@@ -1071,3 +1071,151 @@ fn serial_marking() {
         ["0 fs +0 p0 Note: shared = 1", "0 fs +0 p1 Note: shared = 2"]
     );
 }
+
+/// A shared variable of a protected type: the object is created at elaboration in the shared
+/// heap, its state record is reached through `self`, and two processes call its methods
+/// (serially, in elaboration order).
+#[test]
+fn protected_counter() {
+    use std::sync::{Arc, Mutex};
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let state = pb.ty(Ty::Record {
+        fields: vec![Field {
+            name: "count".into(),
+            ty: int,
+            desc: None,
+        }],
+    });
+    let pt = pb.ty(Ty::Protected { state });
+    let what = pb.check_msg("counter", Dir::To);
+    let make = pb.declare("make_counter", FuncKind::Function, None);
+    let incr = pb.declare("counter.incr", FuncKind::Procedure, None);
+    let value = pb.declare("counter.value", FuncKind::Function, None);
+    let p = pb.declare("p", FuncKind::Process, None);
+    let q = pb.declare("q", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(make);
+        stmt(&mut fb, StmtKind::Return);
+        let eight = fb.int(8);
+        let init = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc {
+            dst: init,
+            size: eight,
+        });
+        let h = fb.reg(RegTy::I64);
+        fb.emit(Inst::New {
+            dst: h,
+            ty: pt,
+            init,
+            size: eight,
+            shared: true,
+        });
+        fb.emit(Inst::Ret { v: Some(h) });
+        fb.finish();
+    }
+    // Both methods: the state record through `self`.
+    for (f, step) in [(incr, true), (value, false)] {
+        let mut fb = pb.define(f);
+        let me = fb.param("self", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let h = load(&mut fb, AddrSpace::Frame, me, Width::B8);
+        let obj = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Deref {
+            dst: obj,
+            handle: h,
+            what,
+        });
+        let v = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: v,
+            addr: obj,
+            w: Width::B8,
+        });
+        if step {
+            let one = fb.int(1);
+            let v = bin(&mut fb, IntOp::Add, v, one);
+            fb.emit(Inst::Store {
+                addr: obj,
+                src: v,
+                w: Width::B8,
+            });
+            fb.emit(Inst::Ret { v: None });
+        } else {
+            fb.emit(Inst::Ret { v: Some(v) });
+        }
+        fb.finish();
+    }
+    for f in [p, q] {
+        let mut fb = pb.define(f);
+        stmt(&mut fb, StmtKind::Call);
+        let obj = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        let args = fb.regs(&[]);
+        fb.emit(Inst::CallProt {
+            func: incr,
+            obj,
+            args,
+            dst: None,
+        });
+        stmt(&mut fb, StmtKind::Report);
+        let obj = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        let args = fb.regs(&[]);
+        let v = fb.reg(RegTy::I64);
+        fb.emit(Inst::CallProt {
+            func: value,
+            obj,
+            args,
+            dst: Some(v),
+        });
+        report_image(&mut fb, "count = ", int, v);
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let prog = Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog.clone(), Bindings::default()).unwrap();
+    let inst = Arc::new(rsim_interp::InstData::default());
+    let mut out = Vec::new();
+    for threads in [1, 4] {
+        let shared = Arc::new(Mutex::new(rsim_interp::SharedState::new(vec![0; 8])));
+        // Elaboration: `shared variable counter : counter_pt;`.
+        let h = rsim_interp::call_shared(rt.clone(), make, inst.clone(), &[], Some(&shared))
+            .unwrap()
+            .unwrap();
+        shared
+            .lock()
+            .unwrap()
+            .vars
+            .copy_from_slice(&h.to_le_bytes());
+        let mut b = Builder::new();
+        for (name, f) in [("p", p), ("q", q)] {
+            assert!(rsim_interp::proc_flags(&prog, f).serial);
+            let ip = rsim_interp::InterpProcess::new(
+                rt.clone(),
+                f,
+                inst.clone(),
+                vec![],
+                Some(shared.clone()),
+            )
+            .unwrap();
+            b.process(name, rsim_interp::proc_flags(&prog, f), &[], ip);
+        }
+        let mut sim = b
+            .build(Config {
+                threads,
+                ..Config::default()
+            })
+            .unwrap();
+        let t = Trace::default();
+        sim.subscribe(Box::new(t.clone()));
+        sim.run_until(Time::ns(1)).unwrap();
+        out.push(t.0.lock().unwrap().clone());
+    }
+    assert_eq!(out[0], out[1]);
+    assert_eq!(
+        out[0],
+        ["0 fs +0 p0 Note: count = 1", "0 fs +0 p1 Note: count = 2"]
+    );
+    // Without the shared state the creator cannot run.
+    let e = rsim_interp::call(rt, make, inst, &[]).unwrap_err();
+    assert!(matches!(e.kind, ErrorKind::Internal(_)), "{e}");
+}

@@ -295,8 +295,33 @@ pub fn call(
     inst: Arc<InstData>,
     args: &[u64],
 ) -> Result<Option<u64>, SimError> {
+    call_shared(rt, func, inst, args, None)
+}
+
+/// [`call`] with access to the shared variables and the shared heap, for elaboration code
+/// that creates shared protected objects (`New { shared: true }`) or initialises shared
+/// variables.
+pub fn call_shared(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[u64],
+    shared: Option<&Arc<Mutex<SharedState>>>,
+) -> Result<Option<u64>, SimError> {
     let mut m = Machine::new(rt, inst, Vec::new(), func);
+    let mut guard = match shared {
+        Some(s) => Some(s.lock().map_err(|_| {
+            SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
+        })?),
+        None => None,
+    };
+    if let Some(g) = guard.as_mut() {
+        m.sh = Some(std::mem::take(&mut **g));
+    }
     let r = m.enter(func, args).and_then(|()| m.run(None, 0));
+    if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
+        **g = st;
+    }
     match r {
         Ok(Outcome::Returned(v)) => Ok(v),
         Ok(Outcome::Suspended) => Err(m.error(

@@ -500,3 +500,15 @@ which tools/difftest parses.
   each signal object's bounds, so unconstrained ports take their actual's bounds. Array signal
   parameters pass the signal reference, the driver slot (`out`/`inout`) and the actual's
   descriptor; their elements and slices are sub-ranges of the reference.
+
+## CLI: JSON diagnostics, `-W` forms, `--explain` (yavs CLI, 2026-10-18)
+
+- **JSON diagnostics follow rustc** (`level`, `children`, `rendered`, plus `code` as a plain string
+  and byte/line/column `spans`), as `docs/cli-contract.md` section 0 promised. The contract won over
+  the first renderer (`severity`, `notes`, `help`) because nothing consumed that shape (#158).
+- **`-W` forms:** `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE`, for `analyze`, `elab` and
+  `run`; per code the last option wins; `CODE` must be a registered warning code, else `E0103`.
+  Same spelling as the contract's `yavs.a_flags` list, GCC-like rather than rustc's `-A/-W/-D` (#137).
+- **`--explain CODE`** lives in the CLI crate, not in `yavs-diag` (a leaf): one table for all stages
+  but `yavs-sem`, which keeps its own. A test fails for any code literal without a text (#136).
+- **A panic is `E9999`, exit 3** in every command (#159).

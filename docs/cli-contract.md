@@ -159,7 +159,16 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   rustc-style human format is the right one; VUnit does not request
   `--message-format=json` (section 0).
 - Options from plan rule 13 that users will put in `yavs.a_flags`:
-  `--relaxed`, `-W<code>`/`-Wno-<code>`/`-Werror`.
+  `--relaxed` and the `-W` forms below. They also work for `elab` and `run`.
+  - `-Werror`: every warning is an error (exit 1 after the batch).
+  - `-Werror=CODE`: that warning is an error. `-Wno-CODE`: that warning is not
+    printed. `-WCODE`: that warning stays a warning even under `-Werror`.
+  - For one code the last option wins; `CODE` must be a registered warning code
+    (`W0001`, `W1008`, ...), else `E0103` and exit 2.
+- `yavs --explain CODE` prints the long text of a diagnostic code on stdout
+  (exit 2 for an unknown code).
+- A panic in any command is an internal compiler error: `E9999` on stderr and
+  exit 3.
 
 ## 5. `yavs run` and `yavs elab`
 

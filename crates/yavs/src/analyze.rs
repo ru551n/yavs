@@ -29,7 +29,7 @@ pub struct Args {
     /// Define a conditional analysis identifier, `NAME=VALUE`.
     #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
     defines: Vec<(String, String)>,
-    /// `-Werror` makes warnings errors; other `-W` forms are not implemented yet.
+    /// Warning control: `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE` (docs/cli-contract.md 4).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
     /// Allow `std`/`ieee` as `--work`/`--map` (analyzes yavs's own lib/ into a library).
@@ -96,23 +96,66 @@ pub(crate) struct Out {
     pub(crate) errors: usize,
     warnings: usize,
     werror: bool,
+    /// Per-code `-W` actions, the last option for a code wins.
+    codes: std::collections::HashMap<String, Action>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Action {
+    Allow,
+    Keep,
+    Deny,
 }
 
 impl Out {
-    pub(crate) fn new(format: MessageFormat, color: bool, werror: bool) -> Out {
+    pub(crate) fn new(format: MessageFormat, color: bool) -> Out {
         Out {
             format,
             color,
             errors: 0,
             warnings: 0,
-            werror,
+            werror: false,
+            codes: Default::default(),
         }
     }
 
+    /// Apply the `-W` options in order: `error`, `error=CODE`, `no-CODE`, `CODE`.
+    pub(crate) fn set_warn(&mut self, opts: &[String]) -> Result<(), Box<Diagnostic>> {
+        for o in opts {
+            let (action, code) = match o.as_str() {
+                "error" => {
+                    self.werror = true;
+                    continue;
+                }
+                _ => match (o.strip_prefix("error="), o.strip_prefix("no-")) {
+                    (Some(c), _) => (Action::Deny, c),
+                    (_, Some(c)) => (Action::Allow, c),
+                    _ => (Action::Keep, o.as_str()),
+                },
+            };
+            if !code.starts_with('W') || crate::explain::explain(code).is_none() {
+                return Err(Box::new(
+                    Diagnostic::error("E0103", format!("unsupported warning option `-W{o}`"))
+                        .with_help(
+                            "use `-Werror`, `-Werror=CODE`, `-Wno-CODE` or `-WCODE` with a warning code; \
+                             `yavs --explain CODE` describes a code",
+                        ),
+                ));
+            }
+            self.codes.insert(code.to_string(), action);
+        }
+        Ok(())
+    }
+
     pub(crate) fn emit(&mut self, sources: &SourceMap, d: &Diagnostic) {
+        let action = self.codes.get(d.code).copied();
+        if d.severity == Severity::Warning && action == Some(Action::Allow) {
+            return;
+        }
         match d.severity {
             Severity::Error => self.errors += 1,
-            Severity::Warning if self.werror => self.errors += 1,
+            Severity::Warning if action == Some(Action::Deny) => self.errors += 1,
+            Severity::Warning if self.werror && action != Some(Action::Keep) => self.errors += 1,
             Severity::Warning => self.warnings += 1,
             Severity::Note => {}
         }
@@ -136,7 +179,7 @@ impl Out {
 }
 
 pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> ExitCode {
-    let mut out = Out::new(format, color, a.warn.iter().any(|w| w == "error"));
+    let mut out = Out::new(format, color);
     let none = SourceMap::default();
     // Usage errors: exit 2.
     let mut libs = Libraries::new();
@@ -159,11 +202,8 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             return out.finish(2);
         }
     }
-    if let Some(w) = a.warn.iter().find(|w| *w != "error") {
-        out.emit(
-            &none,
-            &Diagnostic::error("E0103", format!("unsupported warning option `-W{w}`")),
-        );
+    if let Err(d) = out.set_warn(&a.warn) {
+        out.emit(&none, &d);
         return out.finish(2);
     }
     let (work, _) = a.work.split_once(':').expect("checked by add_spec");
@@ -243,7 +283,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
                 .or_else(|| p.downcast_ref::<String>().cloned())
                 .unwrap_or_default();
             out.errors += 1;
-            let d = Diagnostic::error("E9000", "internal compiler error: this is a bug in yavs")
+            let d = Diagnostic::error("E9999", "internal compiler error: this is a bug in yavs")
                 .with_note(format!("panicked: {msg}"))
                 .with_note(format!(
                     "while analyzing `{}`",

@@ -529,6 +529,9 @@ mod tests {
             j.contains("\"children\":[{\"level\":\"help\",\"message\":\"use `end entity e;`\""),
             "{j}"
         );
-        assert!(j.contains("\"rendered\":\"error[E0001]: mismatched name\\n"), "{j}");
+        assert!(
+            j.contains("\"rendered\":\"error[E0001]: mismatched name\\n"),
+            "{j}"
+        );
     }
 }

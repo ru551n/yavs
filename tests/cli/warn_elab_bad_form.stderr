@@ -1,0 +1,6 @@
+error[E0103]: unsupported warning option `-Wno-nothing`
+  |
+  = help: use `-Werror`, `-Werror=CODE`, `-Wno-CODE` or `-WCODE` with a warning code; `yavs --explain CODE` describes a code
+
+error: aborting due to 1 previous error
+

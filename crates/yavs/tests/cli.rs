@@ -102,6 +102,68 @@ const CASES: &[Case] = &[
         code: 2,
     },
     Case {
+        name: "warn_plain",
+        args: &["analyze", "--work=work:$TMP/lib", "warn.vhd"],
+        code: 0,
+    },
+    Case {
+        name: "warn_werror",
+        args: &["analyze", "--work=work:$TMP/lib", "-Werror", "warn.vhd"],
+        code: 1,
+    },
+    Case {
+        name: "warn_deny_code",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "-Werror=W0001",
+            "warn.vhd",
+        ],
+        code: 1,
+    },
+    Case {
+        name: "warn_allow_code",
+        args: &["analyze", "--work=work:$TMP/lib", "-Wno-W0001", "warn.vhd"],
+        code: 0,
+    },
+    Case {
+        name: "warn_code_after_werror",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "-Werror",
+            "-WW0001",
+            "warn.vhd",
+        ],
+        code: 0,
+    },
+    Case {
+        name: "warn_allow_after_deny",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "-Werror=W0001",
+            "-Wno-W0001",
+            "warn.vhd",
+        ],
+        code: 0,
+    },
+    Case {
+        name: "warn_bad_code",
+        args: &["analyze", "--work=work:$TMP/lib", "-Wno-W9998", "warn.vhd"],
+        code: 2,
+    },
+    Case {
+        name: "warn_bad_form",
+        args: &["analyze", "--work=work:$TMP/lib", "-Wfoo", "warn.vhd"],
+        code: 2,
+    },
+    Case {
+        name: "warn_elab_bad_form",
+        args: &["elab", "--work=work:$TMP/lib", "-Wno-nothing", "top"],
+        code: 2,
+    },
+    Case {
         name: "json",
         args: &[
             "--message-format=json",
@@ -478,4 +540,24 @@ fn per_file_processes_across_libraries() {
     assert_eq!(code, Some(1), "{err}");
     assert!(err.contains("error[E1002]"), "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn explain() {
+    let yavs = |code: &str| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--explain", code])
+            .output()
+            .expect("run yavs")
+    };
+    let ok = yavs("e3002");
+    assert!(ok.status.success());
+    assert!(
+        String::from_utf8(ok.stdout)
+            .unwrap()
+            .starts_with("E3002: More delta cycles")
+    );
+    let sem = yavs("E1100");
+    assert!(sem.status.success());
+    assert_eq!(yavs("E0000").status.code(), Some(2));
 }

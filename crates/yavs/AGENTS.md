@@ -19,6 +19,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|
 | `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding`; `parse` subcommand; `@file` expansion before clap |
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `stdlib()` (finds `lib/`), `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
+| `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
 | `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
@@ -49,9 +50,14 @@ into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
 
 - `docs/cli-contract.md` is a contract with VUnit (`~/git/vunit` `sim_if/yavs.py`). Change it and
   the code together, deliberately; `tests/cli.rs` pins the observable part.
-- A panic in `analyze` is caught and reported as an ICE with the file name. It currently uses code
-  `E9000`, not the registry's `E9999` (#159).
-- `-W` accepts only `error`; other forms are `E0103` (#137).
+- A panic in `analyze` is caught and reported as an `E9999` ICE with the file name (exit 3); `elab`
+  and `run` are wrapped by `guard` in `main.rs` (no file name). The panic hook is silenced in `main`.
+- `-W` forms (`Out::set_warn` in `analyze.rs`): `error`, `error=CODE`, `no-CODE`, `CODE`; the last
+  option for a code wins, an unknown or non-warning code is `E0103`. Warnings are filtered in
+  `Out::emit`, so every stage that goes through `Out` obeys them.
+- `yavs --explain CODE` is `src/explain.rs`: its table covers every code except `yavs-sem`'s
+  (`yavs_sem::diag::EXPLAIN`). A test scans all `crates/*/src` for code literals, so a new code
+  fails `cargo test -p yavs` until it has a text (#136).
 - `--ieee-warnings` is accepted and ignored on purpose (`ponytail:` comment in `elab.rs`).
 - `stdlib()` order: `$YAVS_STDLIB`, then `lib/` next to the executable or up to three parents,
   then the checkout path compiled into `yavs-sem` (#43). A stale binary from a shared
@@ -81,5 +87,5 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   binary; output format changes break their parsers.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:cli`): #64 wire
   lowering, interpreter and kernel into `yavs run`; #95 `--load`; #110 VUnit SimulatorInterface;
-  #116 `--wave`; #135 native Windows build; #137 `-W` forms; #22 bootstrap mode; #20
-  `--encoding` in analyze; #158 JSON keys vs contract; #159 E9000.
+  #116 `--wave`; #135 native Windows build; #22 bootstrap mode; #20
+  `--encoding` in analyze.

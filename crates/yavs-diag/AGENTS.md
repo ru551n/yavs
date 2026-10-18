@@ -52,10 +52,10 @@ Module-local decisions go here, in this section, in the same commit (root `AGENT
   `line_end`, `column_end`, `primary`, `label`), `children[]` (notes then help, each `{level,
   message, spans:[], children:[], rendered:null}`), `rendered` (human text, no colour). Change
   the contract and the renderer together.
-- Registry gaps: the CLI emits `E9000` for a caught panic in `yavs analyze` while the registry
-  says `E9999` (issue #159). Runtime errors carry `yavs_kernel::ErrorKind::code` (`E3001`-`E3010`)
-  and are rendered by `yavs_elab::Elaborated::runtime_diagnostic`; their explain texts are #136.
-- No `--explain` command exists yet; `yavs-sem` keeps explain texts in `src/diag.rs` (#136).
+- Runtime errors carry `yavs_kernel::ErrorKind::code` (`E3001`-`E3010`) and are rendered by
+  `yavs_elab::Elaborated::runtime_diagnostic`. A caught panic is `E9999`.
+- `yavs --explain CODE` lives in the CLI (`crates/yavs/src/explain.rs`): this crate stays a leaf and
+  only owns the registry table. Its test fails for any code literal in `crates/*/src` without a text.
 
 ## 5. How to work here
 
@@ -75,5 +75,4 @@ YAVS_BLESS=1 cargo test -p yavs --test diag         # accept new output, then in
 - Every crate depends on this one: a signature change touches all of them. Prefer additive
   builder methods.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:diag`):
-  #136 keep the code registry and `--explain` texts complete; #159 `E9000` used for ICEs
-  instead of `E9999`.
+  none at the moment.

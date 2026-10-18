@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 mod analyze;
 mod elab;
+mod explain;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
@@ -29,8 +30,11 @@ struct Cli {
     /// (auto), always ISO-8859-1 bytes (latin1), or UTF-8 only (utf8).
     #[arg(long, global = true, value_enum, default_value = "auto")]
     encoding: EncodingArg,
+    /// Print the long explanation of a diagnostic code, such as `E0002`, and exit.
+    #[arg(long, value_name = "CODE")]
+    explain: Option<String>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -93,6 +97,23 @@ pub(crate) fn parse_define(s: &str) -> Result<(String, String), String> {
     }
 }
 
+/// Run `f`; a panic becomes an `E9999` internal-compiler-error diagnostic and exit status 3.
+fn guard(format: MessageFormat, color: bool, f: impl FnOnce() -> ExitCode) -> ExitCode {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let d = Diagnostic::error("E9999", "internal compiler error: this is a bug in yavs")
+            .with_note(format!("panicked: {msg}"));
+        let _ = std::io::stderr()
+            .lock()
+            .write_all(yavs_diag::render(&SourceMap::default(), &d, format, color).as_bytes());
+        ExitCode::from(3)
+    })
+}
+
 /// Code for a file that cannot be read.
 const READ_ERROR: &str = "E0100";
 
@@ -115,6 +136,27 @@ fn main() -> ExitCode {
         }
     };
     let cli = Cli::parse_from(args);
+    if let Some(code) = &cli.explain {
+        return match explain::explain(&code.to_ascii_uppercase()) {
+            Some(text) => {
+                println!("{}: {text}", code.to_ascii_uppercase());
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("error: no such diagnostic code `{code}`");
+                ExitCode::from(2)
+            }
+        };
+    }
+    let Some(command) = cli.command else {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::MissingSubcommand,
+                "a subcommand or --explain CODE is required",
+            )
+            .exit()
+    };
     let color = match cli.color {
         Color::Auto => ColorChoice::Auto,
         Color::Always => ColorChoice::Always,
@@ -131,7 +173,10 @@ fn main() -> ExitCode {
         EncodingArg::Latin1 => Encoding::Latin1,
         EncodingArg::Utf8 => Encoding::Utf8,
     };
-    let (std, defines, dump_ast, files) = match cli.command {
+    // A panic is an internal compiler error (E9999, exit 3), never a bare 101. `analyze` also
+    // catches its own to name the file.
+    std::panic::set_hook(Box::new(|_| {}));
+    let (std, defines, dump_ast, files) = match command {
         Command::Parse {
             std,
             defines,
@@ -139,8 +184,8 @@ fn main() -> ExitCode {
             files,
         } => (std, defines, dump_ast, files),
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
-        Command::Elab(a) => return elab::elab(a, format, color),
-        Command::Run(a) => return elab::run(a, format, color),
+        Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color)),
+        Command::Run(a) => return guard(format, color, || elab::run(a, format, color)),
     };
     let opts = Options {
         std: match std {
@@ -196,4 +241,15 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_becomes_exit_3() {
+        let r = guard(MessageFormat::Short, false, || panic!("boom"));
+        assert_eq!(format!("{r:?}"), format!("{:?}", ExitCode::from(3)));
+    }
 }

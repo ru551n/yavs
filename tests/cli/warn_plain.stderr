@@ -1,0 +1,6 @@
+warning[W0001]: careful
+ --> warn.vhd:1:1
+  |
+1 | `warning "careful"
+  | ^^^^^^^^
+

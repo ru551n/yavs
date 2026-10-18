@@ -35,7 +35,7 @@ pub struct Common {
     /// Relax some LRM checks (sem.md 8.4).
     #[arg(long)]
     relaxed: bool,
-    /// `-Werror` makes warnings errors.
+    /// Warning control: `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE` (docs/cli-contract.md 4).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
     /// Print the elaborated hierarchy (for debugging yavs).
@@ -97,7 +97,7 @@ fn elaborate(
     format: MessageFormat,
     color: bool,
 ) -> Result<(Out, Db, yavs_elab::Elaborated), (Out, u8)> {
-    let mut out = Out::new(format, color, c.warn.iter().any(|w| w == "error"));
+    let mut out = Out::new(format, color);
     let none = SourceMap::default();
     let mut libs = Libraries::new();
     for spec in std::iter::once(&c.work).chain(&c.maps) {
@@ -119,11 +119,8 @@ fn elaborate(
             return Err((out, 2));
         }
     }
-    if let Some(w) = c.warn.iter().find(|w| *w != "error") {
-        out.emit(
-            &none,
-            &Diagnostic::error("E0103", format!("unsupported warning option `-W{w}`")),
-        );
+    if let Err(d) = out.set_warn(&c.warn) {
+        out.emit(&none, &d);
         return Err((out, 2));
     }
     let (work, _) = c.work.split_once(':').expect("checked by add_spec");

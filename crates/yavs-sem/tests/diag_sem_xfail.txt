@@ -1,6 +1,5 @@
 # Files of tests/diag/sem expected to fail until their slice lands (see diag_sem.rs).
 agg/2d_array_wrong_depth.vhd
-agg/aggregate_for_scalar.vhd
 agg/case_expression_type_not_discrete.vhd
 agg/case_others_not_last.vhd
 agg/case_string_choice_length_mismatch.vhd

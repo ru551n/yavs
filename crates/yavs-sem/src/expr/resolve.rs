@@ -226,12 +226,14 @@ impl Db {
                 Expected::Type(t) => {
                     let what = class_name(e);
                     let tn = self.type_name(t);
+                    // An aggregate whose context is not composite gives it no type (9.3.3).
+                    let code = match &e.kind {
+                        ast::ExprKind::Aggregate(_) => diag::AGG_NO_TYPE,
+                        _ => diag::TYPE_MISMATCH,
+                    };
                     self.report(
-                        Diagnostic::error(
-                            diag::TYPE_MISMATCH,
-                            format!("expected `{tn}`, found {what}"),
-                        )
-                        .with_primary(e.span, format!("{what} cannot be of type `{tn}`")),
+                        Diagnostic::error(code, format!("expected `{tn}`, found {what}"))
+                            .with_primary(e.span, format!("{what} cannot be of type `{tn}`")),
                     );
                     self.poison_expr()
                 }

@@ -284,7 +284,17 @@ impl Elaborated {
                             .is_some_and(|m| m.contains_key(&d))
                 });
                 let name = db.decls[d].name.to_string().to_ascii_lowercase();
-                format!("{}{name}", text(declared.unwrap_or(region)))
+                let own = match &db.decls[d].kind {
+                    // A subprogram names itself with its profile and a trailing colon.
+                    DeclKind::Subprogram(_) => format!("{}:", subprogram_element(db, d)),
+                    _ => name,
+                };
+                let local = if declared.is_none() {
+                    local_prefix(db, db.decls[d].scope)
+                } else {
+                    String::new()
+                };
+                format!("{}{local}{own}", text(declared.unwrap_or(region)))
             }
         }
     }
@@ -612,4 +622,43 @@ fn run_time_packages(db: &Db) -> Vec<UnitId> {
         })
         .map(|(id, _)| id)
         .collect()
+}
+
+/// `name[type, type return type]` (LRM 16.2.5, lower case): a subprogram's path element.
+fn subprogram_element(db: &Db, d: yavs_sem::DeclId) -> String {
+    let decl = &db.decls[d];
+    let sub = decl.kind.subprogram().expect("a subprogram declaration");
+    let ty = |st| db.type_name(db.base(st)).to_ascii_lowercase();
+    let params: Vec<String> = sub.params.iter().map(|p| ty(p.subtype)).collect();
+    let mut sig = params.join(",");
+    if let Some(r) = sub.ret {
+        if !sig.is_empty() {
+            sig.push(' ');
+        }
+        sig += &format!("return {}", ty(r));
+    }
+    format!("{}[{sig}]", decl.name.to_string().to_ascii_lowercase())
+}
+
+/// The path elements between a region and an object declared in `scope` inside a process or
+/// subprogram, outermost first, each with its colon: `main:pr[integer]:`. An unlabeled
+/// process contributes an empty element (`::`), as the reference simulators print it.
+fn local_prefix(db: &Db, scope: yavs_sem::ScopeId) -> String {
+    use yavs_sem::scope::ScopeKind as S;
+    let mut parts = Vec::new();
+    let mut sc = Some(scope);
+    while let Some(s) = sc {
+        let sd = &db.scopes[s];
+        match (sd.kind, sd.owner) {
+            (S::Process, o) => parts.push(match o {
+                Some(l) => format!("{}:", db.decls[l].name.to_string().to_ascii_lowercase()),
+                None => ":".into(),
+            }),
+            (S::Subprogram, Some(o)) => parts.push(format!("{}:", subprogram_element(db, o))),
+            (S::Loop | S::SeqBlock, _) => {}
+            _ => break,
+        }
+        sc = sd.parent;
+    }
+    parts.iter().rev().map(String::as_str).collect()
 }

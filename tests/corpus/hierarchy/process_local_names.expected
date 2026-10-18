@@ -1,0 +1,15 @@
+exit	0
+diag	note	0	0	:process_local_names:main	child :process_local_names:main:child | :process_local_names(a):main:child
+diag	note	0	0	:process_local_names:main	k :process_local_names:main:k | :process_local_names(a):main:k
+diag	note	0	0	:process_local_names:main	main :process_local_names:main: | :process_local_names(a):main:
+diag	note	0	0	:process_local_names:main	pr :process_local_names:main:pr[integer]:pv | :process_local_names(a):main:pr[integer]:pv
+diag	note	0	0	:process_local_names:main	prx :process_local_names:main:pr[integer]:x | :process_local_names(a):main:pr[integer]:x
+diag	note	0	0	:process_local_names:main	pr self :process_local_names:main:pr[integer]: | :process_local_names(a):main:pr[integer]:
+diag	note	0	0	:process_local_names:main	inner :process_local_names:main:pr[integer]:inner[]:iv | :process_local_names(a):main:pr[integer]:inner[]:iv
+diag	note	0	0	:process_local_names:main	fn :process_local_names:main:fn[integer return integer]:fv | :process_local_names(a):main:fn[integer return integer]:fv
+diag	note	0	0	:process_local_names:main	arch fn :process_local_names:twice[integer,boolean return integer]:fv | :process_local_names(a):twice[integer,boolean return integer]:fv
+diag	note	1000000	0	:process_local_names:_p0	u :process_local_names::u | :process_local_names(a)::u
+diag	note	2000000	0	:process_local_names:b:q	v :process_local_names:b:q:v | :process_local_names(a):b:q:v
+diag	note	3000000	0	:process_local_names:b:_p0	w :process_local_names:b::w | :process_local_names(a):b::w
+diag	note	4000000	0	:process_local_names:g(0):gp	gv :process_local_names:g(0):gp:v | :process_local_names(a):g(0):gp:v
+diag	note	5000000	0	:process_local_names:g(1):gp	gv :process_local_names:g(1):gp:v | :process_local_names(a):g(1):gp:v

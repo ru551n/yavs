@@ -638,8 +638,13 @@ which tools/difftest parses.
   '-' matches anything, metavalues match nothing, L/H match 0/1 (LRM 9.2.3).
 - **`'path_name`/`'instance_name`** are strings in instance data (`UnitIr::names`), written by
   yavs-elab per region: a design unit names its instance, a signal or constant the region that
-  declares it, a process label its process; other objects (variables) are named from the
-  process's region (ponytail: the process segment is missing for process variables).
+  declares it, a process label its process. Objects declared in a process or subprogram add
+  the path elements between the region and the object (#207, LRM 16.2.5): the process label
+  (an unlabeled process gives an empty element: `:t::v`, `:t:b::v`, as the reference
+  simulators print it) and each enclosing subprogram as `name[type,type return type]` in
+  lower case (`:t:main:pr[integer]:x`, a subprogram's own name ends in `:`). Loops and
+  sequential blocks add nothing. Ponytail: a subprogram declared in an enclosing region of the
+  process's own region is named from the process's region.
 - **Array signal descriptors** live in instance data (`SignalIr::dope`), written by yavs-elab from
   each signal object's bounds, so unconstrained ports take their actual's bounds. Array signal
   parameters pass the signal reference, the driver slot (`out`/`inout`) and the actual's

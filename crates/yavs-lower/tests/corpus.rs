@@ -59,6 +59,7 @@ const PASS: &[&str] = &[
     "hierarchy/component_binding",
     "hierarchy/incremental_binding",
     "hierarchy/instance_path_names",
+    "hierarchy/process_local_names",
     "hierarchy/mode_view_ports",
     "hierarchy/nested_instances",
     "hierarchy/package_const_once",

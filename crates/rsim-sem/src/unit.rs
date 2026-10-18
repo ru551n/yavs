@@ -563,7 +563,10 @@ impl Db {
     /// End of `std.standard`: every queued implicit operation must be created by now.
     pub(crate) fn end_standard(&mut self, _scope: ScopeId, span: Span) {
         if !self.pending_implicit.is_empty() {
-            self.ice(span, "implicit operations of std.standard still pending at its end");
+            self.ice(
+                span,
+                "implicit operations of std.standard still pending at its end",
+            );
         }
     }
 }

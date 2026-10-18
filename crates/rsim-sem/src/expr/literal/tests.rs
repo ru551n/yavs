@@ -47,6 +47,7 @@ fn add_type(db: &mut Db, name: &str, kind: TypeKind) -> TypeId {
         anonymous: false,
         kind,
         first_subtype: st,
+        base_subtype: st,
     });
     ty
 }

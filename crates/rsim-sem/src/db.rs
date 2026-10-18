@@ -274,6 +274,12 @@ impl Db {
         )
     }
 
+    /// The source text of `span`, as written, for messages.
+    pub(crate) fn source_text(&self, span: Span) -> String {
+        let f = self.sources.get(span.file);
+        f.text[f.text_offset(span.start)..f.text_offset(span.end)].to_string()
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diags
     }

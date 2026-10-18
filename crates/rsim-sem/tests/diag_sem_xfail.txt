@@ -68,14 +68,12 @@ ovl/ambiguous_string_literal.vhd
 ovl/ambiguous_universal_integer.vhd
 ovl/formal_twice.vhd
 ovl/function_used_as_statement.vhd
-ovl/index_non_array.vhd
 ovl/missing_actual.vhd
 ovl/no_matching_candidates_listed.vhd
 ovl/no_matching_operator_vector_integer.vhd
 ovl/no_matching_return_type.vhd
 ovl/positional_then_named_same_formal.vhd
 ovl/procedure_used_as_function.vhd
-ovl/too_many_indexes.vhd
 ovl/too_many_positional.vhd
 ovl/unknown_formal_name.vhd
 prot/assign_protected_variable.vhd
@@ -92,7 +90,6 @@ prot/signal_of_protected_type.vhd
 relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd
 relax/shared_variable_unprotected_relaxed.vhd
-stat/array_length_mismatch_constant.vhd
 stat/array_length_mismatch_signal_assign.vhd
 stat/array_length_mismatch_variable.vhd
 stat/attribute_dimension_not_static.vhd

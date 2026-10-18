@@ -44,6 +44,37 @@ impl Db {
 
     /// `E1403`: a static scalar value outside the static subtype it goes into (4.3).
     pub(crate) fn check_in_subtype(&mut self, id: ExprId, st: crate::ids::SubtypeId) {
+        if let Some(crate::stat::ConstValue::Array(a)) = self.value(id)
+            && let crate::types::Constraint::Array {
+                dims: Some(dims), ..
+            } = &self.subtypes[st].constraint
+            && let Some((want, got)) =
+                dims.iter()
+                    .zip(a.bounds.iter())
+                    .find_map(|(rc, &(l, d, r))| {
+                        let crate::types::RangeC::Explicit { left, dir, right } = rc else {
+                            return None;
+                        };
+                        let w = len(
+                            self.value(*left)?.as_int()?,
+                            *dir,
+                            self.value(*right)?.as_int()?,
+                        );
+                        let g = len(l, d, r);
+                        (w != g).then_some((w, g))
+                    })
+        {
+            // 4.3: both lengths static, so the run-time length check would always fail.
+            let span = self.exprs[id].span;
+            self.report(
+                Diagnostic::error(
+                    diag::LENGTH_MISMATCH,
+                    format!("length mismatch: the target has {want} elements, the value {got}"),
+                )
+                .with_primary(span, format!("{got} elements")),
+            );
+            return;
+        }
         let (Some(v), Some((l, d, r))) = (self.value(id).cloned(), self.static_bounds(st)) else {
             return;
         };
@@ -509,10 +540,60 @@ impl Db {
                 return;
             }
             if let K::Name(ast::Name {
-                kind: ast::NameKind::Apply { prefix, .. },
+                kind: ast::NameKind::Apply { prefix, args },
                 ..
             }) = &e.kind
             {
+                // A prefix that is only values (no function): say why it cannot be indexed.
+                if let CandSet::Types(ps) = self.name_cands(scope, prefix)
+                    && !ps.is_empty()
+                    && ps.iter().all(|i| !matches!(i.via, Via::Call(_)))
+                    && let Some(first) = args.first()
+                {
+                    let pname = self.source_text(prefix.span);
+                    let arrays: Vec<usize> = ps
+                        .iter()
+                        .filter_map(|i| match &self.types[i.ty].kind {
+                            TypeKind::Array { indexes, .. } => Some(indexes.len()),
+                            _ => None,
+                        })
+                        .collect();
+                    if arrays.is_empty()
+                        && ps.iter().all(|i| {
+                            !matches!(
+                                self.types[i.ty].kind,
+                                TypeKind::Access { .. } | TypeKind::Error
+                            )
+                        })
+                    {
+                        let tn = self.type_name(ps[0].ty);
+                        self.report(
+                            Diagnostic::error(
+                                diag::TYPE_MISMATCH,
+                                format!("`{pname}` has type `{tn}` and cannot be indexed"),
+                            )
+                            .with_primary(first.span, "index of a value that is not an array")
+                            .with_secondary(prefix.span, format!("of type `{tn}`")),
+                        );
+                        return;
+                    }
+                    if let [dims] = arrays[..]
+                        && dims != args.len()
+                    {
+                        self.report(
+                            Diagnostic::error(
+                                diag::INDEX_ARITY,
+                                format!(
+                                    "array `{pname}` has {dims} dimension{}, found {} indexes",
+                                    if dims == 1 { "" } else { "s" },
+                                    args.len()
+                                ),
+                            )
+                            .with_primary(first.span, format!("{} indexes", args.len())),
+                        );
+                        return;
+                    }
+                }
                 self.report(
                     Diagnostic::error(
                         diag::NO_OVERLOAD,
@@ -824,5 +905,19 @@ impl Db {
         })();
         (self.memo, self.name_memo) = saved;
         r
+    }
+}
+
+/// Number of elements of `l dir r` (0 for a null range).
+fn len(l: i64, d: crate::types::Direction, r: i64) -> i64 {
+    let (lo, hi) = if d == crate::types::Direction::To {
+        (l, r)
+    } else {
+        (r, l)
+    };
+    if hi < lo {
+        0
+    } else {
+        hi.saturating_sub(lo).saturating_add(1)
     }
 }

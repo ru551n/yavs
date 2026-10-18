@@ -709,8 +709,7 @@ impl Machine {
             let t = to_time(self.load(at, Width::B8)? as i64)?;
             items.push((t, self.get_value(add_addr(at, 8)?, elem, len)?));
         }
-        let refs: Vec<(Time, ValueRef<'_>)> =
-            items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
+        let refs: Vec<(Time, ValueRef<'_>)> = items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
         let mode = match mode {
             DriveMode::Transport => DelayMode::Transport,
             DriveMode::Inertial => DelayMode::Inertial {
@@ -1717,8 +1716,8 @@ impl Machine {
                 mode,
                 reject,
             } => {
-                let slot = u32::try_from(self.r(slot))
-                    .map_err(|_| ice("driver slot out of range"))?;
+                let slot =
+                    u32::try_from(self.r(slot)).map_err(|_| ice("driver slot out of range"))?;
                 let d = self.driver(slot)?;
                 self.drive(ctx, d, Some(target), wave, n, mode, reject)?;
             }

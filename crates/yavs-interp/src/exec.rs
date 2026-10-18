@@ -29,6 +29,8 @@ use crate::{InstData, ProcDriver, Runtime, SharedState};
 #[derive(Debug)]
 pub(crate) enum Fault {
     Runtime(String),
+    /// A call of an unbound foreign subprogram: message and places searched.
+    Unbound(String, String),
     Internal(String),
     Kernel(SimError),
 }
@@ -393,6 +395,7 @@ impl Machine {
         };
         let mut e = match f {
             Fault::Runtime(m) => mk(ErrorKind::Runtime(m)),
+            Fault::Unbound(message, searched) => mk(ErrorKind::Foreign { message, searched }),
             Fault::Internal(m) => mk(ErrorKind::Internal(format!("interpreter: {m}"))),
             Fault::Kernel(e) => e,
         };

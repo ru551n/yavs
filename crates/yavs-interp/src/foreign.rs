@@ -349,11 +349,15 @@ impl Machine {
             .get(id)
             .ok_or_else(|| ice(format!("no foreign subprogram {id}")))?;
         let rt = self.rt.clone();
-        let fun = rt
-            .foreign
-            .get(id.0 as usize)
-            .and_then(|f| f.as_ref())
-            .ok_or_else(|| ice(format!("foreign `{}` is not bound", x.name)))?;
+        let Some(fun) = rt.foreign.get(id.0 as usize).and_then(|f| f.as_ref()) else {
+            return Err(Fault::Unbound(
+                format!(
+                    "symbol `{}` of foreign subprogram `{}` is not defined",
+                    x.symbol, x.name
+                ),
+                rt.searched.clone(),
+            ));
+        };
         let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();
         let name = &x.name;
         let mut temps = Vec::with_capacity(regs.len());

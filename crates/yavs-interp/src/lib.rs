@@ -108,6 +108,8 @@ impl Default for Limits {
 pub struct Bindings {
     /// A function for every `Program::foreign` entry (looked up by the elaborator).
     pub foreign: Vec<(ForeignId, ForeignFn)>,
+    /// Where the bindings looked for symbols (reported when an unbound one is called).
+    pub searched: String,
     /// Package instance data, addressed by `AddrSpace::Pkg(i)`.
     pub packages: Vec<Arc<InstData>>,
     /// Coverage counters (instances times items); `None` means `Program::cov.len()`.
@@ -125,6 +127,7 @@ impl Default for Bindings {
     fn default() -> Bindings {
         Bindings {
             foreign: Vec::new(),
+            searched: String::new(),
             packages: Vec::new(),
             cov_counters: None,
             limits: Limits::default(),
@@ -140,6 +143,8 @@ pub struct Runtime {
     pub prog: Arc<Program>,
     pub(crate) natives: Vec<Option<native::NativeFn>>,
     pub(crate) foreign: Vec<Option<ForeignFn>>,
+    /// Where unbound foreign symbols were looked for, for the error at their call.
+    pub(crate) searched: String,
     pub(crate) pkgs: Vec<Arc<InstData>>,
     pub(crate) cov: Vec<AtomicU64>,
     /// Compact constants expanded on first use by address.
@@ -159,8 +164,9 @@ fn usage(m: String) -> SimError {
 }
 
 impl Runtime {
-    /// Fails early on a native symbol that `lib/NATIVE.md` does not define, an unbound
-    /// foreign subprogram or a foreign function whose C signature differs from the IR's.
+    /// Fails early on a native symbol that `lib/NATIVE.md` does not define or a foreign
+    /// function whose C signature differs from the IR's. An unbound foreign subprogram is
+    /// an error only when it is called.
     pub fn new(prog: Arc<Program>, b: Bindings) -> Result<Arc<Runtime>, SimError> {
         let mut natives = Vec::with_capacity(prog.natives.len());
         for (_, n) in prog.natives.iter() {
@@ -185,20 +191,11 @@ impl Runtime {
             }
             foreign[id.0 as usize] = Some(f);
         }
-        if let Some((id, x)) = prog
-            .foreign
-            .iter()
-            .find(|(id, _)| foreign[id.0 as usize].is_none())
-        {
-            return Err(usage(format!(
-                "foreign subprogram `{}` ({id}): symbol `{}` is not bound",
-                x.name, x.symbol
-            )));
-        }
         let n = b.cov_counters.unwrap_or(prog.cov.len());
         Ok(Arc::new(Runtime {
             natives,
             foreign,
+            searched: b.searched,
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),

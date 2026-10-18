@@ -61,6 +61,9 @@ pub enum ErrorKind {
     Conversion { formal: String, message: String },
     /// Raised by process code: bound check, overflow, null access, ...
     Runtime(String),
+    /// A call of a foreign subprogram whose C symbol no `--load` library or the executable
+    /// defines (`searched` lists the places looked in).
+    Foreign { message: String, searched: String },
     /// The model, the configuration or a `SimControl` request is invalid.
     Usage(String),
     /// A broken kernel invariant: a bug in yavs.
@@ -110,6 +113,7 @@ impl ErrorKind {
             ErrorKind::Resolution { .. } => "E3007",
             ErrorKind::Conversion { .. } => "E3008",
             ErrorKind::Runtime(_) => "E3009",
+            ErrorKind::Foreign { .. } => "E0107",
             ErrorKind::Usage(_) => "E3010",
             ErrorKind::Internal(_) => "E9999",
         }
@@ -142,6 +146,7 @@ impl fmt::Display for ErrorKind {
                 write!(f, "conversion for port {formal} failed: {message}")
             }
             ErrorKind::Runtime(msg) | ErrorKind::Usage(msg) => f.write_str(msg),
+            ErrorKind::Foreign { message, .. } => f.write_str(message),
             ErrorKind::Internal(msg) => write!(
                 f,
                 "internal error: {msg}; this is a bug in yavs, please report it"

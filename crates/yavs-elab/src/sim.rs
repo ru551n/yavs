@@ -38,6 +38,8 @@ pub struct Ir {
     /// The C function of each `program.foreign` entry, bound by the caller (`yavs run
     /// --load`) before [`Elaborated::build`].
     pub foreign: Vec<(yavs_ir::ForeignId, yavs_ffi::ForeignFn)>,
+    /// Where the unbound ones were looked for (reported when one is called).
+    pub foreign_searched: String,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -65,6 +67,11 @@ impl Elaborated {
         let mut at = format!("at {}, delta {}", e.time, e.delta);
         if let Some((_, path)) = &e.process {
             at.push_str(&format!(", in process {path}"));
+        }
+        if let ErrorKind::Foreign { searched, .. } = &e.kind {
+            d = d
+                .with_note(format!("searched {searched}"))
+                .with_help("load the shared library that defines it with `--load=LIB`");
         }
         d.with_note(at)
     }
@@ -190,6 +197,7 @@ impl Elaborated {
             packages: lowered.packages,
             shared_size: lowered.shared_size,
             foreign: Vec::new(),
+            foreign_searched: String::new(),
         });
         Ok(())
     }
@@ -334,6 +342,7 @@ impl Elaborated {
                 packages: packages.clone(),
                 sources: ir.sources.clone(),
                 foreign: ir.foreign.clone(),
+                searched: ir.foreign_searched.clone(),
                 ..Default::default()
             };
             let rt = Runtime::new(ir.program.clone(), b)?;
@@ -346,6 +355,7 @@ impl Elaborated {
                 packages,
                 sources: ir.sources.clone(),
                 foreign: ir.foreign.clone(),
+                searched: ir.foreign_searched.clone(),
                 ..Default::default()
             },
         )?;

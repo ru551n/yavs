@@ -89,6 +89,18 @@ architecture a of bad is begin
 end;
 
 use work.c.all;
+entity lazy is end;
+architecture a of lazy is begin
+  process
+    variable n : integer := 0;
+  begin
+    if n > 0 then report integer'image(missing); end if;
+    report "lazy ok";
+    wait;
+  end process;
+end;
+
+use work.c.all;
 entity miss is end;
 architecture a of miss is begin
   process begin report integer'image(missing); wait; end process;
@@ -173,18 +185,36 @@ fn load_and_call_c() {
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("error[E3"), "{err}");
 
-    // A symbol defined nowhere fails before the simulation starts, naming what was searched.
-    let (code, err, _) = yavs(&["run", &lib, &load, "miss"]);
+    // Warn early, fail at the call: an unbound symbol on a branch never taken is a warning
+    // naming what was searched, and the run completes.
+    let (code, err, out) = yavs(&["run", &lib, &load, "lazy"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("lazy ok"), "{out}");
+    assert!(
+        err.contains("warning[W0108]: symbol `no_such_symbol` of foreign subprogram `missing`"),
+        "{err}"
+    );
+    assert!(err.contains("searched") && err.contains("c_test"), "{err}");
+
+    // `-Werror` turns the warning into an error before the simulation.
+    let (code, err, out) = yavs(&["run", &lib, &load, "-Werror", "lazy"]);
     assert_eq!(code, 2, "{err}");
+    assert!(!out.contains("lazy ok"), "{out}");
+
+    // Calling it is E0107, a runtime error at the call with the same note.
+    let (code, err, _) = yavs(&["run", &lib, &load, "miss"]);
+    assert_eq!(code, 1, "{err}");
     assert!(
         err.contains("error[E0107]: symbol `no_such_symbol` of foreign subprogram `missing`"),
         "{err}"
     );
-    assert!(err.contains("c_test"), "{err}");
+    assert!(err.contains("searched") && err.contains("c_test"), "{err}");
 
-    // Without `--load` the C functions are not found either.
+    // Without `--load` the C functions are not found either: a warning each, an error at the
+    // first call.
     let (code, err, _) = yavs(&["run", &lib, "tb"]);
-    assert_eq!(code, 2, "{err}");
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("warning[W0108]"), "{err}");
     assert!(err.contains("error[E0107]"), "{err}");
 
     let missing = format!("--load={}", tmp.join("nope.so").display());

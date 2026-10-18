@@ -42,7 +42,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Reports on stdout as `** Note: <fs>fs+<delta>: msg` then `    Process <path>` | tools/difftest parses the reference simulator's format | `docs/decisions.md` "Runtime: default exit severity", `docs/cli-contract.md` 5 |
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
 | A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and test runner users need the VHDL location | `docs/cli-contract.md` 5 |
-| Foreign symbols are bound after lowering, before `build`: `--load` libraries in order, then the executable; missing is E0107, exit 2 | Fail early | `docs/cli-contract.md` 5, `docs/decisions.md` "Foreign subprograms and `--load`" |
+| Foreign symbols are bound after lowering, before `build`: `--load` libraries in order, then the executable; missing is warning W0108, E0107 only at the call (user decision 2026-10-18) | Warn early, fail at call | `docs/cli-contract.md` 5, `docs/decisions.md` "Foreign subprograms and `--load`" |
 | Unimplemented flags (`--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
@@ -82,7 +82,7 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
 - Env vars: `YAVS_STDLIB` (std/ieee tree), `YAVS_BLESS=1`, `YAVS_CORPUS`, `NO_COLOR`.
 - Codes owned: `E0100`-`E0199`/`W0100`-`W0199` (in use: E0100 unreadable file, E0101 response
   file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
-  cannot be loaded, E0107 foreign symbol not bound).
+  cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound).
 
 ## 6. Coordination
 

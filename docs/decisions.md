@@ -713,8 +713,11 @@ which tools/difftest parses.
   (`E3009`), so a C `uint8_t` 7 for a `boolean` is a runtime error, not a wrong value.
 - **Binding:** after lowering, every `Program::foreign` entry is bound by `yavs run`: the
   `--load` libraries in order (`dlopen` with `RTLD_NOW | RTLD_GLOBAL`, `LoadLibraryExW`), then
-  the executable. A missing symbol is `E0107` before the simulation starts (ir.md 1.7, fail
-  early); the reference simulator reports it only when the call runs. Only subprograms that some lowered code
+  the executable. A missing symbol is warning `W0108` before time 0, one per
+  unbound subprogram naming it, its symbol and the places searched (escalates with `-Werror`);
+  `E0107` (same "searched" note, VHDL stacktrace) only when the subprogram is called, as the
+  reference simulator does. User decision 2026-10-18: "Warn early, fail at call". A `--load`
+  library that cannot be loaded stays `E0106` before the simulation. Only subprograms that some lowered code
   calls are bound. Libraries are never unloaded.
 - **Loader home:** `yavs_vhpi::load_foreign`/`bind_foreign` share the plugin path rules and
   hold the one `unsafe` step (`ForeignFn::new`); `--load` runs no VHPI registration.

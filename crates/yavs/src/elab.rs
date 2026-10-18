@@ -216,7 +216,11 @@ fn elaborate(
 
 /// Loads the `--load` libraries and binds every foreign subprogram of the program to its
 /// symbol: in the libraries in order, then in the executable (ir.md 1.7).
-fn bind_foreign(load: &[String], e: &mut yavs_elab::Elaborated) -> Result<(), Box<Diagnostic>> {
+fn bind_foreign(
+    load: &[String],
+    e: &mut yavs_elab::Elaborated,
+    out: &mut Out,
+) -> Result<(), Box<Diagnostic>> {
     let Some(ir) = e.ir.as_mut() else {
         return Ok(());
     };
@@ -240,13 +244,13 @@ fn bind_foreign(load: &[String], e: &mut yavs_elab::Elaborated) -> Result<(), Bo
         })?;
         libs.push(lib);
     }
+    let searched = libs
+        .iter()
+        .map(|l| format!("`{}`, ", l.path.display()))
+        .collect::<String>()
+        + "the yavs executable";
+    ir.foreign_searched = searched.clone();
     for (id, x) in ir.program.foreign.iter() {
-        let searched = || {
-            libs.iter()
-                .map(|l| format!("`{}`, ", l.path.display()))
-                .collect::<String>()
-                + "the yavs executable"
-        };
         match yavs_vhpi::bind_foreign(&libs, &x.symbol, x.signature()) {
             Some(Ok(f)) => ir.foreign.push((id, f)),
             Some(Err(err)) => {
@@ -255,19 +259,22 @@ fn bind_foreign(load: &[String], e: &mut yavs_elab::Elaborated) -> Result<(), Bo
                     format!("foreign subprogram `{}` cannot be called: {err}", x.name),
                 )));
             }
-            None => {
-                return Err(Box::new(
-                    Diagnostic::error(
-                        "E0107",
-                        format!(
-                            "symbol `{}` of foreign subprogram `{}` is not defined",
-                            x.symbol, x.name
-                        ),
-                    )
-                    .with_note(format!("searched {}", searched()))
-                    .with_help("load the shared library that defines it with `--load=LIB`"),
-                ));
-            }
+            // Warn early, fail at the call (decisions.md "Foreign subprograms and `--load`").
+            None => out.emit(
+                &SourceMap::default(),
+                &Diagnostic::warning(
+                    "W0108",
+                    format!(
+                        "symbol `{}` of foreign subprogram `{}` is not defined",
+                        x.symbol, x.name
+                    ),
+                )
+                .with_note(format!("searched {searched}"))
+                .with_help(
+                    "load the shared library that defines it with `--load=LIB`; calling the \
+                     subprogram is an error (E0107)",
+                ),
+            ),
         }
     }
     Ok(())
@@ -366,8 +373,11 @@ pub fn run(
         },
     };
     let mut e = e;
-    if let Err(d) = bind_foreign(&a.load, &mut e) {
+    let bound = bind_foreign(&a.load, &mut e, &mut out);
+    if let Err(d) = bound {
         out.emit(&none, &d);
+    }
+    if out.errors > 0 {
         return out.finish(2);
     }
     let (mut sim, rt) = match e.build_runtime(cfg) {

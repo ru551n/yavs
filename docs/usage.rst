@@ -54,8 +54,9 @@ Calling C from VHDL
 
 A subprogram whose ``foreign`` attribute is ``"VHPIDIRECT symbol"`` calls the C function
 ``symbol``. ``--load=LIB`` loads a shared library (repeat it for several); symbols are looked
-up in the libraries in order, then in the ``yavs`` executable. A symbol that is defined nowhere
-stops the run before the simulation starts (``E0107``).
+up in the libraries in order, then in the ``yavs`` executable. A symbol that is defined nowhere gives
+a warning before the simulation starts (``W0108``, an error with ``-Werror``) and the error
+``E0107`` only when the subprogram is called.
 
 .. code-block:: vhdl
 

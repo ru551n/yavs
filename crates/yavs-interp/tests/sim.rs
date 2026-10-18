@@ -1084,11 +1084,9 @@ fn foreign_call() {
         )
     );
     assert_eq!(e.trace, [s_bad]);
-    // Unbound and mismatched bindings fail before simulation.
-    let e = Runtime::new(d.prog.clone(), Bindings::default())
-        .err()
-        .unwrap();
-    assert!(e.to_string().contains("symbol `mix` is not bound"), "{e}");
+    // An unbound foreign subprogram is an error only when called (E0107, tested through the
+    // CLI); a mismatched binding fails before simulation.
+    Runtime::new(d.prog.clone(), Bindings::default()).unwrap();
     let wrong = Bindings {
         foreign: vec![(x, ForeignFn::from_fn(mix2 as extern "C" fn(i32) -> i32))],
         ..Bindings::default()

@@ -232,8 +232,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   subprograms. A bare name goes to the OS library search path, a path must exist.
   Every foreign subprogram the design calls is bound before the simulation starts:
   its symbol is looked up in the `--load` libraries in order, then in the
-  executable. A library that cannot be loaded is `E0106`, a symbol defined nowhere
-  (or a signature the trampolines cannot call) is `E0107`; both exit 2. No VHPI
+  executable. A library that cannot be loaded is `E0106` and a signature the
+  trampolines cannot call is `E0107`; both exit 2. A symbol defined nowhere is
+  warning `W0108` before time 0 (one per subprogram) and `E0107` only when the
+  subprogram is called (a runtime error, exit 1). No VHPI
   registration runs for `--load` libraries (that is `--vhpi`).
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants

@@ -92,8 +92,12 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A `--load` library cannot be loaded: the file is missing, has the wrong architecture, or one of its own dependencies cannot be found.",
     ),
     (
+        "W0108",
+        "A VHPIDIRECT foreign subprogram's symbol is defined in no `--load` library and not in the executable. The run goes on; calling the subprogram is `E0107`.",
+    ),
+    (
         "E0107",
-        "A VHPIDIRECT foreign subprogram cannot be bound: no `--load` library and not the executable defines its symbol, or its C signature cannot be called.",
+        "A VHPIDIRECT foreign subprogram cannot be bound or called: its C signature cannot be called, or (at the call) no `--load` library and not the executable defines its symbol.",
     ),
     // yavs-vhpi
     (

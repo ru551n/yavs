@@ -109,6 +109,23 @@ impl Db {
                                 return NameRes::Value;
                             }
                             DeclKind::Error => return NameRes::Error,
+                            DeclKind::Label(_) => match self.construct_region(scope, &[d]) {
+                                Some((s, true)) => Region::Scope(s),
+                                Some((s, false)) => {
+                                    return NameRes::NotInRegion(
+                                        s,
+                                        suffix_span(suffix, n.span),
+                                        key,
+                                    );
+                                }
+                                None => {
+                                    return NameRes::Unsupported(
+                                        n.span,
+                                        "expanded names into this kind of region",
+                                        "S5",
+                                    );
+                                }
+                            },
                             _ => {
                                 return NameRes::Unsupported(
                                     n.span,
@@ -129,16 +146,22 @@ impl Db {
                                 }
                                 Err(_) => NameRes::Error,
                             },
-                            Region::Scope(s) => match self.scopes[s].names.get(&key) {
-                                Some(ds) if ds.len() == 1 && !self.is_overloadable(ds[0]) => {
-                                    NameRes::One(ds[0])
-                                }
-                                Some(ds) if !ds.is_empty() => NameRes::Overloads(ds.clone()),
-                                _ => NameRes::NotInRegion(s, suffix_span(suffix, n.span), key),
-                            },
+                            Region::Scope(s) => self.in_region(s, suffix_span(suffix, n.span), key),
                         }
                     }
-                    NameRes::Overloads(_) | NameRes::Value => NameRes::Value,
+                    // `f.v` names `v` in subprogram `f` only inside `f` (8.3); outside it
+                    // is a selection from a call's value, unless `v` is local to `f`.
+                    NameRes::Overloads(ds) => match self.construct_region(scope, &ds) {
+                        Some((s, true)) => self.in_region(s, suffix_span(suffix, n.span), key),
+                        Some((s, false))
+                            if self.scopes[s].names.contains_key(&key)
+                                && !ds.iter().any(|&d| self.returns_composite(d)) =>
+                        {
+                            NameRes::NotInRegion(s, suffix_span(suffix, n.span), key)
+                        }
+                        _ => NameRes::Value,
+                    },
+                    NameRes::Value => NameRes::Value,
                     other => other,
                 }
             }
@@ -146,6 +169,51 @@ impl Db {
             ast::NameKind::Apply { .. } | ast::NameKind::Attribute { .. } => NameRes::Value,
             _ => NameRes::Unsupported(n.span, "this form of name", "S4"),
         }
+    }
+
+    /// The suffix `key` of an expanded name looked up in region `s`.
+    fn in_region(&self, s: ScopeId, span: Span, key: Symbol) -> NameRes {
+        match self.scopes[s].names.get(&key) {
+            Some(ds) if ds.len() == 1 && !self.is_overloadable(ds[0]) => NameRes::One(ds[0]),
+            Some(ds) if !ds.is_empty() => NameRes::Overloads(ds.clone()),
+            _ => NameRes::NotInRegion(s, span, key),
+        }
+    }
+
+    /// The region of the construct (labelled statement or subprogram) one of `ds` names,
+    /// and whether it encloses `scope` (8.3: only then is an expanded name into it legal).
+    fn construct_region(&self, scope: ScopeId, ds: &[DeclId]) -> Option<(ScopeId, bool)> {
+        let owned = |s: ScopeId| self.scopes[s].owner.is_some_and(|o| ds.contains(&o));
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if owned(s) {
+                return Some((s, true));
+            }
+            cur = self.scopes[s].parent;
+        }
+        ds.iter()
+            .find_map(|&d| match self.decls[d].kind.subprogram()?.body {
+                crate::decl::Body::Hir { scope, .. } => Some(scope),
+                _ => None,
+            })
+            // ponytail: linear scan for a label's region, only reached for a label prefix
+            // outside its statement (an error); index labels if that changes.
+            .or_else(|| self.scopes.iter().map(|(s, _)| s).find(|&s| owned(s)))
+            .map(|s| (s, false))
+    }
+
+    /// A function whose result could be selected from (`f.x` of a record or an access).
+    fn returns_composite(&self, d: DeclId) -> bool {
+        self.decls[d]
+            .kind
+            .subprogram()
+            .and_then(|s| s.ret)
+            .is_some_and(|r| {
+                matches!(
+                    self.types[self.base(r)].kind,
+                    TypeKind::Record { .. } | TypeKind::Access { .. }
+                )
+            })
     }
 
     /// Report why a name has no usable interpretation.

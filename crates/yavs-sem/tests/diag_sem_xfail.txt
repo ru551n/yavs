@@ -45,10 +45,6 @@ stat/attribute_dimension_out_of_range.vhd
 stat/static_index_out_of_range_process.vhd
 stat/static_slice_out_of_range.vhd
 typ/constant_unconstrained_needs_value.vhd
-use/context_not_a_context.vhd
-use/overloaded_function_clash.vhd
-use/prefix_is_type.vhd
-use/prefix_not_a_package.vhd
 v2019/conditional_expression_branch_mismatch.vhd
 v2019/conditional_expression_not_boolean.vhd
 v2019/conditional_expression_ok.vhd
@@ -56,10 +52,3 @@ v2019/converse_on_non_view.vhd
 v2019/private_variable_outside_body.vhd
 v2019/private_variable_scalar_ok.vhd
 v2019/view_nested_wrong_record.vhd
-vis/body_item_from_outside.vhd
-vis/expanded_name_process_variable_outside.vhd
-vis/missing_use_numeric_std.vhd
-vis/missing_use_std_logic.vhd
-vis/near_miss_labels_and_expanded.vhd
-vis/subprogram_local_via_expanded_name.vhd
-vis/use_item_from_body.vhd

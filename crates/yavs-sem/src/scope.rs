@@ -388,8 +388,56 @@ impl Db {
             crate::suggest::closest(name.key.as_str(), keys.iter().map(|k| k.as_str()))
         {
             d = d.with_help(format!("did you mean `{best}`?"));
+        } else {
+            for p in self.packages_declaring(scope, name.key) {
+                d = d.with_help(format!(
+                    "`{}` is declared in `{p}`; add `use {p}.all;`",
+                    name.text
+                ));
+            }
         }
         self.error(d)
+    }
+
+    /// Analyzed packages of the libraries visible from `scope` that declare `key`, as
+    /// `lib.pkg`: the use clause an undeclared name probably misses. With `ieee` visible
+    /// the packages of `ieee.ieee_std_context` are loaded for this first.
+    fn packages_declaring(&mut self, scope: ScopeId, key: Symbol) -> Vec<String> {
+        let libs: Vec<LibId> = self.libs.iter().map(|(l, _)| l).collect();
+        let visible: Vec<LibId> = libs
+            .into_iter()
+            .filter(|&l| {
+                let name = self.libs[l].name.key;
+                matches!(self.lookup(scope, name), Visible::One(d)
+                    if matches!(self.decls[d].kind, crate::decl::DeclKind::Library(x) if x == l))
+            })
+            .collect();
+        let ctx = crate::loader::UnitKey::Primary(Symbol::intern("ieee_std_context"));
+        if let Some(&l) = visible
+            .iter()
+            .find(|&&l| self.libs[l].name.key.as_str() == "ieee")
+            && self.cur().is_none_or(|c| self.units[c.unit].lib != l)
+            && self.locate(l, ctx).is_some()
+        {
+            let _ = self.load_unit(l, ctx, None);
+        }
+        let mut out: Vec<String> = self
+            .units
+            .iter()
+            .filter(|(_, u)| {
+                u.kind == crate::loader::UnitKind::Package
+                    && visible.contains(&u.lib)
+                    && self.scopes[u.scope]
+                        .names
+                        .get(&key)
+                        .is_some_and(|v| !v.is_empty())
+            })
+            // Folded keys: the vendored sources spell some packages in upper case.
+            .map(|(_, u)| format!("{}.{}", self.libs[u.lib].name.key, u.name.key))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Report a use-clause conflict (12.4 c).

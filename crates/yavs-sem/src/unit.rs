@@ -416,18 +416,20 @@ impl Db {
     /// `context l.c;`: splice the items of context declaration `c` (13.4).
     fn context_reference(&mut self, region: ScopeId, n: &ast::Name) -> Result<(), Reported> {
         let d = self.expanded_name_decl(region, n)?;
-        let DeclKind::Unit(u) = self.decls[d].kind else {
-            return Err(self.error(
-                Diagnostic::error(
-                    diag::WRONG_UNIT_KIND,
-                    "a context reference must name a context declaration",
-                )
-                .with_primary(n.span, "not a context declaration"),
-            ));
+        let u = match self.decls[d].kind {
+            DeclKind::Unit(u) if self.units[u].kind == UnitKind::Context => u,
+            DeclKind::Error => return Err(Reported),
+            _ => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_A_PACKAGE,
+                        format!("`{}` is not a context declaration", self.decls[d].name),
+                    )
+                    .with_primary(crate::generic::last_span(n), "not a context declaration")
+                    .with_secondary(self.decls[d].span, "declared here"),
+                ));
+            }
         };
-        if self.units[u].kind != UnitKind::Context {
-            return Err(self.wrong_kind(u, n.span, UnitKind::Context));
-        }
         let s = self.units[u].scope;
         let names: Vec<(Symbol, Vec<DeclId>)> = self.scopes[s]
             .names
@@ -538,11 +540,56 @@ impl Db {
         }
     }
 
+    /// `key` is not usable from region `s` in an expanded name or use clause: not
+    /// declared there (`E1100`), declared in the package's body (`E1105`, 12.3), or
+    /// declared in a construct that does not enclose the name (`E1103`, 8.3).
     pub(crate) fn not_in_region(&mut self, s: ScopeId, span: Span, key: Symbol) -> Reported {
         let owner = self.scopes[s]
             .owner
             .map(|o| self.decls[o].name.to_string())
             .unwrap_or_default();
+        if let Some(&d) = self.scopes[s].names.get(&key).and_then(|v| v.first()) {
+            let name = self.decls[d].name.to_string();
+            let what = match self.scopes[s].kind {
+                ScopeKind::Process => "process",
+                ScopeKind::Subprogram => "subprogram",
+                ScopeKind::Block => "block",
+                ScopeKind::Generate => "generate statement",
+                ScopeKind::Loop => "loop",
+                _ => "construct",
+            };
+            return self.error(
+                Diagnostic::error(
+                    diag::HIDDEN,
+                    format!("`{name}` exists but is not visible here"),
+                )
+                .with_primary(span, "not visible here")
+                .with_secondary(self.decls[d].span, "declared here")
+                .with_help(format!(
+                    "`{name}` is declared in {what} `{owner}` and is only visible inside it"
+                )),
+            );
+        }
+        if self.scopes[s].kind == ScopeKind::Package
+            && let Some(o) = self.scopes[s].owner
+            && let DeclKind::Unit(u) = self.decls[o].kind
+            && let Some(UnitSlot::Done(b)) = self.libs[self.units[u].lib]
+                .units
+                .get(&UnitKey::body(self.units[u].name.key))
+            && let Some(&d) = self.scopes[self.units[*b].scope]
+                .names
+                .get(&key)
+                .and_then(|v| v.first())
+        {
+            return self.error(
+                Diagnostic::error(
+                    diag::PRIVATE,
+                    format!("`{key}` is not in the visible part of `{owner}`"),
+                )
+                .with_primary(span, "declared in the package body")
+                .with_secondary(self.decls[d].span, "declared here"),
+            );
+        }
         let mut d = Diagnostic::error(
             diag::NOT_DECLARED,
             format!("`{key}` is not declared in `{owner}`"),
@@ -573,9 +620,15 @@ impl Db {
             _ => Err(self.error(
                 Diagnostic::error(
                     diag::NOT_A_PACKAGE,
-                    format!("`{}` is not a library or package", self.decls[d].name),
+                    format!(
+                        "`{}` is not a package, library or package instance",
+                        self.decls[d].name
+                    ),
                 )
-                .with_primary(n.span, "expected a library or a package")
+                .with_primary(
+                    crate::generic::last_span(n),
+                    "expected a library or a package",
+                )
                 .with_secondary(self.decls[d].span, "declared here"),
             )),
         }

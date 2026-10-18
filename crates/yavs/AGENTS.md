@@ -87,5 +87,4 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   binary; output format changes break their parsers.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:cli`): #64 wire
   lowering, interpreter and kernel into `yavs run`; #95 `--load`; #110 test runner simulator interface;
-  #116 `--wave`; #135 native Windows build; #22 bootstrap mode; #20
-  `--encoding` in analyze.
+  #116 `--wave`; #135 native Windows build; #22 bootstrap mode.

@@ -164,6 +164,31 @@ const CASES: &[Case] = &[
         code: 2,
     },
     Case {
+        name: "encoding_auto",
+        args: &["analyze", "--work=work:$TMP/lib", "latin1.vhd"],
+        code: 0,
+    },
+    Case {
+        name: "encoding_latin1",
+        args: &[
+            "--encoding=latin1",
+            "analyze",
+            "--work=work:$TMP/lib",
+            "latin1.vhd",
+        ],
+        code: 0,
+    },
+    Case {
+        name: "encoding_utf8",
+        args: &[
+            "--encoding=utf8",
+            "analyze",
+            "--work=work:$TMP/lib",
+            "latin1.vhd",
+        ],
+        code: 1,
+    },
+    Case {
         name: "json",
         args: &[
             "--message-format=json",

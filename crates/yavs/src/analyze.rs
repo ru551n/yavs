@@ -204,6 +204,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
     opts.defines = a.defines;
+    opts.encoding = encoding;
 
     // One exclusive hold on the work library for the whole batch (contract section 3).
     let session = match work_lib.session() {
@@ -224,20 +225,6 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             current.set(i);
             let bytes = std::fs::read(file);
             let before = out.errors;
-            if encoding == Encoding::Utf8
-                && let Ok(b) = &bytes
-            {
-                let mut sm = SourceMap::default();
-                if let (_, Some(d)) = yavs_syntax::load_source(
-                    &mut sm,
-                    file.display().to_string(),
-                    b.clone(),
-                    encoding,
-                ) {
-                    out.emit(&sm, &d);
-                    return Some(i);
-                }
-            }
             let r = db.analyze_file(work, file, rev);
             for d in &db.diagnostics()[shown..] {
                 out.emit(&db.sources, d);

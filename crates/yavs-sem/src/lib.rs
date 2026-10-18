@@ -73,6 +73,8 @@ pub struct Options {
     pub relaxed: bool,
     /// Conditional analysis identifiers, `(name, value)`.
     pub defines: Vec<(String, String)>,
+    /// `--encoding`: how source files are read (decisions.md, source encoding).
+    pub encoding: yavs_syntax::Encoding,
 }
 
 impl Options {
@@ -83,6 +85,7 @@ impl Options {
             libraries: yavs_lib::Libraries::new(),
             relaxed: false,
             defines: Vec::new(),
+            encoding: yavs_syntax::Encoding::Auto,
         }
     }
 }

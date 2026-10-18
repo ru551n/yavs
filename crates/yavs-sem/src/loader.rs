@@ -278,13 +278,17 @@ impl Db {
                 return Err(self.error(d));
             }
         };
-        // Auto never reports a diagnostic; `--encoding` reaches here with the CLI.
-        let (file, _) = yavs_syntax::load_source(
+        let (file, bad) = yavs_syntax::load_source(
             &mut self.sources,
             path.display().to_string(),
             bytes,
-            yavs_syntax::Encoding::Auto,
+            self.opts.encoding,
         );
+        if let Some(d) = bad {
+            self.files
+                .insert(path.to_path_buf(), FileCache { file, units: None });
+            return Err(self.error(d));
+        }
         let opts = yavs_syntax::Options {
             std: rev,
             defines: self.opts.defines.clone(),

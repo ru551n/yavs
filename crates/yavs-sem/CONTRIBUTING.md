@@ -13,7 +13,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 |---|---|---|---|
 | `ids.rs` | typed ids, `Arena` | S1 | done |
 | `db.rs` | `Db`, arenas, `WellKnown`, `Poison`, diagnostics helpers (`error`, `ice`, `unsupported`) | S1 | done; add fields additively |
-| `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead; encoding: #20 (Options.encoding) |
+| `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead |
 | `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170 |
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead |
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead |
@@ -245,10 +245,6 @@ From alloc (alloc.rs):
 
 From cli (`yavs analyze`):
 
-- **loader.rs** `parse_into_cache` hardcodes `Encoding::Auto` and drops the diagnostic of
-  `load_source`. Request: an `encoding` field in `yavs_sem::Options` (default `Auto`) passed to
-  `load_source`, and its diagnostic reported through `Db::error`. The CLI only pre-checks
-  `--encoding=utf8`; `--encoding=latin1` is accepted but has no effect on `analyze` until then.
 - **loader.rs** a `--map`ped library without `yavs-lib.toml` is an empty library (cli-contract
   section 3), but loading it reports `L0001 library not found`. Request: treat a missing manifest
   as an empty library, so the use is `E1002`/`E1004` (unit not found), not `L0001`.

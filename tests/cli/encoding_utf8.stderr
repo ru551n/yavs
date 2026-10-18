@@ -1,0 +1,10 @@
+error[E0010]: file is not valid UTF-8
+ --> latin1.vhd:3:30
+  |
+3 |   constant s : string := "café";
+  |                              ^ invalid byte
+  |
+  = help: VHDL source is ISO-8859-1: use `--encoding=latin1` or `--encoding=auto`
+
+error: aborting due to 1 previous error
+

@@ -94,6 +94,7 @@ fn elaborate(
     c: &Common,
     format: MessageFormat,
     color: bool,
+    encoding: yavs_syntax::Encoding,
 ) -> Result<(Out, Db, yavs_elab::Elaborated), (Out, u8)> {
     let mut out = Out::new(format, color);
     let none = SourceMap::default();
@@ -164,6 +165,7 @@ fn elaborate(
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     opts.libraries = libs;
     opts.relaxed = c.relaxed;
+    opts.encoding = encoding;
     let mut db = Db::new(opts);
     let analyzed = db.analyze_closure(&files);
     let diags = db.take_diagnostics();
@@ -224,8 +226,13 @@ fn print_hierarchy(db: &Db, e: &yavs_elab::Elaborated) {
     print!("{s}");
 }
 
-pub fn elab(a: Common, format: MessageFormat, color: bool) -> ExitCode {
-    match elaborate(&a, format, color) {
+pub fn elab(
+    a: Common,
+    format: MessageFormat,
+    color: bool,
+    encoding: yavs_syntax::Encoding,
+) -> ExitCode {
+    match elaborate(&a, format, color, encoding) {
         Ok((out, db, e)) => {
             if a.print_hierarchy {
                 print_hierarchy(&db, &e);
@@ -236,8 +243,13 @@ pub fn elab(a: Common, format: MessageFormat, color: bool) -> ExitCode {
     }
 }
 
-pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
-    let (mut out, db, e) = match elaborate(&a.common, format, color) {
+pub fn run(
+    a: RunArgs,
+    format: MessageFormat,
+    color: bool,
+    encoding: yavs_syntax::Encoding,
+) -> ExitCode {
+    let (mut out, db, e) = match elaborate(&a.common, format, color, encoding) {
         Ok(x) => x,
         Err((out, code)) => return out.finish(code),
     };

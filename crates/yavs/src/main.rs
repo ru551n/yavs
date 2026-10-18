@@ -184,8 +184,8 @@ fn main() -> ExitCode {
             files,
         } => (std, defines, dump_ast, files),
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
-        Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color)),
-        Command::Run(a) => return guard(format, color, || elab::run(a, format, color)),
+        Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color, encoding)),
+        Command::Run(a) => return guard(format, color, || elab::run(a, format, color, encoding)),
     };
     let opts = Options {
         std: match std {

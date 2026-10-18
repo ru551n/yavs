@@ -15,10 +15,18 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 rsim-diag = { path = "../crates/rsim-diag" }
 rsim-syntax = { path = "../crates/rsim-syntax" }
+rsim-sem = { path = "../crates/rsim-sem" }
 
 [[bin]]
 name = "parse"
 path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sem"
+path = "fuzz_targets/sem.rs"
 test = false
 doc = false
 bench = false

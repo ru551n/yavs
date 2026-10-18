@@ -24,6 +24,7 @@ Layout: `<area>/<name>.vhd`. Areas follow sem.md:
 | `v2019` | VHDL-2019: views, private variables, generic type classes, conditional expressions |
 | `mix` | mixed 2008/2019 (`E1007`, `W1008`) |
 | `relax` | `--relaxed` pairs |
+| `fuzz` | minimised fuzzer finds (regression tests) |
 
 ## Header format
 

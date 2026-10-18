@@ -210,12 +210,78 @@ fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
     )
 }
 
+/// Load the body of every loaded package (not std, whose subprograms are native), so
+/// elaboration-time calls and lowering see subprogram bodies. A package that needs a body
+/// (a subprogram without one, a deferred constant) but has none is an error (LRM 4.8).
+// ponytail: every loaded package, not a call graph walk; enough until designs with many
+// unused packages get slow.
+fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
+    use yavs_sem::decl::Body;
+    use yavs_sem::loader::{UnitKey, UnitSlot};
+    let pkgs: Vec<UnitId> = db
+        .units
+        .iter()
+        .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
+        .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
+        .map(|(id, _)| id)
+        .collect();
+    let mut errs = Vec::new();
+    for p in pkgs {
+        let (lib, key, name) = (db.units[p].lib, db.units[p].name.key, db.units[p].name);
+        let body = UnitKey::body(key);
+        let has = matches!(
+            db.libs[lib].units.get(&body),
+            Some(UnitSlot::Done(_) | UnitSlot::InProgress(_))
+        ) || db.locate(lib, body).is_some();
+        if has {
+            let (l, n) = (db.libs[lib].name.text.to_string(), name.text.to_string());
+            if db.load_body(&l, &n).is_err() {
+                return Err(db.take_diagnostics());
+            }
+            continue;
+        }
+        let scope = db.units[p].scope;
+        let need = db.scopes[scope].order.iter().copied().find(|&d| {
+            let decl = &db.decls[d];
+            !decl.implicit
+                && match &decl.kind {
+                    DeclKind::Subprogram(s) => matches!(s.body, Body::Pending),
+                    DeclKind::Object(o) => o.role == ObjRole::Deferred,
+                    _ => false,
+                }
+        });
+        if let Some(d) = need {
+            let what = match db.decls[d].kind {
+                DeclKind::Object(_) => "deferred constant",
+                _ => "subprogram",
+            };
+            errs.push(
+                Diagnostic::error(
+                    codes::BODY_MISSING,
+                    format!("package `{}` needs a body, and none is analyzed", name.text),
+                )
+                .with_primary(
+                    db.decls[d].span,
+                    format!("this {what} is completed in the package body"),
+                )
+                .with_secondary(name.span, "package declared here")
+                .with_help(format!(
+                    "analyze the file with `package body {} is ... end;` into library `{}`",
+                    name.text, db.libs[lib].name.text
+                )),
+            );
+        }
+    }
+    if errs.is_empty() { Ok(()) } else { Err(errs) }
+}
+
 pub(crate) fn elaborate(
     db: &mut Db,
     top: Top,
     overrides: &[(String, String)],
     cfg: &ElabConfig,
 ) -> Result<Elaborated, Vec<Diagnostic>> {
+    load_bodies(db)?;
     let mut e = Elab {
         db,
         m: Model::default(),

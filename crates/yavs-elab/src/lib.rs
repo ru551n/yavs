@@ -59,6 +59,8 @@ pub mod codes {
     pub const BODY_NOT_ELABORATED: &str = "E2114";
     /// A generic value is outside the generic's subtype.
     pub const GENERIC_RANGE: &str = "E2115";
+    /// A package needs a body (subprograms, deferred constants) and has none (LRM 4.8).
+    pub const BODY_MISSING: &str = "E2116";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").

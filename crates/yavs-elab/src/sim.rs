@@ -8,8 +8,6 @@ use yavs_diag::Diagnostic;
 use yavs_interp::{Bindings, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState};
 use yavs_kernel::{Config, ErrorKind, SimControl, SimError};
 use yavs_lower::{LowerOptions, Lowerer, UnitIr};
-use yavs_sem::hir::UnitHir;
-use yavs_sem::loader::{UnitKey, UnitSlot};
 use yavs_sem::{Db, UnitId};
 
 use crate::Elaborated;
@@ -51,33 +49,6 @@ impl Elaborated {
         }
         if archs.is_empty() {
             return Ok(());
-        }
-        // ponytail: every package body of every loaded package (not std, whose subprograms
-        // are native); a call graph walk when designs with many unused packages get slow.
-        let pkgs: Vec<(String, String)> = db
-            .units
-            .iter()
-            .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
-            .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
-            .filter(|(_, u)| {
-                !matches!(
-                    db.libs[u.lib].units.get(&UnitKey::body(u.name.key)),
-                    Some(UnitSlot::Done(_))
-                )
-            })
-            .map(|(_, u)| {
-                (
-                    db.libs[u.lib].name.text.to_string(),
-                    u.name.text.to_string(),
-                )
-            })
-            .collect();
-        for (l, p) in pkgs {
-            // A package without a body is fine; a body that fails to analyze is an error.
-            let _ = db.load_body(&l, &p);
-        }
-        if db.error_count() > 0 {
-            return Err(db.take_diagnostics());
         }
         let mut l = Lowerer::new(db, LowerOptions::default());
         let mut idx = Vec::new();

@@ -1,8 +1,10 @@
 //! Elaboration-time values: the evaluator, subtype shapes, initial values and `-g` overrides.
 //!
-//! ponytail: globally static expressions are folded with sem's static folder
-//! (`Db::fold_with`) over generic and constant values; anything else (user function calls,
-//! aggregates) reports E2106 until yavs-interp evaluates elaboration code (ir.md 3.6).
+//! Globally static expressions are folded with sem's static folder (`Db::fold_with`) over
+//! generic and constant values; calls of user functions with scalar arguments and results run
+//! in yavs-interp after lowering the function alone (ir.md 3.6).
+//! ponytail: composite values (aggregates, array arguments or results) report E2106; they
+//! need elaboration thunks from yavs-lower.
 
 use std::collections::HashMap;
 
@@ -31,6 +33,15 @@ pub struct Model {
     pub(crate) sigs: HashMap<(ScopeId, DeclId), ObjId>,
     /// Package constants.
     pub(crate) pkg: HashMap<DeclId, Val>,
+    /// User functions lowered for elaboration-time calls (ir.md 3.6): `None` when lowering
+    /// failed (the reason is reported at the call).
+    pub(crate) funcs: HashMap<DeclId, Result<Lowered1, Box<Diagnostic>>>,
+}
+
+/// A function lowered on its own into a program, for `yavs_interp::call`.
+pub(crate) struct Lowered1 {
+    rt: std::sync::Arc<yavs_interp::Runtime>,
+    func: yavs_ir::FuncId,
 }
 
 type R<T> = Result<T, Box<Diagnostic>>;
@@ -112,6 +123,17 @@ impl Model {
             }
             _ => {}
         }
+        if let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            ..
+        } = &ex.kind
+            && let Some(sp) = db.decls[*callee].kind.subprogram()
+            && matches!(sp.body, yavs_sem::decl::Body::Hir { .. })
+        {
+            return self.call(db, e, *callee, args, scope);
+        }
         let mut inner: Option<Box<Diagnostic>> = None;
         let r = db.fold_with(e, &mut |c| match self.eval(db, c, scope) {
             Ok(v) => Some(v),
@@ -130,9 +152,10 @@ impl Model {
                     )
                     .with_primary(ex.span, "needs the IR interpreter")
                     .with_note(
-                        "yavs folds globally static expressions over generics and constants; \
-                         function calls and composite values at elaboration time need \
-                         yavs-interp (docs/design/ir.md 3.6), which is not wired in yet",
+                        "yavs folds globally static expressions over generics and constants and \
+                         runs scalar user function calls in yavs-interp; composite values \
+                         (aggregates, arrays passed to or returned by functions) are not \
+                         evaluated during elaboration yet",
                     ),
                 )
             })),
@@ -142,6 +165,99 @@ impl Model {
                 format!("evaluation fails during elaboration: {why}"),
                 why,
             )),
+        }
+    }
+
+    /// A call of a user function during elaboration: scalar arguments and result, run in
+    /// yavs-interp after lowering the function (and what it calls) with yavs-lower.
+    fn call(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        callee: DeclId,
+        args: &[yavs_sem::hir::Arg],
+        scope: Option<ScopeId>,
+    ) -> R<Val> {
+        let ex = &db.exprs[e];
+        let Some(sp) = db.decls[callee].kind.subprogram() else {
+            return Err(err(
+                codes::INTERNAL,
+                ex.span,
+                "internal error: not a subprogram",
+                "here",
+            ));
+        };
+        let not_scalar = |what: &str| {
+            Box::new(
+                Diagnostic::error(
+                    codes::NOT_EVALUATED,
+                    format!("this call cannot be evaluated during elaboration yet: {what}"),
+                )
+                .with_primary(ex.span, "called during elaboration")
+                .with_note("elaboration-time calls take and return scalars for now"),
+            )
+        };
+        let mut cells = Vec::with_capacity(sp.params.len());
+        for (i, p) in sp.params.iter().enumerate() {
+            if !db.types[db.base(p.subtype)].kind.is_scalar() || p.mode != yavs_sem::hir::Mode::In {
+                return Err(not_scalar("a composite or non-`in` parameter"));
+            }
+            let a = args.iter().find(|a| a.formal as usize == i);
+            let v = match a.map(|a| &a.actual) {
+                Some(yavs_sem::hir::Actual::Expr(x)) => self.eval(db, *x, scope)?,
+                Some(yavs_sem::hir::Actual::Default) | None => match p.default {
+                    Some(d) => self.eval(db, d, scope)?,
+                    None => return Err(not_scalar("a missing argument")),
+                },
+                Some(_) => return Err(not_scalar("an individual or converted argument")),
+            };
+            cells.push(cell(&v).ok_or_else(|| not_scalar("a non-scalar argument value"))?);
+        }
+        let ret = sp.ret.ok_or_else(|| not_scalar("not a function"))?;
+        let rk = &db.types[db.base(ret)].kind;
+        if !rk.is_scalar() {
+            return Err(not_scalar("a composite result"));
+        }
+        if !self.funcs.contains_key(&callee) {
+            let r = lower_one(db, callee, ex.span);
+            self.funcs.insert(callee, r);
+        }
+        let l = match &self.funcs[&callee] {
+            Ok(l) => l,
+            Err(d) => {
+                let mut d = d.clone();
+                if let Some(p) = &mut d.primary {
+                    p.span = ex.span;
+                }
+                return Err(d);
+            }
+        };
+        let r = yavs_interp::call(
+            l.rt.clone(),
+            l.func,
+            std::sync::Arc::new(yavs_interp::InstData::default()),
+            &cells,
+        );
+        match r {
+            Ok(Some(v)) => Ok(match rk {
+                TypeKind::Enum { .. } => Val::Enum(v as u32),
+                TypeKind::Physical { .. } => Val::Phys(v as i64),
+                TypeKind::Floating | TypeKind::UniversalReal => Val::Real(f64::from_bits(v)),
+                _ => Val::Int(v as i64),
+            }),
+            Ok(None) => Err(not_scalar("no result")),
+            Err(e) => {
+                let msg = match &e.kind {
+                    yavs_kernel::ErrorKind::Runtime(m) => m.clone(),
+                    k => k.to_string(),
+                };
+                Err(err(
+                    codes::EVAL_FAILED,
+                    ex.span,
+                    format!("evaluation fails during elaboration: {msg}"),
+                    "in this call",
+                ))
+            }
         }
     }
 
@@ -502,6 +618,42 @@ impl Model {
                 "here",
             )),
         }
+    }
+}
+
+/// Lower `f` (and what it calls) into its own program, for elaboration-time calls.
+fn lower_one(db: &Db, f: DeclId, at: Span) -> Result<Lowered1, Box<Diagnostic>> {
+    let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
+    let lowered = l
+        .subprogram(f)
+        .and_then(|func| l.finish().map(|lw| (func, lw)));
+    let (func, lw) = lowered.map_err(|ds| {
+        let first = ds.into_iter().next().map(|d| d.message).unwrap_or_default();
+        Box::new(
+            Diagnostic::error(
+                codes::NOT_EVALUATED,
+                format!(
+                    "`{}` cannot be called during elaboration yet",
+                    db.decls[f].name
+                ),
+            )
+            .with_primary(at, "called during elaboration")
+            .with_secondary(db.decls[f].span, "declared here")
+            .with_note(format!("lowering it failed: {first}")),
+        )
+    })?;
+    let rt = yavs_interp::Runtime::new(std::sync::Arc::new(lw.program), Default::default())
+        .map_err(|e| err(codes::INTERNAL, at, format!("internal error: {e}"), "here"))?;
+    Ok(Lowered1 { rt, func })
+}
+
+/// A scalar as an interpreter register cell.
+fn cell(v: &Val) -> Option<u64> {
+    match v {
+        Val::Int(x) | Val::Phys(x) => Some(*x as u64),
+        Val::Enum(p) => Some(u64::from(*p)),
+        Val::Real(r) => Some(r.to_bits()),
+        _ => None,
     }
 }
 

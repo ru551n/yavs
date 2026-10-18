@@ -609,3 +609,56 @@ fn guarded_blocks_and_bus_signals() {
     let obj = e.nets.obj(e.nets.leaf(gd.leaf).obj);
     assert_eq!(obj.name.key.as_str(), "guard");
 }
+
+/// #77: user functions called during elaboration run in the interpreter.
+#[test]
+fn elaboration_calls_user_functions() {
+    let src = "package util is
+        function clog2(n : positive) return natural;
+      end;
+      package body util is
+        function clog2(n : positive) return natural is
+          variable r : natural := 0;
+          variable v : natural := 1;
+        begin
+          while v < n loop v := v * 2; r := r + 1; end loop;
+          return r;
+        end;
+      end;
+      use work.util.all;
+      entity t is generic (N : positive := 100); end;
+      architecture a of t is
+        function twice(x : integer) return integer is begin return 2 * x; end;
+        constant W : natural := clog2(N);
+        signal s : bit_vector(twice(W) - 1 downto 0);
+      begin
+        g : for i in 1 to clog2(N + 1) generate end generate;
+      end;";
+    let (_, e) = elab("calls", src, "t", &[]);
+    assert_eq!(e.nets.leaves[0].ty.len, 14);
+    assert_eq!(e.hier.scope(crate::ScopeId(0)).children.len(), 7);
+    let (_, e) = elab("calls2", src, "t", &[("N", "1000")]);
+    assert_eq!(e.nets.leaves[0].ty.len, 20);
+}
+
+/// A package whose subprograms need a body that does not exist.
+#[test]
+fn package_body_missing() {
+    let src = "package p is function f return integer; end;
+      use work.p.all;
+      entity t is end; architecture a of t is begin end;";
+    assert_eq!(err_codes("nobody", src, "t", &[]), [codes::BODY_MISSING]);
+}
+
+/// ieee function calls fold at elaboration too (math_real from source).
+#[test]
+fn elaboration_calls_math_real() {
+    let src = "library ieee; use ieee.math_real.all;
+      entity t is generic (N : positive := 100); end;
+      architecture a of t is
+        constant W : natural := natural(ceil(log2(real(N))));
+        signal s : bit_vector(W - 1 downto 0);
+      begin end;";
+    let (_, e) = elab("mathreal", src, "t", &[]);
+    assert_eq!(e.nets.leaves[0].ty.len, 7);
+}

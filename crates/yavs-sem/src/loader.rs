@@ -213,7 +213,7 @@ impl Db {
     }
 
     /// Where the unit's source is, from the slot or the library source.
-    pub(crate) fn locate(&self, lib: LibId, key: UnitKey) -> Option<(PathBuf, LangRev)> {
+    pub fn locate(&self, lib: LibId, key: UnitKey) -> Option<(PathBuf, LangRev)> {
         if let Some(UnitSlot::NotLoaded { file, rev }) = self.libs[lib].units.get(&key) {
             return Some((file.clone(), *rev));
         }

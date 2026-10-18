@@ -465,7 +465,7 @@ pub enum GenericClass {           // M0 `GenericTypeDef`
 
 | Class | Implicit operations inside the generic: the predefined operations every type of the class has (2019 6.5.3; the exact LRM list was not read, NVC 2019 agrees where it implements them) [L6] |
 |---|---|
-| Private | `=`, `/=` (2008 interface type: the LRM is silent; treat as none and require formal `"="` in 2008, see Q9) |
+| Private, and 2008 `type T` | `=`, `/=`: 2008 6.5.3 declares them implicitly "as formal generic subprograms immediately following the interface type declaration"; no interface `"="` is needed (Q9) [L18] |
 | Scalar | relational, `minimum`, `maximum`, `'image`/`'value` and scalar attributes |
 | Discrete | Scalar plus `'pos`, `'val`, `'succ`, `'pred`, `'leftof`, `'rightof` |
 | Integer, Floating | Scalar plus arithmetic of that class |
@@ -1241,6 +1241,6 @@ LRM text, Q2's premise was wrong and is back with the user as U-1.
 | Q6 | `--relaxed` | R1 and R2 now; R3 only after checking NVC's list | decided |
 | Q7 | generic instances | clone the HIR: visible part eager, body lazy | decided |
 | Q8 | mangled names | long readable form of 5.3; NATIVE.md names only for natives | decided |
-| Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has no implicit `=`, an interface `"="` is required | decided |
+| Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has implicit `=` and `/=` (6.5.3), mapped to the actual's **predefined** `=`/`/=` (GHDL; NVC uses the `"="` visible at the instantiation, e.g. `numeric_std."="`; U-6) | corrected 2026-10-18 (`lrm-checks.md` L18); the "no implicit `=`" half is withdrawn |
 | Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007` error, `W1008` warning | decided |
 | Q11 | bit-string expansion | in sem, `E1331` at the literal | decided |

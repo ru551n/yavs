@@ -46,6 +46,7 @@ LCS text was read.
 | L15 | 2019 private variables and method aliases | 5.6.2 | confirmed | quote below; `private shared variable` is an error |
 | L16 | `buffer` under `'CONVERSE` | 6.5.2 / 16.2 (2019) | still ambiguous: tools disagree | question U-4 |
 | L17 | NVC `--relaxed` list (R3) | n/a | **corrected** | NVC does not relax case choices; drop R3 |
+| L18 | Q9: implicit `=`/`/=` on a 2008 interface type `type T` | 6.5.3 | **corrected** | `=` and `/=` are implicitly declared; they map to the actual's predefined operators (question U-6 for the NVC difference) |
 | P1 | parser: "every `end <keyword>` optional in 2019" (`decisions.md`) | 6.8 (2019), LCS-2016-055a | **corrected** | only `end component` loses its keyword; every other ending keeps the 2008 rule |
 | P2 | parser: positions of 2019 conditional expressions (`decisions.md`) | 9.1, 6.4.2, 6.5.7.1, 10.5.2, 10.6.2, 10.14 (2019) | **corrected** | add the parenthesized primary; interface defaults are unconfirmed (question U-5) |
 
@@ -255,6 +256,32 @@ globally static; shared variable not of protected type. It does not cover case c
 (generic `G` as a case choice) is an error in NVC 2008 with and without `--relaxed`, and in GHDL.
 So R3 has no NVC precedent; per Q6 it is dropped.
 
+### L18: equality on a 2008 interface type (Q9)
+
+LRM 2008 6.5.3, quoted in `VI#317` and `VI#72`: "The following operations are defined for the
+interface type: The basic operations of assignment, allocation, type qualification and type
+conversion; The predefined equality (=) and inequality (/=) operators, implicitly declared as
+formal generic subprograms immediately following the interface type declaration in the enclosing
+interface list." So Q9's "2008 `type T` has no implicit `=`" contradicts the text; NVC and GHDL
+both accept `a = b` and `a /= b` on `generic (type T)` (negative-test agent, and `q9.vhd`).
+
+Which operator the instance uses is where the tools split. `q9.vhd`: `eq(a, b) := a = b` in a
+generic package instantiated with `T => unsigned` (`numeric_std` used at the instantiation),
+called with `"0001"` and `"001"`:
+
+| | GHDL 08/19 | NVC 2008/2019 |
+|---|---|---|
+| `pu.eq("0001", "001")` | `false` (the predefined array `=` of `unsigned`) | `true` (`numeric_std."="`) |
+
+The text says "predefined", which reads as the actual type's predefined operator, the GHDL result;
+`VI#273` (open) asks the same question for the 2019 implicit `<` of an array interface type. Rule
+for rsim: implicitly declare `=`/`/=` after every interface type (2008 and 2019 `private`); at
+instantiation they denote the actual's predefined `=`/`/=`, matching the existing remap rule of
+`sem.md` 5.1. Code that wants `numeric_std."="` declares a formal `function "=" ... is <>`.
+
+Effect on rsim: any check that rejects `=` on a 2008 `type T` without an interface `"="` must be
+removed, and a negative test that expects such an error must become a positive one.
+
 ### P1: optional closing keywords (2019)
 
 The LCS index (vhdlwhiz.com "What's new in VHDL-2019") lists LCS-2016-055a as "Optional component
@@ -363,5 +390,10 @@ filter), L7 (`std.standard` implicit decls), L8 (aggregate elements); P1/P2 chan
   else 2)`). No grammar line was seen; NVC rejects; the parenthesized form is legal anyway through the
   primary rule. **Recommendation:** reject the unparenthesized form (fail early), with a help that
   suggests parentheses.
+- **U-6 (L18) which `=` a 2008 `type T` instance uses.** GHDL: the actual's predefined `=`; NVC:
+  the `"="` directly visible at the instantiation (e.g. `numeric_std`). **Recommendation:** the
+  predefined one (the LRM says "predefined"; it is also what `sem.md` 5.1 already does), with a
+  warning at the instantiation when an explicit `"="` for the actual type is directly visible
+  there, since the result differs from NVC.
 - **U-4 (L16) `buffer` under `'CONVERSE`.** **Recommendation:** `buffer`→`in` (GHDL), since a
   buffer port is an output and its converse must not drive; revisit when the LRM text is at hand.

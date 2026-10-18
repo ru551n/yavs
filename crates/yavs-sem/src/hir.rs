@@ -193,6 +193,10 @@ pub enum LspStep {
     Field(u32),
     Index(Box<[ExprId]>),
     Slice(RangeC),
+    /// The steps that follow index the array in the index space of this subtype: the name
+    /// went through an object alias with a subtype indication (LRM 6.6.2), whose bounds may
+    /// differ from those of the aliased name. Elab and lowering map the positions.
+    Rebase(SubtypeId),
 }
 
 /// Drivers and `all` sensitivity of a process or of a concurrent statement's

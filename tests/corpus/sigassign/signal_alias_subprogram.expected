@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:tb_signal_alias_subprogram:_p0	r.x=5 r.v=0010
+diag	note	1000000	0	:tb_signal_alias_subprogram:_p0	v_lo=0101 len=4 left=0 high=3
+diag	note	2000000	0	:tb_signal_alias_subprogram:_p0	p sees 0101 t'left=1
+diag	note	2000000	0	:tb_signal_alias_subprogram:_p0	v=10100101

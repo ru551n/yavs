@@ -2568,6 +2568,7 @@ impl Db {
                     LspStep::Index(es.iter().map(|&e| self.r_expr(r, e)).collect())
                 }
                 LspStep::Slice(rc) => LspStep::Slice(self.r_range(r, rc)),
+                LspStep::Rebase(st) => LspStep::Rebase(self.r_subtype(r, *st)),
             })
             .collect()
     }

@@ -7,7 +7,7 @@ use yavs_ir::{
     Ty, TyId, Width,
 };
 use yavs_ir::{CheckKind, Inst};
-use yavs_sem::decl::{Body, DeclKind, Param, Subprogram};
+use yavs_sem::decl::{Alias, Body, DeclKind, Param, Subprogram};
 use yavs_sem::hir::UnitHir;
 use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Choice, ExprKind, PredefAttr};
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
@@ -365,6 +365,15 @@ impl Fx<'_, '_> {
                 Ok(V::S(dst))
             }
             None => match &decl.kind {
+                // An object alias without storage of its own (LRM 6.6.2): the aliased name,
+                // seen with the alias subtype's bounds.
+                DeclKind::Alias(Alias::Object { target, subtype }) => match self.expr(*target)? {
+                    V::A(data, dope) => {
+                        let what = decl.name.to_string();
+                        Ok(V::A(data, self.dope_as(dope, *subtype, &what, span)?))
+                    }
+                    v => Ok(v),
+                },
                 DeclKind::EnumLit { pos, .. } => {
                     let dst = self.int(i64::from(*pos));
                     Ok(V::S(dst))
@@ -386,9 +395,10 @@ impl Fx<'_, '_> {
                     let e = o.default.ok_or(Failed)?;
                     let v = match self.expr(e)? {
                         // The constant's own bounds, not the initialiser's (LRM 6.4.2.2).
-                        V::A(data, dope) => {
-                            V::A(data, self.dope_as(d, dope, Some(o.subtype), span)?)
-                        }
+                        V::A(data, dope) => V::A(
+                            data,
+                            self.dope_as(dope, Some(o.subtype), &decl.name.to_string(), span)?,
+                        ),
                         v => v,
                     };
                     if let V::S(r) = v {
@@ -476,8 +486,46 @@ impl Fx<'_, '_> {
                 let a = self.addr(space, off);
                 Ok(self.load(a, Width::Sig, RegTy::Sig))
             }
+            None if self.alias_target(d).is_some() => {
+                let (t, _) = self.alias_target(d).ok_or(Failed)?;
+                self.sig_expr(t)
+            }
             _ => Err(self.cx.unsupported(span, "this signal (ports, M2 slice 3)")),
         }
+    }
+
+    /// The aliased name and alias subtype of object alias `d` when lowering gave it no
+    /// storage of its own (an alias of a signal, or one declared outside the lowered units):
+    /// uses of the alias lower the aliased name (LRM 6.6.2).
+    pub fn alias_target(&self, d: DeclId) -> Option<(ExprId, Option<SubtypeId>)> {
+        if self.cx.objs.contains_key(&d) {
+            return None;
+        }
+        match &self.db.decls[d].kind {
+            DeclKind::Alias(Alias::Object { target, subtype }) => Some((*target, *subtype)),
+            _ => None,
+        }
+    }
+
+    /// The descriptor under which a constant or alias of subtype `st` sees an array with
+    /// descriptor `dope`: that of `st` when it is constrained (checked to match in length,
+    /// LRM 5.3.2.2, 6.6.2), else `dope`.
+    pub fn dope_as(&mut self, dope: Reg, st: Option<SubtypeId>, what: &str, span: Span) -> R<Reg> {
+        let Some(st) = st else {
+            return Ok(dope);
+        };
+        let Some(want) = self.subtype_dope(st, span)? else {
+            return Ok(dope);
+        };
+        let (_, dims) = ty::array_of(self.db, self.db.base(st)).ok_or(Failed)?;
+        let what = self.msg(what, yavs_ir::Dir::To);
+        self.emit(Inst::SubtypeCheck {
+            dope,
+            want,
+            dims,
+            what,
+        });
+        Ok(want)
     }
 
     /// The driver slot through which this process drives signal `d` (an actual of an `out`
@@ -547,24 +595,6 @@ impl Fx<'_, '_> {
         Ok(self.sig_name(e)?.2)
     }
 
-    /// The descriptor under which constant `d` sees an array value with descriptor `dope`:
-    /// its subtype `st` when constrained (checked against the value, LRM 5.3.2.2), else `dope`.
-    fn dope_as(&mut self, d: DeclId, dope: Reg, st: Option<SubtypeId>, span: Span) -> R<Reg> {
-        let Some(st) = st else { return Ok(dope) };
-        let Some(want) = self.subtype_dope(st, span)? else {
-            return Ok(dope);
-        };
-        let (_, dims) = ty::array_of(self.db, self.db.base(st)).ok_or(Failed)?;
-        let what = self.msg(&self.db.decls[d].name.to_string(), yavs_ir::Dir::To);
-        self.emit(Inst::SubtypeCheck {
-            dope,
-            want,
-            dims,
-            what,
-        });
-        Ok(want)
-    }
-
     /// The IR type of object `d`.
     pub fn decl_ty(&mut self, d: DeclId, span: Span) -> R<TyId> {
         match ty::obj_subtype(self.db, d) {
@@ -576,6 +606,13 @@ impl Fx<'_, '_> {
     /// The descriptor of an array signal (from its subtype, evaluated in this instance);
     /// `None` for a scalar signal.
     pub fn sig_dope(&mut self, d: DeclId, span: Span) -> R<Option<Reg>> {
+        if let Some((t, st)) = self.alias_target(d) {
+            let Some(dope) = self.dope_of_signal(t)? else {
+                return Ok(None);
+            };
+            let what = self.db.decls[d].name.to_string();
+            return self.dope_as(dope, st, &what, span).map(Some);
+        }
         let DeclKind::Object(o) = &self.db.decls[d].kind else {
             return Err(self.cx.ice(span, "signal is not an object"));
         };
@@ -618,6 +655,7 @@ impl Fx<'_, '_> {
             ExprKind::Obj(d) => {
                 let dope = match self.cx.objs.get(d) {
                     Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => self.sig_dope(*d, span)?,
+                    None if self.alias_target(*d).is_some() => self.sig_dope(*d, span)?,
                     _ => None,
                 };
                 return Ok((*d, self.sig_of(*d, span)?, dope));
@@ -650,6 +688,7 @@ impl Fx<'_, '_> {
         let sig = match self.cx.objs.get(&d).copied() {
             Some(Obj::Signal { sig }) => Ok(sig),
             Some(Obj::SignalRef { .. }) => Err(self.sig_of(d, span)?),
+            None if self.alias_target(d).is_some() => Err(self.sig_of(d, span)?),
             _ => return Err(self.cx.ice(span, "selection of a non-signal")),
         };
         let Some(dope) = self.sig_dope(d, span)? else {
@@ -657,11 +696,25 @@ impl Fx<'_, '_> {
         };
         let tid = self.decl_ty(d, span)?;
         let logic = self.is_logic(tid);
-        let count = self.dope_len(dope);
         let what = db.decls[d].name.to_string();
+        self.select_in(sig, dope, logic, &what, sel, span)
+    }
+
+    /// Element `Ok(index)` or slice `Err(range)` of the array signal `sig` (an instance
+    /// signal or a reference) with descriptor `dope`.
+    pub fn select_in(
+        &mut self,
+        sig: Result<u32, Reg>,
+        dope: Reg,
+        logic: bool,
+        what: &str,
+        sel: Result<ExprId, &yavs_sem::types::RangeC>,
+        span: Span,
+    ) -> R<(Reg, Option<Reg>)> {
+        let count = self.dope_len(dope);
         match sel {
             Ok(i) => {
-                let pos = self.flat_pos(dope, &[i], &what)?;
+                let pos = self.flat_pos(dope, &[i], what)?;
                 let off = if logic {
                     let one = self.int(1);
                     let last = self.bin(IntOp::Sub, count, one);
@@ -673,7 +726,7 @@ impl Fx<'_, '_> {
                 Ok((self.sub_sig(sig, off, one), None))
             }
             Err(range) => {
-                let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
+                let (p, n, nd) = self.slice_of(dope, range, what, span)?;
                 let off = if logic {
                     let a = self.bin(IntOp::Sub, count, p);
                     self.bin(IntOp::Sub, a, n)
@@ -697,6 +750,9 @@ impl Fx<'_, '_> {
                 }
                 ExprKind::Obj(d) if matches!(self.cx.objs.get(d), Some(Obj::RecSignal)) => {
                     return Some((*d, path));
+                }
+                ExprKind::Obj(d) if self.alias_target(*d).is_some() => {
+                    e = self.alias_target(*d)?.0;
                 }
                 _ => return None,
             }
@@ -1570,6 +1626,11 @@ impl Fx<'_, '_> {
                 }
                 Shape::SigOut => {
                     let (d, sref, dope) = self.sig_name(e)?;
+                    // The driven signal, through any alias (LRM 6.6.2).
+                    let d = match db.lsp(e).map(|l| l.root) {
+                        Some(yavs_sem::hir::ObjRoot::Decl(r)) => r,
+                        _ => d,
+                    };
                     let slot = self.driver_slot_of(d, es)?;
                     cells.extend([sref, slot]);
                     cells.extend(dope);

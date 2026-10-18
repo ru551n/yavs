@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	1	:tb_package_signal_alias:p2	flag event=true
+diag	note	1000000	1	:tb_package_signal_alias:p2	s_up=12
+diag	note	1000000	1	:tb_package_signal_alias:p2	ok

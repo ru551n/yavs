@@ -72,7 +72,16 @@ impl Db {
     pub(crate) fn lsp_parts(&self, e: ExprId) -> Option<(ObjRoot, Vec<LspStep>, Staticness, bool)> {
         match &self.exprs[e].kind {
             ExprKind::Obj(d) => match &self.decls[*d].kind {
-                DeclKind::Alias(Alias::Object { target, .. }) => self.lsp_parts(*target),
+                DeclKind::Alias(Alias::Object { target, subtype }) => {
+                    let mut p = self.lsp_parts(*target)?;
+                    if let Some(st) = *subtype
+                        && !p.3
+                        && matches!(self.types[self.base(st)].kind, TypeKind::Array { .. })
+                    {
+                        p.1.push(LspStep::Rebase(st));
+                    }
+                    Some(p)
+                }
                 DeclKind::Object(o) if o.role == ObjRole::ImplicitSignal => Some((
                     ObjRoot::ImplicitSignal(*d),
                     Vec::new(),
@@ -857,6 +866,9 @@ impl Db {
                         _ => Overlap::Maybe,
                     }
                 }
+                (LspStep::Rebase(s), LspStep::Rebase(q)) if s == q => Overlap::Yes,
+                // The steps that follow are in different index spaces: elab compares them.
+                (LspStep::Rebase(_), _) | (_, LspStep::Rebase(_)) => return Overlap::Maybe,
                 // Different shapes at one level cannot come from one type.
                 _ => Overlap::Maybe,
             };
@@ -880,6 +892,7 @@ impl Db {
                 (LspStep::Slice(r), LspStep::Slice(q)) => {
                     self.folded_range(r).is_some() && self.folded_range(r) == self.folded_range(q)
                 }
+                (LspStep::Rebase(s), LspStep::Rebase(q)) => s == q,
                 _ => false,
             })
     }
@@ -939,6 +952,7 @@ impl Db {
                 (LspStep::Field(i), TypeKind::Record { elems }) => elems.get(*i as usize)?.subtype,
                 (LspStep::Index(_), TypeKind::Array { elem, .. }) => *elem,
                 (LspStep::Slice(_), TypeKind::Array { .. }) => st,
+                (LspStep::Rebase(s), TypeKind::Array { .. }) => *s,
                 _ => return None,
             };
             resolved = resolved || self.is_resolved(st);

@@ -349,7 +349,12 @@ impl<'a, 'b> Fx<'a, 'b> {
         for &d in &self.db.scopes[scope].order {
             let decl = &self.db.decls[d];
             if let DeclKind::Alias(Alias::Object { target, subtype }) = &decl.kind {
-                ok &= self.alias(d, *target, *subtype).is_ok();
+                // A signal alias has no storage: its uses lower the aliased name.
+                let signal = matches!(self.db.name_root(*target),
+                    Some(yavs_sem::lsp::NameRoot::Obj(r)) if self.db.is_signal(r));
+                if !signal {
+                    ok &= self.alias(d, *target, *subtype).is_ok();
+                }
                 continue;
             }
             let DeclKind::Object(o) = &decl.kind else {

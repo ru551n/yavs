@@ -18,19 +18,19 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 7 | 127 | 123 | signal aliases #203 |
+| check | 242 | 1 | 14 | constant bounds #209 (after #203) |
 | com | 0 | 135 | 10 | protected body initialiser #204 (fixed, not re-measured) |
 | data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files of scalars and scalar arrays done (#79, not re-measured) |
-| dictionary | 0 | 8 | 0 | #203 |
+| dictionary | 8 | 0 | 0 | none (after #203) |
 | logging | 112 | 1 | 0 | #207 |
-| path | 0 | 2 | 0 | #203 |
+| path | 2 | 0 | 0 | none (after #203) |
 | random | 0 | 4 | 0 | #204 (fixed, not re-measured) |
 | record_dict (2019) | 6 | 0 | 0 | none |
-| run | 0 | 5 | 0 | #203, #206 |
+| run | 4 | 1 | 0 | #206 (after #203) |
 | string_ops | 3 | 1 | 11 | #209 |
 | verification_components | 0 | 523 | 4 | #77 (impure calls at elaboration), #204; `tb_axi_stream_protocol_checker` does not analyze (#210) and is left out |
 
-With the signal-alias fix of #203 tried locally, `check` passed 156 of 156 runnable tests.
+The `check`, `dictionary`, `path` and `run` rows were re-measured with the signal-alias fix of #203.
 
 ## CI and releases
 

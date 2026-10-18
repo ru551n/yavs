@@ -1076,8 +1076,14 @@ type.
 ```rust
 pub struct Lsp { pub root: ObjRoot, pub path: Box<[LspStep]>, pub stat: Staticness, pub span: Span }
 pub enum ObjRoot { Decl(DeclId), External(ExternalId), ImplicitSignal(DeclId) }
-pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC) }
+pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC), Rebase(SubtypeId) }
 ```
+
+- A name through an object alias is the aliased name's LSP (6.6.2). When the alias has an array
+  subtype indication, a `Rebase(subtype)` step follows: the index and slice steps after it are
+  in that subtype's index space (its bounds may differ from the aliased name's), and elab maps
+  them by element position. Two paths compare (`overlap`) only up to a `Rebase` of different
+  subtypes, then `Maybe`.
 
 - The LSP of a name is its longest prefix whose every index/slice expression is static
   (globally static counts, 8.1; elab evaluates the globally static ones, one reported case was this).

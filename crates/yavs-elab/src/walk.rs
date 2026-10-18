@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use yavs_diag::{Diagnostic, Span};
 use yavs_kernel::{Elem, GuardKind, PortMode, Range};
-use yavs_sem::decl::{DeclKind, ObjClass, ObjRole};
+use yavs_sem::decl::{Alias, DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::{
     Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
     InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, StmtKind, UnitHir,
@@ -951,7 +951,7 @@ impl Elab<'_> {
                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
                 for (steps, e) in parts {
                     let espan = self.db.exprs[*e].span;
-                    let fsels = self.m.steps(self.db, steps, sc, espan)?;
+                    let fsels = self.m.steps(self.db, None, steps, sc, espan)?;
                     let (fl, _) = self.m.select(fo, &fsels, espan)?;
                     let Some((ao, asels)) = self.m.name_ref(self.db, *e, sc)? else {
                         return Err(unsupported(
@@ -1956,10 +1956,16 @@ impl Model {
     fn name_ref(&mut self, db: &Db, e: ExprId, scope: ScopeId) -> R<Option<(ObjId, Vec<Sel>)>> {
         let ex = &db.exprs[e];
         let (prefix, sel) = match &ex.kind {
-            ExprKind::Obj(d) => {
-                let o = self.signal_or_package(db, scope, *d, ex.span)?;
-                return Ok(o.map(|o| (o, Vec::new())));
-            }
+            // An object alias denotes the aliased name (LRM 6.6.2).
+            ExprKind::Obj(d) => match &db.decls[*d].kind {
+                DeclKind::Alias(Alias::Object { target, .. }) => {
+                    return self.name_ref(db, *target, scope);
+                }
+                _ => {
+                    let o = self.signal_or_package(db, scope, *d, ex.span)?;
+                    return Ok(o.map(|o| (o, Vec::new())));
+                }
+            },
             ExprKind::External(x) => {
                 return Ok(Some((self.external(db, *x, scope)?, Vec::new())));
             }
@@ -1977,10 +1983,94 @@ impl Model {
             ExprKind::Field { prefix, elem } => (*prefix, Sel::Field(*elem)),
             _ => return Ok(None),
         };
-        Ok(self.name_ref(db, prefix, scope)?.map(|(o, mut v)| {
-            v.push(sel);
-            (o, v)
-        }))
+        let Some((o, mut v)) = self.name_ref(db, prefix, scope)? else {
+            return Ok(None);
+        };
+        let sel = match &db.exprs[prefix].kind {
+            ExprKind::Obj(a) => match &db.decls[*a].kind {
+                DeclKind::Alias(Alias::Object {
+                    subtype: Some(st), ..
+                }) => self.rebase(db, o, &v, *st, sel, scope, ex.span)?,
+                _ => sel,
+            },
+            _ => sel,
+        };
+        v.push(sel);
+        Ok(Some((o, v)))
+    }
+
+    /// Selector `sel`, written in the index space of alias subtype `st`, as a selector of
+    /// the aliased part `sels` of `o` (LRM 6.6.2: element positions correspond).
+    #[allow(clippy::too_many_arguments)]
+    fn rebase(
+        &mut self,
+        db: &Db,
+        o: ObjId,
+        sels: &[Sel],
+        st: yavs_sem::SubtypeId,
+        sel: Sel,
+        scope: ScopeId,
+        span: Span,
+    ) -> R<Sel> {
+        let Some(Shape::Array { dims: from, .. }) = self.shape(db, st, Some(scope), span)? else {
+            return Ok(sel); // an unconstrained alias subtype keeps the name's bounds
+        };
+        let Shape::Array { dims: to, .. } = self.select(o, sels, span)?.1 else {
+            return Err(Box::new(ice(
+                span,
+                "alias of an array subtype names a non-array",
+            )));
+        };
+        let bad = |m: String| {
+            Box::new(
+                Diagnostic::error(codes::BAD_NAME, format!("invalid static name: {m}"))
+                    .with_primary(span, "this name"),
+            )
+        };
+        let map = |k: usize, v: i64| -> R<i64> {
+            let (f, t) = (from[k], to[k]);
+            let p = f.pos(v).ok_or_else(|| {
+                bad(format!(
+                    "index {v} is outside the alias range {} to {}",
+                    f.left, f.right
+                ))
+            })?;
+            Ok(crate::hier::index_at(t, p))
+        };
+        Ok(match sel {
+            Sel::Index(xs) if xs.len() == to.len() && from.len() == to.len() => Sel::Index(
+                xs.iter()
+                    .enumerate()
+                    .map(|(k, &v)| map(k, v))
+                    .collect::<R<_>>()?,
+            ),
+            Sel::Slice(b) if to.len() == 1 && from.len() == 1 => {
+                let t = to[0];
+                if b.is_empty() {
+                    let right = match t.dir {
+                        yavs_sem::types::Direction::To => t.left - 1,
+                        yavs_sem::types::Direction::Downto => t.left + 1,
+                    };
+                    Sel::Slice(crate::hier::Bounds {
+                        left: t.left,
+                        dir: t.dir,
+                        right,
+                    })
+                } else {
+                    Sel::Slice(crate::hier::Bounds {
+                        left: map(0, b.left)?,
+                        dir: t.dir,
+                        right: map(0, b.right)?,
+                    })
+                }
+            }
+            _ => {
+                return Err(Box::new(ice(
+                    span,
+                    "alias selector does not match its subtype",
+                )));
+            }
+        })
     }
 
     /// Bind external signal name `x` (LRM 8.7) against the hierarchy elaborated so far
@@ -2199,7 +2289,7 @@ impl Model {
             ObjRoot::Decl(d) => d,
             ObjRoot::External(x) => {
                 let o = self.external(db, x, scope)?;
-                let sels = self.steps(db, &l.path, scope, l.span)?;
+                let sels = self.steps(db, Some(o), &l.path, scope, l.span)?;
                 return Ok((o, sels));
             }
             ObjRoot::ImplicitSignal(_) => {
@@ -2209,7 +2299,7 @@ impl Model {
         let Some(o) = self.signal_or_package(db, scope, d, l.span)? else {
             return Err(Box::new(ice(l.span, "driven signal without object")));
         };
-        let sels = self.steps(db, &l.path, scope, l.span)?;
+        let sels = self.steps(db, Some(o), &l.path, scope, l.span)?;
         Ok((o, sels))
     }
 
@@ -2236,7 +2326,7 @@ impl Model {
         for (steps, e) in parts {
             let espan = db.exprs[*e].span;
             let Some(first) = self
-                .steps(db, &steps[..1.min(steps.len())], sc, espan)?
+                .steps(db, None, &steps[..1.min(steps.len())], sc, espan)?
                 .pop()
             else {
                 return Err(Box::new(ice(espan, "empty sub-element path")));
@@ -2293,10 +2383,24 @@ impl Model {
         })
     }
 
-    fn steps(&mut self, db: &Db, path: &[LspStep], scope: ScopeId, span: Span) -> R<Vec<Sel>> {
+    /// The selectors of path `path` of object `o` (`None` for a formal's path, which never
+    /// goes through an alias).
+    fn steps(
+        &mut self,
+        db: &Db,
+        o: Option<ObjId>,
+        path: &[LspStep],
+        scope: ScopeId,
+        span: Span,
+    ) -> R<Vec<Sel>> {
         let mut v = Vec::with_capacity(path.len());
+        let mut rebase = None;
         for st in path {
-            v.push(match st {
+            let sel = match st {
+                LspStep::Rebase(s) => {
+                    rebase = Some(*s);
+                    continue;
+                }
                 LspStep::Field(f) => Sel::Field(*f),
                 LspStep::Index(ix) => {
                     let mut xs = Vec::with_capacity(ix.len());
@@ -2310,7 +2414,13 @@ impl Model {
                     Sel::Index(xs)
                 }
                 LspStep::Slice(r) => Sel::Slice(self.range(db, r, Some(scope), span)?),
-            });
+            };
+            let sel = match (rebase.take(), o) {
+                (Some(s), Some(o)) => self.rebase(db, o, &v, s, sel, scope, span)?,
+                (Some(_), None) => return Err(Box::new(ice(span, "alias step in a formal"))),
+                (None, _) => sel,
+            };
+            v.push(sel);
         }
         Ok(v)
     }

@@ -658,6 +658,12 @@ which tools/difftest parses.
   lower case (`:t:main:pr[integer]:x`, a subprogram's own name ends in `:`). Loops and
   sequential blocks add nothing. Ponytail: a subprogram declared in an enclosing region of the
   process's own region is named from the process's region.
+- **Signal aliases** (#203, LRM 6.6.2) get no storage and no slot: every use lowers the aliased
+  name (`Fx::alias_target`), with the alias subtype's descriptor when it is constrained (a
+  length check at each use, `SubtypeCheck`). Sem's LSP of a name through an alias with an array
+  subtype carries `LspStep::Rebase`; yavs-elab (`Model::rebase`) maps the following indices and
+  slices by element position onto the aliased part, so drivers, port actuals and sensitivity
+  cover exactly the named elements.
 - **Array signal descriptors** live in instance data (`SignalIr::dope`), written by yavs-elab from
   each signal object's bounds, so unconstrained ports take their actual's bounds. Array signal
   parameters pass the signal reference, the driver slot (`out`/`inout`) and the actual's

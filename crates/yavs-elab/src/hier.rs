@@ -542,7 +542,7 @@ fn slice_pos(r: Bounds, b: Bounds) -> Result<(u64, u64), String> {
     Ok((a, z))
 }
 
-fn index_at(b: Bounds, p: u64) -> i64 {
+pub(crate) fn index_at(b: Bounds, p: u64) -> i64 {
     match b.dir {
         Direction::To => b.left + p as i64,
         Direction::Downto => b.left - p as i64,

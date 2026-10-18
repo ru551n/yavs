@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:tb_signal_alias:ww	w_up(0)='U' event=false w=UUUU
+diag	note	0	0	:tb_signal_alias:watch	v_bit='0' event=false last='0'
+diag	note	0	1	:tb_signal_alias:ww	w_up(0)='1' event=true w=0110
+diag	note	0	1	:tb_signal_alias:check	b3 event=true last='0'
+diag	note	1000000	1	:tb_signal_alias:watch	v_bit='1' event=true last='0'
+diag	note	1000000	2	:tb_signal_alias:check	v_hi=1010 s3=89
+diag	note	1000000	2	:tb_signal_alias:check	ok

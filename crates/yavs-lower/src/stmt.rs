@@ -1185,15 +1185,49 @@ impl Fx<'_, '_> {
                 [] => self.sig_of(d, l.span)?,
                 [LspStep::Index(ix)] if ix.len() == 1 => self.sig_select(d, Ok(ix[0]), l.span)?.0,
                 [LspStep::Slice(r)] => self.sig_select(d, Err(r), l.span)?.0,
-                _ => {
-                    return Err(self
-                        .cx
-                        .unsupported(l.span, "sensitivity to record and nested sub-elements"));
-                }
+                path => self.lsp_sig(d, path, l.span)?,
             };
             self.emit(Inst::WaitOn { sig: s });
         }
         Ok(())
+    }
+
+    /// The signal at path `path` of array signal `d`: slices and elements, each indexed in
+    /// the index space of the alias subtype a `Rebase` step gives (LRM 6.6.2).
+    fn lsp_sig(&mut self, d: yavs_sem::DeclId, path: &[LspStep], span: Span) -> R<Reg> {
+        let nested = |fx: &mut Self| {
+            Err(fx
+                .cx
+                .unsupported(span, "sensitivity to record and nested sub-elements"))
+        };
+        let mut sig = match self.cx.objs.get(&d).copied() {
+            Some(Obj::Signal { sig }) => Ok(sig),
+            _ => Err(self.sig_of(d, span)?),
+        };
+        let mut dope = self.sig_dope(d, span)?;
+        let tid = self.decl_ty(d, span)?;
+        let logic = self.is_logic(tid);
+        let what = self.db.decls[d].name.to_string();
+        for step in path {
+            let Some(dp) = dope else {
+                return nested(self);
+            };
+            let sel = match step {
+                LspStep::Rebase(st) => {
+                    dope = Some(self.dope_as(dp, Some(*st), &what, span)?);
+                    continue;
+                }
+                LspStep::Index(ix) if ix.len() == 1 => Ok(ix[0]),
+                LspStep::Slice(r) => Err(r),
+                _ => return nested(self),
+            };
+            let (r, nd) = self.select_in(sig, dp, logic, &what, sel, span)?;
+            (sig, dope) = (Err(r), nd);
+        }
+        match sig {
+            Ok(_) => self.sig_of(d, span),
+            Err(r) => Ok(r),
+        }
     }
 
     /// Signals named in `e` (the implicit sensitivity of `wait until`, LRM 10.2).

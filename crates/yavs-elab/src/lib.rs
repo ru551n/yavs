@@ -14,6 +14,7 @@ mod hier;
 mod sim;
 mod value;
 mod walk;
+mod whole;
 
 #[cfg(test)]
 mod tests;

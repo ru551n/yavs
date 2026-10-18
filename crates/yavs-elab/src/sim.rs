@@ -11,7 +11,7 @@ use yavs_lower::{LowerOptions, Lowerer, UnitIr};
 use yavs_sem::{Db, UnitId};
 
 use crate::Elaborated;
-use crate::hier::{ScopeId, ScopeKind};
+use crate::hier::{LeafRes, ScopeId, ScopeKind};
 
 /// The IR of the design: one program, one `UnitIr` per architecture that owns processes.
 pub struct Ir {
@@ -19,6 +19,9 @@ pub struct Ir {
     pub units: HashMap<UnitId, UnitIr>,
     /// The function of each user resolution function of a signal.
     pub resolvers: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
+    /// IR types of the parameter and the result of each function resolving a composite as
+    /// a whole (#193).
+    pub whole_types: HashMap<yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId)>,
     /// Leaves resolved by a function declared in an entity or architecture: the instance
     /// whose data the function reads (its constants and generics, #164).
     pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
@@ -88,7 +91,7 @@ impl Elaborated {
         // data, so its architecture is lowered even when it owns no process.
         let mut res_regions = std::collections::BTreeMap::new();
         for (k, leaf) in self.nets.leaves.iter().enumerate() {
-            let Some(crate::hier::LeafRes::Func(d)) = leaf.resolution else {
+            let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution else {
                 continue;
             };
             let Some(region) = self.res_region(db, d, self.nets.obj(leaf.obj).scope)? else {
@@ -133,11 +136,20 @@ impl Elaborated {
             idx.push(l.architecture(a)?);
         }
         let mut resolvers = HashMap::new();
+        let mut whole_types = HashMap::new();
         for leaf in &self.nets.leaves {
-            if let Some(crate::hier::LeafRes::Func(d)) = leaf.resolution
+            if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
                 && !resolvers.contains_key(&d)
             {
                 resolvers.insert(d, l.subprogram(d)?);
+            }
+            if let Some(LeafRes::Whole(d)) = leaf.resolution
+                && !whole_types.contains_key(&d)
+                && let Some(sp) = db.decls[d].kind.subprogram()
+                && let ([p], Some(r)) = (&sp.params[..], sp.ret)
+            {
+                let tys = (l.ty(db.base(p.subtype))?, l.ty(db.base(r))?);
+                whole_types.insert(d, tys);
             }
         }
         let lowered = l.finish()?;
@@ -167,6 +179,7 @@ impl Elaborated {
             program: Arc::new(lowered.program),
             units,
             resolvers,
+            whole_types,
             res_regions,
             names,
             packages: lowered.packages,
@@ -347,6 +360,13 @@ impl Elaborated {
                     .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
                 let rt = rt.clone();
                 let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
+                if let Some(LeafRes::Whole(_)) = self.nets.leaf(leaf).resolution {
+                    let tys = *ir.whole_types.get(&d).ok_or_else(|| {
+                        sim_err("types of a composite resolution function not lowered".into())
+                    })?;
+                    let shape = &self.nets.obj(self.nets.leaf(leaf).obj).shape;
+                    return crate::whole::resolver(rt, f, inst, tys, shape).map_err(sim_err);
+                }
                 Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
                     yavs_interp::resolve(rt.clone(), f, inst.clone(), vals, out)
                         .map_err(|e| e.to_string())

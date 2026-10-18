@@ -715,6 +715,7 @@ impl Model {
                     left: Val::Int(0),
                     res: None,
                 }),
+                res: None,
             })),
             _ => Err(err(
                 codes::NOT_EVALUATED,
@@ -828,16 +829,6 @@ impl Model {
                     res,
                 }))
             }
-            TypeKind::Array { .. } | TypeKind::Record { .. }
-                if matches!(db.subtypes[st].resolution, Some(Resolution::Function(_))) =>
-            {
-                Err(err(
-                    codes::NOT_IMPLEMENTED,
-                    span,
-                    "signals of a composite subtype resolved as a whole are not implemented yet",
-                    "resolved as a whole (#193)",
-                ))
-            }
             TypeKind::Array { elem, .. } => {
                 let (elem, (dims, ec)) = (
                     *elem,
@@ -871,6 +862,7 @@ impl Model {
                     ty,
                     dims: ds,
                     elem: Box::new(es),
+                    res: whole_res(db, st),
                 }))
             }
             TypeKind::Record { elems } => {
@@ -890,7 +882,11 @@ impl Model {
                     let Some(s) = s else { return Ok(None) };
                     fields.push((f.name, s));
                 }
-                let mut sh = Shape::Record { ty, fields };
+                let mut sh = Shape::Record {
+                    ty,
+                    fields,
+                    res: whole_res(db, st),
+                };
                 if let Some(r @ Resolution::Record(_)) = &db.subtypes[st].resolution
                     && !apply_res(&mut sh, r)
                 {
@@ -954,8 +950,8 @@ fn lower_one(db: &Db, f: DeclId, at: Span) -> Result<Lowered1, Box<Diagnostic>> 
 }
 
 /// Apply an element resolution indication (LRM 6.3) to the element shape `s`:
-/// `(resolved) t` resolves every scalar, `((resolved)) t` the elements of nested arrays,
-/// `(a f, b g) r` per record element. `false` when it does not fit.
+/// `(f) t` resolves each element with `f` (a composite element as a whole), `((f)) t` the
+/// elements of nested arrays, `(a f, b g) r` per record element. `false` when it does not fit.
 fn apply_res(s: &mut Shape, r: &Resolution) -> bool {
     match (r, s) {
         (Resolution::Function(f), s) => {
@@ -972,11 +968,20 @@ fn apply_res(s: &mut Shape, r: &Resolution) -> bool {
     }
 }
 
+/// The resolution function of composite subtype `st` resolved as a whole (LRM 4.6).
+fn whole_res(db: &Db, st: SubtypeId) -> Option<DeclId> {
+    match db.subtypes[st].resolution {
+        Some(Resolution::Function(f)) => Some(f),
+        _ => None,
+    }
+}
+
 fn set_res(s: &mut Shape, f: DeclId) {
+    // A function resolving a composite element resolves it as a whole (LRM 6.3, 4.6).
     match s {
-        Shape::Scalar { res, .. } => *res = Some(f),
-        Shape::Array { elem, .. } => set_res(elem, f),
-        Shape::Record { fields, .. } => fields.iter_mut().for_each(|(_, s)| set_res(s, f)),
+        Shape::Scalar { res, .. } | Shape::Array { res, .. } | Shape::Record { res, .. } => {
+            *res = Some(f)
+        }
     }
 }
 

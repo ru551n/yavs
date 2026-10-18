@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:record_whole:_p1	one '0' 100 'a'
+diag	note	0	0	:record_whole:_p2	two '0' 115 'b'
+diag	note	1000000	0	:record_whole:_p1	one '1' 104 'x'
+diag	note	1000000	0	:record_whole:_p2	two '0' 111 'c'
+diag	note	2000000	1	:record_whole:_p2	two '0' 121 'c'
+diag	note	3000000	0	:record_whole:_p2	two '1' 122 'd'
+diag	note	4000000	1	:record_whole:_p2	two '0' 122 'd'
+diag	note	5000000	0	:record_whole:_p3	done

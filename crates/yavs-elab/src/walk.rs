@@ -1647,6 +1647,22 @@ impl Elab<'_> {
             by_leaf.extend(rs.iter().copied());
             per_lsp.push(rs);
         }
+        // LRM 14.7.2: a process driving a subelement of a composite resolved as a whole has a
+        // driver for every scalar subelement of it, so the kernel sees whole composite sources.
+        let mut whole: Vec<ObjId> = Vec::new();
+        for &(l, _) in &by_leaf {
+            let leaf = self.m.nets.leaf(l);
+            if matches!(leaf.resolution, Some(LeafRes::Whole(_))) && !whole.contains(&leaf.obj) {
+                whole.push(leaf.obj);
+            }
+        }
+        for o in whole {
+            let (a, z) = self.m.nets.obj(o).leaves;
+            for l in a.0..z.0 {
+                let n = self.m.nets.leaves[l as usize].ty.len;
+                by_leaf.push((LeafId(l), Range::new(0, n)));
+            }
+        }
         by_leaf.sort_by_key(|(l, r)| (*l, r.offset));
         let mut merged: Vec<(LeafId, Range)> = Vec::new();
         for (l, r) in by_leaf {
@@ -1749,6 +1765,26 @@ impl Elab<'_> {
     }
 }
 
+/// Whether `s` has a resolved part below a composite resolved as a whole: any resolved
+/// scalar when `inside`, else a composite resolved as a whole below the root.
+fn nested_res(s: &Shape, inside: bool) -> bool {
+    match s {
+        Shape::Scalar { res, .. } => inside && res.is_some(),
+        Shape::Array { elem, .. } => {
+            matches!(
+                **elem,
+                Shape::Array { res: Some(_), .. } | Shape::Record { res: Some(_), .. }
+            ) || nested_res(elem, inside)
+        }
+        Shape::Record { fields, .. } => fields.iter().any(|(_, f)| {
+            matches!(
+                f,
+                Shape::Array { res: Some(_), .. } | Shape::Record { res: Some(_), .. }
+            ) || nested_res(f, inside)
+        }),
+    }
+}
+
 fn counts(db: &Db, entity: UnitId) -> (usize, usize) {
     match &db.units[entity].hir {
         UnitHir::Entity {
@@ -1840,6 +1876,19 @@ impl Model {
                 .with_primary(at, "here"),
             )
         })?;
+        // A composite resolved as a whole: every leaf is resolved together (#193).
+        let whole = match &shape {
+            Shape::Array { res, .. } | Shape::Record { res, .. } => *res,
+            Shape::Scalar { .. } => None,
+        };
+        if nested_res(&shape, whole.is_some()) {
+            return Err(unsupported(
+                at,
+                "a resolved subelement of a composite resolved as a whole, or a composite \
+                 resolved as a whole inside another composite,",
+                "#76",
+            ));
+        }
         let id = ObjId(self.nets.objs.len() as u32);
         let first = LeafId(self.nets.leaves.len() as u32);
         for ((path, leaf, n), init) in shape.leaves().into_iter().zip(vals) {
@@ -1859,6 +1908,7 @@ impl Model {
                 )
             })?;
             let resolution = match res {
+                _ if whole.is_some() => whole.map(LeafRes::Whole),
                 None => None,
                 Some(f)
                     if *elem == Elem::Logic
@@ -2231,6 +2281,10 @@ impl Model {
             ty,
             dims,
             elem: Box::new(es),
+            res: match db.subtypes[st].resolution {
+                Some(yavs_sem::types::Resolution::Function(f)) => Some(f),
+                _ => None,
+            },
         })
     }
 

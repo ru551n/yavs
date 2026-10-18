@@ -236,14 +236,17 @@ pub enum Shape {
         left: Val,
         res: Option<DeclId>,
     },
+    /// `res`: the resolution function of a composite subtype resolved as a whole (LRM 4.6).
     Array {
         ty: TypeId,
         dims: Vec<Bounds>,
         elem: Box<Shape>,
+        res: Option<DeclId>,
     },
     Record {
         ty: TypeId,
         fields: Vec<(Ident, Shape)>,
+        res: Option<DeclId>,
     },
 }
 
@@ -330,6 +333,9 @@ pub enum LeafRes {
     StdLogic,
     /// A user resolution function (needs the interpreter, M3).
     Func(DeclId),
+    /// A leaf of a signal whose subtype is a composite resolved as a whole by this function
+    /// (LRM 4.6): all leaves of the object are resolved together (#193).
+    Whole(DeclId),
 }
 
 pub struct Leaf {
@@ -457,7 +463,7 @@ impl NetGraph {
                     offset = base + a;
                     count = z - a + 1;
                 }
-                (Sel::Slice(r), Shape::Array { ty, dims, elem }) if dims.len() == 1 => {
+                (Sel::Slice(r), Shape::Array { ty, dims, elem, .. }) if dims.len() == 1 => {
                     let b = dims[0];
                     let n = b.len();
                     let base = offset * n;
@@ -505,6 +511,7 @@ impl NetGraph {
                         right,
                     }],
                     elem: Box::new(shape.clone()),
+                    res: None,
                 }
             }
             None => shape.clone(),

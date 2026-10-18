@@ -286,7 +286,9 @@ analysis order with `yavs_interp::init_package` (shared variables, constants com
 external signal names bound in elaboration order (E2117), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
-instance's data; in a block, generate or subprogram it is E9999, #164). Not yet: conversions of record ports, non-static expression
+instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays
+resolved as a whole (every driving process drives every leaf, #193; nested in another
+composite: E9999). Not yet: conversions of record ports, non-static expression
 actuals (#74, needs yavs-lower DESIGN.md request 7), generic types, subprograms and packages on entities, linkage ports, mode views
 (#75).
 

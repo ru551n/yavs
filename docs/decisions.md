@@ -542,6 +542,15 @@ a note and a help suggesting an access type, as the reference simulators reject 
   at run time (#183), `Elaborated::lower` checks every constant of each run-time package's
   declaration before lowering, so a constant only processes read is E2114 too, never
   evaluated at package initialisation (#197, the LRM is clear).
+- **Composites resolved as a whole** (#193, elab agent, 2026-10-18; LRM 4.6, 14.7.2,
+  14.7.3): a signal whose record or array subtype has its own resolution function keeps its
+  usual leaves (`LeafRes::Whole`), joined by the kernel's `Builder::resolved_composite`. A
+  process driving any subelement of it gets a driver over every leaf, so every source is a
+  whole composite (subelements it never assigns keep the signal's initial value). The resolver
+  (`whole.rs`) repacks the concatenated leaves into the IR layout of an array of the composite,
+  calls the function through `call_values` and unpacks the result. `(f) t` with a composite
+  element resolves each element as a whole. Not yet (E9999, #76): such a composite inside
+  another composite, and resolved subelements below one.
 
 ## Runtime: default exit severity (user, 2026-10-18)
 

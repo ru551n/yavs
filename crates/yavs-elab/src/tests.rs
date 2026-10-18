@@ -1092,9 +1092,10 @@ fn mode_view_and_linkage_ports() {
     );
 }
 
-/// A record subtype resolved as a whole (LRM 4.6) fails early until #193.
+/// A record subtype resolved as a whole (LRM 4.6): every leaf is resolved by the function,
+/// and a process driving one field drives every field (LRM 14.7.2, #193).
 #[test]
-fn composite_resolved_as_a_whole_fails_early() {
+fn composite_resolved_as_a_whole() {
     let src = "
       entity t is end;
       architecture a of t is
@@ -1104,9 +1105,35 @@ fn composite_resolved_as_a_whole_fails_early() {
         subtype rrec is res rec;
         signal s : rrec;
       begin
+        s.n <= 1;
+      end;";
+    let (_, e) = elab("whole_res", src, "t", &[]);
+    assert!(
+        e.nets
+            .leaves
+            .iter()
+            .all(|l| matches!(l.resolution, Some(crate::LeafRes::Whole(_))))
+    );
+    let driven: Vec<u32> = e.nets.drivers.iter().map(|d| d.leaf.0).collect();
+    assert_eq!(driven, [0, 1]);
+}
+
+/// A composite resolved as a whole inside another composite is not supported yet.
+#[test]
+fn nested_composite_resolution_fails_early() {
+    let src = "
+      entity t is end;
+      architecture a of t is
+        type rec is record b : bit; n : integer; end record;
+        type rec_vec is array (natural range <>) of rec;
+        function res(v : rec_vec) return rec is begin return v(v'low); end;
+        subtype rrec is res rec;
+        type rarr is array (0 to 1) of rrec;
+        signal s : rarr;
+      begin
       end;";
     assert_eq!(
-        err_codes("whole_res", src, "t", &[]),
+        err_codes("nested_whole", src, "t", &[]),
         [codes::NOT_IMPLEMENTED]
     );
 }

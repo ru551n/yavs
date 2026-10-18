@@ -99,6 +99,8 @@ impl Elaborated {
                          is not implemented yet (M3)"
                     )));
                 }
+                // Joined into one resolved composite below.
+                (Some(LeafRes::Whole(_)), None) => b.signal(&name, leaf.ty, &leaf.init),
                 (Some(LeafRes::Func(d)), None) => b.resolved_signal(
                     &name,
                     leaf.ty,
@@ -110,6 +112,18 @@ impl Elaborated {
             if let Some(g) = leaf.guard {
                 b.guard(id, g, yavs_kernel::Time::ZERO);
             }
+        }
+        // Composites resolved as a whole (#193): the leaves of each object, as one group.
+        for o in &self.nets.objs {
+            let (a, z) = o.leaves;
+            if a == z || self.nets.leaf(a).implicit.is_some() {
+                continue;
+            }
+            let Some(LeafRes::Whole(d)) = &self.nets.leaf(a).resolution else {
+                continue;
+            };
+            let leaves: Vec<_> = (a.0..z.0).map(yavs_kernel::SignalId).collect();
+            b.resolved_composite(&leaves, res(*d, a)?);
         }
         for e in &self.nets.ports {
             let sig = |(l, r): (crate::LeafId, yavs_kernel::Range)| {

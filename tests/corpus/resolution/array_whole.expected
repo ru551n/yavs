@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:array_whole:_p0	iv 2,8,18
+diag	note	0	0	:array_whole:_p1	nb 0000
+diag	note	0	0	:array_whole:_p2	pr a 100
+diag	note	1000000	0	:array_whole:_p0	iv 11,44,99
+diag	note	1000000	0	:array_whole:_p1	nb 1101
+diag	note	1000000	0	:array_whole:_p2	pr c 101
+diag	note	2000000	1	:array_whole:_p0	iv 11,54,99
+diag	note	2000000	1	:array_whole:_p1	nb 1010
+diag	note	2000000	1	:array_whole:_p2	pr c 011
+diag	note	3000000	1	:array_whole:_p2	pr z 011
+diag	note	4000000	0	:array_whole:b	done

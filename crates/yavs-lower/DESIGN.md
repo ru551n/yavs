@@ -260,3 +260,22 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
    guarded assignments of the block (`Disconnect` when GUARD is false). `bus`/`register`
    signals are guarded in the kernel by elab (`Builder::guard`, disconnection time 0 until
    disconnection specifications reach the HIR).
+
+## Requests from yavs-interp
+
+From yavs-interp (2026-10-18, #163), the implicit natives (`yavs-interp/src/implicit.rs`):
+
+1. **Null concatenation bounds.** The inline `&` takes `S'LEFT` as the left bound also when
+   both operands are null arrays; LRM 2008 9.2.5 says the result is then the right operand.
+   `x & y` with `x : bit_vector(5 to 4)` and `y : bit_vector(9 downto 10)` gives `0 to -1`,
+   the LRM wants `9 downto 10` (NVC 1.23 fails on this case, so a corpus test needs
+   `ref=hand`). The native `yavs.implicit.cat.*` already implements the rule.
+2. **Native fallback contracts**, for any call that goes to the implicit natives instead of
+   being inlined: `cat` takes three more cells after its operands (`S'LEFT`, `S'RIGHT`, the
+   direction 0 `to` / 1 `downto` of the index subtype); `rising_edge`/`falling_edge` take the
+   signal as its two `Sig` cells; `deallocate` takes the address of the access object (inline
+   `Free` is used today, which is equivalent).
+3. Records reach natives as fat pairs (what `cells` emits); the interpreter now reads every
+   record argument (`directory`, `time_record`, `call_path_element`) that way and returns a
+   record result as a fat pair too (yavs-ir README, native convention). Nothing to change in
+   lowering; noted so the two stay in step.

@@ -22,7 +22,9 @@
   declarations and specifications, aliases, protected types.
 - Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
   indications, file element checks; the rule 1 representation is pinned on numeric_std
-  (`numeric_std_subtypes_rule_1`, `numeric_std_body_rule_1`); the user's review is pending.
+  (`numeric_std_subtypes_rule_1`, `numeric_std_body_rule_1`) and reviewed for the composite cases
+  in `docs/design/rule1-review.md` (`tests/rule1.rs`; recommendation: approve with fixes, findings
+  F1 to F8 are issues #98 to #111); the user's approval is pending.
 - Generics (S4, `generic.rs`): generic packages, subprograms and (2019) protected types; 2008
   `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
   (`(<>)`, `(default)`, generic map, checked against the actual instance); package and subprogram

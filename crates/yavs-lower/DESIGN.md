@@ -113,7 +113,7 @@ a call into your module in a small commit.
 | `Call` implicit `to_string`, `'image` and friends | `CallNative` (NATIVE.md section 2 symbol, yavs-std implements) |
 | `Call` with `Body::Native(sym)` | `CallNative` |
 | `Call` with `Body::Hir` | `Call{func}` with arguments per 3. Subprograms |
-| `Call` with `Body::Foreign` | `CallForeign` (M3) |
+| `Call` with `Body::Foreign` | `CallForeign` (`foreign.rs`): one cell per parameter as for natives, records by data address |
 | `Call` with `implicit_cond` | the `??` family (`Cond`) |
 | `Index` | dope bound `Check{Index}` then `Index` / `LGet` |
 | `Slice` | `Check{Index}` on both ends unless null, new dope, address arithmetic or `LCopy` |

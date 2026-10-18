@@ -347,7 +347,15 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine WINEDEBUG=-all \
   cargo test -p yavs-ffi --target x86_64-pc-windows-gnu
 ```
 
-Open: marshalling VHDL values (bit-planes to bytes, records, copy-back) belongs to the interpreter.
+`yavs run --load=LIB` end to end (#95): `'FOREIGN "VHPIDIRECT symbol"` subprograms (placeholder
+bodies allowed) are lowered to `CallForeign`, bound to symbols in the `--load` libraries, then
+the executable (E0106 cannot load, E0107 symbol not found, both before the simulation), and
+called with scalars, scalar `out`/`inout`, arrays (with copy-back), records and access values.
+Test `crates/yavs/tests/foreign.rs` compiles a C library at test time: passes on Linux x86_64
+and on aarch64 under qemu-user (`QEMU_LD_PREFIX=/usr/aarch64-linux-gnu` so the spawned `yavs`
+finds its loader); on Windows x86_64 GNU the same testbench and error cases pass under wine by
+hand with a MinGW DLL (the test cannot spawn the compiler inside wine). Native Windows (MSVC CI)
+runs the test as written.
 
 ## difftest (yavs candidate)
 

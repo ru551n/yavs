@@ -273,7 +273,8 @@ impl ForeignFn {
   from C into VHDL (VHPI covers that).
 - Symbols: `attribute foreign of f : function is "VHPIDIRECT [lib] symbol"`; looked up in
   `--load` libraries (reusing `yavs-vhpi`'s plugin loader), then in the executable. A missing
-  symbol is an elaboration error that lists every library searched.
+  symbol is an elaboration error (`E0107`) that lists every library searched; a library word
+  in the attribute is ignored, as in the reference simulator.
 - **Tests on all three ABIs** without a C compiler: Rust `extern "C" fn` callees with mixed
   signatures (interleaved int/float, more arguments than registers to force stack slots,
   `int32_t`/`uint8_t` results with garbage upper bits, pointer write-back), run in CI on Linux

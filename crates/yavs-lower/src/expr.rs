@@ -1464,9 +1464,10 @@ impl Fx<'_, '_> {
                 span,
                 &format!("call of `{}`, whose body is not analyzed", decl.name),
             )),
+            Body::Foreign(attr) => self.foreign_call(callee, sp, *attr, args, span),
             _ => Err(self
                 .cx
-                .unsupported(span, "foreign, generic and instantiated subprograms (M3)")),
+                .unsupported(span, "generic and instantiated subprograms (M3)")),
         }
     }
 

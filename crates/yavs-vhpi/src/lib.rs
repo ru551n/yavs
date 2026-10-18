@@ -23,7 +23,7 @@ mod model;
 mod plugin;
 
 pub use model::Control;
-pub use plugin::{LoadError, PluginSpec, load};
+pub use plugin::{ForeignLib, LoadError, PluginSpec, bind_foreign, load, load_foreign};
 
 /// Sets the name of the (stub) design root that plugins see.
 pub fn set_design_root(name: &str) {

@@ -13,7 +13,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 - Does not: own IR types (it only uses `yavs_ir::ProgramBuilder`/`FuncBuilder` and the
   verifier), analyze (input must be an error-free `Db`), fold generics or build the hierarchy
   (`yavs-elab`), or execute (`yavs-interp`).
-- Depends on: `yavs-diag`, `yavs-syntax`, `yavs-sem`, `yavs-ir`, `yavs-kernel` (dev: `yavs-elab`,
+- Depends on: `yavs-diag`, `yavs-ffi` (C type mapping), `yavs-syntax`, `yavs-sem`, `yavs-ir`, `yavs-kernel` (dev: `yavs-elab`,
   `yavs-interp`, `yavs-logic`). Called by: `yavs-elab` (`Elaborated::lower`).
 
 ## 2. Map
@@ -27,6 +27,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | `src/ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` |
 | `src/composite.rs`, `access.rs`, `protected.rs`, `file.rs`, `force.rs` | Records and composite arrays, access types, protected types, files/textio, force/release (lower2) |
 | `src/reflect.rs` | `'reflect` and mirror lowering |
+| `src/foreign.rs` | Calls of `'FOREIGN` (VHPIDIRECT) subprograms: one `ForeignRef` per subprogram (`Cx::foreigns`), arguments as `cells(.., native)`, result range check |
 | `tests/corpus.rs` | `tests/corpus` groups through sem, elab (lowering), verifier, interpreter and kernel vs the reference simulator `.expected`; `PASS` list must match exactly |
 
 ## 3. Design decisions that bind this module
@@ -48,6 +49,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | One driver slot per `ProcessInfo::drivers` entry, in order | yavs-elab maps slots to LSP ranges | `docs/decisions.md` "Lowering" |
 | Guarded blocks: GUARD's default is the condition; a `_guard` process drives GUARD | LRM 11.2, 11.6 | `docs/decisions.md` "Lowering" |
 | Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |
+| Foreign calls: symbol is the last word after `VHPIDIRECT` (else the name), C types from the formal's own subtype, result range-checked; signal and file parameters, composite results are `E2001` | Reference simulator conventions, fail early | `docs/decisions.md` "Foreign subprograms and `--load`" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).
@@ -88,6 +90,6 @@ tools/difftest/report.sh                                        # rewrite tests/
   lowering into `yavs run`; #67 array signals, sub-elements, aggregate targets, signal out
   parameters; #68 guarded assignments, null waveforms, force/release, implicit signal
   attributes; #69 matching case, case over arrays, non-static choices; #70 expression gaps; #71
-  foreign, generic and instantiated subprograms, open actuals; #72 remaining attributes; #89 composite arrays and aggregates; #93 external names;
+  generic and instantiated subprograms, open actuals (foreign: done, #95); #72 remaining attributes; #89 composite arrays and aggregates; #93 external names;
   #101 package generics; #160 fixed scratch dir in `tests/corpus.rs`. Older unlabeled: #5, #8,
   #9, #13 to #17.

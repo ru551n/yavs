@@ -35,6 +35,9 @@ pub struct Ir {
     pub sources: yavs_interp::Sources,
     /// Bytes of the shared variables area (file objects of packages).
     pub shared_size: u32,
+    /// The C function of each `program.foreign` entry, bound by the caller (`yavs run
+    /// --load`) before [`Elaborated::build`].
+    pub foreign: Vec<(yavs_ir::ForeignId, yavs_ffi::ForeignFn)>,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -186,6 +189,7 @@ impl Elaborated {
             names,
             packages: lowered.packages,
             shared_size: lowered.shared_size,
+            foreign: Vec::new(),
         });
         Ok(())
     }
@@ -319,6 +323,7 @@ impl Elaborated {
             let b = Bindings {
                 packages: packages.clone(),
                 sources: ir.sources.clone(),
+                foreign: ir.foreign.clone(),
                 ..Default::default()
             };
             let rt = Runtime::new(ir.program.clone(), b)?;
@@ -330,6 +335,7 @@ impl Elaborated {
             Bindings {
                 packages,
                 sources: ir.sources.clone(),
+                foreign: ir.foreign.clone(),
                 ..Default::default()
             },
         )?;

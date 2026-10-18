@@ -87,6 +87,14 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0803",
         "The Ctrl-C handler for `--wave` cannot be installed.",
     ),
+    (
+        "E0106",
+        "A `--load` library cannot be loaded: the file is missing, has the wrong architecture, or one of its own dependencies cannot be found.",
+    ),
+    (
+        "E0107",
+        "A VHPIDIRECT foreign subprogram cannot be bound: no `--load` library and not the executable defines its symbol, or its C signature cannot be called.",
+    ),
     // yavs-vhpi
     (
         "E0901",

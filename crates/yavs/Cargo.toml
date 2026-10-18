@@ -16,6 +16,7 @@ yavs-sem = { path = "../yavs-sem" }
 yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
 yavs-wave = { path = "../yavs-wave" }
+yavs-vhpi = { path = "../yavs-vhpi" }
 
 [lints]
 workspace = true
@@ -29,4 +30,5 @@ name = "corpus"
 required-features = ["corpus"]
 
 [dev-dependencies]
+cc = "1.8.0"
 wellen = "0.25.7"

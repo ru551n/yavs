@@ -675,3 +675,26 @@ which tools/difftest parses.
   per leaf below its fields, so `ProcessIr::drivers` is the flattening of `ProcInst::lsps`.
   Reading a record signal reads it leaf by leaf into a record value; driving it drives each
   leaf with its field.
+
+## Foreign subprograms and `--load` (yavs-lower, yavs-vhpi, CLI, #95, 2026-10-18)
+
+- **Attribute value:** `"VHPIDIRECT [library] symbol"`, keyword case-insensitive. The last
+  word is the symbol and a library word is ignored, as in the reference simulator (symbols come from `--load`).
+  Without a symbol the subprogram's name is used (as another simulator does; the reference simulator fails at the call). Any other
+  foreign kind is `E2001` when a call is lowered.
+- **Placeholder bodies:** a body for a `'FOREIGN` subprogram completes the spec but the
+  subprogram stays foreign (other simulators require or ignore such a body). No body is needed.
+- **C types** follow `yavs_ffi::vhdl` with the formal's own subtype: `integer range 0 to 50`
+  is `int8_t`, as in the reference simulator. The function result is range-checked against the result subtype
+  (`E3009`), so a C `uint8_t` 7 for a `boolean` is a runtime error, not a wrong value.
+- **Binding:** after lowering, every `Program::foreign` entry is bound by `yavs run`: the
+  `--load` libraries in order (`dlopen` with `RTLD_NOW | RTLD_GLOBAL`, `LoadLibraryExW`), then
+  the executable. A missing symbol is `E0107` before the simulation starts (ir.md 1.7, fail
+  early); the reference simulator reports it only when the call runs. Only subprograms that some lowered code
+  calls are bound. Libraries are never unloaded.
+- **Loader home:** `yavs_vhpi::load_foreign`/`bind_foreign` share the plugin path rules and
+  hold the one `unsafe` step (`ForeignFn::new`); `--load` runs no VHPI registration.
+- **Verified:** Linux x86_64 (`crates/yavs/tests/foreign.rs`, C compiled at test time),
+  aarch64 under qemu-user (same test, `QEMU_LD_PREFIX` set for the child process), Windows
+  x86_64 GNU under wine by hand (a MinGW DLL; the test itself cannot spawn the compiler from
+  inside wine).

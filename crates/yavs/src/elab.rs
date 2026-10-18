@@ -214,6 +214,65 @@ fn elaborate(
     }
 }
 
+/// Loads the `--load` libraries and binds every foreign subprogram of the program to its
+/// symbol: in the libraries in order, then in the executable (ir.md 1.7).
+fn bind_foreign(load: &[String], e: &mut yavs_elab::Elaborated) -> Result<(), Box<Diagnostic>> {
+    let Some(ir) = e.ir.as_mut() else {
+        return Ok(());
+    };
+    let mut libs = Vec::new();
+    for l in load {
+        let lib = yavs_vhpi::load_foreign(l.as_ref()).map_err(|err| {
+            let d = Diagnostic::error("E0106", format!("cannot load library `{l}` (`--load`)"));
+            Box::new(match err {
+                yavs_vhpi::LoadError::NotFound { tried, .. } => {
+                    d.with_note(format!("no such file: {}", tried.display()))
+                }
+                yavs_vhpi::LoadError::Open { tried, os, .. } => d
+                    .with_note(format!("tried {tried}"))
+                    .with_note(format!("the OS loader said: {os}"))
+                    .with_help(
+                        "check that the library matches yavs's architecture and that its own \
+                         dependencies are on the library search path",
+                    ),
+                yavs_vhpi::LoadError::NoEntry { .. } => d,
+            })
+        })?;
+        libs.push(lib);
+    }
+    for (id, x) in ir.program.foreign.iter() {
+        let searched = || {
+            libs.iter()
+                .map(|l| format!("`{}`, ", l.path.display()))
+                .collect::<String>()
+                + "the yavs executable"
+        };
+        match yavs_vhpi::bind_foreign(&libs, &x.symbol, x.signature()) {
+            Some(Ok(f)) => ir.foreign.push((id, f)),
+            Some(Err(err)) => {
+                return Err(Box::new(Diagnostic::error(
+                    "E0107",
+                    format!("foreign subprogram `{}` cannot be called: {err}", x.name),
+                )));
+            }
+            None => {
+                return Err(Box::new(
+                    Diagnostic::error(
+                        "E0107",
+                        format!(
+                            "symbol `{}` of foreign subprogram `{}` is not defined",
+                            x.symbol, x.name
+                        ),
+                    )
+                    .with_note(format!("searched {}", searched()))
+                    .with_help("load the shared library that defines it with `--load=LIB`"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_hierarchy(db: &Db, e: &yavs_elab::Elaborated) {
     use yavs_elab::Case;
     let mut s = String::new();
@@ -273,7 +332,6 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     for (given, what) in [
-        (!a.load.is_empty(), "`--load` (M3)"),
         (!a.vhpi.is_empty(), "`--vhpi` (M5)"),
         (a.dap.is_some(), "`--dap` (M8)"),
     ] {
@@ -307,6 +365,11 @@ pub fn run(
             }
         },
     };
+    let mut e = e;
+    if let Err(d) = bind_foreign(&a.load, &mut e) {
+        out.emit(&none, &d);
+        return out.finish(2);
+    }
     let (mut sim, rt) = match e.build_runtime(cfg) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.

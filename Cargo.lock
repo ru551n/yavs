@@ -1419,6 +1419,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "yavs"
 version = "0.3.0"
 dependencies = [
+ "cc",
  "clap",
  "wellen",
  "yavs-diag",
@@ -1428,6 +1429,7 @@ dependencies = [
  "yavs-sem",
  "yavs-std",
  "yavs-syntax",
+ "yavs-vhpi",
  "yavs-wave",
 ]
 
@@ -1443,6 +1445,7 @@ name = "yavs-elab"
 version = "0.3.0"
 dependencies = [
  "yavs-diag",
+ "yavs-ffi",
  "yavs-interp",
  "yavs-ir",
  "yavs-kernel",
@@ -1519,6 +1522,7 @@ version = "0.3.0"
 dependencies = [
  "yavs-diag",
  "yavs-elab",
+ "yavs-ffi",
  "yavs-interp",
  "yavs-ir",
  "yavs-kernel",
@@ -1558,6 +1562,7 @@ dependencies = [
  "cc",
  "libloading",
  "yavs-diag",
+ "yavs-ffi",
 ]
 
 [[package]]

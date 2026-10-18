@@ -10,8 +10,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
-  `yavs-kernel`, `yavs-wave`, `clap`. Not yet wired: `yavs-vhpi` (M5), `yavs-llvm` (M6),
-  `yavs-ffi` via `--load` (M3). Nothing depends on this crate.
+  `yavs-kernel`, `yavs-wave`, `yavs-vhpi` (`--load` only), `clap`. Not yet wired: `--vhpi` (M5),
+  `yavs-llvm` (M6). Nothing depends on this crate.
 
 ## 2. Map
 
@@ -20,8 +20,9 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding`; `parse` subcommand; `@file` expansion before clap |
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
-| `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code |
+| `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107) |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
+| `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
 | `tests/lib_parse.rs` | Every file in `lib/` parses (2008 and 2019) |
 | `tests/corpus.rs` | External parse corpora vs `tests/parse-corpus/` lists (`--features corpus`, `YAVS_CORPUS`) |
@@ -41,7 +42,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Reports on stdout as `** Note: <fs>fs+<delta>: msg` then `    Process <path>` | tools/difftest parses the reference simulator's format | `docs/decisions.md` "Runtime: default exit severity", `docs/cli-contract.md` 5 |
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
 | A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and test runner users need the VHDL location | `docs/cli-contract.md` 5 |
-| Unimplemented flags (`--load`, `--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
+| Foreign symbols are bound after lowering, before `build`: `--load` libraries in order, then the executable; missing is E0107, exit 2 | Fail early | `docs/cli-contract.md` 5, `docs/decisions.md` "Foreign subprograms and `--load`" |
+| Unimplemented flags (`--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
 Module-local decisions go in this section in the same commit; CLI or test-runner-facing behaviour goes
@@ -79,12 +81,13 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   `.stderr`. A parse diagnostic: add `tests/diag/NAME.vhd` and bless.
 - Env vars: `YAVS_STDLIB` (std/ieee tree), `YAVS_BLESS=1`, `YAVS_CORPUS`, `NO_COLOR`.
 - Codes owned: `E0100`-`E0199`/`W0100`-`W0199` (in use: E0100 unreadable file, E0101 response
-  file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`).
+  file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
+  cannot be loaded, E0107 foreign symbol not bound).
 
 ## 6. Coordination
 
 - The difftest (`tools/difftest`) and the corpus report (`tools/corpus/report.sh`) drive this
   binary; output format changes break their parsers.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:cli`): #64 wire
-  lowering, interpreter and kernel into `yavs run`; #95 `--load`; #110 test runner simulator interface;
+  lowering, interpreter and kernel into `yavs run`; #110 test runner simulator interface;
   #135 native Windows build; #22 bootstrap mode.

@@ -228,6 +228,13 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
+- `--load=LIB` (repeatable): load a shared library for VHPIDIRECT foreign
+  subprograms. A bare name goes to the OS library search path, a path must exist.
+  Every foreign subprogram the design calls is bound before the simulation starts:
+  its symbol is looked up in the `--load` libraries in order, then in the
+  executable. A library that cannot be loaded is `E0106`, a symbol defined nowhere
+  (or a signature the trampolines cannot call) is `E0107`; both exit 2. No VHPI
+  registration runs for `--load` libraries (that is `--vhpi`).
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

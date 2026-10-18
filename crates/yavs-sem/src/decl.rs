@@ -864,7 +864,7 @@ impl Db {
         }
         // The body's own declaration (not declared when it completes a spec) gets the
         // body too, so no subprogram is left pending (validate, 7.3). A `'FOREIGN` spec keeps
-        // its foreign body: the VHDL body is a placeholder, as in NVC and GHDL.
+        // its foreign body: the VHDL body is a placeholder, as in other simulators.
         for d in [target, new] {
             if let DeclKind::Subprogram(s) = &mut self.decls[d].kind
                 && !matches!(s.body, Body::Foreign(_))

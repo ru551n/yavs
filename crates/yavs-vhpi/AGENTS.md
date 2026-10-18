@@ -16,8 +16,11 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
   or ship a separate VHPI DLL. Not wired into the `yavs` CLI yet (`--vhpi` reports
   "not implemented (M5)").
-- Depends on: `yavs-diag`, `libloading`; build: `cc`. Called by: nobody yet except its spike
-  binary `src/bin/yavs-vhpi-host.rs`; the CLI will read `DEP_YAVS_VHPI_*`.
+- Also loads `--load` libraries and binds VHPIDIRECT symbols (`load_foreign`, `bind_foreign`,
+  #95), since it already owns `libloading` and the plugin path rules.
+- Depends on: `yavs-diag`, `yavs-ffi`, `libloading`; build: `cc`. Called by: the `yavs` CLI
+  (`--load` only) and its spike binary `src/bin/yavs-vhpi-host.rs`; the CLI will read
+  `DEP_YAVS_VHPI_*` once `--vhpi` is wired.
 
 ## 2. Map
 
@@ -27,7 +30,7 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `src/sys.rs` | `#[repr(C)]` types and one constant per enumerator (no bindgen), no unsafe |
 | `src/abi.rs` | Exported `extern "C"` VHPI functions, process-wide state behind a mutex (`with_state`, `fire`); unsafe confined here and in `plugin.rs` |
 | `src/model.rs` | Safe object model stub, handles, `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting |
-| `src/plugin.rs` | `PluginSpec`, `load`, `LoadError` (`E0901` cannot load, `E0902` no entry point) |
+| `src/plugin.rs` | `PluginSpec`, `load`, `LoadError` (`E0901` cannot load, `E0902` no entry point); `ForeignLib`, `load_foreign`, `bind_foreign` (`--load`: libraries in order, then the executable; never unloaded) |
 | `src/shim.c` | `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` (C variadics) |
 | `src/exports.txt` | The one list of exported symbols |
 | `build.rs` | Generates the Linux dynamic list, the Windows `.def`, import libraries (`yavs.lib`, `yavs-vhpi-host.lib`) and a Rust table referencing every symbol; exports `DEP_YAVS_VHPI_DYNAMIC_LIST`, `_DEF`, `_IMPORT_LIB_DIR` |

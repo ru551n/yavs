@@ -11,9 +11,10 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Targets: x86_64 Linux (SysV), x86_64 Windows (Win64), aarch64 Linux (AAPCS64). Any other target
   is a compile error.
 - Does not: marshal VHDL values (bit-planes to bytes, records, copy-back: `yavs-interp`
-  `foreign.rs`), load shared libraries or look up symbols (the elaborator binds pointers; `--load`
-  is M3, #95).
-- Depends on: nothing. Called by: `yavs-ir` (`CType`, `Signature` in `ForeignRef`), `yavs-interp`.
+  `foreign.rs`), load shared libraries or look up symbols (`yavs-vhpi` `bind_foreign`, called by
+  `yavs run --load`).
+- Depends on: nothing. Called by: `yavs-ir` (`CType`, `Signature` in `ForeignRef`), `yavs-interp`,
+  `yavs-lower` (`vhdl::lower_result` for C types), `yavs-elab` (`ForeignFn` in `Ir`), `yavs-vhpi`.
 
 ## 2. Map
 
@@ -69,5 +70,5 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine WINEDEBUG=-all \
 
 - Marshalling and copy-back rules live in `yavs-interp` (`src/foreign.rs`) and
   `docs/decisions.md` "IR and interpreter" (Foreign arrays).
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:ffi`): #95
-  foreign subprograms with `--load` end to end.
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:ffi`): none
+  (#95 `--load` end to end is done).

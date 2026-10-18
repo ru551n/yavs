@@ -49,6 +49,41 @@ otherwise.
   recorded, and arrays larger than ``--wave-max-array`` (default 65536) are left out with a
   warning. Several delta cycles at one time step give one change with the final value.
 
+Calling C from VHDL
+-------------------
+
+A subprogram whose ``foreign`` attribute is ``"VHPIDIRECT symbol"`` calls the C function
+``symbol``. ``--load=LIB`` loads a shared library (repeat it for several); symbols are looked
+up in the libraries in order, then in the ``yavs`` executable. A symbol that is defined nowhere
+stops the run before the simulation starts (``E0107``).
+
+.. code-block:: vhdl
+
+    function add1 (x : integer) return integer;
+    attribute foreign of add1 : function is "VHPIDIRECT add1";
+    function add1 (x : integer) return integer is begin return 0; end; -- placeholder body
+
+.. code-block:: c
+
+    int32_t add1(int32_t x) { return x + 1; }
+
+.. code-block:: bash
+
+    yavs run --work=lib:out/lib --load=./libadd.so tb
+
+Types map to C as follows: an integer subtype to the smallest of ``int8_t`` to ``int64_t``
+that holds its range (``integer`` is ``int32_t``), an enumeration to the smallest unsigned type
+that holds its literals (``boolean``, ``bit``, ``character`` and ``std_logic`` are
+``uint8_t``), ``real`` to ``double``, a physical type to ``int64_t``. A scalar ``out`` or
+``inout`` parameter is passed as a pointer. An array is passed as a pointer to its elements
+from left to right (``std_logic`` elements as one code byte each, ``'0'`` is 2 and ``'1'`` is
+3), and an unconstrained array parameter is followed by one ``int64_t`` length per dimension.
+A record of scalars is passed as a pointer to a C struct, an access value as a pointer to the
+designated object. ``out`` and ``inout`` values are copied back after the call and checked
+against their VHDL type, as is a function result. A word between ``VHPIDIRECT`` and the symbol
+(a library name) is ignored; without a symbol the subprogram's name is used. A placeholder
+VHDL body is allowed and never runs.
+
 Diagnostics
 -----------
 
@@ -60,5 +95,5 @@ explanation. ``-Werror`` turns warnings into errors, ``-Werror=CODE``, ``-Wno-CO
 Not implemented yet
 -------------------
 
-``--load``, ``--vhpi`` and ``--dap`` are accepted but report that they are not
+``--vhpi`` and ``--dap`` are accepted but report that they are not
 implemented yet, instead of being ignored.

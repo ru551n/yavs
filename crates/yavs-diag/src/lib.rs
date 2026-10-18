@@ -14,7 +14,7 @@
 //! | Range | Owner |
 //! |---|---|
 //! | `E0001`-`E0099`, `W0001`-`W0099` | `yavs-syntax`: lexing, conditional analysis, parsing (`yavs_syntax::codes`) |
-//! | `E0100`-`E0199`, `W0100`-`W0199` | `yavs` command line: reading files, arguments |
+//! | `E0100`-`E0199`, `W0100`-`W0199` | `yavs` command line: reading files, arguments, `--load` libraries |
 //! | `E1000`-`E1999`, `W1000`-`W1999` | `yavs-sem`: semantic analysis (`yavs_sem::diag`, ranges in `docs/design/sem.md` 8.1) |
 //! | `E2100`-`E2199`, `W2100`-`W2199` | `yavs-elab`: elaboration (`yavs_elab::codes`) |
 //! | `E0900`-`E0999`, `W0900`-`W0999` | `yavs-vhpi` (E0901, E0902, W0903, W0904 in use) |

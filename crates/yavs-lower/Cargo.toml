@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 yavs-diag.workspace = true
+yavs-ffi = { path = "../yavs-ffi" }
 yavs-sem = { path = "../yavs-sem" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }

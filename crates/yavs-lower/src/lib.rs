@@ -14,6 +14,7 @@ mod composite;
 mod expr;
 mod file;
 mod force;
+mod foreign;
 mod func;
 mod protected;
 mod reflect;
@@ -274,6 +275,7 @@ pub(crate) struct Cx {
     pub diags: Vec<Diagnostic>,
     pub tys: HashMap<TypeId, TyId>,
     pub natives: HashMap<(String, Option<TyId>), NativeId>,
+    pub foreigns: HashMap<DeclId, yavs_ir::ForeignId>,
     pub funcs: HashMap<DeclId, FuncId>,
     /// Subprograms declared but not lowered yet, with their nesting depth.
     pub queue: Vec<(DeclId, u8)>,
@@ -365,6 +367,7 @@ impl<'a> Lowerer<'a> {
                 diags: Vec::new(),
                 tys: HashMap::new(),
                 natives: HashMap::new(),
+                foreigns: HashMap::new(),
                 funcs: HashMap::new(),
                 queue: Vec::new(),
                 scope_func: HashMap::new(),

@@ -106,28 +106,7 @@ pub fn load(spec: &PluginSpec) -> Result<(), LoadError> {
     std::hint::black_box(crate::abi::exported_symbols());
 
     let path = &spec.path;
-    // A bare name goes to the OS search path; anything else must exist.
-    let tried = if path.components().count() > 1 || path.exists() {
-        let abs = std::path::absolute(path).unwrap_or_else(|_| path.clone());
-        if !abs.exists() {
-            return Err(LoadError::NotFound {
-                path: path.clone(),
-                tried: abs,
-            });
-        }
-        abs
-    } else {
-        path.clone()
-    };
-    let lib = open(&tried).map_err(|e| LoadError::Open {
-        path: path.clone(),
-        tried: if tried == *path {
-            format!("`{}` on the OS library search path", path.display())
-        } else {
-            format!("`{}`", tried.display())
-        },
-        os: error_chain(&e),
-    })?;
+    let lib = open_path(path)?;
     match &spec.entry {
         Some(entry) => {
             // SAFETY: by convention a bootstrap entry is `void (*)(void)`.
@@ -161,6 +140,80 @@ pub fn load(spec: &PluginSpec) -> Result<(), LoadError> {
     }
     std::mem::forget(lib);
     Ok(())
+}
+
+/// Opens `path`: a bare name through the OS library search path, anything else must exist.
+fn open_path(path: &Path) -> Result<libloading::Library, LoadError> {
+    let path = &path.to_path_buf();
+    let tried = if path.components().count() > 1 || path.exists() {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+        if !abs.exists() {
+            return Err(LoadError::NotFound {
+                path: path.clone(),
+                tried: abs,
+            });
+        }
+        abs
+    } else {
+        path.clone()
+    };
+    open(&tried).map_err(|e| LoadError::Open {
+        path: path.clone(),
+        tried: if tried == *path {
+            format!("`{}` on the OS library search path", path.display())
+        } else {
+            format!("`{}`", tried.display())
+        },
+        os: error_chain(&e),
+    })
+}
+
+/// A shared library loaded with `--load` for VHPIDIRECT symbols. It stays loaded for the
+/// life of the process, since bound functions point into it.
+pub struct ForeignLib {
+    pub path: PathBuf,
+    lib: &'static libloading::Library,
+}
+
+/// Loads a `--load` library (no VHPI registration runs).
+pub fn load_foreign(path: &Path) -> Result<ForeignLib, LoadError> {
+    let lib = Box::leak(Box::new(open_path(path)?));
+    Ok(ForeignLib {
+        path: path.to_path_buf(),
+        lib,
+    })
+}
+
+/// Binds `symbol` with C signature `sig`: the first `--load` library in `libs` that defines
+/// it, else the executable. `None` if nothing defines it.
+pub fn bind_foreign(
+    libs: &[ForeignLib],
+    symbol: &str,
+    sig: yavs_ffi::Signature,
+) -> Option<Result<yavs_ffi::ForeignFn, yavs_ffi::FfiError>> {
+    // SAFETY: the address is only used as a function pointer by the trampoline, with the
+    // signature the VHDL declaration gives it (the VHPIDIRECT contract).
+    let find = |l: &libloading::Library| unsafe {
+        l.get::<*mut std::ffi::c_void>(symbol.as_bytes())
+            .ok()
+            .map(|p| *p)
+    };
+    let ptr = libs
+        .iter()
+        .find_map(|l| find(l.lib))
+        .or_else(|| this().ok().and_then(|l| find(&l)))?;
+    // SAFETY: as above; the libraries are never unloaded.
+    Some(unsafe { yavs_ffi::ForeignFn::new(ptr, sig) })
+}
+
+#[cfg(unix)]
+fn this() -> Result<libloading::Library, libloading::Error> {
+    Ok(libloading::os::unix::Library::this().into())
+}
+
+#[cfg(windows)]
+fn this() -> Result<libloading::Library, libloading::Error> {
+    libloading::os::windows::Library::this().map(Into::into)
 }
 
 /// The error and its sources, so the OS error code is not lost (on

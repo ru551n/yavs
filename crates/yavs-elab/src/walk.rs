@@ -728,14 +728,14 @@ impl Elab<'_> {
         }
         let src_elem = self.m.nets.leaves[src.0.index()].ty.elem;
         let l = &mut self.m.nets.leaves[a.index()];
-        // The kernel decides the representation of these signals (K2): one byte per
-        // element for 'stable, 'quiet and 'transaction; the prefix's for 'delayed.
+        // The kernel decides the representation of these signals (K2): one logic element
+        // ('0'/'1' codes) for 'stable, 'quiet and 'transaction; the prefix's for 'delayed.
         l.ty = match kind {
             ImplicitKind::Delayed(_) => yavs_kernel::SignalType {
                 elem: src_elem,
                 len: src.1.len,
             },
-            _ => yavs_kernel::SignalType::bytes(1, 1),
+            _ => yavs_kernel::SignalType::logic(1),
         };
         if let Some(init) = init {
             l.init = init;

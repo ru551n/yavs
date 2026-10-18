@@ -782,7 +782,7 @@ fn natives() {
     let ts_int = pb.native("rsim.implicit.to_string.integer", Some(int));
     let ts_real = pb.native("rsim.implicit.to_string.real", Some(real));
     let ts_ch = pb.native("rsim.implicit.to_string.character", Some(ch));
-    let missing = pb.native("rsim.env.getenv.string.r_string", None);
+    let missing = pb.native("rsim.env.gmtime.void.r_time_record", None);
     let p = pb.declare("p", FuncKind::Process, None);
     {
         let mut fb = pb.define(p);
@@ -842,7 +842,7 @@ fn natives() {
     assert_eq!(
         e.kind,
         ErrorKind::Runtime(
-            "native subprogram `rsim.env.getenv.string.r_string` is not implemented in rsim yet"
+            "native subprogram `rsim.env.gmtime.void.r_time_record` is not implemented in rsim yet"
                 .into()
         )
     );

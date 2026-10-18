@@ -19,19 +19,37 @@ textual dump.
 - Calling convention: arguments are register cells stored into the callee's parameter slots
   (a signal parameter is two cells); composites are passed by address; a function result is
   one cell, a string/unconstrained array result is the address of a fat pair `[data, dope]`.
+- Native argument convention (ir.md 9): `in` scalars by value; `out`/`inout` scalars and
+  access variables (`line`) by the address of the cell; an unconstrained array (`string`,
+  `bit_vector`) as the address of a fat pair `[data, dope]`; a file object as the address of
+  its 4-byte cell (`rsim_interp::FILE_INPUT` / `FILE_OUTPUT` are textio's pre-opened files);
+  a record (`directory`) by address. A heap array object is `[descriptor][elements]`. BIT
+  and BOOLEAN elements of logic arrays are the std_ulogic codes of '0' and '1'.
 - Natives are `lib/NATIVE.md` symbols (`NativeRef`), implicit families carry their `TyId`;
   `rsim.attr.image` is the `'image` attribute. Foreign calls are `ForeignRef` (the elaborator
   binds the function pointer through `rsim_interp::Bindings`).
 - Interpreter API: `Runtime::new(Arc<Program>, Bindings)`, `InterpProcess::new(rt, func,
   Arc<InstData>, Vec<ProcDriver>, shared)`, `proc_flags`, `call` (elaboration-time
-  evaluation), `DebugSession`.
+  evaluation), `call_shared` (the same with the `SharedState`, to create shared protected
+  objects), `DebugSession`.
+- Protected types: the object is a handle (`New { shared: true }` for a shared variable,
+  `false` for a process-local one) to the state record; methods are subprograms whose first
+  parameter is `self`, called with `CallProt`.
+
+## Changes
+
+- `ForeignArg` gained `Array { ty, lengths, copy_back }`, `Record { ty, copy_back }` and
+  `Access` (still `Copy`); an exhaustive `match` on it needs the new arms.
+- `Bindings` gained `revision` and `resolution` (and implements `Default` by hand).
+- `FuncBuilder::param` takes `ty: Option<TyId>` (typed parameters are debugger locals).
 
 ## Still moving
 
-- Exact instruction operand shapes for records with runtime layouts, protected types,
-  files and `Elab*` instructions (their semantics belong to `rsim-elab`).
+- Exact instruction operand shapes for records with runtime layouts and `Elab*` instructions
+  (their semantics belong to `rsim-elab`).
 - `InstData` gains child instances and package links when elaboration needs them.
-- Foreign arrays/records/access marshalling (scalars and scalar `out` work).
+- Binary (non-TEXT) file `read`/`write`, the 2019 `time_record`, call-path, assert-count and
+  PSL natives, and `std.reflection` are not implemented (runtime error naming the symbol).
 
 ## Requests
 

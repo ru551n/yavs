@@ -177,7 +177,11 @@ compact constants, natives by NATIVE.md symbol, foreign references, flag propaga
 kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
 rsim-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
 `to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC,
-serial marking, kernel-free `call` for elaboration, runtime errors with the VHDL stack as
+serial marking, kernel-free `call` / `call_shared` for elaboration, protected objects,
+std.textio (read/write of every textio type, readline/writeline/tee, hread/oread/sread,
+justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version
+strings, time conversions, resolution_limit), VHPIDIRECT calls with scalars, arrays,
+records and access values (copy-back included), runtime errors with the VHDL stack as
 `SimError::trace`, and Riviera/Questa-style debug hooks (docs/design/ir.md 3.4).
 
 Tests (`cargo test -p rsim-ir -p rsim-interp`): 11 end-to-end designs run through the kernel at
@@ -186,8 +190,10 @@ wait inside a procedure, overflow with stack trace, bit-plane ops across blocks,
 and stale handle, GC roots, natives, foreign call, elaboration call, serial marking), 5 debug
 tests (conditional line breakpoint with hit count, step over, step in with frame and locals,
 global step across processes, signal breakpoint and process table), verifier and layout tests.
+Also 5 foreign marshalling tests, 4 textio/file/env tests and a protected-type test.
 Not done: `Elab*` instructions (rsim-elab), records with runtime layouts beyond `LayoutOf`,
-protected types beyond `CallProt` dispatch, files and textio natives, foreign arrays.
+binary file read/write, the 2019 time_record, call-path, assert-count and PSL natives,
+std.reflection.
 
 ## elab (`crates/rsim-elab`, M2)
 

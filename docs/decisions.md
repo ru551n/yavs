@@ -293,6 +293,14 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   require `--threads 1`. API in docs/design/ir.md 3.4.
 - **Verifier** is one linear walk; register liveness across suspension is checked within a
   block only (cross-block needs dataflow, LLVM tier).
+- **Disk files bypass the kernel's K6 streams:** writes go straight to the file. With K6
+  buffering a process that writes a file, closes it and reopens it for reading in the same
+  delta (a common testbench idiom) would read nothing. Determinism holds because a file object
+  belongs to one process or to serial processes. `STD_OUTPUT` still goes through the kernel's
+  OUTPUT stream so it stays ordered with `report`. K6 remains available for a future need.
+- **Foreign arrays** are passed as C-layout copies left to right (NVC convention), logic
+  elements one code byte each (BIT/BOOLEAN 0/1); records as naturally aligned structs;
+  access values as a pointer into the object (rsim additions). Copy-back range-checks.
 
 ## Generics (rsim-sem, S4)
 

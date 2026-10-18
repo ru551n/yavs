@@ -17,6 +17,7 @@ mod exec;
 mod foreign;
 mod heap;
 mod native;
+mod textio;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,12 +27,15 @@ use rsim_ir::{ForeignId, FuncId, FuncKind, Program};
 use rsim_kernel::{
     Ctx, DriverId, ErrorKind, ProcFlags, Process, Range, SignalId, SignalType, SimError,
 };
+use rsim_std::arith::TimeResolution;
+use rsim_std::types::Revision;
 
 pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, LineBp, LocalView, ProcState, ProcStatus, Resume,
     SignalBreak, Stop, StopReason, format_scalar,
 };
 pub use heap::Heap;
+pub use textio::{FILE_INPUT, FILE_OUTPUT};
 
 use exec::{Fault, Machine, Outcome};
 
@@ -96,7 +100,6 @@ impl Default for Limits {
 }
 
 /// What the elaborator binds to a program.
-#[derive(Default)]
 pub struct Bindings {
     /// A function for every `Program::foreign` entry (looked up by the elaborator).
     pub foreign: Vec<(ForeignId, ForeignFn)>,
@@ -105,6 +108,23 @@ pub struct Bindings {
     /// Coverage counters (instances times items); `None` means `Program::cov.len()`.
     pub cov_counters: Option<usize>,
     pub limits: Limits,
+    /// The analysed revision: INTEGER bounds for textio reads, `vhdl_version`.
+    pub revision: Revision,
+    /// The time resolution, for `resolution_limit`.
+    pub resolution: TimeResolution,
+}
+
+impl Default for Bindings {
+    fn default() -> Bindings {
+        Bindings {
+            foreign: Vec::new(),
+            packages: Vec::new(),
+            cov_counters: None,
+            limits: Limits::default(),
+            revision: Revision::Vhdl2008,
+            resolution: TimeResolution::Fs,
+        }
+    }
 }
 
 /// A program bound for execution, shared by all processes of a simulation.
@@ -117,6 +137,10 @@ pub struct Runtime {
     /// Compact constants expanded on first use by address.
     pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
     pub(crate) limits: Limits,
+    pub(crate) revision: Revision,
+    pub(crate) resolution: TimeResolution,
+    /// Open file objects; a file cell holds index + 1 (0: never opened).
+    pub(crate) files: Mutex<Vec<textio::FileSlot>>,
 }
 
 fn usage(m: String) -> SimError {
@@ -168,6 +192,9 @@ impl Runtime {
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
             limits: b.limits,
+            revision: b.revision,
+            resolution: b.resolution,
+            files: Mutex::new(textio::FileSlot::preopened()),
             prog,
         }))
     }

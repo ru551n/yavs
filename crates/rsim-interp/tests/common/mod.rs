@@ -295,6 +295,12 @@ impl Observer for Trace {
         self.0.lock().unwrap().push(line);
     }
 
+    fn output(&mut self, h: &mut Hook<'_>, p: ProcId, bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        let line = format!("{} +{} p{} out: {text:?}", h.now(), h.delta(), p.0);
+        self.0.lock().unwrap().push(line);
+    }
+
     fn report(&mut self, h: &mut Hook<'_>, r: &Report) {
         let line = format!(
             "{} +{} p{} {:?}: {}",
@@ -402,4 +408,80 @@ impl Design {
 
 pub fn has(lines: &[String], s: &str) -> bool {
     lines.iter().any(|l| l.contains(s))
+}
+
+/// A fat pair `[data, dope]` for a constant string.
+pub fn fat_str(fb: &mut FuncBuilder<'_>, s: &[u8]) -> Reg {
+    let c = fb.program().konst(ConstData::Bytes(s.to_vec()));
+    let data = fb.addr(AddrSpace::Const(c), 0);
+    fat_of(fb, data, 1, s.len() as i64, false)
+}
+
+/// A fat pair `[data, dope]` in temporary memory with one dimension `l .. r`.
+pub fn fat_of(fb: &mut FuncBuilder<'_>, data: Reg, l: i64, r: i64, downto: bool) -> Reg {
+    let size = fb.int(40);
+    let fp = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: fp, size });
+    let sixteen = fb.int(16);
+    let dope = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Index {
+        dst: dope,
+        base: fp,
+        pos: sixteen,
+        stride: 1,
+    });
+    let parts = [fb.int(l), fb.int(r), fb.int(downto.into())];
+    let parts = fb.regs(&parts);
+    fb.emit(Inst::MakeDope { at: dope, parts });
+    fb.emit(Inst::Store {
+        addr: fp,
+        src: data,
+        w: Width::B8,
+    });
+    let eight = fb.int(8);
+    let a = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Index {
+        dst: a,
+        base: fp,
+        pos: eight,
+        stride: 1,
+    });
+    fb.emit(Inst::Store {
+        addr: a,
+        src: dope,
+        w: Width::B8,
+    });
+    fp
+}
+
+/// Call native `sym` (type `ty` for implicit families); `ret` gives a result register.
+pub fn native(
+    fb: &mut FuncBuilder<'_>,
+    sym: &str,
+    ty: Option<TyId>,
+    args: &[Reg],
+    ret: bool,
+) -> Option<Reg> {
+    let n = fb.program().native(sym, ty);
+    let args = fb.regs(args);
+    let dst = ret.then(|| fb.reg(RegTy::I64));
+    fb.emit(Inst::CallNative {
+        native: n,
+        args,
+        dst,
+    });
+    dst
+}
+
+/// Call a native returning a string (the address of a fat pair).
+pub fn native_str(fb: &mut FuncBuilder<'_>, sym: &str, args: &[Reg]) -> Reg {
+    let n = fb.program().native(sym, None);
+    let args = fb.regs(args);
+    let dst = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::CallNative {
+        native: n,
+        args,
+        dst: Some(dst),
+    });
+    dst
 }

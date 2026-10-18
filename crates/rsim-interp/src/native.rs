@@ -82,7 +82,39 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
         ("rsim.env.finish.integer", _, _) => finish1,
         (_, Some("to_string"), _) => to_string,
         (_, _, Some("image")) => image_attr,
-        _ => return Ok(None),
+        ("rsim.env.resolution_limit.void.r_delay_length", _, _) => resolution_limit,
+        ("rsim.env.getenv.string.r_string", _, _) => getenv_string,
+        ("rsim.env.getenv.string.r_line", _, _) => getenv_line,
+        ("rsim.env.vhdl_version.void.r_string", _, _) => vhdl_version,
+        ("rsim.env.tool_type.void.r_string", _, _) => tool_type,
+        ("rsim.env.tool_vendor.void.r_string", _, _) => tool_vendor,
+        ("rsim.env.tool_name.void.r_string", _, _) => tool_name,
+        ("rsim.env.tool_edition.void.r_string", _, _) => tool_edition,
+        ("rsim.env.tool_version.void.r_string", _, _) => tool_version,
+        ("rsim.env.epoch.void.r_real", _, _) => epoch,
+        ("rsim.env.time_to_seconds.time.r_real", _, _) => time_to_seconds,
+        ("rsim.env.seconds_to_time.real.r_time", _, _) => seconds_to_time,
+        ("rsim.env.dir_open.directory_string_dir_open_status", _, _) => dir_open_proc,
+        ("rsim.env.dir_open.directory_string.r_dir_open_status", _, _) => dir_open_fn,
+        ("rsim.env.dir_close.directory", _, _) => dir_close,
+        ("rsim.env.dir_itemexists.string.r_boolean", _, _) => dir_itemexists,
+        ("rsim.env.dir_itemisdir.string.r_boolean", _, _) => dir_itemisdir,
+        ("rsim.env.dir_itemisfile.string.r_boolean", _, _) => dir_itemisfile,
+        ("rsim.env.dir_workingdir.string_dir_open_status", _, _) => set_workingdir_proc,
+        ("rsim.env.dir_workingdir.string.r_dir_open_status", _, _) => set_workingdir_fn,
+        ("rsim.env.dir_workingdir.void.r_string", _, _) => workingdir,
+        ("rsim.env.dir_createdir.string_dir_create_status", _, _) => createdir_proc,
+        ("rsim.env.dir_createdir.string_boolean_dir_create_status", _, _) => createdir_proc,
+        ("rsim.env.dir_createdir.string_boolean.r_dir_create_status", _, _) => createdir_fn,
+        ("rsim.env.dir_deletedir.string_dir_delete_status", _, _) => deletedir_proc,
+        ("rsim.env.dir_deletedir.string_boolean_dir_delete_status", _, _) => deletedir_proc,
+        ("rsim.env.dir_deletedir.string_boolean.r_dir_delete_status", _, _) => deletedir_fn,
+        ("rsim.env.dir_deletefile.string_file_delete_status", _, _) => deletefile_proc,
+        ("rsim.env.dir_deletefile.string.r_file_delete_status", _, _) => deletefile_fn,
+        _ => match crate::textio::lookup(symbol, family) {
+            Some(f) => f,
+            None => return Ok(None),
+        },
     };
     Ok(Some(f))
 }
@@ -220,6 +252,251 @@ fn to_string(
     m.ret_string(&s).map(Some)
 }
 
+// ---- std.env ----
+
+use crate::textio::arg as targ;
+use rsim_ir::Width;
+use rsim_std::env;
+
+fn resolution_limit(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    _: &[u64],
+) -> R<Option<u64>> {
+    Ok(Some(env::resolution_limit(m.rt.resolution) as u64))
+}
+
+fn getenv_string(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let name = m.fat_bytes(targ(a, 0)?)?;
+    let v = env::getenv(&name).unwrap_or_default();
+    m.ret_string(&v).map(Some)
+}
+
+fn getenv_line(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let name = m.fat_bytes(targ(a, 0)?)?;
+    match env::getenv(&name) {
+        // A result is not stored in shared memory: the private heap.
+        Some(v) => m.new_line(0, &v).map(Some),
+        None => Ok(Some(0)),
+    }
+}
+
+macro_rules! const_strings {
+    ($($name:ident => $v:expr),*) => {$(
+        fn $name(m: &mut Machine, _: &mut Option<&mut Ctx<'_>>, _: Option<TyId>, _: &[u64]) -> R<Option<u64>> {
+            let s: &str = $v(m);
+            m.ret_string(s.as_bytes()).map(Some)
+        }
+    )*};
+}
+
+const_strings! {
+    vhdl_version => |m: &Machine| env::vhdl_version(m.rt.revision),
+    tool_type => |_: &Machine| env::TOOL_TYPE,
+    tool_vendor => |_: &Machine| env::TOOL_VENDOR,
+    tool_name => |_: &Machine| env::TOOL_NAME,
+    tool_edition => |_: &Machine| env::TOOL_EDITION,
+    tool_version => |_: &Machine| env::TOOL_VERSION
+}
+
+fn epoch(
+    _: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    _: &[u64],
+) -> R<Option<u64>> {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| Fault::Runtime("system clock is before 1970".into()))?;
+    Ok(Some(d.as_secs_f64().to_bits()))
+}
+
+fn time_to_seconds(
+    _: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    Ok(Some(env::time_to_seconds(targ(a, 0)? as i64).to_bits()))
+}
+
+fn seconds_to_time(
+    _: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let t = env::seconds_to_time(f64::from_bits(targ(a, 0)?))
+        .map_err(|e| Fault::Runtime(e.to_string()))?;
+    Ok(Some(t as u64))
+}
+
+/// `DIR_OPEN (Dir, Path)`: DIRECTORY is `(Name: line; Items: access line_vector)`, two
+/// handles; Items is `[0 to n - 1][line handles]`.
+fn dir_open(m: &mut Machine, a: &[u64]) -> R<u64> {
+    let dir = targ(a, 0)?;
+    let path = m.fat_bytes(targ(a, 1)?)?;
+    let d = match env::dir_open(&path) {
+        Ok(d) => d,
+        Err(s) => return Ok(s as u64),
+    };
+    m.line_set(dir, &d.name)?;
+    let items_cell = crate::exec::add_addr(dir, 8)?;
+    let mut obj: Vec<u8> = [0i64, d.items.len() as i64 - 1, 0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    for it in &d.items {
+        let h = m.new_line(items_cell, it)?;
+        obj.extend(h.to_le_bytes());
+    }
+    let h = m.alloc_line_vector(items_cell, obj)?;
+    m.store(items_cell, Width::B8, h)?;
+    Ok(env::DirOpenStatus::Ok as u64)
+}
+
+fn dir_open_proc(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let s = dir_open(m, a)?;
+    m.store(targ(a, 2)?, Width::B1, s)?;
+    Ok(None)
+}
+
+fn dir_open_fn(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    dir_open(m, a).map(Some)
+}
+
+/// `DIR_CLOSE (Dir)`: deallocates the item names and the item vector.
+fn dir_close(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let items = m.load(crate::exec::add_addr(targ(a, 0)?, 8)?, Width::B8)?;
+    if items != 0 {
+        let lines = m.line_vector_handles(items)?;
+        for h in lines {
+            m.free_handle(h)?;
+        }
+        m.free_handle(items)?;
+    }
+    Ok(None)
+}
+
+fn path_test(m: &mut Machine, a: &[u64], f: fn(&[u8]) -> bool) -> R<Option<u64>> {
+    let p = m.fat_bytes(targ(a, 0)?)?;
+    Ok(Some(f(&p).into()))
+}
+
+fn dir_itemexists(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    path_test(m, a, env::dir_itemexists)
+}
+fn dir_itemisdir(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    path_test(m, a, env::dir_itemisdir)
+}
+fn dir_itemisfile(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> R<Option<u64>> {
+    path_test(m, a, env::dir_itemisfile)
+}
+
+fn workingdir(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    _: &[u64],
+) -> R<Option<u64>> {
+    let d = env::dir_workingdir().map_err(|e| Fault::Runtime(format!("dir_workingdir: {e}")))?;
+    m.ret_string(&d).map(Some)
+}
+
+/// A path operation with a status: the procedure form stores it in the last argument, the
+/// function form returns it. `flag` is the optional boolean (Parents, Recursive) after the
+/// path, given when the call has it.
+fn status_op(
+    m: &mut Machine,
+    a: &[u64],
+    proc_form: bool,
+    f: fn(&[u8], bool) -> u64,
+) -> R<Option<u64>> {
+    let p = m.fat_bytes(targ(a, 0)?)?;
+    let n = a.len() - usize::from(proc_form);
+    let flag = n == 2 && targ(a, 1)? != 0;
+    let s = f(&p, flag);
+    if proc_form {
+        m.store(targ(a, a.len() - 1)?, Width::B1, s)?;
+        Ok(None)
+    } else {
+        Ok(Some(s))
+    }
+}
+
+fn set_wd(p: &[u8], _: bool) -> u64 {
+    env::dir_set_workingdir(p) as u64
+}
+fn mkdir(p: &[u8], parents: bool) -> u64 {
+    env::dir_createdir(p, parents) as u64
+}
+fn rmdir(p: &[u8], recursive: bool) -> u64 {
+    env::dir_deletedir(p, recursive) as u64
+}
+fn rm(p: &[u8], _: bool) -> u64 {
+    env::dir_deletefile(p) as u64
+}
+
+macro_rules! status_natives {
+    ($($name:ident => ($proc:expr, $f:ident)),*) => {$(
+        fn $name(m: &mut Machine, _: &mut Option<&mut Ctx<'_>>, _: Option<TyId>, a: &[u64]) -> R<Option<u64>> {
+            status_op(m, a, $proc, $f)
+        }
+    )*};
+}
+
+status_natives! {
+    set_workingdir_proc => (true, set_wd),
+    set_workingdir_fn => (false, set_wd),
+    createdir_proc => (true, mkdir),
+    createdir_fn => (false, mkdir),
+    deletedir_proc => (true, rmdir),
+    deletedir_fn => (false, rmdir),
+    deletefile_proc => (true, rm),
+    deletefile_fn => (false, rm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,8 +506,24 @@ mod tests {
         assert!(lookup("rsim.env.stop.integer").unwrap().is_some());
         assert!(lookup("rsim.implicit.to_string.integer").unwrap().is_some());
         assert!(lookup("rsim.attr.image").unwrap().is_some());
+        assert!(lookup("rsim.implicit.file_open.text").unwrap().is_some());
+        assert!(
+            lookup("rsim.textio.read.line_integer_boolean")
+                .unwrap()
+                .is_some()
+        );
+        assert!(lookup("rsim.textio.read.line_boolean").unwrap().is_some());
+        assert!(
+            lookup("rsim.env.dir_open.directory_string.r_dir_open_status")
+                .unwrap()
+                .is_some()
+        );
         // Defined in NATIVE.md, not implemented yet.
-        assert!(lookup("rsim.implicit.file_open.text").unwrap().is_none());
+        assert!(
+            lookup("rsim.env.gmtime.void.r_time_record")
+                .unwrap()
+                .is_none()
+        );
         let e = lookup("rsim.env.bogus.void").unwrap_err();
         assert!(e.contains("rsim.env.bogus.void"), "{e}");
     }

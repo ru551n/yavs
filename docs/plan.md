@@ -1,0 +1,144 @@
+# Plan: rsim, a production VHDL simulator in Rust
+
+## Context
+rsim is a new VHDL simulator. The aim is that it can replace GHDL or NVC for VUnit, OSVVM and cocotb users, with a Riviera-Pro-style debugging GUI. The first proof point is a real VUnit testbench running end to end. "rsim" is a placeholder because the name is taken on crates.io, so every crate is `rsim-*` with `publish = false` until it is renamed.
+
+Decisions made with the user:
+- Written in Rust, with **its own parser and its own semantic analysis**.
+- **VHDL-2008 and 2019 together**, designed in from the start.
+- **An LLVM backend plus an IR interpreter** (the NVC model).
+- **Process evaluation runs in parallel**, and the kernel is designed for it from the start. Parsing, analysis and compilation run on a single thread.
+- **Diagnostics in the style of rustc**: coloured, with source snippets and VHDL stacktraces.
+- **No incremental compilation cache.**
+- **Interfaces:** VHPI for cocotb (**mandatory**), code coverage, and a DAP debug server with HDL extensions.
+- **GUI:** egui with an embedded **libsurfer**, as a separate process. It is built last, but everything before it is designed for it.
+- **Platforms (all tier 1, in CI from M0):** Linux x86_64, Linux aarch64 and Windows x86_64.
+  - Windows includes LLVM and cocotb.
+  - VHPI uses no separate DLL. `rsim.exe` exports the `vhpi_*` symbols and ships an import library (`rsim.lib`) for external plugins, the way Riviera does.
+  - LLVM on Windows needs a pinned prebuilt LLVM 21 package with static libs; the prebuilt packages lack `llvm-config`.
+- **Performance:** correctness first, no speed target yet. Benchmarks are tracked, not gated.
+- **Embedded Python is deferred.** A Tcl-like `rsim` scripting module comes after the DAP server.
+- **Interop with the VUnit python bridge:** rsim needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), and an entry in the bridge's simulator table.
+- **Vendor libraries:**
+  - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
+  - Synopsys `std_logic_arith`/`unsigned`/`signed` are a **clean-room** MIT/Apache reimplementation, written from documented behaviour and tested against NVC and GHDL output. They are never copied.
+  - Installation is documented as VUnit `add_library` recipes, with no installer command.
+- **Repo:** `ru551n/rsim` on GitHub stays **private until the rename**, with CI from M0. Each milestone lands as a PR that I review and the user merges; agents never merge.
+- **External test inputs (never copied into the repo):** VESTs, NVC `test/regress` and GHDL `testsuite/gna`, fetched in CI or read from local checkouts, for parse, sem and differential runs.
+- **Licensing:** MIT/Apache, published once the repo goes public. The GUI crate alone is EUPL-1.2, because libsurfer is.
+- **Workflow:** one subagent per milestone.
+
+What the research found locally:
+- **No Rust simulator exists to build on.**
+- **rust_hdl** (`vhdl_lang`, `vhdl_syntax`) is MPL. Its 2019 grammar is close to empty, and a global interner lock serializes parsing. It is a test-corpus and behaviour reference only, not a dependency.
+- **LLVM 21.1.8** with dev headers and static libs is in `/usr/lib/llvm-21`. Use `llvm-sys` 211.x, falling back to `prefer-dynamic`.
+- **wellen** (`~/git/wellen`, BSD-3) provides public `HierarchyBuilder` and `wavemem::Encoder`. It works as rsim's in-memory waveform model and as Surfer's data source.
+- **NVC** (`~/git/nvc`, GPL) is an architecture reference only; never copy its code.
+  - VHPI is in `src/vhpi/vhpi-model.c`.
+  - The JIT pipeline is `jit-irgen.c` → `jit-interp.c` and `jit-llvm.c`.
+  - Coverage is in `src/cov/` and `rt/cover.c`.
+  - NVC passes cocotb's whole regression, so its exported VHPI symbol set is the checklist to cover.
+- **Library sources:**
+  - `~/git/rust_hdl/vhdl_libraries/{std,ieee2008}`. The IEEE parts are Apache-2.0. `std` has declarations only, so rsim writes the bodies for standard, textio and env natively.
+  - VUnit and OSVVM in `~/git/vunit/vunit/vhdl`.
+- **Not installed:** cocotb and a Surfer checkout. Both are needed in later milestones.
+
+## Architecture (Cargo workspace at `~/git/rsim`)
+| Crate | Role |
+|---|---|
+| `rsim-diag` | One diagnostics model shared by every stage, rendered rustc-style with `annotate-snippets`. A diagnostic carries a severity and colour, a stable code (`rsim --explain E0xxx`), a primary span plus labelled secondary spans, and `note:`/`help:` lines with suggested fixes. Errors recover and are reported together, with cascading errors suppressed. **Runtime errors** add a VHDL stacktrace (one frame per subprogram, with its source line), the process, the instance path, and the time and delta, so an assert raised inside an IEEE library still points at the caller in user code. Colour turns off when the output isn't a TTY, with `--color` and `NO_COLOR` to override. Also `--message-format=json\|short` for VUnit, editors and DAP. Internal compiler errors are caught and rendered at the span being processed. |
+| `rsim-syntax` | Lexer and recursive-descent parser into an owned AST with spans. Handles 2008 and 2019, including mode views, private regions, the 2019 generic forms and the sequential block. Conditional analysis (`` `if ``) is evaluated in the token stream. Parsing and analysis run on a single thread. |
+| `rsim-sem` | Libraries and design units, scopes and visibility (`use`, `context`, selected names), the type system, overload resolution, static expression evaluation, and diagnostics. Its output is a **typed HIR** in which every expression carries its type and every call names the overload it resolved to. |
+| `rsim-lib` | Library manifests, with **no incremental compilation cache**. `rsim analyze --work L f.vhd` checks the file and records it in `L/rsim-lib.toml` (in compile order). `elab` and `run` re-parse and re-analyze from source. The serialized-unit format is skipped and not needed. **Analysis is on demand:** the manifest maps unit names to files, and `elab` analyzes only the units the top level can reach. This keeps big vendor libraries such as UNISIM from being re-analyzed in full on every run, without needing a cache. |
+| `rsim-ir` | Lowers the HIR to a register-based IR. Each instruction carries a statement-location tag, used for stepping and for coverage. |
+| `rsim-elab` | Elaboration. Folds generics through the interpreter, expands generates, binds components and configurations, and resolves external names. It builds the signal net graph (drivers, resolution, port conversions). |
+| `rsim-interp` | IR interpreter. Used for elaboration-time evaluation, cold code, and debug stepping. |
+| `rsim-llvm` | IR → LLVM, JIT through the ORC C API. There is no object cache: code is compiled again on every run. Tiered: a process starts in the interpreter and moves to LLVM once it is hot. Compilation runs on a single thread, in the background, so the simulation is never blocked waiting for it. |
+| `rsim-rt` | The kernel. Implements the LRM 14.7 cycle with **parallel process evaluation** (described below). Holds the value heap (access types, protected types) and the native `std.standard`, `textio` and `env`. Logic vectors are **packed**, behind one runtime type: M3 benchmarks 4-bit nibbles against 4 bit-planes and picks one. Foreign subprograms are supported (VHPIDIRECT style, plus `--load`). |
+| `rsim-wave` | Records values into a wellen `Hierarchy` and signals, and writes FST. |
+| `rsim-cov` | Statement, branch and toggle counters, a database that can be merged, and HTML and Cobertura reports. |
+| `rsim-vhpi` | IEEE 1076 VHPI C ABI (`vhpi_user.h`) and `vhpi_startup_routines` loading for cocotb. |
+| `rsim-dap` | Debug Adapter Protocol server: breakpoints, step in/over per process, stack, and variables. Extensions add hierarchy browsing, signal peek/force/deposit, run-to-time, and live waveform streaming. |
+| `rsim` | The CLI: `rsim analyze`, `rsim elab`, `rsim run [--wave] [--cov] [--vhpi lib] [--dap port]`. The exit code follows `env.stop`/`finish` and severity, as VUnit expects. |
+| `rsim-gui` (EUPL-1.2, **built last**) | egui/eframe app embedding libsurfer. It connects to `rsim --dap`. It provides the hierarchy and source panes, breakpoints, a console and live waves. |
+
+**Designed for the GUI from the start** (none of it is built until M10):
+- **The kernel is driven through a `SimControl` API**: run-for, run-until, step-delta, pause, plus breakpoint and watch hooks. The CLI, DAP and VHPI all call this one API, and nothing else drives simulation.
+- **Every IR instruction carries a source span and a statement id**, and every elaborated object has a stable hierarchical path. The same ids feed DAP stack frames, VHPI handles, coverage and the hierarchy view.
+- **Value change events go to a subscriber bus.** Waves (wellen), VHPI value-change callbacks and DAP live streaming are all subscribers, so a live GUI is just one more subscriber.
+- **The simulation can be paused at defined points**: at the end of a delta, at a timestep, or at a statement while running in the interpreter. Signals can be peeked, forced and deposited while paused.
+
+**Parallel kernel design**
+- In each delta, the processes that are ready are evaluated on a thread pool (rayon). A process only reads signal values from the current cycle and writes its own driver queue, so there are no data races.
+- **Side effects are buffered per process** (report, assert, file writes, `env.stop`), then committed in a deterministic order, sorted by the process's elaboration order. This keeps output byte-identical to a single-threaded run.
+- **Shared state:** each protected type instance gets a lock. Processes that touch non-protected `shared variable`s (VHDL-93 style) are marked serial during elaboration and run alone.
+- `--threads 1` must give identical results. That is the determinism check. `--shuffle` randomizes the serial order to expose testbenches that depend on process order (UVVM-style shared variables, NVC #614).
+- **There is no prior art to copy.** NVC tried work-queue parallelism in 2022 and went back to a serial run queue in 2023, and GHDL is serial. So `--threads` defaults to 1 until the differential suites pass at N threads, and the GC/heap safepoints are designed together with the thread pool (NVC #1649 was a deadlock between GC and threads).
+
+## Design rules from the GHDL and NVC issue trackers
+Both simulators kept running into these bug classes; issue numbers are in brackets.
+1. **Constraints are runtime data on every composite.** Partially constrained types, constraints known only at runtime, and records with unconstrained fields are the largest crash class in both trackers (GHDL #641/#1224/#2422, NVC #1589/#1543/#1576). There is one type/subtype representation, and no "maybe static" path.
+2. **Signals are addressed by sub-element.** One mapping from longest static prefix to drivers and sources is shared by drivers, views, force/deposit, VHPI, waves and coverage (NVC #856/#824/#1340/#1045). Storage and event tracking work on a whole signal or a contiguous vector, not on each scalar (GHDL #2246/#812).
+3. **Port collapsing is an optional optimisation** behind a flag, with a differential test against the uncollapsed design (NVC #824/#1340). Port conversions and associations become explicit implicit processes in the IR (GHDL #2422, NVC #843).
+4. **Elaboration is a pure, re-entrant function** of (design, generics, configuration), with no global state, so restarting in-process works (GHDL #1184). External names are bound at elaboration (GHDL #548). Generic overrides of any type are parsed with the normal value parser (GHDL #1117). Each generic instance gets its own mangled identity (NVC #1492/#1408).
+5. **The interpreter is the semantic reference.** LLVM must pass every suite when compared against it (GHDL #1829/#2723, NVC #1688/#1338). The IR uses 32-bit ids and register reuse, with linear-time passes. A unit too big for LLVM stays interpreted (NVC #1200/#608). LLVM 21 is pinned, linking goes through ORC (no hand-written ELF loader), and code targets a portable CPU baseline (NVC #887/#1311).
+6. **The heap uses precise roots**, with handles into a growable arena and no conservative scanning (NVC #1688/#515). Large locals and temporaries go on the heap, not the stack (GHDL #752, NVC #791). Sizes are 64-bit everywhere (GHDL #1761/#1970).
+7. **Time and integer semantics are the same in every tier.** Time resolution is a runtime setting, never baked into code (GHDL #613/#672). All arithmetic is checked i64, with 64-bit integers in 2019 mode (GHDL #950, NVC #1255). A delta-cycle limit has a clear diagnostic (GHDL #713).
+8. **Identifiers keep their original spelling**, with lookup by a case-folded key. VHPI `CaseName`, waves and diagnostics need it, and NVC had to retrofit this painfully (#723).
+9. **VHPI handles are generational ids into an arena.** They are cheap to create and release, and compared with `vhpi_compare_handles`. Callbacks that are disabled but never removed must stay cheap, because cocotb never removes them (NVC #1114). Records, arrays, generics and generates are native in the object model, not a Verilog-shaped shim (GHDL #237/#2324).
+10. **Coverage items are identified by hierarchical path plus a hash of the source span**, never by offset. Databases are named per run and can be merged (NVC #474/#1517/#823). Instrumentation is ordinary IR, so both tiers have it (GHDL #286).
+11. **Waves come from the same sub-element change events.** There are include/exclude globs, a size cap for arrays and memories, and enum names kept in metadata. The FST is flushed on SIGINT and at the end of simulation (GHDL #2617/#2706, NVC #959).
+12. **Constant aggregates are compact** (run-length or `others`), so a 64K-entry memory initialiser doesn't blow up elaboration (GHDL #49/#1349).
+13. **Diagnostics have a stable code** that can be suppressed or escalated per code (`-W`, `-Werror`). The few relaxations of LRM rules sit behind `--relaxed` (NVC #641/#1004/#1669).
+14. **Process-safe on disk.** VUnit runs N simulators at once, so `run` never writes into library directories and nothing uses lock files (NVC #507/#651).
+15. **Front-end fuzzing from M0.** cargo-fuzz runs on the parser and on semantic analysis; one week of AFL found 32 crashes in NVC (#1038).
+
+## Milestones (one subagent each, run one at a time)
+- **M0: workspace, lexer and parser.** Parse all of VUnit, OSVVM, rust_hdl's `vhdl_libraries`, and the NVC `test/regress` and `test/parse` files with zero errors (NVC files are only read as test inputs). Also a set of 2019 constructs, with `` `if `` handling.
+- **M1: semantic analysis.** Analyze std, ieee2008, VUnit and OSVVM with zero diagnostics, in both 2008 and 2019 mode. Own negative tests cover the illegal cases (bad overloads, visibility, types), with snapshots of the rendered diagnostics. The type and constraint model (rule 1) is reviewed before M2 starts.
+- **M2: IR, interpreter, elaboration and the parallel kernel on a scalar subset.** Check: a differential corpus (`tests/corpus/*.vhd`) gives the same report lines, times and exit status as NVC, with both `--threads 1` and `--threads N`.
+- **M3: full types and libraries.**
+  - Arrays, records, access types, protected types, resolution.
+  - `numeric_std` and the fixed and float packages from source.
+  - textio and file I/O, `env`, package generics, external names.
+  - Foreign subprograms with `--load`.
+  - The packed-logic layout benchmark and decision.
+- **M4: VUnit end to end.** A minimal testbench, then VUnit's `vunit/vhdl/**/test` suites. Add an rsim `SimulatorInterface` in `~/git/vunit/vunit/sim_if/` so that `run.py --simulator rsim` works.
+- **M4b: ecosystem libraries.**
+  - The clean-room Synopsys packages.
+  - Functional VITAL.
+  - UNISIM/UNIMACRO, altera_mf/lpm and Lattice/Microchip primitives analyze and simulate, each with a documented VUnit recipe.
+  - The VUnit python bridge's test suite passes on rsim, after adding rsim to its simulator table.
+- **M5: VHPI (mandatory).** The full VHPI object model over `SimControl` and the event bus. Install cocotb into a venv. Check: cocotb's own regression passes on rsim.
+- **M6: LLVM tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against NVC are tracked in `STATUS.md`.
+- **M7: waves.** FST output through wellen, as an event-bus subscriber.
+- **M8: DAP server.** Interpreter stepping, signal peek/force, and the wave-stream extension. Check: scripted DAP sessions in tests, plus manual use from VS Code.
+- **M9: coverage.** Statement, branch and toggle coverage, merge, HTML and Cobertura output.
+- **M9b: embedded Python scripting (deferred).**
+  - A pyo3 `rsim` module over `SimControl`: run, step, force, examine, breakpoints, waves.
+  - libpython is loaded dynamically, and an interpreter that cocotb or the bridge has already started is reused (one CPython per process).
+- **M10: GUI (later).** rsim-gui with embedded libsurfer, connected over DAP. Nothing in it should need kernel changes.
+
+## Working rules for the milestone subagents
+- One background agent at a time (an earlier memory records OOM crashes when agents fanned out). Each one works on a branch, and I review and merge.
+- No more than 8 HDL simulator processes in parallel host-wide, NVC references included.
+- Each simulation gets a timeout and a memory cap (`systemd-run --user --scope -p MemoryMax=…`).
+- No testbench may run longer than 5 minutes.
+- Never copy NVC or rust_hdl source. Reading it for reference is allowed.
+- Every check's exit status must reach the caller: never pipe a check into `grep` or `tail`.
+- No em dashes in docs or commits.
+
+## Verification
+- **Diagnostics snapshot tests** (`tests/diag/*.vhd` with expected rendered output, the way rustc's UI tests work), for both analysis and runtime errors. A change to error text then shows up in review.
+- `cargo test` and `cargo clippy --workspace -D warnings` in every milestone.
+- **Parse and analysis corpus counts** (M0, M1): zero errors on the library corpora, run as a cargo test over the local corpora.
+  - VESTs, NVC regress and GHDL gna have pass/fail lists checked into the repo, including the tests expected to fail. Any regression fails CI.
+- **Differential tests against NVC** (from M2): report text, report time, exit status, and thread-count invariance.
+- **External suites, gated in CI once they first pass:**
+  - VUnit's own VHDL test suites (M4) and cocotb's regression (M5).
+  - OSVVM's and UVVM's own suites (from M4), which stress protected types, access types and generic packages together.
+  - Pass counts are tracked in `STATUS.md`.
+- **Both tiers on every suite** (from M6). LLVM-only and interpreter-only runs must give identical output.
+
+## Out of scope (add when needed)
+Verilog and mixed-language designs, PSL, SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (vhdl_ls and speja already cover that), SDF and VITAL timing, macOS (avoid gratuitously Unix-only code), an incremental compilation cache, and a speed target.

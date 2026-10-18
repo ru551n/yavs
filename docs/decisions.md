@@ -134,3 +134,37 @@
   `rsim-vhpi-host.exe` through the llvm-dlltool import library, same output as Linux). The
   tests themselves cannot run under wine since they call the C compiler. Windows MSVC (`/DEF:`,
   `lib.exe`, `cl` in the tests) is only build-path code until Windows CI runs it.
+
+## std value conversion: NVC formats, LRM parsing (rsim-std)
+
+- **Text is Latin-1 bytes.** Every VHDL-level string in `rsim-std` is `[u8]`, one byte per
+  CHARACTER, matching the runtime's STRING layout. Identifiers keep their declared spelling.
+- **Output formats follow NVC byte for byte** where the LRM leaves them to the implementation,
+  because NVC is the differential reference for report text: `real'image`/`to_string(real)` is
+  C `%.15g` (`1e-05`, `0.333333333333333`), `to_string(real, 0)` is `%.17g` (round-trips),
+  `write(real)` with `digits = 0` is `%e`, `time'image` is in fs, `to_string(time, unit)` is an
+  integer when exact and `%.15g` otherwise, and `write(time, unit)` is exact decimal with at most
+  `min(floor(log10(unit)), 17)` truncated digits (GHDL agrees on the last one). GHDL prints reals
+  as shortest round-trip VHDL literals (`1.0e-1`) and Questa as `%e`; neither is adopted.
+- **The LRM wins over NVC** where NVC is wrong or crashes, each case listed with its reason in
+  `crates/rsim-std/golden/nvc-deviations.txt`: extended identifiers keep case and doubled
+  backslashes; `'VALUE` takes full literal syntax (based literals, exponents, underscores only
+  between digits, decimal physical literals rounded to the primary unit, unit-only `ns`, extended
+  unit names) and rejects what is not one literal (`Fo o`, `1__0`, `.5`, `5.`); overflow is an
+  error, never wrapped; `to_string(real, format)` is full C99 printf for one real (flags, `%a`,
+  literal text), with anything else an error; no fixed output buffer limits.
+- **Leniencies kept from NVC/GHDL**: a leading `+`, an integer literal for a real, no separator
+  in `5ns`, and format effectors (HT, CR, LF, VT, FF) as whitespace around a value.
+- **READ**: numbers are `[sign] digits [. digits] [E [sign] digits]` with no underscores or bases
+  (NVC and GHDL agree), TIME accepts decimals (`1.5 ns`, as GHDL; NVC rejects), the unit is the
+  longest unit name prefixing the rest (`5 nsx` reads 5 ns), a failed READ leaves the line
+  unchanged (GHDL; NVC consumes part of it) and returns a structured error that the GOOD form
+  maps to `false`. READLINE drops the CRs just before LF (CRLF files) but keeps inner CRs (NVC
+  deletes every CR); WRITELINE writes LF on all platforms.
+- **env**: TIME_RECORD arithmetic is exact in microseconds and years outside 1..4095 are errors
+  (NVC wraps epochs past 2**31 and loses microseconds in `-`); `seconds_to_time` truncates like
+  NVC but errors on overflow; LOCALTIME uses the system zone through `jiff`; `DIRECTORY.items`
+  are sorted, without `.` and `..`; TOOL_* name rsim.
+- **Verification**: `golden/gen.py` writes testbenches, runs NVC 2008 and 2019 and records
+  goldens (about 2,900 cases per revision); the Rust tests compare against them without needing
+  NVC, and proptest checks `'value('image(x)) = x` and WRITE-then-READ round trips.

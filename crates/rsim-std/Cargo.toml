@@ -1,0 +1,16 @@
+[package]
+name = "rsim-std"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Native semantics of std.standard, std.textio and std.env value conversion for rsim"
+
+[dependencies]
+jiff = "0.2.38"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

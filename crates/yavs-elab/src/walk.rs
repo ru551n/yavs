@@ -738,7 +738,7 @@ impl Elab<'_> {
                 (ObjClass::Signal, ObjRole::Plain) => {
                     let span = decl.span;
                     let Some(shape) = self.m.shape(db, o.subtype, Some(s), span)? else {
-                        return Err(Box::new(ice(span, "signal of an unconstrained subtype")));
+                        return Err(unconstrained_signal(o, span));
                     };
                     let guard = o.signal_kind.map(|k| match k {
                         yavs_syntax::ast::SignalKind::Bus => GuardKind::Bus,
@@ -2096,10 +2096,7 @@ impl Model {
             return Ok(Some(obj));
         }
         let Some(shape) = self.shape(db, o.subtype, None, decl.span)? else {
-            return Err(Box::new(ice(
-                at,
-                "package signal of an unconstrained subtype",
-            )));
+            return Err(unconstrained_signal(o, at));
         };
         if o.signal_kind.is_some() {
             return Err(unsupported(decl.span, "guarded signals in packages", "M3"));
@@ -2196,5 +2193,15 @@ impl Model {
             });
         }
         Ok(())
+    }
+}
+
+/// A signal whose subtype is not fully constrained: a 2019 signal takes its bounds from
+/// its initial value (sem accepts it, #175); anything else is a bug.
+fn unconstrained_signal(o: &yavs_sem::decl::Object, span: Span) -> Box<Diagnostic> {
+    if o.bounds == yavs_sem::types::BoundsFrom::Initializer {
+        unsupported(span, "signals that take their bounds from the initial value (2019)", "M3")
+    } else {
+        Box::new(ice(span, "signal of an unconstrained subtype"))
     }
 }

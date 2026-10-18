@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:nested_alias_slices:_p4	m=00001111 00000001 al(2)=00000001
+diag	note	1000000	0	:nested_alias_slices:_p4	q=577 r=91010
+diag	note	2000000	0	:nested_alias_slices:_p4	m(1)=10101010 m(2)=01010101 m(3)=10010000
+diag	note	3000000	0	:nested_alias_slices:_p4	n0=3 n1=3 n2=3 n3=2 m(3)=00010000

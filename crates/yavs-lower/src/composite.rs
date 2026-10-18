@@ -1205,8 +1205,9 @@ impl Fx<'_, '_> {
             return self.aggregate_pieces(assocs, bounds, st, span);
         }
         // Descriptor: the context subtype's, else from the bounds of each level.
+        // Named bounds: sem's result subtype has the direction of a constrained context.
         let desc = match bounds {
-            AggBounds::Context => self.desc_of(st, None, span)?,
+            AggBounds::Context | AggBounds::Named { .. } => self.desc_of(st, None, span)?,
             _ => None,
         };
         let desc = match desc {

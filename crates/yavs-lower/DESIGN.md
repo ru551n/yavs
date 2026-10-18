@@ -233,7 +233,8 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   the elaborator from the signal's shape (#215).
 - Signals of arrays of arrays without records are one instance signal of all their scalars;
   `Fx::sig_steps` selects a name's range by the same walk (`walk_steps`) with that one leaf
-  (#89). A subtype-alias path (`LspStep::Rebase`) over one is E2001.
+  (#89). A subtype-alias step (`Step::Rebase`) takes the alias subtype's descriptor; an index
+  or slice after a slice counts within the slice (`m(0 to 1)(0)`, #230).
 - Objects of record and composite-array type are a slot `[data, desc, handle]` over a private
   heap object `[descriptor][value]`, the handle a GC root. Access variables are handle slots;
   allocators build the same `[descriptor][value]` object, so `p.all` keeps its bounds.
@@ -265,10 +266,12 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - 2008 array-valued pieces of positional 1-D aggregates (`(a, '1', b)`, `(rows, row)`) are
   concatenated with bounds as for `&` (`aggregate_pieces`, `put_pieces`, shared with `&`); as
   aggregate targets each piece takes as many elements as its target has, the cover checked
-  first (#89).
-- Not yet: force of composite signals, named or multi-dimensional aggregates with
-  array-valued pieces and pieces whose element subtype is not fixed by the type, methods
-  of protected types in generic package instances (generic instantiation, #71), user
+  first (#89). A piece under a range choice fills the range in the aggregate's order
+  (`put_at`); an element subtype the type leaves open takes its constraint from the context
+  or the first value (#230). Named bounds come from sem's result subtype (direction of a
+  constrained context).
+- Not yet: force of composite signals, named pieces in aggregate targets, methods of
+  protected types in generic package instances (generic instantiation, #71), user
   resolution of logic leaves.
 
 ### Requests from lower2 to lower

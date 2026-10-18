@@ -707,11 +707,12 @@ impl Fx<'_, '_> {
         if assocs.iter().any(|a| a.slice_piece) {
             // The pieces must cover the value exactly (LRM 10.6.2.1), checked first.
             let want = self.pieces_dope(assocs, false, span)?;
+            let what = self.msg("target", Dir::To);
             self.emit(Inst::SubtypeCheck {
                 dope,
                 want,
                 dims: 1,
-                what: m,
+                what,
             });
         }
         let mut k = self.int(0);
@@ -1094,12 +1095,13 @@ impl Fx<'_, '_> {
         if assocs.iter().any(|a| a.slice_piece) {
             // The pieces must cover every value exactly (LRM 10.5.2.1), checked first.
             let want = self.pieces_dope(assocs, true, span)?;
+            let what = self.msg("target", Dir::To);
             for &(_, (_, dope)) in &vals {
                 self.emit(Inst::SubtypeCheck {
                     dope,
                     want,
                     dims: 1,
-                    what: m,
+                    what,
                 });
             }
         }
@@ -1468,92 +1470,32 @@ impl Fx<'_, '_> {
             }) else {
                 return Err(self.cx.unsupported(l.span, "sensitivity to external names"));
             };
+            let steps: Vec<_> = l
+                .path
+                .iter()
+                .map(|s| match s {
+                    LspStep::Field(n) => crate::expr::Step::Field(*n),
+                    LspStep::Index(ix) => crate::expr::Step::Index(ix),
+                    LspStep::Slice(r) => crate::expr::Step::Slice(r),
+                    LspStep::Rebase(st) => crate::expr::Step::Rebase(*st),
+                })
+                .collect();
             if matches!(self.cx.objs.get(&d), Some(Obj::RecSignal(_))) {
                 // A composite signal: the selected elements of every leaf below the prefix.
-                let mut steps = Vec::new();
-                for s in l.path.iter() {
-                    steps.push(match s {
-                        LspStep::Field(n) => crate::expr::Step::Field(*n),
-                        LspStep::Index(ix) => crate::expr::Step::Index(ix),
-                        LspStep::Slice(r) => crate::expr::Step::Slice(r),
-                        LspStep::Rebase(_) => {
-                            return Err(self.cx.unsupported(
-                                l.span,
-                                "sensitivity to composite signals through subtype aliases",
-                            ));
-                        }
-                    });
-                }
                 let p = self.comp_select(d, &steps, l.span)?;
                 for (_, s, _) in p.leaves {
                     self.emit(Inst::WaitOn { sig: s });
                 }
                 continue;
             }
-            let s = match &l.path[..] {
+            let s = match &steps[..] {
                 [] => self.sig_of(d, l.span)?,
-                path => self.lsp_sig(d, path, l.span)?,
+                // Indices, slices and alias subtypes by the one walk of `sig_steps`.
+                steps => self.sig_steps(d, steps, l.span)?.0,
             };
             self.emit(Inst::WaitOn { sig: s });
         }
         Ok(())
-    }
-
-    /// The signal at path `path` of array signal `d`: slices and elements, each indexed in
-    /// the index space of the alias subtype a `Rebase` step gives (LRM 6.6.2).
-    fn lsp_sig(&mut self, d: yavs_sem::DeclId, path: &[LspStep], span: Span) -> R<Reg> {
-        let steps: Option<Vec<_>> = path
-            .iter()
-            .map(|s| match s {
-                LspStep::Index(ix) => Some(crate::expr::Step::Index(ix)),
-                LspStep::Slice(r) => Some(crate::expr::Step::Slice(r)),
-                _ => None,
-            })
-            .collect();
-        if let Some(steps) = steps {
-            return Ok(self.sig_steps(d, &steps, span)?.0);
-        }
-        let nested = |fx: &mut Self| {
-            Err(fx
-                .cx
-                .unsupported(span, "sensitivity to record and nested sub-elements"))
-        };
-        // ponytail: subtype-alias paths select one level at a time (`select_in`), so only over
-        // arrays of scalars; walk them like `sig_steps` once nested aliases need it.
-        let t = ty::obj_subtype(self.db, d).map(|st| self.db.base(st));
-        if t.and_then(|t| ty::array_of(self.db, t))
-            .is_some_and(|(e, _)| ty::is_array(self.db, self.db.base(e)))
-        {
-            return nested(self);
-        }
-        let mut sig = match self.cx.objs.get(&d).copied() {
-            Some(Obj::Signal { sig }) => Ok(sig),
-            _ => Err(self.sig_of(d, span)?),
-        };
-        let mut dope = self.sig_dope(d, span)?;
-        let tid = self.decl_ty(d, span)?;
-        let logic = self.is_logic(tid);
-        let what = self.db.decls[d].name.to_string();
-        for step in path {
-            let Some(dp) = dope else {
-                return nested(self);
-            };
-            let sel = match step {
-                LspStep::Rebase(st) => {
-                    dope = Some(self.dope_as(dp, Some(*st), &what, span)?);
-                    continue;
-                }
-                LspStep::Index(ix) if ix.len() == 1 => Ok(ix[0]),
-                LspStep::Slice(r) => Err(r),
-                _ => return nested(self),
-            };
-            let (r, nd) = self.select_in(sig, dp, logic, &what, sel, span)?;
-            (sig, dope) = (Err(r), nd);
-        }
-        match sig {
-            Ok(_) => self.sig_of(d, span),
-            Err(r) => Ok(r),
-        }
     }
 
     /// Signals named in `e` (the implicit sensitivity of `wait until`, LRM 10.2).

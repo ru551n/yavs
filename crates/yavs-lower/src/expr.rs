@@ -69,6 +69,8 @@ pub(crate) enum Step<'d> {
     Field(u32),
     Index(&'d [ExprId]),
     Slice(&'d RangeC),
+    /// The steps that follow index in the index space of this alias subtype (LRM 6.6.2).
+    Rebase(SubtypeId),
 }
 
 /// Where a chain of selections leads (`Fx::walk_steps`): the part's type, descriptor and
@@ -856,44 +858,6 @@ impl<'a> Fx<'a, '_> {
         Ok((self.sub_sig(sig, a, len), dope))
     }
 
-    /// Element `Ok(index)` or slice `Err(range)` of the array signal `sig` (an instance
-    /// signal or a reference) with descriptor `dope`.
-    pub fn select_in(
-        &mut self,
-        sig: Result<u32, Reg>,
-        dope: Reg,
-        logic: bool,
-        what: &str,
-        sel: Result<ExprId, &yavs_sem::types::RangeC>,
-        span: Span,
-    ) -> R<(Reg, Option<Reg>)> {
-        let count = self.dope_len(dope);
-        match sel {
-            Ok(i) => {
-                let pos = self.flat_pos(dope, &[i], what)?;
-                let off = if logic {
-                    let one = self.int(1);
-                    let last = self.bin(IntOp::Sub, count, one);
-                    self.bin(IntOp::Sub, last, pos)
-                } else {
-                    pos
-                };
-                let one = self.int(1);
-                Ok((self.sub_sig(sig, off, one), None))
-            }
-            Err(range) => {
-                let (p, n, nd) = self.slice_of(dope, range, what, span)?;
-                let off = if logic {
-                    let a = self.bin(IntOp::Sub, count, p);
-                    self.bin(IntOp::Sub, a, n)
-                } else {
-                    p
-                };
-                Ok((self.sub_sig(sig, off, n), Some(nd)))
-            }
-        }
-    }
-
     /// The steps from a composite signal (`Obj::RecSignal`) down to the part `e` names.
     pub fn comp_steps(&self, e: ExprId) -> Option<(DeclId, Vec<Step<'a>>)> {
         let db = self.db;
@@ -1067,34 +1031,44 @@ impl<'a> Fx<'a, '_> {
         let (mut offset, mut count) = (self.int(0), self.int(1));
         let mut inst: Option<(TypeId, Reg)> = None;
         for s in steps {
-            if inst.is_some() {
-                return Err(self
-                    .cx
-                    .unsupported(span, "names below a slice of a composite signal"));
-            }
             let tid = self.ty(t, span)?;
             match *s {
+                Step::Field(_) if inst.is_some() => {
+                    return Err(self.cx.ice(span, "record element of a slice"));
+                }
                 Step::Field(n) => {
                     desc = self.field_desc(tid, desc, n, span)?;
                     t = db.base(self.field_subtype(t, n)?);
                     path.push(n);
                 }
+                Step::Rebase(st) => desc = self.dope_as(desc, Some(st), what, span)?,
                 Step::Index(ix) => {
-                    let n = self.elems(tid, desc);
                     let lin = self.flat_pos(desc, ix, what)?;
-                    let o = self.bin(IntOp::Mul, offset, n);
-                    offset = self.bin(IntOp::Add, o, lin);
+                    if inst.take().is_some() {
+                        // An element of a slice: counted from the slice's first instance.
+                        offset = self.bin(IntOp::Add, offset, lin);
+                        count = self.int(1);
+                    } else {
+                        let n = self.elems(tid, desc);
+                        let o = self.bin(IntOp::Mul, offset, n);
+                        offset = self.bin(IntOp::Add, o, lin);
+                    }
                     desc = self.elem_desc(tid, desc)?.1;
                     t = db.base(ty::array_of(db, t).ok_or(Failed)?.0);
                 }
                 Step::Slice(r) => {
-                    let n = self.elems(tid, desc);
                     let (p, len, nd) = self.slice_of(desc, r, what, span)?;
-                    let o = self.bin(IntOp::Mul, offset, n);
-                    offset = self.bin(IntOp::Add, o, p);
+                    if inst.is_some() {
+                        // A slice of a slice: the same instances, fewer of them.
+                        offset = self.bin(IntOp::Add, offset, p);
+                    } else {
+                        let n = self.elems(tid, desc);
+                        let o = self.bin(IntOp::Mul, offset, n);
+                        offset = self.bin(IntOp::Add, o, p);
+                        let ed = self.elem_desc(tid, desc)?.1;
+                        inst = Some((db.base(ty::array_of(db, t).ok_or(Failed)?.0), ed));
+                    }
                     count = len;
-                    let ed = self.elem_desc(tid, desc)?.1;
-                    inst = Some((db.base(ty::array_of(db, t).ok_or(Failed)?.0), ed));
                     desc = self.slice_desc(tid, desc, nd);
                 }
             }
@@ -1662,6 +1636,8 @@ impl<'a> Fx<'a, '_> {
                 let dir = self.dir_reg(s.dir);
                 self.one_dope(s.left, right, dir)
             }
+            // Sem's result subtype: the direction of a constrained context (LRM 9.3.3.3).
+            AggBounds::Named { .. } if let Some(d) = self.subtype_dope(st, span)? => d,
             AggBounds::Named { low, high } => {
                 let s = self.scalar_bounds(index, span)?;
                 let lo = self.scalar_expr(*low)?;
@@ -2840,62 +2816,81 @@ impl<'a> Fx<'a, '_> {
         data: Reg,
         n: Reg,
         logic: bool,
-        (bias, w): (i64, Width),
+        bw: (i64, Width),
         m: Reg,
         pieces: &[(Reg, Option<Reg>)],
     ) {
         let one = self.int(1);
-        let z = self.int(0);
-        let total = self.bin(IntOp::Mul, n, m);
-        let mut k = z;
-        for &(r, len) in pieces {
-            let at = self.bin(IntOp::Mul, k, m);
-            let units = len.map(|len| self.bin(IntOp::Mul, len, m));
-            if logic {
-                // Planes hold the leftmost element last.
-                let x = self.bin(IntOp::Sub, total, at);
-                let off = self.bin(IntOp::Sub, x, units.unwrap_or(one));
-                match units {
-                    None => {
-                        let v = self.enc(r, bias);
-                        self.emit(Inst::LSet {
-                            base: data,
-                            idx: off,
-                            v,
-                        })
-                    }
-                    Some(units) => self.emit(Inst::LCopy {
-                        dst: data,
-                        dst_off: off,
-                        src: r,
-                        src_off: z,
-                        n: units,
-                    }),
-                }
-            } else {
-                let a = self.reg(RegTy::Ptr);
-                self.emit(Inst::Index {
-                    dst: a,
-                    base: data,
-                    pos: at,
-                    stride: 1,
-                });
-                match units {
-                    None => self.store(a, r, w),
-                    Some(bytes) => self.emit(Inst::Copy {
-                        dst: a,
-                        src: r,
-                        bytes,
-                    }),
-                }
-            }
-            k = self.bin(IntOp::Add, k, len.unwrap_or(one));
+        let mut k = self.int(0);
+        for &piece in pieces {
+            self.put_at(data, n, logic, bw, m, k, piece);
+            k = self.bin(IntOp::Add, k, piece.1.unwrap_or(one));
         }
     }
 
-    /// A positional 1-D aggregate with 2008 array-valued pieces (`(a, '1', b)`, `(rows, row)`):
-    /// the pieces concatenated, bounds as for `&` (LRM 9.3.3.3), checked against a
-    /// constrained context. Element subtypes must be fixed by the type.
+    /// Store one piece of `put_pieces` at element position `k` (from the left).
+    #[allow(clippy::too_many_arguments)]
+    fn put_at(
+        &mut self,
+        data: Reg,
+        n: Reg,
+        logic: bool,
+        (bias, w): (i64, Width),
+        m: Reg,
+        k: Reg,
+        (r, len): (Reg, Option<Reg>),
+    ) {
+        let one = self.int(1);
+        let z = self.int(0);
+        let at = self.bin(IntOp::Mul, k, m);
+        let units = len.map(|len| self.bin(IntOp::Mul, len, m));
+        if logic {
+            // Planes hold the leftmost element last.
+            let total = self.bin(IntOp::Mul, n, m);
+            let x = self.bin(IntOp::Sub, total, at);
+            let off = self.bin(IntOp::Sub, x, units.unwrap_or(one));
+            match units {
+                None => {
+                    let v = self.enc(r, bias);
+                    self.emit(Inst::LSet {
+                        base: data,
+                        idx: off,
+                        v,
+                    })
+                }
+                Some(units) => self.emit(Inst::LCopy {
+                    dst: data,
+                    dst_off: off,
+                    src: r,
+                    src_off: z,
+                    n: units,
+                }),
+            }
+        } else {
+            let a = self.reg(RegTy::Ptr);
+            self.emit(Inst::Index {
+                dst: a,
+                base: data,
+                pos: at,
+                stride: 1,
+            });
+            match units {
+                None => self.store(a, r, w),
+                Some(bytes) => self.emit(Inst::Copy {
+                    dst: a,
+                    src: r,
+                    bytes,
+                }),
+            }
+        }
+    }
+
+    /// A 1-D aggregate with 2008 array-valued pieces (LRM 9.3.3.3). Positional pieces
+    /// (`(a, '1', b)`, `(rows, row)`) are concatenated, bounds as for `&` unless the context
+    /// gives them (checked); a piece under a range choice (`(7 downto 4 => a, others => '0')`)
+    /// fills the elements of the range in the aggregate's order. Each value is evaluated
+    /// once. An element subtype the type leaves open takes its constraint from the context or
+    /// the first value, and every value is checked against it.
     pub(crate) fn aggregate_pieces(
         &mut self,
         assocs: &[AggAssoc],
@@ -2908,31 +2903,28 @@ impl<'a> Fx<'a, '_> {
         let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
             return Err(self.cx.ice(span, "aggregate pieces of a non-array"));
         };
+        // Sem allows pieces in one-dimensional aggregates only (LRM 9.3.3.3).
+        if indexes.len() != 1 {
+            return Err(self.cx.ice(
+                span,
+                "array-valued elements in a multi-dimensional aggregate",
+            ));
+        }
         let (index, elem) = (indexes[0], *elem);
         let tid = self.ty(t, span)?;
-        if indexes.len() != 1 {
-            return Err(self.cx.unsupported(
-                span,
-                "multi-dimensional aggregates with array-valued elements (2008)",
-            ));
-        }
-        if assocs.iter().any(|a| !a.choices.is_empty()) {
-            return Err(self
-                .cx
-                .unsupported(span, "named aggregates with array-valued elements (2008)"));
-        }
-        if self.desc_size(tid) > 24 {
-            return Err(self.cx.unsupported(
-                span,
-                "array-valued aggregate elements of an unconstrained element subtype",
-            ));
-        }
         let etid = self.ty(db.base(elem), span)?;
         let scalar = crate::composite::scalar_w(self.fb.program(), etid);
         let logic = self.is_logic(tid);
+        let is_others = |a: &AggAssoc| a.choices.iter().any(|c| matches!(c, Choice::Others));
         let mut vals = Vec::new();
+        // Elements of the positional associations.
         let mut n = self.int(0);
         for a in assocs {
+            if a.slice_piece && is_others(a) {
+                return Err(self
+                    .cx
+                    .unsupported(span, "`others` with an array value in an aggregate"));
+            }
             let v = self.expr(a.value)?;
             let len = if a.slice_piece {
                 let (_, p) = self.arr(v, span)?;
@@ -2940,46 +2932,115 @@ impl<'a> Fx<'a, '_> {
             } else {
                 self.int(1)
             };
-            n = self.bin(IntOp::Add, n, len);
+            if a.choices.is_empty() {
+                n = self.bin(IntOp::Add, n, len);
+            }
             vals.push((a, v, len));
         }
-        let s = self.scalar_bounds(index, span)?;
-        let one = self.int(1);
-        let last = self.bin(IntOp::Sub, n, one);
-        let right = match s.dir {
-            Dr::Static(Direction::To) => self.bin(IntOp::Add, s.left, last),
-            Dr::Static(Direction::Downto) => self.bin(IntOp::Sub, s.left, last),
-            Dr::Dyn(_) => return Err(self.cx.ice(span, "index subtype with a runtime direction")),
-        };
-        let dir = self.dir_reg(s.dir);
-        let mut dope = self.one_dope(s.left, right, dir);
-        let z = self.int(0);
-        let null = self.cmp(CmpOp::Eq, n, z);
-        let ok = self.not(null);
-        let (lo, hi) = self.low_high(s);
-        let what = self.msg(
-            &format!("the aggregate ({})", ty::subtype_name(db, index)),
-            ir_dir(s.dir),
-        );
-        let chk = self.select(ok, right, s.left, RegTy::I64);
-        self.emit(Inst::Check {
-            kind: CheckKind::Index,
-            v: chk,
-            lo,
-            hi,
-            what,
-        });
-        if matches!(bounds, AggBounds::Context)
-            && let Some(want) = self.subtype_dope(st, span)?
-        {
-            let what = self.msg("aggregate", Dir::To);
-            self.emit(Inst::SubtypeCheck {
-                dope,
-                want,
-                dims: 1,
+        let (mut dope, full) = if assocs.iter().all(|a| a.choices.is_empty()) {
+            let s = self.scalar_bounds(index, span)?;
+            let one = self.int(1);
+            let last = self.bin(IntOp::Sub, n, one);
+            let right = match s.dir {
+                Dr::Static(Direction::To) => self.bin(IntOp::Add, s.left, last),
+                Dr::Static(Direction::Downto) => self.bin(IntOp::Sub, s.left, last),
+                Dr::Dyn(_) => {
+                    return Err(self.cx.ice(span, "index subtype with a runtime direction"));
+                }
+            };
+            let dir = self.dir_reg(s.dir);
+            let dope = self.one_dope(s.left, right, dir);
+            let z = self.int(0);
+            let null = self.cmp(CmpOp::Eq, n, z);
+            let ok = self.not(null);
+            let (lo, hi) = self.low_high(s);
+            let what = self.msg(
+                &format!("the aggregate ({})", ty::subtype_name(db, index)),
+                ir_dir(s.dir),
+            );
+            let chk = self.select(ok, right, s.left, RegTy::I64);
+            self.emit(Inst::Check {
+                kind: CheckKind::Index,
+                v: chk,
+                lo,
+                hi,
                 what,
             });
-            dope = want;
+            match bounds {
+                AggBounds::Context => match self.subtype_dope(st, span)? {
+                    Some(want) => {
+                        let what = self.msg("aggregate", Dir::To);
+                        self.emit(Inst::SubtypeCheck {
+                            dope,
+                            want,
+                            dims: 1,
+                            what,
+                        });
+                        (want, true)
+                    }
+                    None => (dope, false),
+                },
+                _ => (dope, false),
+            }
+        } else {
+            match bounds {
+                AggBounds::Context => match self.subtype_dope(st, span)? {
+                    Some(d) => (d, true),
+                    None => return Err(self.cx.ice(span, "aggregate context without bounds")),
+                },
+                // Sem's result subtype: the direction of a constrained context.
+                AggBounds::Named { .. } if let Some(d) = self.subtype_dope(st, span)? => (d, true),
+                AggBounds::Named { low, high } => {
+                    let s = self.scalar_bounds(index, span)?;
+                    let lo = self.scalar_expr(*low)?;
+                    let hi = self.scalar_expr(*high)?;
+                    match s.dir {
+                        Dr::Static(Direction::To) => {
+                            let d = self.int(0);
+                            (self.one_dope(lo, hi, d), false)
+                        }
+                        Dr::Static(Direction::Downto) => {
+                            let d = self.int(1);
+                            (self.one_dope(hi, lo, d), false)
+                        }
+                        Dr::Dyn(_) => {
+                            return Err(self
+                                .cx
+                                .ice(span, "index subtype with a runtime direction"));
+                        }
+                    }
+                }
+                _ => return Err(self.cx.ice(span, "named aggregate without named bounds")),
+            }
+        };
+        // An element subtype the type leaves open: the element part of the descriptor comes
+        // from the first value unless the context gave it.
+        let ds = self.desc_size(tid);
+        if ds > 24 && !full {
+            let Some((a, v, _)) = vals.first() else {
+                return Err(self.cx.ice(span, "aggregate without associations"));
+            };
+            let (_, vd) = self.arr(*v, span)?;
+            let src = if a.slice_piece {
+                self.elem_desc(tid, vd)?.1
+            } else {
+                vd
+            };
+            let d = self.alloc_n(ds);
+            let n24 = self.int(24);
+            self.emit(Inst::Copy {
+                dst: d,
+                src: dope,
+                bytes: n24,
+            });
+            let at = self.offset(d, 24);
+            let rest = self.int(i64::from(ds - 24));
+            self.emit(Inst::Copy {
+                dst: at,
+                src,
+                bytes: rest,
+            });
+            dope = d;
         }
         let (_, ed) = self.elem_desc(tid, dope)?;
         // Units per element: plane elements of a logic array, else bytes.
@@ -2997,20 +3058,113 @@ impl<'a> Fx<'a, '_> {
             pieces.push(match v {
                 V::S(r) => {
                     self.check_scalar(r, Some(db.exprs[a.value].subtype), elem, "", span)?;
-                    (r, None)
+                    (a, (r, None), None)
                 }
-                V::A(d, _) if a.slice_piece => (d, Some(len)),
+                V::A(d, p) if a.slice_piece => {
+                    if ds > 24 {
+                        let (_, pe) = self.elem_desc(tid, p)?;
+                        self.check_desc(db.base(elem), etid, pe, ed, "aggregate element", span)?;
+                    }
+                    (a, (d, Some(len)), Some(p))
+                }
                 V::A(d, p) => {
                     let what = "aggregate element";
                     self.check_desc(db.base(elem), etid, p, ed, what, span)?;
-                    (d, Some(len))
+                    (a, (d, Some(len)), None)
                 }
             });
         }
         let (size, _) = self.layout(tid, dope);
         let data = self.alloc(size);
-        let bias = self.code_bias(etid);
-        self.put_pieces(data, n, logic, (bias, w), m, &pieces);
+        let count = self.dope_len(dope);
+        let bw = (self.code_bias(etid), w);
+        if assocs.iter().all(|a| a.choices.is_empty()) {
+            let pieces: Vec<_> = pieces.into_iter().map(|p| p.1).collect();
+            self.put_pieces(data, n, logic, bw, m, &pieces);
+            return Ok(V::A(data, dope));
+        }
+        let what = self.msg("aggregate", Dir::To);
+        let pos_of = |fx: &mut Self, idx: Reg| {
+            let pos = fx.reg(RegTy::I64);
+            fx.emit(Inst::Pos {
+                dst: pos,
+                dope,
+                dim: 0,
+                idx,
+                what,
+            });
+            pos
+        };
+        // `others` first: the other associations then overwrite their positions.
+        for (_, piece, _) in pieces.iter().filter(|p| is_others(p.0)) {
+            let piece = *piece;
+            self.for_n(count, |fx, i| {
+                fx.put_at(data, count, logic, bw, m, i, piece);
+                Ok(())
+            })?;
+        }
+        let mut k = self.int(0);
+        let one = self.int(1);
+        for (a, piece, pd) in pieces.into_iter().filter(|p| !is_others(p.0)) {
+            if a.choices.is_empty() {
+                self.put_at(data, count, logic, bw, m, k, piece);
+                k = self.bin(IntOp::Add, k, piece.1.unwrap_or(one));
+                continue;
+            }
+            for c in a.choices.iter() {
+                match (c, pd) {
+                    (Choice::Expr(c), None) => {
+                        let i = self.scalar_expr(*c)?;
+                        let pos = pos_of(self, i);
+                        self.put_at(data, count, logic, bw, m, pos, piece);
+                    }
+                    // The piece fills the range's elements in the aggregate's order.
+                    (Choice::Range(rc), Some(pd)) => {
+                        let r = self.range(rc, span)?;
+                        let d = self.dir_reg(r.dir);
+                        let rd = self.one_dope(r.left, r.right, d);
+                        self.emit(Inst::SubtypeCheck {
+                            dope: pd,
+                            want: rd,
+                            dims: 1,
+                            what,
+                        });
+                        let rn = self.dope_len(rd);
+                        let z = self.int(0);
+                        let some = self.cmp(CmpOp::Gt, rn, z);
+                        let (body, join) = (self.block(), self.block());
+                        self.branch(some, body, join);
+                        self.at(body);
+                        let (lo, hi) = self.low_high(r);
+                        let (pl, ph) = (pos_of(self, lo), pos_of(self, hi));
+                        let first = self.cmp(CmpOp::Lt, pl, ph);
+                        let p = self.select(first, pl, ph, RegTy::I64);
+                        self.put_at(data, count, logic, bw, m, p, piece);
+                        self.jump(join);
+                        self.at(join);
+                    }
+                    (Choice::Range(rc), None) => {
+                        let r = self.range(rc, span)?;
+                        let d = self.dir_reg(r.dir);
+                        let rd = self.one_dope(r.left, r.right, d);
+                        let rn = self.dope_len(rd);
+                        let z = self.int(0);
+                        let up = self.cmp(CmpOp::Eq, d, z);
+                        let m1 = self.int(-1);
+                        let step = self.select(up, one, m1, RegTy::I64);
+                        let left = r.left;
+                        self.for_n(rn, |fx, i| {
+                            let off = fx.bin(IntOp::Mul, i, step);
+                            let idx = fx.bin(IntOp::Add, left, off);
+                            let pos = pos_of(fx, idx);
+                            fx.put_at(data, count, logic, bw, m, pos, piece);
+                            Ok(())
+                        })?;
+                    }
+                    _ => return Err(self.cx.ice(span, "element choice in an array aggregate")),
+                }
+            }
+        }
         Ok(V::A(data, dope))
     }
 

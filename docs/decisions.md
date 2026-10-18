@@ -824,8 +824,19 @@ which tools/difftest parses.
   and direction are those of the index subtype, as for `&`, and a constrained context checks
   the length and gives the bounds. As a variable or signal target, each piece takes as many
   elements as its own target has, from the left, and the pieces must cover the value exactly
-  (checked before anything is assigned). Named pieces, multi-dimensional ones and element
-  subtypes not fixed by the type are E2001.
+  (checked before anything is assigned). A piece under a range choice
+  (`(7 downto 4 => a, others => '0')`, #230) fills the range's elements in the aggregate's
+  order whatever the choice's direction, as both reference simulators do; its length must
+  match the range. An element subtype the type leaves open takes its constraint from a fully
+  constrained context, else from the first value, and every value is checked against it.
+  Pieces exist in 1-D aggregates only (LRM 9.3.3.3; sem rejects them in more dimensions, as
+  the reference simulators do). Named pieces in aggregate *targets* stay E2001: the LRM is
+  unclear there and the reference simulators disagree (one rejects range choices in targets).
+- **Named aggregate bounds take the direction of a constrained context** (#230, LRM
+  9.3.3.3: assignment to a constrained target, constrained initial value, qualified
+  expression, ...): lowering uses sem's result subtype for `AggBounds::Named`, not the
+  index subtype's direction, so `v := (7 => o, 6 downto 0 => '0')` with
+  `v : bit_vector(7 downto 0)` sets `v(7)`.
 - **Signal parameters with records in their type** (#215) pass one signal reference per leaf
   of the formal (in leaf order, each two cells, so the interpreter's parameter copying is
   unchanged), then for `out`/`inout` the caller's driver slot of the first leaf (leaf `k`
@@ -848,8 +859,10 @@ which tools/difftest parses.
   major (logic mirrored). Every name of indices and slices below such a signal (`m(i)`,
   `m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`), as target, actual, alias or sensitivity, selects
   one contiguous range by the same walk as composite signals (`Fx::sig_steps`), so a whole
-  element is all its scalars, not one. Paths through a subtype alias (`LspStep::Rebase`) of
-  such a signal are still E2001.
+  element is all its scalars, not one. A subtype alias step (`LspStep::Rebase`, `Step::Rebase`)
+  takes the alias subtype's descriptor (length-checked) for the steps after it, and an index or
+  slice after a slice (`m(0 to 1)(0)`) counts within the slice, so sensitivity through such an
+  alias and names below a slice use the same walk (#230).
 
 ## Foreign subprograms and `--load` (yavs-lower, yavs-vhpi, CLI, #95, 2026-10-18)
 

@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:aggregate_named_pieces:_p0	11000000
+diag	note	0	0	:aggregate_named_pieces:_p0	00001100 01111100
+diag	note	0	0	:aggregate_named_pieces:_p0	11001010 01111100
+diag	note	0	0	:aggregate_named_pieces:_p0	1,2,9,9,1,2, 1,2,5, 2:4
+diag	note	0	0	:aggregate_named_pieces:_p0	abcdef
+diag	note	0	0	:aggregate_named_pieces:_p0	11111111 00000001 00000010
+diag	note	0	0	:aggregate_named_pieces:_p0	378false
+diag	note	0	0	:aggregate_named_pieces:_p0	1,2, 3:4
+diag	note	0	0	:aggregate_named_pieces:_p0	10000000 335
+diag	note	0	0	:aggregate_named_pieces:_p0	378
+diag	note	1000000	0	:aggregate_named_pieces:_p0	11000011

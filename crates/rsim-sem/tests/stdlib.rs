@@ -94,3 +94,54 @@ fn integer_range_follows_the_revision() {
         assert!(db.static_bounds(db.types[time].first_subtype).is_some());
     }
 }
+
+/// Rule 1 checkpoint (sem.md 10, S3): numeric_std's array subtypes in the one
+/// subtype representation. `UNSIGNED` is `(resolved) UNRESOLVED_UNSIGNED`: no
+/// constraint of its own, an element resolution naming `resolved`, and the base
+/// is an array indexed by NATURAL with STD_ULOGIC elements.
+#[test]
+fn numeric_std_subtypes_rule_1() {
+    use rsim_sem::decl::DeclKind;
+    use rsim_sem::types::{Constrainedness, Resolution, TypeKind};
+    let mut db = Db::new(Options::new(LangRev::Vhdl2008, default_stdlib()));
+    let u = db.load_primary("ieee", "numeric_std").expect("numeric_std");
+    let scope = db.units[u].scope;
+    let find = |db: &Db, key: &str| {
+        let ds = &db.scopes[scope].names[&rsim_syntax::Symbol::intern(key)];
+        match db.decls[ds[0]].kind {
+            DeclKind::Subtype(st) => st,
+            DeclKind::Type(t) => db.types[t].first_subtype,
+            _ => panic!("{key} is not a type"),
+        }
+    };
+    for (name, unres) in [
+        ("unsigned", "unresolved_unsigned"),
+        ("signed", "unresolved_signed"),
+    ] {
+        let st = find(&db, name);
+        let base = db.base(st);
+        assert_eq!(
+            base,
+            db.base(find(&db, unres)),
+            "{name} has the base of {unres}"
+        );
+        assert_eq!(db.constrainedness(st), Constrainedness::Unconstrained);
+        let Some(Resolution::Element(inner)) = &db.subtypes[st].resolution else {
+            panic!("{name}: element resolution expected");
+        };
+        let Resolution::Function(f) = **inner else {
+            panic!("{name}: resolution function expected");
+        };
+        assert_eq!(db.decls[f].name.key().as_str(), "resolved");
+        let TypeKind::Array { indexes, elem } = &db.types[base].kind else {
+            panic!("{name}: array base expected");
+        };
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(Some(indexes[0]), db.well_known.natural);
+        assert_eq!(
+            db.decls[db.types[db.base(*elem)].decl].name.key().as_str(),
+            "std_ulogic"
+        );
+        assert!(db.subtypes[find(&db, unres)].resolution.is_none());
+    }
+}

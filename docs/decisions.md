@@ -241,3 +241,22 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Protected types:** callers are `serial` through M3; the kernel needs no further support.
 - **`SimError` is boxed** (`Deref` to `ErrorInfo`) to keep hot-path `Result`s one word; a panic
   in kernel code becomes an internal error like a panic in process code.
+
+## Semantic analysis (rsim-sem, M1)
+
+- **Static values outside the base range** of their type (the declared range, Q2) are overflow:
+  `E1401` in required contexts, `W1401` elsewhere. Array type definition bounds are required
+  contexts (Q5), so `array (0 to integer'high * 2)` is an error.
+- **Division by zero, `mod`/`rem` by zero, negative integer exponent** in a static expression go
+  through the same rule: `E1401` where the value is required, `W1401` with the run-time check kept
+  otherwise.
+- **Operator declarations (4.5.2, 9.2):** logical operators take 1 or 2 parameters (2008 unary
+  reductions), `+`/`-` 1 or 2, `not`/`abs`/`??` 1, the rest 2; other symbols are `E1303`.
+- **Function parameter modes:** `in` only (`E1360`), except that 2019 files allow `out`/`inout` on
+  impure functions.
+- **Missing subprogram bodies (`E1230`)** are checked at the end of every declarative part except
+  packages (checked at the end of the package body) and protected types (s6). A package without
+  any analyzed body is not checked at analysis.
+- **Type names in messages** are qualified by their region (`work.i1.rec`) only when two names in
+  one message collide.
+

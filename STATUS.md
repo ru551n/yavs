@@ -5,8 +5,24 @@
 | Milestone | State |
 |---|---|
 | M0: workspace, lexer and parser | done: `rsim parse`, corpora below |
-| M1: semantic analysis | design in `docs/design/sem.md` |
+| M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2 to M10 | not started (crate spikes below) |
+
+## sem (`crates/rsim-sem`, M1)
+
+- Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
+  rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt`.
+- `tests/stdlib.rs`: std, ieee packages, and the bodies of math_real, math_complex and
+  numeric_*_unsigned analyze clean. numeric_std, numeric_bit and std_logic_1164 bodies still stop on
+  `E1325` (`x := (others => ...)` assignments need the target subtype as context) and `.all`.
+- Declarations: objects, subprograms (operator arity `E1303`, function parameter modes, missing
+  bodies `E1230`), components, generic and port clauses (components, blocks), attribute
+  declarations and specifications, aliases, protected types.
+- Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
+  indications, file element checks; the rule 1 representation is pinned on numeric_std
+  (`numeric_std_subtypes_rule_1`), review with the user pending.
+- Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
+  range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 
 ## syntax (`crates/rsim-syntax`, M0)
 

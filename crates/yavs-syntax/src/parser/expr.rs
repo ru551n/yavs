@@ -949,16 +949,18 @@ impl Parser<'_> {
         }
     }
 
-    /// `(` positioned: is this a record element constraint `(a(...), ...)`?
+    /// `(` positioned: is this a record element constraint `(a(...)(...), ...)`?
+    /// Not when a name suffix follows the parentheses, as in
+    /// `(g(0)(1).f'range)` (#59).
     fn at_record_constraint(&self) -> bool {
         if !matches!(self.nth(1), Tok::Ident | Tok::ExtIdent) || self.nth(2) != Tok::LParen {
             return false;
         }
-        let after = self.after_matching_paren(self.pos + 2);
-        matches!(
-            self.toks[after].kind,
-            Tok::Comma | Tok::RParen | Tok::LParen
-        )
+        let mut after = self.after_matching_paren(self.pos + 2);
+        while self.toks[after].kind == Tok::LParen {
+            after = self.after_matching_paren(after);
+        }
+        matches!(self.toks[after].kind, Tok::Comma | Tok::RParen)
     }
 
     fn paren_constraint(&mut self) -> PResult<Constraint> {

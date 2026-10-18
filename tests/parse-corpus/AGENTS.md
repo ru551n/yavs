@@ -18,5 +18,4 @@ YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus
 YAVS_BLESS=1 YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus   # rewrite lists, review the diff
 ```
 
-Open issues (snapshot 2026-10-18): #59 UVVM `hvvc_to_vvc_bridge_sbi.vhd` E0002; #87 periodic
-parse-corpus gate. Decisions about these lists go here in the same commit (root rule 24).
+Open issues (snapshot 2026-10-18): #87 periodic parse-corpus gate. Decisions about these lists go here in the same commit (root rule 24).

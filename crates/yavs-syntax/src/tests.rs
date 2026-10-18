@@ -212,7 +212,9 @@ fn subtype_indications() {
         subtype f is arr_t(open)(7 downto 0);
         subtype g is arr_t(idx_t, x'range);
         subtype h is t'subtype;
-        subtype i is (elem resolved, other f) rec_t;"));
+        subtype i is (elem resolved, other f) rec_t;
+        subtype j is arr_t(g(g'low)(g(g'low)'high).f'range);
+        subtype k is rec_t(f1(open)(3 downto 0), f2(1 to 2));"));
     let decls = pkg_decls(&d);
     let st = |i: usize| match &decls[i] {
         Decl::Subtype(s) => &s.subtype,
@@ -243,6 +245,12 @@ fn subtype_indications() {
     );
     assert!(matches!(st(7).type_mark.kind, NameKind::Attribute { .. }));
     assert!(matches!(&st(8).resolution, Some(Resolution::Record(v)) if v.len() == 2));
+    assert!(matches!(
+        &st(9).constraint,
+        Some(Constraint::Array { indexes: Some(ix), .. })
+            if matches!(ix[..], [DiscreteRange::Range(Range::Name(_))])
+    ));
+    assert!(matches!(&st(10).constraint, Some(Constraint::Record(v, _)) if v.len() == 2));
 }
 
 #[test]

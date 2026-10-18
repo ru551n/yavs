@@ -1501,7 +1501,9 @@ impl Machine {
                     CheckKind::Length => {
                         let l = self.ri(lo);
                         if x != l {
-                            return rt_err(format!("length {x} does not match length {l} of {w}"));
+                            return rt_err(format!(
+                                "value length {x} does not match {w} length {l}"
+                            ));
                         }
                     }
                     CheckKind::Null => {
@@ -1569,9 +1571,13 @@ impl Machine {
                     let (a, b) = (len(self, self.r(dope))?, len(self, self.r(want))?);
                     if a != b {
                         let (w, _) = self.check_msg(what);
+                        let dim = if dims > 1 {
+                            format!(" for dimension {}", k + 1)
+                        } else {
+                            String::new()
+                        };
                         return rt_err(format!(
-                            "length {a} of dimension {} does not match length {b} of {w}",
-                            k + 1
+                            "value length {a}{dim} does not match {w} length {b}"
                         ));
                     }
                 }

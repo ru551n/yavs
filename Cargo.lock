@@ -1520,6 +1520,7 @@ dependencies = [
 name = "yavs-lower"
 version = "0.3.0"
 dependencies = [
+ "tempfile",
  "yavs-diag",
  "yavs-elab",
  "yavs-ffi",

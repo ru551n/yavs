@@ -344,6 +344,9 @@ fn corpus_groups() {
         for f in files {
             let name = format!("{g}/{}", f.file_stem().unwrap().to_string_lossy());
             let expected = std::fs::read_to_string(f.with_extension("expected")).unwrap();
+            // Testbenches write files relative to the working directory: give each its own.
+            let cwd = tempfile::tempdir().unwrap();
+            std::env::set_current_dir(cwd.path()).unwrap();
             let got = simulate(&f);
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {

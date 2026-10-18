@@ -1503,9 +1503,7 @@ impl<'a> Fx<'a, '_> {
             return self.aggregate_comp(assocs, bounds, st, span);
         }
         if assocs.iter().any(|a| a.slice_piece) {
-            return Err(self
-                .cx
-                .unsupported(span, "aggregates with array-valued elements (2008)"));
+            return self.aggregate_pieces(assocs, bounds, st, span);
         }
         let (index, elem) = (indexes[0], *elem);
         let dope = match bounds {
@@ -1665,7 +1663,7 @@ impl<'a> Fx<'a, '_> {
         Ok(())
     }
 
-    fn one_dope(&mut self, left: Reg, right: Reg, dir: Reg) -> Reg {
+    pub(crate) fn one_dope(&mut self, left: Reg, right: Reg, dir: Reg) -> Reg {
         let at = self.alloc_n(24);
         let parts = self.fb.regs(&[left, right, dir]);
         self.emit(Inst::MakeDope { at, parts });
@@ -2636,61 +2634,198 @@ impl<'a> Fx<'a, '_> {
         });
         let (size, _) = self.layout(tid, dope);
         let data = self.alloc(size);
-        // Element offsets of the two operands: from the left, or from the right for planes.
-        let (oa, ob) = if logic { (lb, z) } else { (z, la) };
-        for (k, (r, len)) in ops.iter().enumerate() {
-            let off = if k == 0 { oa } else { ob };
-            match len {
-                None if logic => {
-                    let bias = self.code_bias(tid);
-                    let v = self.enc(*r, bias);
-                    self.emit(Inst::LSet {
-                        base: data,
-                        idx: off,
-                        v,
-                    })
-                }
-                None => {
-                    let a = self.reg(RegTy::Ptr);
-                    self.emit(Inst::Index {
-                        dst: a,
-                        base: data,
-                        pos: off,
-                        stride: w.bytes(),
-                    });
-                    self.store(a, *r, w);
-                }
-                Some(len) if logic => self.emit(Inst::LCopy {
-                    dst: data,
-                    dst_off: off,
-                    src: *r,
-                    src_off: z,
-                    n: *len,
-                }),
-                Some(len) => {
-                    let a = self.reg(RegTy::Ptr);
-                    self.emit(Inst::Index {
-                        dst: a,
-                        base: data,
-                        pos: off,
-                        stride: w.bytes(),
-                    });
-                    let wb = self.int(i64::from(w.bytes()));
-                    let bytes = self.bin(IntOp::Mul, *len, wb);
-                    self.emit(Inst::Copy {
-                        dst: a,
-                        src: *r,
-                        bytes,
-                    });
-                }
-            }
-        }
+        let m = self.int(if logic { 1 } else { i64::from(w.bytes()) });
+        let bias = self.code_bias(tid);
+        self.put_pieces(data, n, logic, (bias, w), m, &ops);
         // Two null operands: the result is the right operand (LRM 9.2.5 a).
         if let (Some(_), Some(rd)) = (ops[0].1, right_dope) {
             let data = self.select(null, ops[1].0, data, RegTy::Ptr);
             let dope = self.select(null, rd, dope, RegTy::Ptr);
             return Ok(V::A(data, dope));
         }
+        Ok(V::A(data, dope))
+    }
+
+    /// Store `pieces` (a scalar value, or array data and its element count) one after another
+    /// from the left into the 1-D array `data` of `n` elements, each `m` plane elements
+    /// (`logic`) or `m` bytes; scalars are encoded with `bias` or stored with width `w`.
+    #[allow(clippy::too_many_arguments)]
+    fn put_pieces(
+        &mut self,
+        data: Reg,
+        n: Reg,
+        logic: bool,
+        (bias, w): (i64, Width),
+        m: Reg,
+        pieces: &[(Reg, Option<Reg>)],
+    ) {
+        let one = self.int(1);
+        let z = self.int(0);
+        let total = self.bin(IntOp::Mul, n, m);
+        let mut k = z;
+        for &(r, len) in pieces {
+            let at = self.bin(IntOp::Mul, k, m);
+            let units = len.map(|len| self.bin(IntOp::Mul, len, m));
+            if logic {
+                // Planes hold the leftmost element last.
+                let x = self.bin(IntOp::Sub, total, at);
+                let off = self.bin(IntOp::Sub, x, units.unwrap_or(one));
+                match units {
+                    None => {
+                        let v = self.enc(r, bias);
+                        self.emit(Inst::LSet {
+                            base: data,
+                            idx: off,
+                            v,
+                        })
+                    }
+                    Some(units) => self.emit(Inst::LCopy {
+                        dst: data,
+                        dst_off: off,
+                        src: r,
+                        src_off: z,
+                        n: units,
+                    }),
+                }
+            } else {
+                let a = self.reg(RegTy::Ptr);
+                self.emit(Inst::Index {
+                    dst: a,
+                    base: data,
+                    pos: at,
+                    stride: 1,
+                });
+                match units {
+                    None => self.store(a, r, w),
+                    Some(bytes) => self.emit(Inst::Copy {
+                        dst: a,
+                        src: r,
+                        bytes,
+                    }),
+                }
+            }
+            k = self.bin(IntOp::Add, k, len.unwrap_or(one));
+        }
+    }
+
+    /// A positional 1-D aggregate with 2008 array-valued pieces (`(a, '1', b)`, `(rows, row)`):
+    /// the pieces concatenated, bounds as for `&` (LRM 9.3.3.3), checked against a
+    /// constrained context. Element subtypes must be fixed by the type.
+    pub(crate) fn aggregate_pieces(
+        &mut self,
+        assocs: &[AggAssoc],
+        bounds: &AggBounds,
+        st: SubtypeId,
+        span: Span,
+    ) -> R<V> {
+        let db = self.db;
+        let t = db.base(st);
+        let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
+            return Err(self.cx.ice(span, "aggregate pieces of a non-array"));
+        };
+        let (index, elem) = (indexes[0], *elem);
+        let tid = self.ty(t, span)?;
+        if indexes.len() != 1 {
+            return Err(self.cx.unsupported(
+                span,
+                "multi-dimensional aggregates with array-valued elements (2008)",
+            ));
+        }
+        if assocs.iter().any(|a| !a.choices.is_empty()) {
+            return Err(self
+                .cx
+                .unsupported(span, "named aggregates with array-valued elements (2008)"));
+        }
+        if self.desc_size(tid) > 24 {
+            return Err(self.cx.unsupported(
+                span,
+                "array-valued aggregate elements of an unconstrained element subtype",
+            ));
+        }
+        let etid = self.ty(db.base(elem), span)?;
+        let scalar = crate::composite::scalar_w(self.fb.program(), etid);
+        let logic = self.is_logic(tid);
+        let mut vals = Vec::new();
+        let mut n = self.int(0);
+        for a in assocs {
+            let v = self.expr(a.value)?;
+            let len = if a.slice_piece {
+                let (_, p) = self.arr(v, span)?;
+                self.dope_len(p)
+            } else {
+                self.int(1)
+            };
+            n = self.bin(IntOp::Add, n, len);
+            vals.push((a, v, len));
+        }
+        let s = self.scalar_bounds(index, span)?;
+        let one = self.int(1);
+        let last = self.bin(IntOp::Sub, n, one);
+        let right = match s.dir {
+            Dr::Static(Direction::To) => self.bin(IntOp::Add, s.left, last),
+            Dr::Static(Direction::Downto) => self.bin(IntOp::Sub, s.left, last),
+            Dr::Dyn(_) => return Err(self.cx.ice(span, "index subtype with a runtime direction")),
+        };
+        let dir = self.dir_reg(s.dir);
+        let mut dope = self.one_dope(s.left, right, dir);
+        let z = self.int(0);
+        let null = self.cmp(CmpOp::Eq, n, z);
+        let ok = self.not(null);
+        let (lo, hi) = self.low_high(s);
+        let what = self.msg(
+            &format!("the aggregate ({})", ty::subtype_name(db, index)),
+            ir_dir(s.dir),
+        );
+        let chk = self.select(ok, right, s.left, RegTy::I64);
+        self.emit(Inst::Check {
+            kind: CheckKind::Index,
+            v: chk,
+            lo,
+            hi,
+            what,
+        });
+        if matches!(bounds, AggBounds::Context)
+            && let Some(want) = self.subtype_dope(st, span)?
+        {
+            let what = self.msg("aggregate", Dir::To);
+            self.emit(Inst::SubtypeCheck {
+                dope,
+                want,
+                dims: 1,
+                what,
+            });
+            dope = want;
+        }
+        let (_, ed) = self.elem_desc(tid, dope)?;
+        // Units per element: plane elements of a logic array, else bytes.
+        let (m, w) = match scalar {
+            Some(w) => (self.int(if logic { 1 } else { i64::from(w.bytes()) }), w),
+            None if logic => (self.layout(etid, ed).1, Width::B8),
+            None => {
+                let l = self.lay(tid, dope);
+                let sa = self.offset(l, 16);
+                (self.load(sa, Width::B8, RegTy::I64), Width::B8)
+            }
+        };
+        let mut pieces = Vec::new();
+        for (a, v, len) in vals {
+            pieces.push(match v {
+                V::S(r) => {
+                    self.check_scalar(r, Some(db.exprs[a.value].subtype), elem, "", span)?;
+                    (r, None)
+                }
+                V::A(d, _) if a.slice_piece => (d, Some(len)),
+                V::A(d, p) => {
+                    let what = "aggregate element";
+                    self.check_desc(db.base(elem), etid, p, ed, what, span)?;
+                    (d, Some(len))
+                }
+            });
+        }
+        let (size, _) = self.layout(tid, dope);
+        let data = self.alloc(size);
+        let bias = self.code_bias(etid);
+        self.put_pieces(data, n, logic, (bias, w), m, &pieces);
         Ok(V::A(data, dope))
     }
 

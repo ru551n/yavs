@@ -1195,9 +1195,7 @@ impl Fx<'_, '_> {
         };
         let dims = indexes.len() as u8;
         if assocs.iter().any(|a| a.slice_piece) {
-            return Err(self
-                .cx
-                .unsupported(span, "aggregates with array-valued elements (2008)"));
+            return self.aggregate_pieces(assocs, bounds, st, span);
         }
         // Descriptor: the context subtype's, else from the bounds of each level.
         let desc = match bounds {

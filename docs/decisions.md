@@ -779,6 +779,13 @@ which tools/difftest parses.
 - **A target's driver slot** is the `ProcessInfo::drivers` entry with the same prefix, compared
   structurally with folded indices (`Db::same_lsp`, sem's deduplication), so a static element
   assigned twice in one process finds the one entry sem kept (#215).
+- **2008 array-valued aggregate pieces** (#89, LRM 9.3.3.3): a positional 1-D aggregate
+  whose elements are slices or elements is the concatenation of its pieces; its left bound
+  and direction are those of the index subtype, as for `&`, and a constrained context checks
+  the length and gives the bounds. As a variable or signal target, each piece takes as many
+  elements as its own target has, from the left, and the pieces must cover the value exactly
+  (checked before anything is assigned). Named pieces, multi-dimensional ones and element
+  subtypes not fixed by the type are E2001.
 - **Arrays of arrays without records** (#89) stay one kernel signal of all their scalars, row
   major (logic mirrored). Every name of indices and slices below such a signal (`m(i)`,
   `m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`), as target, actual, alias or sensitivity, selects

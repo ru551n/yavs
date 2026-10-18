@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:aggregate_pieces:_p0	10100101 1010101010
+diag	note	0	0	:aggregate_pieces:_p0	1,2,3, 1,2,1,2,9,
+diag	note	0	0	:aggregate_pieces:_p0	5,6,7, 8,
+diag	note	0	0	:aggregate_pieces:_p0	he|llo|abcdef
+diag	note	0	0	:aggregate_pieces:_p0	00000001 00000010 11111111
+diag	note	0	0	:aggregate_pieces:_p0	10101010 00000010 00000001
+diag	note	0	0	:aggregate_pieces:_p0	916
+diag	note	0	0	:aggregate_pieces:_p0	783truefalse
+diag	note	2000000	0	:aggregate_pieces:_p0	101011 101 011 1,2,1,2,
+diag	note	2000000	0	:aggregate_pieces:_p0	1,2, 3 4,5,
+diag	note	5000000	0	:aggregate_pieces:_p0	3,1,2,

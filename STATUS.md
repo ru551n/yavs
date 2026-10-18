@@ -162,7 +162,8 @@ attributes including 'path_name/'instance_name, 'driving/'driving_value and sign
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
 (arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); nested names of signals of arrays of arrays
-(`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`) as targets, actuals and sensitivity (#89); package
+(`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`) as targets, actuals and sensitivity (#89);
+2008 array-valued pieces of positional aggregates as values and targets (#89); package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
 bounds too, shared protected variables, package signals and files); composite architecture
 constants evaluated once per region (#73). `tests/corpus.rs` runs every corpus group plus

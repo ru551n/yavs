@@ -248,7 +248,12 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - User resolution functions: yavs-elab lowers them (`Ir::resolvers`) and the kernel resolver
   calls `yavs_interp::resolve` (driving values as an array `0 to n - 1`); bit-plane leaves
   are not handled yet.
-- Not yet: force of composite signals, 2008 slice-valued aggregate elements, nested
+- 2008 array-valued pieces of positional 1-D aggregates (`(a, '1', b)`, `(rows, row)`) are
+  concatenated with bounds as for `&` (`aggregate_pieces`, `put_pieces`, shared with `&`); as
+  aggregate targets each piece takes as many elements as its target has, the cover checked
+  first (#89).
+- Not yet: force of composite signals, named or multi-dimensional aggregates with
+  array-valued pieces and pieces whose element subtype is not fixed by the type, nested
   subprograms of protected methods reading state variables, methods of protected types in
   generic package instances (generic instantiation, #71), user resolution of logic leaves.
 

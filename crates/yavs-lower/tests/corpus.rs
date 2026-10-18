@@ -28,6 +28,7 @@ const PASS: &[&str] = &[
     "arith/real_arith",
     "arith/real_to_int_range",
     "arith/time_arith",
+    "composite/aggregate_pieces",
     "composite/array_records",
     "composite/nested_selections",
     "composite/arrays_aggregates",

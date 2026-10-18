@@ -622,12 +622,69 @@ impl Fx<'_, '_> {
         let (_, rt, w) = self.scalar(elem, span)?;
         let count = self.dope_len(dope);
         let m = self.msg("aggregate target", Dir::To);
-        for (k, a) in assocs.iter().enumerate() {
+        // The position of the next positional element; a 2008 slice piece takes as many
+        // elements as its target has, from there.
+        if assocs.iter().any(|a| a.slice_piece) {
+            // The pieces must cover the value exactly (LRM 10.6.2.1), checked first.
+            let want = self.pieces_dope(assocs, false, span)?;
+            self.emit(Inst::SubtypeCheck {
+                dope,
+                want,
+                dims: 1,
+                what: m,
+            });
+        }
+        let mut k = self.int(0);
+        for a in assocs.iter() {
             if a.slice_piece {
-                return Err(self.cx.unsupported(span, "slices in aggregate targets"));
+                if !a.choices.is_empty() {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "named slices in aggregate targets"));
+                }
+                let what = self.target_name(a.value);
+                let p = self.place(a.value)?;
+                let Place::Array { dope: pd, .. } = p else {
+                    return Err(self.cx.ice(span, "slice piece of a scalar target"));
+                };
+                let len = self.dope_len(pd);
+                let (size, _) = self.layout(tid, pd);
+                let src = if logic {
+                    // Planes hold the leftmost element last.
+                    let piece = self.alloc(size);
+                    let r = self.bin(IntOp::Sub, count, k);
+                    let src_off = self.bin(IntOp::Sub, r, len);
+                    let z = self.int(0);
+                    self.emit(Inst::LCopy {
+                        dst: piece,
+                        dst_off: z,
+                        src: data,
+                        src_off,
+                        n: len,
+                    });
+                    piece
+                } else {
+                    let a = self.reg(RegTy::Ptr);
+                    self.emit(Inst::Index {
+                        dst: a,
+                        base: data,
+                        pos: k,
+                        stride: w.bytes(),
+                    });
+                    a
+                };
+                let st = db.exprs[a.value].subtype;
+                self.store_place(p, crate::expr::V::A(src, pd), st, &what, span)?;
+                k = self.bin(IntOp::Add, k, len);
+                continue;
             }
             let pos = match a.choices.first() {
-                None => self.int(k as i64),
+                None => {
+                    let pos = k;
+                    let one = self.int(1);
+                    k = self.bin(IntOp::Add, k, one);
+                    pos
+                }
                 Some(Choice::Expr(c)) if a.choices.len() == 1 => {
                     let i = self.scalar_expr(*c)?;
                     let p = self.reg(RegTy::I64);
@@ -668,6 +725,36 @@ impl Fx<'_, '_> {
             self.store_place(p, crate::expr::V::S(x), elem, &what, span)?;
         }
         Ok(())
+    }
+
+    /// A descriptor `0 to n - 1` for the `n` elements a positional aggregate target with
+    /// slice pieces covers (`signal`: its elements are signal names).
+    fn pieces_dope(
+        &mut self,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        signal: bool,
+        span: Span,
+    ) -> R<Reg> {
+        let mut n = self.int(0);
+        for a in assocs {
+            let len = if !a.slice_piece {
+                self.int(1)
+            } else if signal {
+                match self.sig_name(a.value)?.2 {
+                    Some(d) => self.dope_len(d),
+                    None => return Err(self.cx.ice(span, "slice piece of a scalar signal")),
+                }
+            } else {
+                match self.place(a.value)? {
+                    Place::Array { dope, .. } => self.dope_len(dope),
+                    _ => return Err(self.cx.ice(span, "slice piece of a scalar target")),
+                }
+            };
+            n = self.bin(IntOp::Add, n, len);
+        }
+        let (z, one) = (self.int(0), self.int(1));
+        let last = self.bin(IntOp::Sub, n, one);
+        Ok(self.one_dope(z, last, z))
     }
 
     fn target_name(&self, e: ExprId) -> String {
@@ -906,11 +993,95 @@ impl Fx<'_, '_> {
             }
         };
         let m = self.msg("aggregate target", Dir::To);
-        for (k, (a, lsp)) in assocs.iter().zip(target.lsps.iter()).enumerate() {
+        // The position of the next positional element; a 2008 slice piece takes as many
+        // elements as its target has, from there.
+        if assocs.iter().any(|a| a.slice_piece) {
+            // The pieces must cover every value exactly (LRM 10.5.2.1), checked first.
+            let want = self.pieces_dope(assocs, true, span)?;
+            for &(_, (_, dope)) in &vals {
+                self.emit(Inst::SubtypeCheck {
+                    dope,
+                    want,
+                    dims: 1,
+                    what: m,
+                });
+            }
+        }
+        let mut k = self.int(0);
+        for (a, lsp) in assocs.iter().zip(target.lsps.iter()) {
             if a.slice_piece {
-                return Err(self
-                    .cx
-                    .unsupported(span, "slices in aggregate signal targets"));
+                if !a.choices.is_empty() {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "named slices in aggregate signal targets"));
+                }
+                let slot = self.driver_of(lsp)?;
+                let (_, sref, tdope) = self.sig_name(a.value)?;
+                let Some(td) = tdope else {
+                    return Err(self.cx.ice(span, "slice piece of a scalar signal"));
+                };
+                let len = self.dope_len(td);
+                let (size, _) = self.layout(vtid, td);
+                // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
+                let seven = self.int(7);
+                let r = self.bin(IntOp::Add, size, seven);
+                let eight = self.int(8);
+                let q = self.bin(IntOp::Div, r, eight);
+                let r8 = self.bin(IntOp::Mul, q, eight);
+                let stride = self.bin(IntOp::Add, r8, eight);
+                let nv = self.int(vals.len() as i64);
+                let total = self.bin(IntOp::Mul, stride, nv);
+                let wave = self.alloc(total);
+                for (j, &(at, (data, dope))) in vals.iter().enumerate() {
+                    let jj = self.int(j as i64);
+                    let o = self.bin(IntOp::Mul, jj, stride);
+                    let e = self.reg(RegTy::Ptr);
+                    self.emit(Inst::Index {
+                        dst: e,
+                        base: wave,
+                        pos: o,
+                        stride: 1,
+                    });
+                    self.store(e, at, Width::B8);
+                    let va = self.offset(e, 8);
+                    if vlogic {
+                        // Planes hold the leftmost element last.
+                        let count = self.dope_len(dope);
+                        let r = self.bin(IntOp::Sub, count, k);
+                        let src_off = self.bin(IntOp::Sub, r, len);
+                        let z = self.int(0);
+                        self.emit(Inst::LCopy {
+                            dst: va,
+                            dst_off: z,
+                            src: data,
+                            src_off,
+                            n: len,
+                        });
+                    } else {
+                        let p = self.reg(RegTy::Ptr);
+                        self.emit(Inst::Index {
+                            dst: p,
+                            base: data,
+                            pos: k,
+                            stride: vw.bytes(),
+                        });
+                        self.emit(Inst::Copy {
+                            dst: va,
+                            src: p,
+                            bytes: size,
+                        });
+                    }
+                }
+                self.emit(Inst::Drive {
+                    driver: slot,
+                    target: Some(sref),
+                    wave,
+                    n: nv,
+                    mode,
+                    reject,
+                });
+                k = self.bin(IntOp::Add, k, len);
+                continue;
             }
             let slot = self.driver_of(lsp)?;
             let (_, sref, tdope) = self.sig_name(a.value)?;
@@ -926,9 +1097,16 @@ impl Fx<'_, '_> {
             let (_, _, tw) = self.scalar(st, span)?;
             let stride = if tlogic { 8 + 32 } else { 16 };
             let wave = self.alloc_n(stride * vals.len() as u32);
+            let next = match a.choices.first() {
+                None => {
+                    let one = self.int(1);
+                    Some(self.bin(IntOp::Add, k, one))
+                }
+                _ => None,
+            };
             for (j, &(at, (data, dope))) in vals.iter().enumerate() {
                 let pos = match a.choices.first() {
-                    None => self.int(k as i64),
+                    None => k,
                     Some(Choice::Expr(c)) if a.choices.len() == 1 => {
                         let i = self.scalar_expr(*c)?;
                         let p = self.reg(RegTy::I64);
@@ -991,6 +1169,9 @@ impl Fx<'_, '_> {
                 mode,
                 reject,
             });
+            if let Some(next) = next {
+                k = next;
+            }
         }
         Ok(())
     }

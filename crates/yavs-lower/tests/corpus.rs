@@ -139,6 +139,7 @@ const PASS: &[&str] = &[
     "scalar/string_attrs",
     "scalar/subtype_range",
     "scalar/time_attrs",
+    "scalar/time_bounds",
     "sigassign/assign_inertial",
     "sigassign/assign_reject",
     "sigassign/assign_transport",

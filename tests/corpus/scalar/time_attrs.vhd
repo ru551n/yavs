@@ -5,7 +5,7 @@ begin
   process
     variable t : time := 1500 ps;
   begin
-    assert time'low = -9223372036854775807 fs or time'low < 0 fs severity failure;
+    assert time'low = -9223372036854775807 fs - 1 fs severity failure;
     assert 1 ns = 1000 ps and 1 us = 1000 ns and 1 ms = 1000 us and 1 sec = 1000 ms severity failure;
     assert t = 1.5 ns and t / 3 = 500 ps and t * 2 = 3 ns and t / 500 ps = 1 + 2 severity failure;
     assert abs(-t) = t and t mod 1 ns = 500 ps and -t < 0 fs severity failure;

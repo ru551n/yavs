@@ -273,7 +273,7 @@ package STANDARD is
   -- end record;
 
   -- Predefined type TIME:
-  type TIME is range -9223372036854775807 to 9223372036854775807
+  type TIME is range -9223372036854775807 - 1 to 9223372036854775807
     units
       fs;             -- femtosecond
       ps  = 1000 fs;  -- picosecond

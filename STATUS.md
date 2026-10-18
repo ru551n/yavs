@@ -20,7 +20,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
 |---|---|---|---|---|
 | check | 7 | 127 | 123 | signal aliases #203 |
 | com | 0 | 135 | 10 | protected body initialiser #204 (fixed, not re-measured) |
-| data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208, binary files #79 |
+| data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files #79 |
 | dictionary | 0 | 8 | 0 | #203 |
 | logging | 112 | 1 | 0 | #207 |
 | path | 0 | 2 | 0 | #203 |

@@ -312,6 +312,7 @@ mod tests {
     fn checked_ops() {
         assert!(add(i64::MAX, 1).is_err());
         assert!(sub(i64::MIN, 1).is_err());
+        assert_eq!(sub(-i64::MAX, 1), Ok(i64::MIN));
         assert!(mul(i64::MAX, 2).is_err());
         assert!(div(i64::MIN, -1).is_err());
         assert!(div(1, 0).is_err());

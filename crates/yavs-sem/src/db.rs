@@ -127,6 +127,9 @@ pub struct Db {
     /// External names of the current unit already built, by AST node address (built once:
     /// candidates need the subtype, the HIR is the same).
     pub(crate) ext_memo: HashMap<usize, ExprId>,
+    /// The type mark as written of a parameter (by its object decl) and of a function's
+    /// result (by the subprogram decl), for messages in the user's spelling (8.3).
+    pub(crate) written_marks: HashMap<DeclId, Span>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     pub(crate) incomplete_ok: bool,
@@ -235,6 +238,7 @@ impl Db {
             required_ctx: false,
             inst_types: Vec::new(),
             ext_memo: HashMap::new(),
+            written_marks: HashMap::new(),
             incomplete_ok: false,
             context_subtype: None,
             top_context: None,

@@ -24,6 +24,12 @@ An installed binary finds `lib/` next to itself (#43).
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45).
+- Overload diagnostics (#51): association errors of the only candidate (`E1100` unknown formal,
+  `E1310` formal twice, `E1311` missing actual, `E1301` at the first extra argument), procedures
+  used as functions and functions used as statements (`E1300`), no function with the expected
+  result type (`E1301`), an ambiguous procedure call reported at the one actual that decides it
+  (`E1302` with a qualification help in the declaration's spelling), candidate lists in help, and
+  hints for calls from several packages and for vector/integer operators.
 - `tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
   math_complex, numeric_std, numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019).
   `numeric_std_body_rule_1` is the rule 1 review: every object and object alias of the numeric_std

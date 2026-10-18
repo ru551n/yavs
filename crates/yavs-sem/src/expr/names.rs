@@ -763,7 +763,7 @@ impl Db {
             .iter()
             .map(|p| (p.name.key, self.base(p.subtype), p.default.is_some()))
             .collect();
-        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)?;
+        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
         let mut convs = 0;
         for (i, (_, ft, has_default)) in formals.iter().enumerate() {
             match map[i].map(|a| &args[a].actual) {
@@ -1126,7 +1126,7 @@ impl Db {
         let formals: Vec<(Symbol, SubtypeId)> =
             s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
-        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)?;
+        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
         let mut hargs = Vec::with_capacity(formals.len());
         // 9.4.3: a pure function call with globally static actuals is globally static
         // (sem folds only the implicit operations, so user calls never become locally static).
@@ -1645,33 +1645,56 @@ fn actual_span(a: &ast::Actual) -> Option<Span> {
     }
 }
 
+/// Why an association list does not fit a formal list (6.5.7.1), with the index of the
+/// offending association.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AssocErr {
+    /// A positional association after the last formal.
+    TooMany(usize),
+    /// A named association whose formal is not a parameter.
+    Unknown(usize),
+    /// A named association of a formal associated before.
+    Twice(usize),
+    /// Positional after named, or a formal that is not a simple name.
+    Other,
+}
+
 /// Map formals (by key) to association indexes: positional first, then named.
-/// `None` if the association does not fit (too many, unknown or repeated name).
+/// `Err` if the association does not fit (too many, unknown or repeated name).
 // ponytail: named association by simple formal name only; sub-element and conversion
 // formals (6.5.7.1) come with S5.
-pub(crate) fn assoc_map(formals: &[Symbol], args: &[ast::AssocElem]) -> Option<Vec<Option<usize>>> {
+pub(crate) fn assoc_map(
+    formals: &[Symbol],
+    args: &[ast::AssocElem],
+) -> Result<Vec<Option<usize>>, AssocErr> {
     let mut map = vec![None; formals.len()];
     let mut named = false;
     for (k, a) in args.iter().enumerate() {
         match &a.formal {
             None => {
-                if named || k >= formals.len() {
-                    return None;
+                if named {
+                    return Err(AssocErr::Other);
+                }
+                if k >= formals.len() {
+                    return Err(AssocErr::TooMany(k));
                 }
                 map[k] = Some(k);
             }
             Some(f) => {
                 named = true;
                 let ast::NameKind::Simple(i) = &f.kind else {
-                    return None;
+                    return Err(AssocErr::Other);
                 };
-                let pos = formals.iter().position(|&x| x == i.key)?;
+                let pos = formals
+                    .iter()
+                    .position(|&x| x == i.key)
+                    .ok_or(AssocErr::Unknown(k))?;
                 if map[pos].is_some() {
-                    return None;
+                    return Err(AssocErr::Twice(k));
                 }
                 map[pos] = Some(k);
             }
         }
     }
-    Some(map)
+    Ok(map)
 }

@@ -618,6 +618,9 @@ impl Db {
                     format!("no visible `\"{sym}\"` accepts these operands"),
                 )
                 .with_primary(e.span, format!("no matching {what}"));
+                if let Some(h) = self.vector_integer_hint(scope, e) {
+                    d = d.with_help(h);
+                }
                 if let Visible::Overloads(ds) = self.lookup(scope, operator_key(sym)) {
                     let n = ds.len();
                     for &c in ds.iter().take(MAX_CANDIDATE_LABELS) {
@@ -691,6 +694,10 @@ impl Db {
                         return;
                     }
                 }
+                if let NameRes::Overloads(ds) = self.classify(scope, prefix) {
+                    self.no_function(prefix, args, &ds);
+                    return;
+                }
                 self.report(
                     Diagnostic::error(
                         diag::NO_OVERLOAD,
@@ -700,10 +707,38 @@ impl Db {
                 );
                 return;
             }
+            if let K::Name(n) = &e.kind
+                && let NameRes::Overloads(ds) = self.classify(scope, n)
+                && self.procedures_only(n, &ds)
+            {
+                return;
+            }
             self.report(
                 Diagnostic::error(diag::NOT_AN_OBJECT, "this name does not denote a value")
                     .with_primary(e.span, "not an object, literal or function"),
             );
+            return;
+        }
+        // Only function calls, none returning the expected type (12.5).
+        if let (K::Name(_), Expected::Type(t)) = (&e.kind, exp)
+            && let Some(calls) = is
+                .iter()
+                .map(|i| match i.via {
+                    Via::Call(d) => Some(self.entity(d)),
+                    _ => None,
+                })
+                .collect::<Option<Vec<DeclId>>>()
+        {
+            let tn = self.type_name(t);
+            let mut d = Diagnostic::error(
+                diag::NO_OVERLOAD,
+                format!("no function `{}` returns `{tn}`", self.decls[calls[0]].name),
+            )
+            .with_primary(e.span, format!("expected `{tn}`"));
+            for &c in calls.iter().take(MAX_CANDIDATE_LABELS) {
+                d = self.candidate_label(d, c);
+            }
+            self.report(d);
             return;
         }
         let mut ts: Vec<TypeId> = is.iter().map(|i| i.ty).collect();
@@ -769,9 +804,36 @@ impl Db {
                 _ => d = d.with_note(format!("could be of type `{}`", self.type_name(i.ty))),
             }
         }
-        self.report(
-            d.with_help("qualify an operand (`t'(x)`) or use a selected name (`pkg.\"+\"`)"),
-        );
+        // A call whose candidates come from several packages: name the first one.
+        let callee = match &e.kind {
+            ast::ExprKind::Name(ast::Name {
+                kind: ast::NameKind::Apply { prefix, .. },
+                ..
+            }) => Some(prefix.span),
+            ast::ExprKind::Name(n) => Some(n.span),
+            _ => None,
+        };
+        let regions: Option<Vec<String>> = best
+            .iter()
+            .map(|i| match i.via {
+                Via::Call(c) => Some(crate::mangle::region(
+                    self,
+                    self.decls[self.entity(c)].scope,
+                )),
+                _ => None,
+            })
+            .collect();
+        let help = match (callee, regions) {
+            (Some(sp), Some(rs)) if rs.iter().any(|r| *r != rs[0]) && !rs[0].is_empty() => {
+                format!(
+                    "qualify the operand or use a selected name (`{}.{}`)",
+                    rs[0],
+                    self.source_text(sp)
+                )
+            }
+            _ => "qualify an operand (`t'(x)`) or use a selected name (`pkg.\"+\"`)".into(),
+        };
+        self.report(d.with_help(help));
     }
 
     /// The name of a type for messages (8.3): anonymous base types say so.
@@ -970,6 +1032,27 @@ impl Db {
                 .copied()
                 .filter(|&d| matches!(self.decls[self.entity(d)].kind.subprogram(), Some(s) if matches!(s.kind, crate::decl::SubprogramKind::Procedure)))
                 .collect();
+            if procs.is_empty()
+                && let Some(f) = ds.iter().copied().find(|&d| {
+                    self.decls[self.entity(d)]
+                        .kind
+                        .subprogram()
+                        .is_some_and(|s| s.ret.is_some())
+                })
+            {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::TYPE_MISMATCH,
+                        format!(
+                            "function `{}` cannot be called as a statement",
+                            self.decls[f].name
+                        ),
+                    )
+                    .with_primary(prefix.span, "a function call is an expression")
+                    .with_secondary(self.decls[self.entity(f)].span, "declared here")
+                    .with_help("assign or use its result, or call a procedure"),
+                ));
+            }
             if procs.is_empty() {
                 return Err(self.error(
                     Diagnostic::error(
@@ -991,7 +1074,7 @@ impl Db {
                     .iter()
                     .map(|p| (p.name.key, self.base(p.subtype), p.default.is_some()))
                     .collect();
-                let Some(map) = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)
+                let Ok(map) = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)
                 else {
                     continue;
                 };
@@ -1029,6 +1112,18 @@ impl Db {
                 _ => prefix.span,
             };
             let Some(min) = best.iter().map(|b| b.1).min() else {
+                let mut one: Vec<DeclId> = Vec::new();
+                for &d in &procs {
+                    let e = self.entity(d);
+                    if !one.contains(&e) {
+                        one.push(e);
+                    }
+                }
+                if let [p] = one[..]
+                    && let Some(r) = self.assoc_mismatch(p, args, callee_span)
+                {
+                    return Err(r);
+                }
                 let mut d = Diagnostic::error(
                     diag::NO_OVERLOAD,
                     format!(
@@ -1050,15 +1145,20 @@ impl Db {
             };
             best.retain(|b| b.1 == min);
             if best.len() > 1 {
-                let mut d = Diagnostic::error(diag::AMBIGUOUS, "this procedure call is ambiguous")
-                    .with_primary(prefix.span, "several procedures fit");
-                for (c, _) in &best {
-                    let sig = self.signature(*c);
-                    d = d.with_secondary(self.decls[*c].span, sig);
+                let cands: Vec<DeclId> = best.iter().map(|b| b.0).collect();
+                let mut d = match self.ambiguous_actual(scope, &cands, args) {
+                    Some(d) => d,
+                    None => Diagnostic::error(diag::AMBIGUOUS, "this procedure call is ambiguous")
+                        .with_primary(prefix.span, "several procedures fit")
+                        .with_help(
+                            "use a selected name such as `pkg.proc`, or qualify an argument",
+                        ),
+                };
+                for c in cands {
+                    let sig = self.signature(c);
+                    d = d.with_secondary(self.decls[c].span, sig);
                 }
-                return Err(self.error(
-                    d.with_help("use a selected name such as `pkg.proc`, or qualify an argument"),
-                ));
+                return Err(self.error(d));
             }
             let method_of = match (&prefix.kind, owners.iter().find(|o| o.0 == best[0].0)) {
                 (ast::NameKind::Selected { prefix: obj, .. }, Some(&(_, t))) => {
@@ -1104,6 +1204,323 @@ impl Db {
                     .with_secondary(obj.span, "this prefix is not a protected object"),
             ),
         }
+    }
+}
+
+/// Overload diagnostics of calls (8.3): association errors of the only candidate, calls of
+/// procedures as functions, ambiguous actuals.
+impl Db {
+    /// A secondary label at candidate `c` with its signature (a note for implicit ones).
+    fn candidate_label(&self, d: Diagnostic, c: DeclId) -> Diagnostic {
+        let sig = self.signature(c);
+        let sp = self.decls[c].span;
+        if sp != Span::default() {
+            d.with_secondary(sp, sig)
+        } else {
+            d.with_note(format!("candidate: {sig}"))
+        }
+    }
+
+    /// `pr` or `pr(..)` used as a value where every overload is a procedure: E1300.
+    fn procedures_only(&mut self, callee: &ast::Name, ds: &[DeclId]) -> bool {
+        let procs = !ds.is_empty()
+            && ds.iter().all(|&d| {
+                matches!(
+                    self.decls[self.entity(d)].kind.subprogram(),
+                    Some(s) if s.ret.is_none()
+                )
+            });
+        if procs {
+            let e = self.entity(ds[0]);
+            let d = Diagnostic::error(
+                diag::TYPE_MISMATCH,
+                format!("procedure `{}` does not return a value", self.decls[e].name),
+            )
+            .with_primary(callee.span, "a procedure call is a statement")
+            .with_secondary(self.decls[e].span, "declared here");
+            self.report(d);
+        }
+        procs
+    }
+
+    /// `f(args)` matching no overload `ds` of `f` (E1301), or the association error
+    /// of the only function `f` (E1100, E1301, E1310, E1311).
+    fn no_function(&mut self, prefix: &ast::Name, args: &[ast::AssocElem], ds: &[DeclId]) {
+        let mut fns: Vec<DeclId> = Vec::new();
+        for &d in ds {
+            let e = self.entity(d);
+            if self.decls[e]
+                .kind
+                .subprogram()
+                .is_some_and(|s| s.ret.is_some())
+                && !fns.contains(&e)
+            {
+                fns.push(e);
+            }
+        }
+        if fns.is_empty() && self.procedures_only(prefix, ds) {
+            return;
+        }
+        if let [f] = fns[..]
+            && self.assoc_mismatch(f, args, prefix.span).is_some()
+        {
+            return;
+        }
+        let name = fns.first().map_or_else(
+            || self.source_text(prefix.span),
+            |&f| self.decls[f].name.to_string(),
+        );
+        let mut d = Diagnostic::error(
+            diag::NO_OVERLOAD,
+            format!("no function `{name}` matches the call"),
+        )
+        .with_primary(prefix.span, "no matching function");
+        for &f in fns.iter().take(MAX_CANDIDATE_LABELS) {
+            d = self.candidate_label(d, f);
+        }
+        if !fns.is_empty() && fns.len() <= MAX_CANDIDATE_LABELS {
+            let list: Vec<String> = fns
+                .iter()
+                .map(|&f| format!("`{}`", self.short_signature(f)))
+                .collect();
+            d = d.with_help(format!("candidates: {}", list.join(", ")));
+        }
+        self.report(d);
+    }
+
+    /// The association list `args` does not fit subprogram `d` itself (6.5.7.1): report
+    /// why. `None` when it fits, so only the argument types are wrong.
+    fn assoc_mismatch(
+        &mut self,
+        d: DeclId,
+        args: &[ast::AssocElem],
+        callee: Span,
+    ) -> Option<crate::Reported> {
+        use super::names::{AssocErr, assoc_map};
+        let e = self.entity(d);
+        let s = self.decls[e].kind.subprogram()?;
+        let keys: Vec<yavs_syntax::Symbol> = s.params.iter().map(|p| p.name.key).collect();
+        let what = match s.kind {
+            crate::decl::SubprogramKind::Procedure => "procedure",
+            crate::decl::SubprogramKind::Function { .. } => "function",
+        };
+        let name = self.decls[e].name;
+        let formal = |k: usize| match &args[k].formal {
+            Some(ast::Name {
+                kind: ast::NameKind::Simple(i),
+                span,
+            }) => Some((*i, *span)),
+            _ => None,
+        };
+        let d = match assoc_map(&keys, args) {
+            Ok(map) => {
+                // No actual, or `open` (6.5.6.2), for a formal without a default.
+                let (p, m) = s.params.iter().zip(&map).find(|(p, m)| {
+                    p.default.is_none()
+                        && m.is_none_or(|a| matches!(args[a].actual, ast::Actual::Open(_)))
+                })?;
+                let how = if m.is_some() {
+                    "is open"
+                } else {
+                    "has no actual"
+                };
+                Diagnostic::error(
+                    diag::MISSING_ACTUAL,
+                    format!(
+                        "formal `{}` of {what} `{name}` {how} and has no default",
+                        p.name.text
+                    ),
+                )
+                .with_primary(callee, format!("no actual for `{}`", p.name.text))
+            }
+            Err(AssocErr::TooMany(k)) => {
+                let n = s.params.len();
+                Diagnostic::error(
+                    diag::NO_OVERLOAD,
+                    format!(
+                        "{what} `{name}` takes {n} argument{}, found {}",
+                        if n == 1 { "" } else { "s" },
+                        args.len()
+                    ),
+                )
+                .with_primary(args[k].span, "extra argument")
+            }
+            Err(AssocErr::Unknown(k)) => {
+                let (i, sp) = formal(k)?;
+                Diagnostic::error(
+                    diag::NOT_DECLARED,
+                    format!("{what} `{name}` has no parameter `{}`", i.text),
+                )
+                .with_primary(sp, "no such parameter")
+            }
+            Err(AssocErr::Twice(k)) => {
+                let (i, sp) = formal(k)?;
+                let pos = keys.iter().position(|&x| x == i.key)?;
+                let first = (0..k).find(|&j| match &args[j].formal {
+                    None => j == pos,
+                    Some(_) => formal(j).is_some_and(|(f, _)| f.key == i.key),
+                })?;
+                Diagnostic::error(
+                    diag::FORMAL_TWICE,
+                    format!("formal `{}` is associated twice", i.text),
+                )
+                .with_primary(sp, "associated again here")
+                .with_secondary(args[first].span, "first associated here")
+            }
+            Err(AssocErr::Other) => return None,
+        };
+        let d = self.candidate_label(d, e);
+        Some(self.error(d))
+    }
+
+    /// Procedure call candidates `cands` that differ only in the type of one actual:
+    /// E1302 at that actual, with a qualification as help.
+    fn ambiguous_actual(
+        &mut self,
+        scope: ScopeId,
+        cands: &[DeclId],
+        args: &[ast::AssocElem],
+    ) -> Option<Diagnostic> {
+        use super::names::assoc_map;
+        // Per candidate, the formal (decl, subtype) of each association.
+        let mut per: Vec<Vec<(Option<DeclId>, crate::ids::SubtypeId)>> = Vec::new();
+        for &c in cands {
+            let s = self.decls[self.entity(c)].kind.subprogram()?;
+            let keys: Vec<yavs_syntax::Symbol> = s.params.iter().map(|p| p.name.key).collect();
+            let map = assoc_map(&keys, args).ok()?;
+            let mut f = vec![(None, self.poison.subtype); args.len()];
+            for (k, m) in map.iter().enumerate() {
+                if let Some(a) = *m {
+                    f[a] = (s.params[k].decl, s.params[k].subtype);
+                }
+            }
+            per.push(f);
+        }
+        let mut differ = (0..args.len()).filter(|&a| {
+            per.iter()
+                .any(|f| self.base(f[a].1) != self.base(per[0][a].1))
+        });
+        let a = differ.next()?;
+        if differ.next().is_some() {
+            return None;
+        }
+        let ast::Actual::Expr(x) = &args[a].actual else {
+            return None;
+        };
+        let mut inner = x;
+        while let ast::ExprKind::Paren(i) = &inner.kind {
+            inner = i;
+        }
+        let text = self.source_text(x.span);
+        use ast::LiteralKind as L;
+        let (msg, what) = match &inner.kind {
+            ast::ExprKind::Aggregate(_) => ("this aggregate is ambiguous".to_string(), "aggregate"),
+            ast::ExprKind::Literal(l) => match &l.kind {
+                L::Char(_) => (
+                    format!("character literal `{text}` is ambiguous"),
+                    "literal",
+                ),
+                L::String(_) | L::BitString(_) => ("string literal is ambiguous".into(), "literal"),
+                L::Null => ("`null` is ambiguous".into(), "literal"),
+                L::Abstract(_) | L::Physical { .. } => {
+                    ("numeric literal is ambiguous".into(), "literal")
+                }
+            },
+            ast::ExprKind::Name(_) => match self.cands(scope, x) {
+                CandSet::Types(is) if is.iter().all(|i| matches!(i.via, Via::EnumLit(_))) => (
+                    format!("enumeration literal `{text}` is ambiguous"),
+                    "literal",
+                ),
+                CandSet::Types(is) if is.iter().all(|i| matches!(i.via, Via::Call(_))) => {
+                    (format!("call of `{text}` is ambiguous"), "call")
+                }
+                _ => (format!("`{text}` is ambiguous"), "expression"),
+            },
+            _ => ("this argument is ambiguous".into(), "expression"),
+        };
+        let (fd, fst) = per[0][a];
+        let mark = self.written(fd, fst);
+        let q = if text.starts_with('(') {
+            format!("{mark}'{text}")
+        } else {
+            format!("{mark}'({text})")
+        };
+        Some(
+            Diagnostic::error(diag::AMBIGUOUS, msg)
+                .with_primary(x.span, "fits several procedures")
+                .with_help(format!("qualify the {what}: `{q}`")),
+        )
+    }
+
+    /// The type mark of parameter or function `d` as its declaration wrote it
+    /// (`integer`, not `INTEGER`), else the name of subtype `st`.
+    fn written(&self, d: Option<DeclId>, st: crate::ids::SubtypeId) -> String {
+        match d.and_then(|d| self.written_marks.get(&d)) {
+            Some(&sp) => self.source_text(sp),
+            None => self.subtype_name(st),
+        }
+    }
+
+    /// `f (x: integer) return integer`: a candidate in a help line, as written.
+    fn short_signature(&self, d: DeclId) -> String {
+        let e = self.entity(d);
+        let decl = &self.decls[e];
+        let Some(s) = decl.kind.subprogram() else {
+            return decl.name.to_string();
+        };
+        let params: Vec<String> = s
+            .params
+            .iter()
+            .map(|p| format!("{}: {}", p.name.text, self.written(p.decl, p.subtype)))
+            .collect();
+        let mut out = decl.name.to_string();
+        if !params.is_empty() {
+            out += &format!(" ({})", params.join("; "));
+        }
+        if let Some(r) = s.ret {
+            out += &format!(" return {}", self.written(Some(e), r));
+        }
+        out
+    }
+
+    /// 8.3: an operator applied to a numeric_std/numeric_bit vector and an integer.
+    fn vector_integer_hint(&mut self, scope: ScopeId, e: &ast::Expr) -> Option<String> {
+        let ast::ExprKind::Binary { left, right, .. } = &e.kind else {
+            return None;
+        };
+        let types = |db: &mut Db, x: &ast::Expr| match db.cands(scope, x) {
+            CandSet::Types(is) => is.iter().map(|i| i.ty).collect(),
+            CandSet::Class(_) => Vec::new(),
+        };
+        let (l, r) = (types(self, left), types(self, right));
+        // ponytail: keyed on the type names of numeric_std/numeric_bit; a table of known
+        // conversions (8.3 "type mismatch") if more hints are wanted.
+        let vector = |db: &Db, ts: &[TypeId]| {
+            ts.iter().find_map(|&t| {
+                let n = db.type_name(t).to_ascii_lowercase();
+                if n.ends_with("unsigned") {
+                    Some("to_unsigned")
+                } else if n.ends_with("signed") {
+                    Some("to_signed")
+                } else {
+                    None
+                }
+            })
+        };
+        let integer = |db: &Db, ts: &[TypeId]| {
+            ts.iter().any(|&t| {
+                matches!(
+                    db.types[t].kind,
+                    TypeKind::Integer | TypeKind::UniversalInteger
+                )
+            })
+        };
+        let f = match (vector(self, &l), vector(self, &r)) {
+            (Some(f), None) if integer(self, &r) => f,
+            (None, Some(f)) if integer(self, &l) => f,
+            _ => return None,
+        };
+        Some(format!("use `{f}(x, n)` to convert an integer to a vector"))
     }
 }
 

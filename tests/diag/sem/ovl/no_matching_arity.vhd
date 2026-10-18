@@ -1,5 +1,5 @@
 -- yavs-test: std=2008
--- expect: E1301 14:10 no function `f` matches the call
+-- expect: E1301 14:15 function `f` takes 1 argument, found 2
 -- LRM 12.5
 package p is
   function f (x : integer) return integer;

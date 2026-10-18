@@ -7,6 +7,6 @@ use ieee.numeric_std.all;
 package p is
   signal u : unsigned(3 downto 0);
   signal s : unsigned(3 downto 0);
-  signal b : boolean;
+  signal b : integer;
   constant c : boolean := u and b;
 end package;

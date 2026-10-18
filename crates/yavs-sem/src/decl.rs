@@ -929,6 +929,9 @@ impl Db {
             Some(n) => Some(self.type_mark(if generics.is_some() { pscope } else { scope }, n)?),
             None => None,
         };
+        if let Some(n) = &s.return_type {
+            self.written_marks.insert(decl, n.span);
+        }
         if s.return_ident.is_some() {
             return Err(self.unsupported(s.span, "named return values", "S7"));
         }
@@ -1310,6 +1313,9 @@ impl Db {
                 name.span,
             );
             self.declare(pscope, decl);
+            if let Some(ast::IncompleteSubtype::Subtype(si)) = &o.subtype {
+                self.written_marks.insert(decl, si.type_mark.span);
+            }
             out.push(Param {
                 name,
                 class,

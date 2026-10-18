@@ -5,6 +5,22 @@ GUI"), `docs/design/ir.md` (sections 1.2 to 1.5, 2, 7), `docs/design/sem.md` sec
 crate owns no IR types: it builds `rsim_ir::Program` through rsim-ir's builder and runs the
 rsim-ir verifier on every function it emits.
 
+## Modules and owners
+
+| Module | Area | Owner |
+|---|---|---|
+| `lib.rs` | public API (`Lowerer`, `UnitIr`), `Cx`, `Obj` locations, codes | lower (additive changes welcome) |
+| `func.rs` | `Fx`, frames, parameters, declarations, subprograms, processes, architectures | lower |
+| `expr.rs` | scalar expressions, calls, implicit operations, attributes, names, 1-D arrays, aggregates of scalars | lower |
+| `stmt.rs` | sequential statements, waits, signal assignments | lower |
+| `ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` (core); record/access/file/protected `Ty` arms | lower (core), lower2 (composite arms) |
+| `composite.rs`, `access.rs`, `protected.rs`, `file.rs`, ... | records, nested arrays, access types, protected types, textio/files, resolution, force/release | lower2 |
+
+Hooks for lower2: `Fx::{expr, scalar_expr, place, store_place, range, subtype_dope, layout,
+check_scalar, call}`, `Obj` variants (add new ones rather than changing existing ones),
+`Cx::unsupported`. Unsupported constructs in lower's files report `E2001`; replace such an arm by
+a call into your module in a small commit.
+
 ## Shape
 
 - Input: an analyzed `rsim_sem::Db` (no error diagnostics; lowering a unit with errors is an ICE)

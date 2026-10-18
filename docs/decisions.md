@@ -22,6 +22,18 @@ milestone users care about works.
 - Release workflow: triggered by a `v*` tag; builds `yavs` for Linux x86_64, Linux aarch64 and
   Windows x86_64 (with `yavs.lib` for VHPI plugins and `lib/` std/ieee sources), runs the CI
   checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
+- Packaging (agent, 2026-10-18, #165): `yavs-<version>-<target>.tar.gz` (Linux) or `.zip`
+  (Windows) holding `yavs`, `lib/` (`std`, `ieee`, `LICENSE`, `AUTHORS.md`, `SOURCES.md`,
+  `README.md`, `ORDER.md`, `NATIVE.md`, `SHA256SUMS`; not the Synopsys testbenches or agent
+  files), `LICENSE-MIT`, `LICENSE-APACHE` and `README.md`. The binary finds `lib/` next to itself
+  (#43); a release build never falls back to the build machine's checkout. `yavs.lib` is not
+  shipped while the `yavs` binary does not link `yavs-vhpi` (#124). The tag must equal
+  `v<workspace version>`; notes come from `docs/release-notes/<tag>.md`. `workflow_dispatch`
+  with `dry_run` builds the archives as workflow artifacts and publishes nothing.
+- CI (agent, 2026-10-18, #134): fmt, clippy and tests with default features on ubuntu-24.04,
+  ubuntu-24.04-arm and windows-latest (MSVC). No LLVM, no external corpora (#63), no qemu/Wine
+  runs (the aarch64 and Windows runners are native). The release workflow calls the same
+  workflow on the tagged commit.
 - First release: `v0.1.0` (the workspace version), marked pre-release, notes listing what works
   and the known gaps. Once the trigger is met, the user's request counts as approval to publish it.
 

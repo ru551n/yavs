@@ -1,0 +1,108 @@
+# Release on a `v*` tag (#165, docs/decisions.md "Release trigger and first release"): the CI
+# checks on the tagged commit, a release build of `yavs` per platform, archives with `lib/`,
+# SHA256SUMS and a GitHub pre-release with notes from docs/release-notes/<tag>.md.
+# workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
+# and publishes nothing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and package only, do not publish
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p yavs
+      - name: Package
+        run: |
+          name="yavs-$VERSION-${{ matrix.target }}"
+          mkdir -p "dist/$name/lib"
+          cp -r lib/std lib/ieee lib/LICENSE lib/AUTHORS.md lib/SOURCES.md lib/README.md \
+            lib/ORDER.md lib/NATIVE.md lib/SHA256SUMS "dist/$name/lib/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
+          cd dist
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp ../target/release/yavs.exe "$name/"
+            # yavs.lib (VHPI import library, #124) is only built with yavs-vhpi, which the
+            # yavs binary does not link yet.
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            cp ../target/release/yavs "$name/"
+            tar czf "$name.tar.gz" "$name"
+          fi
+          # Smoke test: the unpacked tree finds its lib/ (#43).
+          printf 'entity t is end;\narchitecture a of t is begin\nprocess begin report "ok"; wait; end process;\nend;\n' > t.vhd
+          env -u YAVS_STDLIB "$name/yavs" analyze --work=work:w t.vhd
+          env -u YAVS_STDLIB "$name/yavs" run --work=work:w t | grep -q ': ok'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yavs-${{ matrix.target }}
+          path: |
+            dist/yavs-*.tar.gz
+            dist/yavs-*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS and notes
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          test -s "docs/release-notes/v$version.md"
+          cd dist && sha256sum yavs-* > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+      - name: GitHub release
+        if: github.event_name == 'push' || !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --prerelease --verify-tag \
+            --title "yavs ${GITHUB_REF_NAME#v}" --notes-file "docs/release-notes/$GITHUB_REF_NAME.md"

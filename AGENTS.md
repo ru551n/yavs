@@ -109,7 +109,9 @@ to, and those documents win over your memory.
 16. **No testbench may run longer than 5 minutes.** Shrink the scenario, never weaken assertions.
 
 ### Git and collaboration
-17. **Current phase: push straight to `main`** (no branches, no PRs, no CI yet). Rebase on
+17. **Current phase: push straight to `main`** (no branches, no PRs). CI
+    (`.github/workflows/ci.yml`) runs the rule 13 checks on Linux x86_64, Linux aarch64 and
+    Windows x86_64 for every push: watch your run (`gh run watch`) and fix a red one. Rebase on
     `origin/main` first; push only with no rebase in progress and a clean tree. If the push is
     rejected, rebase again and re-run the checks. **Before every push run
     `git diff --stat origin/main..HEAD`** (or `git show --stat HEAD`) and confirm every path is

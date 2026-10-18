@@ -10,6 +10,15 @@
 | M4: VUnit end to end | first VUnit testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and VUnit's `examples/vhdl/user_guide` give the right pass/fail per test with the VUnit `rsim-integration` branch; VUnit's own suites next (#112) |
 | M3 to M10 | not started (crate spikes below) |
 
+## CI and releases
+
+`.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on
+ubuntu-24.04, ubuntu-24.04-arm and windows-latest (MSVC) for every push to main and every pull
+request (#134); not yet in CI: LLVM tier, corpus gates (#63). `.github/workflows/release.yml`
+builds and packages `yavs` with `lib/` for the three targets on a `v*` tag and publishes a
+pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives.
+An installed binary finds `lib/` next to itself (#43).
+
 ## sem (`crates/yavs-sem`, M1)
 
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional

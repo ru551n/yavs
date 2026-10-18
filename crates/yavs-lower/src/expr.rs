@@ -63,6 +63,25 @@ pub(crate) enum Place {
     },
 }
 
+/// One selection below a composite signal.
+#[derive(Clone, Copy)]
+pub(crate) enum Step<'d> {
+    Field(u32),
+    Index(&'d [ExprId]),
+    Slice(&'d RangeC),
+}
+
+/// The part of a composite signal that a name selects (`Fx::comp_select`).
+pub(crate) struct SigPart {
+    pub t: TypeId,
+    pub tid: TyId,
+    pub desc: Reg,
+    /// Its field path from the signal.
+    pub path: Vec<u32>,
+    /// Each leaf below it, a reference to its selected elements and their count.
+    pub leaves: Vec<(crate::RecLeaf, Reg, Reg)>,
+}
+
 fn dir_cell(d: Direction) -> i64 {
     match d {
         Direction::To => 0,
@@ -77,7 +96,7 @@ fn ir_dir(d: Dr) -> Dir {
     }
 }
 
-impl Fx<'_, '_> {
+impl<'a> Fx<'a, '_> {
     pub fn arr(&mut self, v: V, span: Span) -> R<(Reg, Reg)> {
         match v {
             V::A(d, p) => Ok((d, p)),
@@ -304,8 +323,10 @@ impl Fx<'_, '_> {
         let obj = self.cx.objs.get(&d).copied();
         match obj {
             Some(Obj::RecSignal) => {
-                let st = ty::obj_subtype(db, d).ok_or(Failed)?;
-                self.read_record_signal(d, &[], st, span)
+                // ponytail: any name below a composite signal reads all of it, then selects;
+                // read only the selected part (`comp_select`) if large memories need it.
+                let p = self.comp_select(d, &[], span)?;
+                self.read_comp(&p, span)
             }
             Some(Obj::Scalar { space, off, w }) => {
                 let rt = self.obj_rt(d);
@@ -641,15 +662,20 @@ impl Fx<'_, '_> {
         let db = self.db;
         let x = &db.exprs[e];
         let span = x.span;
-        if let Some((d, path)) = self.field_path(e) {
-            let leaves = self.leaves_under(d, &path);
-            let [leaf] = leaves.as_slice() else {
+        if let Some((d, steps)) = self.comp_steps(e) {
+            let p = self.comp_select(d, &steps, span)?;
+            let [(leaf, r, _)] = p.leaves.as_slice() else {
                 return Err(self
                     .cx
-                    .unsupported(span, "record parts of record signals here"));
+                    .unsupported(span, "record parts of composite signals here"));
             };
-            let (r, dope) = self.leaf_sig(leaf, span)?;
-            return Ok((d, r, dope));
+            if leaf.path != p.path {
+                return Err(self
+                    .cx
+                    .unsupported(span, "record parts of composite signals here"));
+            }
+            let dope = ty::is_array(db, p.t).then_some(p.desc);
+            return Ok((d, *r, dope));
         }
         let (prefix, sel) = match &x.kind {
             ExprKind::Obj(d) => {
@@ -738,18 +764,28 @@ impl Fx<'_, '_> {
         }
     }
 
-    /// `(signal, field path)` when `e` names a record signal or a field of one.
-    pub fn field_path(&self, e: ExprId) -> Option<(DeclId, Vec<u32>)> {
-        let mut path = Vec::new();
+    /// The steps from a composite signal (`Obj::RecSignal`) down to the part `e` names.
+    pub fn comp_steps(&self, e: ExprId) -> Option<(DeclId, Vec<Step<'a>>)> {
+        let db = self.db;
+        let mut steps = Vec::new();
         let mut e = e;
         loop {
-            match &self.db.exprs[e].kind {
+            match &db.exprs[e].kind {
                 ExprKind::Field { prefix, elem } => {
-                    path.insert(0, *elem);
+                    steps.push(Step::Field(*elem));
+                    e = *prefix;
+                }
+                ExprKind::Index { prefix, indices } => {
+                    steps.push(Step::Index(indices));
+                    e = *prefix;
+                }
+                ExprKind::Slice { prefix, range } => {
+                    steps.push(Step::Slice(range));
                     e = *prefix;
                 }
                 ExprKind::Obj(d) if matches!(self.cx.objs.get(d), Some(Obj::RecSignal)) => {
-                    return Some((*d, path));
+                    steps.reverse();
+                    return Some((*d, steps));
                 }
                 ExprKind::Obj(d) if self.alias_target(*d).is_some() => {
                     e = self.alias_target(*d)?.0;
@@ -759,7 +795,7 @@ impl Fx<'_, '_> {
         }
     }
 
-    /// The leaves of record signal `d` under field path `path`, in leaf order.
+    /// The leaves of composite signal `d` under field path `path`, in leaf order.
     pub fn leaves_under(&self, d: DeclId, path: &[u32]) -> Vec<crate::RecLeaf> {
         self.cx
             .rec_leaves
@@ -773,86 +809,318 @@ impl Fx<'_, '_> {
             .unwrap_or_default()
     }
 
-    /// A reference to all of leaf `l` of a record signal, and its descriptor for an array.
-    pub fn leaf_sig(&mut self, l: &crate::RecLeaf, span: Span) -> R<(Reg, Option<Reg>)> {
-        if !ty::is_array(self.db, self.db.base(l.st)) {
-            return Ok((self.sigval(l.sig), None));
-        }
-        let Some(dope) = self.subtype_dope(l.st, span)? else {
-            return Err(self
-                .cx
-                .unsupported(span, "unconstrained array fields of record signals"));
+    /// Elements of all dimensions of one level of an array of type `tid`.
+    fn elems(&mut self, tid: TyId, desc: Reg) -> Reg {
+        let dims = match self.fb.program().types().get(tid) {
+            Some(Ty::Array { dims, .. }) => *dims,
+            _ => 1,
         };
-        let tid = self.ty(self.db.base(l.st), span)?;
-        let (_, count) = self.layout(tid, dope);
-        let z = self.int(0);
-        Ok((self.sigval_at(l.sig, z, count), Some(dope)))
+        let mut n = self.int(1);
+        for dim in 0..dims {
+            let m = self.reg(RegTy::I64);
+            self.emit(Inst::DopeLen {
+                dst: m,
+                dope: desc,
+                dim,
+            });
+            n = self.bin(IntOp::Mul, n, m);
+        }
+        n
     }
 
-    /// Read the part of record signal `d` at field path `path` (of subtype `st`) into a new
-    /// record value, leaf by leaf.
-    pub fn read_record_signal(
-        &mut self,
-        d: DeclId,
-        path: &[u32],
-        st: SubtypeId,
-        span: Span,
-    ) -> R<V> {
-        let t = self.db.base(st);
-        let tid = self.ty(t, span)?;
-        let Some(desc) = self.desc_of(st, None, span)? else {
-            return Err(self.cx.unsupported(span, "unconstrained record signals"));
-        };
-        let size = self.size_of(tid, desc);
-        let buf = self.alloc(size);
-        for l in self.leaves_under(d, path) {
-            let (addr, _) = self.leaf_addr(t, tid, buf, desc, &l.path[path.len()..], span)?;
-            let (s, dope) = self.leaf_sig(&l, span)?;
-            if dope.is_some() {
-                self.emit(Inst::SigRead { dst: addr, sig: s });
-                continue;
+    /// Elements of the leaf at field path `rel` in one value of type `t` (descriptor `desc`).
+    fn leaf_count(&mut self, t: TypeId, desc: Reg, rel: &[u32], span: Span) -> R<Reg> {
+        let db = self.db;
+        let (mut t, mut desc, mut rel) = (t, desc, rel);
+        let mut n = self.int(1);
+        loop {
+            let tid = self.ty(t, span)?;
+            match &db.types[t].kind {
+                TypeKind::Record { .. } => {
+                    let [f, rest @ ..] = rel else {
+                        return Err(self.cx.ice(span, "leaf path ends at a record"));
+                    };
+                    desc = self.field_desc(tid, desc, *f, span)?;
+                    t = db.base(self.field_subtype(t, *f)?);
+                    rel = rest;
+                }
+                TypeKind::Array { elem, .. } => {
+                    let m = self.elems(tid, desc);
+                    n = self.bin(IntOp::Mul, n, m);
+                    desc = self.elem_desc(tid, desc)?.1;
+                    t = db.base(*elem);
+                }
+                _ => return Ok(n),
             }
-            let ltid = self.ty(self.db.base(l.st), span)?;
-            let (_, rt, w) = self.scalar(l.st, span)?;
-            let raw = self.reg(RegTy::I64);
-            self.emit(Inst::SigReadScalar { dst: raw, sig: s });
-            let bias = self.code_bias(ltid);
-            let v = self.dec(raw, bias);
-            let v = if rt == RegTy::F64 {
-                let f = self.reg(RegTy::F64);
-                self.emit(Inst::Move { dst: f, src: v });
-                f
-            } else {
-                v
-            };
-            self.store(addr, v, w);
         }
-        Ok(V::A(buf, desc))
     }
 
-    /// Address (and descriptor) of the field at `path` inside the record of type `t` at
-    /// `(base, desc)`.
-    pub fn leaf_addr(
+    /// The part of composite signal `d` that `steps` select, with a reference to the selected
+    /// elements of each leaf below it. Offsets follow the one sub-element map (rule 2, the
+    /// rule of `yavs_elab::NetGraph::select`): a leaf holds its field of every element in row
+    /// major order, mirrored for logic leaves.
+    pub fn comp_select(&mut self, d: DeclId, steps: &[Step<'_>], span: Span) -> R<SigPart> {
+        let db = self.db;
+        let st = ty::obj_subtype(db, d).ok_or(Failed)?;
+        let root_t = db.base(st);
+        let Some(root) = self.desc_of(st, None, span)? else {
+            return Err(self.cx.unsupported(span, "unconstrained composite signals"));
+        };
+        let what = db.decls[d].name.to_string();
+        let (mut t, mut desc) = (root_t, root);
+        let mut path = Vec::new();
+        // `count` consecutive instances of the part, from instance `offset`, each of type
+        // `inst` (the element type after a slice).
+        let (mut offset, mut count) = (self.int(0), self.int(1));
+        let mut inst: Option<(TypeId, Reg)> = None;
+        for s in steps {
+            if inst.is_some() {
+                return Err(self
+                    .cx
+                    .unsupported(span, "names below a slice of a composite signal"));
+            }
+            let tid = self.ty(t, span)?;
+            match *s {
+                Step::Field(n) => {
+                    desc = self.field_desc(tid, desc, n, span)?;
+                    t = db.base(self.field_subtype(t, n)?);
+                    path.push(n);
+                }
+                Step::Index(ix) => {
+                    let n = self.elems(tid, desc);
+                    let lin = self.flat_pos(desc, ix, &what)?;
+                    let o = self.bin(IntOp::Mul, offset, n);
+                    offset = self.bin(IntOp::Add, o, lin);
+                    desc = self.elem_desc(tid, desc)?.1;
+                    t = db.base(ty::array_of(db, t).ok_or(Failed)?.0);
+                }
+                Step::Slice(r) => {
+                    let n = self.elems(tid, desc);
+                    let (p, len, nd) = self.slice_of(desc, r, &what, span)?;
+                    let o = self.bin(IntOp::Mul, offset, n);
+                    offset = self.bin(IntOp::Add, o, p);
+                    count = len;
+                    let ed = self.elem_desc(tid, desc)?.1;
+                    inst = Some((db.base(ty::array_of(db, t).ok_or(Failed)?.0), ed));
+                    desc = self.slice_desc(tid, desc, nd);
+                }
+            }
+        }
+        let (it, idesc) = inst.unwrap_or((t, desc));
+        let mut leaves = Vec::new();
+        for l in self.leaves_under(d, &path) {
+            let total = self.leaf_count(root_t, root, &l.path, span)?;
+            let k = self.leaf_count(it, idesc, &l.path[path.len()..], span)?;
+            let a = self.bin(IntOp::Mul, offset, k);
+            let len = self.bin(IntOp::Mul, count, k);
+            let ltid = self.ty(db.base(l.st), span)?;
+            let a = if self.is_logic(ltid) {
+                let r = self.bin(IntOp::Sub, total, a);
+                self.bin(IntOp::Sub, r, len)
+            } else {
+                a
+            };
+            let r = self.sigval_at(l.sig, a, len);
+            leaves.push((l, r, len));
+        }
+        let tid = self.ty(t, span)?;
+        Ok(SigPart {
+            t,
+            tid,
+            desc,
+            path,
+            leaves,
+        })
+    }
+
+    /// Plane code bias, logic flag and scalar width of the elements of leaf `l`.
+    fn leaf_facts(&mut self, l: &crate::RecLeaf, span: Span) -> R<(bool, i64, Width)> {
+        let mut t = self.db.base(l.st);
+        while let Some((e, _)) = ty::array_of(self.db, t) {
+            t = self.db.base(e);
+        }
+        let tid = self.ty(t, span)?;
+        let w = crate::composite::scalar_w(self.fb.program(), tid).ok_or_else(|| {
+            self.cx
+                .ice(span, "leaf of a composite signal is not scalar")
+        })?;
+        let logic = self.is_logic(tid);
+        Ok((logic, self.code_bias(tid), w))
+    }
+
+    /// Copy the leaf at field path `rel` of the value of type `t` at `(addr, desc)` between
+    /// the value and the leaf buffer `buf` (`leaf_copy`), run by run in row-major order: a
+    /// scalar, or an array of scalars stored as one block; `k` is the leaf position of the
+    /// run's first element, a register this advances.
+    #[allow(clippy::too_many_arguments)]
+    fn leaf_walk(
         &mut self,
         t: TypeId,
-        tid: TyId,
-        base: Reg,
+        addr: Reg,
         desc: Reg,
-        path: &[u32],
+        rel: &[u32],
+        k: Reg,
+        buf: (Reg, Reg),
+        facts: (bool, i64, Width),
+        into_value: bool,
         span: Span,
-    ) -> R<(Reg, Reg)> {
-        let (mut t, mut tid, mut base, mut desc) = (t, tid, base, desc);
-        for &n in path {
-            let (a, d) = self.field_addr(tid, base, desc, n, span)?;
-            let TypeKind::Record { elems } = &self.db.types[t].kind else {
-                return Err(self.cx.ice(span, "field path through a non-record"));
-            };
-            t = self.db.base(elems[n as usize].subtype);
-            tid = self.ty(t, span)?;
-            base = a;
-            desc = d;
+    ) -> R<()> {
+        let db = self.db;
+        let tid = self.ty(t, span)?;
+        let m = match &db.types[t].kind {
+            TypeKind::Record { .. } => {
+                let [n, rest @ ..] = rel else {
+                    return Err(self.cx.ice(span, "leaf path ends at a record"));
+                };
+                let (a, d) = self.field_addr(tid, addr, desc, *n, span)?;
+                let ft = db.base(self.field_subtype(t, *n)?);
+                return self.leaf_walk(ft, a, d, rest, k, buf, facts, into_value, span);
+            }
+            TypeKind::Array { elem, .. } => {
+                let et = db.base(*elem);
+                let etid = self.ty(et, span)?;
+                let scalar = crate::composite::scalar_w(self.fb.program(), etid).is_some();
+                if !scalar && !self.is_logic(tid) {
+                    let n = self.elems(tid, desc);
+                    let ed = self.elem_desc(tid, desc)?.1;
+                    return self.for_n(n, |fx, i| {
+                        let a = fx.elem_addr(tid, addr, desc, i);
+                        fx.leaf_walk(et, a, ed, rel, k, buf, facts, into_value, span)
+                    });
+                }
+                let (_, m) = self.layout(tid, desc);
+                self.leaf_copy(buf, facts, addr, Some(m), k, into_value);
+                m
+            }
+            _ => {
+                let one = self.int(1);
+                self.leaf_copy(buf, facts, addr, None, k, into_value);
+                one
+            }
+        };
+        let next = self.bin(IntOp::Add, k, m);
+        self.emit(Inst::Move { dst: k, src: next });
+        Ok(())
+    }
+
+    /// Copy one run of a leaf between a value at `addr` and the leaf buffer `buf` of `len`
+    /// elements (`into_value`: from the buffer into the value).
+    #[allow(clippy::too_many_arguments)]
+    fn leaf_copy(
+        &mut self,
+        (buf, len): (Reg, Reg),
+        (logic, bias, w): (bool, i64, Width),
+        addr: Reg,
+        block: Option<Reg>,
+        k: Reg,
+        into_value: bool,
+    ) {
+        match (logic, block) {
+            (true, None) => {
+                let one = self.int(1);
+                let last = self.bin(IntOp::Sub, len, one);
+                let idx = self.bin(IntOp::Sub, last, k);
+                if into_value {
+                    let c = self.reg(RegTy::I64);
+                    self.emit(Inst::LGet {
+                        dst: c,
+                        base: buf,
+                        idx,
+                    });
+                    let v = self.dec(c, bias);
+                    self.store(addr, v, w);
+                } else {
+                    let x = self.load(addr, w, RegTy::I64);
+                    let v = self.enc(x, bias);
+                    self.emit(Inst::LSet { base: buf, idx, v });
+                }
+            }
+            (true, Some(m)) => {
+                let r = self.bin(IntOp::Sub, len, k);
+                let off = self.bin(IntOp::Sub, r, m);
+                let z = self.int(0);
+                let (dst, dst_off, src, src_off) = if into_value {
+                    (addr, z, buf, off)
+                } else {
+                    (buf, off, addr, z)
+                };
+                self.emit(Inst::LCopy {
+                    dst,
+                    dst_off,
+                    src,
+                    src_off,
+                    n: m,
+                });
+            }
+            (false, m) => {
+                let at = self.reg(RegTy::Ptr);
+                self.emit(Inst::Index {
+                    dst: at,
+                    base: buf,
+                    pos: k,
+                    stride: w.bytes(),
+                });
+                let ws = self.int(i64::from(w.bytes()));
+                let bytes = match m {
+                    Some(m) => self.bin(IntOp::Mul, m, ws),
+                    None => ws,
+                };
+                let (dst, src) = if into_value { (addr, at) } else { (at, addr) };
+                self.emit(Inst::Copy { dst, src, bytes });
+            }
         }
-        Ok((base, desc))
+    }
+
+    /// Read part `p` of a composite signal into a new value, leaf by leaf.
+    pub fn read_comp(&mut self, p: &SigPart, span: Span) -> R<V> {
+        let size = self.size_of(p.tid, p.desc);
+        let val = self.alloc(size);
+        for (l, sref, len) in &p.leaves {
+            let facts = self.leaf_facts(l, span)?;
+            let size = self.leaf_size(l, *len, span)?;
+            let buf = self.alloc(size);
+            self.emit(Inst::SigRead {
+                dst: buf,
+                sig: *sref,
+            });
+            let k = self.int(0);
+            let rel = &l.path[p.path.len()..];
+            self.leaf_walk(p.t, val, p.desc, rel, k, (buf, *len), facts, true, span)?;
+        }
+        Ok(V::A(val, p.desc))
+    }
+
+    /// Write the elements of leaf `l` (relative field path `rel`) of value `(data, desc)` of
+    /// part type `t` into `buf`, a leaf buffer of `len` elements.
+    #[allow(clippy::too_many_arguments)]
+    pub fn leaf_of_value(
+        &mut self,
+        l: &crate::RecLeaf,
+        rel: &[u32],
+        t: TypeId,
+        (data, desc): (Reg, Reg),
+        (buf, len): (Reg, Reg),
+        span: Span,
+    ) -> R<()> {
+        let facts = self.leaf_facts(l, span)?;
+        let k = self.int(0);
+        self.leaf_walk(t, data, desc, rel, k, (buf, len), facts, false, span)
+    }
+
+    /// Bytes of a buffer of `len` elements of leaf `l`: planes for logic, else `len * w`.
+    pub fn leaf_size(&mut self, l: &crate::RecLeaf, len: Reg, span: Span) -> R<Reg> {
+        let (logic, _, w) = self.leaf_facts(l, span)?;
+        Ok(if logic {
+            let k = self.int(63);
+            let a = self.bin(IntOp::Add, len, k);
+            let b = self.int(64);
+            let blocks = self.bin(IntOp::Div, a, b);
+            let bs = self.int(32);
+            self.bin(IntOp::Mul, blocks, bs)
+        } else {
+            let ws = self.int(i64::from(w.bytes()));
+            self.bin(IntOp::Mul, len, ws)
+        })
     }
 
     /// Elements `offset .. offset + len` (kernel order) of instance signal `Ok(sig)`, or of the

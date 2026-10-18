@@ -244,27 +244,33 @@ pub(crate) fn obj_subtype(db: &Db, d: yavs_sem::DeclId) -> Option<SubtypeId> {
     }
 }
 
-pub(crate) fn is_record(db: &Db, t: TypeId) -> bool {
-    matches!(db.types[t].kind, TypeKind::Record { .. })
+/// Whether `t` is a record or an array (of arrays) of records: a signal of it has one kernel
+/// signal per field.
+pub(crate) fn has_record(db: &Db, t: TypeId) -> bool {
+    match &db.types[t].kind {
+        TypeKind::Record { .. } => true,
+        TypeKind::Array { elem, .. } => has_record(db, db.base(*elem)),
+        _ => false,
+    }
 }
 
 /// The leaves of a signal of subtype `st` (docs/decisions.md "Elaboration": one kernel signal
-/// per record field, recursively): (field path, leaf subtype). `None` for arrays of records
-/// (a struct of arrays in the kernel, not lowered yet).
-pub(crate) fn leaves(db: &Db, st: SubtypeId) -> Option<Vec<(Vec<u32>, SubtypeId)>> {
+/// per record field, recursively; an array of records one per field, a struct of arrays):
+/// (field path, leaf subtype: the field's scalar or array of scalars).
+pub(crate) fn leaves(db: &Db, st: SubtypeId) -> Vec<(Vec<u32>, SubtypeId)> {
     let t = db.base(st);
     match &db.types[t].kind {
         TypeKind::Record { elems } => {
             let mut out = Vec::new();
             for (i, e) in elems.iter().enumerate() {
-                for (mut p, s) in leaves(db, e.subtype)? {
+                for (mut p, s) in leaves(db, e.subtype) {
                     p.insert(0, i as u32);
                     out.push((p, s));
                 }
             }
-            Some(out)
+            out
         }
-        TypeKind::Array { elem, .. } if is_record(db, db.base(*elem)) => None,
-        _ => Some(vec![(Vec::new(), st)]),
+        TypeKind::Array { elem, .. } if has_record(db, db.base(*elem)) => leaves(db, *elem),
+        _ => vec![(Vec::new(), st)],
     }
 }

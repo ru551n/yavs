@@ -207,6 +207,11 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   (`dims` 0).
 - Arrays of composites: element address `data + pos * stride` (stride from the layout);
   arrays of logic arrays are one plane vector, a row is an `LCopy` range.
+- Signals with records in their type (`Obj::RecSignal`, `Cx::rec_leaves`): one instance signal
+  per field path, holding that field of every array element (struct of arrays).
+  `Fx::comp_select` turns a name (fields, indices, a final slice) into one kernel range per
+  leaf with the rule of `yavs_elab::NetGraph::select`; `leaf_walk` copies a leaf's elements
+  between a leaf buffer and the composite value (#200).
 - Objects of record and composite-array type are a slot `[data, desc, handle]` over a private
   heap object `[descriptor][value]`, the handle a GC root. Access variables are handle slots;
   allocators build the same `[descriptor][value]` object, so `p.all` keeps its bounds.

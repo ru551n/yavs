@@ -460,7 +460,7 @@ impl Fx<'_, '_> {
     // ---- element and field access ----
 
     /// Element descriptor of an array of type `tid` with descriptor `dope`.
-    fn elem_desc(&mut self, tid: TyId, dope: Reg) -> R<(TyId, Reg)> {
+    pub(crate) fn elem_desc(&mut self, tid: TyId, dope: Reg) -> R<(TyId, Reg)> {
         match self.fb.program().types().get(tid).cloned() {
             Some(Ty::Array {
                 elem,
@@ -531,9 +531,7 @@ impl Fx<'_, '_> {
         n: u32,
         span: Span,
     ) -> R<(Reg, Reg)> {
-        let Some(Ty::Record { fields }) = self.fb.program().types().get(tid).cloned() else {
-            return Err(self.cx.ice(span, "field of a non-record"));
-        };
+        let d = self.field_desc(tid, desc, n, span)?;
         let l = self.lay(tid, desc);
         let a = self.reg(RegTy::Ptr);
         self.emit(Inst::Field {
@@ -542,8 +540,16 @@ impl Fx<'_, '_> {
             layout: l,
             n,
         });
+        Ok((a, d))
+    }
+
+    /// Descriptor of field `n` of a record of type `tid` with descriptor `desc`.
+    pub fn field_desc(&mut self, tid: TyId, desc: Reg, n: u32, span: Span) -> R<Reg> {
+        let Some(Ty::Record { fields }) = self.fb.program().types().get(tid).cloned() else {
+            return Err(self.cx.ice(span, "field of a non-record"));
+        };
         let f = &fields[n as usize];
-        let d = match f.desc {
+        Ok(match f.desc {
             Some(c) => self.const_addr(c),
             None => {
                 let mut off = 0;
@@ -554,11 +560,10 @@ impl Fx<'_, '_> {
                 }
                 self.offset(desc, off)
             }
-        };
-        Ok((a, d))
+        })
     }
 
-    fn field_subtype(&mut self, t: TypeId, n: u32) -> R<SubtypeId> {
+    pub(crate) fn field_subtype(&mut self, t: TypeId, n: u32) -> R<SubtypeId> {
         match &self.db.types[t].kind {
             TypeKind::Record { elems } if (n as usize) < elems.len() => {
                 Ok(elems[n as usize].subtype)
@@ -660,7 +665,7 @@ impl Fx<'_, '_> {
         }
     }
 
-    fn elem_addr(&mut self, tid: TyId, data: Reg, dope: Reg, pos: Reg) -> Reg {
+    pub(crate) fn elem_addr(&mut self, tid: TyId, data: Reg, dope: Reg, pos: Reg) -> Reg {
         let l = self.lay(tid, dope);
         let sa = self.offset(l, 16);
         let stride = self.load(sa, Width::B8, RegTy::I64);
@@ -703,7 +708,7 @@ impl Fx<'_, '_> {
     }
 
     /// A slice of an array of composites: the descriptor keeps the element part.
-    fn slice_desc(&mut self, tid: TyId, dope: Reg, nd: Reg) -> Reg {
+    pub(crate) fn slice_desc(&mut self, tid: TyId, dope: Reg, nd: Reg) -> Reg {
         let ds = self.desc_size(tid);
         if ds <= 24 {
             return nd;

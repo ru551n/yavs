@@ -48,6 +48,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | Instance data per region (instance, block, generate iteration); values written by the elaborator (`write_value`, `write_string`), thunks only for unfoldable scalar constants | Generate parameters, generics per instance, shared code | `docs/decisions.md` "Lowering" |
 | One driver slot per `ProcessInfo::drivers` entry, in order | yavs-elab maps slots to LSP ranges | `docs/decisions.md` "Lowering" |
 | A subprogram declared in a process drives through that process's driver slots | LRM 14.7.2: the process owns those drivers, #206 | DESIGN.md "Contract with yavs-interp and yavs-elab" |
+| Signals with records in their type: one instance signal per field path (struct of arrays); names select one kernel range per leaf by the `NetGraph::select` rule, at run time; reads read the whole signal | Rule 2, one sub-element map; rule 1 | `docs/decisions.md` "Lowering", DESIGN.md "Composites", #200 |
 | Guarded blocks: GUARD's default is the condition; a `_guard` process drives GUARD | LRM 11.2, 11.6 | `docs/decisions.md` "Lowering" |
 | Signal aliases have no storage: uses lower the aliased name with the alias subtype's descriptor; `LspStep::Rebase` paths are walked by `lsp_sig` | LRM 6.6.2, #203 | `docs/decisions.md` "Lowering" |
 | Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |

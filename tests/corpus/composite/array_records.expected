@@ -1,0 +1,36 @@
+exit	0
+diag	note	0	0	:array_records:_p0	cs true/1/'0''0''1' false/2/'0''1''0' true/3/'1''0''0'
+diag	note	0	0	:array_records:_p1	cs(2) false/2/'0''1''0'
+diag	note	0	0	:array_records:_p3	so false/0/'0''0''0' false/0/'0''0''0' false/0/'0''0''0'
+diag	note	0	0	:array_records:_p4	bk a false/0/'0''0''0' false/0/'0''0''0' false/0/'0''0''0'
+diag	note	0	0	:array_records:_p5	pr p'0''0''0'
+diag	note	0	0	:array_records:_p6	cnt 0
+diag	note	0	1	:array_records:_p3	so false/2/'1''1''0' true/4/'1''0''1' false/6/'0''1''1'
+diag	note	1000000	1	:array_records:_p0	cs false/10/'1''1''1' true/20/'0''0''0' false/30/'1''0''1'
+diag	note	1000000	1	:array_records:_p1	cs(2) true/20/'0''0''0'
+diag	note	1000000	1	:array_records:_p2	cs(3).n 30
+diag	note	1000000	2	:array_records:_p3	so true/20/'0''0''0' false/40/'1''1''1' true/60/'0''1''0'
+diag	note	2000000	1	:array_records:_p0	cs false/10/'1''1''1' false/21/'0''1''1' false/30/'1''0''1'
+diag	note	2000000	1	:array_records:_p1	cs(2) false/21/'0''1''1'
+diag	note	2000000	2	:array_records:_p3	so true/20/'0''0''0' true/42/'1''0''0' true/60/'0''1''0'
+diag	note	3000000	1	:array_records:_p0	cs false/10/'1''0''1' false/21/'0''1''1' false/31/'1''0''1'
+diag	note	3000000	1	:array_records:_p2	cs(3).n 31
+diag	note	3000000	2	:array_records:_p3	so true/20/'0''1''0' true/42/'1''0''0' true/62/'0''1''0'
+diag	note	4000000	1	:array_records:_p0	cs false/11/'1''0''1' true/23/'0''1''1' false/34/'1''0''1'
+diag	note	4000000	1	:array_records:_p1	cs(2) true/23/'0''1''1'
+diag	note	4000000	1	:array_records:_p2	cs(3).n 34
+diag	note	4000000	2	:array_records:_p3	so true/22/'0''1''0' false/46/'1''0''0' true/68/'0''1''0'
+diag	note	5000000	1	:array_records:_p0	cs false/11/'1''0''1' true/7/'1''1''0' true/8/'0''0''1'
+diag	note	5000000	1	:array_records:_p1	cs(2) true/7/'1''1''0'
+diag	note	5000000	1	:array_records:_p2	cs(3).n 8
+diag	note	5000000	1	:array_records:_p4	bk z false/0/'0''0''0' false/5/'0''0''0' false/0/'0''0''0'
+diag	note	5000000	1	:array_records:_p5	pr p'0''1''0'
+diag	note	5000000	2	:array_records:_p3	so true/22/'0''1''0' false/14/'0''0''1' false/16/'1''1''0'
+diag	note	5000000	2	:array_records:_p6	cnt 1
+diag	note	6000000	1	:array_records:_p4	bk z false/0/'0''0''0' true/9/'1''1''1' true/9/'1''1''1'
+diag	note	6000000	1	:array_records:_p5	pr p'0''1''1'
+diag	note	6000000	2	:array_records:_p6	cnt 2
+diag	note	7000000	1	:array_records:_p0	cs true/11/'1''0''1' true/7/'1''1''0' true/8/'0''0''1'
+diag	note	7000000	1	:array_records:_p7	cs(1).ok rose
+diag	note	7000000	2	:array_records:_p3	so false/22/'0''1''0' false/14/'0''0''1' false/16/'1''1''0'
+diag	note	8000000	0	:array_records:drv	done

@@ -704,6 +704,15 @@ which tools/difftest parses.
   per leaf below its fields, so `ProcessIr::drivers` is the flattening of `ProcInst::lsps`.
   Reading a record signal reads it leaf by leaf into a record value; driving it drives each
   leaf with its field.
+- **Arrays of records** (any signal type with a record in it, #200) use the same `SignalIr`
+  per field path; each leaf holds its field of every element (struct of arrays). A name
+  below the signal (fields, indices, one slice at the end) selects one contiguous range per
+  leaf, by the rule of `NetGraph::select` (row major, logic leaves mirrored), computed at run
+  time from the signal subtype's descriptor (rule 1). A longest static prefix covers the leaves
+  below all its field selections (indices select elements, not leaves), one driver slot each.
+  Reading any name below such a signal reads the whole signal and then selects (ponytail:
+  read only the selected ranges if large memories of records need it); driving a part copies
+  each leaf's elements of every waveform value into one transaction per leaf.
 
 ## Foreign subprograms and `--load` (yavs-lower, yavs-vhpi, CLI, #95, 2026-10-18)
 

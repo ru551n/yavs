@@ -974,13 +974,11 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
     let name = decl.name.to_string();
     let array = ty::is_array(db, db.base(o.subtype));
     match o.class {
-        ObjClass::Signal if ty::is_record(db, db.base(o.subtype)) => {
-            // One kernel signal per leaf (field), in leaf order.
-            let Some(leaves) = ty::leaves(db, o.subtype) else {
-                return Err(cx.unsupported(decl.span, "record signals with arrays of records"));
-            };
+        ObjClass::Signal if ty::has_record(db, db.base(o.subtype)) => {
+            // One kernel signal per leaf (field), in leaf order; an array of records has one
+            // per field over all its elements.
             let mut out = Vec::new();
-            for (path, st) in leaves {
+            for (path, st) in ty::leaves(db, o.subtype) {
                 let t = ty::lower(db, cx, pb, db.base(st), decl.span)?;
                 let sig = ir.signals.len() as u32;
                 ir.signals.push(SignalIr {
@@ -1617,11 +1615,12 @@ impl Fx<'_, '_> {
     }
 }
 
-/// The leading field selections of a longest static prefix (its record path).
+/// The field selections of a longest static prefix: the field path of the leaves it covers
+/// (indices select elements, not leaves).
 pub(crate) fn lsp_fields(l: &hir::Lsp) -> Vec<u32> {
     l.path
         .iter()
-        .map_while(|s| match s {
+        .filter_map(|s| match s {
             hir::LspStep::Field(n) => Some(*n),
             _ => None,
         })

@@ -755,13 +755,13 @@ impl Fx<'_, '_> {
         }
     }
 
-    /// A record signal (or record part of one) as a target: each leaf is driven with its
-    /// field of every waveform value, through its own driver slot.
+    /// A composite signal part with records (or several leaves) as a target: each leaf is
+    /// driven with its elements of every waveform value, through its own driver slot.
     #[allow(clippy::too_many_arguments)]
     fn drive_record(
         &mut self,
         d: yavs_sem::DeclId,
-        path: &[u32],
+        steps: &[crate::expr::Step<'_>],
         base: u32,
         covered: &[crate::RecLeaf],
         target: &Target,
@@ -770,9 +770,9 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let db = self.db;
-        let st = db.exprs[target.expr].subtype;
-        let t = db.base(st);
-        let tid = self.ty(t, span)?;
+        let p = self.comp_select(d, steps, span)?;
+        let what = self.target_name(target.expr);
+        let dims = ty::array_of(db, p.t).map(|x| x.1);
         let mut vals = Vec::new();
         for el in elems {
             let Some(v) = el.value else {
@@ -785,7 +785,17 @@ impl Fx<'_, '_> {
                 None => self.int(0),
             };
             let x = self.expr(v)?;
-            vals.push((at, self.arr(x, span)?));
+            let (data, vd) = self.arr(x, span)?;
+            if let Some(dims) = dims {
+                let m = self.msg(&what, Dir::To);
+                self.emit(Inst::SubtypeCheck {
+                    dope: vd,
+                    want: p.desc,
+                    dims,
+                    what: m,
+                });
+            }
+            vals.push((at, (data, vd)));
         }
         let (mode, reject) = match delay {
             Delay::Transport => (DriveMode::Transport, None),
@@ -798,33 +808,25 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        for leaf in self.leaves_under(d, path) {
+        for (leaf, sref, len) in &p.leaves {
             let slot = base
                 + covered
                     .iter()
                     .position(|l| l.path == leaf.path)
                     .unwrap_or(0) as u32;
-            let (sref, ldope) = self.leaf_sig(&leaf, span)?;
-            let ltid = self.ty(db.base(leaf.st), span)?;
-            let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), ltid).is_some();
-            let rel = &leaf.path[path.len()..];
-            let size = ldope.map(|dp| self.layout(ltid, dp).0);
-            let stride = match size {
-                Some(sz) => {
-                    let seven = self.int(7);
-                    let r = self.bin(IntOp::Add, sz, seven);
-                    let eight = self.int(8);
-                    let q = self.bin(IntOp::Div, r, eight);
-                    let r8 = self.bin(IntOp::Mul, q, eight);
-                    self.bin(IntOp::Add, r8, eight)
-                }
-                None => self.int(if logic { 8 + 32 } else { 16 }),
-            };
+            let rel = &leaf.path[p.path.len()..];
+            // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
+            let size = self.leaf_size(leaf, *len, span)?;
+            let seven = self.int(7);
+            let r = self.bin(IntOp::Add, size, seven);
+            let eight = self.int(8);
+            let q = self.bin(IntOp::Div, r, eight);
+            let r8 = self.bin(IntOp::Mul, q, eight);
+            let stride = self.bin(IntOp::Add, r8, eight);
             let n = self.int(vals.len() as i64);
             let total = self.bin(IntOp::Mul, stride, n);
             let wave = self.alloc(total);
-            for (j, &(at, (data, desc))) in vals.iter().enumerate() {
-                let (faddr, _) = self.leaf_addr(t, tid, data, desc, rel, span)?;
+            for (j, &(at, v)) in vals.iter().enumerate() {
                 let jj = self.int(j as i64);
                 let o = self.bin(IntOp::Mul, jj, stride);
                 let e = self.reg(RegTy::Ptr);
@@ -836,33 +838,11 @@ impl Fx<'_, '_> {
                 });
                 self.store(e, at, Width::B8);
                 let va = self.offset(e, 8);
-                match size {
-                    Some(sz) => self.emit(Inst::Copy {
-                        dst: va,
-                        src: faddr,
-                        bytes: sz,
-                    }),
-                    None => {
-                        let (_, rt, w) = self.scalar(leaf.st, span)?;
-                        let x = self.load(faddr, w, rt);
-                        if logic {
-                            let bias = self.code_bias(ltid);
-                            let c = self.enc(x, bias);
-                            let z = self.int(0);
-                            self.emit(Inst::LSet {
-                                base: va,
-                                idx: z,
-                                v: c,
-                            });
-                        } else {
-                            self.store(va, x, w);
-                        }
-                    }
-                }
+                self.leaf_of_value(leaf, rel, p.t, v, (va, *len), span)?;
             }
             self.emit(Inst::Drive {
                 driver: slot,
-                target: Some(sref),
+                target: Some(*sref),
                 wave,
                 n,
                 mode,
@@ -1044,11 +1024,18 @@ impl Fx<'_, '_> {
             Some(_) => 0,
             None => self.driver_of(lsp)?,
         };
-        if let Some((d, path)) = self.field_path(target.expr) {
+        if let Some((d, steps)) = self.comp_steps(target.expr) {
+            let path: Vec<u32> = steps
+                .iter()
+                .filter_map(|s| match *s {
+                    crate::expr::Step::Field(n) => Some(n),
+                    _ => None,
+                })
+                .collect();
             let leaves = self.leaves_under(d, &path);
             let covered = self.leaves_under(d, &crate::func::lsp_fields(lsp));
             if !matches!(leaves.as_slice(), [l] if l.path == path) {
-                return self.drive_record(d, &path, slot, &covered, target, delay, elems, span);
+                return self.drive_record(d, &steps, slot, &covered, target, delay, elems, span);
             }
             slot += covered.iter().position(|l| l.path == path).unwrap_or(0) as u32;
         }
@@ -1183,9 +1170,23 @@ impl Fx<'_, '_> {
                 return Err(self.cx.unsupported(l.span, "sensitivity to external names"));
             };
             if matches!(self.cx.objs.get(&d), Some(Obj::RecSignal)) {
-                // A record signal: every leaf below the prefix's fields.
-                for leaf in self.leaves_under(d, &crate::func::lsp_fields(l)) {
-                    let (s, _) = self.leaf_sig(&leaf, l.span)?;
+                // A composite signal: the selected elements of every leaf below the prefix.
+                let mut steps = Vec::new();
+                for s in l.path.iter() {
+                    steps.push(match s {
+                        LspStep::Field(n) => crate::expr::Step::Field(*n),
+                        LspStep::Index(ix) => crate::expr::Step::Index(ix),
+                        LspStep::Slice(r) => crate::expr::Step::Slice(r),
+                        LspStep::Rebase(_) => {
+                            return Err(self.cx.unsupported(
+                                l.span,
+                                "sensitivity to composite signals through subtype aliases",
+                            ));
+                        }
+                    });
+                }
+                let p = self.comp_select(d, &steps, l.span)?;
+                for (_, s, _) in p.leaves {
                     self.emit(Inst::WaitOn { sig: s });
                 }
                 continue;
@@ -1245,8 +1246,10 @@ impl Fx<'_, '_> {
         let x = &db.exprs[e];
         match &x.kind {
             ExprKind::Obj(d) => {
-                if matches!(self.cx.objs.get(d), Some(Obj::Signal { .. }))
-                    && !out.iter().any(|l| l.root == ObjRoot::Decl(*d))
+                if matches!(
+                    self.cx.objs.get(d),
+                    Some(Obj::Signal { .. } | Obj::RecSignal)
+                ) && !out.iter().any(|l| l.root == ObjRoot::Decl(*d))
                 {
                     out.push(Lsp {
                         root: ObjRoot::Decl(*d),

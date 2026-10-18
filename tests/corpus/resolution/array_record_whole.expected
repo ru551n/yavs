@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:array_record_whole:_p0	rc false/2/'0''0' false/4/'0''0'
+diag	note	0	0	:array_record_whole:_p1	rb a false/2/'0''0' true/0/'0''1'
+diag	note	1000000	0	:array_record_whole:_p0	rc true/11/'1''0' false/22/'1''0'
+diag	note	1000000	0	:array_record_whole:_p1	rb c false/6/'1''0' true/6/'0''1'
+diag	note	2000000	1	:array_record_whole:_p0	rc true/11/'1''0' false/27/'1''0'
+diag	note	3000000	1	:array_record_whole:_p0	rc true/13/'0''0' false/27/'1''0'
+diag	note	3000000	1	:array_record_whole:_p1	rb z false/6/'1''0' true/6/'0''1'
+diag	note	4000000	0	:array_record_whole:b	done

@@ -1,0 +1,1 @@
+{"severity":"error","code":"E0002","message":"expected expression, found `;`","spans":[{"file":"json_format.vhd","byte_start":70,"byte_end":71,"line_start":3,"column_start":27,"line_end":3,"column_end":28,"primary":true,"label":"expected expression"}],"notes":[],"help":[]}

@@ -1,0 +1,18 @@
+error[E0005]: PSL is not supported
+ --> psl.vhd:4:3
+  |
+4 |   assume always req -> next ack;
+  |   ^^^^^^ PSL starts here
+  |
+  = note: rsim does not implement PSL (IEEE 1850); this construct is skipped
+
+error[E0005]: PSL is not supported
+ --> psl.vhd:8:1
+  |
+8 | vunit check (e) {
+  | ^^^^^ PSL starts here
+  |
+  = note: rsim does not implement PSL (IEEE 1850); this construct is skipped
+
+error: aborting due to 2 previous errors
+

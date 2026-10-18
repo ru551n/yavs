@@ -1,0 +1,28 @@
+error[E0001]: unterminated string literal
+ --> lexical.vhd:2:26
+  |
+2 |   constant s : string := "unterminated
+  |                          ^ string starts here
+
+error[E0001]: malformed numeric literal
+ --> lexical.vhd:3:27
+  |
+3 |   constant n : integer := 16#FF;
+  |                           ^^^^^
+
+warning[W0003]: missing space between a number and an identifier
+ --> lexical.vhd:4:24
+  |
+4 |   constant d : time := 10ns;
+  |                        ^^^^
+  |
+  = help: write a space before the unit, as in `10 ns`
+
+error[E0001]: unexpected character
+ --> lexical.vhd:5:10
+  |
+5 |   signal $bad : bit;
+  |          ^ not valid in VHDL
+
+error: aborting due to 3 previous errors
+

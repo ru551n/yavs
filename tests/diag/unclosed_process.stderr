@@ -1,0 +1,11 @@
+error[E0002]: expected `end`, found end of file
+ --> unclosed_process.vhd:5:11
+  |
+3 |   p : process
+  |       ------- this process is never closed
+4 |   begin
+5 |     wait;
+  |          ^ expected `end`
+
+error: aborting due to 1 previous error
+

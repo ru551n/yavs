@@ -1,0 +1,10 @@
+error[E0002]: mixed logical operators need parentheses
+ --> mixed_logical.vhd:2:35
+  |
+2 |   constant c : boolean := a and b or c;
+  |                                   ^^
+  |
+  = help: add parentheses to show the order of evaluation
+
+error: aborting due to 1 previous error
+

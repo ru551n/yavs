@@ -1,0 +1,14 @@
+error[E0002]: expected `;`, found `begin`
+ --> missing_semicolon.vhd:6:25
+  |
+6 |   signal n : integer := 0
+  |                         ^ expected `;` after this
+
+error[E0002]: expected `;`, found `end`
+ --> missing_semicolon.vhd:9:14
+  |
+9 |     n <= n + 1
+  |              ^ expected `;` after this
+
+error: aborting due to 2 previous errors
+

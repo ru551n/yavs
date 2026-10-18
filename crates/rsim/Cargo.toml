@@ -1,0 +1,15 @@
+[package]
+name = "rsim"
+description = "rsim VHDL simulator command line"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+rsim-diag.workspace = true
+rsim-syntax.workspace = true
+
+[lints]
+workspace = true

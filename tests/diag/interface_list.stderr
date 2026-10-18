@@ -1,0 +1,11 @@
+error[E0002]: expected interface declaration or `)`, found `end`
+ --> interface_list.vhd:4:1
+  |
+2 |   port (
+  |        - interface list starts here
+3 |     a : in bit;
+4 | end entity;
+  | ^^^ expected `)`
+
+error: aborting due to 1 previous error
+

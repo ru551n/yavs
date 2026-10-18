@@ -168,3 +168,45 @@
 - **Verification**: `golden/gen.py` writes testbenches, runs NVC 2008 and 2019 and records
   goldens (about 2,900 cases per revision); the Rust tests compare against them without needing
   NVC, and proptest checks `'value('image(x)) = x` and WRITE-then-READ round trips.
+
+## Parser (rsim-syntax, M0)
+
+Choices made while writing the M0 parser that the plan does not settle. Each is easy to revisit.
+
+- **Interner:** one global table behind a mutex, strings leaked (`Symbol::as_str` gives
+  `&'static str`). Parsing is single-threaded, so the lock is never contended, and symbols stay
+  valid on runtime worker threads. The AST keeps both the original spelling and the folded key of
+  every identifier (rule 8); extended identifiers fold to themselves.
+- **Fail early:** `parse_file` returns the tree only when there was no error. Inside one file
+  the parser still recovers (skip to `;`, local recovery to `then`/`loop`/`generate`, a missing
+  `;` at a line end is reported and assumed) so independent errors are listed together. Syntax
+  errors at a token that had a lexical error, or at the same token as the previous error, are
+  dropped as cascades.
+- **Conditional analysis in both modes:** `` `if `` etc. are evaluated for 2008 files too
+  (`VHDL_VERSION` is `"2008"`), since 2008 already allows tool directives and the evaluation is
+  harmless. Unknown directives (`` `protect ``) warn (W0002) and skip their line. `TOOL_VENDOR`
+  and `TOOL_NAME` are `rsim`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
+- **2019 closing keywords:** in 2019 mode every `end <keyword>` keyword is optional
+  (LCS-2016-055a regularizes the endings; accepting the superset is simpler than listing which
+  constructs it covers). In 2008 mode the keywords the 2008 grammar requires are required.
+- **2019 conditional expressions** (`a when c else b`) are parsed in initial values, interface
+  defaults, `return`, association actuals and variable assignments, the places the NVC 2019 tests
+  use. `unaffected` is accepted as a 2019 variable assignment value. A `generic map` after a name
+  is part of the name (a call of an uninstantiated subprogram) only inside expressions.
+- **Strict where tools differ:** `abs x ** 2`, chained relations (`a > b = c`) and mixed logical
+  operators without parentheses are errors, as in the LRM grammar. `10ns` (no space before the
+  unit) is accepted with warning W0003, because it is common in real code.
+- **Ambiguity left to sem:** `label: p;` in a concurrent region is a `ProcedureCall`; sem turns it
+  into a component instantiation when `p` is a component. Choices and generic actuals that look
+  like expressions may be subtype names.
+- **Source decoding:** valid UTF-8 is taken as UTF-8, anything else as ISO-8859-1 (the LRM
+  encoding), so the vendored IEEE sources with Latin-1 bytes and UTF-8 comments both work.
+  Open question for M1: whether a string literal in a UTF-8 file should be re-encoded to Latin-1
+  (it matters for `'length` of non-ASCII strings).
+- **PSL** is out of scope: PSL declarations, directives and verification units get E0005 and are
+  skipped (to `;`, or to the closing `}` of a `vunit`).
+- **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
+  simulation corpus). NVC `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
+  files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (rsim has no 1993
+  mode, so 93 code that uses 2008 reserved words is an expected failure). VESTs `vhdl-ams` is
+  VHDL-AMS and is not parsed.

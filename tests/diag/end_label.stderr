@@ -1,0 +1,16 @@
+error[E0003]: end label `beta` does not match `alpha`
+ --> end_label.vhd:2:12
+  |
+1 | entity alpha is
+  |        ----- declared here
+2 | end entity beta;
+  |            ^^^^ expected `alpha`
+
+error[E0003]: end label `l2` does not match `l1`
+ --> end_label.vhd:6:40
+  |
+6 |   l1 : process begin wait; end process l2;
+  |   -- declared here                     ^^ expected `l1`
+
+error: aborting due to 2 previous errors
+

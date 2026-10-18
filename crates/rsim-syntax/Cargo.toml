@@ -1,0 +1,13 @@
+[package]
+name = "rsim-syntax"
+description = "VHDL-2008/2019 lexer and parser for rsim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rsim-diag.workspace = true
+
+[lints]
+workspace = true

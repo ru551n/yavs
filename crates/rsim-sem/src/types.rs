@@ -53,7 +53,8 @@ pub enum TypeKind {
     },
     Protected {
         decl_scope: ScopeId,
-        body: Option<DeclId>,
+        /// The protected body's region (its parent is `decl_scope`), once paired.
+        body: Option<ScopeId>,
         generics: Option<Box<[DeclId]>>,
     },
     Incomplete {

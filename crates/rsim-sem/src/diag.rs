@@ -80,8 +80,10 @@ codes! {
     UNINSTANTIATED_CALL = "E1505", "An uninstantiated subprogram cannot be called.";
     // E16xx names, aliases, attributes, signatures
     EXTERNAL_CLASS = "E1601", "The class of the external name does not allow this use.";
+    EXTERNAL_PATH = "E1602", "The path of an external name is malformed: a package path is `@lib.pkg.obj`, an absolute path names the top entity first, only generate labels take a globally static index, and a relative path needs an enclosing concurrent region (LRM 8.7).";
     ALIAS_NOT_STATIC = "E1610", "An object alias must name a static name.";
     ALIAS_SIGNATURE = "E1611", "An alias of an overloaded name needs a signature.";
+    BAD_ALIAS = "E1612", "The alias declaration does not fit what it names: an object alias needs an identifier designator, a nonobject alias has no subtype indication, a character designator names an enumeration literal, an operator designator names a function with a fitting number of parameters, and labels and loop or generate parameters cannot be aliased (LRM 6.6).";
     SIGNAL_ATTR_IN_SUBPROGRAM = "E1620", "Implicit signal attributes (`'delayed`, `'stable`, `'quiet`, `'transaction`) are not allowed in subprograms.";
     UNKNOWN_ATTRIBUTE = "E1621", "No predefined or user-defined attribute with this name applies to the prefix.";
     ENTITY_CLASS = "E1622", "The entity class of an attribute specification does not match the named entity.";
@@ -104,6 +106,7 @@ codes! {
     VIEW_MODE = "E1903", "The port is used against the mode its view gives the element.";
     SHARED_NOT_PROTECTED = "E1904", "A shared variable must be of a protected type (LRM 6.4.2.4); `--relaxed` turns this into warning W1904.";
     PROTECTED_MISUSE = "E1905", "A protected type cannot be the type of a signal, port or file, and has no `=`.";
+    PROTECTED_ITEM = "E1906", "This declaration is not allowed in a protected type declaration or body (LRM 5.6): the declaration holds method declarations, use clauses, attribute specifications and, in VHDL-2019, private variables and aliases of methods; the body holds no signals or shared variables.";
     NEEDS_2019 = "E1910", "The construct needs VHDL-2019.";
     // Warnings
     W_CHANGED_MEANING = "W1008", "The construct means something different under the design's VHDL-2019 std/ieee than under VHDL-2008, for example `integer'high`.";

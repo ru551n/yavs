@@ -312,7 +312,7 @@ pub enum TypeKind {
     Record { elems: Box<[RecordElem]> },              // RecordElem { name: Ident, subtype: SubtypeId }
     Access { designated: SubtypeId },
     File { elem: SubtypeId },
-    Protected { decl_scope: ScopeId, body: Option<DeclId>, generics: Option<GenericList> },
+    Protected { decl_scope: ScopeId, body: Option<ScopeId>, generics: Option<GenericList> },
     Incomplete { completion: Option<TypeId> },
     Generic { class: GenericClass },                  // opaque inside a generic unit, 2.9
     Error,

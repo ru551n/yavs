@@ -96,6 +96,33 @@ impl Fx<'_, '_> {
         self.scal(v, self.db.exprs[e].span)
     }
 
+    /// What a BIT or BOOLEAN position adds to become its plane code (the std_ulogic codes of
+    /// '0' and '1', docs/decisions.md "Interpreter: BIT/BOOLEAN codes"); 0 for STD_ULOGIC.
+    pub fn code_bias(&mut self, tid: TyId) -> i64 {
+        match Ty::logic_leaf(self.fb.program().types(), tid) {
+            Some(rsim_ir::LogicKind::Bit | rsim_ir::LogicKind::Boolean) => 2,
+            _ => 0,
+        }
+    }
+
+    /// Position to plane code.
+    pub fn enc(&mut self, v: Reg, bias: i64) -> Reg {
+        if bias == 0 {
+            return v;
+        }
+        let b = self.int(bias);
+        self.bin(IntOp::Add, v, b)
+    }
+
+    /// Plane code to position.
+    pub fn dec(&mut self, v: Reg, bias: i64) -> Reg {
+        if bias == 0 {
+            return v;
+        }
+        let b = self.int(bias);
+        self.bin(IntOp::Sub, v, b)
+    }
+
     fn is_logic(&mut self, tid: TyId) -> bool {
         Ty::logic_leaf(self.fb.program().types(), tid).is_some()
     }
@@ -144,7 +171,7 @@ impl Fx<'_, '_> {
                     self.emit(Inst::IToF { dst, src: r });
                     return Ok(V::S(dst));
                 }
-                self.check_scalar(r, Some(from), to, &ty::subtype_name(db, to), span)?;
+                self.check_scalar(r, Some(from), to, "", span)?;
                 Ok(V::S(r))
             }
             ExprKind::Conditional { alts } => {
@@ -223,14 +250,17 @@ impl Fx<'_, '_> {
                 });
                 return Ok(V::A(dst, dope));
             }
-            (Elems::Bytes(b), true) => ConstData::Logic(b.iter().rev().map(|&x| (1, x)).collect()),
+            (Elems::Bytes(b), true) => {
+                let bias = self.code_bias(tid) as u8;
+                ConstData::Logic(b.iter().rev().map(|&x| (1, x + bias)).collect())
+            }
             (Elems::Runs(runs), true) => {
                 let mut out = Vec::new();
                 for (n, c) in runs.iter().rev() {
                     let Some(x) = ty::cell(c) else {
                         return Err(self.cx.unsupported(span, "nested array constants"));
                     };
-                    out.push((*n, x as u8));
+                    out.push((*n, x as u8 + self.code_bias(tid) as u8));
                 }
                 ConstData::Logic(out)
             }
@@ -284,8 +314,16 @@ impl Fx<'_, '_> {
             }
             Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => {
                 let s = self.sig_of(d, span)?;
-                let dst = self.reg(RegTy::I64);
-                self.emit(Inst::SigReadScalar { dst, sig: s });
+                let raw = self.reg(RegTy::I64);
+                self.emit(Inst::SigReadScalar { dst: raw, sig: s });
+                let bias = match &decl.kind {
+                    DeclKind::Object(o) => {
+                        let tid = self.ty(db.base(o.subtype), span)?;
+                        self.code_bias(tid)
+                    }
+                    _ => 0,
+                };
+                let dst = self.dec(raw, bias);
                 if self.obj_rt(d) == RegTy::F64 {
                     let f = self.reg(RegTy::F64);
                     self.emit(Inst::Move { dst: f, src: dst });
@@ -636,10 +674,12 @@ impl Fx<'_, '_> {
             _ => return Err(self.cx.unsupported(span, "this aggregate form")),
         };
         let (tid, logic, w) = self.elem_facts(t, span)?;
+        let bias = self.code_bias(tid);
         let (size, count) = self.layout(tid, dope);
         let data = self.alloc(size);
         let set = |fx: &mut Self, pos: Reg, v: Reg| {
             if logic {
+                let v = fx.enc(v, bias);
                 let one = fx.int(1);
                 let last = fx.bin(IntOp::Sub, count, one);
                 let idx = fx.bin(IntOp::Sub, last, pos);
@@ -657,8 +697,7 @@ impl Fx<'_, '_> {
         };
         let elem_value = |fx: &mut Self, e: ExprId| -> R<Reg> {
             let v = fx.scalar_expr(e)?;
-            let what = ty::subtype_name(fx.db, elem);
-            fx.check_scalar(v, Some(fx.db.exprs[e].subtype), elem, &what, span)?;
+            fx.check_scalar(v, Some(fx.db.exprs[e].subtype), elem, "", span)?;
             Ok(v)
         };
         let m = self.msg("aggregate", Dir::To);
@@ -733,7 +772,7 @@ impl Fx<'_, '_> {
     }
 
     /// `body(i)` for `i` in `0 .. n`.
-    fn for_n(&mut self, n: Reg, mut body: impl FnMut(&mut Self, Reg) -> R<()>) -> R<()> {
+    pub fn for_n(&mut self, n: Reg, mut body: impl FnMut(&mut Self, Reg) -> R<()>) -> R<()> {
         let i = self.reg(RegTy::I64);
         self.emit(Inst::Const { dst: i, v: 0 });
         let (head, b, exit) = (self.block(), self.block(), self.block());
@@ -809,13 +848,15 @@ impl Fx<'_, '_> {
     ) -> R<()> {
         let db = self.db;
         let t = db.base(to);
-        if from == Some(to) || ty::is_real(db, t) {
-            // ponytail: no range checks on real subtypes yet (Check is i64 only).
+        if from == Some(to) {
             return Ok(());
         }
         if !matches!(
             db.types[t].kind,
-            TypeKind::Enum { .. } | TypeKind::Integer | TypeKind::Physical { .. }
+            TypeKind::Enum { .. }
+                | TypeKind::Integer
+                | TypeKind::Physical { .. }
+                | TypeKind::Floating
         ) {
             return Ok(());
         }
@@ -841,32 +882,79 @@ impl Fx<'_, '_> {
         }
         let r = self.scalar_bounds(to, span)?;
         let dir = ir_dir(r.dir);
+        let real = ty::is_real(db, t);
+        let (lo, hi) = if real {
+            self.low_high_f(r)
+        } else {
+            self.low_high(r)
+        };
+        let st = ty::subtype_name(db, to);
+        let what = self.fb.program().check_msg_for(what, dir, &st);
+        if real {
+            self.emit(Inst::FCheck { v, lo, hi, what });
+        } else {
+            self.emit(Inst::Check {
+                kind: CheckKind::Range,
+                v,
+                lo,
+                hi,
+                what,
+            });
+        }
+        Ok(())
+    }
+
+    /// `(low, high)` of a real range (registers are F64).
+    fn low_high_f(&mut self, r: Rng) -> (Reg, Reg) {
+        match r.dir {
+            Dr::Static(Direction::To) => (r.left, r.right),
+            Dr::Static(Direction::Downto) => (r.right, r.left),
+            Dr::Dyn(d) => {
+                let z = self.int(0);
+                let up = self.cmp(CmpOp::Eq, d, z);
+                let lo = self.select(up, r.left, r.right, RegTy::F64);
+                let hi = self.select(up, r.right, r.left, RegTy::F64);
+                (lo, hi)
+            }
+        }
+    }
+
+    /// Integer or physical arithmetic checked against the base range of the result type
+    /// (rule 7, U-1); universal results are only checked for i64 overflow.
+    fn bin_checked(
+        &mut self,
+        op: IntOp,
+        a: Reg,
+        b: Reg,
+        res: Option<SubtypeId>,
+        span: Span,
+    ) -> R<Reg> {
+        let db = self.db;
+        let Some(st) = res.filter(|&st| {
+            matches!(
+                db.types[db.base(st)].kind,
+                TypeKind::Integer | TypeKind::Physical { .. }
+            )
+        }) else {
+            return Ok(self.bin(op, a, b));
+        };
+        let t = db.base(st);
+        let bs = db.types[t].base_subtype;
+        let r = self.scalar_bounds(bs, span)?;
         let (lo, hi) = self.low_high(r);
-        let what = self.msg(what, dir);
-        self.emit(Inst::Check {
-            kind: CheckKind::Range,
-            v,
+        let name = db.types[t].name.text.as_str().to_ascii_uppercase();
+        let what = self.fb.program().check_msg_for("", Dir::To, &name);
+        let dst = self.reg(RegTy::I64);
+        self.emit(Inst::BinRange {
+            op,
+            dst,
+            a,
+            b,
             lo,
             hi,
             what,
         });
-        Ok(())
-    }
-
-    /// Check an integer or physical result against the base range of its type (rule 7, U-1).
-    fn check_base(&mut self, v: Reg, st: SubtypeId, span: Span) -> R<()> {
-        let db = self.db;
-        let t = db.base(st);
-        if !matches!(
-            db.types[t].kind,
-            TypeKind::Integer | TypeKind::Physical { .. }
-        ) {
-            return Ok(());
-        }
-        let bs = db.types[t].base_subtype;
-        // ponytail: reported as a range error naming the type; NVC's "result of A + B cannot
-        // be represented" wording needs the operands in the check (rsim-ir request).
-        self.check_scalar(v, None, bs, &db.types[t].name.text.to_string(), span)
+        Ok(dst)
     }
 
     // ---- calls ----
@@ -980,7 +1068,7 @@ impl Fx<'_, '_> {
                         v,
                         Some(db.exprs[e].subtype),
                         p.subtype,
-                        &p.name.text.to_string(),
+                        &format!("parameter {}", p.name.text.as_str().to_ascii_uppercase()),
                         es,
                     )?;
                     cells.push(v);
@@ -1232,7 +1320,8 @@ impl Fx<'_, '_> {
                 });
                 let v = self.reg(RegTy::I64);
                 self.emit(Inst::SigReadScalar { dst: v, sig: s });
-                let want = self.int(i64::from(op.family == RisingEdge));
+                // BIT and BOOLEAN signals hold the codes of '0' and '1'.
+                let want = self.int(2 + i64::from(op.family == RisingEdge));
                 let c = self.cmp(CmpOp::Eq, v, want);
                 let dst = self.reg(RegTy::I64);
                 self.emit(Inst::Bool {
@@ -1364,13 +1453,20 @@ impl Fx<'_, '_> {
                         Exp => IntOp::Pow,
                         _ => return Err(self.cx.ice(span, "arithmetic family")),
                     };
-                    self.bin(o, a, b)
+                    return self.bin_checked(o, a, b, res, span);
                 }
             },
             _ => return Err(self.cx.ice(span, "binary operation with one operand")),
         };
         if let Some(st) = res {
-            self.check_base(r, st, span)?;
+            // `-x` and `abs x` overflow only at the most negative value of the base range.
+            self.check_scalar(
+                r,
+                None,
+                self.db.types[self.db.base(st)].base_subtype,
+                "",
+                span,
+            )?;
         }
         Ok(r)
     }
@@ -1576,11 +1672,15 @@ impl Fx<'_, '_> {
         for (k, (r, len)) in ops.iter().enumerate() {
             let off = if k == 0 { oa } else { ob };
             match len {
-                None if logic => self.emit(Inst::LSet {
-                    base: data,
-                    idx: off,
-                    v: *r,
-                }),
+                None if logic => {
+                    let bias = self.code_bias(tid);
+                    let v = self.enc(*r, bias);
+                    self.emit(Inst::LSet {
+                        base: data,
+                        idx: off,
+                        v,
+                    })
+                }
                 None => {
                     let a = self.reg(RegTy::Ptr);
                     self.emit(Inst::Index {
@@ -1648,7 +1748,7 @@ impl Fx<'_, '_> {
                     Pos => Ok(V::S(self.scalar_expr(args[0])?)),
                     Val => {
                         let v = self.scalar_expr(args[0])?;
-                        self.check_scalar(v, None, st, &ty::subtype_name(db, st), span)?;
+                        self.check_scalar(v, None, st, "", span)?;
                         Ok(V::S(v))
                     }
                     Succ | Pred | Leftof | Rightof => {
@@ -1700,7 +1800,7 @@ impl Fx<'_, '_> {
                             .native("rsim.attr.value", Some(tid), &[fat], Some(res), span)?
                             .ok_or(Failed)?;
                         if let V::S(r) = r {
-                            self.check_scalar(r, None, st, &ty::subtype_name(db, st), span)?;
+                            self.check_scalar(r, None, st, "", span)?;
                         }
                         Ok(r)
                     }
@@ -1752,7 +1852,8 @@ impl Fx<'_, '_> {
                                 base: buf,
                                 idx: z,
                             });
-                            return Ok(V::S(dst));
+                            let bias = self.code_bias(tid);
+                            return Ok(V::S(self.dec(dst, bias)));
                         }
                         return Ok(V::S(self.load(buf, w, rt)));
                     }
@@ -1876,7 +1977,9 @@ impl Fx<'_, '_> {
         let tid = self.ty(t, span)?;
         if logic {
             let (_, count) = self.layout(tid, dope);
-            return Ok(V::S(self.elem_at(data, pos, count, true, w)));
+            let code = self.elem_at(data, pos, count, true, w);
+            let bias = self.code_bias(tid);
+            return Ok(V::S(self.dec(code, bias)));
         }
         let rt = self.rt_of(db.base(ty::array_of(db, t).ok_or(Failed)?.0));
         let a = self.reg(RegTy::Ptr);
@@ -2121,6 +2224,9 @@ impl Fx<'_, '_> {
             Place::Logic { data, idx, st } => {
                 let r = self.scal(v, span)?;
                 self.check_scalar(r, Some(from), st, what, span)?;
+                let tid = self.ty(self.db.base(st), span)?;
+                let bias = self.code_bias(tid);
+                let r = self.enc(r, bias);
                 self.emit(Inst::LSet {
                     base: data,
                     idx,
@@ -2216,9 +2322,18 @@ impl Fx<'_, '_> {
         let name = ty::subtype_name(db, to);
         let r = match (ty::is_real(db, ft), ty::is_real(db, tt)) {
             (true, false) => {
+                let r = self.scalar_bounds(to, span)?;
+                let dir = ir_dir(r.dir);
+                let (lo, hi) = self.low_high(r);
+                let what = self.fb.program().check_msg_for("", dir, &name);
                 let dst = self.reg(RegTy::I64);
-                self.emit(Inst::FToI { dst, src: v });
-                self.check_scalar(dst, None, to, &name, span)?;
+                self.emit(Inst::FToIRange {
+                    dst,
+                    src: v,
+                    lo,
+                    hi,
+                    what,
+                });
                 dst
             }
             (false, true) => {
@@ -2228,7 +2343,7 @@ impl Fx<'_, '_> {
             }
             (true, true) => v,
             (false, false) => {
-                self.check_scalar(v, Some(from), to, &name, span)?;
+                self.check_scalar(v, Some(from), to, "", span)?;
                 v
             }
         };

@@ -314,7 +314,7 @@ impl Fx<'_, '_> {
         let mut e = e;
         loop {
             match &self.db.exprs[e].kind {
-                ExprKind::Obj(d) => return self.db.decls[*d].name.to_string(),
+                ExprKind::Obj(d) => return ty::obj_desc(self.db, *d),
                 ExprKind::Index { prefix, .. } | ExprKind::Slice { prefix, .. } => e = *prefix,
                 _ => return "target".into(),
             }
@@ -446,6 +446,8 @@ impl Fx<'_, '_> {
             let va = self.offset(at, 8);
             if logic {
                 let z = self.int(0);
+                let bias = self.code_bias(tid);
+                let r = self.enc(r, bias);
                 self.emit(Inst::LSet {
                     base: va,
                     idx: z,

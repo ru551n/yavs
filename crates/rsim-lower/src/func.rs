@@ -410,7 +410,8 @@ impl<'a, 'b> Fx<'a, 'b> {
         let v = match o.default {
             Some(e) => {
                 let v = self.scalar_expr(e)?;
-                self.check_scalar(v, Some(db.exprs[e].subtype), o.subtype, &name, decl.span)?;
+                let what = ty::obj_desc(db, d);
+                self.check_scalar(v, Some(db.exprs[e].subtype), o.subtype, &what, decl.span)?;
                 v
             }
             None => self.scalar_left(o.subtype, decl.span)?,
@@ -437,14 +438,24 @@ impl<'a, 'b> Fx<'a, 'b> {
             .static_bounds(elem)
             .and_then(|(l, _, _)| ty::cell(&l))
             .filter(|&c| c == 0);
-        if left.is_some() {
+        let etid = self.ty(db.base(elem), span)?;
+        let logic = rsim_ir::Ty::logic_leaf(self.fb.program().types(), etid).is_some();
+        let bias = self.code_bias(etid);
+        if left.is_some() && bias == 0 {
             return Ok(data); // temporaries are zeroed
         }
-        let etid = self.ty(db.base(elem), span)?;
-        if rsim_ir::Ty::logic_leaf(self.fb.program().types(), etid).is_some() {
-            return Err(self
-                .cx
-                .unsupported(span, "logic arrays whose element left bound is not code 0"));
+        if logic {
+            let v = self.scalar_left(elem, span)?;
+            let code = self.enc(v, bias);
+            self.for_n(count, |fx, i| {
+                fx.emit(Inst::LSet {
+                    base: data,
+                    idx: i,
+                    v: code,
+                });
+                Ok(())
+            })?;
+            return Ok(data);
         }
         let (_, _, w) = self.scalar(elem, span)?;
         let v = self.scalar_left(elem, span)?;
@@ -646,9 +657,7 @@ fn thunk(
     span: Span,
     f: impl FnOnce(&mut Fx<'_, '_>) -> R<Reg>,
 ) -> R<rsim_ir::FuncId> {
-    // ponytail: a pure function rather than `FuncKind::Thunk`, whose `Ret` the verifier
-    // requires to be empty; a thunk once rsim-ir lets thunks return their value.
-    let id = pb.declare(name, FuncKind::Function, None);
+    let id = pb.declare(name, FuncKind::Thunk, None);
     let mut fx = Fx::new(
         db,
         cx,
@@ -691,7 +700,13 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 |fx| match def {
                     Some(e) => {
                         let v = fx.scalar_expr(e)?;
-                        fx.check_scalar(v, Some(db.exprs[e].subtype), st, &name, decl.span)?;
+                        fx.check_scalar(
+                            v,
+                            Some(db.exprs[e].subtype),
+                            st,
+                            &ty::obj_desc(db, d),
+                            decl.span,
+                        )?;
                         Ok(v)
                     }
                     None => fx.scalar_left(st, decl.span),
@@ -720,7 +735,13 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
             let st = o.subtype;
             let init = thunk(db, pb, cx, &name, decl.span, |fx| {
                 let v = fx.scalar_expr(def)?;
-                fx.check_scalar(v, Some(db.exprs[def].subtype), st, &name, decl.span)?;
+                fx.check_scalar(
+                    v,
+                    Some(db.exprs[def].subtype),
+                    st,
+                    &ty::obj_desc(db, d),
+                    decl.span,
+                )?;
                 Ok(v)
             })?;
             let off = ir.inst_size.next_multiple_of(8);

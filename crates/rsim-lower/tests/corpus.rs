@@ -25,8 +25,16 @@ use rsim_sem::{Db, LangRev, Options};
 
 /// Corpus files whose output matches NVC's exactly.
 const PASS: &[&str] = &[
+    "scalar/enum_attrs",
+    "scalar/int_attrs",
+    "scalar/real_attrs",
     "scalar/real_image",
+    "scalar/string_attrs",
+    "scalar/subtype_range",
+    "scalar/time_attrs",
+    "arith/div_zero",
     "arith/int_ops",
+    "arith/int_overflow",
     "arith/real_arith",
     "arith/time_arith",
     "process/case_if",
@@ -36,6 +44,7 @@ const PASS: &[&str] = &[
     "report/assert_user_message",
     "report/concurrent_assert",
     "report/error_then_end",
+    "report/failure_exit",
     "report/message_forms",
     "delta/concurrent_assign",
     "delta/delta_order",
@@ -206,7 +215,12 @@ fn run(l: Lowered, names: &[String], stop: Time) -> Result<String, String> {
         let ty = SignalType { elem, len: 1 };
         let init = match elem {
             rsim_kernel::Elem::Logic => {
-                let code = *rsim_logic::ALL.get(v as usize).ok_or("logic code")?;
+                // BIT and BOOLEAN leaves hold the std_ulogic codes of '0' and '1'.
+                let bias = match rsim_ir::Ty::logic_leaf(&prog.types, s.ty) {
+                    Some(rsim_ir::LogicKind::StdULogic) => 0,
+                    _ => 2,
+                };
+                let code = *rsim_logic::ALL.get(v as usize + bias).ok_or("logic code")?;
                 Value::Logic(rsim_kernel::LogicVec::from_fn(1, |_| code))
             }
             rsim_kernel::Elem::Bytes(n) => Value::Bytes(v.to_le_bytes()[..n as usize].to_vec()),

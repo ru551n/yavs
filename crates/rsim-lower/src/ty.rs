@@ -151,11 +151,29 @@ pub(crate) fn array_of(db: &Db, t: TypeId) -> Option<(SubtypeId, u8)> {
     }
 }
 
-/// Display name of a subtype for check messages.
+/// Name of a subtype in runtime check messages. Upper case, as NVC prints it, so the
+/// differential corpus compares exactly (difftest is strict for rsim).
 pub(crate) fn subtype_name(db: &Db, st: SubtypeId) -> String {
     let s = &db.subtypes[st];
     match s.name {
-        Some(n) => n.text.to_string(),
-        None => db.types[s.base].name.text.to_string(),
+        Some(n) => n.text.as_str().to_ascii_uppercase(),
+        None => db.types[s.base].name.text.as_str().to_ascii_uppercase(),
     }
+}
+
+/// An object as check messages name it: `variable P`, `signal S`, `parameter X`.
+pub(crate) fn obj_desc(db: &Db, d: rsim_sem::DeclId) -> String {
+    use rsim_sem::decl::{DeclKind, ObjClass, ObjRole};
+    let name = db.decls[d].name.to_string().to_ascii_uppercase();
+    let class = match &db.decls[d].kind {
+        DeclKind::Object(o) if o.role == ObjRole::Param => "parameter",
+        DeclKind::Object(o) => match o.class {
+            ObjClass::Constant => "constant",
+            ObjClass::Signal => "signal",
+            ObjClass::Variable | ObjClass::SharedVariable => "variable",
+            ObjClass::File => "file",
+        },
+        _ => return name,
+    };
+    format!("{class} {name}")
 }

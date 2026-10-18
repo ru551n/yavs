@@ -59,7 +59,7 @@ pub struct InstConst {
     pub name: String,
     pub off: u32,
     pub w: Width,
-    /// A function without parameters returning the value.
+    /// `FuncKind::Thunk` returning the value.
     pub init: FuncId,
 }
 
@@ -69,7 +69,7 @@ pub struct SignalIr {
     /// Original spelling (rule 8).
     pub name: String,
     pub ty: TyId,
-    /// A function without parameters returning the initial value (a scalar cell).
+    /// `FuncKind::Thunk` returning the initial value (a scalar cell).
     pub init: FuncId,
 }
 

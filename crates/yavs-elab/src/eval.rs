@@ -218,11 +218,11 @@ impl Model {
         if !rk.is_scalar() {
             return Err(not_scalar("a composite result"));
         }
-        if !self.funcs.contains_key(&callee) {
-            let r = lower_one(db, callee, ex.span);
-            self.funcs.insert(callee, r);
-        }
-        let l = match &self.funcs[&callee] {
+        let l = match self
+            .funcs
+            .entry(callee)
+            .or_insert_with(|| lower_one(db, callee, ex.span))
+        {
             Ok(l) => l,
             Err(d) => {
                 let mut d = d.clone();

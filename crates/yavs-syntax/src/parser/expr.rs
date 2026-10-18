@@ -610,13 +610,28 @@ impl Parser<'_> {
         }
     }
 
-    /// A type mark: a name with selected and attribute suffixes but no parentheses.
+    /// A type mark: a name with selected and attribute suffixes but no parentheses,
+    /// except the dimension of a 2019 `A'INDEX(n)` (16.2.3), which a constraint
+    /// could not follow anyway (the index subtype is scalar).
     pub(super) fn type_mark(&mut self) -> PResult<Name> {
         let mut n = self.name_prefix()?;
         loop {
             match self.peek() {
                 Tok::Dot => n = self.selected(n)?,
                 Tok::Tick if self.nth(1) != Tok::LParen => n = self.attribute(n)?,
+                Tok::LParen
+                    if matches!(&n.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index") =>
+                {
+                    let args = self.assoc_list()?;
+                    let span = self.span_from(n.span);
+                    n = Name {
+                        kind: NameKind::Apply {
+                            prefix: Box::new(n),
+                            args,
+                        },
+                        span,
+                    };
+                }
                 _ => return Ok(n),
             }
         }

@@ -42,6 +42,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Where 2019 conditional expressions are allowed | Permissive per LRM policy | `docs/design/lrm-checks.md` P2, `docs/decisions.md` "Parser" |
 | Strict on `abs x ** 2`, chained relations, mixed logical operators; `10ns` accepted with `W0003` | LRM grammar; common real code | `docs/decisions.md` "Parser" |
 | Encoding: `auto` (UTF-8 if valid else Latin-1), `latin1`, `utf8` (`E0010`); non-Latin-1 char in literal/identifier `E0009`; spans are file byte offsets | User decision | `docs/decisions.md` "Parser", source encoding |
+| A type mark takes no parentheses except the dimension of 2019 `A'INDEX(n)` (`NameKind::Apply` on the attribute) | The index subtype is scalar, so no index constraint can follow; #174 | `src/parser/expr.rs` `type_mark` |
 | PSL is `E0005` and skipped | Out of scope | `docs/plan.md` "Out of scope", #138 |
 | No VHDL-93 mode: 93 code using 2008 reserved words is an expected corpus failure | Plan scope | `docs/decisions.md` "Parser", corpus lists |
 

@@ -1305,3 +1305,116 @@ fn des_text(d: &ast::Designator) -> String {
 #[cfg(test)]
 #[path = "attr_tests.rs"]
 mod tests;
+
+impl Db {
+    /// 2019 `A'INDEX` or `A'INDEX(n)` as a type mark (16.2): the index subtype of
+    /// dimension `n`, narrowed to `A'RANGE(n)` when `A` is an object or a fully
+    /// constrained array subtype (L14).
+    pub(crate) fn index_type_mark(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        dim: Option<&ast::Expr>,
+        span: Span,
+    ) -> Result<SubtypeId, Reported> {
+        let (range, _) = self.range_attr_inner(scope, prefix, false, dim, span)?;
+        let crate::types::RangeC::Attr {
+            prefix: aprefix,
+            dim,
+            ..
+        } = &range
+        else {
+            return Err(self.ice(span, "a range attribute without an attribute range"));
+        };
+        let (st, narrow) = match *aprefix {
+            AttrPrefix::Subtype(st) => (
+                st,
+                self.constrainedness(st) == crate::types::Constrainedness::Full,
+            ),
+            AttrPrefix::Expr(e) => (self.exprs[e].subtype, true),
+            AttrPrefix::Entity(_) => return Err(self.ice(span, "`'index` of a named entity")),
+        };
+        let index = match &self.types[self.base(st)].kind {
+            TypeKind::Array { indexes, .. } => indexes[*dim as usize - 1],
+            TypeKind::Error => return Err(Reported),
+            _ => {
+                return Err(self.error(
+                    Diagnostic::error(diag::NOT_A_TYPE, "`'index` needs an array prefix")
+                        .with_primary(prefix.span, "not an array"),
+                ));
+            }
+        };
+        if !narrow {
+            return Ok(index);
+        }
+        let base = self.base(index);
+        Ok(self.subtypes.push(crate::types::SubtypeDef {
+            base,
+            name: None,
+            parent: Some(index),
+            constraint: crate::types::Constraint::Range(range),
+            resolution: None,
+            span,
+        }))
+    }
+
+    /// 2019 `R'RECORD` (16.2.6), `R` a range attribute name: the range record type of
+    /// the range's scalar type, with elements `LEFT`, `RIGHT` and `DIRECTION` (L12).
+    /// One anonymous record type per scalar base type, made on first use.
+    pub(crate) fn range_record_type_mark(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        attr: Ident,
+    ) -> Result<SubtypeId, Reported> {
+        let Some(r) = self.range_attr(scope, prefix) else {
+            return Err(self.error(
+                Diagnostic::error(diag::NOT_A_TYPE, "the prefix of `'record` must be a range attribute name")
+                    .with_primary(prefix.span, "not `X'range` or `X'reverse_range`"),
+            ));
+        };
+        let (_, t) = r?;
+        if let Some(&st) = self.range_records.get(&t) {
+            return Ok(st);
+        }
+        let Some(dir) = self.well_known.range_direction else {
+            return Err(self.ice(attr.span, "`'record` without std.standard.RANGE_DIRECTION"));
+        };
+        let elem = self.types[t].first_subtype;
+        let dir = self.types[dir].first_subtype;
+        let name = Ident {
+            text: Symbol::intern(&format!("{}_RANGE_RECORD", self.types[t].name.text)),
+            key: Symbol::intern(&format!("{}_range_record", self.types[t].name.key)),
+            span: attr.span,
+        };
+        let el = |n: &str, subtype| crate::types::RecordElem {
+            name: Ident {
+                text: Symbol::intern(n),
+                key: Symbol::intern(&n.to_ascii_lowercase()),
+                span: attr.span,
+            },
+            subtype,
+        };
+        let elems = Box::new([el("LEFT", elem), el("RIGHT", elem), el("DIRECTION", dir)]);
+        let ty = self.types.next_id();
+        let st = self.subtypes.push(crate::types::SubtypeDef {
+            base: ty,
+            name: Some(name),
+            parent: None,
+            constraint: crate::types::Constraint::None,
+            resolution: None,
+            span: attr.span,
+        });
+        let decl = self.types[t].decl;
+        self.types.push(crate::types::TypeDef {
+            decl,
+            name,
+            anonymous: true,
+            kind: TypeKind::Record { elems },
+            first_subtype: st,
+            base_subtype: st,
+        });
+        self.range_records.insert(t, st);
+        Ok(st)
+    }
+}

@@ -49,9 +49,9 @@ LCS text was read.
 | L9 | case on a non-locally-static 1-D char array | 10.9 | confirmed | all choices the same length (analysis error), expression length checked at run time |
 | L10 | locally static calls into ieee packages | 9.4.2 | confirmed | exactly `std_logic_1164`, `numeric_bit`, `numeric_std`, `numeric_bit_unsigned`, `numeric_std_unsigned` |
 | L11 | where `is name` of a subprogram default resolves | 6.5.6.2 | confirmed (NVC; GHDL crashes) | resolved at the formal's declaration; `is <>` at the instantiation, by the formal's designator |
-| L12 | spelling of the range record attribute | 16.2.6 (2019) | **corrected** | no `'RANGE_RECORD`; it is `R'RECORD` (and `R'VALUE`) with `R` a range attribute name |
+| L12 | spelling of the range record attribute | 16.2.6 (2019) | **corrected** | no `'RANGE_RECORD`; it is `R'RECORD` (and `R'VALUE`) with `R` a range attribute name; `R'RECORD` as a type mark implemented (#180), `R'VALUE` and the `std.standard` names `<T>_RANGE_RECORD` not yet |
 | L13 | 2019 `'IMAGE` on objects | 16.2 (2019) | confirmed | `o'IMAGE` for an object of scalar type (NVC 2019) |
-| L14 | 2019 `'INDEX` | 16.2 (2019) | confirmed | `A'INDEX` / `A'INDEX(n)`, a subtype; only in a type mark |
+| L14 | 2019 `'INDEX` | 16.2 (2019) | confirmed | `A'INDEX` / `A'INDEX(n)`, a subtype; only in a type mark; implemented (#174): the index subtype, narrowed to `A'RANGE(n)` for an object or a fully constrained subtype |
 | L15 | 2019 private variables and method aliases | 5.6.2 | confirmed | quote below; `private shared variable` is an error |
 | L16 | `buffer` under `'CONVERSE` | 6.5.2 / 16.2 (2019) | unclear (tools disagree), **permissive** | `buffer` stays `buffer`: both read and drive allowed (U-4, decided) |
 | L17 | NVC `--relaxed` list (R3) | n/a | **corrected** | NVC does not relax case choices; drop R3 |

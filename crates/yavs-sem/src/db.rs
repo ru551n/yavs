@@ -138,6 +138,8 @@ pub struct Db {
     pub config_specs: HashMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
     /// Configuration specifications whose instance labels wait for the statement part.
     pub(crate) pending_specs: Vec<crate::unit::PendingSpec>,
+    /// 2019 range record types (`R'RECORD`) by scalar base type, made on first use (attr.rs).
+    pub(crate) range_records: HashMap<TypeId, SubtypeId>,
     /// Generic defaults, generic lists and instance remappings (generic.rs).
     pub(crate) generic: crate::generic::GenericState,
     diags: Vec<Diagnostic>,
@@ -236,6 +238,7 @@ impl Db {
             tainted: HashSet::new(),
             stmt_owners: Vec::new(),
             config_specs: HashMap::new(),
+            range_records: HashMap::new(),
             pending_specs: Vec::new(),
             generic: Default::default(),
             diags: Vec::new(),

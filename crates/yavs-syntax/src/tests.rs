@@ -676,6 +676,19 @@ fn vhdl2019_mode_views() {
 }
 
 #[test]
+fn vhdl2019_index_attribute_type_mark() {
+    // `A'INDEX(n)` keeps its dimension; it is not an index constraint (#174).
+    let d = ok19("package p is signal i : t'index(2); signal j : t'index range 0 to 1; end;");
+    let decls = pkg_decls(&d);
+    let Decl::Object(o) = &decls[0] else { panic!() };
+    assert!(o.subtype.constraint.is_none());
+    assert!(matches!(&o.subtype.type_mark.kind, NameKind::Apply { prefix, args }
+        if args.len() == 1 && matches!(&prefix.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index")));
+    let Decl::Object(o) = &decls[1] else { panic!() };
+    assert!(o.subtype.constraint.is_some());
+}
+
+#[test]
 fn vhdl2019_protected_private() {
     let d = ok19(
         "package p is type pt is protected

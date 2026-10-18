@@ -148,11 +148,27 @@ impl Db {
                     DeclKind::PhysUnit { ty, .. } => {
                         CandSet::Types(vec![Interp::new(ty, Via::Literal)])
                     }
-                    _ => self.poison_cands(),
+                    _ => self.not_a_unit(*unit),
                 },
-                _ => self.poison_cands(),
+                Visible::None => {
+                    self.undeclared(scope, *unit);
+                    self.poison_cands()
+                }
+                _ => self.not_a_unit(*unit),
             },
         }
+    }
+
+    /// A physical literal's unit that names no unit: reported, never silent (poison).
+    fn not_a_unit(&mut self, unit: rsim_syntax::ast::Ident) -> CandSet {
+        self.error(
+            rsim_diag::Diagnostic::error(
+                crate::diag::BAD_LITERAL,
+                format!("`{}` is not a physical unit", unit.text),
+            )
+            .with_primary(unit.span, "not a unit"),
+        );
+        self.poison_cands()
     }
 
     /// Candidates of a name that denotes only overloadables (character literals).

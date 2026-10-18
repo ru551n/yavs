@@ -88,6 +88,14 @@ fn check(path: &Path) -> Result<(), String> {
     let mut db = Db::new(opts);
     let _ = db.analyze_file("work", path, file_rev);
     let shown = path.display().to_string();
+    // An internal error is never an expected failure, not even for an xfail file.
+    if let Some(d) = db
+        .diagnostics()
+        .iter()
+        .find(|d| d.notes.iter().any(|n| n.contains("this is a bug in rsim")))
+    {
+        return Err(format!("ICE: {}", d.message));
+    }
     let mut got = BTreeSet::new();
     let mut extra = Vec::new();
     for d in db.diagnostics() {
@@ -182,7 +190,8 @@ fn negative_suite() {
             .to_string_lossy()
             .replace('\\', "/");
         let r = check(p);
-        match (r, xfail.contains(rel.as_str())) {
+        let ice = r.as_ref().is_err_and(|e| e.starts_with("ICE:"));
+        match (r, xfail.contains(rel.as_str()) && !ice) {
             (Ok(()), true) => fixed.push(rel),
             (Err(e), false) => unexpected.push(format!("{rel}: {e}")),
             (Err(_), true) => failing.push(rel),

@@ -527,6 +527,14 @@ impl Db {
             }
             NameRes::One(d) => vec![d],
             NameRes::Overloads(ds) => ds,
+            // `alias a : t is obj.field;`: an object name that is not a plain object.
+            NameRes::Value => {
+                return Err(self.unsupported(
+                    name.span,
+                    "aliases of selected object names",
+                    "S3",
+                ));
+            }
             other => return Err(self.report_name(scope, other)),
         };
         let sig = match sig {

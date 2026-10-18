@@ -233,6 +233,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             Space::Frame(d) if d == self.depth => AddrSpace::Frame,
             Space::Frame(d) => AddrSpace::Up(self.depth - d),
             Space::Inst => AddrSpace::Inst,
+            Space::Pkg(p) => AddrSpace::Pkg(p),
         };
         let dst = self.reg(RegTy::Ptr);
         self.emit(Inst::AddrOf { dst, space, off });
@@ -804,7 +805,8 @@ pub(crate) fn architecture(
         inst_size: 0,
         values: Vec::new(),
         consts: Vec::new(),
-        signals: Vec::new(),
+        // Package signals come first, at the same index in every unit.
+        signals: cx.pkg_sigs.clone(),
         processes: Vec::new(),
         names: Vec::new(),
     };
@@ -1219,4 +1221,230 @@ fn guard_process(
         drivers: vec![sig],
     });
     Ok(())
+}
+
+/// The run-time objects of a package and its body (LRM 14.4.2): signals, and an initialisation
+/// thunk that evaluates the constants that are not locally static once and creates the shared
+/// variables, in declaration order, in package data `AddrSpace::Pkg(index)`.
+pub(crate) fn package(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    unit: UnitId,
+    index: u32,
+) -> R<crate::PackageIr> {
+    let u = &db.units[unit];
+    if !matches!(u.hir, UnitHir::Package { .. }) {
+        return Err(cx.ice(u.span, "not a package"));
+    }
+    let mut scopes = vec![u.scope];
+    scopes.extend(db.units.iter().find_map(|(_, b)| match b.hir {
+        UnitHir::PackageBody { package } if package == unit => Some(b.scope),
+        _ => None,
+    }));
+    let name = format!("{}'init", u.name.text);
+    let f = pb.declare(&name, FuncKind::Thunk, None);
+    let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Thunk, name);
+    fx.stmt_start(StmtKind::Decl, u.span);
+    let mut size = 0u32;
+    let mut signals = Vec::new();
+    let mut ok = true;
+    for s in scopes {
+        for &d in &db.scopes[s].order {
+            ok &= fx.pkg_object(d, index, &mut size, &mut signals).is_ok();
+        }
+    }
+    fx.end(u.span);
+    if !ok {
+        return Err(Failed);
+    }
+    Ok(crate::PackageIr {
+        unit,
+        index,
+        size,
+        init: f,
+        signals,
+    })
+}
+
+impl Fx<'_, '_> {
+    /// One package object (see [`package`]); `size` is the package data allocated so far.
+    fn pkg_object(
+        &mut self,
+        d: DeclId,
+        p: u32,
+        size: &mut u32,
+        signals: &mut Vec<SignalIr>,
+    ) -> R<()> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Ok(());
+        };
+        if self.cx.objs.contains_key(&d) {
+            return Ok(()); // a deferred constant seen again in the body
+        }
+        let span = decl.span;
+        let t = db.base(o.subtype);
+        let mut alloc = |n: u32| {
+            let off = size.next_multiple_of(8);
+            *size = off + n;
+            off
+        };
+        match o.class {
+            ObjClass::Signal => {
+                let ty = self.ty(t, span)?;
+                let sig = self.cx.pkg_sigs.len() as u32;
+                let s = SignalIr {
+                    decl: d,
+                    name: decl.name.to_string(),
+                    ty,
+                    init: None,
+                    dope: None,
+                };
+                self.cx.pkg_sigs.push(s.clone());
+                signals.push(s);
+                self.cx.objs.insert(d, Obj::Signal { sig });
+                Ok(())
+            }
+            ObjClass::Constant => {
+                // A deferred constant without its body, and locally static constants (read
+                // through their folded value), have no slot.
+                let Some(def) = o.default else { return Ok(()) };
+                if db.value(def).is_some() {
+                    return Ok(());
+                }
+                self.stmt_start(StmtKind::Decl, span);
+                if self.is_comp(t) {
+                    let tid = self.ty(t, span)?;
+                    let Some(desc) = self.static_desc(o.subtype, def) else {
+                        // ponytail: bounds known only at run time: the constant is still
+                        // re-evaluated at each use (`read_obj`); a heap object in package data
+                        // when such constants need evaluating once.
+                        return Ok(());
+                    };
+                    let lsize = match self.fb.program().layout(tid, &desc) {
+                        Ok((l, _)) => l.size as u32,
+                        Err(e) => return Err(self.cx.ice(span, &e.to_string())),
+                    };
+                    let v = self.expr(def)?;
+                    let (data, vdope) = self.arr(v, span)?;
+                    let off = alloc(lsize.next_multiple_of(8) + desc.len() as u32);
+                    let dslot = off + lsize.next_multiple_of(8);
+                    let c = self
+                        .fb
+                        .program()
+                        .konst(yavs_ir::ConstData::Bytes(desc.clone()));
+                    let da = self.addr(Space::Pkg(p), dslot);
+                    if !desc.is_empty() {
+                        self.emit(Inst::CopyConst { dst: da, c });
+                        if ty::is_array(db, t) {
+                            let dims = ty::array_of(db, t).map_or(1, |x| x.1);
+                            let what = self.msg(&ty::obj_desc(db, d), yavs_ir::Dir::To);
+                            self.emit(Inst::SubtypeCheck {
+                                dope: vdope,
+                                want: da,
+                                dims,
+                                what,
+                            });
+                        }
+                    }
+                    let dst = self.addr(Space::Pkg(p), off);
+                    let n = self.int(i64::from(lsize));
+                    self.emit(Inst::Copy {
+                        dst,
+                        src: data,
+                        bytes: n,
+                    });
+                    self.cx.objs.insert(
+                        d,
+                        Obj::Fixed {
+                            space: Space::Pkg(p),
+                            off,
+                            size: lsize.next_multiple_of(8),
+                        },
+                    );
+                    return Ok(());
+                }
+                let (_, _, w) = self.scalar(o.subtype, span)?;
+                let v = self.scalar_expr(def)?;
+                let what = ty::obj_desc(db, d);
+                self.check_scalar(v, Some(db.exprs[def].subtype), o.subtype, &what, span)?;
+                let off = alloc(8);
+                let a = self.addr(Space::Pkg(p), off);
+                self.store(a, v, w);
+                self.cx.objs.insert(
+                    d,
+                    Obj::Scalar {
+                        space: Space::Pkg(p),
+                        off,
+                        w,
+                    },
+                );
+                Ok(())
+            }
+            ObjClass::SharedVariable => {
+                if !matches!(
+                    db.types[t].kind,
+                    yavs_sem::types::TypeKind::Protected { .. }
+                ) {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "shared variables of non-protected types"));
+                }
+                self.stmt_start(StmtKind::Decl, span);
+                let h = self.prot_new(t, true, span)?;
+                let off = alloc(8);
+                let a = self.addr(Space::Pkg(p), off);
+                self.store(a, h, Width::B8);
+                self.cx.objs.insert(
+                    d,
+                    Obj::Scalar {
+                        space: Space::Pkg(p),
+                        off,
+                        w: Width::B8,
+                    },
+                );
+                Ok(())
+            }
+            // Files in packages are not registered: a use reports E2001 (M3).
+            _ => Ok(()),
+        }
+    }
+
+    /// The descriptor of a composite subtype when it is known at lowering: none needed (a
+    /// record of constrained fields), or static index bounds (from the subtype, else from a
+    /// folded initial value).
+    fn static_desc(&mut self, st: SubtypeId, def: yavs_sem::ExprId) -> Option<Vec<u8>> {
+        let db = self.db;
+        let tid = ty::lower(
+            db,
+            self.cx,
+            self.fb.program(),
+            db.base(st),
+            db.exprs[def].span,
+        )
+        .ok()?;
+        let n = yavs_ir::Ty::desc_size(self.fb.program().types(), tid)?;
+        if n == 0 {
+            return Some(Vec::new());
+        }
+        let mut out = Vec::new();
+        if let yavs_sem::types::Constraint::Array {
+            dims: Some(dims), ..
+        } = &db.subtypes[st].constraint
+        {
+            for rc in dims.iter() {
+                let yavs_sem::types::RangeC::Explicit { left, dir, right } = rc else {
+                    return None;
+                };
+                let (l, r) = (db.value(*left)?.as_int()?, db.value(*right)?.as_int()?);
+                let d = i64::from(*dir == yavs_sem::types::Direction::Downto);
+                for x in [l, r, d] {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+        }
+        (out.len() as u64 == n).then_some(out)
+    }
 }

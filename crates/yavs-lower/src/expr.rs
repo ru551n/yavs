@@ -324,6 +324,11 @@ impl Fx<'_, '_> {
                 let (data, dope) = self.inst_array(off);
                 Ok(V::A(data, dope))
             }
+            Some(Obj::Fixed { space, off, size }) => {
+                let data = self.addr(space, off);
+                let dope = self.addr(space, off + size);
+                Ok(V::A(data, dope))
+            }
             Some(Obj::Signal { .. } | Obj::SignalRef { .. })
                 if self.sig_dope(d, span)?.is_some() =>
             {
@@ -642,6 +647,7 @@ impl Fx<'_, '_> {
                     return Ok(self.load(dp, Width::B8, RegTy::Ptr));
                 }
                 Some(Obj::InstArray { off }) => return Ok(self.inst_array(off).1),
+                Some(Obj::Fixed { space, off, size }) => return Ok(self.addr(space, off + size)),
                 Some(Obj::Signal { .. }) => {
                     let span = self.db.exprs[e].span;
                     if let Some(d) = self.sig_dope(d, span)? {

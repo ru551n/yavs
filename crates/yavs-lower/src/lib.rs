@@ -186,6 +186,25 @@ pub struct ProcessIr {
 pub struct Lowered {
     pub program: Program,
     pub units: Vec<UnitIr>,
+    /// Packages with run-time objects, in the order [`Lowerer::package`] was called; the
+    /// `index` of each is its `AddrSpace::Pkg` number.
+    pub packages: Vec<PackageIr>,
+}
+
+/// A package's objects at run time (LRM 14.4.2). The elaborator initialises each package
+/// once, in dependency order, with `yavs_interp::init_package(rt, init, index, size, shared)`
+/// and binds the results as `Bindings::packages` (index order); signals are the first
+/// entries of every `UnitIr::signals` (the same index in every instance).
+#[derive(Clone, Debug)]
+pub struct PackageIr {
+    /// The package declaration (its body, if analyzed, is included).
+    pub unit: UnitId,
+    pub index: u32,
+    /// Bytes of package data.
+    pub size: u32,
+    /// `FuncKind::Thunk`: evaluates the constants and creates the shared variables.
+    pub init: FuncId,
+    pub signals: Vec<SignalIr>,
 }
 
 /// Lowering failed; the diagnostics say why.
@@ -205,6 +224,9 @@ pub(crate) enum Obj {
     Array { space: Space, off: u32 },
     /// Instance signal `sig`.
     Signal { sig: u32 },
+    /// A composite of static layout stored in place: `size` bytes of elements at `off`, then
+    /// its descriptor.
+    Fixed { space: Space, off: u32, size: u32 },
     /// An array in instance data: byte offsets of its elements and descriptor at `off`.
     InstArray { off: u32 },
     /// A signal parameter: the slot holds a signal reference (two cells).
@@ -218,6 +240,8 @@ pub(crate) enum Space {
     /// The frame of the function at this nesting depth.
     Frame(u8),
     Inst,
+    /// Package data (`AddrSpace::Pkg`).
+    Pkg(u32),
 }
 
 /// State shared by the functions being lowered.
@@ -240,6 +264,8 @@ pub(crate) struct Cx {
     pub names: Vec<InstName>,
     /// Instance-data descriptor offsets of array signals (`SignalIr::dope`).
     pub sig_dopes: HashMap<DeclId, u32>,
+    /// Signals of packages: the first entries of every unit's signal table.
+    pub pkg_sigs: Vec<SignalIr>,
 }
 
 impl Cx {
@@ -287,6 +313,7 @@ pub struct Lowerer<'a> {
     pb: ProgramBuilder,
     cx: Cx,
     units: Vec<UnitIr>,
+    packages: Vec<PackageIr>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -308,7 +335,9 @@ impl<'a> Lowerer<'a> {
                 inst_size: 0,
                 names: Vec::new(),
                 sig_dopes: HashMap::new(),
+                pkg_sigs: Vec::new(),
             },
+            packages: Vec::new(),
             units: Vec::new(),
         }
     }
@@ -321,6 +350,21 @@ impl<'a> Lowerer<'a> {
             Ok(u) if self.cx.diags.is_empty() => {
                 self.units.push(u);
                 Ok(self.units.len() - 1)
+            }
+            _ => Err(std::mem::take(&mut self.cx.diags)),
+        }
+    }
+
+    /// Lower the run-time objects of package `unit` (and of its body, when analyzed): call it
+    /// for every package with objects before lowering the architectures that use them.
+    pub fn package(&mut self, unit: UnitId) -> Result<usize, Vec<Diagnostic>> {
+        let index = self.packages.len() as u32;
+        let r = func::package(self.db, &mut self.pb, &mut self.cx, unit, index);
+        self.drain();
+        match r {
+            Ok(p) if self.cx.diags.is_empty() => {
+                self.packages.push(p);
+                Ok(self.packages.len() - 1)
             }
             _ => Err(std::mem::take(&mut self.cx.diags)),
         }
@@ -370,6 +414,7 @@ impl<'a> Lowerer<'a> {
             Ok(program) => Ok(Lowered {
                 program,
                 units: self.units,
+                packages: self.packages,
             }),
             Err(errs) => Err(errs.iter().map(verify_ice).collect()),
         }

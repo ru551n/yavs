@@ -522,3 +522,10 @@ which tools/difftest parses.
 - **`--explain CODE`** lives in the CLI crate, not in `yavs-diag` (a leaf): one table for all stages
   but `yavs-sem`, which keeps its own. A test fails for any code literal without a text (#136).
 - **A panic is `E9999`, exit 3** in every command (#159).
+- **Package objects (#183):** each package with run-time objects gets package data
+  (`AddrSpace::Pkg`, `PackageIr`): an initialisation thunk evaluates its constants that are not
+  locally static once (composites of static layout in place) and creates its protected shared
+  variables, run once by the elaborator with `yavs_interp::init_package` (the package's data is
+  writable only there). Package signals take the first indices of every unit's signal table.
+  Composite package constants whose bounds are known only at run time are still re-evaluated
+  at each use (ponytail).

@@ -1517,6 +1517,7 @@ version = "0.1.0"
 dependencies = [
  "yavs-diag",
  "yavs-elab",
+ "yavs-interp",
  "yavs-ir",
  "yavs-kernel",
  "yavs-sem",

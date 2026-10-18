@@ -144,6 +144,10 @@ impl Db {
                 ));
             }
             self.units[unit].deps.push(p);
+            // The primary's context is this unit's too: a failed use clause there taints both (8.2).
+            if self.tainted.contains(&p) {
+                self.tainted.insert(unit);
+            }
             parent = Some(self.units[p].scope);
         }
         let context = self.add_scope(ScopeKind::Context, parent, None);

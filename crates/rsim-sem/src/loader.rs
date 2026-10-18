@@ -173,9 +173,11 @@ impl Db {
                 let mut d = Diagnostic::error(
                     diag::UNKNOWN_LIBRARY,
                     format!("unknown library `{}`", name.text),
-                )
-                .with_primary(name.span, "not a mapped library")
-                .with_note(format!("mapped libraries: {}", known.join(", ")));
+                );
+                if name.span != Span::default() {
+                    d = d.with_primary(name.span, "not a mapped library");
+                }
+                d = d.with_note(format!("mapped libraries: {}", known.join(", ")));
                 if let Some(best) = crate::suggest::closest(key, known.iter().map(String::as_str)) {
                     d = d.with_help(format!("did you mean `{best}`?"));
                 } else {
@@ -207,7 +209,7 @@ impl Db {
     }
 
     /// Where the unit's source is, from the slot or the library source.
-    fn locate(&self, lib: LibId, key: UnitKey) -> Option<(PathBuf, LangRev)> {
+    pub(crate) fn locate(&self, lib: LibId, key: UnitKey) -> Option<(PathBuf, LangRev)> {
         if let Some(UnitSlot::NotLoaded { file, rev }) = self.libs[lib].units.get(&key) {
             return Some((file.clone(), *rev));
         }
@@ -396,7 +398,16 @@ impl Db {
         path: &Path,
         rev: LangRev,
     ) -> Result<Vec<UnitRecord>, Reported> {
-        let lib = self.library(ident(work))?;
+        let name = ident(work);
+        let lib =
+            if self.opts.libraries.get(work).is_some() || self.lib_by_key.contains_key(&name.key) {
+                self.library(name)?
+            } else {
+                // An unmapped work library holds only what this session analyzes.
+                let l = self.add_library(name, LibSource::Files);
+                self.lib_by_key.insert(name.key, Some(l));
+                l
+            };
         self.parse_into_cache(path, rev, None)?;
         let keys: Vec<UnitKey> = self.files[path]
             .units

@@ -89,6 +89,9 @@ impl Options {
 pub fn default_stdlib() -> PathBuf {
     match std::env::var_os("RSIM_STDLIB") {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib")),
+        None => {
+            let p = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+            p.canonicalize().unwrap_or(p)
+        }
     }
 }

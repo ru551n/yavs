@@ -98,6 +98,11 @@ pub struct Db {
     #[allow(dead_code)]
     /// Undeclared names already reported, per (unit, key) (8.2).
     pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
+    /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
+    #[allow(dead_code)]
+    pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
+    /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
+    pub(crate) pending_implicit: Vec<(TypeId, ScopeId)>,
     diags: Vec<Diagnostic>,
     errors: usize,
 }
@@ -140,6 +145,7 @@ impl Db {
             anonymous: false,
             kind: TypeKind::Error,
             first_subtype: subtype,
+            base_subtype: subtype,
         });
         let expr = exprs.push(Expr {
             kind: ExprKind::Error,
@@ -177,6 +183,8 @@ impl Db {
             files: HashMap::new(),
             stack: Vec::new(),
             undeclared: HashSet::new(),
+            memo: HashMap::new(),
+            pending_implicit: Vec::new(),
             diags: Vec::new(),
             errors: 0,
         }

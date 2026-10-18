@@ -27,10 +27,9 @@ codes! {
     REDECLARED = "E1101", "A declaration with the same designator (and, for subprograms, the same parameter and result type profile) already exists in this declarative region.";
     USE_CONFLICT = "E1102", "Two use clauses make different declarations with this name potentially visible, so neither is visible (LRM 12.4).";
     HIDDEN = "E1103", "The named entity exists but is hidden at this point.";
-    NOT_SELECTABLE = "E1104", "The prefix of a selected name does not have a declaration with this suffix, or the prefix cannot be selected from.";
+    NOT_A_PACKAGE = "E1104", "The prefix of a use clause, context reference or expanded name must denote a library, a package, a package instance or a context declaration (LRM 12.4, 13.4).";
     PRIVATE = "E1105", "The declaration is not in the visible part of its package or protected type.";
     END_LABEL = "E1106", "The name after `end` does not repeat the name of the construct.";
-    NOT_A_PACKAGE = "E1107", "A use clause must name a package, a package instance, or a declaration in one.";
     // E12xx types and subtypes
     NOT_A_TYPE = "E1201", "A type mark must denote a type or subtype.";
     CONSTRAINED_TWICE = "E1210", "An index or element constraint is applied to a dimension that is already constrained.";
@@ -47,6 +46,7 @@ codes! {
     TYPE_MISMATCH = "E1300", "The expression has a different type than the context requires.";
     NO_OVERLOAD = "E1301", "None of the visible subprograms or literals with this name accepts these operands.";
     AMBIGUOUS = "E1302", "More than one interpretation fits; qualify an operand or use a selected name.";
+    BAD_OPERATOR_DECL = "E1303", "An operator symbol that is not a VHDL operator, or an operator function with the wrong number of parameters (LRM 4.5.2).";
     FORMAL_TWICE = "E1310", "A formal is associated more than once.";
     MISSING_ACTUAL = "E1311", "A formal without a default has no actual.";
     AGG_NO_TYPE = "E1320", "The type of an aggregate comes only from its context, and this context does not give one.";
@@ -87,9 +87,10 @@ codes! {
     SIGNAL_ATTR_IN_SUBPROGRAM = "E1620", "Implicit signal attributes (`'delayed`, `'stable`, `'quiet`, `'transaction`) are not allowed in subprograms.";
     UNKNOWN_ATTRIBUTE = "E1621", "No predefined or user-defined attribute with this name applies to the prefix.";
     ENTITY_CLASS = "E1622", "The entity class of an attribute specification does not match the named entity.";
+    ATTR_DIMENSION = "E1623", "The dimension argument of an array attribute is not a dimension of the prefix.";
     SIGNATURE_NONE = "E1630", "No declaration matches the signature.";
-    SIGNATURE_MANY = "E1631", "More than one declaration matches the signature.";
     // E17xx configurations, binding, components
+    NOT_INSTANTIABLE = "E1700", "The instantiated name is not a component, an entity or a configuration.";
     NOT_AN_INSTANCE = "E1701", "The label is not an instance of the named component.";
     REBINDING = "E1702", "An instance already bound by a configuration specification cannot be bound again.";
     BINDING_MISMATCH = "E1703", "A port or generic of the component has no match in the bound entity.";
@@ -114,8 +115,8 @@ codes! {
     W_STATIC_INDEX = "W1404", "A static index is outside the static range of the array; the code may be dead, so this is checked again at runtime.";
     W_UNUSED_GENERIC = "W1501", "A generic is never used.";
     W_DEFAULT_BINDING = "W1703", "Default binding found a directly visible entity and a different one in `work`; the directly visible one is used.";
-    W_SHARED_NOT_PROTECTED = "W1904", "`--relaxed`: a shared variable of a non-protected type is accepted; the processes using it run serially.";
-    W_RELAXED = "W1990", "A rule relaxed by `--relaxed` was applied.";
+    W_PURE_IMPURE = "W1830", "`--relaxed` (R2): a pure function reads or calls something impure.";
+    W_SHARED_NOT_PROTECTED = "W1904", "`--relaxed` (R1): a shared variable of a non-protected type is accepted; the processes using it run serially.";
 }
 
 /// Internal compiler error (shared with every stage).

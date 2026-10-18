@@ -25,7 +25,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate |
-| `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5) | S4 | free |
+| `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); do not implement the Q9 `=` restriction on 2008 `type T` until the LRM verdict lands | S4 | free |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
 | `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt |
@@ -76,6 +76,12 @@ through the orchestrator.
 
 ## Testing
 
+- `tests/diag_sem.rs` runs the negative suite `tests/diag/sem` (contract in its README.md):
+  exact `(code, line, col)` sets. Files that cannot pass yet are listed in
+  `tests/diag_sem_xfail.txt`; a listed file that starts passing fails the test, so delete its
+  line in the same commit (`RSIM_SEM_XFAIL_WRITE=1 cargo test -p rsim-sem --test diag_sem`
+  regenerates the list; check the diff only removes lines).
+- `cargo run -p rsim-sem --example analyze -- [--std 2019] FILE...` prints the diagnostics.
 - `cargo test -p rsim-sem`. The positive corpus test analyzes the vendored `lib/` tree
   (`tests/stdlib.rs`); extend its list as slices land (sem.md 10, "green when").
 - Outputs and scratch files go to `~/.cache/rsim-sem`, never into the repo.

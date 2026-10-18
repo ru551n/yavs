@@ -22,6 +22,10 @@ pub struct TypeDef {
     pub kind: TypeKind,
     /// `T` in `type T is ...`.
     pub first_subtype: SubtypeId,
+    /// The subtype covering the whole base range (`T'base`): for integer,
+    /// floating and physical types the implementation-defined base range (Q2);
+    /// otherwise the same as `first_subtype`.
+    pub base_subtype: SubtypeId,
 }
 
 pub enum TypeKind {

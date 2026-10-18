@@ -680,7 +680,8 @@ Choices: index expressions, discrete ranges, subtype names, `others`. Rules (9.3
   otherwise `E1326`.
 - Static choices: duplicate/overlap `E1327`, uncovered index values when no `others` and the
   context subtype is constrained `E1328`. Choice sets are folded to sorted `(lo, hi)` intervals
-  of positions (enums by pos); the same code checks case statements.
+  of positions (enums by pos); the same folding checks case statements, which report `E1820`
+  instead (`E1327`/`E1328` are for aggregates only).
 
 Bounds of the result (stored, not recomputed by M2):
 
@@ -955,7 +956,8 @@ Predefined attributes are a table keyed by `(name, prefix kind)`:
 
 `[t1, t2 return r]`: each type mark resolved to a subtype; matching compares base types of the
 profile. Used by aliases, attribute specifications, generic subprogram actuals and `use` of a
-single overload. No match `E1630`, several `E1631`.
+single overload. No match `E1630`. Several matches cannot happen: a full signature (parameters
+and result) is unique among homographs, so there is no code for it.
 
 ### 6.5 Configurations and binding (3.4, 7.3)
 
@@ -1006,7 +1008,7 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 ```
 
 - `view v of r_t is a, b : in; c : out; d : view w; end view;` every element of `r_t` exactly once
-  (`E1660` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
+  (`E1901` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
 - `v'converse` is a view with `in`/`out` swapped, `inout` unchanged and `buffer` becoming `in`
   (GHDL; NVC keeps `buffer`; no LRM text found, U-4) [L16], nested views conversed recursively. Sem materializes it as a `ViewDef`
   on first use.
@@ -1123,16 +1125,16 @@ Sem takes `E1xxx` / `W1xxx`:
 | Range | Area | Examples |
 |---|---|---|
 | E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration or construct not available under the file's or the design's revision (0.1) |
-| E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1105 private/not in visible part, E1106 end label mismatch |
+| E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1104 prefix of a use clause, context reference or expanded name is not a library, package, package instance or context declaration (a missing suffix in a package is E1100), E1105 private/not in visible part, E1106 end label mismatch |
 | E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed, E1222 illegal file element, E1225 bad resolution function, E1230 missing body |
-| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1310 formal associated twice, E1311 missing actual, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
+| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1310 formal associated twice, E1311 missing actual, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
 | E14xx | static evaluation | E1401 overflow, E1402 literal out of range, E1403 static value outside subtype, E1405 static length mismatch, E1410 choice/range not locally static where required |
 | E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |
-| E16xx | names, aliases, attributes, signatures | E1601 external name class misuse, E1610 alias of a non-static name, E1611 alias needs a signature, E1620 implicit signal attribute in subprogram, E1621 unknown attribute, E1622 entity class mismatch, E1630/E1631 signature |
-| E17xx | configurations, binding, components | E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity |
+| E16xx | names, aliases, attributes, signatures | E1601 external name class misuse, E1610 alias of a non-static name, E1611 alias needs a signature, E1620 implicit signal attribute in subprogram, E1621 unknown attribute, E1622 entity class mismatch, E1623 attribute dimension argument out of range for the prefix, E1630 signature matches nothing |
+| E17xx | configurations, binding, components | E1700 instantiated name is not a component, entity or configuration, E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity |
 | E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1820 case coverage/duplicates, E1830 pure function side effect |
 | E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
-| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1990 relaxed rule applied (one code per relaxation, 8.4) |
+| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
 
 Codes are `pub const` in `rsim-sem::diag` with an `--explain` text each (one paragraph plus a
 minimal example), checked by a test that every constant has an explain entry.
@@ -1237,7 +1239,7 @@ LRM text, Q2's premise was wrong and is back with the user as U-1.
 | Q2 | base range of an anonymous integer base type (`t'base'high`) | proposed: base range = declared range, operations checked against it (NVC; GHDL and NVC both report the declared range for `'base`, neither uses 32/64-bit) | checked; open as U-1 in `lrm-checks.md` |
 | Q3 | 2008 locally static ieee calls without an interpreter in M1 | classified in M1; their choice checks deferred to elab through a `ConstEval` hook implemented by M2's interpreter | decided |
 | Q4 | default binding | last architecture in manifest order, note when several; directly visible entity preferred over `work` (GHDL #66), `W1703` | decided |
-| Q5 | overflow folding where the value is not required | error in required contexts; `W1401` elsewhere, runtime check kept | decided |
+| Q5 | overflow folding where the value is not required | error `E1401` only in required contexts (type and array bounds, physical unit scales, choices, attribute dimension arguments); `W1401` elsewhere, e.g. a constant initializer, with the runtime check kept | decided |
 | Q6 | `--relaxed` | R1 and R2 now; R3 only after checking NVC's list | decided |
 | Q7 | generic instances | clone the HIR: visible part eager, body lazy | decided |
 | Q8 | mangled names | long readable form of 5.3; NATIVE.md names only for natives | decided |

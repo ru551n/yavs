@@ -240,3 +240,51 @@ impl DeclKind {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Analysis of declarative parts.
+
+use rsim_syntax::ast;
+
+use crate::db::Db;
+
+impl Db {
+    /// Analyze a declarative part in order. Each item's errors are reported
+    /// independently; the enclosing unit fails if any were.
+    pub(crate) fn decls_in(&mut self, scope: ScopeId, decls: &[ast::Decl]) {
+        for d in decls {
+            let _ = self.decl_item(scope, d);
+        }
+    }
+
+    fn decl_item(&mut self, _scope: ScopeId, d: &ast::Decl) -> Result<(), crate::Reported> {
+        let span = decl_span(d);
+        Err(self.unsupported(span, "this declaration", "S1"))
+    }
+}
+
+pub(crate) fn decl_span(d: &ast::Decl) -> Span {
+    use ast::Decl as D;
+    match d {
+        D::Type(x) => x.span,
+        D::Subtype(x) => x.span,
+        D::Object(x) => x.span,
+        D::File(x) => x.span,
+        D::Alias(x) => x.span,
+        D::Component(x) => x.span,
+        D::Attribute(x) => x.span,
+        D::AttributeSpec(x) => x.span,
+        D::Subprogram(x) => x.span,
+        D::SubprogramBody(x) => x.span,
+        D::SubprogramInstance(x) => x.span,
+        D::Package(x) => x.span,
+        D::PackageBody(x) => x.span,
+        D::PackageInstance(x) => x.span,
+        D::Use(x) => x.span,
+        D::Group(x) => x.span,
+        D::GroupTemplate(x) => x.span,
+        D::Disconnect(x) => x.span,
+        D::ConfigSpec(x) => x.span,
+        D::View(x) => x.span,
+    }
+}

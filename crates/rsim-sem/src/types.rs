@@ -1477,6 +1477,25 @@ impl Db {
         }
     }
 
+    /// The types of an attribute's object prefix. No interpretation at all means an
+    /// undeclared or failed name: that is reported as such (or stays silent, 8.2),
+    /// never as a wrong prefix.
+    fn attr_prefix_types(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+    ) -> Result<Vec<TypeId>, Reported> {
+        let ts = self.prefix_types(scope, prefix).map_err(|_| Reported)?;
+        if ts.is_empty() {
+            use crate::expr::names::NameRes;
+            let r = self.classify(scope, prefix);
+            if !matches!(r, NameRes::One(_) | NameRes::Overloads(_) | NameRes::Value) {
+                return Err(self.report_name(scope, r));
+            }
+        }
+        Ok(ts)
+    }
+
     /// `a'range`, `t'reverse_range(2)` (16.2): `None` when `n` is not a range attribute.
     pub(crate) fn range_attr(
         &mut self,
@@ -1533,7 +1552,7 @@ impl Db {
         let (aprefix, t) = if let Some(st) = self.quiet_type_mark(scope, prefix) {
             (AttrPrefix::Subtype(st), self.base(st))
         } else {
-            let ts = self.prefix_types(scope, prefix).map_err(|_| Reported)?;
+            let ts = self.attr_prefix_types(scope, prefix)?;
             let arrays: Vec<TypeId> = self
                 .with_designated(ts)
                 .into_iter()
@@ -1630,7 +1649,7 @@ impl Db {
         let st = if let Some(st) = self.quiet_type_mark(scope, prefix) {
             st
         } else if matches!(what, "subtype" | "element") {
-            let ts = self.prefix_types(scope, prefix).map_err(|_| Reported)?;
+            let ts = self.attr_prefix_types(scope, prefix)?;
             let [t] = ts.as_slice() else {
                 return Err(self.error(
                     Diagnostic::error(

@@ -87,7 +87,7 @@ An installed binary finds `lib/` next to itself (#43).
   (`E1623`), static indices and slices outside a static index range warn (`W1404`), and an
   constant without a value outside a package declaration is `E1224` (#213), and a deferred constant
   without a full declaration in the package body is `E1230`.
-- A package body is one declarative region with its package (4.8): redeclaring a package name in the body is `E1101` (#232, lrm-checks L63).
+- A package body is one declarative region with its package (4.8): redeclaring a package name in the body is `E1101` (#232, lrm-checks L64).
 - `tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
   math_complex, numeric_std, numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019).
   `numeric_std_body_rule_1` is the rule 1 review: every object and object alias of the numeric_std

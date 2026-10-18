@@ -1145,53 +1145,71 @@ impl Db {
         mark: SubtypeId,
     ) -> Result<Constraint, Reported> {
         let base = self.base(mark);
+        let existing = self.subtypes[mark].constraint.clone();
+        self.merge_constraint(scope, c, base, &existing)
+    }
+
+    /// Apply constraint `c` to type `t` whose subtype already has `existing`
+    /// (2008 5.3.2.2, 6.3): `open` keeps a dimension unconstrained, constraining a
+    /// constrained dimension or element is `E1210`. Merged once, here (rule 1).
+    fn merge_constraint(
+        &mut self,
+        scope: ScopeId,
+        c: &ast::Constraint,
+        t: TypeId,
+        existing: &Constraint,
+    ) -> Result<Constraint, Reported> {
+        let kind_err =
+            |db: &mut Db, span: Span, msg: &str, label: &str| -> Result<Constraint, Reported> {
+                if matches!(db.types[t].kind, TypeKind::Error) {
+                    return Err(Reported);
+                }
+                Err(db.error(
+                    Diagnostic::error(diag::BAD_CONSTRAINT, msg.to_string())
+                        .with_primary(span, label.to_string()),
+                ))
+            };
         match c {
             ast::Constraint::Range(r) => {
-                if !self.types[base].kind.is_scalar()
-                    && !matches!(self.types[base].kind, TypeKind::Error)
-                {
-                    return Err(self.error(
-                        Diagnostic::error(
-                            diag::BAD_CONSTRAINT,
-                            "a range constraint needs a scalar type",
-                        )
-                        .with_primary(range_span(r), "range constraint on a composite type"),
-                    ));
+                if !self.types[t].kind.is_scalar() {
+                    return kind_err(
+                        self,
+                        range_span(r),
+                        "a range constraint needs a scalar type",
+                        "range constraint on a composite type",
+                    );
                 }
-                Ok(Constraint::Range(self.range(scope, r, base)?))
+                Ok(Constraint::Range(self.range(scope, r, t)?))
             }
             ast::Constraint::Array {
                 indexes,
                 element,
                 span,
             } => {
-                let TypeKind::Array { indexes: idx, .. } = &self.types[base].kind else {
-                    if matches!(self.types[base].kind, TypeKind::Error) {
-                        return Err(Reported);
-                    }
-                    return Err(self.error(
-                        Diagnostic::error(
-                            diag::BAD_CONSTRAINT,
-                            "an index constraint needs an array type",
-                        )
-                        .with_primary(*span, "index constraint on a non-array type"),
-                    ));
+                let TypeKind::Array { indexes: idx, elem } = &self.types[t].kind else {
+                    return kind_err(
+                        self,
+                        *span,
+                        "an index constraint needs an array type",
+                        "index constraint on a non-array type",
+                    );
                 };
-                let idx = idx.clone();
-                if element.is_some() {
-                    return Err(self.unsupported(*span, "element constraints", "S3"));
-                }
-                if let Constraint::Array { dims: Some(_), .. } = self.subtypes[mark].constraint {
-                    return Err(self.error(
-                        Diagnostic::error(
-                            diag::CONSTRAINED_TWICE,
-                            "the array subtype is already constrained",
-                        )
-                        .with_primary(*span, "second index constraint"),
-                    ));
-                }
+                let (idx, elem) = (idx.clone(), *elem);
+                let (old_dims, old_elem) = match existing {
+                    Constraint::Array { dims, elem } => (dims.clone(), (**elem).clone()),
+                    _ => (None, Constraint::None),
+                };
                 let dims = match indexes {
-                    None => None,
+                    None => old_dims,
+                    Some(_) if old_dims.is_some() => {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::CONSTRAINED_TWICE,
+                                "the index ranges of this array subtype are already constrained",
+                            )
+                            .with_primary(*span, "second index constraint"),
+                        ));
+                    }
                     Some(rs) => {
                         if rs.len() != idx.len() {
                             return Err(self.error(
@@ -1208,20 +1226,98 @@ impl Db {
                         }
                         let mut dims = Vec::new();
                         for (r, &i) in rs.iter().zip(idx.iter()) {
-                            let t = self.base(i);
-                            dims.push(self.discrete_range(scope, r, Some(t))?.0);
+                            let it = self.base(i);
+                            dims.push(self.discrete_range(scope, r, Some(it))?.0);
                         }
                         Some(dims.into_boxed_slice())
                     }
                 };
+                let elem_c = match element {
+                    None => old_elem,
+                    Some(ec) => {
+                        let current = self.effective_elem(&old_elem, elem);
+                        let et = self.base(elem);
+                        self.merge_constraint(scope, ec, et, &current)?
+                    }
+                };
                 Ok(Constraint::Array {
                     dims,
-                    elem: Box::new(Constraint::None),
+                    elem: Box::new(elem_c),
                 })
             }
-            ast::Constraint::Record(_, span) => {
-                Err(self.unsupported(*span, "record constraints", "S3"))
+            ast::Constraint::Record(items, span) => {
+                let TypeKind::Record { elems } = &self.types[t].kind else {
+                    return kind_err(
+                        self,
+                        *span,
+                        "a record constraint needs a record type",
+                        "record constraint on a non-record type",
+                    );
+                };
+                let decl_elems: Vec<SubtypeId> = elems.iter().map(|e| e.subtype).collect();
+                let mut out: Vec<(u32, Constraint)> = match existing {
+                    Constraint::Record { elems } => elems.to_vec(),
+                    _ => Vec::new(),
+                };
+                let mut seen: Vec<u32> = Vec::new();
+                for (name, ec) in items {
+                    let Some(i) = self.record_elem(t, name.key) else {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::BAD_RECORD_CONSTRAINT,
+                                format!(
+                                    "`{}` is not an element of `{}`",
+                                    name.text,
+                                    self.type_name(t)
+                                ),
+                            )
+                            .with_primary(name.span, "no such element"),
+                        ));
+                    };
+                    if seen.contains(&i) {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::BAD_RECORD_CONSTRAINT,
+                                format!("element `{}` is constrained twice", name.text),
+                            )
+                            .with_primary(name.span, "repeated here"),
+                        ));
+                    }
+                    seen.push(i);
+                    let est = decl_elems[i as usize];
+                    let current = match out.iter().find(|(k, _)| *k == i) {
+                        Some((_, c)) => c.clone(),
+                        None => self.subtypes[est].constraint.clone(),
+                    };
+                    let et = self.base(est);
+                    if self.types[et].kind.is_scalar() {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::BAD_RECORD_CONSTRAINT,
+                                format!(
+                                    "element `{}` is scalar and cannot be constrained here",
+                                    name.text
+                                ),
+                            )
+                            .with_primary(name.span, "not a composite element"),
+                        ));
+                    }
+                    let merged = self.merge_constraint(scope, ec, et, &current)?;
+                    out.retain(|(k, _)| *k != i);
+                    out.push((i, merged));
+                }
+                out.sort_by_key(|(k, _)| *k);
+                Ok(Constraint::Record { elems: out.into() })
             }
+        }
+    }
+
+    /// The constraint of an array element: what the array subtype says, else the
+    /// element subtype's own.
+    fn effective_elem(&self, c: &Constraint, elem: SubtypeId) -> Constraint {
+        match c {
+            Constraint::None => self.subtypes[elem].constraint.clone(),
+            c => c.clone(),
         }
     }
 
@@ -1384,8 +1480,8 @@ impl Db {
         scope: ScopeId,
         n: &ast::Name,
     ) -> Result<SubtypeId, Reported> {
-        if let ast::NameKind::Attribute { attr, .. } = &n.kind {
-            return Err(self.unsupported(attr.span, "attributes as type marks", "S3"));
+        if let ast::NameKind::Attribute { prefix, attr } = &n.kind {
+            return self.attribute_type_mark(scope, prefix, *attr);
         }
         let d = self.expanded_name_decl(scope, n)?;
         match self.decls[self.entity(d)].kind {
@@ -1408,6 +1504,94 @@ impl Db {
                 )
                 .with_primary(n.span, "expected a type mark")
                 .with_secondary(self.decls[d].span, "declared here"),
+            )),
+        }
+    }
+
+    /// `x'subtype`, `x'element`, `t'base` used as type marks (16.2).
+    fn attribute_type_mark(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        attr: Ident,
+    ) -> Result<SubtypeId, Reported> {
+        let what = attr.key.as_str();
+        let st = if let Some(st) = self.quiet_type_mark(scope, prefix) {
+            st
+        } else if matches!(what, "subtype" | "element") {
+            let ts = self.prefix_types(scope, prefix).map_err(|_| Reported)?;
+            let [t] = ts.as_slice() else {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_AN_OBJECT,
+                        format!("the prefix of `'{}` must denote an object", attr.text),
+                    )
+                    .with_primary(prefix.span, "not an object of one type"),
+                ));
+            };
+            let e = self.resolve_prefix(scope, prefix, *t);
+            let st = self.exprs[e].subtype;
+            if self.constrainedness(st) == Constrainedness::Full {
+                st
+            } else {
+                // Bounds come from the object at run time (rule 1).
+                let base = self.base(st);
+                self.subtypes.push(SubtypeDef {
+                    base,
+                    name: None,
+                    parent: Some(st),
+                    constraint: Constraint::FromObject {
+                        expr: e,
+                        elem_depth: 0,
+                    },
+                    resolution: self.subtypes[st].resolution.clone(),
+                    span: attr.span,
+                })
+            }
+        } else {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_A_TYPE,
+                    format!("`'{}` does not denote a subtype", attr.text),
+                )
+                .with_primary(attr.span, "not a type mark"),
+            ));
+        };
+        match what {
+            "subtype" => Ok(st),
+            "base" => {
+                let t = self.base(st);
+                Ok(self.types[t].base_subtype)
+            }
+            "element" => match self.element_subtype(st) {
+                Some(e) => match self.subtypes[st].constraint {
+                    Constraint::FromObject { expr, .. } => {
+                        let base = self.base(e);
+                        Ok(self.subtypes.push(SubtypeDef {
+                            base,
+                            name: None,
+                            parent: Some(e),
+                            constraint: Constraint::FromObject {
+                                expr,
+                                elem_depth: 1,
+                            },
+                            resolution: self.subtypes[e].resolution.clone(),
+                            span: attr.span,
+                        }))
+                    }
+                    _ => Ok(e),
+                },
+                None => Err(self.error(
+                    Diagnostic::error(diag::NOT_A_TYPE, "`'element` needs an array prefix")
+                        .with_primary(prefix.span, "not an array"),
+                )),
+            },
+            _ => Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_A_TYPE,
+                    format!("`'{}` does not denote a subtype", attr.text),
+                )
+                .with_primary(attr.span, "not a type mark"),
             )),
         }
     }
@@ -1451,31 +1635,71 @@ impl Db {
 
     /// 5.1: computed, never stored.
     pub fn constrainedness(&self, st: SubtypeId) -> Constrainedness {
-        match (
-            &self.types[self.base(st)].kind,
-            &self.subtypes[st].constraint,
-        ) {
-            (TypeKind::Array { elem, .. }, Constraint::Array { dims, .. }) => {
-                match (dims.is_some(), self.constrainedness(*elem)) {
-                    (true, Constrainedness::Full) => Constrainedness::Full,
-                    (false, Constrainedness::Unconstrained) => Constrainedness::Unconstrained,
-                    _ => Constrainedness::Partial,
+        let c = self.subtypes[st].constraint.clone();
+        self.constrainedness_of(self.base(st), &c)
+    }
+
+    fn constrainedness_of(&self, t: TypeId, c: &Constraint) -> Constrainedness {
+        use Constrainedness::*;
+        if let Constraint::FromObject { .. } = c {
+            return Full;
+        }
+        match &self.types[t].kind {
+            TypeKind::Array { elem, .. } => {
+                let (dims, ec) = match c {
+                    Constraint::Array { dims, elem: ec } => {
+                        (dims.is_some(), self.effective_elem(ec, *elem))
+                    }
+                    _ => (false, self.subtypes[*elem].constraint.clone()),
+                };
+                let et = self.base(*elem);
+                let composite = matches!(
+                    self.types[et].kind,
+                    TypeKind::Array { .. } | TypeKind::Record { .. }
+                );
+                match (dims, self.constrainedness_of(et, &ec)) {
+                    (true, Full) => Full,
+                    (true, _) => Partial,
+                    (false, Full | Partial) if composite => Partial,
+                    (false, _) => Unconstrained,
                 }
             }
-            (TypeKind::Array { .. }, Constraint::FromObject { .. }) => Constrainedness::Full,
-            (TypeKind::Array { .. }, _) => Constrainedness::Unconstrained,
-            (TypeKind::Record { elems }, _) => {
-                let all: Vec<Constrainedness> = elems
-                    .iter()
-                    .map(|e| self.constrainedness(e.subtype))
-                    .collect();
-                if all.iter().all(|c| *c == Constrainedness::Full) {
-                    Constrainedness::Full
-                } else {
-                    Constrainedness::Partial
+            TypeKind::Record { elems } => {
+                let mut any_c = false;
+                let mut all_full = true;
+                let mut any_composite = false;
+                for (i, e) in elems.iter().enumerate() {
+                    let ec = match c {
+                        Constraint::Record { elems: cs } => cs
+                            .iter()
+                            .find(|(k, _)| *k as usize == i)
+                            .map(|(_, c)| c.clone()),
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| self.subtypes[e.subtype].constraint.clone());
+                    let et = self.base(e.subtype);
+                    if matches!(
+                        self.types[et].kind,
+                        TypeKind::Array { .. } | TypeKind::Record { .. }
+                    ) {
+                        any_composite = true;
+                        match self.constrainedness_of(et, &ec) {
+                            Full => any_c = true,
+                            Partial => {
+                                any_c = true;
+                                all_full = false;
+                            }
+                            Unconstrained => all_full = false,
+                        }
+                    }
+                }
+                match (all_full, any_c || !any_composite) {
+                    (true, _) => Full,
+                    (false, true) => Partial,
+                    (false, false) => Unconstrained,
                 }
             }
-            _ => Constrainedness::Full,
+            _ => Full,
         }
     }
 

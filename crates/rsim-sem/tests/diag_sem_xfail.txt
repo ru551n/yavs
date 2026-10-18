@@ -226,8 +226,6 @@ typ/incomplete_used_as_object.vhd
 typ/index_type_mismatch.vhd
 typ/not_a_type_entity.vhd
 typ/range_constraint_on_array.vhd
-typ/record_constraint_duplicate_element.vhd
-typ/record_constraint_unknown_element.vhd
 typ/signal_needs_constraint.vhd
 typ/signal_partially_constrained.vhd
 typ/subprogram_body_missing_in_unit.vhd

@@ -1168,11 +1168,14 @@ pub fn resolve_aggregate(
         TypeKind::Error => Ok(db.poison.expr),
         TypeKind::Record { .. } => record_agg(db, r, ty, ctx, assocs, span),
         TypeKind::Array { indexes, elem } => {
+            let (indexes, elem) = (indexes.to_vec(), *elem);
+            // The element subtype with the context's element constraint applied (2008).
+            let elem = db.element_subtype(ctx).unwrap_or(elem);
             let cx = ArrCx {
                 ty,
                 ctx,
-                indexes: indexes.to_vec(),
-                elem: *elem,
+                indexes,
+                elem,
                 ctx_dims: match &db.subtypes[ctx].constraint {
                     Constraint::Array { dims: Some(d), .. } => Some(d.to_vec()),
                     _ => None,

@@ -330,6 +330,20 @@ impl Db {
                 }
             }
         }
+        // sem.md 0.1: a 2008 file does not see std/ieee declarations new in 2019 (no new
+        // conflicts or overloads); if nothing else is visible they come back for `E1007`.
+        let rev = self.file_rev();
+        if pot.iter().any(|&d| self.decls[d].since > rev) {
+            let (newer, old): (Vec<DeclId>, Vec<DeclId>) =
+                pot.into_iter().partition(|&d| self.decls[d].since > rev);
+            if old.is_empty() && over.is_empty() {
+                return match newer[..] {
+                    [d] if !self.is_overloadable(d) => Visible::One(d),
+                    _ => Visible::Overloads(newer),
+                };
+            }
+            pot = old;
+        }
         // (a) a directly visible homograph hides the potentially visible declaration.
         pot.retain(|&p| {
             !over

@@ -208,17 +208,24 @@ impl Db {
         s.order.push(d);
     }
 
-    /// An entity and its architecture are one declarative region (12.1):
-    /// a declaration in the architecture may not be a homograph of one in the
-    /// entity (`E1101`). Reports and returns whether it did.
+    /// An entity and its architecture (12.1), a package and its body (4.8) are one
+    /// declarative region: a declaration in the architecture or body may not be a
+    /// homograph of one in the entity or package (`E1101`). A deferred constant of
+    /// the package is completed by the body's full declaration. Reports and
+    /// returns whether it did.
     fn entity_homograph(&mut self, scope: ScopeId, d: DeclId) -> bool {
-        if self.scopes[scope].kind != ScopeKind::Architecture || self.decls[d].implicit {
+        let (head_kind, is_body) = match self.scopes[scope].kind {
+            ScopeKind::Architecture => (ScopeKind::Entity, false),
+            ScopeKind::PackageBody => (ScopeKind::Package, true),
+            _ => return false,
+        };
+        if self.decls[d].implicit {
             return false;
         }
         let Some(entity) = self.scopes[scope]
             .parent
             .and_then(|c| self.scopes[c].parent)
-            .filter(|&e| self.scopes[e].kind == ScopeKind::Entity)
+            .filter(|&e| self.scopes[e].kind == head_kind)
         else {
             return false;
         };
@@ -226,10 +233,18 @@ impl Db {
         let Some(old) = self.scopes[entity]
             .names
             .get(&key)
-            .and_then(|v| v.iter().copied().find(|&o| self.homographs(o, d)))
+            .and_then(|v| {
+                v.iter().copied().find(|&o| {
+                    self.homographs(o, d)
+                        && !self.decls[o].implicit
+                        && !(is_body
+                            && matches!(&self.decls[o].kind, DeclKind::Object(x) if x.role == crate::decl::ObjRole::Deferred))
+                })
+            })
         else {
             return false;
         };
+        let head = if is_body { "package" } else { "entity" };
         let what = match &self.decls[old].kind {
             DeclKind::Object(o) if o.role == crate::decl::ObjRole::Port => "a port",
             DeclKind::Object(o) if o.role == crate::decl::ObjRole::Generic => "a generic",
@@ -244,11 +259,15 @@ impl Db {
         self.report(
             Diagnostic::error(
                 diag::REDECLARED,
-                format!("`{name}` is already declared as {what} of `{ename}`"),
+                format!("`{name}` is already declared as {what} of {head} `{ename}`"),
             )
             .with_primary(span, "redeclared here")
-            .with_secondary(old_span, "declared in the entity here")
-            .with_note("an entity and its architectures form one declarative region (LRM 12.1)"),
+            .with_secondary(old_span, format!("declared in the {head} here"))
+            .with_note(if is_body {
+                "a package and its body form one declarative region (LRM 4.8, 12.1)"
+            } else {
+                "an entity and its architectures form one declarative region (LRM 12.1)"
+            }),
         );
         true
     }

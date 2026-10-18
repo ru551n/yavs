@@ -301,3 +301,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   with no binding indication): accepted, the default binding (7.3.3) supplies the entity. LRM
   3.4.3 does not say whether an implicit binding makes the instance "fully bound"; Questa accepts,
   NVC and GHDL reject, so the permissive reading applies. With no entity to bind it is `E1704`.
+
+## Reflection: TIME values in mirrors (user, 2026-10-18)
+
+`PHYSICAL_VALUE_MIRROR.value` for a `TIME` value is expressed in units of
+`std.env.resolution_limit`, as Riviera-PRO does (NVC returns femtoseconds). The LRM is unclear,
+and VUnit's `record_dict_pkg` (PR #1239) relies on this reading. With the default femtosecond
+resolution both readings give the same number. Applies to the M3 runtime that builds mirrors.

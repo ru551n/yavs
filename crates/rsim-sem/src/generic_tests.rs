@@ -388,3 +388,92 @@ fn w1501_unused_generic_after_the_body() {
         ["W1501"]
     );
 }
+
+#[test]
+fn package_instance_inside_a_generic_package() {
+    let mut db = clean(
+        "
+package h is
+  generic (m : integer := 1);
+  constant hm : integer := m * 2;
+  function f return integer;
+end package;
+package body h is
+  function f return integer is begin return m; end function;
+end package body;
+package g is
+  generic (n : integer := 1);
+  package hi is new work.h generic map (m => n + 1);
+  constant k : integer := hi.hm;
+end package;
+package gi is new work.g generic map (n => 10);
+",
+    );
+    let k = unit_decl(&db, "gi", "k");
+    let DeclKind::Object(o) = &db.decls[k].kind else {
+        panic!("k")
+    };
+    assert_eq!(
+        db.value(o.default.expect("default")),
+        Some(&ConstValue::Int(22))
+    );
+    // The nested instance's body clones with m => 11.
+    let hi = unit_decl(&db, "gi", "hi");
+    let DeclKind::PackageInst(i) = db.decls[hi].kind else {
+        panic!("hi")
+    };
+    assert_eq!(db.insts[i].mangled.as_str(), "work.gi.hi");
+    db.instance_body(i).expect("body");
+    let f = db.scopes[db.insts[i].scope].names[&Symbol::intern("f")][0];
+    let Some(Body::Hir { stmts, .. }) = db.decls[f].kind.subprogram().map(|s| &s.body) else {
+        panic!("cloned body")
+    };
+    let StmtKind::Return(Some(e)) = db.stmts[stmts[0]].kind else {
+        panic!("return m")
+    };
+    assert_eq!(db.value(e), Some(&ConstValue::Int(11)));
+}
+
+#[test]
+fn subprogram_instance_inside_a_generic_package() {
+    let mut db = clean(
+        "
+package p is
+  function id generic (type t) parameter (x : t) return t;
+end package;
+package body p is
+  function id generic (type t) parameter (x : t) return t is begin return x; end function;
+end package body;
+package g is
+  generic (type u);
+  function idu is new work.p.id generic map (t => u);
+end package;
+package gi is new work.g generic map (u => bit);
+",
+    );
+    let f = unit_decl(&db, "gi", "idu");
+    let s = db.decls[f].kind.subprogram().expect("idu");
+    assert_eq!(
+        db.base(s.params[0].subtype),
+        db.well_known.bit.expect("BIT")
+    );
+    let Body::Instance(i) = s.body else {
+        panic!("instance")
+    };
+    let gf = unit_decl(&db, "g", "idu");
+    let Some(&Body::Instance(gi)) = db.decls[gf].kind.subprogram().map(|s| &s.body) else {
+        panic!("instance in g")
+    };
+    assert_ne!(i, gi, "the clone has its own instance");
+    db.instance_body(i).expect("body");
+    let Some(Body::Hir { stmts, .. }) = db.decls[f].kind.subprogram().map(|s| &s.body) else {
+        panic!("cloned body")
+    };
+    let StmtKind::Return(Some(e)) = db.stmts[stmts[0]].kind else {
+        panic!("return x")
+    };
+    assert_eq!(
+        db.base(db.exprs[e].subtype),
+        db.well_known.bit.expect("BIT")
+    );
+}

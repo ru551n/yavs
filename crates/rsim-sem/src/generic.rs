@@ -1802,19 +1802,90 @@ impl Db {
                 record: self.r_ty(r, *record),
                 index: *index,
             },
-            DeclKind::View(_) | DeclKind::PackageInst(_) => {
+            DeclKind::PackageInst(i) => DeclKind::PackageInst(self.r_instance(r, new, *i)),
+            DeclKind::View(_) => {
+                // ponytail: mode views are not analyzed yet (decl.rs reports S7), so none reach here.
                 let span = self.decls[new].span;
-                let what = if matches!(k, DeclKind::View(_)) {
-                    "mode views in generic units"
-                } else {
-                    "package instances inside generic units"
-                };
-                self.unsupported(span, what, "S7");
+                self.unsupported(span, "mode views in generic units", "S7");
                 r.failed = true;
                 DeclKind::Error
             }
             DeclKind::Error => DeclKind::Error,
         }
+    }
+
+    /// A package instance declared inside the generic unit: its region is cloned
+    /// with the rest, and its body remap is the inner remap followed by `r`.
+    fn r_instance(&mut self, r: &mut Remap, site: DeclId, i: InstId) -> InstId {
+        let (generic, scope) = (self.insts[i].generic, self.insts[i].scope);
+        if !self.r_inside(r, scope) {
+            return i;
+        }
+        let scope = self.r_scope(r, scope);
+        let old = &self.insts[i].map;
+        let (types, consts, subprograms, packages) = (
+            old.types.clone(),
+            old.consts.clone(),
+            old.subprograms.clone(),
+            old.packages.clone(),
+        );
+        let map = GenericMap {
+            types: types
+                .into_iter()
+                .map(|(t, st)| (t, self.r_subtype(r, st)))
+                .collect(),
+            consts: consts
+                .into_iter()
+                .map(|(d, e)| (d, self.r_expr(r, e)))
+                .collect(),
+            subprograms: subprograms
+                .into_iter()
+                .map(|(f, a)| (f, self.r_decl(r, a)))
+                .collect(),
+            packages,
+        };
+        let inner = self.generic.maps.get(&i).cloned().unwrap_or_default();
+        let composed = self.r_compose(r, &inner);
+        let mangled = Symbol::intern(&crate::mangle::region(self, scope));
+        let n = self.insts.push(Instance {
+            generic,
+            site,
+            map,
+            scope,
+            body: OnceCell::new(),
+            mangled,
+        });
+        self.generic.maps.insert(n, composed);
+        n
+    }
+
+    /// `inner` followed by `r`: what `inner` maps to, as `r` clones it.
+    fn r_compose(&mut self, r: &mut Remap, inner: &Remap) -> Remap {
+        let mut c = Remap {
+            roots: inner.roots.clone(),
+            formal_firsts: inner.formal_firsts.clone(),
+            ..Default::default()
+        };
+        for (&a, &b) in &inner.decls {
+            c.decls.insert(a, self.r_decl(r, b));
+        }
+        for (&a, &b) in &inner.types {
+            c.types.insert(a, self.r_ty(r, b));
+        }
+        for (&a, &b) in &inner.subtypes {
+            c.subtypes.insert(a, self.r_subtype(r, b));
+        }
+        for (&a, &b) in &inner.scopes {
+            c.scopes.insert(a, self.r_scope(r, b));
+        }
+        for (&a, &b) in &inner.exprs {
+            c.exprs.insert(a, self.r_expr(r, b));
+        }
+        for (&a, &b) in &inner.consts {
+            c.consts.insert(a, self.r_expr(r, b));
+        }
+        // Statements of an inner body already cloned are cloned again with that body.
+        c
     }
 
     fn r_object(&mut self, r: &mut Remap, o: &Object) -> Object {
@@ -1864,7 +1935,7 @@ impl Db {
             }),
             Body::Native(n) => Body::Native(*n),
             Body::Foreign(e) => Body::Foreign(self.r_expr(r, *e)),
-            Body::Instance(i) => Body::Instance(*i),
+            Body::Instance(i) => Body::Instance(self.r_instance(r, new, *i)),
             Body::Interface => Body::Interface,
         };
         let types: Vec<SubtypeId> = params.iter().map(|p| p.subtype).collect();
@@ -2144,6 +2215,15 @@ impl Db {
             value: None,
         });
         self.fold_into(n);
+        // A constant of the instance whose initial value folded again (`hi.hm`).
+        if let ExprKind::Obj(d) = self.exprs[n].kind
+            && let DeclKind::Object(o) = &self.decls[d].kind
+            && o.class == ObjClass::Constant
+            && o.role == ObjRole::Plain
+            && let Some(init) = o.default
+        {
+            self.exprs[n].value = self.exprs[init].value;
+        }
         r.exprs.insert(e, n);
         n
     }

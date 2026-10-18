@@ -682,8 +682,10 @@ fn vhdl2019_index_attribute_type_mark() {
     let decls = pkg_decls(&d);
     let Decl::Object(o) = &decls[0] else { panic!() };
     assert!(o.subtype.constraint.is_none());
-    assert!(matches!(&o.subtype.type_mark.kind, NameKind::Apply { prefix, args }
-        if args.len() == 1 && matches!(&prefix.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index")));
+    assert!(
+        matches!(&o.subtype.type_mark.kind, NameKind::Apply { prefix, args }
+        if args.len() == 1 && matches!(&prefix.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index"))
+    );
     let Decl::Object(o) = &decls[1] else { panic!() };
     assert!(o.subtype.constraint.is_some());
 }

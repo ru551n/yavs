@@ -1369,8 +1369,11 @@ impl Db {
     ) -> Result<SubtypeId, Reported> {
         let Some(r) = self.range_attr(scope, prefix) else {
             return Err(self.error(
-                Diagnostic::error(diag::NOT_A_TYPE, "the prefix of `'record` must be a range attribute name")
-                    .with_primary(prefix.span, "not `X'range` or `X'reverse_range`"),
+                Diagnostic::error(
+                    diag::NOT_A_TYPE,
+                    "the prefix of `'record` must be a range attribute name",
+                )
+                .with_primary(prefix.span, "not `X'range` or `X'reverse_range`"),
             ));
         };
         let (_, t) = r?;

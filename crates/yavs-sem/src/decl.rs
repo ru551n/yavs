@@ -1105,7 +1105,11 @@ impl Db {
         };
         if var_port {
             let t = self.base(subtype);
-            if !matches!(self.types[t].kind, crate::types::TypeKind::Protected { .. } | crate::types::TypeKind::Error) || mode != Mode::Inout {
+            if !matches!(
+                self.types[t].kind,
+                crate::types::TypeKind::Protected { .. } | crate::types::TypeKind::Error
+            ) || mode != Mode::Inout
+            {
                 return Err(self.error(
                     yavs_diag::Diagnostic::error(
                         crate::diag::CLASS_MISUSE,

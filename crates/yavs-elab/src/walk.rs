@@ -2203,7 +2203,11 @@ impl Model {
 /// its initial value (sem accepts it, #175); anything else is a bug.
 fn unconstrained_signal(o: &yavs_sem::decl::Object, span: Span) -> Box<Diagnostic> {
     if o.bounds == yavs_sem::types::BoundsFrom::Initializer {
-        unsupported(span, "signals that take their bounds from the initial value (2019)", "M3")
+        unsupported(
+            span,
+            "signals that take their bounds from the initial value (2019)",
+            "M3",
+        )
     } else {
         Box::new(ice(span, "signal of an unconstrained subtype"))
     }

@@ -781,8 +781,13 @@ impl Db {
         let DeclKind::Object(o) = &self.decls[f].kind else {
             return Err(self.unsupported(fspan, "generic packages of design entities", "S4"));
         };
-        let (st, role, mode, has_default, class) =
-            (o.subtype, o.role.clone(), o.mode, o.default.is_some(), o.class);
+        let (st, role, mode, has_default, class) = (
+            o.subtype,
+            o.role.clone(),
+            o.mode,
+            o.default.is_some(),
+            o.class,
+        );
         // A port of a generic type of this instance has the type's actual.
         // ponytail: only ports whose type is the generic type itself; composites built from
         // it need the instance substitution of generic.rs.

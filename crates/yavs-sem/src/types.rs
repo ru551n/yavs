@@ -1617,7 +1617,13 @@ impl Db {
             ast::NameKind::Apply { prefix, args } => {
                 if let ast::NameKind::Attribute { prefix, attr } = &prefix.kind
                     && attr.key.as_str() == "index"
-                    && let [ast::AssocElem { formal: None, actual: ast::Actual::Expr(x), .. }] = args.as_slice()
+                    && let [
+                        ast::AssocElem {
+                            formal: None,
+                            actual: ast::Actual::Expr(x),
+                            ..
+                        },
+                    ] = args.as_slice()
                 {
                     return self.index_type_mark(scope, prefix, Some(x), n.span);
                 }

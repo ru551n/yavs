@@ -619,8 +619,7 @@ impl Parser<'_> {
             match self.peek() {
                 Tok::Dot => n = self.selected(n)?,
                 Tok::Tick if self.nth(1) != Tok::LParen => n = self.attribute(n)?,
-                Tok::LParen
-                    if matches!(&n.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index") =>
+                Tok::LParen if matches!(&n.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index") =>
                 {
                     let args = self.assoc_list()?;
                     let span = self.span_from(n.span);

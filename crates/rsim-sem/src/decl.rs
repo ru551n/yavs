@@ -389,13 +389,25 @@ impl Db {
             BoundsFrom::Initializer
         };
         if !full && class != ObjClass::Constant {
+            let what = if class == ObjClass::Signal {
+                "signal"
+            } else {
+                "variable"
+            };
+            let name = o.names.first().map_or(o.subtype.span, |n| n.span);
             self.report(
                 rsim_diag::Diagnostic::error(
                     crate::diag::NOT_FULLY_CONSTRAINED,
-                    "a signal or variable needs a fully constrained subtype",
+                    match o.names.first() {
+                        Some(n) => format!("{what} `{}` needs a fully constrained subtype", n.text),
+                        None => format!("a {what} needs a fully constrained subtype"),
+                    },
                 )
-                .with_primary(o.subtype.span, "not fully constrained")
-                .with_help("give index ranges, such as `string(1 to 8)`"),
+                .with_primary(name, "declared here")
+                .with_secondary(o.subtype.span, "not fully constrained")
+                .with_help(format!(
+                    "give the {what} a constrained subtype, e.g. `bit_vector(7 downto 0)`"
+                )),
             );
         }
         let role = match (class, &default) {

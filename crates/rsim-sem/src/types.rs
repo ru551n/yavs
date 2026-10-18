@@ -335,6 +335,18 @@ impl Db {
             }
             ast::TypeDef::File(n) => {
                 let elem = self.type_mark(scope, n)?;
+                if let Some((what, bad)) = self.bad_file_elem(self.base(elem)) {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_FILE_ELEMENT,
+                            format!(
+                                "a file cannot contain {what} type `{}`",
+                                self.type_name(bad)
+                            ),
+                        )
+                        .with_primary(n.span, "not a valid file element type"),
+                    ));
+                }
                 self.new_type(
                     decl,
                     name,
@@ -866,7 +878,7 @@ impl Db {
         let k = &self.types[self.base(st)].kind;
         if !k.is_discrete() && !matches!(k, TypeKind::Error | TypeKind::Generic { .. }) {
             return Err(self.error(
-                Diagnostic::error(diag::BAD_CONSTRAINT, "an index subtype must be discrete")
+                Diagnostic::error(diag::NOT_A_TYPE, "an index subtype must be discrete")
                     .with_primary(n.span, "not an integer or enumeration type"),
             ));
         }
@@ -889,6 +901,9 @@ impl Db {
                     None => self.range_type_of(scope, left, right)?,
                 };
                 let l = self.expr(scope, left, Expected::Type(t));
+                if self.is_poison_expr(l) {
+                    return Err(Reported);
+                }
                 let rr = self.expr(scope, right, Expected::Type(t));
                 Ok((
                     RangeC::Explicit {
@@ -1174,7 +1189,7 @@ impl Db {
                 if !self.types[t].kind.is_scalar() {
                     return kind_err(
                         self,
-                        range_span(r),
+                        range_kw_span(self, r),
                         "a range constraint needs a scalar type",
                         "range constraint on a composite type",
                     );
@@ -1201,13 +1216,18 @@ impl Db {
                 };
                 let dims = match indexes {
                     None => old_dims,
-                    Some(_) if old_dims.is_some() => {
+                    Some(rs) if old_dims.is_some() => {
+                        let at = match rs.first() {
+                            Some(ast::DiscreteRange::Range(r)) => range_span(r),
+                            Some(ast::DiscreteRange::Subtype(si)) => si.span,
+                            None => *span,
+                        };
                         return Err(self.error(
                             Diagnostic::error(
                                 diag::CONSTRAINED_TWICE,
                                 "the index ranges of this array subtype are already constrained",
                             )
-                            .with_primary(*span, "second index constraint"),
+                            .with_primary(at, "second index constraint"),
                         ));
                     }
                     Some(rs) => {
@@ -1322,6 +1342,20 @@ impl Db {
     }
 
     /// A range constraint of type `base`.
+    /// The access, file or protected type in `t`, through composites (5.5).
+    fn bad_file_elem(&self, t: TypeId) -> Option<(&'static str, TypeId)> {
+        match &self.types[t].kind {
+            TypeKind::Access { .. } => Some(("access", t)),
+            TypeKind::File { .. } => Some(("file", t)),
+            TypeKind::Protected { .. } => Some(("protected", t)),
+            TypeKind::Array { elem, .. } => self.bad_file_elem(self.base(*elem)),
+            TypeKind::Record { elems } => elems
+                .iter()
+                .find_map(|e| self.bad_file_elem(self.base(e.subtype))),
+            _ => None,
+        }
+    }
+
     pub(crate) fn range(
         &mut self,
         scope: ScopeId,
@@ -1331,6 +1365,10 @@ impl Db {
         match r {
             ast::Range::Simple { left, dir, right } => {
                 let l = self.expr(scope, left, Expected::Type(base));
+                // One wrong-typed range is one error (`integer range red to green`).
+                if self.is_poison_expr(l) {
+                    return Err(Reported);
+                }
                 let rr = self.expr(scope, right, Expected::Type(base));
                 Ok(RangeC::Explicit {
                     left: l,
@@ -1762,6 +1800,21 @@ fn range_span(r: &ast::Range) -> Span {
     match r {
         ast::Range::Simple { left, right, .. } => left.span.to(right.span),
         ast::Range::Name(n) => n.span,
+    }
+}
+
+/// The `range` keyword before `r`, else `r` itself (the AST keeps no keyword span).
+fn range_kw_span(db: &Db, r: &ast::Range) -> Span {
+    let sp = range_span(r);
+    let b = db.sources.get(sp.file).bytes();
+    let end = b[..sp.start as usize].trim_ascii_end().len();
+    match end.checked_sub(5) {
+        Some(st) if b[st..end].eq_ignore_ascii_case(b"range") => Span {
+            start: st as u32,
+            end: end as u32,
+            ..sp
+        },
+        _ => sp,
     }
 }
 

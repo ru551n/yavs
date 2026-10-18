@@ -852,3 +852,61 @@ fn external_names() {
     let err = m.external(&db, bad, top).expect_err("missing region");
     assert_eq!(err.code, codes::EXTERNAL_NOT_FOUND);
 }
+
+/// Blocks with generic and port clauses (#75).
+#[test]
+fn block_generics_and_ports() {
+    let src = "entity t is end; architecture a of t is
+        signal x : bit_vector(3 downto 0);
+      begin
+        b : block
+          generic (W : natural);
+          generic map (W => 4);
+          port (p : in bit_vector(W - 1 downto 0));
+          port map (p => x);
+          signal inner : bit_vector(2 * W - 1 downto 0);
+        begin
+        end block;
+      end;";
+    let (_, e) = elab("blockports", src, "t", &[]);
+    assert_eq!(sig_paths(&e), [":t:x", ":t:b:p", ":t:b:inner"]);
+    assert_eq!(e.nets.leaves[2].ty.len, 8);
+    assert_eq!(e.nets.ports.len(), 1);
+}
+
+/// Incremental binding (LRM 7.3.2.3): a configuration's generic map over the default binding
+/// (#75). The parser does not take a binding indication without an
+/// entity aspect yet, so the test removes the aspect from the analyzed HIR.
+#[test]
+fn incremental_binding() {
+    let src = "entity inv is generic (W : natural := 1); end;
+      architecture rtl of inv is signal s : bit_vector(W - 1 downto 0); begin end;
+      entity top is end;
+      architecture t of top is
+        component inv is generic (W : natural := 1); end component;
+        for u2 : inv use entity work.inv(rtl);
+      begin
+        u1 : inv;
+        u2 : inv;
+      end;
+      configuration cfg of top is
+        for t
+          for u1 : inv use entity work.inv generic map (W => 3); end for;
+        end for;
+      end;";
+    let mut db = analyze("incremental", src);
+    let top = crate::find_top(&mut db, "work", "cfg").expect("top");
+    let cu = top.config.expect("configuration");
+    let yavs_sem::hir::UnitHir::Configuration(b) = &mut db.units[cu].hir else {
+        panic!("configuration")
+    };
+    for it in &mut b.items {
+        if let yavs_sem::hir::ConfigItem::Component(c) = it {
+            c.binding.as_mut().expect("binding").aspect = None;
+        }
+    }
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let lens: Vec<u32> = e.nets.leaves.iter().map(|l| l.ty.len).collect();
+    // u1: W from the incremental map; u2 (bound by the specification): the default.
+    assert_eq!(lens, [3, 1]);
+}

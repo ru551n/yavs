@@ -35,6 +35,22 @@ enum A {
     Conv(ExprId),
 }
 
+/// The associations of a map as `(formal index, association)`.
+type Pairs = Vec<(usize, A)>;
+
+fn pairs(args: &[Arg]) -> Pairs {
+    let n = args
+        .iter()
+        .map(|a| a.formal as usize + 1)
+        .max()
+        .unwrap_or(0);
+    assocs(args, n)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| args.iter().any(|a| a.formal as usize == *i))
+        .collect()
+}
+
 fn assocs(args: &[Arg], n: usize) -> Vec<A> {
     let mut v: Vec<A> = (0..n).map(|_| A::Default).collect();
     for a in args {
@@ -951,16 +967,24 @@ impl Elab<'_> {
                 scope: bscope,
                 guard,
                 generics,
+                generic_map,
                 ports,
+                port_map,
                 body,
-                ..
             } => {
-                if !generics.is_empty() || !ports.is_empty() {
-                    return Err(unsupported(span, "blocks with generics or ports", "M3"));
-                }
                 let (bscope, body, guard) = (*bscope, body.to_vec(), *guard);
+                let (gens, pts) = (generics.to_vec(), ports.to_vec());
+                let (ga, pa) = (assocs(generic_map, gens.len()), assocs(port_map, pts.len()));
                 let b = self.m.hier.add(Some(s), ScopeKind::Block, named(db)?);
                 let bcfg = cfg.and_then(|c| self.sub_cfg(c, st, None));
+                // Block generics and ports (LRM 11.2): like an instance's, actuals in the
+                // enclosing region.
+                for (g, a) in gens.iter().zip(&ga) {
+                    self.generic(b, *g, a, Some(s), &[], span)?;
+                }
+                for (p, a) in pts.iter().zip(&pa) {
+                    self.port(b, *p, a, Some(s), span)?;
+                }
                 self.decls(b, bscope)?;
                 if let Some(g) = guard {
                     if self.m.signal(b, g).is_none() {
@@ -1295,24 +1319,13 @@ impl Elab<'_> {
         let with_aspect = |c: &yavs_sem::hir::ComponentConfig| {
             c.binding.as_ref().is_some_and(|b| b.aspect.is_some())
         };
-        // The binding indication: the declaration's, if it names an entity, else the spec's.
+        // The primary binding indication: the declaration's, if it names an entity, else the
+        // specification's; one without an entity aspect is incremental (LRM 7.3.2.3) over
+        // the specification's or the default binding.
         let (bind, block) = match (decl_cc, spec_cc) {
             (Some(d), _) if with_aspect(d) => (d.binding.as_ref(), found.clone()),
-            (Some(d), Some(s)) => {
-                if d.binding
-                    .as_ref()
-                    .is_some_and(|b| !b.generic_map.is_empty() || !b.port_map.is_empty())
-                {
-                    return Err(unsupported(d.span, "incremental binding indications", "M3"));
-                }
-                (s.binding.as_ref(), found.clone())
-            }
-            (Some(d), None) => {
-                if d.binding.is_some() {
-                    return Err(unsupported(d.span, "incremental binding indications", "M3"));
-                }
-                (None, found.clone())
-            }
+            (Some(_), Some(s)) => (s.binding.as_ref(), found.clone()),
+            (Some(_), None) => (None, found.clone()),
             (None, Some(s)) => (
                 s.binding.as_ref(),
                 s.block.as_ref().map(|_| CfgPath {
@@ -1322,41 +1335,79 @@ impl Elab<'_> {
             ),
             (None, None) => (None, None),
         };
-        let nested = |p: Option<CfgPath>| p.filter(|p| block_cfg(db, p).is_some());
-        if let Some(b) = bind {
-            let (entity, arch, cfgu) = match &b.aspect {
-                Some(EntityAspect::Entity { unit, arch }) => (*unit, arch.map(|a| a.key), None),
-                Some(EntityAspect::Configuration(cu)) => match find_top_of_config(db, *cu) {
-                    Ok((e, a)) => (e, Some(db.units[a].name.key), Some(*cu)),
-                    Err(()) => return Err(Box::new(ice(span, "configuration target"))),
-                },
-                Some(EntityAspect::Open) => return Ok(None),
-                None => {
-                    return Err(unsupported(
-                        span,
-                        "binding indications without an entity aspect",
-                        "M3",
-                    ));
-                }
-            };
-            let (ng, np) = counts(db, entity);
-            let cfgp = match cfgu {
-                Some(cu) => Some(CfgPath {
-                    root: CfgRoot::Unit(cu),
-                    steps: Vec::new(),
-                }),
-                None => nested(block),
-            };
-            return Ok(Some(Bound {
-                entity,
-                arch,
-                gmap: assocs(&b.generic_map, ng),
-                pmap: assocs(&b.port_map, np),
-                cfg: cfgp,
-            }));
+        let mut incremental: Vec<(Pairs, Pairs)> = Vec::new();
+        let owned = |b: &yavs_sem::hir::Binding| (pairs(&b.generic_map), pairs(&b.port_map));
+        if let Some(b) = bind.filter(|b| b.aspect.is_none()) {
+            incremental.push(owned(b));
         }
-        // Default binding (7.3.3): an entity of the component's name; maps by name.
-        let block = nested(block);
+        if let Some(b) = decl_cc
+            .filter(|d| !with_aspect(d))
+            .and_then(|d| d.binding.as_ref())
+            .filter(|b| bind.is_none_or(|x| !std::ptr::eq(*b, x)))
+        {
+            incremental.push(owned(b));
+        }
+        let nested = |p: Option<CfgPath>| p.filter(|p| block_cfg(db, p).is_some());
+        let mut bound = match bind.filter(|b| b.aspect.is_some()) {
+            Some(b) => {
+                let (entity, arch, cfgu) = match &b.aspect {
+                    Some(EntityAspect::Entity { unit, arch }) => (*unit, arch.map(|a| a.key), None),
+                    Some(EntityAspect::Configuration(cu)) => match find_top_of_config(db, *cu) {
+                        Ok((e, a)) => (e, Some(db.units[a].name.key), Some(*cu)),
+                        Err(()) => return Err(Box::new(ice(span, "configuration target"))),
+                    },
+                    _ => return Ok(None),
+                };
+                let (ng, np) = counts(db, entity);
+                let cfgp = match cfgu {
+                    Some(cu) => Some(CfgPath {
+                        root: CfgRoot::Unit(cu),
+                        steps: Vec::new(),
+                    }),
+                    None => nested(block),
+                };
+                Bound {
+                    entity,
+                    arch,
+                    gmap: assocs(&b.generic_map, ng),
+                    pmap: assocs(&b.port_map, np),
+                    cfg: cfgp,
+                }
+            }
+            None => {
+                let block = nested(block);
+                match self.default_bound(region, comp, span)? {
+                    Some(mut b) => {
+                        b.cfg = block;
+                        b
+                    }
+                    None => return Ok(None),
+                }
+            }
+        };
+        // Incremental binding: its associations replace the primary's (NVC's permissive
+        // reading; the LRM allows only formals the primary left open).
+        for (g, p) in incremental {
+            for (dst, src) in [(&mut bound.gmap, g), (&mut bound.pmap, p)] {
+                for (i, a) in src {
+                    if let Some(d) = dst.get_mut(i)
+                        && !matches!(a, A::Default)
+                    {
+                        *d = a;
+                    }
+                }
+            }
+        }
+        Ok(Some(bound))
+    }
+
+    /// Default binding (LRM 7.3.3): an entity of the component's name, maps by name.
+    fn default_bound(
+        &mut self,
+        region: yavs_sem::ScopeId,
+        comp: DeclId,
+        span: Span,
+    ) -> R<Option<Bound>> {
         let Some((entity, arch)) = self.db.default_binding(region, comp) else {
             return Ok(None);
         };
@@ -1388,7 +1439,7 @@ impl Elab<'_> {
             arch,
             gmap: by_name(generics, &c.generics, A::Default),
             pmap: by_name(ports, &c.ports, A::Open),
-            cfg: block,
+            cfg: None,
         }))
     }
 

@@ -32,6 +32,10 @@
   `Db::instance_body`); `W1501`, `W1506`. The fixed/float packages' declarations and instances
   analyze clean; their bodies wait for `E1325` and `.all`/allocators. Open: anonymous generic
   types, mode views in generic units, instantiating a generic protected type (parser request).
+- 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
+  and variables with bounds from the initial value, variable ports of protected types, `open`
+  sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
+  architecture. Elab reports initializer-bound signals and variable ports unsupported (#187, #188).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 

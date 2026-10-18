@@ -154,6 +154,9 @@ pub(crate) struct Fx<'a, 'b> {
     /// Copy-out after the call being lowered: (frame slot of the temporary, actual,
     /// subtype of the formal) for `out`/`inout` actuals passed through a temporary.
     pub writeback: Vec<(u32, Option<yavs_sem::ExprId>, SubtypeId)>,
+    /// Allocators allocate in the shared heap: the initialisers of a shared protected
+    /// object and of package objects, whose values outlive the code creating them (#184).
+    pub alloc_shared: bool,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -180,6 +183,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             prot_self: None,
             guard: None,
             writeback: Vec::new(),
+            alloc_shared: false,
         }
     }
 
@@ -608,6 +612,15 @@ impl<'a, 'b> Fx<'a, 'b> {
             desc: dope,
         });
         let size = self.load(l, Width::B8, RegTy::I64);
+        // The element count is the fourth word of an array layout; a record layout has its
+        // field offsets there instead (and may be shorter), so its count is 0.
+        if !matches!(
+            self.fb.program().types().get(tid),
+            Some(yavs_ir::Ty::Array { .. })
+        ) {
+            let count = self.int(0);
+            return (size, count);
+        }
         let c = self.offset(l, 24);
         let count = self.load(c, Width::B8, RegTy::I64);
         (size, count)
@@ -1248,6 +1261,7 @@ pub(crate) fn package(
     let name = format!("{}'init", u.name.text);
     let f = pb.declare(&name, FuncKind::Thunk, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Thunk, name);
+    fx.alloc_shared = true;
     fx.stmt_start(StmtKind::Decl, u.span);
     let mut size = 0u32;
     let mut signals = Vec::new();

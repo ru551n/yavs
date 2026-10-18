@@ -185,6 +185,15 @@ impl Fx<'_, '_> {
     /// A new protected object of type `t`: its state initialised from the variables'
     /// declarations, in the shared heap for a shared variable.
     pub fn prot_new(&mut self, t: TypeId, shared: bool, span: Span) -> R<Reg> {
+        // The initialisers' allocators follow the object into the shared heap (#184).
+        let outer = self.alloc_shared;
+        self.alloc_shared |= shared;
+        let r = self.prot_new_inner(t, shared, span);
+        self.alloc_shared = outer;
+        r
+    }
+
+    fn prot_new_inner(&mut self, t: TypeId, shared: bool, span: Span) -> R<Reg> {
         let db = self.db;
         let state = self.state_of(t, span)?;
         let Some(Ty::Record { fields }) = self.fb.program().types().get(state).cloned() else {

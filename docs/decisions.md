@@ -601,3 +601,7 @@ which tools/difftest parses.
   writable only there). Package signals take the first indices of every unit's signal table.
   Composite package constants whose bounds are known only at run time are still re-evaluated
   at each use (ponytail).
+- **Allocators of shared objects (#184):** allocators in the initialisers of a shared protected
+  object and of package objects, and allocators executed inside a method of a protected object
+  in the shared heap (or anything it calls), allocate in the shared heap, so shared state never
+  points into a private heap that dies with its process or with an elaboration call.

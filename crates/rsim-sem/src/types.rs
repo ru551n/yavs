@@ -347,9 +347,10 @@ impl Db {
             ast::TypeDef::Record { .. } => {
                 return Err(self.unsupported(td.span, "record types", "S3"));
             }
-            ast::TypeDef::Protected(_) | ast::TypeDef::ProtectedBody(_) => {
-                return Err(self.unsupported(td.span, "protected types", "S6"));
+            ast::TypeDef::Protected(pt) => {
+                return self.protected_decl(scope, decl, name, pt, td.span);
             }
+            ast::TypeDef::ProtectedBody(b) => return self.protected_body(scope, name, b, td.span),
         };
         if let Some(d) = incomplete {
             // Move the full definition into the incomplete type's id, so earlier references stay valid.
@@ -388,6 +389,77 @@ impl Db {
         self.declare_implicit_ops(ty, scope);
         self.register_well_known_type(scope, name, ty);
         Ok(())
+    }
+
+    /// `type T is protected ... end protected;` (5.6.2). `T` is visible in its own
+    /// method profiles.
+    fn protected_decl(
+        &mut self,
+        scope: ScopeId,
+        decl: DeclId,
+        name: Ident,
+        pt: &ast::ProtectedDecl,
+        span: Span,
+    ) -> Result<(), Reported> {
+        let pscope = self.add_scope(crate::scope::ScopeKind::Protected, Some(scope), Some(decl));
+        let ty = self.new_type(
+            decl,
+            name,
+            false,
+            TypeKind::Protected {
+                decl_scope: pscope,
+                body: None,
+                generics: None,
+            },
+            Constraint::None,
+            span,
+        );
+        self.decls[decl].kind = DeclKind::Type(ty);
+        self.declare(scope, decl);
+        self.check_protected_decl_items(pt)?;
+        self.decls_in(pscope, &pt.decls);
+        let aliases: Vec<DeclId> = self.scopes[pscope]
+            .order
+            .iter()
+            .copied()
+            .filter(|&d| matches!(self.decls[d].kind, DeclKind::Alias(_)))
+            .collect();
+        for a in aliases {
+            let _ = self.check_protected_alias(a);
+        }
+        Ok(())
+    }
+
+    /// `type T is protected body ... end protected body;` (5.6.3).
+    fn protected_body(
+        &mut self,
+        scope: ScopeId,
+        name: Ident,
+        b: &ast::ProtectedBody,
+        span: Span,
+    ) -> Result<(), Reported> {
+        let ty_decl = match self.lookup(scope, name.key) {
+            crate::scope::Visible::One(d) => d,
+            crate::scope::Visible::None => return Err(self.undeclared(scope, name)),
+            _ => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_A_TYPE,
+                        format!("`{}` is not a protected type", name.text),
+                    )
+                    .with_primary(name.span, "expected a protected type declaration"),
+                ));
+            }
+        };
+        let bscope = self.add_scope(
+            crate::scope::ScopeKind::ProtectedBody,
+            Some(scope),
+            Some(ty_decl),
+        );
+        let t = self.pair_protected_body(scope, ty_decl, name, bscope)?;
+        self.check_protected_body_items(b)?;
+        self.decls_in(bscope, &b.decls);
+        self.check_protected_complete(t, span)
     }
 
     fn enum_type(

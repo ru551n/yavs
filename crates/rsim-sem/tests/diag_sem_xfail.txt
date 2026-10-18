@@ -34,11 +34,7 @@ agg/uncovered_index.vhd
 alias/enum_literal_needs_signature.vhd
 alias/for_label_ok.vhd
 alias/object_alias_non_static.vhd
-alias/of_non_object_with_subtype.vhd
-alias/of_undeclared.vhd
-alias/signature_ok.vhd
 alias/subprogram_needs_signature.vhd
-alias/subtype_constraint_mismatch_ok.vhd
 alias/subtype_mismatch.vhd
 attr/attribute_of_others_ok.vhd
 attr/attribute_spec_wrong_class_overload.vhd
@@ -164,7 +160,6 @@ mix/natural_high_in_2008_file.vhd
 mix/natural_range_in_2008_file.vhd
 mix/reflection_library_unit_in_2008_file.vhd
 mix/valid_2008_unchanged_ok.vhd
-ovl/alias_signature_matches_nothing.vhd
 ovl/ambiguous_aggregate_unqualified.vhd
 ovl/ambiguous_call_by_return_type.vhd
 ovl/ambiguous_character_literal.vhd
@@ -194,7 +189,6 @@ ovl/unary_only_operator_binary.vhd
 ovl/unknown_formal_name.vhd
 prot/assign_protected_variable.vhd
 prot/body_method_missing.vhd
-prot/body_without_declaration.vhd
 prot/equality_on_protected.vhd
 prot/method_unknown.vhd
 prot/method_wrong_args.vhd
@@ -211,7 +205,6 @@ relax/pure_function_reads_signal.vhd
 relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd
 relax/shared_variable_unprotected_relaxed.vhd
-sig/signature_unknown_type.vhd
 stat/array_length_mismatch_constant.vhd
 stat/array_length_mismatch_signal_assign.vhd
 stat/array_length_mismatch_variable.vhd

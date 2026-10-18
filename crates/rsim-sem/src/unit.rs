@@ -168,6 +168,8 @@ impl Db {
             L::PackageBody(b) => {
                 let package = self.units[unit].deps[0];
                 self.decls_in(scope, &b.decls);
+                let pscope = self.units[package].scope;
+                let _ = self.check_protected_bodies(pscope, b.span);
                 UnitHir::PackageBody { package }
             }
             L::Context(c) => {

@@ -125,3 +125,27 @@ From implicit (implicit.rs, mangle.rs):
   protected_type, spec))`; `tests/native_symbols.rs` pins the rule against NATIVE.md (235 rows).
 - implicit: range records (2019 `R'RECORD`, U-3) are not created yet; they need the U-3 decision
   on the `DIRECTION` name and belong with attribute analysis.
+
+## Wiring status (M1 lead)
+
+Done in decl.rs/types.rs: alias declarations (`object_alias`, `nonobject_alias`, signatures via
+`Db::signature_of`), `check_shared_variable`, `check_not_protected` (signals, constants),
+`check_protected_param`, protected type declarations and bodies (`check_protected_decl_items`,
+`check_protected_alias`, `pair_protected_body`, `check_protected_body_items`,
+`check_protected_complete`), `check_protected_bodies` at the end of every region except package
+and protected declarations (packages: at the end of the package body). U-2 needs no check:
+type marks accept incomplete types everywhere for now.
+
+Hooks the M1 lead calls; the module owner fills the body (keep the signature):
+
+- **stmt.rs** `Db::seq_stmts(&mut self, scope: ScopeId, stmts: &[ast::SeqStmt]) -> Box<[StmtId]>`:
+  called for subprogram bodies with the subprogram's parameter region (its `owner` is the
+  subprogram decl). Currently a stub reporting `E9999`.
+- **implicit.rs** `declare_implicit_ops(ty, scope)` after every type declaration (also the
+  universal types at the start of `std.standard`), `flush_pending_implicit()` after every
+  `std.standard` type and subtype.
+
+Wiring still open (M1 lead will do these in expr/names.rs unless someone asks for them):
+`external_name` (`NameKind::External`), `protected_member` (selection from a protected object),
+`view_ref`, `match_signature` in attribute specifications and `use`, the aggregate resolver
+(`AggResolver` in expr/aggregate.rs) from `resolve` for `Expected::Type` aggregates.

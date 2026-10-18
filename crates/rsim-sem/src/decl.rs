@@ -257,6 +257,39 @@ impl Db {
                 self.poison_names(scope, d);
             }
         }
+        self.check_incomplete_completed(scope);
+        // Protected types of a package get their bodies in the package body (unit.rs).
+        if !matches!(
+            self.scopes[scope].kind,
+            crate::scope::ScopeKind::Package | crate::scope::ScopeKind::Protected
+        ) {
+            let end = decls.last().map_or(Span::default(), decl_span);
+            let _ = self.check_protected_bodies(scope, end);
+        }
+    }
+
+    /// `E1220`: an incomplete type declared in this region was never completed (5.4.2).
+    fn check_incomplete_completed(&mut self, scope: ScopeId) {
+        let open: Vec<DeclId> = self.scopes[scope]
+            .order
+            .iter()
+            .copied()
+            .filter(|&d| matches!(self.decls[d].kind, DeclKind::Type(t) if matches!(self.types[t].kind, crate::types::TypeKind::Incomplete { completion: None })))
+            .collect();
+        for d in open {
+            let name = self.decls[d].name;
+            self.report(
+                rsim_diag::Diagnostic::error(
+                    crate::diag::INCOMPLETE,
+                    format!("incomplete type `{name}` is never completed"),
+                )
+                .with_primary(
+                    self.decls[d].span,
+                    "declared here without a full declaration",
+                )
+                .with_help("declare the full type later in the same declarative part"),
+            );
+        }
     }
 
     /// After a failed declaration, declare its names as poison so later uses stay silent (8.2).
@@ -302,7 +335,11 @@ impl Db {
             D::Subtype(s) => self.subtype_decl(scope, s),
             D::Object(o) => self.object_decl(scope, o),
             D::File(f) => self.file_decl(scope, f),
-            D::Subprogram(s) => self.subprogram_spec(scope, s).map(|_| ()),
+            D::Subprogram(s) => {
+                let d = self.subprogram_spec(scope, s)?;
+                self.declare(scope, d);
+                Ok(())
+            }
             D::Attribute(a) => {
                 let ty = self.type_mark(scope, &a.type_mark)?;
                 let decl = self.new_decl(
@@ -318,8 +355,8 @@ impl Db {
                 self.use_clause(scope, u);
                 Ok(())
             }
-            D::SubprogramBody(b) => Err(self.unsupported(b.spec.span, "subprogram bodies", "S2")),
-            D::Alias(a) => Err(self.unsupported(a.span, "alias declarations", "S2")),
+            D::SubprogramBody(b) => self.subprogram_body(scope, b),
+            D::Alias(a) => self.alias_decl(scope, a),
             D::AttributeSpec(a) => Err(self.unsupported(a.span, "attribute specifications", "S6")),
             D::Component(c) => Err(self.unsupported(c.span, "component declarations", "S5")),
             D::SubprogramInstance(x) => {
@@ -394,6 +431,72 @@ impl Db {
         Ok(())
     }
 
+    /// `alias a [: st] is name [signature];` (6.6), through `alias.rs`.
+    fn alias_decl(&mut self, scope: ScopeId, a: &ast::AliasDecl) -> Result<(), crate::Reported> {
+        use crate::expr::names::NameRes;
+        let (name, sig) = match &a.name.kind {
+            ast::NameKind::Signature { prefix, signature } => (prefix.as_ref(), Some(signature)),
+            _ => (&a.name, None),
+        };
+        let subtype = match &a.subtype {
+            Some(si) => Some(self.subtype_indication(scope, si)?),
+            None => None,
+        };
+        let res = match &name.kind {
+            ast::NameKind::Simple(_)
+            | ast::NameKind::Selected { .. }
+            | ast::NameKind::Operator(_)
+            | ast::NameKind::Character(_) => self.classify(scope, name),
+            ast::NameKind::External(_) => {
+                return Err(self.unsupported(name.span, "aliases of external names", "S6"));
+            }
+            _ => {
+                return Err(self.unsupported(
+                    name.span,
+                    "aliases of indexed, sliced or selected object names",
+                    "S3",
+                ));
+            }
+        };
+        let cands = match res {
+            NameRes::One(d) if self.object_type(d).is_some() => {
+                let target = self.object_ref(d, name.span);
+                let alias = self.object_alias(scope, a, target, subtype)?;
+                self.declare(scope, alias);
+                return Ok(());
+            }
+            NameRes::One(d) => vec![d],
+            NameRes::Overloads(ds) => ds,
+            other => return Err(self.report_name(scope, other)),
+        };
+        let sig = match sig {
+            Some(s) => Some(self.signature_of(scope, s)?),
+            None => None,
+        };
+        let decls = self.nonobject_alias(scope, a, &cands, sig.as_ref())?;
+        for d in decls {
+            self.declare(scope, d);
+        }
+        Ok(())
+    }
+
+    /// Resolve the type marks of a signature (4.5.3).
+    pub(crate) fn signature_of(
+        &mut self,
+        scope: ScopeId,
+        s: &ast::Signature,
+    ) -> Result<crate::alias::Signature, crate::Reported> {
+        let mut params = Vec::new();
+        for p in &s.params {
+            params.push(self.type_mark(scope, p)?);
+        }
+        let ret = match &s.ret {
+            Some(r) => Some(self.type_mark(scope, r)?),
+            None => None,
+        };
+        Ok(crate::alias::Signature::new(self, &params, ret, s.span))
+    }
+
     /// `file f : t open k is "name";` (6.4.2.5).
     fn file_decl(&mut self, scope: ScopeId, f: &ast::FileDecl) -> Result<(), crate::Reported> {
         let subtype = self.subtype_indication(scope, &f.subtype)?;
@@ -443,7 +546,63 @@ impl Db {
         Ok(())
     }
 
+    /// A subprogram body (4.3). It completes an earlier specification with the
+    /// same designator and profile in the same region (for a package body: the
+    /// package; for a protected type body: the protected type declaration),
+    /// which keeps its `DeclId`; otherwise it is a new declaration.
+    fn subprogram_body(
+        &mut self,
+        scope: ScopeId,
+        b: &ast::SubprogramBody,
+    ) -> Result<(), crate::Reported> {
+        let new = self.subprogram_spec(scope, &b.spec)?;
+        let key = self.decls[new].name.key();
+        let mut regions = vec![scope];
+        match self.scopes[scope].kind {
+            crate::scope::ScopeKind::PackageBody => {
+                if let Some(c) = self.scopes[scope].parent
+                    && let Some(p) = self.scopes[c].parent
+                {
+                    regions.push(p);
+                }
+            }
+            crate::scope::ScopeKind::ProtectedBody => regions.extend(self.scopes[scope].parent),
+            _ => {}
+        }
+        let profile = self.profile(new);
+        let spec = regions.iter().find_map(|&r| {
+            self.scopes[r].names.get(&key)?.iter().copied().find(|&d| {
+                matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending)) && self.profile(d) == profile
+            })
+        });
+        let pscope = match &self.decls[new].kind {
+            DeclKind::Subprogram(s) => s.scope.expect("specs have a parameter region"),
+            _ => return Err(crate::Reported),
+        };
+        let target = match spec {
+            Some(d) => {
+                // The body's parameter region (its spelling and defaults) becomes the body region.
+                self.scopes[pscope].owner = Some(d);
+                d
+            }
+            None => {
+                self.declare(scope, new);
+                new
+            }
+        };
+        self.decls_in(pscope, &b.decls);
+        let stmts = self.seq_stmts(pscope, &b.stmts);
+        if let DeclKind::Subprogram(s) = &mut self.decls[target].kind {
+            s.body = Body::Hir {
+                scope: pscope,
+                stmts,
+            };
+        }
+        Ok(())
+    }
+
     /// A subprogram declaration (4.2): parameters in their own region, result type.
+    /// The caller declares the returned entity.
     pub(crate) fn subprogram_spec(
         &mut self,
         scope: ScopeId,
@@ -490,7 +649,6 @@ impl Db {
             body: Body::Pending,
             mangled,
         });
-        self.declare(scope, decl);
         Ok(decl)
     }
 

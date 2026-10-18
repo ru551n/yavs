@@ -356,6 +356,10 @@ impl Db {
     }
 
     /// A reference to an object; constants carry their folded value (9.4.1).
+    pub(crate) fn object_ref(&mut self, d: DeclId, span: Span) -> ExprId {
+        self.object_expr(d, span)
+    }
+
     fn object_expr(&mut self, d: DeclId, span: Span) -> ExprId {
         let (subtype, stat, value) = match &self.decls[d].kind {
             DeclKind::Object(o) => {

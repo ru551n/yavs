@@ -145,6 +145,8 @@ const PASS: &[&str] = &[
     "scalar/array_attrs",
     "scalar/enum_attrs",
     "scalar/int_attrs",
+    "scalar/min_literal",
+    "scalar/min_literal_2019",
     "scalar/real_attrs",
     "scalar/real_image",
     "scalar/string_attrs",

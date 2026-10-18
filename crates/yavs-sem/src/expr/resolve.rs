@@ -345,7 +345,15 @@ impl Db {
             },
             K::Paren(inner) => self.build(scope, inner, i),
             K::Name(n) => self.build_name(scope, n, i, e.span),
-            K::Unary { operand, .. } => self.build_operator(scope, i, &[operand.as_ref()], e.span),
+            K::Unary { op, operand } => {
+                if *op == ast::UnaryOp::Minus
+                    && let K::Literal(l) = &operand.kind
+                    && let Some(v) = crate::expr::literal::negated_min(self, l, i.ty)
+                {
+                    return crate::expr::literal::const_expr(self, e.span, i.ty, Some(v));
+                }
+                self.build_operator(scope, i, &[operand.as_ref()], e.span)
+            }
             K::Binary { left, right, .. } => {
                 self.build_operator(scope, i, &[left.as_ref(), right.as_ref()], e.span)
             }

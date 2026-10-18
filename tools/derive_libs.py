@@ -47,9 +47,8 @@ std19 = rd("std/standard.vhdl")
 for name, rng in (
     ("INTEGER", "-9223372036854775807 to 9223372036854775807"),
     ("REAL", "-1.7976931348623157e308 to 1.7976931348623157e308"),
-    # -2^63 fs is TIME'low (the full i64 range, as the reference simulator). yavs
-    # reads a literal above i64 as too large, so the minimum is written as an expression.
-    ("TIME", "-9223372036854775807 - 1 to 9223372036854775807"),
+    # -2^63 fs is TIME'low (the full i64 range, as the reference simulator).
+    ("TIME", "-9223372036854775808 to 9223372036854775807"),
 ):
     std19, n = re.subn(
         rf"^(  type {name} is range) implementation_defined", rf"\1 {rng}", std19, flags=re.M

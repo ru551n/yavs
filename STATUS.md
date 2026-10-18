@@ -43,6 +43,7 @@ An installed binary finds `lib/` next to itself (#43).
 
 ## sem (`crates/yavs-sem`, M1)
 
+- A negated abstract literal at the i64 minimum (`-9223372036854775808`, `-9223372036854775808 fs`) folds to `i64::MIN` (L50, #214); `std.standard` writes TIME's lower bound as that literal.
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

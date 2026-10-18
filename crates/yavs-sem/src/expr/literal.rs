@@ -667,23 +667,52 @@ pub fn literal_value(
     }))
 }
 
+/// The value of `-lit` when the literal alone is one past `i64::MAX` (LRM 9.3, 5.2.3: the minus
+/// applies to a `universal_integer` literal, so `-9223372036854775808` is legal) and `ty` is an
+/// integer or physical type; `None` for every other literal (the normal path handles and reports).
+// ponytail: only the i64 minimum needs the wider intermediate; any other value folds via `-` as before.
+pub fn negated_min(db: &Db, lit: &Literal, ty: TypeId) -> Option<ConstValue> {
+    const MAG: i128 = 1 << 63;
+    match (&lit.kind, &db.types[ty].kind) {
+        (LiteralKind::Abstract(t), k) if k.class() == crate::types::TypeClass::Integer => {
+            let a = lex(t.as_str()).ok()?;
+            (a.to_i128() == Some(MAG)).then_some(ConstValue::Int(i64::MIN))
+        }
+        (LiteralKind::Physical { value, unit }, TypeKind::Physical { units }) => {
+            let scale = units
+                .iter()
+                .find(|u| db.decls[u.decl].name.key() == unit.key)?
+                .scale;
+            let a = lex(value.as_str()).ok()?;
+            (a.scaled(scale) == Some(MAG)).then_some(ConstValue::Phys(i64::MIN))
+        }
+        _ => None,
+    }
+}
+
 /// Build the constant HIR expression of a literal of type `ty` (sem.md 3.5, "Resolved with type T").
 pub fn literal_expr(db: &mut Db, lit: &Literal, ty: TypeId) -> Result<ExprId, Reported> {
+    let v = literal_value(db, lit, ty)?;
+    Ok(const_expr(db, lit.span, ty, v))
+}
+
+/// The expression of an already folded literal value (`None` is `null`).
+pub fn const_expr(db: &mut Db, span: Span, ty: TypeId, v: Option<ConstValue>) -> ExprId {
     let subtype = db.types[ty].first_subtype;
-    let (kind, value) = match literal_value(db, lit, ty)? {
+    let (kind, value) = match v {
         Some(v) => {
             let c = db.add_const(v);
             (ExprKind::Const(c), Some(c))
         }
         None => (ExprKind::Null, None),
     };
-    Ok(db.add_expr(Expr {
+    db.add_expr(Expr {
         kind,
         subtype,
-        span: lit.span,
+        span,
         stat: Staticness::Locally,
         value,
-    }))
+    })
 }
 
 #[cfg(test)]

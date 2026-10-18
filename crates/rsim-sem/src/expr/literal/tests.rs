@@ -9,7 +9,7 @@ fn sp() -> Span {
     Span::new(FileId(0), 10, 40)
 }
 
-fn ident(s: &str) -> Ident {
+pub(crate) fn ident(s: &str) -> Ident {
     let k = Symbol::intern(&s.to_ascii_lowercase());
     Ident {
         text: Symbol::intern(s),
@@ -18,11 +18,11 @@ fn ident(s: &str) -> Ident {
     }
 }
 
-fn new_db() -> Db {
+pub(crate) fn new_db() -> Db {
     Db::new(Options::new(LangRev::Vhdl2008, "/nonexistent"))
 }
 
-fn add_type(db: &mut Db, name: &str, kind: TypeKind) -> TypeId {
+pub(crate) fn add_type(db: &mut Db, name: &str, kind: TypeKind) -> TypeId {
     let root = db.root;
     let decl = db.decls.push(Decl {
         name: Designator::Ident(ident(name)),
@@ -41,6 +41,7 @@ fn add_type(db: &mut Db, name: &str, kind: TypeKind) -> TypeId {
         resolution: None,
         span: Span::default(),
     });
+    db.decls[decl].kind = DeclKind::Type(ty);
     db.types.push(TypeDef {
         decl,
         name: ident(name),
@@ -65,7 +66,7 @@ fn int_expr(db: &mut Db, v: i64) -> ExprId {
 }
 
 /// Enumeration type of character literals.
-fn char_enum(db: &mut Db, name: &str, chars: &str) -> TypeId {
+pub(crate) fn char_enum(db: &mut Db, name: &str, chars: &str) -> TypeId {
     let root = db.root;
     let ty = add_type(db, name, TypeKind::Enum { lits: Box::new([]) });
     let lits: Vec<_> = chars
@@ -92,7 +93,14 @@ fn char_enum(db: &mut Db, name: &str, chars: &str) -> TypeId {
 }
 
 /// `array (<index> range <>) of <elem>` with index subtype `lo to hi` (or `lo downto hi`).
-fn array_of(db: &mut Db, name: &str, elem: TypeId, lo: i64, dir: Direction, hi: i64) -> TypeId {
+pub(crate) fn array_of(
+    db: &mut Db,
+    name: &str,
+    elem: TypeId,
+    lo: i64,
+    dir: Direction,
+    hi: i64,
+) -> TypeId {
     let int = add_type(db, "idx", TypeKind::Integer);
     let l = int_expr(db, lo);
     let r = int_expr(db, hi);

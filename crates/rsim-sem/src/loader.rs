@@ -435,6 +435,11 @@ impl Db {
         if self.error_count() > before {
             return Err(Reported);
         }
+        // HIR invariants (sem.md 7.3) in debug builds.
+        #[cfg(debug_assertions)]
+        if crate::validate::validate(self) > 0 {
+            return Err(Reported);
+        }
         Ok(ids.into_iter().map(|u| self.unit_record(u)).collect())
     }
 

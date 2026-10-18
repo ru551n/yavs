@@ -718,4 +718,4 @@ pub fn literal_expr(db: &mut Db, lit: &Literal, ty: TypeId) -> Result<ExprId, Re
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

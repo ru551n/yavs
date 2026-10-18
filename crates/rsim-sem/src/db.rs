@@ -103,6 +103,8 @@ pub struct Db {
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
     /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
     pub(crate) pending_implicit: Vec<(TypeId, ScopeId)>,
+    /// How much of the arenas `validate` already checked.
+    pub(crate) validated: crate::validate::Mark,
     diags: Vec<Diagnostic>,
     errors: usize,
 }
@@ -185,6 +187,7 @@ impl Db {
             undeclared: HashSet::new(),
             memo: HashMap::new(),
             pending_implicit: Vec::new(),
+            validated: Default::default(),
             diags: Vec::new(),
             errors: 0,
         }

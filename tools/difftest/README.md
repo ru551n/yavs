@@ -20,12 +20,14 @@ systemd-run for debugging.
 
 One line in the first 15 lines of each `.vhd`:
 
-    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [exit=N] [ref=hand]
+    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [exit=N] [ref=hand] [ignore=a,b]
 
 - `top`: top-level entity (required). All design units in the file are analysed into one library.
 - `std`: default 2008. `stop`: passed as `--stop-time` (needed for free-running clocks).
 - `exit`: expected process exit status of the reference (default 0). `--bless` refuses to write
   an `.expected` whose exit status differs, so a broken test cannot be blessed by accident.
+- `ignore`: fields added to the ignore set for this test only (below), e.g. `ignore=order` for a
+  test whose processes report in the same cycle. Say why in a comment.
 - `ref=hand`: NVC is known to give a wrong result for this test. The `.expected` is edited by
   hand to the LRM result; `--bless` and the NVC candidate skip it. Say why in a comment.
 
@@ -59,8 +61,11 @@ to stderr in NVC and stdout in GHDL, so cross-stream order is not compared).
 
 - `delta`, `path`: GHDL prints neither the delta cycle nor the process path.
 - `fatalmsg`: runtime error text and time of `fatal` events (NVC and GHDL word them differently).
-- `order`: sort events that share the same time (and delta); process order inside a cycle is
-  unspecified by the LRM. Keep this off for yavs and compare strictly first.
+- `order`: sort events that share the same time (and delta) by process path, keeping each
+  process's own order (by text when `path` is ignored too); process order inside a cycle is
+  unspecified by the LRM. Keep this off for yavs and compare strictly first; a test can opt in
+  with `ignore=order` (NVC's order there is an artefact of its event heap, see
+  `docs/decisions.md`).
 - `errexit`: NVC exits 1 after any `error` severity report, GHDL exits 0. Exit 1 is treated as 0
   when there is no `failure` or `fatal` event.
 - `time`, `stderr`: extra, off by default.

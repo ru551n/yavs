@@ -1,4 +1,6 @@
--- difftest: top=multi_process_order std=2008
+-- difftest: top=multi_process_order std=2008 ignore=order
+-- p1 and p3 resume at 2 ns in the same cycle. The LRM leaves their order open; NVC's comes from
+-- its event heap and yavs's (elaboration order) is deterministic, so compare per process.
 entity multi_process_order is end;
 architecture t of multi_process_order is
 begin

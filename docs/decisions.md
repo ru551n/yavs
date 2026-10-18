@@ -463,3 +463,13 @@ which tools/difftest parses.
   `Assertion violation` event on both sides.
 - **Exit 2 is not always an elaboration failure:** `stop(2)` exits 2 like NVC, so the yavs template
   runs `yavs elab` first and maps only its failure to "elaboration failed".
+- **Report order within one cycle (#11): yavs keeps committing in elaboration order.** NVC's
+  order is neither elaboration nor wakeup (FIFO) order: six processes whose timeouts all fall on
+  3 ns, scheduled at 0, 1 and 2 ns, report as p2 p4 p1 p5 p6 p3 in NVC, an artefact of its event
+  heap; processes woken by one signal event report in reverse registration order. Matching that
+  would mean reproducing NVC's heap layout, which the LRM does not ask for (the order is
+  unspecified) and which no other simulator shares. A deterministic wakeup order would match
+  NVC no better than ProcId order, so the kernel is unchanged and `--threads N` stays
+  byte-identical by construction. difftest instead gained a per-test `ignore=order` header; the
+  `order` mask now sorts a cycle's events stably by process path, so each process's own order is
+  still compared. Strict comparison stays the default for yavs.

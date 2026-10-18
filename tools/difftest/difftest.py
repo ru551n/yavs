@@ -47,7 +47,7 @@ HDR = re.compile(r"^--\s*difftest:\s*(.*)$")
 
 
 def parse_header(path):
-    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc"}
+    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": ""}
     for line in path.read_text().splitlines()[:15]:
         m = HDR.match(line)
         if m:
@@ -206,7 +206,10 @@ def mask(lines, ignore):
             while j < len(res) and keys[j] is not None and keys[j] == keys[i]:
                 j += 1
             j = max(j, i + 1)
-            out += sorted(res[i:j]) if keys[i] is not None else res[i:j]
+            # With paths, a stable sort by process keeps each process's own order; without
+            # them (GHDL) only the text is left to sort by.
+            by = (lambda l: l) if "path" in ignore else (lambda l: l.split("\t")[4])
+            out += sorted(res[i:j], key=by) if keys[i] is not None else res[i:j]
             i = j
         res = out
     return res
@@ -223,6 +226,7 @@ def one(vhd, args, template, ignore):
     base = CACHE / args.candidate_id / rel.with_suffix("")
     res = {"name": str(rel), "ok": True, "msg": ""}
     hand = hdr["ref"] == "hand"  # .expected maintained by hand: NVC is known wrong here
+    ignore = ignore | set(hdr["ignore"].split(",")) - {""}  # per-test additions
     if hand and args.candidate == "nvc":
         return {**res, "msg": "skipped, hand-maintained .expected"}
     try:

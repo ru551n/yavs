@@ -95,7 +95,8 @@ to, and those documents win over your memory.
 13. **Green before every push, on the exact commit you push:**
     `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
     `cargo test --workspace`. Never pipe a check through `grep`/`tail` in a way that hides its exit
-    status.
+    status. These checks run whenever the pushed range (`origin/main..HEAD`) touches `crates/`,
+    regardless of what you think you changed.
 14. **Every behaviour gets a test.** Errors get a negative test with the code and position.
     Rendered output changes are snapshot changes that show up in review (`YAVS_BLESS=1` to update,
     then inspect the diff).
@@ -107,7 +108,11 @@ to, and those documents win over your memory.
 ### Git and collaboration
 17. **Current phase: push straight to `main`** (no branches, no PRs, no CI yet). Rebase on
     `origin/main` first; push only with no rebase in progress and a clean tree. If the push is
-    rejected, rebase again and re-run the checks.
+    rejected, rebase again and re-run the checks. **Before every push run
+    `git diff --stat origin/main..HEAD`** (or `git show --stat HEAD`) and confirm every path is
+    one you meant to change: any diff outside your area means a bad rebase (commit 219eabe, a
+    "tools only" commit, silently reverted another agent's Rust work through a conflicted rebase
+    and skipped the checks; fixed in 6a21cb8).
 18. **Commit messages:** imperative subject and a body that says why. No `Co-Authored-By`
     trailer (user rule), and commit as the GitHub noreply address
     `1427336+ru551n@users.noreply.github.com` (set by `git config user.email` in this repo). No

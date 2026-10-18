@@ -130,6 +130,8 @@ pub struct Db {
     pub config_specs: HashMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
     /// Configuration specifications whose instance labels wait for the statement part.
     pub(crate) pending_specs: Vec<crate::unit::PendingSpec>,
+    /// Generic defaults, generic lists and instance remappings (generic.rs).
+    pub(crate) generic: crate::generic::GenericState,
     diags: Vec<Diagnostic>,
     errors: usize,
 }
@@ -224,6 +226,7 @@ impl Db {
             stmt_owners: Vec::new(),
             config_specs: HashMap::new(),
             pending_specs: Vec::new(),
+            generic: Default::default(),
             diags: Vec::new(),
             errors: 0,
         }

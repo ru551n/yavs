@@ -170,9 +170,14 @@ impl Db {
         self.units[unit].scope = scope;
         let hir = match &ast.unit {
             L::Package(p) => {
-                if p.generics.is_some() || p.generic_map.is_some() {
-                    return Err(self.unsupported(p.name.span, "a generic package", "S4"));
+                if p.generic_map.is_some() {
+                    return Err(self.unsupported(
+                        p.name.span,
+                        "a package with a generic map",
+                        "S4",
+                    ));
                 }
+                let generics = p.generics.as_ref().map(|g| self.generic_list(scope, g));
                 let is_standard = self.is_std_standard(unit);
                 if is_standard {
                     self.begin_standard(scope);
@@ -181,7 +186,9 @@ impl Db {
                 if is_standard {
                     self.end_standard(scope, p.span);
                 }
-                UnitHir::Package { generics: None }
+                UnitHir::Package {
+                    generics: generics.transpose()?,
+                }
             }
             L::PackageBody(b) => {
                 let package = self.units[unit].deps[0];
@@ -200,7 +207,7 @@ impl Db {
             L::Architecture(a) => self.architecture_body(unit, scope, a),
             L::Configuration(c) => self.configuration_body(unit, scope, c)?,
             L::PackageInstance(p) => {
-                return Err(self.unsupported(p.name.span, "package instantiation", "S4"));
+                UnitHir::PackageInst(self.package_instance_unit(scope, decl, p)?)
             }
         };
         self.units[unit].hir = hir;
@@ -471,8 +478,13 @@ impl Db {
         let d = self.expanded_name_decl(scope, n)?;
         match self.decls[d].kind {
             DeclKind::Library(l) => Ok(Region::Library(l)),
-            DeclKind::Unit(u) if self.units[u].kind == UnitKind::Package => {
-                Ok(Region::Scope(self.units[u].scope))
+            DeclKind::Unit(_) | DeclKind::PackageInst(_) | DeclKind::GenericPackage(_)
+                if !matches!(self.package_region(d), crate::generic::PkgRegion::No) =>
+            {
+                match self.package_region(d) {
+                    crate::generic::PkgRegion::Scope(s) => Ok(Region::Scope(s)),
+                    _ => Err(self.uninstantiated(d, crate::generic::last_span(n))),
+                }
             }
             DeclKind::Error => Err(Reported),
             _ => Err(self.error(

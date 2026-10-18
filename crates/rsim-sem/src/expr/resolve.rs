@@ -441,9 +441,14 @@ impl Db {
                     | NameRes::Conflict(..)
                     | NameRes::Unsupported(..)
                     | NameRes::NotInRegion(..)
+                    | NameRes::Uninstantiated(..)
                     | NameRes::Error
             ) {
                 self.report_name(scope, r);
+                return;
+            }
+            if let Some(g) = self.uninstantiated_of(&r) {
+                self.uninstantiated(g, base.span);
                 return;
             }
             let attr = match &n.kind {

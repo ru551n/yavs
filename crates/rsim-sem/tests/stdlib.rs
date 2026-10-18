@@ -19,6 +19,10 @@ const UNITS: &[(&str, &str)] = &[
     ("ieee", "math_real"),
     ("ieee", "math_complex"),
     ("ieee", "fixed_float_types"),
+    ("ieee", "fixed_generic_pkg"),
+    ("ieee", "fixed_pkg"),
+    ("ieee", "float_generic_pkg"),
+    ("ieee", "float_pkg"),
 ];
 
 /// Packages whose bodies analyze clean too.

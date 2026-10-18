@@ -36,6 +36,8 @@ pub(crate) enum NameRes {
     Value,
     /// Already reported.
     Error,
+    /// An uninstantiated generic package used as a prefix (`E1505`, generic.rs).
+    Uninstantiated(DeclId, Span),
 }
 
 fn name_ident(n: &ast::Name) -> Option<(Symbol, Ident)> {
@@ -81,10 +83,23 @@ impl Db {
                     NameRes::One(d) => {
                         let region = match self.decls[self.entity(d)].kind {
                             DeclKind::Library(l) => Region::Library(l),
-                            DeclKind::Unit(u)
-                                if self.units[u].kind == crate::loader::UnitKind::Package =>
+                            DeclKind::Unit(_)
+                            | DeclKind::PackageInst(_)
+                            | DeclKind::GenericPackage(_)
+                                if !matches!(
+                                    self.package_region(d),
+                                    crate::generic::PkgRegion::No
+                                ) =>
                             {
-                                Region::Scope(self.units[u].scope)
+                                match self.package_region(d) {
+                                    crate::generic::PkgRegion::Scope(s) => Region::Scope(s),
+                                    _ => {
+                                        return NameRes::Uninstantiated(
+                                            self.entity(d),
+                                            crate::generic::last_span(prefix),
+                                        );
+                                    }
+                                }
                             }
                             DeclKind::Object(_) | DeclKind::Alias(Alias::Object { .. }) => {
                                 return NameRes::Value;
@@ -137,6 +152,7 @@ impl Db {
             NameRes::Unsupported(span, what, slice) => self.unsupported(span, what, slice),
             NameRes::NotInRegion(s, span, key) => self.not_in_region(s, span, key),
             NameRes::Error => Reported,
+            NameRes::Uninstantiated(d, span) => self.uninstantiated(d, span),
             NameRes::One(_) | NameRes::Overloads(_) | NameRes::Value => Reported,
         }
     }

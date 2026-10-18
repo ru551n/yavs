@@ -409,12 +409,10 @@ impl Db {
             D::SubprogramBody(b) => self.subprogram_body(scope, b),
             D::Alias(a) => self.alias_decl(scope, a),
             D::Component(c) => self.component_decl(scope, c),
-            D::SubprogramInstance(x) => {
-                Err(self.unsupported(x.span, "subprogram instantiation", "S4"))
-            }
+            D::SubprogramInstance(x) => self.subprogram_instance(scope, x),
             D::Package(x) => Err(self.unsupported(x.span, "nested packages", "S4")),
             D::PackageBody(x) => Err(self.unsupported(x.span, "nested package bodies", "S4")),
-            D::PackageInstance(x) => Err(self.unsupported(x.span, "package instantiation", "S4")),
+            D::PackageInstance(x) => self.package_instance_decl(scope, x),
             D::Group(x) => Err(self.unsupported(x.span, "groups", "S6")),
             D::GroupTemplate(x) => Err(self.unsupported(x.span, "group templates", "S6")),
             D::Disconnect(x) => Err(self.unsupported(x.span, "disconnection specifications", "S5")),
@@ -660,6 +658,7 @@ impl Db {
         scope: ScopeId,
         b: &ast::SubprogramBody,
     ) -> Result<(), crate::Reported> {
+        self.prepare_generic_body(scope, &b.spec);
         let new = self.subprogram_spec(scope, &b.spec)?;
         let key = self.decls[new].name.key();
         let mut regions = vec![scope];
@@ -717,8 +716,8 @@ impl Db {
         scope: ScopeId,
         s: &ast::SubprogramSpec,
     ) -> Result<DeclId, crate::Reported> {
-        if s.generics.is_some() || s.generic_map.is_some() {
-            return Err(self.unsupported(s.span, "generic subprograms", "S4"));
+        if s.generic_map.is_some() {
+            return Err(self.unsupported(s.span, "subprograms with a generic map", "S4"));
         }
         let name = match &s.designator {
             ast::Designator::Ident(i) => Designator::Ident(*i),
@@ -733,6 +732,10 @@ impl Db {
         };
         let decl = self.new_decl(scope, name, DeclKind::Error, s.span);
         let pscope = self.add_scope(crate::scope::ScopeKind::Subprogram, Some(scope), Some(decl));
+        let generics = match &s.generics {
+            Some(g) => Some(self.generic_list(pscope, g)?),
+            None => None,
+        };
         let mut params = Vec::new();
         for p in s.params.iter().flatten() {
             let ast::InterfaceDecl::Object(o) = p else {
@@ -762,7 +765,8 @@ impl Db {
             self.check_operator_arity(key, params.len(), name_span)?;
         }
         let ret = match &s.return_type {
-            Some(n) => Some(self.type_mark(scope, n)?),
+            // The generics of a generic subprogram are visible in its result type.
+            Some(n) => Some(self.type_mark(if generics.is_some() { pscope } else { scope }, n)?),
             None => None,
         };
         if s.return_ident.is_some() {
@@ -786,7 +790,7 @@ impl Db {
             kind,
             params: params.into(),
             ret,
-            generics: None,
+            generics,
             scope: Some(pscope),
             body,
             mangled,

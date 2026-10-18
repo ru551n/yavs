@@ -232,3 +232,22 @@ From cli (`rsim analyze`):
   (S4, generic); mode view ports report `E9999` (S7).
 - An entity and its architecture are one region (12.1): `declare` in an architecture checks the
   entity's names (`E1101`).
+
+### generic -> others
+
+generic.rs (S4) is in. What other modules can use, and what is still open:
+
+- `Db::generic_list(scope, &[InterfaceDecl])` analyzes a generic clause (constants, types with
+  their class operations, subprograms with `is <>`/`is name` defaults, formal packages). Entity
+  and block generics (`st_interfaces`, S5) can call it for the generic part.
+- `Db::package_region(decl)` is the one place that maps a package, package instance or formal
+  package decl to its region (`E1505` for an uninstantiated generic package); unit.rs `region_of`
+  and names.rs `classify` call it. `NameRes::Uninstantiated` reports through `report_name`.
+- `Db::instance_body(inst)` clones a package instance's body (or an instantiated subprogram's)
+  on demand and gives the instance's subprograms their `Body::Hir`; M2 calls it.
+- Open: anonymous generic types (`type is private` in an interface object, S7), formal packages
+  with a partial generic map, package instances and mode views inside generic units, generic
+  protected types (protected.rs keeps its `E9999`), `W1501` (unused generic).
+- Blocked in lib: the bodies of `fixed_generic_pkg` and `float_generic_pkg` (so the instance
+  bodies of `fixed_pkg`/`float_pkg`) need aggregates with `others` from a return or parameter
+  context (`E1325`), `.all` and allocators; the declarations and instances analyze clean.

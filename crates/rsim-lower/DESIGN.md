@@ -203,3 +203,10 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
 5. **Array signals:** elab gives each array signal one kernel leaf (`Elem::Logic` for
    std_ulogic/bit/boolean elements, else bytes), so `SigVal` offsets follow the element order
    above.
+6. **Guarded blocks** (`resolution/bus_guarded`): elab creates the block's GUARD signal object
+   and one process instance per guarded block, named `_guard`, whose statement is the block
+   statement and whose only driver slot is GUARD (`GUARD <= guard_expression`, LRM 11.2).
+   Lowering needs a `ProcessIr` for it (sensitive to the guard expression's signals) and the
+   guarded assignments of the block (`Disconnect` when GUARD is false). `bus`/`register`
+   signals are guarded in the kernel by elab (`Builder::guard`, disconnection time 0 until
+   disconnection specifications reach the HIR).

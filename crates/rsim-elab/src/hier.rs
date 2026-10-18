@@ -321,6 +321,8 @@ pub struct Leaf {
     pub path: Vec<u32>,
     pub ty: SignalType,
     pub resolution: Option<LeafRes>,
+    /// `bus` or `register` (a guarded signal, LRM 6.4.2.3).
+    pub guard: Option<rsim_kernel::GuardKind>,
     pub init: Value,
 }
 

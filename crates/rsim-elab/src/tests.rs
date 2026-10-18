@@ -585,3 +585,27 @@ fn bit_and_boolean_use_std_ulogic_codes() {
     };
     assert_eq!(b.get(0) as u8, 3);
 }
+
+#[test]
+fn guarded_blocks_and_bus_signals() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      entity t is end; architecture a of t is
+        signal en : boolean := false;
+        signal b : std_logic bus;
+      begin
+        g1 : block (en) begin b <= guarded '1'; end block;
+      end;";
+    let (_, e) = elab("guarded", src, "t", &[]);
+    assert_eq!(procs(&e), [":t:g1:_guard:", ":t:g1:_p0:"]);
+    let b = e
+        .nets
+        .leaves
+        .iter()
+        .find(|l| l.resolution.is_some())
+        .expect("b");
+    assert_eq!(b.guard, Some(rsim_kernel::GuardKind::Bus));
+    // The guard process drives the block's GUARD signal.
+    let gd = &e.nets.drivers[e.procs[0].drivers[0]];
+    let obj = e.nets.obj(e.nets.leaf(gd.leaf).obj);
+    assert_eq!(obj.name.key.as_str(), "guard");
+}

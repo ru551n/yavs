@@ -71,6 +71,9 @@ impl Elaborated {
                 }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
+            if let Some(g) = leaf.guard {
+                b.guard(id, g, rsim_kernel::Time::ZERO);
+            }
         }
         for e in &self.nets.ports {
             let sig = |(l, r): (crate::LeafId, rsim_kernel::Range)| {

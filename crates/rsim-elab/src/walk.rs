@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use rsim_diag::{Diagnostic, Span};
-use rsim_kernel::{Elem, PortMode, Range};
+use rsim_kernel::{Elem, GuardKind, PortMode, Range};
 use rsim_sem::decl::{DeclKind, ObjClass, ObjRole};
 use rsim_sem::hir::{
     Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
@@ -531,21 +531,43 @@ impl Elab<'_> {
                     let Some(shape) = self.m.shape(db, o.subtype, Some(s), span)? else {
                         return Err(Box::new(ice(span, "signal of an unconstrained subtype")));
                     };
-                    if o.signal_kind.is_some() {
-                        return Err(unsupported(
-                            span,
-                            "guarded signals (`bus`, `register`)",
-                            "M3",
-                        ));
-                    }
+                    let guard = o.signal_kind.map(|k| match k {
+                        rsim_syntax::ast::SignalKind::Bus => GuardKind::Bus,
+                        rsim_syntax::ast::SignalKind::Register => GuardKind::Register,
+                    });
                     let init = match o.default {
                         Some(e) => Some(self.m.eval(db, e, Some(s))?),
                         None => None,
                     };
-                    self.m
-                        .add_obj(self.db, s, d, ObjKind::Signal, shape, init.as_ref(), span)?;
+                    let obj = self.m.add_obj(
+                        self.db,
+                        s,
+                        d,
+                        ObjKind::Signal,
+                        shape,
+                        init.as_ref(),
+                        span,
+                    )?;
+                    if let Some(g) = guard {
+                        // ponytail: disconnection specifications are not in the HIR yet, so
+                        // the disconnection time is 0 ns.
+                        let (a, b) = self.m.nets.obj(obj).leaves;
+                        for l in &mut self.m.nets.leaves[a.index()..b.index()] {
+                            l.guard = Some(g);
+                        }
+                    }
                 }
-                (ObjClass::Signal, ObjRole::ImplicitSignal | ObjRole::Guard) => {
+                (ObjClass::Signal, ObjRole::Guard) => {
+                    // The implicit GUARD signal of a guarded block (LRM 11.2), driven by
+                    // the block's guard process.
+                    let span = decl.span;
+                    let Some(shape) = self.m.shape(db, o.subtype, Some(s), span)? else {
+                        return Err(Box::new(ice(span, "GUARD subtype")));
+                    };
+                    self.m
+                        .add_obj(self.db, s, d, ObjKind::Signal, shape, None, span)?;
+                }
+                (ObjClass::Signal, ObjRole::ImplicitSignal) => {
                     return Err(unsupported(
                         decl.span,
                         "implicit signals ('stable, 'quiet, 'delayed, 'transaction, GUARD)",
@@ -757,17 +779,36 @@ impl Elab<'_> {
                 body,
                 ..
             } => {
-                if guard.is_some() || !generics.is_empty() || !ports.is_empty() {
-                    return Err(unsupported(
-                        span,
-                        "guarded blocks and blocks with generics or ports",
-                        "M3",
-                    ));
+                if !generics.is_empty() || !ports.is_empty() {
+                    return Err(unsupported(span, "blocks with generics or ports", "M3"));
                 }
-                let (bscope, body) = (*bscope, body.to_vec());
+                let (bscope, body, guard) = (*bscope, body.to_vec(), *guard);
                 let b = self.m.hier.add(Some(s), ScopeKind::Block, named(db)?);
                 let bcfg = cfg.and_then(|c| self.sub_cfg(c, st, None));
                 self.decls(b, bscope)?;
+                if let Some(g) = guard {
+                    if self.m.signal(b, g).is_none() {
+                        let gspan = self.db.decls[g].span;
+                        let DeclKind::Object(o) = &self.db.decls[g].kind else {
+                            return Err(Box::new(ice(span, "GUARD is not an object")));
+                        };
+                        let Some(shape) = self.m.shape(self.db, o.subtype, Some(b), gspan)? else {
+                            return Err(Box::new(ice(span, "GUARD subtype")));
+                        };
+                        self.m
+                            .add_obj(self.db, b, g, ObjKind::Signal, shape, None, gspan)?;
+                    }
+                    // The guard process `GUARD <= guard_expression` (LRM 11.2): its
+                    // statement is the block statement; it drives GUARD.
+                    let o = self.m.signal(b, g).expect("GUARD just elaborated");
+                    let n = Symbol::intern("_guard");
+                    let name = Ident {
+                        text: n,
+                        key: n,
+                        span,
+                    };
+                    self.process_refs(b, st, name, false, vec![(o, Vec::new(), span)])?;
+                }
                 let mut c = 0;
                 self.stmts(b, &body, bcfg.as_ref(), &mut c, depth)
             }
@@ -1245,17 +1286,33 @@ impl Elab<'_> {
         postponed: bool,
         lsps: &[Lsp],
     ) -> R<()> {
+        let mut refs = Vec::with_capacity(lsps.len());
+        for l in lsps {
+            let (o, sels) = self.m.lsp_ref(self.db, l, s)?;
+            refs.push((o, sels, l.span));
+        }
+        self.process_refs(s, st, name, postponed, refs)
+    }
+
+    /// A process instance driving the given static names (one entry per driver slot).
+    fn process_refs(
+        &mut self,
+        s: ScopeId,
+        st: StmtId,
+        name: Ident,
+        postponed: bool,
+        refs: Vec<(ObjId, Vec<Sel>, Span)>,
+    ) -> R<()> {
         let ps = self
             .m
             .hier
             .add(Some(s), ScopeKind::Process { stmt: st }, name);
         let idx = ProcIdx(self.procs.len() as u32);
         // Merge the driven ranges per leaf: a process has one driver per scalar subelement.
-        let mut per_lsp = Vec::with_capacity(lsps.len());
+        let mut per_lsp = Vec::with_capacity(refs.len());
         let mut by_leaf: Vec<(LeafId, Range)> = Vec::new();
-        for l in lsps {
-            let (o, sels) = self.m.lsp_ref(self.db, l, s)?;
-            let (rs, _) = self.m.select(o, &sels, l.span)?;
+        for (o, sels, span) in refs {
+            let (rs, _) = self.m.select(o, &sels, span)?;
             by_leaf.extend(rs.iter().copied());
             per_lsp.push(rs);
         }
@@ -1486,6 +1543,7 @@ impl Model {
                 path,
                 ty: rsim_kernel::SignalType { elem: *elem, len },
                 resolution,
+                guard: None,
                 init,
             });
         }

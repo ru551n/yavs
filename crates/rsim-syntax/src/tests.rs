@@ -158,6 +158,16 @@ fn configuration() {
     ok("architecture a of e is for u1 : comp use entity work.x; begin end;");
 }
 
+#[test]
+fn architecture_of_selected_entity_name() {
+    let d = ok("architecture a of work.e is begin end;");
+    let LibraryUnit::Architecture(a) = &d.units[0].unit else {
+        panic!()
+    };
+    assert_eq!(a.entity_lib.map(|l| l.text.to_string()).as_deref(), Some("work"));
+    assert_eq!(a.entity.text.as_str(), "e");
+}
+
 // Declarations.
 
 #[test]

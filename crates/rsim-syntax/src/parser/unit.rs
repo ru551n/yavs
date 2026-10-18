@@ -191,7 +191,12 @@ impl Parser<'_> {
         let start = self.expect_kw(Kw::Architecture)?;
         let name = self.ident()?;
         self.expect_kw(Kw::Of)?;
-        let entity = self.ident()?;
+        let mut entity = self.ident()?;
+        let mut entity_lib = None;
+        if self.eat(Tok::Dot) {
+            entity_lib = Some(entity);
+            entity = self.ident()?;
+        }
         self.expect_kw(Kw::Is)?;
         let decls = self.decls(false);
         self.expect_kw(Kw::Begin)?;
@@ -205,6 +210,7 @@ impl Parser<'_> {
         )?;
         Ok(ArchitectureBody {
             name,
+            entity_lib,
             entity,
             decls,
             stmts,

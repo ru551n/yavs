@@ -24,17 +24,11 @@ alias/object_alias_non_static.vhd
 alias/subprogram_needs_signature.vhd
 alias/subtype_mismatch.vhd
 attr/dimension_arg_on_scalar_type.vhd
-attr/event_on_constant.vhd
 attr/high_on_function.vhd
 attr/image_on_array_2008.vhd
-attr/length_on_scalar.vhd
-attr/pos_on_array_type.vhd
 attr/range_on_scalar_object.vhd
 attr/stable_negative_time.vhd
-attr/succ_on_real.vhd
-attr/unknown_help_typo.vhd
 attr/user_attribute_class_mismatch.vhd
-attr/user_attribute_ok.vhd
 attr/user_attribute_spec_twice.vhd
 attr/user_attribute_unknown_entity.vhd
 drv/delayed_attr_in_subprogram.vhd

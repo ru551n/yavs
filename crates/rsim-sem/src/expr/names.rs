@@ -9,7 +9,7 @@ use rsim_syntax::Symbol;
 use rsim_syntax::ast::{self, Ident};
 
 use super::{CandSet, Expected, Interp, Via};
-use crate::attr::PredefAttr;
+use crate::attr::{self, AttrInfo, Kind, PredefAttr, PrefixForm};
 use crate::db::{Db, Reported};
 use crate::decl::{Alias, DeclKind, char_key, operator_key};
 use crate::diag;
@@ -304,7 +304,156 @@ impl Db {
         })
     }
 
-    /// Predefined attributes (16.2): of a type mark, or of an object or value.
+    /// What an attribute prefix can denote, without reporting (16.1): each
+    /// form with where its subtype comes from. `Err`: the prefix name itself
+    /// does not resolve.
+    fn attr_prefixes(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+    ) -> Result<Vec<(attr::Prefix, PSrc)>, NameRes> {
+        let entity = |d| {
+            (
+                attr::Prefix {
+                    form: PrefixForm::Entity,
+                    subtype: None,
+                    fully_constrained: false,
+                },
+                PSrc::Entity(d),
+            )
+        };
+        if let Some(st) = self.quiet_type_mark(scope, prefix) {
+            return Ok(vec![(
+                attr::Prefix {
+                    form: PrefixForm::TypeMark,
+                    subtype: Some(st),
+                    fully_constrained: self.constrainedness(st)
+                        == crate::types::Constrainedness::Full,
+                },
+                PSrc::Type(st),
+            )]);
+        }
+        let inner = match &prefix.kind {
+            ast::NameKind::Signature { prefix, .. } => prefix.as_ref(),
+            _ => prefix,
+        };
+        match self.classify(scope, inner) {
+            NameRes::One(d) => {
+                let e = self.entity(d);
+                if let Some(t) = self.object_type(d) {
+                    let subtype = self.object_subtype(d);
+                    return Ok(vec![(
+                        attr::Prefix {
+                            form: PrefixForm::Object {
+                                signal: self.decl_is_signal(d),
+                            },
+                            subtype,
+                            fully_constrained: subtype.is_some_and(|st| {
+                                self.constrainedness(st) == crate::types::Constrainedness::Full
+                            }),
+                        },
+                        PSrc::Object(d, t),
+                    )]);
+                }
+                if matches!(self.decls[e].kind, DeclKind::View(_)) {
+                    return Ok(vec![(
+                        attr::Prefix {
+                            form: PrefixForm::View,
+                            subtype: None,
+                            fully_constrained: false,
+                        },
+                        PSrc::Entity(d),
+                    )]);
+                }
+                Ok(vec![entity(d)])
+            }
+            NameRes::Overloads(ds) => {
+                // The subprogram or literal as a named entity first; then the
+                // result of a parameterless function call (8.1 "appropriate for").
+                let mut out: Vec<(attr::Prefix, PSrc)> = ds.iter().map(|&d| entity(d)).collect();
+                for d in ds {
+                    if let Some(i) = self.value_interp(d, 0)
+                        && !out.iter().any(|(_, s)| *s == PSrc::Value(i.ty))
+                    {
+                        out.push(self.value_prefix(i.ty, false));
+                    }
+                }
+                Ok(out)
+            }
+            NameRes::Value => {
+                let Ok(ts) = self.prefix_types(scope, prefix) else {
+                    return Err(NameRes::Error);
+                };
+                let signal = self.ast_root_signal(scope, prefix);
+                Ok(ts
+                    .into_iter()
+                    .map(|t| self.value_prefix(t, signal))
+                    .collect())
+            }
+            r => Err(r),
+        }
+    }
+
+    fn value_prefix(&self, t: TypeId, signal: bool) -> (attr::Prefix, PSrc) {
+        (
+            attr::Prefix {
+                form: PrefixForm::Object { signal },
+                subtype: Some(self.types[t].base_subtype),
+                fully_constrained: false,
+            },
+            PSrc::Value(t),
+        )
+    }
+
+    /// The declared subtype of an object or object alias.
+    fn object_subtype(&self, d: DeclId) -> Option<SubtypeId> {
+        match &self.decls[d].kind {
+            DeclKind::Object(o) => Some(o.subtype),
+            DeclKind::Alias(Alias::Object { target, subtype }) => {
+                Some(subtype.unwrap_or(self.exprs[*target].subtype))
+            }
+            _ => None,
+        }
+    }
+
+    /// Is `d` a signal (ports, implicit signals and signal aliases included)?
+    pub(crate) fn decl_is_signal(&self, d: DeclId) -> bool {
+        match &self.decls[d].kind {
+            DeclKind::Object(o) => o.class == crate::decl::ObjClass::Signal,
+            DeclKind::Alias(Alias::Object { target, .. }) => self.expr_is_signal(*target),
+            _ => false,
+        }
+    }
+
+    /// Is `e` a name of a signal or of a part of one?
+    pub(crate) fn expr_is_signal(&self, e: ExprId) -> bool {
+        match &self.exprs[e].kind {
+            ExprKind::Obj(d) => self.decl_is_signal(*d),
+            ExprKind::External(x) => {
+                self.externals[*x].class == rsim_syntax::ast::ExternalClass::Signal
+            }
+            ExprKind::Index { prefix, .. }
+            | ExprKind::Slice { prefix, .. }
+            | ExprKind::Field { prefix, .. } => self.expr_is_signal(*prefix),
+            _ => false,
+        }
+    }
+
+    /// Whether the object a selected or indexed name starts from is a signal.
+    fn ast_root_signal(&mut self, scope: ScopeId, n: &ast::Name) -> bool {
+        match self.classify(scope, n) {
+            NameRes::One(d) => self.decl_is_signal(d),
+            NameRes::Value => match &n.kind {
+                ast::NameKind::Selected { prefix, .. } | ast::NameKind::Apply { prefix, .. } => {
+                    self.ast_root_signal(scope, prefix)
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Attributes (16.2 predefined through the `attr::TABLE`, 6.7 user-defined).
     fn attr_cands(
         &mut self,
         scope: ScopeId,
@@ -312,89 +461,62 @@ impl Db {
         attr: Ident,
         args: &[ast::AssocElem],
     ) -> CandSet {
-        let Some(a) = PredefAttr::from_key(attr.key) else {
-            return CandSet::Types(Vec::new());
+        // No interpretation: the top-down pass reports why (`report_attr`).
+        let ps = match self.attr_prefixes(scope, prefix) {
+            Ok(ps) => ps,
+            Err(NameRes::Error) => return self.poison_cands(),
+            Err(_) => return CandSet::Types(Vec::new()),
         };
-        let w = self.well_known.clone();
-        use PredefAttr::*;
-        let nargs = args.len();
-        if matches!(a, SimpleName | PathName | InstanceName) {
-            return match (w.string, nargs) {
-                (Some(t), 0) => CandSet::Types(vec![Interp::new(t, Via::AttrOf(self.poison.ty))]),
+        let Some(a) = PredefAttr::from_key(attr.key) else {
+            return match self.user_attr_type(&ps, attr.key) {
+                Some(t) if args.is_empty() => CandSet::Types(vec![Interp::new(t, Via::Attr)]),
                 _ => CandSet::Types(Vec::new()),
             };
-        }
-        if let Some(st) = self.quiet_type_mark(scope, prefix) {
-            let t = self.base(st);
-            let is_array = matches!(self.types[t].kind, TypeKind::Array { .. });
-            if is_array {
-                return self.array_attr_cands(t, a, nargs, Via::Attr);
-            }
-            let (ty, convertible) = match (a, nargs) {
-                (Left | Right | High | Low, 0) => (Some(t), false),
-                (Ascending, 0) => (w.boolean, false),
-                (Image, 1) => (w.string, false),
-                (Value | Val | Succ | Pred | Leftof | Rightof, 1) => (Some(t), false),
-                (Pos, 1) => (w.universal_integer, true),
-                _ => (None, false),
-            };
-            return match ty {
-                Some(ty) => CandSet::Types(vec![Interp {
-                    convertible,
-                    ..Interp::new(ty, Via::Attr)
-                }]),
-                None => CandSet::Types(Vec::new()),
-            };
-        }
-        let Ok(ts) = self.prefix_types(scope, prefix) else {
-            return self.poison_cands();
         };
+        let info = a.info();
+        let dim = literal_dim(args);
         let mut out = Vec::new();
-        for t in ts {
-            let via = Via::AttrOf(t);
-            if matches!(self.types[t].kind, TypeKind::Array { .. })
-                && let CandSet::Types(v) = self.array_attr_cands(t, a, nargs, via)
-                && !v.is_empty()
+        for (p, src) in &ps {
+            if !attr::applies(self, info, p)
+                || !matches!(info.kind, Kind::Value | Kind::Function | Kind::Signal)
+                || !arity_ok(info, p, args.len())
             {
-                out.extend(v);
                 continue;
             }
-            let ty = match (a, nargs) {
-                (Event | Active | Stable | Quiet | Driving, _) if nargs <= 1 => w.boolean,
-                (LastEvent | LastActive, 0) => w.time,
-                (LastValue | DrivingValue, 0) | (Delayed, 0 | 1) => Some(t),
-                (Transaction, 0) => w.bit,
-                (Image, 0) => w.string,
-                _ => None,
+            let Some(st) = attr::result_subtype(self, info, p, dim) else {
+                continue;
             };
-            if let Some(ty) = ty {
-                out.push(Interp::new(ty, via));
-            }
+            let via = match *src {
+                _ if info
+                    .prefixes
+                    .iter()
+                    .all(|r| r.form == attr::Form::NamedEntity) =>
+                {
+                    Via::AttrOf(self.poison.ty)
+                }
+                PSrc::Type(_) => Via::Attr,
+                PSrc::Value(t) | PSrc::Object(_, t) => Via::AttrOf(t),
+                PSrc::Entity(_) => Via::AttrOf(self.poison.ty),
+            };
+            out.push(Interp {
+                convertible: info.result == attr::Result_::UniversalInteger,
+                ..Interp::new(self.base(st), via)
+            });
         }
         CandSet::Types(out)
     }
 
-    /// Array attributes with an optional dimension argument.
-    fn array_attr_cands(&mut self, t: TypeId, a: PredefAttr, nargs: usize, via: Via) -> CandSet {
-        use PredefAttr::*;
-        let TypeKind::Array { indexes, .. } = &self.types[t].kind else {
-            return CandSet::Types(Vec::new());
-        };
-        let index = self.base(indexes[0]);
-        let w = &self.well_known;
-        let (ty, convertible) = match (a, nargs) {
-            (Left | Right | High | Low, 0 | 1) => (Some(index), false),
-            (Length, 0 | 1) => (w.universal_integer, true),
-            (Ascending, 0 | 1) => (w.boolean, false),
-            _ => (None, false),
-        };
-        match ty {
-            Some(ty) => CandSet::Types(vec![Interp {
-                convertible,
-                ..Interp::new(ty, via)
-            }]),
-            None => CandSet::Types(Vec::new()),
-        }
+    /// The type of user-defined attribute `key` of the named entity a prefix
+    /// denotes, if it has a value for it (7.2). Any overload with a value counts.
+    fn user_attr_type(&self, ps: &[(attr::Prefix, PSrc)], key: Symbol) -> Option<TypeId> {
+        ps.iter().find_map(|(_, src)| {
+            let (PSrc::Entity(d) | PSrc::Object(d, _)) = *src else {
+                return None;
+            };
+            let v = attr::user_value(self, self.entity(d), key)?;
+            let st = attr::spec_subtype(self, self.attr_values[v].attr)?;
+            Some(self.base(st))
+        })
     }
 
     fn apply_cands(
@@ -876,7 +998,7 @@ impl Db {
         span: Span,
     ) -> ExprId {
         let Some(a) = PredefAttr::from_key(attr.key) else {
-            return self.poison_expr();
+            return self.build_user_attr(scope, prefix, attr, span);
         };
         let (aprefix, mut stat, arg_t) = match i.via {
             Via::AttrOf(t) if t == self.poison.ty => {
@@ -993,6 +1115,87 @@ impl Db {
         id
     }
 
+    /// Report why attribute name `prefix'attr` has no interpretation (E1621,
+    /// E1007 through [`attr::select`]). Returns `false` when it found nothing
+    /// to report.
+    pub(crate) fn report_attr(&mut self, scope: ScopeId, prefix: &ast::Name, attr: Ident) -> bool {
+        let ps = match self.attr_prefixes(scope, prefix) {
+            Ok(ps) => ps,
+            Err(r) => {
+                self.report_name(scope, r);
+                return true;
+            }
+        };
+        if PredefAttr::from_key(attr.key).is_none() {
+            let declared = matches!(
+                self.lookup(scope, attr.key),
+                Visible::One(d) if matches!(self.decls[self.entity(d)].kind, DeclKind::Attribute { .. })
+            );
+            let mut d = if declared {
+                Diagnostic::error(
+                    diag::UNKNOWN_ATTRIBUTE,
+                    format!("this prefix has no value for attribute `{}`", attr.text),
+                )
+                .with_primary(attr.span, "no specification gives it one")
+                .with_note("a user-defined attribute is read from the named entity an attribute specification decorates (LRM 7.2)")
+            } else {
+                Diagnostic::error(
+                    diag::UNKNOWN_ATTRIBUTE,
+                    format!("unknown attribute `{}`", attr.text),
+                )
+                .with_primary(attr.span, "not a predefined or declared attribute")
+            };
+            if !declared
+                && let Some(best) =
+                    crate::suggest::closest(attr.key.as_str(), attr::TABLE.iter().map(|i| i.name))
+            {
+                d = d.with_help(format!("did you mean `{best}`?"));
+            }
+            self.report(d);
+            return true;
+        }
+        for (p, _) in &ps {
+            if attr::select(self, attr, p, attr.span).is_err() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `x'a` for a user-defined attribute `a` (6.7): the value given to the
+    /// named entity `x` by a specification (7.2).
+    fn build_user_attr(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        attr: Ident,
+        span: Span,
+    ) -> ExprId {
+        let Ok(ps) = self.attr_prefixes(scope, prefix) else {
+            return self.poison_expr();
+        };
+        let found = ps.iter().find_map(|(_, src)| match *src {
+            PSrc::Entity(d) | PSrc::Object(d, _) => {
+                attr::user_value(self, self.entity(d), attr.key)
+            }
+            _ => None,
+        });
+        let Some(v) = found else {
+            return self.poison_expr();
+        };
+        let value = self.attr_values[v].value;
+        let subtype =
+            attr::spec_subtype(self, self.attr_values[v].attr).unwrap_or(self.exprs[value].subtype);
+        let (stat, folded) = (self.exprs[value].stat, self.exprs[value].value);
+        self.add_expr(Expr {
+            kind: ExprKind::AttrValue { spec: v },
+            subtype,
+            span,
+            stat,
+            value: folded,
+        })
+    }
+
     /// `'left`, `'length`, ... of a static array subtype: folded even when the
     /// prefix is an object (its subtype decides, 16.2.3).
     fn fold_array_attr(&mut self, id: ExprId, st: SubtypeId, a: PredefAttr) {
@@ -1094,6 +1297,52 @@ impl Expr {
             Diagnostic::error(diag::BAD_CONVERSION, msg.to_string()).with_primary(span, "here"),
         );
         db.poison.expr
+    }
+}
+
+/// Where an attribute prefix interpretation gets its type from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PSrc {
+    /// A type mark.
+    Type(SubtypeId),
+    /// An object name (and the object's type).
+    Object(DeclId, TypeId),
+    /// A value of this type that is not a named object.
+    Value(TypeId),
+    /// A named entity that is not an object or type.
+    Entity(DeclId),
+}
+
+/// The 0-based dimension an integer literal argument names; 0 otherwise.
+fn literal_dim(args: &[ast::AssocElem]) -> u32 {
+    match args {
+        [
+            ast::AssocElem {
+                actual:
+                    ast::Actual::Expr(ast::Expr {
+                        kind:
+                            ast::ExprKind::Literal(ast::Literal {
+                                kind: ast::LiteralKind::Abstract(v),
+                                ..
+                            }),
+                        ..
+                    }),
+                ..
+            },
+        ] => v.as_str().parse::<u32>().map_or(0, |d| d.saturating_sub(1)),
+        _ => 0,
+    }
+}
+
+/// Does `n` arguments fit the parameter of `info` for this prefix? Object
+/// forms of `'image`/`'pos` (2019) take none.
+fn arity_ok(info: &AttrInfo, p: &attr::Prefix, n: usize) -> bool {
+    use attr::Param as P;
+    match info.param {
+        P::None => n == 0,
+        P::Dim | P::Time => n <= 1,
+        P::PrefixValue if matches!(p.form, PrefixForm::Object { .. }) => n == 0,
+        P::PrefixValue | P::String | P::AnyInteger => n == 1,
     }
 }
 

@@ -429,15 +429,7 @@ impl Db {
                 _ => None,
             };
             if let Some(attr) = attr {
-                if crate::attr::PredefAttr::from_key(attr.key).is_none() {
-                    self.report(
-                        Diagnostic::error(
-                            diag::UNKNOWN_ATTRIBUTE,
-                            format!("unknown attribute `{}`", attr.text),
-                        )
-                        .with_primary(attr.span, "not a predefined attribute"),
-                    );
-                } else {
+                if !self.report_attr(scope, base, attr) {
                     self.unsupported(n.span, "this use of a predefined attribute", "S3");
                 }
                 return;

@@ -568,6 +568,19 @@ impl Db {
                 self.uninstantiated(g, base.span);
                 return;
             }
+            // `T'a.f` and `T'a(i).f`: the real problem is the attribute under the selections.
+            let mut under = n;
+            while let ast::NameKind::Selected { prefix, .. } | ast::NameKind::Apply { prefix, .. } =
+                &under.kind
+            {
+                under = prefix;
+            }
+            if let ast::NameKind::Attribute { prefix, attr } = &under.kind
+                && !std::ptr::eq(under, n)
+                && self.report_attr(scope, prefix, *attr)
+            {
+                return;
+            }
             let attr = match &n.kind {
                 ast::NameKind::Attribute { attr, .. } => Some(*attr),
                 ast::NameKind::Apply { prefix, .. } => match &prefix.kind {

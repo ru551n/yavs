@@ -855,13 +855,17 @@ pub fn select(
             .with_note("this file is analyzed as VHDL-2008"),
         ));
     }
-    Err(db.error(
-        Diagnostic::error(
-            diag::UNKNOWN_ATTRIBUTE,
-            format!("attribute `'{}` does not apply to {what}", attr.text),
-        )
-        .with_primary(span, "this prefix"),
-    ))
+    let mut d = Diagnostic::error(
+        diag::UNKNOWN_ATTRIBUTE,
+        format!("attribute `'{}` does not apply to {what}", attr.text),
+    )
+    .with_primary(span, "this prefix");
+    if a == PredefAttr::Reflect {
+        d = d.with_note(
+            "the prefix of `'reflect` must be an object or a fully constrained subtype (LRM 2019 16.2)",
+        );
+    }
+    Err(db.error(d))
 }
 
 /// Whether `info` applies to `prefix` in this file's revision, without

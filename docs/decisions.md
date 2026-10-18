@@ -362,3 +362,11 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   elaboration code (ir.md 3.6).
 - **Package constant calling a function of its own package** whose body is not elaborated yet
   (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.
+
+## Runtime: default exit severity (user, 2026-10-18)
+
+`rsim run` defaults to `--exit-severity=failure`, like NVC, GHDL and Questa. A report or assert of
+severity ERROR is printed and the simulation continues; the run exits 1 at the end if any ERROR or
+higher was reported. FAILURE stops the simulation at once. rsim's own runtime errors (bound,
+overflow, null access, delta limit, internal) still stop immediately, per the error motto.
+`--exit-severity=error|warning|note` lowers the threshold. VUnit passes its own setting.

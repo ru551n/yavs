@@ -258,6 +258,9 @@ pub struct SimControl {
     ports_up: Vec<Vec<u32>>,
     /// Per signal: edges where it is the actual of an `in`/`inout` port.
     ports_down: Vec<Vec<u32>>,
+    /// Per signal: no port edge and no composite group, so its update touches only itself
+    /// and can run in parallel with other such signals.
+    independent: Vec<bool>,
     implicits: Vec<Implicit>,
     /// Leaves of each composite resolved as a whole (`Builder::resolved_composite`).
     groups: Vec<Vec<u32>>,
@@ -330,7 +333,10 @@ impl SimControl {
         };
         let mut ports_up = vec![Vec::new(); signals.len()];
         let mut ports_down = vec![Vec::new(); signals.len()];
+        let mut independent: Vec<bool> = signals.iter().map(|s| s.group.is_none()).collect();
         for (i, p) in ports.iter().enumerate() {
+            independent[p.formal.0 as usize] = false;
+            independent[p.actual.0 as usize] = false;
             if p.slot.is_some() {
                 ports_up[p.formal.0 as usize].push(i as u32);
             }
@@ -347,6 +353,7 @@ impl SimControl {
             ports,
             ports_up,
             ports_down,
+            independent,
             implicits,
             groups,
             slots,
@@ -802,6 +809,19 @@ impl SimControl {
         let mut up: BinaryHeap<(u32, Reverse<u32>)> = BinaryHeap::new();
         let mut down: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
         let mut due: BTreeSet<u32> = BTreeSet::new();
+        let mut ops: BTreeMap<u32, Vec<SignalOp>> = BTreeMap::new();
+        for op in std::mem::take(&mut self.ops) {
+            let s = op.signal.0;
+            let sig = &mut self.signals[s as usize];
+            if sig.queued_up != cycle {
+                sig.queued_up = cycle;
+                up.push((sig.level, Reverse(s)));
+            }
+            ops.entry(s).or_default().push(op);
+        }
+        // Matured drivers of independent signals without forces or deposits, as
+        // (signal, driver) in queue order.
+        let mut indep: Vec<(u32, u32)> = Vec::new();
         while let Some(&Reverse((t, e))) = self.queue.peek() {
             if t > now {
                 break;
@@ -816,6 +836,11 @@ impl SimControl {
                 Entry::Implicit(i) => _ = due.insert(i),
                 Entry::Driver(d) => {
                     let info = &self.drivers[d as usize];
+                    let s = info.signal.0;
+                    if self.independent[s as usize] && !ops.contains_key(&s) {
+                        indep.push((s, d));
+                        continue;
+                    }
                     let mut slot = lock(&self.slots[info.owner.0 as usize]);
                     let sig = &mut self.signals[info.signal.0 as usize];
                     for txn in slot.st.waveforms[info.local as usize].take_due(now) {
@@ -830,16 +855,7 @@ impl SimControl {
                 }
             }
         }
-        let mut ops: BTreeMap<u32, Vec<SignalOp>> = BTreeMap::new();
-        for op in std::mem::take(&mut self.ops) {
-            let s = op.signal.0;
-            let sig = &mut self.signals[s as usize];
-            if sig.queued_up != cycle {
-                sig.queued_up = cycle;
-                up.push((sig.level, Reverse(s)));
-            }
-            ops.entry(s).or_default().push(op);
-        }
+        self.update_independent(indep)?;
 
         // Driving values bottom-up: formals before the actuals they feed.
         while let Some((_, Reverse(s))) = up.pop() {
@@ -889,6 +905,64 @@ impl SimControl {
             }
         }
         self.update_implicit(&due)
+    }
+
+    /// Update phase of signals without ports or groups: each one only reads its own drivers'
+    /// waveforms, so they are updated in parallel, one signal per task, each applying its
+    /// drivers' transactions in queue order. Errors are taken in signal id order, so the
+    /// result does not depend on the thread count.
+    fn update_independent(&mut self, mut due: Vec<(u32, u32)>) -> Result<(), ErrorKind> {
+        if due.is_empty() {
+            return Ok(());
+        }
+        let (now, cycle) = (self.now, self.cycle);
+        due.sort_by_key(|&(s, _)| s);
+        let mut jobs = Vec::new();
+        let mut it = self.signals.iter_mut();
+        let mut next = 0;
+        for run in due.chunk_by(|a, b| a.0 == b.0) {
+            let s = run[0].0 as usize;
+            let sig = it
+                .nth(s - next)
+                .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+            next = s + 1;
+            jobs.push((sig, run));
+        }
+        let (drivers, slots) = (&self.drivers, &self.slots);
+        let job = |(sig, run): &mut (&mut Signal, &[(u32, u32)])| -> Result<bool, ErrorKind> {
+            for &(_, d) in run.iter() {
+                let info = &drivers[d as usize];
+                let mut slot = lock(&slots[info.owner.0 as usize]);
+                for txn in slot.st.waveforms[info.local as usize].take_due(now) {
+                    apply_txn(&mut sig.drivers[info.slot as usize], &txn);
+                    sig.mark_active(txn.range, now, cycle);
+                    sig.dirty.push(txn.range);
+                }
+            }
+            let mut dirty = std::mem::take(&mut sig.dirty);
+            for &r in &dirty {
+                sig.compute_driving(r)?;
+            }
+            let mut changed = false;
+            for r in dirty.drain(..) {
+                changed |= sig.update_effective(r, now, cycle);
+            }
+            sig.dirty = dirty;
+            Ok(changed)
+        };
+        // ponytail: fixed cut-off below which a parallel split costs more than it saves.
+        let results: Vec<Result<bool, ErrorKind>> = match &self.pool {
+            Some(pool) if jobs.len() >= 256 => {
+                pool.install(|| jobs.par_iter_mut().map(job).collect())
+            }
+            _ => jobs.iter_mut().map(job).collect(),
+        };
+        for (run, changed) in due.chunk_by(|a, b| a.0 == b.0).zip(results) {
+            if changed? {
+                self.changed_sigs.push(run[0].0);
+            }
+        }
+        Ok(())
     }
 
     /// The first leaf of a composite group popped with any leaf dirty resolves the whole

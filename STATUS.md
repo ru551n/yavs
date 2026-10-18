@@ -254,6 +254,19 @@ bit-planes with plane-wise resolution (3x faster). Scalar byte signals pay 10 to
 storage enum and the port/implicit machinery. With trivial processes the serial update and
 commit phases dominate, so threads gain little.
 
+Parallel update of independent signals (#103: no port, no composite group, one task per
+signal). Same host and load (load average 12 to 29), median of 3 to 6 interleaved runs, before
+against after:
+
+| case | threads | before | after |
+|---|---|---|---|
+| 10000 counters, work 0 | 1 / 4 / 8 | 5.9 / 5.8 / 5.1 s | 5.4 / 3.6 / 3.9 s |
+| 10000 counters, work 1000 | 1 / 4 / 8 | 13.0 / 8.4 / 7.8 s | 12.0 / 7.6 / 5.5 s |
+| 5000 std_logic signals x 2 drivers | 1 / 4 / 8 | 5.6 / 5.4 / 5.0 s | 5.5 / 3.6 / 4.6 s |
+
+The queue drain, port and group signals, wake and commit stay serial (DESIGN.md "Open
+questions").
+
 ## ir and interp (`crates/yavs-ir`, `crates/yavs-interp`, M2)
 
 `yavs-ir`: Program/Func/Block/Inst with 32-bit ids and a `StmtId` per instruction, runtime type

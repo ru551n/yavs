@@ -193,3 +193,51 @@ fn shuffle_gives_identical_traces_for_order_independent_designs() {
 fn shuffle_exposes_order_dependent_serial_processes() {
     assert_ne!(trace(true, 1, None), trace(true, 1, Some(1)));
 }
+
+/// Resolution fails on 300 independent signals in one cycle (updated in parallel at 8
+/// threads): the error names the lowest signal id at every thread count.
+#[test]
+fn parallel_update_reports_the_lowest_failing_signal() {
+    let fails = Resolution::Func(Arc::new(|srcs: &[&[u8]], _: &mut [u8]| {
+        if srcs.iter().any(|s| s[0] != 0) {
+            Err("conflict".into())
+        } else {
+            Ok(())
+        }
+    }));
+    for threads in [1, 8] {
+        let mut b = Builder::new();
+        for i in 0..300 {
+            let r = b.resolved_signal(
+                &format!("r{i}"),
+                SignalType::bytes(1, 1),
+                &[0],
+                fails.clone(),
+            );
+            let d = b.driver(r);
+            b.process(
+                &format!("drv{i}"),
+                ProcFlags::default(),
+                &[d],
+                p(move |c| {
+                    c.drive(d, &[1])?;
+                    c.wait_for(ns(10))
+                }),
+            );
+        }
+        let cfg = Config {
+            threads,
+            ..Config::default()
+        };
+        let (mut sim, _) = build(b, cfg);
+        let err = sim.run_until(ns(1)).unwrap_err();
+        assert_eq!(
+            err.kind,
+            ErrorKind::Resolution {
+                signal: "r0".into(),
+                message: "conflict".into()
+            },
+            "{threads} threads"
+        );
+    }
+}

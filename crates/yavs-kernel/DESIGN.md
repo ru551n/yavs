@@ -58,6 +58,13 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 2. **Update phase** (`update`), all within this cycle:
    - drain due queue entries: matured transactions into driver values (null ones disconnect),
      marking elements active; timeouts resume processes;
+   - **independent signals** (no port edge, no composite group, no force or deposit this
+     cycle) touch nothing but themselves, so the drain only collects their matured drivers;
+     they are then updated in parallel, one signal per task (with at least 256 of them and
+     `threads > 1`): each applies its drivers' transactions in queue order, resolves and
+     updates its effective value. A resolution error is taken from the lowest signal id, so
+     the result is the same at any thread count. Everything else goes through the worklists
+     below, serially;
    - **driving values bottom-up** over a worklist ordered by port level (formals before the
      actuals they feed): resolve dirty ranges, apply queued forces/releases/deposits, then pass
      the formal's driving value (after `force out`, through `to_actual` conversion) into the
@@ -169,12 +176,12 @@ process code, and a panic anywhere in the kernel (a broken invariant), is caught
 
 ## Open questions
 
-- With trivial processes the serial update and commit phases dominate (see STATUS.md); the
-  scalar byte path is 10 to 15% slower than the first byte-only kernel because of the storage
-  enum and the port/implicit machinery. Parallel per-signal update and allocation-free
-  transactions are the next steps if real designs show it. Measured 2026-10-18 (#103, bench
-  10000 counters, 8 threads, work 1000: 4.3 s against 7.5 s at 1 thread): update 2.0 s, wake
-  0.3 s, run 1.4 s, commit 0.5 s; with work 0 update is half the wall time. A parallel update
-  must give each signal to one thread (transactions of one driver applied in queue order) and
-  keep ports, which cross signals, in level order.
+- The scalar byte path is 10 to 15% slower than the first byte-only kernel because of the
+  storage enum and the port/implicit machinery; allocation-free transactions are the next step
+  if real designs show it. Measured 2026-10-18 (#103, bench 10000 counters, 8 threads, work
+  1000, before the parallel update): update 2.0 s, wake 0.3 s, run 1.4 s, commit 0.5 s. The
+  update phase of independent signals is now parallel (see "The cycle"); still serial: the
+  queue drain, port and composite-group signals, implicit signals, the wake and the commit
+  phase (the commit is small next to the update, and its waiter lists and queue cross
+  processes). Parallelising port signals would need level-ordered waves over the port graph.
 - Preemption is O(elements times pending transactions) per assignment.

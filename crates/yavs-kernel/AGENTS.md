@@ -39,6 +39,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 |---|---|---|
 | Ready processes run in parallel (rayon); they read only current-cycle values and write their own driver queue and effect buffer | No data races without `unsafe` | `docs/plan.md` "Parallel kernel design", DESIGN.md "Parallel evaluation" |
 | Effects (report, assert, textio `OUTPUT`, `stop`/`finish`, force) are committed in elaboration (`ProcId`) order | `--threads 1` and `N` byte-identical | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3 |
+| The update phase of independent signals (no port, no composite group, no force or deposit this cycle) runs in parallel, one signal per task, errors taken in signal id order; ports, groups and the commit phase stay serial (#103) | Signals cross no other state; ports cross signals in level order, and the commit is small next to the update | DESIGN.md "The cycle" |
 | Processes touching non-protected shared variables, protected types or disk files are `serial` through M3 (user decision; files: #82); serial is `ProcFlags::serial` or `Process::serial` | No locks needed yet; the process knows what it touches | `docs/decisions.md` "Kernel round 2" (Protected types), "Kernel round 3", DESIGN.md |
 | No kernel user-file streams (K6 dropped): the interpreter reads and writes disk files directly | Write, close, reopen-for-read in one delta; serial callers keep it deterministic | `docs/decisions.md` "Kernel round 3" |
 | `--shuffle` permutes execution order with a seeded splitmix64, commit order fixed | Expose order-dependent testbenches | `docs/plan.md`, DESIGN.md |
@@ -96,6 +97,6 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 
 - Kernel API changes ripple into `yavs-interp` (process), `yavs-elab` (builder) and the CLI;
   `docs/design/ir.md` sections 3.2 and 6 describe the seam.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #103
-  update/commit phases are single-threaded.
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): none
+  on the cycle's threading (#103 done).
   Questions on report order vs the reference simulator: #11, #12.

@@ -20,7 +20,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Lowerer` (`new`, `architecture`, `subprogram`, `subprograms_of`, `finish -> Lowered`), `LowerOptions` (`coverage`), `UnitIr`, `InstValue::write_value`, `InstConst`, `SignalIr`, `ProcessIr`, `Cx` (`error`, `unsupported`, `ice`, `cover`), `Obj`, `Space`, `top_architecture`, codes |
+| `src/lib.rs` | `Lowerer` (`new`, `architecture`, `package`, `package_value`, `subprogram`, `subprograms_of`, `finish -> Lowered`), `LowerOptions` (`coverage`), `UnitIr`, `InstValue::write_value`, `InstConst`, `SignalIr`, `ProcessIr`, `Cx` (`error`, `unsupported`, `ice`, `cover`), `Obj`, `Space`, `top_architecture`, codes |
 | `src/func.rs` | `Fx`: frames, parameters, declarations, subprograms, processes, architectures |
 | `src/expr.rs` | Scalar expressions, calls, implicit operations, attributes, names, 1-D arrays |
 | `src/stmt.rs` | Sequential statements, waits, signal assignments, case |

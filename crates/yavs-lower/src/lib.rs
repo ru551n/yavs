@@ -420,6 +420,23 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A thunk returning the value of constant `decl` of a package lowered with
+    /// [`Lowerer::package`]: a scalar's cell, or the address of a composite's fat pair
+    /// `[data, desc]`. For the elaborator, which reads package constants with impure
+    /// initial values from the package data instead of evaluating them again (#77).
+    pub fn package_value(&mut self, decl: DeclId) -> Result<FuncId, Vec<Diagnostic>> {
+        let d = &self.db.decls[decl];
+        let (name, span) = (format!("{}'value", d.name), d.span);
+        let f = func::thunk(self.db, &mut self.pb, &mut self.cx, &name, span, |fx| {
+            fx.obj_cell(decl, span)
+        });
+        self.drain();
+        match f {
+            Ok(f) if self.cx.diags.is_empty() => Ok(f),
+            _ => Err(std::mem::take(&mut self.cx.diags)),
+        }
+    }
+
     /// Lower a subprogram (and everything it calls), returning its function.
     pub fn subprogram(&mut self, decl: DeclId) -> Result<FuncId, Vec<Diagnostic>> {
         let f = func::func_of(self.db, &mut self.pb, &mut self.cx, decl, Span::default());

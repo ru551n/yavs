@@ -253,6 +253,9 @@ Answered (yavs-lower, 2026-10-18): 1 (`UnitIr::values`, `write_value`), 2 (ports
 outer regions are `SignalIr`s), 3 (processes in blocks and generates, generate parameters as
 values; yavs-elab keys instance data by region), 5 (array signals, element and slice targets
 and sensitivity with kernel offsets as below). Open: 4 (`'path_name`), 6 (guarded blocks).
+Added by yavs-elab (#77, 2026-10-18): `Lowerer::package_value(decl)`, a thunk returning a
+package constant's value (a cell, or a composite's fat pair), so elaboration reads a package
+constant with an impure initial value from the package data instead of evaluating it again.
 
 yavs-elab (`Elaborated::lower`, `Elaborated::build`) lowers every architecture that owns a
 process and builds one `InstData` per entity instance: constants from `UnitIr::consts`, the

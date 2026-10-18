@@ -317,6 +317,21 @@ impl<'a> Fx<'a, '_> {
 
     // ---- objects ----
 
+    /// The value of object `d` as one cell: a scalar, or the address of a composite's fat
+    /// pair `[data, desc]` (a thunk's result).
+    pub(crate) fn obj_cell(&mut self, d: DeclId, span: Span) -> R<Reg> {
+        match self.read_obj(d, span)? {
+            V::S(r) => Ok(r),
+            V::A(data, desc) => {
+                let fat = self.alloc_n(16);
+                self.store(fat, data, Width::B8);
+                let dp = self.offset(fat, 8);
+                self.store(dp, desc, Width::B8);
+                Ok(fat)
+            }
+        }
+    }
+
     fn read_obj(&mut self, d: DeclId, span: Span) -> R<V> {
         let db = self.db;
         let decl = &db.decls[d];

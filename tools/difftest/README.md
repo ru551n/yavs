@@ -63,16 +63,19 @@ to stderr in NVC and stdout in GHDL, so cross-stream order is not compared).
   when there is no `failure` or `fatal` event.
 - `time`, `stderr`: extra, off by default.
 
-## Plugging rsim in (M2)
+## Plugging rsim in
 
 `--candidate` takes `nvc`, `ghdl`, `rsim` or any bash command template. The built-in `rsim`
-template is a placeholder in `difftest.py` (`RSIM`); edit it to the real CLI when it exists:
-
-    rsim run --std {std} --work {work} --top {top} {stop_flag} --threads {threads} {shuffle_flag} {file}
+template (`RSIM` in `difftest.py`) analyzes the file with `rsim analyze` into the work library,
+then `rsim run`s the top; `RSIM_BIN` selects the binary (default `rsim` on `PATH`),
+`DIFFTEST_CACHE` the output directory. `rsim run` exit 2 (usage, elaboration, "not implemented")
+is reported as an elaboration failure. `tools/difftest/report.sh` runs the corpus at 1 thread,
+4 threads and 4 threads shuffled and writes `tests/corpus/RESULTS.md`; `--json FILE` writes the
+raw per-test results it summarises.
 
 Placeholders: `{file}` `{top}` `{std}` (2008) `{std2}` (08) `{stop}` `{stop_flag}`
 (`--stop-time=X` or empty) `{work}` (does not exist yet; ghdl needs `mkdir -p`) `{threads}`
-`{shuffle}` (seed) `{shuffle_flag}` (`--shuffle=SEED` or empty). The template runs in a fresh
+`{shuffle}` (seed) `{shuffle_flag}` (`--shuffle=SEED` or empty) `{shuffle_on}` (`--shuffle` or empty). The template runs in a fresh
 working directory, so textio files land there. Exit codes 97 (analysis) and 98 (elaboration) are
 reserved for the harness: make a multi-step template `|| exit 97` / `|| exit 98` as `NVC` does, so
 that a compile failure is reported as such. rsim must print reports in NVC's format

@@ -239,3 +239,7 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine WINEDEBUG=-all \
 ```
 
 Open: marshalling VHDL values (bit-planes to bytes, records, copy-back) belongs to the interpreter.
+
+## difftest (rsim candidate)
+
+`python3 tools/difftest/difftest.py --candidate rsim` drives `rsim analyze` + `rsim run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md` (0/75 until `rsim run` simulates processes).

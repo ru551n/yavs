@@ -8,7 +8,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CORPUS = ROOT / "tests" / "corpus"
-CACHE = Path.home() / ".cache" / "rsim-difftest"
+CACHE = Path(os.environ.get("DIFFTEST_CACHE", Path.home() / ".cache" / "rsim-difftest"))
 MAX_JOBS = 8
 TIMEOUT = 300
 RC_ANALYSE, RC_ELAB = 97, 98
@@ -21,9 +21,11 @@ NVC = ("nvc --std={std} --work={work} -a {file} || exit 97; "
 GHDL = ("mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file} || exit 97; "
         "ghdl -e --std={std2} --workdir={work} {top} || exit 98; "
         "ghdl -r --std={std2} --workdir={work} {top} {stop_flag}")
-# Placeholder: the real flags are decided at M2 when the CLI exists.
-RSIM = ("rsim run --std {std} --work {work} --top {top} {stop_flag} "
-        "--threads {threads} {shuffle_flag} {file}")
+# analyze fails -> 97; `rsim run` exit 2 (usage, elaboration, "not implemented") -> 98; 1 and 3 pass through.
+# --shuffle is a plain switch in rsim, so {shuffle_on} replaces the seeded {shuffle_flag}.
+RSIM = ('R=${{RSIM_BIN:-rsim}}; "$R" analyze --std={std} --work=work:{work} {file} || exit 97; '
+        '"$R" run --std={std} --work=work:{work} {stop_flag} --threads={threads} {shuffle_on} {top}; '
+        "rc=$?; [ $rc -eq 2 ] && exit 98; exit $rc")
 TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "rsim": RSIM}
 # Fields masked by default per builtin candidate (reference prints them all).
 DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "rsim": ""}
@@ -68,7 +70,8 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
         std2={"1993": "93", "2002": "02", "2008": "08", "2019": "19"}[std],
         stop=hdr["stop"], stop_flag=f"--stop-time={hdr['stop']}" if hdr["stop"] else "",
         work=shlex.quote(str(work / "lib")), threads=threads, shuffle=shuffle or "",
-        shuffle_flag=f"--shuffle={shuffle}" if shuffle else "")
+        shuffle_flag=f"--shuffle={shuffle}" if shuffle else "",
+        shuffle_on="--shuffle" if shuffle else "")
     cmd = ["timeout", str(TIMEOUT)]
     if sandbox:
         cmd += ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
@@ -217,7 +220,8 @@ def one(vhd, args, template, ignore):
             if rc == 124:
                 return {**res, "ok": False, "msg": f"timeout after {TIMEOUT}s"}
             if rc in (RC_ANALYSE, RC_ELAB) and hdr["exit"] != rc:
-                return {**res, "ok": False, "msg": f"{'analysis' if rc == RC_ANALYSE else 'elaboration'} failed:\n" + (err or out)[:1500]}
+                return {**res, "ok": False, "msg": f"{'analysis' if rc == RC_ANALYSE else 'elaboration'} failed:\n" + (err or out)[:1500],
+                        "stage": "analysis" if rc == RC_ANALYSE else "elab", "raw": err or out}
             outs.append(normalise(rc, out, err))
         if args.bless:
             if hand:
@@ -259,6 +263,7 @@ def main():
     ap.add_argument("--ignore", default=None, help="comma list of: delta,path,fatalmsg,order,errexit,time,stderr (default depends on candidate)")
     ap.add_argument("--corpus", type=Path, default=CORPUS)
     ap.add_argument("--no-sandbox", action="store_true", help="skip systemd-run (debugging only)")
+    ap.add_argument("--json", type=Path, help="write one JSON result per test (stage, message) to this file")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
@@ -272,15 +277,19 @@ def main():
     if args.list:
         print("\n".join(str(p.relative_to(CORPUS)) for p in tests)); return
     jobs = max(1, min(args.jobs, MAX_JOBS))
-    fails = 0
+    fails, results = 0, []
     with cf.ThreadPoolExecutor(jobs) as ex:
         for r in ex.map(lambda p: one(p, args, template, ignore), tests):
+            results.append(r)
             if r["ok"]:
                 if args.verbose or args.bless:
                     print(f"PASS {r['name']}" + (f" ({r['msg']})" if r["msg"] else ""))
             else:
                 fails += 1
                 print(f"FAIL {r['name']}\n" + "\n".join("    " + l for l in r["msg"].splitlines()[:40]))
+    if args.json:
+        import json
+        args.json.write_text("\n".join(json.dumps(r) for r in results) + "\n")
     print(f"{len(tests) - fails}/{len(tests)} passed (candidate={args.candidate}, ignore={','.join(sorted(ignore - {''})) or 'none'})")
     sys.exit(1 if fails else 0)
 

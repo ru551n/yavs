@@ -2,6 +2,8 @@
 # checks on the tagged commit, a release build of `yavs` per platform (std/ieee built in),
 # SHA256SUMS and a GitHub pre-release with notes from release_notes/<version>.md (towncrier,
 # collected and renamed in the commit that bumps the version).
+# The Linux archives are built with cargo-zigbuild against glibc 2.17 (docs/decisions.md "Linux
+# release archives") and smoke-tested in centos:7.
 # workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
 # and publishes nothing.
 name: Release
@@ -43,6 +45,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install zig and cargo-zigbuild
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zb"
+          "$RUNNER_TEMP/zb/bin/pip" install ziglang==0.14.1 cargo-zigbuild==0.23.4
+          echo "$RUNNER_TEMP/zb/bin" >> "$GITHUB_PATH"
+          rustup target add ${{ matrix.target }}
       - name: Version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
@@ -50,7 +59,19 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match the workspace version $version"; exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-      - run: cargo build --release --locked -p yavs
+      - name: Build
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            # glibc 2.17; the target directory and the archive name stay the plain triple.
+            cargo zigbuild --release --locked -p yavs --target ${{ matrix.target }}.2.17
+            echo "BIN=target/${{ matrix.target }}/release/yavs" >> "$GITHUB_ENV"
+            v=$(objdump -T target/${{ matrix.target }}/release/yavs | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+            echo "highest glibc symbol version: $v"
+            [[ "$(printf '%s\n' GLIBC_2.17 "$v" | sort -V | tail -n1)" == GLIBC_2.17 ]] || { echo "needs more than glibc 2.17"; exit 1; }
+          else
+            cargo build --release --locked -p yavs
+            echo "BIN=target/release/yavs.exe" >> "$GITHUB_ENV"
+          fi
       - name: Package
         run: |
           name="yavs-$VERSION-${{ matrix.target }}"
@@ -60,17 +81,23 @@ jobs:
           cp lib/LICENSE "dist/$name/LICENSE-IEEE"
           cd dist
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cp ../target/release/yavs.exe "$name/"
+            cp "../$BIN" "$name/"
             # No VHPI import library: plugins bring their own (user, 2026-10-18, #124).
             7z a -tzip "$name.zip" "$name" > /dev/null
           else
-            cp ../target/release/yavs "$name/"
+            cp "../$BIN" "$name/"
             tar czf "$name.tar.gz" "$name"
           fi
           # Smoke test: the binary alone runs a design (std/ieee built in).
           printf 'entity t is end;\narchitecture a of t is begin\nprocess begin report "ok"; wait; end process;\nend;\n' > t.vhd
           env -u YAVS_STDLIB "$name/yavs" analyze --work=work:w t.vhd
           env -u YAVS_STDLIB "$name/yavs" run --work=work:w t | grep -q ': ok'
+          # Linux: the same smoke test in the oldest environment the archive claims (glibc 2.17).
+          # centos:7 is multi-arch, so the arm64 runner runs the arm64 image natively.
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            docker run --rm -v "$PWD:/w" -w /w centos:7 sh -ec \
+              "rm -rf w2; $name/yavs analyze --work=work:w2 t.vhd && $name/yavs run --work=work:w2 t | grep -q ': ok'"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: yavs-${{ matrix.target }}

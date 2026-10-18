@@ -12,6 +12,11 @@ put the directory on ``PATH``:
 * ``yavs-<version>-aarch64-unknown-linux-gnu.tar.gz``
 * ``yavs-<version>-x86_64-pc-windows-msvc.zip``
 
+aarch64 is also known as arm64; run ``uname -m`` to see which one you need.
+
+The Linux archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+).
+On musl-based systems such as Alpine, install the ``gcompat`` package.
+
 .. code-block:: bash
 
     sha256sum -c SHA256SUMS --ignore-missing

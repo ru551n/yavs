@@ -38,7 +38,7 @@ The `check`, `dictionary`, `path` and `run` rows were re-measured with the signa
 ubuntu-24.04, ubuntu-24.04-arm and windows-latest (MSVC) for every push to main and every pull
 request (#134); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63); not yet in CI: JIT tier. `.github/workflows/release.yml`
 builds and packages `yavs` with `lib/` for the three targets on a `v*` tag and publishes a
-pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives.
+pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives. The Linux archives are built with cargo-zigbuild against glibc 2.17 and smoke-tested in centos:7.
 An installed binary finds `lib/` next to itself (#43).
 
 ## sem (`crates/yavs-sem`, M1)

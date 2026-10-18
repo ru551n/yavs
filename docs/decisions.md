@@ -760,3 +760,17 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   form is a runtime error when the stored count differs. A value outside the type's range, or
   reading past the end of the file, is a runtime error.
 - Records and arrays of composites are not implemented (runtime error naming #79).
+
+## Linux release archives (2026-10-18)
+
+- **glibc 2.17 floor:** the Linux archives are built with cargo-zigbuild against glibc 2.17 and
+  stay dynamically linked; CI fails if `objdump -T` shows a higher `GLIBC_` version and smoke-tests
+  each archive in a `centos:7` container. "As compatible with as many Linux distros as possible"
+  (user, 2026-10-18); 2.17 covers RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+.
+- **No static musl build:** considered and rejected (user, 2026-10-18). `--load` and VHPI plugins
+  need `dlopen` and exported `vhpi_*` symbols, which need a dynamic glibc binary, and glibc 2.17
+  already covers nearly all distros. Alpine users install `gcompat`.
+- **Archive names:** the Rust target triples are kept (`x86_64-unknown-linux-gnu`,
+  `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`), without the glibc version, so installers
+  that match on target triples find them; OS-arch names such as `linux-arm64` were considered
+  (user, 2026-10-18). The docs say that aarch64 is also known as arm64.

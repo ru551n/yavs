@@ -20,7 +20,9 @@ waveforms, a debug server and a GUI are planned. yavs is early: expect gaps and 
 
 Download the archive for your platform (Linux x86_64, Linux aarch64, Windows x86_64) from the
 [releases](https://github.com/ru551n/yavs/releases) page, unpack it and put the directory on
-`PATH`. Or build from source with Rust stable and a C compiler:
+`PATH`. aarch64 is also known as arm64; run `uname -m` to see which one you need. The Linux
+archives require glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+); on musl-based
+systems such as Alpine, install the `gcompat` package. Or build from source with Rust stable and a C compiler:
 
 ```sh
 cargo build --release -p yavs   # target/release/yavs

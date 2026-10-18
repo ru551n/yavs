@@ -1058,7 +1058,7 @@ and result) is unique among homographs, so there is no code for it.
   the variable, and the call's `method_of` is `PrivateVar { object, var }` (from outside, `object`
   the protected object) or `Obj(var)` (the implicit object inside the body), nested once per
   forwarding alias of a chain. An alias of a method of any other object (a shared variable
-  outside a protected type) reports `E9999` (S7): the call would need that object at each use.
+  outside a protected type) reports `E9999` (S7, #237): the call would need that object at each use.
 - Body: bodies for every declared method (`E1230` for missing), plus any declarations.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.

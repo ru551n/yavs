@@ -51,7 +51,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | `drv/multiple_sources_two_processes` | accepts | accepts | Both reject at elaboration (the reference simulator `-e -r`: "unresolved signal has multiple sources"; the second reference simulator `--elab-run`: "too many drivers"), same signal. yavs reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
 | `v2019/generic_class_array_elem_mismatch` | accepts | rejects @5,6 | The reference simulator does not check this 2019 rule at analysis; the second reference simulator rejects (but for lack of 2019 syntax support, so no real second opinion). |
 | `v2019/method_alias_ok` | rejects @12 | rejects @10,11,15,16 | The reference simulator crashes (internal error) on the call of the method alias `set` with the implicit object inside the protected body; LRM 2019 5.6.2 allows the alias (L15). The second reference simulator lacks private variables. |
-| `v2019/method_alias_of_shared_variable` | accepts | accepts | Both accept an alias of a method of a shared variable; yavs reports `E9999` (forwarding through objects other than a private variable is not implemented, #32 follow-up). |
+| `v2019/method_alias_of_shared_variable` | accepts | accepts | Both accept an alias of a method of a shared variable; yavs reports `E9999` (forwarding through objects other than a private variable is not implemented, #237). |
 
 The second reference simulator as second opinion: files where the second reference simulator disagrees but the reference simulator agrees.
 

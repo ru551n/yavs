@@ -276,9 +276,10 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in NVC's
-format on stdout). Difftest: see `tests/corpus/RESULTS.md` (71 of 78 at 1, 4 and 4 shuffled
-threads on 2026-10-18; the open `generics/` and `hierarchy/` cases stop in sem analysis or in
-lowering of `'path_name`).
+format on stdout). Difftest: see `tests/corpus/RESULTS.md` (93 of 96 at 1, 4 and 4 shuffled
+threads on 2026-10-18; open: `generics/generic_types_2019` (generic types on entities, #75),
+`hierarchy/external_port_actual` (expression actuals, #74), `hierarchy/mode_view_ports` (record
+port elements in lowering)).
 
 ## ffi (`crates/yavs-ffi`)
 

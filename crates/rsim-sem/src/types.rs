@@ -309,6 +309,9 @@ impl Db {
             self.declare(scope, decl);
             return Ok(());
         };
+        if let ast::TypeDef::ProtectedBody(b) = def {
+            return self.protected_body(scope, name, b, td.span);
+        }
         let decl = match incomplete {
             Some(d) => d,
             None => self.new_decl(scope, Designator::Ident(name), DeclKind::Error, td.span),
@@ -362,7 +365,7 @@ impl Db {
             ast::TypeDef::Protected(pt) => {
                 return self.protected_decl(scope, decl, name, pt, td.span);
             }
-            ast::TypeDef::ProtectedBody(b) => return self.protected_body(scope, name, b, td.span),
+            ast::TypeDef::ProtectedBody(_) => unreachable!("handled above"),
         };
         if let Some(d) = incomplete {
             // Move the full definition into the incomplete type's id, so earlier references stay valid.

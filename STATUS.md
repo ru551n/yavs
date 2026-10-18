@@ -13,15 +13,16 @@
 
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt`.
-- `tests/stdlib.rs`: std, ieee packages, and the bodies of math_real, math_complex and
-  numeric_*_unsigned analyze clean. numeric_std, numeric_bit and std_logic_1164 bodies still stop on
-  `E1325` (`x := (others => ...)` assignments need the target subtype as context) and `.all`.
+- `tests/stdlib.rs`: std, ieee packages, and the bodies of math_real, math_complex, numeric_std,
+  numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019). std_logic_1164's body stops on
+  `.all`. `numeric_std_body_rule_1` is the rule 1 review: every object of the numeric_std body
+  has its bounds from the one subtype representation.
 - Declarations: objects, subprograms (operator arity `E1303`, function parameter modes, missing
   bodies `E1230`), components, generic and port clauses (components, blocks), attribute
   declarations and specifications, aliases, protected types.
 - Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
   indications, file element checks; the rule 1 representation is pinned on numeric_std
-  (`numeric_std_subtypes_rule_1`), review with the user pending.
+  (`numeric_std_subtypes_rule_1`, `numeric_std_body_rule_1`); the user's review is pending.
 - Generics (S4, `generic.rs`): generic packages, subprograms and (2019) protected types; 2008
   `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
   (`(<>)`, `(default)`, generic map, checked against the actual instance); package and subprogram

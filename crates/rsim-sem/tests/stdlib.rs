@@ -31,6 +31,8 @@ const BODIES: &[&str] = &[
     "math_complex",
     "numeric_std_unsigned",
     "numeric_bit_unsigned",
+    "numeric_std",
+    "numeric_bit",
 ];
 
 fn analyze(rev: LangRev, lib: &str, unit: &str) -> Db {
@@ -150,4 +152,80 @@ fn numeric_std_subtypes_rule_1() {
         );
         assert!(db.subtypes[find(&db, unres)].resolution.is_none());
     }
+}
+
+/// Rule 1 review (sem.md 10, S3) on the numeric_std body: every object's
+/// bounds come from one subtype representation. Static bounds are folded
+/// (`Expr::value`), the others stay expressions, and nothing else decides.
+#[test]
+fn numeric_std_body_rule_1() {
+    use rsim_sem::decl::{DeclKind, ObjRole};
+    use rsim_sem::stat::Staticness;
+    use rsim_sem::types::{BoundsFrom, Constraint, RangeC};
+    let db = analyze_with(LangRev::Vhdl2008, "ieee", "numeric_std", true);
+    let mut tally = std::collections::BTreeMap::<String, usize>::new();
+    for (_, d) in db.decls.iter() {
+        if !db
+            .sources
+            .get(d.span.file)
+            .path
+            .ends_with("numeric_std-body.vhdl")
+        {
+            continue;
+        }
+        let DeclKind::Object(o) = &d.kind else {
+            continue;
+        };
+        let shape = match &db.subtypes[o.subtype].constraint {
+            Constraint::Array {
+                dims: Some(dims), ..
+            } => {
+                let mut kinds = Vec::new();
+                for r in dims.iter() {
+                    kinds.push(match r {
+                        RangeC::Explicit { left, right, .. } => {
+                            for b in [*left, *right] {
+                                let e = &db.exprs[b];
+                                // Folded exactly when locally static (rule 1: the value is a cache).
+                                assert_eq!(
+                                    e.value.is_some(),
+                                    e.stat == Staticness::Locally,
+                                    "{}",
+                                    d.name
+                                );
+                            }
+                            if db.exprs[*left].value.is_some() && db.exprs[*right].value.is_some() {
+                                "static"
+                            } else {
+                                "expr"
+                            }
+                        }
+                        RangeC::Attr { .. } => "attr",
+                    });
+                }
+                format!("array({})", kinds.join(","))
+            }
+            Constraint::Array { dims: None, .. } => "array(open)".into(),
+            Constraint::None => "none".into(),
+            Constraint::Range(_) => "range".into(),
+            Constraint::Record { .. } => "record".into(),
+            Constraint::FromObject { .. } => "from-object".into(),
+        };
+        // An object whose subtype is not fully constrained takes its bounds from
+        // its initial value or its actual, never from a guess.
+        let full = db.constrainedness(o.subtype) == rsim_sem::types::Constrainedness::Full;
+        match (full, o.bounds, &o.role) {
+            (true, BoundsFrom::Subtype, _) | (false, BoundsFrom::Initializer, _) => {}
+            (false, BoundsFrom::Actual, ObjRole::Param) => {}
+            other => panic!("{}: {:?} bounds {:?}", d.name, other.0, other.1),
+        }
+        *tally
+            .entry(format!("{shape} from {:?}", o.bounds))
+            .or_default() += 1;
+    }
+    println!("{tally:#?}");
+    assert!(
+        tally.keys().any(|k| k.starts_with("array(expr)")),
+        "dynamic bounds such as UNSIGNED(L'length-1 downto 0)"
+    );
 }

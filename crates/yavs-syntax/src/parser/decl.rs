@@ -962,6 +962,11 @@ impl Parser<'_> {
 
     fn subprogram_spec(&mut self) -> PResult<SubprogramSpec> {
         let start = self.span();
+        // Parts LRM 4.4 does not allow before `is new`, reported once we know it follows.
+        let mut illegal: Vec<(yavs_diag::Span, &str)> = Vec::new();
+        if self.at_kw(Kw::Pure) || self.at_kw(Kw::Impure) {
+            illegal.push((self.span(), "`pure` or `impure`"));
+        }
         let purity = if self.eat_kw(Kw::Pure) {
             Some(Purity::Pure)
         } else if self.eat_kw(Kw::Impure) {
@@ -978,12 +983,16 @@ impl Parser<'_> {
         };
         let designator = self.designator()?;
         let (generics, generic_map) = if self.at_kw(Kw::Generic) && self.nth(1) == Tok::LParen {
+            illegal.push((self.span(), "generic clause"));
             self.bump();
             let g = self.interface_list()?;
             (Some(g), self.opt_map(Kw::Generic)?)
         } else {
             (None, None)
         };
+        if self.at_kw(Kw::Parameter) || self.at(Tok::LParen) {
+            illegal.push((self.span(), "parameter list"));
+        }
         let has_param_kw = self.eat_kw(Kw::Parameter);
         let params = if self.at(Tok::LParen) || has_param_kw {
             Some(self.interface_list()?)
@@ -995,6 +1004,7 @@ impl Parser<'_> {
         if let SubprogramKind::Function(_) = kind
             && !instance
         {
+            illegal.push((self.span(), "`return`"));
             self.expect_kw(Kw::Return)?;
             if self.at_ident() && self.nth(1) == Tok::Kw(Kw::Of) {
                 let id = self.ident()?;
@@ -1003,6 +1013,22 @@ impl Parser<'_> {
                 return_ident = Some(id);
             }
             return_type = Some(self.type_mark()?);
+        }
+        if self.at_kw(Kw::Is) && self.nth(1) == Tok::Kw(Kw::New) {
+            for (span, what) in illegal {
+                self.report(
+                    yavs_diag::Diagnostic::error(
+                        crate::codes::SYNTAX,
+                        format!("unexpected {what} in subprogram instantiation"),
+                    )
+                    .with_primary(span, "not allowed before `is new`")
+                    .with_help(
+                        "a subprogram instantiation is `function|procedure designator is new \
+                         name [signature] [generic map (...)];`; the instance takes purity, \
+                         parameters and result from the uninstantiated subprogram",
+                    ),
+                );
+            }
         }
         Ok(SubprogramSpec {
             kind,

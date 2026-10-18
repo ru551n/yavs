@@ -290,7 +290,7 @@ fn subprograms() {
         procedure p(signal s : out bit; variable v : inout integer; file f : text);
         function \"+\"(a, b : t) return t;
         function gf generic (type t; function eq(a, b : t) return boolean is <>) parameter (x : t) return t;
-        procedure gp generic (n : natural) is new work.base generic map (n => 1);
+        procedure gp is new work.base generic map (n => 1);
         function fi is new gf generic map (t => integer);
         function body_f(x : integer) return integer is variable y : integer; begin return x + y; end function body_f;
         procedure body_p is begin null; end procedure;

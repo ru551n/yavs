@@ -1,0 +1,10 @@
+error[E0002]: unexpected `return` in subprogram instantiation
+ --> inst_return.vhd:3:14
+  |
+3 |   function g return integer is new f generic map (t => integer);
+  |              ^^^^^^ not allowed before `is new`
+  |
+  = help: a subprogram instantiation is `function|procedure designator is new name [signature] [generic map (...)];`; the instance takes purity, parameters and result from the uninstantiated subprogram
+
+error: aborting due to 1 previous error
+

@@ -742,8 +742,8 @@ otherwise, rule 12).
 | abstract integer | `{universal_integer}` | value i64 checked (`E1402` overflow) |
 | abstract real | `{universal_real}` | f64, nearest, ties-to-even |
 | based literal `16#FF#`, `2#1.0#E3` | as above | exact integer arithmetic, then f64 for reals |
-| character `'a'` | every visible enum type that has `'a'` as a literal | `EnumLit` |
-| string `"abc"` | `Class(STRING_LIKE)` | each char must be a literal of T's element enum (`E1330` naming the bad char); 1-D only |
+| character `'a'` | every visible enum type that has `'a'` as a literal | `EnumLit`; an enumeration context without `'a'` is `E1330` at the literal |
+| string `"abc"` | `Class(STRING_LIKE)` | each char must be a literal of T's element enum (`E1330` at the bad char, naming the element type); 1-D only; elements that are not of an enumeration type are `E1330` at the literal |
 | bit string `8x"FF"`, `b"1_0"`, `ux"F"`, `sx"F"`, `d"12"` | `Class(STRING_LIKE)` | expanded to characters by `literal::expand_bitstring` (15.8: base digits to `0/1`, other graphic characters replicated per digit, length adjust with zero/sign extension, `E1331` on dropping non-zero digits); then as a string literal |
 | physical `10 ns` | `{type of unit}` | value * unit scale in base units, checked i64 |
 | `null` | `Class(ANY_ACCESS)` | |

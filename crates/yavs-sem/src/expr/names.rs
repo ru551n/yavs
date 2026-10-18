@@ -165,8 +165,9 @@ impl Db {
                     other => other,
                 }
             }
-            ast::NameKind::External(_) => NameRes::Unsupported(n.span, "external names", "S6"),
-            ast::NameKind::Apply { .. } | ast::NameKind::Attribute { .. } => NameRes::Value,
+            ast::NameKind::External(_)
+            | ast::NameKind::Apply { .. }
+            | ast::NameKind::Attribute { .. } => NameRes::Value,
             _ => NameRes::Unsupported(n.span, "this form of name", "S4"),
         }
     }

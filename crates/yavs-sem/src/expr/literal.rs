@@ -400,12 +400,16 @@ fn array_of_chars(
     };
     let TypeKind::Enum { lits } = &db.types[elem_ty].kind else {
         let n = type_name(db, elem_ty);
-        return Err(mismatch(
-            db,
-            span,
-            "a string literal",
-            ty,
-            &format!("elements that are characters, not `{n}`"),
+        return Err(db.error(
+            Diagnostic::error(
+                diag::CHAR_NOT_IN_TYPE,
+                format!("`{n}` has no character literals"),
+            )
+            .with_primary(
+                span,
+                format!("a string literal of type `{}`", type_name(db, ty)),
+            )
+            .with_note("a string literal needs an array type whose elements are characters"),
         ));
     };
     let mut table: [Option<u8>; 256] = [None; 256];
@@ -423,7 +427,7 @@ fn array_of_chars(
             Some(p) => elems.push(p),
             None => {
                 let at = Span::new(span.file, col(i), col(i) + 1);
-                return Err(bad_char(db, at, c as char, ty));
+                return Err(bad_char(db, at, c as char, elem_ty));
             }
         }
     }

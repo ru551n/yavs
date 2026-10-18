@@ -224,6 +224,19 @@ impl Db {
             CandSet::Class(m) => match exp {
                 Expected::Type(t) if self.class_admits(m, t) => self.build_class(scope, e, t),
                 Expected::Type(t) => {
+                    // A string literal of a one-dimensional array type whose elements are not
+                    // characters: E1330 from the literal check (15.7).
+                    if let ast::ExprKind::Literal(
+                        l @ ast::Literal {
+                            kind: ast::LiteralKind::String(_) | ast::LiteralKind::BitString(_),
+                            ..
+                        },
+                    ) = &e.kind
+                        && matches!(&self.types[t].kind, TypeKind::Array { indexes, .. } if indexes.len() == 1)
+                        && crate::expr::literal::literal_expr(self, l, t).is_err()
+                    {
+                        return self.poison_expr();
+                    }
                     let what = class_name(e);
                     let tn = self.type_name(t);
                     // An aggregate whose context is not composite gives it no type (9.3.3).
@@ -541,6 +554,19 @@ impl Db {
     /// Report why `e` has no interpretation that fits `exp`.
     fn no_interp(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected, is: &[Interp]) {
         use ast::ExprKind as K;
+        // A character literal that is not a literal of the expected enumeration type (15.6).
+        if let (
+            K::Literal(ast::Literal {
+                kind: ast::LiteralKind::Char(c),
+                ..
+            }),
+            Expected::Type(t),
+        ) = (&e.kind, exp)
+            && matches!(self.types[t].kind, TypeKind::Enum { .. })
+            && crate::expr::literal::char_literal(self, *c, t, e.span).is_err()
+        {
+            return;
+        }
         // Names: missing declarations and unsupported forms first.
         if let K::Name(n) = &e.kind {
             let base = match &n.kind {

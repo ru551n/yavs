@@ -16,11 +16,6 @@ expr/mismatch_in_subprogram_arg_label.vhd
 expr/out_parameter_actual_constant.vhd
 expr/signal_param_actual_variable.vhd
 expr/type_mismatch_in_range.vhd
-ext/external_type_mismatch.vhd
-lit/char_literal_wrong_type.vhd
-lit/string_char_not_in_element_type_std_logic.vhd
-lit/string_char_not_in_type.vhd
-lit/string_lit_for_non_char_array.vhd
 mix/env_2019_unit_used_via_selected_name.vhd
 mix/env_localtime_call_in_2008_file.vhd
 mix/env_tool_name_in_2008_file.vhd

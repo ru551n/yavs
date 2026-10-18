@@ -45,7 +45,7 @@ An installed binary finds `lib/` next to itself (#43).
 
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
-  aggregates and case choices group passes, #45).
+  aggregates and case choices group passes, #45; external names and literals, #49).
 - Overload diagnostics (#51): association errors of the only candidate (`E1100` unknown formal,
   `E1310` formal twice, `E1311` missing actual, `E1301` at the first extra argument), procedures
   used as functions and functions used as statements (`E1300`), no function with the expected

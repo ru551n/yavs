@@ -681,7 +681,10 @@ fn typed_strings_and_chars() {
         string_literal(&mut e.db, Symbol::intern("1"), arr, sp()),
         Err(Reported)
     );
-    assert_eq!(e.db.diagnostics().last().unwrap().code, diag::TYPE_MISMATCH);
+    assert_eq!(
+        e.db.diagnostics().last().unwrap().code,
+        diag::CHAR_NOT_IN_TYPE
+    );
 }
 
 #[test]

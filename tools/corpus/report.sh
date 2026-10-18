@@ -8,7 +8,7 @@ repo=$(cd "$here/../.." && pwd)
 bin=${1:-}
 if [ -z "$bin" ]; then
     (cd "$repo" && cargo build -q --release -p rsim)
-    bin=$repo/target/release/rsim
+    bin=${CARGO_TARGET_DIR:-$repo/target}/release/rsim
 fi
 work=$(mktemp -d "${TMPDIR:-$HOME/.cache}/rsim-report.XXXXXX")
 mkdir -p "$work/bin" && ln -s "$(readlink -f "$bin")" "$work/bin/rsim"

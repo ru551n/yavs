@@ -422,10 +422,10 @@ which tools/difftest parses.
   locally static). Array attributes of a port or generic whose subtype is not fully constrained
   are globally static too: its bounds are fixed at elaboration, and NVC, GHDL and Questa accept
   such constants in static names (OSVVM AxiStreamReceiver).
-- **Implicit versus explicit in one region:** a call ambiguous only between implicit operations
-  and explicit subprograms declared in the same region picks the explicit ones (2019: a user
-  `to_string(a; sep := " ")` beside the implicit composite `TO_STRING`). NVC, GHDL and Questa
-  accept OSVVM's RandomBasePkg this way; the LRM does not settle it.
+- **Implicit versus explicit:** a call ambiguous only between implicit operations and explicit
+  subprograms picks the explicit ones (2019: a user `to_string(a; sep := " ")` beside the
+  implicit composite `TO_STRING`, in the same package or through a use clause). NVC, GHDL and
+  Questa accept OSVVM's RandomBasePkg and UVVM's rand_pkg this way; the LRM does not settle it.
 
 ## Implicit operation natives (yavs-interp `implicit.rs`)
 

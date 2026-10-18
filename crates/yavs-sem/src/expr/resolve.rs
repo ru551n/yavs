@@ -730,9 +730,9 @@ impl Db {
     }
 
     /// Calls that are ambiguous only between implicit operations and explicit
-    /// subprograms declared in the same region (a 2019 composite `TO_STRING` and a
-    /// user `to_string(A; sep := " ")`): the explicit ones win, as in NVC, GHDL and
-    /// Questa (decisions.md).
+    /// subprograms (a 2019 composite `TO_STRING` and a user `to_string(A; sep := " ")`,
+    /// in the same package or made visible by a use clause): the explicit ones win, as
+    /// in NVC, GHDL and Questa (decisions.md).
     fn prefer_explicit(&self, best: &mut Vec<(Interp, u32)>) {
         let calls: Option<Vec<DeclId>> = best
             .iter()
@@ -747,12 +747,7 @@ impl Db {
         if imp.is_empty() || exp.is_empty() {
             return;
         }
-        let region = self.decls[exp[0]].scope;
-        if calls.iter().all(|&d| self.decls[d].scope == region) {
-            best.retain(
-                |(i, _)| matches!(i.via, Via::Call(d) if !self.decls[self.entity(d)].implicit),
-            );
-        }
+        best.retain(|(i, _)| matches!(i.via, Via::Call(d) if !self.decls[self.entity(d)].implicit));
     }
 
     fn ambiguous(&mut self, e: &ast::Expr, best: &[Interp]) {

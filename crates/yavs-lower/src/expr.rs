@@ -15,7 +15,7 @@ use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
 use yavs_sem::{DeclId, ExprId, SubtypeId, TypeId};
 
 use crate::func::{Fx, Shape, func_of, shape};
-use crate::{Failed, Obj, R, ty};
+use crate::{Failed, Obj, R, Space, ty};
 
 /// A value: a scalar cell, or an array as `(data address, descriptor address)`.
 #[derive(Clone, Copy, Debug)]
@@ -316,6 +316,22 @@ impl Fx<'_, '_> {
                 let dope = self.load(dp, Width::B8, RegTy::Ptr);
                 Ok(V::A(data, dope))
             }
+            Some(Obj::InstArray { off }) => {
+                let (data, dope) = self.inst_array(off);
+                Ok(V::A(data, dope))
+            }
+            Some(Obj::Signal { .. }) if self.sig_dope(d, span)?.is_some() => {
+                let dope = self.sig_dope(d, span)?.ok_or(Failed)?;
+                let s = self.sig_of(d, span)?;
+                let DeclKind::Object(o) = &decl.kind else {
+                    return Err(self.cx.ice(span, "signal is not an object"));
+                };
+                let tid = self.ty(db.base(o.subtype), span)?;
+                let (size, _) = self.layout(tid, dope);
+                let buf = self.alloc(size);
+                self.emit(Inst::SigRead { dst: buf, sig: s });
+                Ok(V::A(buf, dope))
+            }
             Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => {
                 let s = self.sig_of(d, span)?;
                 let raw = self.reg(RegTy::I64);
@@ -373,10 +389,36 @@ impl Fx<'_, '_> {
         }
     }
 
+    /// Elements and descriptor of an array in instance data (`Obj::InstArray`).
+    pub fn inst_array(&mut self, off: u32) -> (Reg, Reg) {
+        let base = self.addr(Space::Inst, 0);
+        let at = |fx: &mut Self, k: u32| {
+            let cell = fx.addr(Space::Inst, off + k);
+            let o = fx.load(cell, Width::B8, RegTy::I64);
+            let dst = fx.reg(RegTy::Ptr);
+            fx.emit(Inst::Index {
+                dst,
+                base,
+                pos: o,
+                stride: 1,
+            });
+            dst
+        };
+        (at(self, 0), at(self, 8))
+    }
+
     /// A reference to all of the scalar signal or signal parameter `d`.
     pub fn sig_of(&mut self, d: DeclId, span: Span) -> R<Reg> {
         match self.cx.objs.get(&d).copied() {
-            Some(Obj::Signal { sig }) => Ok(self.sigval(sig)),
+            Some(Obj::Signal { sig }) => match self.sig_dope(d, span)? {
+                Some(dope) => {
+                    let tid = self.decl_ty(d, span)?;
+                    let (_, count) = self.layout(tid, dope);
+                    let offset = self.int(0);
+                    Ok(self.sigval_at(sig, offset, count))
+                }
+                None => Ok(self.sigval(sig)),
+            },
             Some(Obj::SignalRef { space, off }) => {
                 let a = self.addr(space, off);
                 Ok(self.load(a, Width::Sig, RegTy::Sig))
@@ -387,13 +429,120 @@ impl Fx<'_, '_> {
 
     /// The signal an expression names.
     pub fn sig_expr(&mut self, e: ExprId) -> R<Reg> {
-        let x = &self.db.exprs[e];
-        match x.kind {
-            ExprKind::Obj(d) => self.sig_of(d, x.span),
-            _ => Err(self
-                .cx
-                .unsupported(x.span, "signal sub-elements as signal actuals")),
+        Ok(self.sig_name(e)?.1)
+    }
+
+    /// The IR type of object `d`.
+    pub fn decl_ty(&mut self, d: DeclId, span: Span) -> R<TyId> {
+        match &self.db.decls[d].kind {
+            DeclKind::Object(o) => self.ty(self.db.base(o.subtype), span),
+            _ => Err(self.cx.ice(span, "not an object")),
         }
+    }
+
+    /// The descriptor of an array signal (from its subtype, evaluated in this instance);
+    /// `None` for a scalar signal.
+    pub fn sig_dope(&mut self, d: DeclId, span: Span) -> R<Option<Reg>> {
+        let DeclKind::Object(o) = &self.db.decls[d].kind else {
+            return Err(self.cx.ice(span, "signal is not an object"));
+        };
+        if !ty::is_array(self.db, self.db.base(o.subtype)) {
+            return Ok(None);
+        }
+        match self.subtype_dope(o.subtype, span)? {
+            Some(d) => Ok(Some(d)),
+            None => Err(self.cx.unsupported(span, "unconstrained array signals")),
+        }
+    }
+
+    /// The signal (or signal element or slice) an expression names: its root declaration,
+    /// the reference and, for an array, the descriptor of the named part. Kernel offsets
+    /// follow docs/decisions.md "Elaboration" (row major, mirrored for logic leaves).
+    pub fn sig_name(&mut self, e: ExprId) -> R<(DeclId, Reg, Option<Reg>)> {
+        let db = self.db;
+        let x = &db.exprs[e];
+        let span = x.span;
+        let (prefix, sel) = match &x.kind {
+            ExprKind::Obj(d) => {
+                let dope = match self.cx.objs.get(d) {
+                    Some(Obj::Signal { .. }) => self.sig_dope(*d, span)?,
+                    _ => None,
+                };
+                return Ok((*d, self.sig_of(*d, span)?, dope));
+            }
+            ExprKind::Index { prefix, indices } if indices.len() == 1 => (*prefix, Ok(indices[0])),
+            ExprKind::Slice { prefix, range } => (*prefix, Err(range)),
+            _ => {
+                return Err(self
+                    .cx
+                    .unsupported(span, "signal names with record or nested selections"));
+            }
+        };
+        let ExprKind::Obj(d) = db.exprs[prefix].kind else {
+            return Err(self
+                .cx
+                .unsupported(span, "signal names with nested selections"));
+        };
+        let (r, dope) = self.sig_select(d, sel, span)?;
+        Ok((d, r, dope))
+    }
+
+    /// Element `Ok(index)` or slice `Err(range)` of array signal `d`.
+    pub fn sig_select(
+        &mut self,
+        d: DeclId,
+        sel: Result<ExprId, &yavs_sem::types::RangeC>,
+        span: Span,
+    ) -> R<(Reg, Option<Reg>)> {
+        let db = self.db;
+        let Some(Obj::Signal { sig }) = self.cx.objs.get(&d).copied() else {
+            return Err(self
+                .cx
+                .unsupported(span, "sub-elements of signal parameters"));
+        };
+        let Some(dope) = self.sig_dope(d, span)? else {
+            return Err(self.cx.ice(span, "indexed scalar signal"));
+        };
+        let tid = self.decl_ty(d, span)?;
+        let logic = self.is_logic(tid);
+        let count = self.dope_len(dope);
+        let what = db.decls[d].name.to_string();
+        match sel {
+            Ok(i) => {
+                let pos = self.flat_pos(dope, &[i], &what)?;
+                let off = if logic {
+                    let one = self.int(1);
+                    let last = self.bin(IntOp::Sub, count, one);
+                    self.bin(IntOp::Sub, last, pos)
+                } else {
+                    pos
+                };
+                let one = self.int(1);
+                Ok((self.sigval_at(sig, off, one), None))
+            }
+            Err(range) => {
+                let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
+                let off = if logic {
+                    let a = self.bin(IntOp::Sub, count, p);
+                    self.bin(IntOp::Sub, a, n)
+                } else {
+                    p
+                };
+                Ok((self.sigval_at(sig, off, n), Some(nd)))
+            }
+        }
+    }
+
+    /// Elements `offset .. offset + len` (kernel order) of instance signal `sig`.
+    pub fn sigval_at(&mut self, sig: u32, offset: Reg, len: Reg) -> Reg {
+        let dst = self.reg(RegTy::Sig);
+        self.emit(Inst::SigVal {
+            dst,
+            sig,
+            offset,
+            len,
+        });
+        dst
     }
 
     /// A reference to all of scalar instance signal `sig`.
@@ -413,12 +562,22 @@ impl Fx<'_, '_> {
     /// The descriptor of an array expression, without reading its elements when it names an
     /// object.
     fn dope_of(&mut self, e: ExprId) -> R<Reg> {
-        if let ExprKind::Obj(d) = self.db.exprs[e].kind
-            && let Some(Obj::Array { space, off }) = self.cx.objs.get(&d).copied()
-        {
-            let a = self.addr(space, off);
-            let dp = self.offset(a, 8);
-            return Ok(self.load(dp, Width::B8, RegTy::Ptr));
+        if let ExprKind::Obj(d) = self.db.exprs[e].kind {
+            match self.cx.objs.get(&d).copied() {
+                Some(Obj::Array { space, off }) => {
+                    let a = self.addr(space, off);
+                    let dp = self.offset(a, 8);
+                    return Ok(self.load(dp, Width::B8, RegTy::Ptr));
+                }
+                Some(Obj::InstArray { off }) => return Ok(self.inst_array(off).1),
+                Some(Obj::Signal { .. }) => {
+                    let span = self.db.exprs[e].span;
+                    if let Some(d) = self.sig_dope(d, span)? {
+                        return Ok(d);
+                    }
+                }
+                _ => {}
+            }
         }
         let v = self.expr(e)?;
         Ok(self.arr(v, self.db.exprs[e].span)?.1)
@@ -442,6 +601,7 @@ impl Fx<'_, '_> {
                 reverse,
                 dim,
             } => {
+                // `dim` is 1-based in the HIR.
                 let r = match prefix {
                     AttrPrefix::Subtype(st) if !ty::is_array(self.db, self.db.base(*st)) => {
                         self.scalar_bounds(*st, span)?

@@ -10,7 +10,7 @@ use yavs_sem::hir::{self, Mode as HMode, Sensitivity, StmtKind as HStmt, UnitHir
 use yavs_sem::scope::ScopeKind;
 use yavs_sem::{Db, DeclId, ScopeId, StmtId, SubtypeId, UnitId};
 
-use crate::{Cx, Failed, InstConst, Obj, ProcessIr, R, SignalIr, Space, UnitIr, ty};
+use crate::{Cx, Failed, InstConst, InstValue, Obj, ProcessIr, R, SignalIr, Space, UnitIr, ty};
 
 /// How a parameter is passed (DESIGN.md "Subprograms").
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -137,7 +137,7 @@ pub(crate) struct Fx<'a, 'b> {
     pub ret: Option<SubtypeId>,
     pub name: String,
     /// Driver slots of a process: the signal declaration each slot drives.
-    pub drivers: Vec<DeclId>,
+    pub drivers: Vec<hir::Lsp>,
     /// The IR statement being lowered.
     pub cur: Option<yavs_ir::StmtId>,
     /// In a protected type method: the frame depth and slot of `self`.
@@ -645,15 +645,21 @@ pub(crate) fn architecture(
         return Err(cx.ice(u.span, "not an architecture"));
     };
     let e = &db.units[*entity];
+    let mut iface: Vec<DeclId> = Vec::new();
     if let UnitHir::Entity {
         generics,
         ports,
         stmts: estmts,
     } = &e.hir
     {
-        if !generics.is_empty() || !ports.is_empty() {
-            return Err(cx.unsupported(e.span, "entity generics and ports (M2 slice 3)"));
+        for &g in generics.iter() {
+            if !matches!(db.decls[g].kind, DeclKind::Object(_)) {
+                return Err(
+                    cx.unsupported(db.decls[g].span, "generic types, subprograms and packages")
+                );
+            }
         }
+        iface.extend(generics.iter().chain(ports.iter()));
         if !estmts.is_empty() {
             return Err(cx.unsupported(e.span, "entity statements"));
         }
@@ -661,20 +667,89 @@ pub(crate) fn architecture(
     let mut ir = UnitIr {
         unit,
         inst_size: 0,
+        values: Vec::new(),
         consts: Vec::new(),
         signals: Vec::new(),
         processes: Vec::new(),
     };
     let mut ok = true;
-    for scope in [e.scope, u.scope] {
-        for &d in &db.scopes[scope].order {
-            ok &= inst_object(db, pb, cx, &mut ir, d).is_ok();
+    let scopes = [e.scope, u.scope];
+    let decls = iface.iter().chain(
+        scopes
+            .iter()
+            .flat_map(|&s| db.scopes[s].order.iter())
+            .filter(|d| !iface.contains(d)),
+    );
+    for &d in decls {
+        ok &= inst_object(db, pb, cx, &mut ir, d).is_ok();
+    }
+    ok &= region(db, pb, cx, &mut ir, stmts).is_ok();
+    if ok { Ok(ir) } else { Err(Failed) }
+}
+
+/// The concurrent statements of a region: processes and the equivalent processes of
+/// concurrent statements, recursing into blocks and generates (whose declarations and
+/// generate parameters become instance data too; yavs-elab builds one instance data per
+/// generate iteration). Component and entity instances belong to the elaborator.
+fn region(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    ir: &mut UnitIr,
+    stmts: &[StmtId],
+) -> R<()> {
+    let mut ok = true;
+    let decls =
+        |cx: &mut Cx, pb: &mut ProgramBuilder, ir: &mut UnitIr, scope: yavs_sem::ScopeId| {
+            let mut ok = true;
+            for &d in &db.scopes[scope].order {
+                ok &= inst_object(db, pb, cx, ir, d).is_ok();
+            }
+            ok
+        };
+    for &s in stmts {
+        let st = &db.stmts[s];
+        match &st.kind {
+            HStmt::Instance { .. } => {}
+            HStmt::Block {
+                scope,
+                guard,
+                generics,
+                ports,
+                body,
+                ..
+            } => {
+                if guard.is_some() || !generics.is_empty() || !ports.is_empty() {
+                    ok = false;
+                    cx.unsupported(st.span, "guarded blocks and blocks with generics or ports");
+                    continue;
+                }
+                ok &= decls(cx, pb, ir, *scope);
+                ok &= region(db, pb, cx, ir, body).is_ok();
+            }
+            HStmt::ForGenerate {
+                param, scope, body, ..
+            } => {
+                ok &= inst_object(db, pb, cx, ir, *param).is_ok();
+                ok &= decls(cx, pb, ir, *scope);
+                ok &= region(db, pb, cx, ir, body).is_ok();
+            }
+            HStmt::IfGenerate { alts } => {
+                for a in alts.iter() {
+                    ok &= decls(cx, pb, ir, a.scope);
+                    ok &= region(db, pb, cx, ir, &a.body).is_ok();
+                }
+            }
+            HStmt::CaseGenerate { alts, .. } => {
+                for (_, a) in alts.iter() {
+                    ok &= decls(cx, pb, ir, a.scope);
+                    ok &= region(db, pb, cx, ir, &a.body).is_ok();
+                }
+            }
+            _ => ok &= process(db, pb, cx, ir, s).is_ok(),
         }
     }
-    for &s in stmts.iter() {
-        ok &= process(db, pb, cx, &mut ir, s).is_ok();
-    }
-    if ok { Ok(ir) } else { Err(Failed) }
+    if ok { Ok(()) } else { Err(Failed) }
 }
 
 /// A thunk evaluating one cell (an initial value), for the elaborator.
@@ -711,47 +786,50 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
     };
     let name = decl.name.to_string();
     if o.class == ObjClass::Constant
+        && o.role != ObjRole::Generic
         && matches!(
             db.types[db.base(o.subtype)].kind,
             yavs_sem::types::TypeKind::Array { .. } | yavs_sem::types::TypeKind::Record { .. }
         )
     {
         // ponytail: like a package constant, a composite constant of an architecture is
-        // re-evaluated from its initialiser at each use (`read_obj`); instance data when
-        // composite instance values land (#67, #73).
+        // re-evaluated from its initialiser at each use (`read_obj`); instance data once
+        // elaboration folds every composite constant (#73).
         return Ok(());
     }
-    if ty::is_array(db, db.base(o.subtype)) {
-        return Err(cx.unsupported(
-            decl.span,
-            "array signals and constants in an architecture (M2 slice 2)",
-        ));
-    }
+    let array = ty::is_array(db, db.base(o.subtype));
     match o.class {
         ObjClass::Signal => {
             let t = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
+            if array
+                && !matches!(
+                    db.subtypes[o.subtype].constraint,
+                    yavs_sem::types::Constraint::Array { dims: Some(_), .. }
+                )
+            {
+                return Err(cx.unsupported(decl.span, "unconstrained array ports"));
+            }
             let (st, def) = (o.subtype, o.default);
-            let init = thunk(
-                db,
-                pb,
-                cx,
-                &format!("{name}'init"),
-                decl.span,
-                |fx| match def {
-                    Some(e) => {
-                        let v = fx.scalar_expr(e)?;
-                        fx.check_scalar(
-                            v,
-                            Some(db.exprs[e].subtype),
-                            st,
-                            &ty::obj_desc(db, d),
-                            decl.span,
-                        )?;
-                        Ok(v)
-                    }
-                    None => fx.scalar_left(st, decl.span),
-                },
-            )?;
+            let init = if array || o.role == ObjRole::Port {
+                None
+            } else {
+                Some(thunk(
+                    db,
+                    pb,
+                    cx,
+                    &format!("{name}'init"),
+                    decl.span,
+                    |fx| match def {
+                        Some(e) => {
+                            let v = fx.scalar_expr(e)?;
+                            let what = ty::obj_desc(db, d);
+                            fx.check_scalar(v, Some(db.exprs[e].subtype), st, &what, decl.span)?;
+                            Ok(v)
+                        }
+                        None => fx.scalar_left(st, decl.span),
+                    },
+                )?)
+            };
             cx.objs.insert(
                 d,
                 Obj::Signal {
@@ -767,25 +845,25 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
             Ok(())
         }
         ObjClass::Constant => {
+            // A locally static constant is read through its folded initialiser (`read_obj`).
+            let given = matches!(o.role, ObjRole::Generic | ObjRole::GenerateParam);
+            if !given && o.default.is_some_and(|e| db.value(e).is_some()) {
+                return Ok(());
+            }
             let t = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
-            let w = pb.types().get(t).map_or(Width::B8, ty::width);
-            let Some(def) = o.default else {
-                return Err(cx.ice(decl.span, "constant without a value"));
-            };
-            let st = o.subtype;
-            let init = thunk(db, pb, cx, &name, decl.span, |fx| {
-                let v = fx.scalar_expr(def)?;
-                fx.check_scalar(
-                    v,
-                    Some(db.exprs[def].subtype),
-                    st,
-                    &ty::obj_desc(db, d),
-                    decl.span,
-                )?;
-                Ok(v)
-            })?;
             let off = ir.inst_size.next_multiple_of(8);
-            ir.inst_size = off + 8;
+            ir.inst_size = off + if array { 16 } else { 8 };
+            ir.values.push(InstValue {
+                decl: d,
+                name: name.clone(),
+                off,
+                ty: t,
+            });
+            if array {
+                cx.objs.insert(d, Obj::InstArray { off });
+                return Ok(());
+            }
+            let w = pb.types().get(t).map_or(Width::B8, ty::width);
             cx.objs.insert(
                 d,
                 Obj::Scalar {
@@ -794,13 +872,23 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     w,
                 },
             );
-            ir.consts.push(InstConst {
-                decl: d,
-                name,
-                off,
-                w,
-                init,
-            });
+            // Scalar constants the elaborator cannot fold are computed by a thunk.
+            if let (Some(def), false) = (o.default, given) {
+                let st = o.subtype;
+                let init = thunk(db, pb, cx, &name, decl.span, |fx| {
+                    let v = fx.scalar_expr(def)?;
+                    let what = ty::obj_desc(db, d);
+                    fx.check_scalar(v, Some(db.exprs[def].subtype), st, &what, decl.span)?;
+                    Ok(v)
+                })?;
+                ir.consts.push(InstConst {
+                    decl: d,
+                    name,
+                    off,
+                    w,
+                    init,
+                });
+            }
             Ok(())
         }
         ObjClass::SharedVariable => crate::protected::shared_var(db, pb, cx, ir, d),
@@ -853,20 +941,18 @@ fn process(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, s: St
     if let Some(sc) = scope {
         cx.scope_func.insert(sc, (f, 0));
     }
-    let mut drivers = Vec::new();
+    // One driver slot per longest static prefix, in `ProcessInfo::drivers` order.
     let mut sigs = Vec::new();
     for l in &info.drivers {
         let hir::ObjRoot::Decl(d) = l.root else {
             return Err(cx.unsupported(l.span, "drivers of external names and implicit signals"));
         };
         let Some(&Obj::Signal { sig }) = cx.objs.get(&d) else {
-            return Err(cx.unsupported(l.span, "drivers of ports and outer signals (M2 slice 3)"));
+            return Err(cx.unsupported(l.span, "drivers of signals outside the architecture"));
         };
-        if !drivers.contains(&d) {
-            drivers.push(d);
-            sigs.push(sig);
-        }
+        sigs.push(sig);
     }
+    let drivers = info.drivers.clone();
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name.clone());
     if implicit {
         fx.fb.flag(FuncFlags::IMPLICIT);

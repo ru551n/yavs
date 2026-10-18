@@ -2,29 +2,23 @@
 //! kernel, compared with the NVC reference outputs (`tests/corpus/**/*.expected`, canonical
 //! form of `tools/difftest/README.md`).
 //!
-//! The elaborator is not there yet, so `run` below is a minimal stand-in for a top-level
-//! architecture without ports or generics: it evaluates the instance constants and signal
-//! initial values (thunks), creates scalar kernel signals and one interpreter process per
-//! process. Files listed in `PASS` must match their `.expected` exactly; every other file must
-//! still analyze, lower and verify or fail with a clear "not lowered" diagnostic.
+//! Each file is elaborated with yavs-elab (which lowers through this crate) and run on the
+//! kernel, the same path as `yavs run`. Files listed in `PASS` must match their `.expected`
+//! exactly; the others are printed with their difference or diagnostic.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use yavs_diag::{MessageFormat, render};
-use yavs_interp::{Bindings, InstData, InstSig, InterpProcess, ProcDriver, Runtime};
-use yavs_kernel::{
-    Builder, Config, EndReason, Hook, Observer, ProcFlags, Report, RunStatus, Severity, SignalType,
-    Time, Value,
-};
-use yavs_lower::{LowerOptions, Lowered, Lowerer, signal_elem, top_architecture};
+use yavs_kernel::{Config, EndReason, Hook, Observer, Report, RunStatus, Severity, Time};
+use yavs_lower::{LowerOptions, Lowerer};
 use yavs_sem::hir::UnitHir;
-use yavs_sem::loader::{UnitKey, UnitSlot};
 use yavs_sem::{Db, LangRev, Options};
 
 /// Corpus files whose output matches NVC's exactly.
 const PASS: &[&str] = &[
+    "scalar/array_attrs",
     "scalar/enum_attrs",
     "scalar/int_attrs",
     "scalar/real_attrs",
@@ -47,6 +41,7 @@ const PASS: &[&str] = &[
     "report/failure_exit",
     "report/message_forms",
     "delta/concurrent_assign",
+    "delta/delta_chain",
     "delta/delta_order",
     "delta/event_attrs",
     "delta/signal_update_order",
@@ -60,6 +55,15 @@ const PASS: &[&str] = &[
     "env/finish_noarg",
     "env/stop_status",
     "env/stop_time_limit",
+    "generics/for_generate",
+    "generics/generic_map",
+    "generics/if_case_generate",
+    "hierarchy/port_modes_conversion",
+    "composite/arrays_aggregates",
+    "composite/slv_register",
+    "composite/strings_ops",
+    "resolution/resolved_record_port",
+    "resolution/std_logic_drivers",
     "run/sig_params",
     "reflect/arrays",
     "reflect/multidim",
@@ -86,6 +90,14 @@ const GROUPS: &[&str] = &[
     "sigassign",
     "postponed",
     "env",
+    "generics",
+    "hierarchy",
+    "composite",
+    "access",
+    "protected",
+    "resolution",
+    "force",
+    "textio",
     "run",
     "reflect",
     "access",
@@ -123,71 +135,6 @@ fn header(src: &str) -> (String, LangRev, Time) {
     (top, rev, stop)
 }
 
-/// Analyze and lower `file`; `Err` holds rendered diagnostics.
-fn lower(file: &Path) -> Result<(Lowered, Vec<String>, Time), String> {
-    let src = std::fs::read_to_string(file).unwrap();
-    let (top, rev, stop) = header(&src);
-    // The checkout's own lib/ tree, not `default_stdlib()` (a shared target dir can carry another
-    // checkout's compile-time path).
-    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
-    let mut opts = Options::new(rev, lib);
-    let dir = std::env::temp_dir().join("yavs-lower-work");
-    opts.libraries
-        .add_spec(&format!("work:{}", dir.display()))
-        .unwrap();
-    let mut db = Db::new(opts);
-    let r = db.analyze_file("work", file, rev);
-    let text = |db: &Db, ds: &[yavs_diag::Diagnostic]| -> String {
-        ds.iter()
-            .map(|d| render(&db.sources, d, MessageFormat::Short, false))
-            .collect()
-    };
-    if r.is_err() || db.error_count() > 0 {
-        return Err(format!("analysis: {}", text(&db, db.diagnostics())));
-    }
-    // The elaborator loads the package bodies a design needs; load every one that exists.
-    let pkgs: Vec<(String, String)> = db
-        .units
-        .iter()
-        .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
-        // std has no package bodies: its subprograms are natives.
-        .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
-        .filter(|(_, u)| {
-            !matches!(
-                db.libs[u.lib].units.get(&UnitKey::body(u.name.key)),
-                Some(UnitSlot::Done(_))
-            )
-        })
-        .map(|(_, u)| {
-            (
-                db.libs[u.lib].name.text.to_string(),
-                u.name.text.to_string(),
-            )
-        })
-        .collect();
-    for (l, p) in pkgs {
-        let _ = db.load_body(&l, &p);
-    }
-    if db.error_count() > 0 {
-        return Err(format!("package bodies: {}", text(&db, db.diagnostics())));
-    }
-    let arch = top_architecture(&db, &top).ok_or("no architecture")?;
-    let mut l = Lowerer::new(&db, LowerOptions::default());
-    let u = l.architecture(arch).map_err(|d| text(&db, &d))?;
-    assert_eq!(u, 0);
-    let lowered = l.finish().map_err(|d| text(&db, &d))?;
-    let names = lowered.units[0]
-        .processes
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let l = p.label.clone().unwrap_or_else(|| format!("_p{i}"));
-            format!(":{}:{}", top.to_ascii_lowercase(), l.to_ascii_lowercase())
-        })
-        .collect();
-    Ok((lowered, names, stop))
-}
-
 /// (severity, time in fs, delta, process index, message).
 type Entry = (Severity, u64, u32, usize, String);
 
@@ -211,67 +158,41 @@ fn escape(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-/// Run a lowered top level and return its canonical output.
-fn run(l: Lowered, names: &[String], stop: Time) -> Result<String, String> {
-    let prog = Arc::new(l.program);
-    let u = &l.units[0];
-    let rt = Runtime::new(prog.clone(), Bindings::default()).map_err(|e| e.to_string())?;
-    let mut inst = InstData {
-        data: vec![0; u.inst_size as usize],
-        ..Default::default()
+/// Analyze, elaborate (yavs-elab, which lowers through this crate) and run `file`; its
+/// canonical output, or the rendered diagnostics.
+fn simulate(file: &Path) -> Result<String, String> {
+    let src = std::fs::read_to_string(file).unwrap();
+    let (top, rev, stop) = header(&src);
+    // The checkout's own lib/ tree, not `default_stdlib()` (#7).
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(rev, lib);
+    let dir = std::env::temp_dir().join("yavs-lower-work");
+    opts.libraries
+        .add_spec(&format!("work:{}", dir.display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    let r = db.analyze_file("work", file, rev);
+    let text = |db: &Db, ds: &[yavs_diag::Diagnostic]| -> String {
+        ds.iter()
+            .map(|d| render(&db.sources, d, MessageFormat::Short, false))
+            .collect()
     };
-    for c in &u.consts {
-        let v = yavs_interp::call(rt.clone(), c.init, Arc::new(inst.clone()), &[])
-            .map_err(|e| e.to_string())?
-            .ok_or("constant thunk without value")?;
-        let n = c.w.bytes() as usize;
-        inst.data[c.off as usize..c.off as usize + n].copy_from_slice(&v.to_le_bytes()[..n]);
+    if r.is_err() || db.error_count() > 0 {
+        return Err(format!("analysis: {}", text(&db, db.diagnostics())));
     }
-    let mut b = Builder::new();
-    for s in &u.signals {
-        let v = yavs_interp::call(rt.clone(), s.init, Arc::new(inst.clone()), &[])
-            .map_err(|e| e.to_string())?
-            .ok_or("signal init without value")?;
-        let elem = signal_elem(&prog, s.ty).ok_or("signal type")?;
-        let ty = SignalType { elem, len: 1 };
-        let init = match elem {
-            yavs_kernel::Elem::Logic => {
-                // BIT and BOOLEAN leaves hold the std_ulogic codes of '0' and '1'.
-                let bias = match yavs_ir::Ty::logic_leaf(&prog.types, s.ty) {
-                    Some(yavs_ir::LogicKind::StdULogic) => 0,
-                    _ => 2,
-                };
-                let code = *yavs_logic::ALL.get(v as usize + bias).ok_or("logic code")?;
-                Value::Logic(yavs_kernel::LogicVec::from_fn(1, |_| code))
-            }
-            yavs_kernel::Elem::Bytes(n) => Value::Bytes(v.to_le_bytes()[..n as usize].to_vec()),
-        };
-        let id = b.signal(&s.name, ty, &init);
-        inst.sigs.push(InstSig { signal: id, ty });
-    }
-    let inst = Arc::new(inst);
-    for (p, name) in u.processes.iter().zip(names) {
-        let mut ids = Vec::new();
-        let mut drivers = Vec::new();
-        for &sig in &p.drivers {
-            let s = inst.sigs[sig as usize];
-            let id = b.driver(s.signal);
-            ids.push(id);
-            drivers.push(ProcDriver {
-                id,
-                sig,
-                range: yavs_kernel::Range::new(0, s.ty.len),
-            });
-        }
-        let proc = InterpProcess::new(rt.clone(), p.func, inst.clone(), drivers, None)
-            .map_err(|e| e.to_string())?;
-        let flags = ProcFlags {
-            postponed: p.postponed,
-            serial: false,
-        };
-        b.process(name, flags, &ids, proc);
-    }
-    let mut sim = b.build(Config::default()).map_err(|e| e.to_string())?;
+    let mut e = yavs_elab::find_top(&mut db, "work", &top)
+        .and_then(|t| yavs_elab::elaborate(&mut db, t, &[], &yavs_elab::ElabConfig::default()))
+        .map_err(|d| text(&db, &d))?;
+    e.lower(&mut db).map_err(|d| text(&db, &d))?;
+    let names: Vec<String> = e
+        .procs
+        .iter()
+        .map(|p| {
+            let n = e.hier.path_name(p.scope, yavs_elab::Case::Lrm);
+            n.strip_suffix(':').unwrap_or(&n).to_string()
+        })
+        .collect();
+    let mut sim = e.build(Config::default()).map_err(|e| e.to_string())?;
     let reps = Arc::new(Mutex::new(Vec::new()));
     sim.subscribe(Box::new(Reports(reps.clone())));
     let status = sim.run_until(stop);
@@ -340,7 +261,7 @@ fn corpus_groups() {
         for f in files {
             let name = format!("{g}/{}", f.file_stem().unwrap().to_string_lossy());
             let expected = std::fs::read_to_string(f.with_extension("expected")).unwrap();
-            let got = lower(&f).and_then(|(l, n, stop)| run(l, &n, stop));
+            let got = simulate(&f);
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {
                 _ if pass => "PASS".to_string(),

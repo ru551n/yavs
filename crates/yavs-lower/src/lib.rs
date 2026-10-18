@@ -50,8 +50,11 @@ pub struct UnitIr {
     pub unit: UnitId,
     /// Bytes of instance data (`AddrSpace::Inst`).
     pub inst_size: u32,
-    /// Instance constants in declaration order. The elaborator runs each thunk (it may read
-    /// the constants before it) and stores the returned cell at `off` with width `w`.
+    /// Generics and constants whose values the elaborator supplies (`Elaborated::value`),
+    /// written into instance data with [`UnitIr::write_value`], in declaration order.
+    pub values: Vec<InstValue>,
+    /// Scalar constants the elaborator could not fold: it runs each thunk (it may read the
+    /// values before it) and stores the returned cell at `off` with width `w`.
     pub consts: Vec<InstConst>,
     /// Signals, indexed by `Inst::SigVal::sig`.
     pub signals: Vec<SignalIr>,
@@ -75,8 +78,57 @@ pub struct SignalIr {
     /// Original spelling (rule 8).
     pub name: String,
     pub ty: TyId,
-    /// `FuncKind::Thunk` returning the initial value (a scalar cell).
-    pub init: FuncId,
+    /// `FuncKind::Thunk` returning the initial value of a scalar signal (`None` for ports
+    /// and arrays: the elaborator computes initial values itself).
+    pub init: Option<FuncId>,
+}
+
+/// A generic or constant in instance data.
+#[derive(Clone, Debug)]
+pub struct InstValue {
+    pub decl: DeclId,
+    pub name: String,
+    pub off: u32,
+    /// Its IR type: a scalar is one cell of the type's width at `off`; an array has the byte
+    /// offsets of its elements and of its descriptor (both in instance data) at `off` and
+    /// `off + 8`.
+    pub ty: TyId,
+}
+
+impl UnitIr {
+    /// Write value `v` of `iv` into instance data `data` (at least `inst_size` bytes): a
+    /// scalar into its cell, an array appended (elements in the IR layout, bit-planes for
+    /// logic arrays, then the descriptor) with the offsets stored at `iv.off`.
+    pub fn write_value(
+        prog: &Program,
+        iv: &InstValue,
+        v: &yavs_sem::stat::ConstValue,
+        data: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        let off = iv.off as usize;
+        let t = prog.types.get(iv.ty).ok_or("missing type")?;
+        if data.len() < off + t.scalar_size().map_or(16, |n| n as usize) {
+            return Err(format!("instance data too short for `{}`", iv.name));
+        }
+        if let Some(n) = t.scalar_size() {
+            let c = ty::cell(v).ok_or_else(|| format!("`{}`: not a scalar value", iv.name))?;
+            data[off..off + n as usize].copy_from_slice(&c.to_le_bytes()[..n as usize]);
+            return Ok(());
+        }
+        let (elems, dope) = ty::encode_array(prog, iv.ty, v)
+            .ok_or_else(|| format!("`{}`: value does not fit its array type", iv.name))?;
+        let mut put = |bytes: &[u8]| {
+            let at = data.len().next_multiple_of(8);
+            data.resize(at, 0);
+            data.extend_from_slice(bytes);
+            at as u64
+        };
+        let e = put(&elems);
+        let d = put(&dope);
+        data[off..off + 8].copy_from_slice(&e.to_le_bytes());
+        data[off + 8..off + 16].copy_from_slice(&d.to_le_bytes());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -86,7 +138,8 @@ pub struct ProcessIr {
     pub func: FuncId,
     pub label: Option<String>,
     pub postponed: bool,
-    /// Driver slots: the instance signal each `Drive::driver` index drives (whole signal).
+    /// Driver slots, one per `ProcessInfo::drivers` entry in order: the instance signal it
+    /// drives (the elaborator gives each slot the entry's kernel range).
     pub drivers: Vec<u32>,
 }
 
@@ -113,6 +166,8 @@ pub(crate) enum Obj {
     Array { space: Space, off: u32 },
     /// Instance signal `sig`.
     Signal { sig: u32 },
+    /// An array in instance data: byte offsets of its elements and descriptor at `off`.
+    InstArray { off: u32 },
     /// A signal parameter: the slot holds a signal reference (two cells).
     SignalRef { space: Space, off: u32 },
 }

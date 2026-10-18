@@ -4,7 +4,7 @@ use yavs_diag::Span;
 use yavs_ir::{LogicKind, Program, ProgramBuilder, Ty, TyId, Width};
 use yavs_kernel::Elem;
 use yavs_sem::decl::Designator;
-use yavs_sem::stat::ConstValue;
+use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::TypeKind;
 use yavs_sem::{Db, SubtypeId, TypeId};
 
@@ -177,4 +177,57 @@ pub(crate) fn obj_desc(db: &Db, d: yavs_sem::DeclId) -> String {
         _ => return name,
     };
     format!("{class} {name}")
+}
+
+/// Elements (IR layout) and descriptor bytes of a folded array value of IR type `ty`.
+pub(crate) fn encode_array(prog: &Program, ty: TyId, v: &ConstValue) -> Option<(Vec<u8>, Vec<u8>)> {
+    let ConstValue::Array(a) = v else {
+        return None;
+    };
+    let Ty::Array { elem, .. } = prog.types.get(ty)? else {
+        return None;
+    };
+    let mut cells: Vec<u64> = Vec::new();
+    match &a.elems {
+        Elems::Bytes(b) => cells.extend(b.iter().map(|&x| u64::from(x))),
+        Elems::Runs(runs) => {
+            for (n, c) in runs.iter() {
+                let x = cell(c)?;
+                cells.extend(std::iter::repeat_n(x, usize::try_from(*n).ok()?));
+            }
+        }
+    }
+    let mut dope = Vec::new();
+    for &(l, d, r) in a.bounds.iter() {
+        let d = i64::from(d == yavs_sem::types::Direction::Downto);
+        for x in [l, r, d] {
+            dope.extend_from_slice(&x.to_le_bytes());
+        }
+    }
+    let elems = match Ty::logic_leaf(&prog.types, ty) {
+        Some(k) => {
+            let bias = if k == LogicKind::StdULogic { 0 } else { 2 };
+            let n = cells.len();
+            let mut blocks = vec![[0u64; 4]; n.div_ceil(64)];
+            for (p, &c) in cells.iter().enumerate() {
+                let i = n - 1 - p; // element 0 is the rightmost
+                let code = c + bias;
+                for (plane, w) in blocks[i / 64].iter_mut().enumerate() {
+                    *w |= (code >> plane & 1) << (i % 64);
+                }
+            }
+            blocks
+                .iter()
+                .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+                .collect()
+        }
+        None => {
+            let w = prog.types.get(*elem)?.scalar_size()? as usize;
+            cells
+                .iter()
+                .flat_map(|c| c.to_le_bytes()[..w].to_vec())
+                .collect()
+        }
+    };
+    Some((elems, dope))
 }

@@ -1516,10 +1516,9 @@ name = "yavs-lower"
 version = "0.1.0"
 dependencies = [
  "yavs-diag",
- "yavs-interp",
+ "yavs-elab",
  "yavs-ir",
  "yavs-kernel",
- "yavs-logic",
  "yavs-sem",
  "yavs-syntax",
 ]

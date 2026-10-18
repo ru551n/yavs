@@ -14,8 +14,7 @@ yavs-kernel = { path = "../yavs-kernel" }
 yavs-syntax.workspace = true
 
 [dev-dependencies]
-yavs-interp = { path = "../yavs-interp" }
-yavs-logic.workspace = true
+yavs-elab = { path = "../yavs-elab" }
 
 [lints]
 workspace = true

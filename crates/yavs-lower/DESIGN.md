@@ -74,10 +74,15 @@ a call into your module in a small commit.
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image`, `'value` `yavs.attr.value`
   (taking the string as a fat pair address). Array arguments to natives are fat pair addresses.
-- `UnitIr` per architecture: instance constants (offset, width, a parameterless function
-  computing the value), signals (IR type, a function computing the initial value; kernel element
-  representation from `signal_elem`), processes in statement order with their driver slots (one
-  per signal the process drives, whole signal). Process names `_p<n>` follow the statement index.
+- `UnitIr` per architecture: `values` (generics, generate parameters and constants that are not
+  locally static: the elaborator writes its value with `UnitIr::write_value`; arrays go after
+  the fixed part, their element and descriptor offsets in the slot), `consts` (thunks for scalar
+  constants elaboration could not fold), signals (ports and declared signals, mapped by
+  declaration; array signals read their bounds from their subtype in this instance),
+  processes of the architecture, its blocks and generates, with one driver slot per
+  `ProcessInfo::drivers` entry. The elaborator builds one instance data per region (instance,
+  block, generate iteration), looking values and signals up from the process's region
+  outwards. Locally static constants have no slot: their folded value is used directly.
 
 ## Mapping table
 
@@ -206,6 +211,11 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   elements, nested subprograms of protected methods reading state variables.
 
 ## Requests from yavs-elab
+
+Answered (yavs-lower, 2026-10-18): 1 (`UnitIr::values`, `write_value`), 2 (ports and signals of
+outer regions are `SignalIr`s), 3 (processes in blocks and generates, generate parameters as
+values; yavs-elab keys instance data by region), 5 (array signals, element and slice targets
+and sensitivity with kernel offsets as below). Open: 4 (`'path_name`), 6 (guarded blocks).
 
 yavs-elab (`Elaborated::lower`, `Elaborated::build`) lowers every architecture that owns a
 process and builds one `InstData` per entity instance: constants from `UnitIr::consts`, the

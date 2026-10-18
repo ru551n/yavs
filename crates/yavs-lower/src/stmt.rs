@@ -5,8 +5,8 @@ use yavs_diag::Span;
 use yavs_ir::CheckKind;
 use yavs_ir::{BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, RegTy, StmtKind, Width};
 use yavs_sem::hir::{
-    Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, ObjRoot, Rhs, StmtKind as H, Target,
-    Waveform,
+    Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs, StmtKind as H,
+    Target, Waveform,
 };
 use yavs_sem::types::{Direction, TypeKind};
 use yavs_sem::{ExprId, StmtId};
@@ -369,25 +369,16 @@ impl Fx<'_, '_> {
     }
 
     /// The instance signal and driver slot of a whole-signal target.
-    fn driver_of(&mut self, lsp: &Lsp) -> R<(u32, u32)> {
-        let ObjRoot::Decl(d) = lsp.root else {
-            return Err(self.cx.unsupported(
-                lsp.span,
-                "assignments to external names and implicit signals",
-            ));
-        };
-        if !lsp.path.is_empty() {
-            return Err(self
-                .cx
-                .unsupported(lsp.span, "assignments to signal sub-elements (M2 slice 2)"));
-        }
-        let Some(Obj::Signal { sig }) = self.cx.objs.get(&d).copied() else {
-            return Err(self
-                .cx
-                .unsupported(lsp.span, "assignments to ports and signal parameters"));
-        };
-        match self.drivers.iter().position(|&x| x == d) {
-            Some(slot) => Ok((sig, slot as u32)),
+    /// The driver slot of a target's longest static prefix: the `ProcessInfo::drivers` entry
+    /// with the same root and path (slots are 1:1 with those entries, as yavs-elab expects).
+    fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
+        let key = format!("{:?}{:?}", lsp.root, lsp.path);
+        match self
+            .drivers
+            .iter()
+            .position(|l| format!("{:?}{:?}", l.root, l.path) == key)
+        {
+            Some(slot) => Ok(slot as u32),
             None => Err(self
                 .cx
                 .ice(lsp.span, "signal target without a driver of the process")),
@@ -402,25 +393,49 @@ impl Fx<'_, '_> {
         let [lsp] = &target.lsps[..] else {
             return Err(self.cx.unsupported(span, "aggregate signal targets"));
         };
-        let (sig, slot) = self.driver_of(lsp)?;
-        let st = db.exprs[target.expr].subtype;
-        if ty::is_array(db, db.base(st)) {
-            return Err(self.cx.ice(span, "array signal target"));
+        if !matches!(lsp.root, ObjRoot::Decl(_)) {
+            return Err(self.cx.unsupported(
+                lsp.span,
+                "assignments to external names and implicit signals",
+            ));
         }
-        let (tid, _, vw) = self.scalar(st, span)?;
+        let slot = self.driver_of(lsp)?;
+        let (_, sref, tdope) = self.sig_name(target.expr)?;
+        let st = db.exprs[target.expr].subtype;
+        let tid = self.ty(db.base(st), span)?;
         let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_some();
-        let stride = if logic { 8 + 32 } else { 16 };
-        let n = elems.len() as u32;
-        let wave = self.alloc_n(stride * n);
+        // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
+        let (stride, size) = match tdope {
+            Some(dope) => {
+                let (size, _) = self.layout(tid, dope);
+                let seven = self.int(7);
+                let r = self.bin(IntOp::Add, size, seven);
+                let eight = self.int(8);
+                let q = self.bin(IntOp::Div, r, eight);
+                let r8 = self.bin(IntOp::Mul, q, eight);
+                (self.bin(IntOp::Add, r8, eight), Some(size))
+            }
+            None => (self.int(if logic { 8 + 32 } else { 16 }), None),
+        };
+        let n = self.int(elems.len() as i64);
+        let total = self.bin(IntOp::Mul, stride, n);
+        let wave = self.alloc(total);
         let what = self.target_name(target.expr);
-        let mut first = None;
         for (k, el) in elems.iter().enumerate() {
             let Some(v) = el.value else {
                 return Err(self
                     .cx
                     .unsupported(span, "null waveform elements (guarded signals)"));
             };
-            let at = self.offset(wave, stride * k as u32);
+            let kk = self.int(k as i64);
+            let o = self.bin(IntOp::Mul, kk, stride);
+            let at = self.reg(RegTy::Ptr);
+            self.emit(Inst::Index {
+                dst: at,
+                base: wave,
+                pos: o,
+                stride: 1,
+            });
             let t = match el.after {
                 Some(a) => {
                     let t = self.scalar_expr(a)?;
@@ -438,25 +453,45 @@ impl Fx<'_, '_> {
                 }
                 None => self.int(0),
             };
-            first.get_or_insert(t);
             self.store(at, t, Width::B8);
-            let r = self.scalar_expr(v)?;
-            self.check_scalar(r, Some(db.exprs[v].subtype), st, &what, span)?;
             let va = self.offset(at, 8);
-            if logic {
-                let z = self.int(0);
-                let bias = self.code_bias(tid);
-                let r = self.enc(r, bias);
-                self.emit(Inst::LSet {
-                    base: va,
-                    idx: z,
-                    v: r,
-                });
-            } else {
-                self.store(va, r, vw);
+            match (tdope, size) {
+                (Some(dope), Some(size)) => {
+                    let val = self.expr(v)?;
+                    let (data, vd) = self.arr(val, span)?;
+                    let dims = ty::array_of(db, db.base(st)).map_or(1, |x| x.1);
+                    let m = self.msg(&what, Dir::To);
+                    self.emit(Inst::SubtypeCheck {
+                        dope: vd,
+                        want: dope,
+                        dims,
+                        what: m,
+                    });
+                    self.emit(Inst::Copy {
+                        dst: va,
+                        src: data,
+                        bytes: size,
+                    });
+                }
+                _ => {
+                    let (_, _, vw) = self.scalar(st, span)?;
+                    let r = self.scalar_expr(v)?;
+                    self.check_scalar(r, Some(db.exprs[v].subtype), st, &what, span)?;
+                    if logic {
+                        let z = self.int(0);
+                        let bias = self.code_bias(tid);
+                        let r = self.enc(r, bias);
+                        self.emit(Inst::LSet {
+                            base: va,
+                            idx: z,
+                            v: r,
+                        });
+                    } else {
+                        self.store(va, r, vw);
+                    }
+                }
             }
         }
-        let n = self.int(i64::from(n));
         let (mode, reject) = match delay {
             Delay::Transport => (DriveMode::Transport, None),
             Delay::Default => (DriveMode::Inertial, None),
@@ -468,10 +503,9 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        let _ = sig;
         self.emit(Inst::Drive {
             driver: slot,
-            target: None,
+            target: Some(sref),
             wave,
             n,
             mode,
@@ -488,12 +522,16 @@ impl Fx<'_, '_> {
                     .cx
                     .unsupported(l.span, "sensitivity to external names and implicit signals"));
             };
-            if !l.path.is_empty() {
-                return Err(self
-                    .cx
-                    .unsupported(l.span, "sensitivity to signal sub-elements"));
-            }
-            let s = self.sig_of(d, l.span)?;
+            let s = match &l.path[..] {
+                [] => self.sig_of(d, l.span)?,
+                [LspStep::Index(ix)] if ix.len() == 1 => self.sig_select(d, Ok(ix[0]), l.span)?.0,
+                [LspStep::Slice(r)] => self.sig_select(d, Err(r), l.span)?.0,
+                _ => {
+                    return Err(self
+                        .cx
+                        .unsupported(l.span, "sensitivity to record and nested sub-elements"));
+                }
+            };
             self.emit(Inst::WaitOn { sig: s });
         }
         Ok(())

@@ -184,7 +184,7 @@ fn simulate(file: &Path) -> Result<String, String> {
     // The checkout's own lib/ tree, not `default_stdlib()` (#7).
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(rev, lib);
-    let dir = std::env::temp_dir().join("yavs-lower-work");
+    let dir = std::env::temp_dir().join(format!("yavs-lower-work-{}", std::process::id()));
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();
@@ -311,7 +311,7 @@ fn package_subprograms() {
     ));
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(LangRev::Vhdl2008, lib);
-    let dir = std::env::temp_dir().join("yavs-lower-work");
+    let dir = std::env::temp_dir().join(format!("yavs-lower-work-{}", std::process::id()));
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();

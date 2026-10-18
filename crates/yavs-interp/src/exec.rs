@@ -729,6 +729,25 @@ impl Machine {
         }
     }
 
+    /// `deallocate` of the access object at `a`: free its object and set it to null.
+    pub(crate) fn deallocate(&mut self, a: u64) -> R<()> {
+        let h = self.load(a, Width::B8)?;
+        if h == 0 {
+            return Ok(());
+        }
+        let (hp, _) = self.heap_of(h)?;
+        match hp.free(h) {
+            Ok(()) => {}
+            Err(HeapError::Stale) => {
+                return rt_err(
+                    "deallocate of an access value whose object was already deallocated",
+                );
+            }
+            Err(e) => return Err(ice(format!("deallocate: {e:?}"))),
+        }
+        self.store(a, Width::B8, 0)
+    }
+
     pub(crate) fn heap_of(&mut self, h: u64) -> R<(&mut Heap, u8)> {
         match heap::tag_of(h) {
             heap::PRIVATE => Ok((&mut self.heap, HEAP)),
@@ -947,9 +966,14 @@ impl Machine {
         let mut out = Vec::with_capacity(regs.len() + 2);
         for (i, &r) in regs.iter().enumerate() {
             out.push(self.r(r));
-            let sig = callee
-                .and_then(|c| c.params.get(i + skip))
-                .is_some_and(|p| p.width == Width::Sig);
+            // Natives have no parameter list: a signal argument is a `Sig` register.
+            let sig = match callee {
+                Some(c) => c
+                    .params
+                    .get(i + skip)
+                    .is_some_and(|p| p.width == Width::Sig),
+                None => f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig),
+            };
             if sig {
                 out.push(self.r(Reg(r.0 + 1)));
             }
@@ -1523,24 +1547,7 @@ impl Machine {
                 })?;
                 self.set(dst, h);
             }
-            Inst::Free { ptr } => {
-                let a = self.r(ptr);
-                let h = self.load(a, Width::B8)?;
-                if h != 0 {
-                    let (hp, _) = self.heap_of(h)?;
-                    match hp.free(h) {
-                        Ok(()) => {}
-                        Err(HeapError::Stale) => {
-                            return rt_err(
-                                "deallocate of an access value whose object was already \
-                                 deallocated",
-                            );
-                        }
-                        Err(e) => return Err(ice(format!("deallocate: {e:?}"))),
-                    }
-                    self.store(a, Width::B8, 0)?;
-                }
-            }
+            Inst::Free { ptr } => self.deallocate(self.r(ptr))?,
             Inst::Deref { dst, handle, what } => {
                 let h = self.r(handle);
                 let (w, _) = self.check_msg(what);

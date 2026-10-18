@@ -426,3 +426,18 @@ which tools/difftest parses.
   and explicit subprograms declared in the same region picks the explicit ones (2019: a user
   `to_string(a; sep := " ")` beside the implicit composite `TO_STRING`). NVC, GHDL and Questa
   accept OSVVM's RandomBasePkg this way; the LRM does not settle it.
+
+## Implicit operation natives (yavs-interp `implicit.rs`)
+
+- **Shifts with a negative count** follow LRM 9.2.4 (`sla -k` is `sra k`, `sra -k` is `sla k`),
+  as GHDL does. NVC fills from the wrong end for negative arithmetic shifts.
+- **Concatenation bounds** follow LRM 2008 9.2.5: two null operands give the right operand;
+  otherwise the result starts at `S'LEFT` in the direction of `S` and both bounds must belong
+  to `S`. GHDL agrees; NVC gives `S'LEFT to S'LEFT - 1` for two null operands and a wrong
+  (null) range for downto index subtypes. The `cat` native takes `S'LEFT`, `S'RIGHT` and the
+  direction as three extra cells.
+- **`?<` .. `?>=` with a `'-'` operand** is a runtime error (LRM 9.2.3 says it is an error);
+  NVC returns `'X'` silently.
+- **2019 `TO_STRING` of an array** whose element type is not a character enumeration is
+  `(e1,e2,...)` as NVC prints it; a null such array gives `()` (NVC prints `)`).
+- **`MINIMUM`/`MAXIMUM` of a null array** give the element type's `'HIGH`/`'LOW` (NVC agrees).

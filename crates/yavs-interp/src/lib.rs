@@ -16,6 +16,7 @@ mod debug;
 mod exec;
 mod foreign;
 mod heap;
+mod implicit;
 mod native;
 mod reflect;
 mod textio;

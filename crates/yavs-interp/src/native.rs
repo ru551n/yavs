@@ -80,15 +80,15 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
             "`{symbol}` is not a native subprogram (lib/NATIVE.md defines the symbols)"
         ));
     }
+    if let Some(f) = crate::implicit::lookup(symbol) {
+        return Ok(Some(f));
+    }
     let f: NativeFn = match (symbol, family, attr) {
         ("yavs.standard.now.void.r_delay_length", _, _) => now,
         ("yavs.env.stop.void", _, _) => stop0,
         ("yavs.env.stop.integer", _, _) => stop1,
         ("yavs.env.finish.void", _, _) => finish0,
         ("yavs.env.finish.integer", _, _) => finish1,
-        (_, Some("to_string"), _) => to_string,
-        (_, Some("to_hstring"), _) => to_hstring,
-        (_, Some("to_ostring"), _) => to_ostring,
         (_, _, Some("value")) => value_attr,
         (_, _, Some("image")) => image_attr,
         ("yavs.env.resolution_limit.void.r_delay_length", _, _) => resolution_limit,
@@ -197,7 +197,7 @@ fn finish1(
     Ok(None)
 }
 
-fn lit(s: &str) -> EnumLit {
+pub(crate) fn lit(s: &str) -> EnumLit {
     let b = s.as_bytes();
     if b.len() == 3 && b[0] == b'\'' && b[2] == b'\'' {
         EnumLit::Char(b[1])
@@ -207,7 +207,7 @@ fn lit(s: &str) -> EnumLit {
 }
 
 /// `'image` (`image = true`) or `to_string` of a scalar.
-fn scalar_text(m: &Machine, ty: Option<TyId>, v: u64, image: bool) -> R<Vec<u8>> {
+pub(crate) fn scalar_text(m: &Machine, ty: Option<TyId>, v: u64, image: bool) -> R<Vec<u8>> {
     let ty = ty.ok_or_else(|| ice("image native without a type"))?;
     let t =
         m.rt.prog
@@ -291,42 +291,6 @@ fn value_attr(
         .map_err(|e| Fault::Runtime(format!("'value: {e}")))
 }
 
-/// `to_string` of an array of characters or bits: the fat pair in `a[0]`.
-fn array_text(m: &Machine, ty: TyId, fat: u64, bits: fn(&[bool]) -> Vec<u8>) -> R<Vec<u8>> {
-    if Ty::logic_leaf(&m.rt.prog.types, ty).is_some() {
-        let (data, n) = m.fat1(fat)?;
-        Ok(bits(&m.bits_at(data, n)?))
-    } else {
-        m.fat_bytes(fat)
-    }
-}
-
-fn is_array(m: &Machine, ty: Option<TyId>) -> Option<TyId> {
-    ty.filter(|t| matches!(m.rt.prog.types.get(*t), Some(Ty::Array { .. })))
-}
-
-fn to_hstring(
-    m: &mut Machine,
-    _: &mut Option<&mut Ctx<'_>>,
-    ty: Option<TyId>,
-    a: &[u64],
-) -> R<Option<u64>> {
-    let t = is_array(m, ty).ok_or_else(|| ice("to_hstring of a non-array type"))?;
-    let s = array_text(m, t, arg(a, 0)?, image::bits_to_hstring)?;
-    m.ret_string(&s).map(Some)
-}
-
-fn to_ostring(
-    m: &mut Machine,
-    _: &mut Option<&mut Ctx<'_>>,
-    ty: Option<TyId>,
-    a: &[u64],
-) -> R<Option<u64>> {
-    let t = is_array(m, ty).ok_or_else(|| ice("to_ostring of a non-array type"))?;
-    let s = array_text(m, t, arg(a, 0)?, image::bits_to_ostring)?;
-    m.ret_string(&s).map(Some)
-}
-
 fn image_attr(
     m: &mut Machine,
     _: &mut Option<&mut Ctx<'_>>,
@@ -334,19 +298,6 @@ fn image_attr(
     a: &[u64],
 ) -> R<Option<u64>> {
     let s = scalar_text(m, ty, arg(a, 0)?, true)?;
-    m.ret_string(&s).map(Some)
-}
-
-fn to_string(
-    m: &mut Machine,
-    _: &mut Option<&mut Ctx<'_>>,
-    ty: Option<TyId>,
-    a: &[u64],
-) -> R<Option<u64>> {
-    let s = match is_array(m, ty) {
-        Some(t) => array_text(m, t, arg(a, 0)?, image::bits_to_string)?,
-        None => scalar_text(m, ty, arg(a, 0)?, false)?,
-    };
     m.ret_string(&s).map(Some)
 }
 

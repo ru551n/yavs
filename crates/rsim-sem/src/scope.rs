@@ -145,6 +145,10 @@ impl Db {
         if self.entity(a) == self.entity(b) {
             return false;
         }
+        // A failed declaration's poison name conflicts with nothing (8.2).
+        if self.is_poison(a) || self.is_poison(b) {
+            return false;
+        }
         match (self.is_overloadable(a), self.is_overloadable(b)) {
             (true, true) => self.profile(a) == self.profile(b),
             _ => true,

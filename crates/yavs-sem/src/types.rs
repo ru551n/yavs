@@ -1639,7 +1639,7 @@ impl Db {
     }
 
     /// `x'subtype`, `x'element`, `t'base` used as type marks (16.2).
-    fn attribute_type_mark(
+    pub(crate) fn attribute_type_mark(
         &mut self,
         scope: ScopeId,
         prefix: &ast::Name,

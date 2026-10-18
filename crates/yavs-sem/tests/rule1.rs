@@ -1285,7 +1285,6 @@ fn f3_selected_element_keeps_record_constraint() {
 
 /// F4: attributes of `'element` and `'base` prefixes.
 #[test]
-#[ignore = "finding F4 (#104): `'element'range`, `'element'length`, `T'base'high` not implemented"]
 fn f4_attribute_of_attribute() {
     analyze("f4", &[("work", ARRAYS), ("work", ATTRIBUTE_OF_ATTRIBUTE)]);
 }

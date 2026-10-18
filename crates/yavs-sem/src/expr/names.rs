@@ -163,6 +163,13 @@ impl Db {
 
     /// The subtype a type mark name denotes, without reporting.
     pub(crate) fn quiet_type_mark(&mut self, scope: ScopeId, n: &ast::Name) -> Option<SubtypeId> {
+        // `x'element`, `x'subtype`, `t'base` denote subtypes (16.2), so `rows'element'range`
+        // is an attribute of a type mark.
+        if let ast::NameKind::Attribute { prefix, attr } = &n.kind
+            && matches!(attr.key.as_str(), "subtype" | "element" | "base")
+        {
+            return self.attribute_type_mark(scope, prefix, *attr).ok();
+        }
         match self.classify(scope, n) {
             NameRes::One(d) => match self.decls[self.entity(d)].kind {
                 DeclKind::Type(t) | DeclKind::GenericType(t) => Some(self.types[t].first_subtype),

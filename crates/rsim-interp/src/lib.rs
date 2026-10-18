@@ -14,6 +14,7 @@
 
 mod debug;
 mod exec;
+mod foreign;
 mod heap;
 mod native;
 
@@ -113,6 +114,8 @@ pub struct Runtime {
     pub(crate) foreign: Vec<Option<ForeignFn>>,
     pub(crate) pkgs: Vec<Arc<InstData>>,
     pub(crate) cov: Vec<AtomicU64>,
+    /// Compact constants expanded on first use by address.
+    pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
     pub(crate) limits: Limits,
 }
 
@@ -163,6 +166,7 @@ impl Runtime {
             foreign,
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
+            expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
             limits: b.limits,
             prog,
         }))

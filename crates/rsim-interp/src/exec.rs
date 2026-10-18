@@ -9,11 +9,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use rsim_ffi::{Arg, CType, Ret};
 use rsim_ir::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, ConstData, Dir, DriveMode, FOp, FUnOp,
-    ForceKind, ForeignArg, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp, LNumOp, LOp, LayoutError,
-    ParamClass, PhysOp, Program, Reg, StmtId, Ty, Width,
+    ForceKind, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp, LNumOp, LOp, LayoutError, ParamClass,
+    PhysOp, Program, Reg, StmtId, Ty, Width,
 };
 use rsim_kernel::{
     Ctx, DelayMode, Elem, ErrorKind, ForceMode, LogicVec, Severity, SigRef, SimError, StreamId,
@@ -62,8 +61,8 @@ const PKG: u8 = 2;
 const CONST: u8 = 3;
 const HEAP: u8 = 4;
 const TEMP: u8 = 5;
-const SHARED: u8 = 6;
-const SHARED_HEAP: u8 = 7;
+pub(crate) const SHARED: u8 = 6;
+pub(crate) const SHARED_HEAP: u8 = 7;
 
 const SPACE_NAMES: [&str; 8] = [
     "frame",
@@ -87,7 +86,7 @@ pub(crate) fn mk_addr(space: u8, index: u32, off: u64) -> R<u64> {
     Ok(u64::from(space) << 61 | u64::from(index) << 32 | off)
 }
 
-fn split(a: u64) -> (u8, u32, u64) {
+pub(crate) fn split(a: u64) -> (u8, u32, u64) {
     (
         (a >> 61) as u8,
         ((a >> 32) & ((1 << 29) - 1)) as u32,
@@ -95,7 +94,7 @@ fn split(a: u64) -> (u8, u32, u64) {
     )
 }
 
-fn add_addr(a: u64, delta: u64) -> R<u64> {
+pub(crate) fn add_addr(a: u64, delta: u64) -> R<u64> {
     let (s, i, o) = split(a);
     match o.checked_add(delta) {
         Some(o) => mk_addr(s, i, o),
@@ -416,7 +415,7 @@ impl Machine {
         &mut self.frames[n - 1]
     }
 
-    fn r(&self, r: Reg) -> u64 {
+    pub(crate) fn r(&self, r: Reg) -> u64 {
         self.frames[self.frames.len() - 1].regs[r.0 as usize]
     }
 
@@ -434,19 +433,19 @@ impl Machine {
 
     // ---- memory ----
 
-    fn shared(&self) -> R<&SharedState> {
+    pub(crate) fn shared(&self) -> R<&SharedState> {
         self.sh
             .as_ref()
             .ok_or_else(|| ice("shared state accessed by a process that is not marked serial"))
     }
 
-    fn shared_mut(&mut self) -> R<&mut SharedState> {
+    pub(crate) fn shared_mut(&mut self) -> R<&mut SharedState> {
         self.sh
             .as_mut()
             .ok_or_else(|| ice("shared state accessed by a process that is not marked serial"))
     }
 
-    fn rd(&self, a: u64, n: u64) -> R<&[u8]> {
+    pub(crate) fn rd(&self, a: u64, n: u64) -> R<&[u8]> {
         let (sp, idx, off) = split(a);
         let mem: &[u8] = match sp {
             FRAME => {
@@ -467,7 +466,18 @@ impl Machine {
             }
             CONST => match self.rt.prog.consts.get(rsim_ir::ConstId(idx)) {
                 Some(ConstData::Bytes(b)) => b,
-                _ => return Err(ice(format!("constant c{idx} is not addressable bytes"))),
+                Some(c) => {
+                    let cell = self
+                        .rt
+                        .expanded
+                        .get(idx as usize)
+                        .ok_or_else(|| ice(format!("no constant c{idx}")))?;
+                    if cell.get().is_none() {
+                        let _ = cell.set(expand_const(c)?);
+                    }
+                    cell.get().map(Vec::as_slice).unwrap_or(&[])
+                }
+                None => return Err(ice(format!("no constant c{idx}"))),
             },
             HEAP => self
                 .heap
@@ -492,7 +502,7 @@ impl Machine {
         })
     }
 
-    fn wr(&mut self, a: u64, n: u64) -> R<&mut [u8]> {
+    pub(crate) fn wr(&mut self, a: u64, n: u64) -> R<&mut [u8]> {
         let (sp, idx, off) = split(a);
         let mem: &mut [u8] = match sp {
             FRAME => {
@@ -531,12 +541,12 @@ impl Machine {
         })
     }
 
-    fn put(&mut self, a: u64, bytes: &[u8]) -> R<()> {
+    pub(crate) fn put(&mut self, a: u64, bytes: &[u8]) -> R<()> {
         self.wr(a, bytes.len() as u64)?.copy_from_slice(bytes);
         Ok(())
     }
 
-    fn load(&self, a: u64, w: Width) -> R<u64> {
+    pub(crate) fn load(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
         let b = self.rd(a, n)?;
         let mut x = [0u8; 8];
@@ -544,7 +554,7 @@ impl Machine {
         Ok(u64::from_le_bytes(x))
     }
 
-    fn store(&mut self, a: u64, w: Width, v: u64) -> R<()> {
+    pub(crate) fn store(&mut self, a: u64, w: Width, v: u64) -> R<()> {
         let n = w.bytes().min(8) as usize;
         self.put(a, &v.to_le_bytes()[..n])
     }
@@ -575,7 +585,7 @@ impl Machine {
         Ok(fat)
     }
 
-    fn planes(&self, a: u64, n: u64) -> R<LogicVec> {
+    pub(crate) fn planes(&self, a: u64, n: u64) -> R<LogicVec> {
         let b = self.rd(a, n.div_ceil(64) * 32)?;
         Ok(LogicVec::from_repr(Planes::from_blocks(
             n as usize,
@@ -583,7 +593,7 @@ impl Machine {
         )))
     }
 
-    fn put_planes(&mut self, a: u64, v: &LogicVec) -> R<()> {
+    pub(crate) fn put_planes(&mut self, a: u64, v: &LogicVec) -> R<()> {
         self.put(a, &bytes_of(v.repr().blocks()))
     }
 
@@ -658,7 +668,7 @@ impl Machine {
         }
     }
 
-    fn heap_of(&mut self, h: u64) -> R<(&mut Heap, u8)> {
+    pub(crate) fn heap_of(&mut self, h: u64) -> R<(&mut Heap, u8)> {
         match heap::tag_of(h) {
             heap::PRIVATE => Ok((&mut self.heap, HEAP)),
             heap::SHARED => {
@@ -1394,9 +1404,9 @@ impl Machine {
                     let sh = self.shared_mut()?;
                     sh.heap
                         .get_or_insert_with(|| Heap::new(heap::SHARED))
-                        .alloc(ty, data)
+                        .alloc(heap::Obj::Typed(ty), data)
                 } else {
-                    self.heap.alloc(ty, data)
+                    self.heap.alloc(heap::Obj::Typed(ty), data)
                 };
                 let h = r.map_err(|_| {
                     Fault::Runtime("heap object limit (16M objects per heap) exceeded".into())
@@ -1678,71 +1688,6 @@ impl Machine {
         }
         Ok(Flow::Next)
     }
-
-    fn foreign(
-        &mut self,
-        prog: &Program,
-        f: &Func,
-        id: rsim_ir::ForeignId,
-        args: rsim_ir::Regs,
-    ) -> R<u64> {
-        let x = prog
-            .foreign
-            .get(id)
-            .ok_or_else(|| ice(format!("no foreign subprogram {id}")))?;
-        let rt = self.rt.clone();
-        let fun = rt
-            .foreign
-            .get(id.0 as usize)
-            .and_then(|f| f.as_ref())
-            .ok_or_else(|| ice(format!("foreign `{}` is not bound", x.name)))?;
-        let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();
-        let mut temps: Vec<Box<[u64; 1]>> = Vec::new();
-        let mut cargs = Vec::with_capacity(regs.len());
-        for (k, (a, &r)) in x.args.iter().zip(&regs).enumerate() {
-            let v = self.r(r);
-            let arg = match *a {
-                ForeignArg::Value(ct) => to_c(ct, v, &x.name, k)?,
-                ForeignArg::ScalarRef(ct, w) => {
-                    let cur = self.load(v, w)?;
-                    let bits = match to_c(ct, cur, &x.name, k)? {
-                        Arg::F32(f) => u64::from(f.to_bits()),
-                        a => arg_bits(a),
-                    };
-                    let mut b = Box::new([bits]);
-                    let p = b.as_mut_ptr().cast::<std::ffi::c_void>();
-                    temps.push(b);
-                    Arg::Ptr(p)
-                }
-            };
-            cargs.push(arg);
-        }
-        let ret = fun.call(&cargs).map_err(|e| {
-            Fault::Runtime(format!("foreign call of `{}` ({}): {e}", x.name, x.symbol))
-        })?;
-        let mut ti = 0;
-        for (a, &r) in x.args.iter().zip(&regs) {
-            if let ForeignArg::ScalarRef(ct, w) = *a {
-                let bits = temps[ti][0];
-                ti += 1;
-                let v = from_c_bits(ct, bits);
-                self.store(self.r(r), w, v)?;
-            }
-        }
-        Ok(match ret {
-            Ret::Void => 0,
-            Ret::I8(v) => v as i64 as u64,
-            Ret::I16(v) => v as i64 as u64,
-            Ret::I32(v) => v as i64 as u64,
-            Ret::I64(v) => v as u64,
-            Ret::U8(v) => v.into(),
-            Ret::U16(v) => v.into(),
-            Ret::U32(v) => v.into(),
-            Ret::F32(v) => f64::from(v).to_bits(),
-            Ret::F64(v) => v.to_bits(),
-            Ret::Ptr(p) => p as usize as u64,
-        })
-    }
 }
 
 fn force_mode(k: ForceKind) -> ForceMode {
@@ -1750,64 +1695,6 @@ fn force_mode(k: ForceKind) -> ForceMode {
         ForceKind::In => ForceMode::Effective,
         ForceKind::Out => ForceMode::Driving,
     }
-}
-
-fn arg_bits(a: Arg) -> u64 {
-    match a {
-        Arg::I8(v) => v as u8 as u64,
-        Arg::I16(v) => v as u16 as u64,
-        Arg::I32(v) => v as u32 as u64,
-        Arg::I64(v) => v as u64,
-        Arg::U8(v) => v.into(),
-        Arg::U16(v) => v.into(),
-        Arg::U32(v) => v.into(),
-        Arg::F32(v) => v.to_bits().into(),
-        Arg::F64(v) => v.to_bits(),
-        Arg::Ptr(p) => p as usize as u64,
-    }
-}
-
-/// A C temp's bits back to a VHDL cell (sign-extended integers, f64 reals).
-fn from_c_bits(ct: CType, b: u64) -> u64 {
-    match ct {
-        CType::I8 => b as i8 as i64 as u64,
-        CType::I16 => b as i16 as i64 as u64,
-        CType::I32 => b as i32 as i64 as u64,
-        CType::I64 | CType::Ptr => b,
-        CType::U8 => b & 0xff,
-        CType::U16 => b & 0xffff,
-        CType::U32 => b & 0xffff_ffff,
-        CType::F32 => f64::from(f32::from_bits(b as u32)).to_bits(),
-        CType::F64 => b,
-    }
-}
-
-fn to_c(ct: CType, v: u64, name: &str, k: usize) -> R<Arg> {
-    let i = v as i64;
-    let range = || {
-        Fault::Runtime(format!(
-            "argument {} of foreign `{name}`: {i} does not fit C type {ct}",
-            k + 1
-        ))
-    };
-    Ok(match ct {
-        CType::I8 => Arg::I8(i8::try_from(i).map_err(|_| range())?),
-        CType::I16 => Arg::I16(i16::try_from(i).map_err(|_| range())?),
-        CType::I32 => Arg::I32(i32::try_from(i).map_err(|_| range())?),
-        CType::I64 => Arg::I64(i),
-        CType::U8 => Arg::U8(u8::try_from(i).map_err(|_| range())?),
-        CType::U16 => Arg::U16(u16::try_from(i).map_err(|_| range())?),
-        CType::U32 => Arg::U32(u32::try_from(i).map_err(|_| range())?),
-        CType::F32 => Arg::F32(f64::from_bits(v) as f32),
-        CType::F64 => Arg::F64(f64::from_bits(v)),
-        CType::Ptr => {
-            return rt_err(format!(
-                "argument {} of foreign `{name}`: passing access values and arrays to C is \
-                 not implemented yet",
-                k + 1
-            ));
-        }
-    })
 }
 
 fn store_cells(slots: &mut [u8], slot: u32, w: Width, cells: &[u64]) -> R<()> {

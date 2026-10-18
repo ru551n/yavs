@@ -250,3 +250,65 @@ pub unsafe fn call(fn_ptr: *const c_void, sig: &Signature, args: &[Arg]) -> Resu
     // SAFETY: forwarded to the caller.
     unsafe { ForeignFn::new(fn_ptr, sig.clone()) }?.call(args)
 }
+
+/// C-like callees that write through pointers, for marshalling tests in crates that forbid
+/// `unsafe` (rsim-interp). Not part of the API.
+#[doc(hidden)]
+pub mod testing {
+    use std::ffi::c_void;
+
+    /// `int64_t sum_double(int32_t *p, int64_t n)`: the sum, and doubles every element.
+    pub extern "C" fn sum_double(p: *mut c_void, n: i64) -> i64 {
+        // SAFETY: the caller passes `n` valid `int32_t`s.
+        let s = unsafe { std::slice::from_raw_parts_mut(p.cast::<i32>(), n as usize) };
+        let sum = s.iter().map(|&v| i64::from(v)).sum();
+        s.iter_mut().for_each(|v| *v *= 2);
+        sum
+    }
+
+    /// `void invert8(uint8_t *p)`: swaps '0' and '1' (codes 2 and 3) in 8 std_ulogic codes,
+    /// everything else becomes 'X'.
+    pub extern "C" fn invert8(p: *mut c_void) {
+        // SAFETY: the caller passes 8 valid bytes.
+        let s = unsafe { std::slice::from_raw_parts_mut(p.cast::<u8>(), 8) };
+        s.iter_mut().for_each(|c| {
+            *c = match *c {
+                2 => 3,
+                3 => 2,
+                _ => 1,
+            }
+        });
+    }
+
+    #[repr(C)]
+    pub struct Rec {
+        pub a: i32,
+        pub b: f64,
+        pub c: u8,
+    }
+
+    /// `void rec_bump(struct { int32_t a; double b; uint8_t c; } *p)`.
+    pub extern "C" fn rec_bump(p: *mut c_void) {
+        // SAFETY: the caller passes a valid `Rec`.
+        let r = unsafe { &mut *p.cast::<Rec>() };
+        r.a += 1;
+        r.b *= 2.0;
+        r.c = 1;
+    }
+
+    /// `int32_t poke(int64_t *p)`: writes 99 through a non-null pointer; returns 1 for NULL.
+    pub extern "C" fn poke(p: *mut c_void) -> i32 {
+        if p.is_null() {
+            return 1;
+        }
+        // SAFETY: the caller passes a valid `int64_t`.
+        unsafe { *p.cast::<i64>() = 99 };
+        0
+    }
+
+    /// `void bad_bool(uint8_t *p)`: writes 7, which is no boolean.
+    pub extern "C" fn bad_bool(p: *mut c_void) {
+        // SAFETY: the caller passes one valid byte.
+        unsafe { *p.cast::<u8>() = 7 };
+    }
+}

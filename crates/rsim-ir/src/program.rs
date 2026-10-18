@@ -226,6 +226,22 @@ pub enum ForeignArg {
     /// A scalar `out`/`inout`: the register holds the address of the VHDL value (`Width`),
     /// C gets a pointer to a C-typed temp that is written back after the call.
     ScalarRef(CType, Width),
+    /// An array of scalars of type `ty`: the register holds the address of a fat pair
+    /// `[data, dope]` (constrained arrays too). C gets a pointer to a C-layout copy (one C
+    /// element per VHDL element, left to right; logic elements as one code byte), followed
+    /// by `lengths` `int64_t` lengths (one per dimension for an unconstrained formal, else 0).
+    /// `copy_back` (`out`/`inout`) writes the C array back after the call.
+    Array {
+        ty: TyId,
+        lengths: u8,
+        copy_back: bool,
+    },
+    /// A record of scalars of type `ty` (static layout): the register holds its address, C
+    /// gets a pointer to a naturally aligned C struct.
+    Record { ty: TyId, copy_back: bool },
+    /// An access value: C gets a pointer to the designated object's data (after the
+    /// descriptor for an array object) in VHDL layout, or NULL.
+    Access,
 }
 
 /// A VHPIDIRECT subprogram (ir.md 1.7). The function pointer is bound outside the IR (the
@@ -244,9 +260,16 @@ impl ForeignRef {
             params: self
                 .args
                 .iter()
-                .map(|a| match a {
-                    ForeignArg::Value(c) => *c,
-                    ForeignArg::ScalarRef(..) => CType::Ptr,
+                .flat_map(|a| match *a {
+                    ForeignArg::Value(c) => vec![c],
+                    ForeignArg::Array { lengths, .. } => {
+                        let mut v = vec![CType::Ptr];
+                        v.extend(std::iter::repeat_n(CType::I64, lengths.into()));
+                        v
+                    }
+                    ForeignArg::ScalarRef(..) | ForeignArg::Record { .. } | ForeignArg::Access => {
+                        vec![CType::Ptr]
+                    }
                 })
                 .collect(),
             ret: self.ret,

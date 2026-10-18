@@ -24,9 +24,20 @@ pub enum HeapError {
     Full,
 }
 
+/// What a heap object holds, for the GC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Obj {
+    /// A value of this type (arrays as `[descriptor][elements]`).
+    Typed(TyId),
+    /// Bytes without handles (a `line` string made by a native).
+    Bytes,
+    /// `[descriptor: 24 bytes][handles]` (a `line_vector` made by a native).
+    Handles,
+}
+
 struct Slot {
     generation: u32,
-    ty: TyId,
+    ty: Obj,
     data: Option<Vec<u8>>,
 }
 
@@ -60,7 +71,7 @@ impl Heap {
         self.slots.iter().filter(|s| s.data.is_some()).count()
     }
 
-    pub fn alloc(&mut self, ty: TyId, data: Vec<u8>) -> Result<u64, HeapError> {
+    pub fn alloc(&mut self, ty: Obj, data: Vec<u8>) -> Result<u64, HeapError> {
         self.since_gc = self.since_gc.saturating_add(data.len() as u64 + 32);
         let index = match self.free.pop() {
             Some(i) => i,
@@ -71,7 +82,7 @@ impl Heap {
                 }
                 self.slots.push(Slot {
                     generation: 0,
-                    ty,
+                    ty: Obj::Bytes,
                     data: None,
                 });
                 i
@@ -116,6 +127,11 @@ impl Heap {
         self.slots.get(index as usize)?.data.as_deref()
     }
 
+    pub fn kind(&self, index: u32) -> Option<Obj> {
+        let s = self.slots.get(index as usize)?;
+        s.data.as_ref().map(|_| s.ty)
+    }
+
     pub fn data_mut(&mut self, index: u32) -> Option<&mut [u8]> {
         self.slots.get_mut(index as usize)?.data.as_deref_mut()
     }
@@ -135,7 +151,19 @@ impl Heap {
             }
             let s = &self.slots[i as usize];
             let Some(data) = &s.data else { continue };
-            if !object_handles(prog, s.ty, data, &mut work) {
+            let ok = match s.ty {
+                Obj::Typed(t) => object_handles(prog, t, data, &mut work),
+                Obj::Bytes => true,
+                Obj::Handles => {
+                    let mut at = 24;
+                    while let Some(h) = read_u64(data, at) {
+                        work.push(h);
+                        at += 8;
+                    }
+                    true
+                }
+            };
+            if !ok {
                 return false;
             }
         }
@@ -278,11 +306,11 @@ mod tests {
         };
         let mut h = Heap::new(PRIVATE);
         // a -> b, c unreachable.
-        let b = h.alloc(node, vec![0; 16]).unwrap();
+        let b = h.alloc(Obj::Typed(node), vec![0; 16]).unwrap();
         let mut ad = vec![0; 8];
         ad.extend(b.to_le_bytes());
-        let a = h.alloc(node, ad).unwrap();
-        let c = h.alloc(node, vec![0; 16]).unwrap();
+        let a = h.alloc(Obj::Typed(node), ad).unwrap();
+        let c = h.alloc(Obj::Typed(node), vec![0; 16]).unwrap();
         assert!(h.collect(&prog, &[a]));
         assert_eq!(h.live(), 2);
         assert_eq!(h.resolve(c), Err(HeapError::Stale));
@@ -290,7 +318,7 @@ mod tests {
         h.free(a).unwrap();
         assert_eq!(h.free(a), Err(HeapError::Stale));
         // The freed slot is reused with a new generation; the old handle stays stale.
-        let d = h.alloc(int, vec![0; 8]).unwrap();
+        let d = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
         assert_ne!(d, a);
         assert_eq!(h.resolve(a), Err(HeapError::Stale));
         assert_eq!(h.resolve(0), Err(HeapError::Null));

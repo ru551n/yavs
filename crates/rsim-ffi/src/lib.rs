@@ -21,7 +21,7 @@ mod abi;
 mod sys;
 pub mod vhdl;
 
-pub use sys::{ForeignFn, call};
+pub use sys::{ForeignFn, call, testing};
 pub use typed::{CArgType, CFnPtr, CRetType};
 
 mod typed;

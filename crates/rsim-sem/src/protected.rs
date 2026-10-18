@@ -242,7 +242,7 @@ impl Db {
     }
 
     /// The protected type whose declaration region is `s`.
-    fn protected_of_region(&self, s: ScopeId) -> Option<TypeId> {
+    pub fn protected_of_region(&self, s: ScopeId) -> Option<TypeId> {
         let sc = &self.scopes[s];
         if sc.kind != ScopeKind::Protected {
             return None;

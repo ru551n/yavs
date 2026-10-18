@@ -6,7 +6,6 @@ agg/case_others_not_last.vhd
 agg/case_string_choice_length_mismatch.vhd
 agg/index_outside_context.vhd
 agg/mix_named_positional.vhd
-agg/nonstatic_choice_with_others.vhd
 agg/others_not_last.vhd
 agg/others_unconstrained_context.vhd
 agg/record_others_mixed_types.vhd
@@ -85,7 +84,6 @@ prot/protected_body_state_from_outside.vhd
 prot/protected_constant.vhd
 prot/shared_variable_array_not_protected.vhd
 prot/shared_variable_not_protected.vhd
-prot/shared_variable_protected_ok.vhd
 prot/signal_of_protected_type.vhd
 relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd

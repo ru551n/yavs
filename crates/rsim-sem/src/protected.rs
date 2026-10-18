@@ -300,9 +300,14 @@ impl Db {
             }
         };
         let decl_region = self.decls[ty_decl].scope;
+        // A package body's region sits under its own context region, whose parent is the
+        // package's region (unit.rs).
         let same = decl_region == region
             || (self.scopes[region].kind == ScopeKind::PackageBody
-                && self.scopes[region].parent == Some(decl_region));
+                && self.scopes[region]
+                    .parent
+                    .and_then(|c| self.scopes[c].parent)
+                    == Some(decl_region));
         if !same {
             return Err(self.error(
                 Diagnostic::error(

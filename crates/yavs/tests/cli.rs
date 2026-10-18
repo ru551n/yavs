@@ -653,6 +653,10 @@ fn explain() {
     assert_eq!(yavs("E0000").status.code(), Some(2));
 }
 
+fn etxtbsy(e: &std::io::Error) -> bool {
+    cfg!(unix) && e.raw_os_error() == Some(26)
+}
+
 /// A copy of the binary alone in a directory analyzes and runs a design (std/ieee are built
 /// in). `$YAVS_STDLIB` naming a tree with empty `std` and `ieee` must fail and name that tree,
 /// which shows the variable replaces the built-in copy.
@@ -677,11 +681,19 @@ fn standalone_binary() {
             Some(d) => c.env("YAVS_STDLIB", d),
             None => c.env_remove("YAVS_STDLIB"),
         };
-        let o = c
-            .args(["--color", "never"])
-            .args(args)
-            .output()
-            .expect("run");
+        c.args(["--color", "never"]).args(args);
+        // A sibling test forking while we wrote the copy leaves the copy's write fd open in the
+        // child until its exec, so exec of the copy can fail with ETXTBSY (Linux). Retry that only.
+        let mut tries = 0;
+        let o = loop {
+            match c.output() {
+                Err(e) if etxtbsy(&e) && tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                r => break r.expect("run"),
+            }
+        };
         (
             o.status.code().expect("exit code"),
             String::from_utf8_lossy(&o.stderr).into_owned(),

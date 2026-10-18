@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Regenerate tests/corpus/RESULTS.md: build yavs, run the corpus at 1 thread, 4 threads and
-# 4 threads shuffled, then summarise. Run outputs go to ~/.cache/rsim-difftest2 (removed afterwards).
+# 4 threads shuffled, then summarise. Run outputs go to ~/.cache/rsim-difftest2.<pid> (removed afterwards).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6} DIFFTEST_CACHE=${DIFFTEST_CACHE:-$HOME/.cache/rsim-difftest2}
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6} DIFFTEST_CACHE=${DIFFTEST_CACHE:-$HOME/.cache/rsim-difftest2.$$}
 cargo build -p yavs
 export YAVS_BIN=${CARGO_TARGET_DIR:-$PWD/target}/debug/yavs
 mkdir -p "$HOME/.cache"

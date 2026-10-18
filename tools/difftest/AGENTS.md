@@ -22,7 +22,7 @@ themselves are described in `tests/corpus/AGENTS.md`.
 | File | What |
 |---|---|
 | `difftest.py` | Harness: templates `NVC`, `GHDL`, `YAVS`, `normalise()`, `yavs_fatal()` (yavs runtime diagnostics to `fatal` events), ignore masks, `--bless`, `--json`, `--threads`, `--shuffle`, `--filter`, `--jobs` (max 8), `--list`, `--no-sandbox` |
-| `report.sh` | Build `yavs`, run at 1, 4 and 4 shuffled threads, write `tests/corpus/RESULTS.md` (scratch `~/.cache/rsim-difftest2`, removed afterwards) |
+| `report.sh` | Build `yavs`, run at 1, 4 and 4 shuffled threads, write `tests/corpus/RESULTS.md` (scratch `~/.cache/rsim-difftest2.<pid>`, removed afterwards) |
 | `report.py` | `--json` results to `RESULTS.md`, failures grouped with an owner guess per code/message |
 | `README.md` | The contract |
 
@@ -34,7 +34,7 @@ themselves are described in `tests/corpus/AGENTS.md`.
 | yavs is compared strictly (no ignored fields by default); a test may opt into `ignore=order` with a comment | Same-cycle report order is unspecified by the LRM | README "Ignore set", `docs/decisions.md` |
 | Exit codes 97 (analysis) and 98 (elaboration) are reserved for the harness | Compile failures reported as such | README "Plugging yavs in" |
 | yavs reports in the reference simulator's format on stdout; runtime errors are diagnostics on stderr (`error[E3xxx]`, `= note: at T, delta D`) | One canonical form | README; `docs/cli-contract.md` 5 |
-| Every run `timeout 300 systemd-run --user --scope -p MemoryMax=2G`, at most 8 at once; work dirs under `~/.cache/yavs-difftest` (`DIFFTEST_CACHE`) | Root rule 15 | README |
+| Every run `timeout 300 systemd-run --user --scope -p MemoryMax=2G`, at most 8 at once; work dirs under `~/.cache/yavs-difftest/run-<pid>` (unique per process; `DIFFTEST_CACHE` overrides) | Root rule 15 | README |
 | `--bless` refuses an `.expected` whose exit status differs from the header's `exit=` | A broken test cannot be blessed by accident | README "Test header" |
 
 Decisions about the harness go in this section and README in the same commit (root `AGENTS.md`

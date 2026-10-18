@@ -8,7 +8,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CORPUS = ROOT / "tests" / "corpus"
-CACHE = Path(os.environ.get("DIFFTEST_CACHE", Path.home() / ".cache" / "yavs-difftest"))
+# Work directory: unique per process unless DIFFTEST_CACHE is set, so parallel runs never collide.
+CACHE = Path(os.environ.get("DIFFTEST_CACHE") or Path.home() / ".cache" / "yavs-difftest" / f"run-{os.getpid()}")
 MAX_JOBS = 8
 TIMEOUT = 300
 RC_ANALYSE, RC_ELAB = 97, 98

@@ -80,3 +80,57 @@
   which is caught), 1 for every other error. Normal ends map from `EndReason` in the CLI.
 - **End of simulation:** `Idle` (nothing scheduled) is terminal like `stop`/`finish`;
   `EndOfSim` fires once.
+
+## VHPI ABI and symbol export (rsim-vhpi)
+
+- **Header:** `crates/rsim-vhpi/include/vhpi_user.h` is the official IEEE 1076-2019 header
+  ("Copyright 2019 IEEE P1076 WG Authors", Apache-2.0), vendored unchanged with its license
+  header from rust-vhpi (`vhpi-sys/vhpi_user.h`, commit `65484e3`; NVC ships the same file with
+  `(void)` prototypes). Plugins build against it. We do not write our own: names, values and
+  layouts are fixed by the standard, and the IEEE text is what every other simulator ships.
+- **Rust side:** hand-written `#[repr(C)]` types and one constant per enumerator in `sys.rs`
+  (C enums are `c_int`), no bindgen or libclang build dependency (painful on Windows). The test
+  `abi_matches_c_header` compiles a C program generated from the Rust tables against the header
+  and compares all ~610 constants and every struct size and field offset; a second test checks
+  the header has no constant the Rust side lacks. Same result on Linux and Win64 (MinGW, wine).
+- **Export, Linux:** the executable exports exactly the symbols in `src/exports.txt` through
+  `-Wl,--dynamic-list` (the executable form of a version script; `--export-dynamic` would also
+  export every Rust and std symbol). Plugins leave `vhpi_*` unresolved; plugin loading uses
+  `RTLD_NOW | RTLD_GLOBAL`, so a missing symbol fails at load, naming it.
+- **Export, Windows:** no VHPI DLL. The executable is linked with a generated `.def`
+  (`/DEF:` for MSVC, the `.def` as linker input for MinGW). `build.rs` also writes import
+  libraries `rsim.lib` (naming `rsim.exe`) and `rsim-vhpi-host.lib` with `lib.exe` (MSVC), else
+  `llvm-dlltool`, else MinGW `dlltool`; short-format import libraries work with both MSVC link
+  and GNU ld. The import names the executable, so a renamed `rsim.exe` breaks plugins linked
+  that way (shims that use `GetProcAddress` on the main module do not care).
+- **One list:** `build.rs` turns `src/exports.txt` into the dynamic list, the `.def`, the import
+  libraries and a Rust table that references every symbol, which keeps them linked from the rlib.
+  Other packages (the `rsim` CLI) get the paths as `DEP_RSIM_VHPI_DYNAMIC_LIST`, `_DEF` and
+  `_IMPORT_LIB_DIR` (the crate has `links = "rsim_vhpi"`) and must pass them to their own binary
+  link. The spike binary `rsim-vhpi-host` gets them via `rustc-link-arg-bins`.
+- **Variadics:** `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` are in `src/shim.c`
+  (stable Rust cannot define C-variadic functions) and call plain Rust functions.
+  `vhpi_control` ignores the optional argument after `vhpiStop`/`vhpiFinish` (cocotb passes
+  `vhpiDiagTimeLoc`).
+- **Unsafe:** the crate does not inherit the workspace lints, since `forbid(unsafe_code)` cannot
+  be relaxed per crate; unsafe stays in `abi.rs` and `plugin.rs`, `model.rs` is safe Rust.
+- **State and handles:** VHPI has no context argument, so the model is one process-wide state
+  behind a mutex that is never held while plugin code runs. Handles are `(index, generation)`
+  packed into the pointer value (rule 9), never NULL and never dereferenced; a released handle
+  goes stale even after its slot is reused. 64-bit targets only (compile error otherwise).
+- **Errors (fail early, fail clearly):** a plugin that does not exist, does not load (with the
+  OS loader's message and error code) or has no entry point is a hard error before simulation
+  starts: `E0901` (cannot load) and `E0902` (no entry point), rendered through rsim-diag.
+  Each failed VHPI call sets the `vhpi_check_error` info (cleared by the next call, printf
+  included). API misuse (NULL arguments, stale or wrong handles) is also reported on stderr every
+  time as `W0903`; calls rsim does not implement yet as `W0904`, once per distinct message.
+  A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
+  `vhpi_check_error`, since cocotb probes names routinely. Codes `E09xx`/`W09xx` are reserved
+  for VHPI.
+- **Verified:** Linux x86_64 by `cargo test` (C plugin built against only the header, loaded
+  through `vhpi_startup_routines` and through `LIB:ENTRY`, plus missing file, missing entry and
+  unresolved-symbol errors). Windows x86_64 GNU by cross-building with MinGW and running under
+  wine (the export table has exactly the 42 symbols, the plugin DLL imports from
+  `rsim-vhpi-host.exe` through the llvm-dlltool import library, same output as Linux). The
+  tests themselves cannot run under wine since they call the C compiler. Windows MSVC (`/DEF:`,
+  `lib.exe`, `cl` in the tests) is only build-path code until Windows CI runs it.

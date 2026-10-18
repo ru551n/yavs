@@ -1,0 +1,46 @@
+# Symbols the simulator executable exports to VHPI plugins.
+# One per line; DATA marks a data symbol (needed for the Windows .def).
+# build.rs turns this into the Linux dynamic list, the Windows .def and
+# import libraries, and the Rust table that keeps every symbol linked.
+vhpi_assert
+vhpi_check_error
+vhpi_compare_handles
+vhpi_control
+vhpi_create
+vhpi_disable_cb
+vhpi_enable_cb
+vhpi_format_value
+vhpi_get
+vhpi_get_cb_info
+vhpi_get_data
+vhpi_get_foreignf_info
+vhpi_get_next_time
+vhpi_get_phys
+vhpi_get_real
+vhpi_get_str
+vhpi_get_time
+vhpi_get_value
+vhpi_handle
+vhpi_handle_by_index
+vhpi_handle_by_name
+vhpi_is_printable
+vhpi_iterator
+vhpi_printf
+vhpi_protected_call
+vhpi_put_data
+vhpi_put_value
+vhpi_register_cb
+vhpi_register_foreignf
+vhpi_release_handle
+vhpi_remove_cb
+vhpi_scan
+vhpi_schedule_transaction
+vhpi_vprintf
+vhpiFS DATA
+vhpiPS DATA
+vhpiNS DATA
+vhpiUS DATA
+vhpiMS DATA
+vhpiS DATA
+vhpiMN DATA
+vhpiHR DATA

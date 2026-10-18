@@ -1264,8 +1264,11 @@ impl Db {
                         | PredefAttr::Ascending,
                         TypeKind::Array { .. },
                     ) => {
-                        if self.constrainedness(self.exprs[p].subtype)
-                            == crate::types::Constrainedness::Full
+                        let st = self.exprs[p].subtype;
+                        if self.array_locally_static(st) {
+                            // An object of a locally static subtype (9.4.2 e).
+                            Staticness::Locally
+                        } else if self.constrainedness(st) == crate::types::Constrainedness::Full
                             || self.is_port_or_generic(p)
                         {
                             // A port or generic gets its bounds once, at elaboration: like NVC,
@@ -1534,11 +1537,28 @@ impl Db {
         }
     }
 
-    /// The expression names a port or generic of the enclosing design entity.
+    /// An array subtype whose index ranges are all locally static (9.4.2).
+    fn array_locally_static(&self, st: SubtypeId) -> bool {
+        let crate::types::Constraint::Array {
+            dims: Some(dims), ..
+        } = &self.subtypes[st].constraint
+        else {
+            return false;
+        };
+        dims.iter().all(|r| match r {
+            crate::types::RangeC::Explicit { left, right, .. } => {
+                self.exprs[*left].stat.min(self.exprs[*right].stat) == Staticness::Locally
+            }
+            crate::types::RangeC::Attr { .. } => false,
+        })
+    }
+
+    /// The expression names a port or generic of the enclosing design entity,
+    /// or a sub-element of one (`bus.dat`: its bounds are fixed at elaboration too).
     fn is_port_or_generic(&self, e: ExprId) -> bool {
-        match &self.exprs[e].kind {
-            ExprKind::Obj(d) => matches!(
-                &self.decls[*d].kind,
+        match self.lsp(e).map(|l| l.root) {
+            Some(crate::hir::ObjRoot::Decl(d)) => matches!(
+                &self.decls[d].kind,
                 DeclKind::Object(o) if matches!(o.role, crate::decl::ObjRole::Port | crate::decl::ObjRole::Generic)
             ),
             _ => false,

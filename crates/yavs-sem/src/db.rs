@@ -93,6 +93,8 @@ pub struct Db {
     pub attr_index: HashMap<(DeclId, Symbol), AttrValueId>,
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
     pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
+    /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
+    pub(crate) pending_label_attrs: Vec<crate::attr::PendingLabel>,
     pub well_known: WellKnown,
     pub poison: Poison,
     pub(crate) root: ScopeId,
@@ -212,6 +214,7 @@ impl Db {
             attr_values: Arena::new(),
             attr_index: HashMap::new(),
             attr_closed: HashSet::new(),
+            pending_label_attrs: Vec::new(),
             well_known: WellKnown::default(),
             poison: Poison {
                 decl,

@@ -913,8 +913,11 @@ impl Db {
         HashMap::new()
     }
 
-    /// The subtype of the sub-element a prefix denotes; `None` when unknown.
-    fn lsp_subtype(&self, l: &Lsp) -> Option<SubtypeId> {
+    /// The subtype of the sub-element a prefix denotes, and whether it is
+    /// resolved: by its own subtype or by that of an enclosing part (the
+    /// elements of a `(resolved) std_ulogic_vector` signal are, 4.6). `None`
+    /// when unknown.
+    fn lsp_subtype(&self, l: &Lsp) -> Option<(SubtypeId, bool)> {
         let ObjRoot::Decl(d) = l.root else {
             return None;
         };
@@ -922,6 +925,7 @@ impl Db {
             return None;
         };
         let mut st = o.subtype;
+        let mut resolved = self.is_resolved(st);
         for step in l.path.iter() {
             st = match (step, &self.types[self.subtypes[st].base].kind) {
                 (LspStep::Field(i), TypeKind::Record { elems }) => elems.get(*i as usize)?.subtype,
@@ -929,8 +933,9 @@ impl Db {
                 (LspStep::Slice(_), TypeKind::Array { .. }) => st,
                 _ => return None,
             };
+            resolved = resolved || self.is_resolved(st);
         }
-        Some(st)
+        Some((st, resolved))
     }
 
     /// The formals of an instantiated unit: `(generics, ports)`.
@@ -1047,12 +1052,9 @@ impl Db {
                     } else {
                         &b.lsp
                     };
-                    let Some(st) = self.lsp_subtype(deeper) else {
+                    let Some((st, false)) = self.lsp_subtype(deeper) else {
                         continue;
                     };
-                    if self.is_resolved(st) {
-                        continue;
-                    }
                     found.push((d, a.lsp.span, b.lsp.span, st));
                     break 'pairs;
                 }

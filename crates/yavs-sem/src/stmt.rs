@@ -214,7 +214,7 @@ impl Db {
         label: Ident,
         stmt: StmtId,
     ) -> Result<DeclId, Reported> {
-        self.declare_plain(
+        let d = self.declare_plain(
             scope,
             Decl {
                 name: Designator::Ident(label),
@@ -224,7 +224,9 @@ impl Db {
                 implicit: true,
                 since: LangRev::Vhdl2008,
             },
-        )
+        )?;
+        crate::attr::label_declared(self, scope, d)?;
+        Ok(d)
     }
 
     /// A constant parameter (loop or generate).
@@ -1298,6 +1300,7 @@ impl Db {
                 out.push(id);
             }
         }
+        errs.keep(crate::attr::unresolved_labels(self, scope));
         errs.finish(out.into())
     }
 

@@ -27,6 +27,7 @@ use crate::diag;
 use crate::hir::{AttrPrefix, Expr, ExprKind};
 use crate::ids::{AttrValueId, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 use crate::loader::UnitKind;
+use crate::scope::ScopeKind;
 use crate::stat::Staticness;
 use crate::types::{BoundsFrom, TypeKind};
 
@@ -1175,6 +1176,33 @@ pub fn specify(
                 {
                     found.push(owner);
                 }
+                // A port or generic in the architecture: the entity and its
+                // architectures are one declarative region (12.1); NVC, GHDL
+                // and Questa accept it.
+                if found.is_empty()
+                    && let Some(ent) = arch_entity(db, scope)
+                {
+                    found.extend(db.scopes[ent].names.get(&dkey).into_iter().flatten().filter(
+                        |&&d| matches!(&db.decls[d].kind, DeclKind::Object(o) if matches!(o.role, ObjRole::Port | ObjRole::Generic)),
+                    ));
+                }
+                // A label of a statement of this region's statement part, which
+                // is analyzed after the declarative part: wait for it.
+                if found.is_empty()
+                    && class == Kw::Label
+                    && sig.is_none()
+                    && has_conc_stmts(db, scope)
+                {
+                    db.pending_label_attrs.push(PendingLabel {
+                        scope,
+                        key: dkey,
+                        name: des_text(des),
+                        span: sp,
+                        attr,
+                        value,
+                    });
+                    continue;
+                }
                 if found.is_empty() {
                     failed = Some(db.error(
                         Diagnostic::error(
@@ -1249,41 +1277,124 @@ pub fn specify(
     }
     let mut out = Vec::new();
     for (d, sp) in targets {
-        let entity = db.entity(d);
-        if let Some(old) = user_value(db, entity, key) {
-            let old_span = db.exprs[db.attr_values[old].value].span;
-            failed = Some(
-                db.error(
-                    Diagnostic::error(
-                        diag::ATTR_TWICE,
-                        format!(
-                            "attribute `{}` is given to `{}` twice",
-                            spec.attr.text, db.decls[entity].name
-                        ),
-                    )
-                    .with_primary(sp, "given again here")
-                    .with_secondary(old_span, "first given here"),
-                ),
-            );
-            continue;
+        match attach(db, attr, d, value, sp) {
+            Ok(id) => out.push(id),
+            Err(e) => failed = Some(e),
         }
-        let id = db.attr_values.push(AttrValue {
-            attr,
-            entity,
-            value,
-        });
-        db.attr_index.insert((entity, key), id);
-        if key.as_str() == "foreign"
-            && let DeclKind::Subprogram(s) = &mut db.decls[entity].kind
-        {
-            s.body = Body::Foreign(value);
-        }
-        out.push(id);
     }
     match failed {
         Some(e) => Err(e),
         None => Ok(out),
     }
+}
+
+/// Give `d` the value of attribute `attr` (E1622 when it already has one).
+fn attach(
+    db: &mut Db,
+    attr: DeclId,
+    d: DeclId,
+    value: ExprId,
+    sp: Span,
+) -> Result<AttrValueId, Reported> {
+    let key = db.decls[attr].name.key();
+    let entity = db.entity(d);
+    if let Some(old) = user_value(db, entity, key) {
+        let old_span = db.exprs[db.attr_values[old].value].span;
+        return Err(db.error(
+            Diagnostic::error(
+                diag::ATTR_TWICE,
+                format!(
+                    "attribute `{}` is given to `{}` twice",
+                    db.decls[attr].name, db.decls[entity].name
+                ),
+            )
+            .with_primary(sp, "given again here")
+            .with_secondary(old_span, "first given here"),
+        ));
+    }
+    let id = db.attr_values.push(AttrValue {
+        attr,
+        entity,
+        value,
+    });
+    db.attr_index.insert((entity, key), id);
+    if key.as_str() == "foreign"
+        && let DeclKind::Subprogram(s) = &mut db.decls[entity].kind
+    {
+        s.body = Body::Foreign(value);
+    }
+    Ok(id)
+}
+
+/// A label specification waiting for its statement (7.2: it is written in
+/// the declarative part of the construct whose statement part holds it).
+pub(crate) struct PendingLabel {
+    scope: ScopeId,
+    key: Symbol,
+    name: String,
+    span: Span,
+    attr: DeclId,
+    value: ExprId,
+}
+
+/// The entity region of an architecture region (its parent is the context
+/// region, whose parent is the entity's).
+fn arch_entity(db: &Db, scope: ScopeId) -> Option<ScopeId> {
+    if db.scopes[scope].kind != ScopeKind::Architecture {
+        return None;
+    }
+    db.scopes[scope]
+        .parent
+        .and_then(|c| db.scopes[c].parent)
+        .filter(|&e| db.scopes[e].kind == ScopeKind::Entity)
+}
+
+/// Regions whose concurrent statement part follows the declarative part
+/// and ends with [`unresolved_labels`].
+// ponytail: labels of sequential statements (a process decorating its loop)
+// are still E1100; defer them too once a design needs it.
+fn has_conc_stmts(db: &Db, scope: ScopeId) -> bool {
+    matches!(
+        db.scopes[scope].kind,
+        ScopeKind::Entity | ScopeKind::Architecture | ScopeKind::Block | ScopeKind::Generate
+    )
+}
+
+/// Label `d` was declared in `scope`: apply the specifications waiting for it.
+pub(crate) fn label_declared(db: &mut Db, scope: ScopeId, d: DeclId) -> Result<(), Reported> {
+    let key = db.decls[d].name.key();
+    let mut failed = None;
+    let mut i = 0;
+    while i < db.pending_label_attrs.len() {
+        let p = &db.pending_label_attrs[i];
+        if p.scope != scope || p.key != key {
+            i += 1;
+            continue;
+        }
+        let p = db.pending_label_attrs.remove(i);
+        if let Err(e) = attach(db, p.attr, d, p.value, p.span) {
+            failed = Some(e);
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
+/// The end of `scope`'s statement part: a label specification still waiting
+/// names no label of it (E1100).
+pub(crate) fn unresolved_labels(db: &mut Db, scope: ScopeId) -> Result<(), Reported> {
+    let (left, keep) = std::mem::take(&mut db.pending_label_attrs)
+        .into_iter()
+        .partition(|p| p.scope == scope);
+    db.pending_label_attrs = keep;
+    let mut failed = None;
+    for p in left.iter() {
+        failed = Some(db.error(
+            Diagnostic::error(diag::NOT_DECLARED, format!("`{}` is not declared", p.name))
+                .with_primary(p.span, "no statement of this region has this label")
+                .with_note("a label specification names a statement of the statement part of the construct whose declarative part holds it (LRM 7.2)"),
+        ));
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 fn designator_key(d: &ast::Designator) -> (Symbol, Span) {

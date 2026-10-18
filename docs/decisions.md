@@ -463,9 +463,10 @@ which tools/difftest parses.
   still goes through the kernel output stream, ordered with `report`.
 - **Globally static calls and port attributes (9.4.3):** a call of a pure function whose actuals
   are globally static is globally static (sem never folds it; only implicit operations become
-  locally static). Array attributes of a port or generic whose subtype is not fully constrained
-  are globally static too: its bounds are fixed at elaboration, and NVC, GHDL and Questa accept
-  such constants in static names (OSVVM AxiStreamReceiver).
+  locally static). Array attributes of a port or generic whose subtype is not fully constrained,
+  or of a sub-element of one (`bus.dat'length`), are globally static too: its bounds are fixed at
+  elaboration, and NVC, GHDL and Questa accept such constants in static names (OSVVM
+  AxiStreamReceiver, WishboneRegisterSubordinate).
 - **Implicit versus explicit:** a call ambiguous only between implicit operations and explicit
   subprograms picks the explicit ones (2019: a user `to_string(a; sep := " ")` beside the
   implicit composite `TO_STRING`, in the same package or through a use clause). NVC, GHDL and

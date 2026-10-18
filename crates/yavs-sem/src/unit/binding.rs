@@ -1059,7 +1059,12 @@ impl Db {
         assocs: &[ast::AssocElem],
         parts: &[(usize, Span)],
     ) -> Result<Actual, Reported> {
-        let fscope = self.decls[f].scope;
+        // The formal designator names `f`, but the index and range expressions
+        // in it are evaluated where the association is (6.5.7.1): look the name
+        // up in a region that holds only `f`, inside the instantiating one.
+        let fscope = self.add_scope(crate::scope::ScopeKind::Block, Some(scope), None);
+        let key = self.decls[f].name.key();
+        self.scopes[fscope].names.insert(key, vec![f]);
         let mut errs = Errs::default();
         let mut out = Vec::new();
         for &(k, span) in parts {

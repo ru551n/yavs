@@ -257,7 +257,8 @@ impl Db {
             return CandSet::Types(is);
         };
         let mut out = Vec::new();
-        for t in self.with_designated(ts) {
+        for &t in &ts {
+            // method_decls follows an access to a protected type itself.
             for d in self.method_decls(t, key) {
                 if let Some(i) = self.value_interp(d, 0) {
                     out.push(Interp {
@@ -266,6 +267,8 @@ impl Db {
                     });
                 }
             }
+        }
+        for t in self.with_designated(ts) {
             if let (Some(i), TypeKind::Record { elems }) =
                 (self.record_elem(t, key), &self.types[t].kind)
             {

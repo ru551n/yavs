@@ -94,6 +94,7 @@ const PASS: &[&str] = &[
     "protected/alloc_in_init",
     "protected/counter",
     "protected/generic_package_prot",
+    "protected/method_in_init",
     "protected/stack",
     "reflect/arrays",
     "reflect/index_bases",

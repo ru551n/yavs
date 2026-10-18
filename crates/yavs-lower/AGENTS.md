@@ -50,6 +50,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | Guarded blocks: GUARD's default is the condition; a `_guard` process drives GUARD | LRM 11.2, 11.6 | `docs/decisions.md` "Lowering" |
 | Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |
 | Foreign calls: symbol is the last word after `VHPIDIRECT` (else the name), C types from the formal's own subtype, result range-checked; signal and file parameters, composite results are `E2001` | Reference simulator conventions, fail early | `docs/decisions.md` "Foreign subprograms and `--load`" |
+| Protected state initial values run on the new object (`self` and the state bound), except those giving a variable its constraint, which run before it exists | LRM 5.6.2: methods called from initial values act on the object being elaborated (#204) | DESIGN.md "Composites" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).

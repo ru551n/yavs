@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	0	:method_in_init:_p0	shared 3 35 t7
+diag	note	0	0	:method_in_init:_p0	local 3 35 t7

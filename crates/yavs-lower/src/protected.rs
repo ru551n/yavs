@@ -78,7 +78,12 @@ impl Fx<'_, '_> {
             .param("self", Width::B8, ParamClass::Value, Mode::In, None);
         self.prot_self = Some((depth, off));
         let state = self.state_of(t, span)?;
-        let ds = self.desc_size(state);
+        let p = self.deref_self(depth, off);
+        self.bind_state(t, state, p, depth, span)
+    }
+
+    /// The state address of the object whose handle is in frame slot `(depth, off)`.
+    fn deref_self(&mut self, depth: u8, off: u32) -> Reg {
         let s = self.addr(Space::Frame(depth), off);
         let h = self.load(s, Width::B8, RegTy::I64);
         let what = self.msg("protected object", Dir::To);
@@ -88,6 +93,14 @@ impl Fx<'_, '_> {
             handle: h,
             what,
         });
+        p
+    }
+
+    /// A slot per state variable of protected type `t` holding its address in the state at
+    /// `p` (or `[data, desc]` for composites), so that names of the variables resolve.
+    fn bind_state(&mut self, t: TypeId, state: TyId, p: Reg, depth: u8, span: Span) -> R<()> {
+        let db = self.db;
+        let ds = self.desc_size(state);
         let base = self.offset(p, ds);
         let Some(Ty::Record { fields }) = self.fb.program().types().get(state).cloned() else {
             return Err(self.cx.ice(span, "protected state is not a record"));
@@ -142,7 +155,12 @@ impl Fx<'_, '_> {
             Some(e) => self.scalar_expr(e)?,
             None => {
                 let Some((depth, off)) = self.prot_self else {
-                    return Err(self.cx.ice(span, "method call without an object"));
+                    // Only the initial value of a variable whose constraint it gives runs
+                    // before its object exists (`prot_new_inner`).
+                    return Err(self.cx.unsupported(
+                        span,
+                        "a method call in the initial value of an unconstrained variable of a protected body",
+                    ));
                 };
                 let a = self.addr(Space::Frame(depth), off);
                 self.load(a, Width::B8, RegTy::I64)
@@ -200,20 +218,25 @@ impl Fx<'_, '_> {
             return Err(self.cx.ice(span, "protected state is not a record"));
         };
         let vars = state_vars(db, t);
-        // The state's descriptor: the constraints of its variables (rule 1).
+        // The state's descriptor: the constraints of its variables (rule 1). A variable whose
+        // constraint comes from its initial value is initialised before the object exists.
+        let outer_self = self.prot_self.take();
         let ds = self.desc_size(state);
         let desc = self.alloc_n(ds.max(1));
         let mut off = 0;
-        let mut inits = Vec::new();
+        let mut early = Vec::new();
         for (f, &v) in fields.iter().zip(&vars) {
             let DeclKind::Object(o) = &db.decls[v].kind else {
-                continue;
+                return Err(self
+                    .cx
+                    .ice(span, "protected state variable is not an object"));
             };
-            let init = match o.default {
-                Some(e) => Some(self.expr(e)?),
-                None => None,
-            };
+            let mut init = None;
             if f.desc.is_none() && Ty::needs_desc(self.fb.program().types(), f.ty) {
+                init = match o.default {
+                    Some(e) => Some(self.expr(e)?),
+                    None => None,
+                };
                 let vd = match init {
                     Some(V::A(_, vd)) => Some(vd),
                     _ => None,
@@ -231,8 +254,10 @@ impl Fx<'_, '_> {
                 });
                 off += n;
             }
-            inits.push((o.subtype, o.default, init));
+            early.push(init);
         }
+        // The object with default values, so that methods called by the initialisers below
+        // see it (LRM 5.6.3: their implicit object is the one being elaborated).
         let size = self.size_of(state, desc);
         let dsr = self.int(i64::from(ds));
         let total = self.bin(yavs_ir::IntOp::Add, size, dsr);
@@ -243,25 +268,20 @@ impl Fx<'_, '_> {
             bytes: dsr,
         });
         let base = self.offset(buf, ds);
-        for (n, (st, e, init)) in inits.into_iter().enumerate() {
+        let mut late = Vec::new();
+        for (n, (&v, init)) in vars.iter().zip(early).enumerate() {
             let (a, fd) = self.field_addr(state, base, buf, n as u32, span)?;
+            late.push(init.is_none());
             match init {
-                Some(V::S(r)) => {
-                    if let Some(e) = e {
-                        self.check_scalar(r, Some(db.exprs[e].subtype), st, "", span)?;
-                    }
-                    self.store_at(fields[n].ty, a, V::S(r), span)?;
-                }
-                Some(v) => self.store_at(fields[n].ty, a, v, span)?,
+                Some(val) => self.store_init(v, fields[n].ty, a, val, span)?,
                 None => {
-                    let ft = db.base(st);
-                    if let TypeKind::Protected { .. } = db.types[ft].kind {
-                        let h = self.prot_new(ft, shared, span)?;
-                        self.store(a, h, Width::B8);
-                    } else {
-                        let c = db.subtypes[st].constraint.clone();
-                        self.default_into(st, &c, a, fd, span)?;
-                    }
+                    let DeclKind::Object(o) = &db.decls[v].kind else {
+                        return Err(self
+                            .cx
+                            .ice(span, "protected state variable is not an object"));
+                    };
+                    let c = db.subtypes[o.subtype].constraint.clone();
+                    self.default_into(o.subtype, &c, a, fd, span)?;
                 }
             }
         }
@@ -273,7 +293,79 @@ impl Fx<'_, '_> {
             size: total,
             shared,
         });
+        let so = self.fb.slot(8, 8);
+        let sa = self.addr(Space::Frame(self.depth), so);
+        self.store(sa, h, Width::B8);
+        self.prot_self = Some((self.depth, so));
+        // The initialisers also name the variables declared before them; other objects of
+        // this type being lowered keep their own bindings.
+        let saved: Vec<_> = vars.iter().map(|v| self.cx.objs.remove(v)).collect();
+        let r = self.prot_init_late(t, state, &late, so, shared, span);
+        for (v, o) in vars.iter().zip(saved) {
+            match o {
+                Some(o) => self.cx.objs.insert(*v, o),
+                None => self.cx.objs.remove(v),
+            };
+        }
+        self.prot_self = outer_self;
+        r?;
         Ok(h)
+    }
+
+    /// The initialisers of the state variables not initialised by `prot_new_inner`, in
+    /// declaration order, on the object whose handle is in frame slot `so`.
+    fn prot_init_late(
+        &mut self,
+        t: TypeId,
+        state: TyId,
+        late: &[bool],
+        so: u32,
+        shared: bool,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let Some(Ty::Record { fields }) = self.fb.program().types().get(state).cloned() else {
+            return Err(self.cx.ice(span, "protected state is not a record"));
+        };
+        let p = self.deref_self(self.depth, so);
+        self.bind_state(t, state, p, self.depth, span)?;
+        let ds = self.desc_size(state);
+        let base = self.offset(p, ds);
+        for (n, v) in state_vars(db, t).into_iter().enumerate() {
+            if !late[n] {
+                continue;
+            }
+            let DeclKind::Object(o) = &db.decls[v].kind else {
+                return Err(self
+                    .cx
+                    .ice(span, "protected state variable is not an object"));
+            };
+            let ft = db.base(o.subtype);
+            let val = match o.default {
+                Some(e) => self.expr(e)?,
+                None if matches!(db.types[ft].kind, TypeKind::Protected { .. }) => {
+                    V::S(self.prot_new(ft, shared, span)?)
+                }
+                None => continue,
+            };
+            let (a, _) = self.field_addr(state, base, p, n as u32, span)?;
+            self.store_init(v, fields[n].ty, a, val, span)?;
+        }
+        Ok(())
+    }
+
+    /// Store the initial value `val` of state variable `v` (field type `ft`) at `a`.
+    fn store_init(&mut self, v: DeclId, ft: TyId, a: Reg, val: V, span: Span) -> R<()> {
+        let db = self.db;
+        let DeclKind::Object(o) = &db.decls[v].kind else {
+            return Err(self
+                .cx
+                .ice(span, "protected state variable is not an object"));
+        };
+        if let (V::S(r), Some(e)) = (&val, o.default) {
+            self.check_scalar(*r, Some(db.exprs[e].subtype), o.subtype, "", span)?;
+        }
+        self.store_at(ft, a, val, span)
     }
 
     /// A process-local variable of a protected type.

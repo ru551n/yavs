@@ -19,12 +19,12 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
 | check | 7 | 127 | 123 | signal aliases #203 |
-| com | 0 | 135 | 10 | protected body initialiser #204 |
+| com | 0 | 135 | 10 | protected body initialiser #204 (fixed, not re-measured) |
 | data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208, binary files #79 |
 | dictionary | 0 | 8 | 0 | #203 |
 | logging | 112 | 1 | 0 | #207 |
 | path | 0 | 2 | 0 | #203 |
-| random | 0 | 4 | 0 | #204 |
+| random | 0 | 4 | 0 | #204 (fixed, not re-measured) |
 | record_dict (2019) | 6 | 0 | 0 | none |
 | run | 0 | 5 | 0 | #203, #206 |
 | string_ops | 3 | 1 | 11 | #209 |
@@ -140,10 +140,11 @@ constants evaluated once per region (#73). `tests/corpus.rs` runs every corpus g
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
 composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
-`deallocate`), process-local protected objects (`CallProt`), file objects and textio,
+`deallocate`), process-local protected objects (`CallProt`), protected state initial values
+that call the body's methods (#204), file objects and textio,
 `force`/`release` of scalar signals, shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`). Difftest: access 3/3,
-composite 5/5, force 3/3, protected 2/3, resolution 4/5, textio 2/3 at 1 and 4 threads.
+composite 5/5, force 3/3, protected 5/5, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
 ## sem robustness
 

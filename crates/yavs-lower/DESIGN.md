@@ -212,6 +212,12 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   gets `self` as its first parameter and a slot per state variable holding its address in the
   state (`Obj::ScalarRef` / `Obj::Array`), so the body's names need no new `Obj` kind. Calls
   are `CallProt`; a call without a prefix inside a method passes `self`.
+- A new protected object (`prot_new`): the initial values that give a variable its
+  constraint are evaluated first (they build the state descriptor); then the object is
+  created with default values and the other initial values run in declaration order with
+  that object as `self` and the state variables bound, so they may call methods of the body
+  and name earlier variables (LRM 5.6.2, #204). A method call in one of the first kind is
+  `E9999` not implemented.
 - Files: a 4-byte cell (`Obj::Scalar`, `B4`); natives take its address. textio's `INPUT` and
   `OUTPUT` are the pre-opened cells 1 and 2 (constant cells).
 - `force`/`release`: whole scalar signals; default mode `out` for ports of mode out, inout and

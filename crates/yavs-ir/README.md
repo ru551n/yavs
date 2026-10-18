@@ -109,6 +109,9 @@ More requests from `yavs-lower` (2026-10-18):
 7. **`out` signal parameters**: `Drive`/`Disconnect` name a static driver slot, but a procedure
    with `signal s : out T` drives the caller's slot. A driver slot passed in a register (one
    more cell next to the signal reference) would do (`process/subprograms`).
+   Done (yavs-lower, 2026-10-18): `Inst::DriveSlot { slot, target, .. }` drives through the
+   driver slot in a register; `out`/`inout` signal parameters pass it as a cell after the
+   signal reference.
 8. **Composite instance data**: constants and signal initial values of array type are computed
    by parameterless functions returning a fat pair; the elaborator needs the bytes behind it
    (`yavs_interp::call` returns only the cell). A `call` variant returning the data and dope

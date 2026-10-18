@@ -680,6 +680,54 @@ impl Machine {
         self.put(da, &bytes_of(&dw))
     }
 
+    /// `Drive` and `DriveSlot`: the waveform at `wave` onto driver `d`.
+    #[allow(clippy::too_many_arguments)]
+    fn drive(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        d: ProcDriver,
+        target: Option<Reg>,
+        wave: Reg,
+        n: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    ) -> R<()> {
+        let (sr, elem) = match target {
+            Some(t) => {
+                let (sr, ty) = self.sigref(t)?;
+                (sr, ty.elem)
+            }
+            None => self.driver_ref(&d)?,
+        };
+        let len = sr.range.map_or(0, |r| r.len);
+        let vsize = value_size(elem, len);
+        let stride = 8 + vsize.next_multiple_of(8);
+        let w = self.r(wave);
+        let mut items = Vec::new();
+        for k in 0..self.r(n) {
+            let at = add_addr(w, k * stride)?;
+            let t = to_time(self.load(at, Width::B8)? as i64)?;
+            items.push((t, self.get_value(add_addr(at, 8)?, elem, len)?));
+        }
+        let refs: Vec<(Time, ValueRef<'_>)> =
+            items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
+        let mode = match mode {
+            DriveMode::Transport => DelayMode::Transport,
+            DriveMode::Inertial => DelayMode::Inertial {
+                reject: match reject {
+                    Some(r) => Some(to_time(self.ri(r))?),
+                    None => None,
+                },
+            },
+        };
+        let range = target.map(|_| sr.range).unwrap_or(None);
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err("signal or wait operation during elaboration");
+        };
+        c.assign(d.id, range, &refs, mode)?;
+        Ok(())
+    }
+
     fn sigref(&self, r: Reg) -> R<(SigRef, yavs_kernel::SignalType)> {
         let v = self.r(r);
         let len = self.r(Reg(r.0 + 1)) as u32;
@@ -1659,36 +1707,20 @@ impl Machine {
                 reject,
             } => {
                 let d = self.driver(driver)?;
-                let (sr, elem) = match target {
-                    Some(t) => {
-                        let (sr, ty) = self.sigref(t)?;
-                        (sr, ty.elem)
-                    }
-                    None => self.driver_ref(&d)?,
-                };
-                let len = sr.range.map_or(0, |r| r.len);
-                let vsize = value_size(elem, len);
-                let stride = 8 + vsize.next_multiple_of(8);
-                let w = self.r(wave);
-                let mut items = Vec::new();
-                for k in 0..self.r(n) {
-                    let at = add_addr(w, k * stride)?;
-                    let t = to_time(self.load(at, Width::B8)? as i64)?;
-                    items.push((t, self.get_value(add_addr(at, 8)?, elem, len)?));
-                }
-                let refs: Vec<(Time, ValueRef<'_>)> =
-                    items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
-                let mode = match mode {
-                    DriveMode::Transport => DelayMode::Transport,
-                    DriveMode::Inertial => DelayMode::Inertial {
-                        reject: match reject {
-                            Some(r) => Some(to_time(self.ri(r))?),
-                            None => None,
-                        },
-                    },
-                };
-                let range = target.map(|_| sr.range).unwrap_or(None);
-                kc!().assign(d.id, range, &refs, mode)?;
+                self.drive(ctx, d, target, wave, n, mode, reject)?;
+            }
+            Inst::DriveSlot {
+                slot,
+                target,
+                wave,
+                n,
+                mode,
+                reject,
+            } => {
+                let slot = u32::try_from(self.r(slot))
+                    .map_err(|_| ice("driver slot out of range"))?;
+                let d = self.driver(slot)?;
+                self.drive(ctx, d, Some(target), wave, n, mode, reject)?;
             }
             Inst::Disconnect {
                 driver,

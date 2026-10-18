@@ -554,6 +554,16 @@ pub enum Inst {
         mode: DriveMode,
         reject: Option<Reg>,
     },
+    /// [`Inst::Drive`] through the driver slot in register `slot`: an `out`/`inout` signal
+    /// parameter drives its actual through the caller's slot, passed as a cell.
+    DriveSlot {
+        slot: Reg,
+        target: Reg,
+        wave: Reg,
+        n: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    },
     Disconnect {
         driver: u32,
         target: Option<Reg>,
@@ -912,6 +922,22 @@ impl Inst {
                 if let Some(t) = target {
                     f(t, Use, s);
                 }
+                f(wave, Use, p);
+                f(n, Use, i);
+                if let Some(r) = reject {
+                    f(r, Use, i);
+                }
+            }
+            Inst::DriveSlot {
+                slot,
+                target,
+                wave,
+                n,
+                reject,
+                ..
+            } => {
+                f(slot, Use, i);
+                f(target, Use, s);
                 f(wave, Use, p);
                 f(n, Use, i);
                 if let Some(r) = reject {

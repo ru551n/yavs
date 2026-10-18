@@ -25,7 +25,8 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate; semaggr: negative suite #45 |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate; sem08: corpus false positives #167-#170 (user attribute specifications) |
-| `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic |
+| `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic; gentypes: concurrent statements in the clone, `seed_type` (#75) |
+| `generic/entity.rs` | design entities with generic types, subprograms or packages cloned per map (`Db::instantiate_entity`, 5.3) | S4 | owner: gentypes (#75) |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
 | `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33 |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt; sem08: corpus false positives #167-#170 |
@@ -299,13 +300,9 @@ Corpus groups `tests/corpus/hierarchy` and `generics` (difftest) stop in analysi
   E1300.
 - **units**: for elaboration of `for` generates under a configuration, `GenSelect::Index`
   expressions are evaluated without the generate's scope (fine while they are locally static).
-- **generic** (#75, open, yavs-elab 2026-10-18): entities with generic types, subprograms or
-  packages. `generics/generic_types_2019.vhd` now analyzes and its instances carry
-  `Actual::Subtype`/`Actual::Subprogram`, but the entity and architecture HIR still name the
-  formal type (`TypeKind::Generic`) and formal subprogram, so neither elab (port shapes) nor
-  yavs-lower (layouts, calls) can use them. Elab asks for the package-instance mechanism
-  applied to design units: `Db::instantiate_entity(entity, arch, map: GenericMap) ->
-  (UnitId, UnitId)` cloning the entity and architecture with the formals replaced by the
-  actuals (5.1), one clone per distinct map, with a mangled identity (rule 4). Elab would
-  call it per instance whose entity has non-constant generics and elaborate and lower the
-  clone like any other unit.
+- **generic** (#75, done): entities with generic types, subprograms or packages.
+  `Db::instantiate_entity(entity, arch, actuals, at)` (`generic/entity.rs`) clones the entity
+  and architecture once per distinct map of those actuals (generic constants stay generics of
+  the clone); elab calls it per instance. Open: `is <>` defaults of entity generic
+  subprograms (no actual reaches elab, `E9999`), configuration specifications inside such an
+  architecture (`E9999`).

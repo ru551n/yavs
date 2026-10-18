@@ -92,7 +92,9 @@ An installed binary finds `lib/` next to itself (#43).
   `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
   (`(<>)`, `(default)`, generic map, checked against the actual instance); package and subprogram
   instances, also inside generic units, by HIR cloning (visible part eager, bodies lazy via
-  `Db::instance_body`); `W1501`, `W1506`. The fixed/float packages' declarations, generic bodies
+  `Db::instance_body`); `W1501`, `W1506`; design entities with generic types, subprograms or
+  packages cloned with their architecture per distinct map for elab (`generic/entity.rs`,
+  `Db::instantiate_entity`, concurrent statements cloned too). The fixed/float packages' declarations, generic bodies
   and instance bodies analyze clean in 2008 and 2019 (#37). Open: anonymous generic
   types, mode views in generic units, instantiating a generic protected type (parser request).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
@@ -358,9 +360,13 @@ resolution, user resolution functions (one declared in an entity or architecture
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays
 resolved as a whole (every driving process drives every leaf, #193; nested in another
 composite: E9999), an external name as an `in` port actual driven by its equivalent process
-one delta later (#186). Not yet: conversions of record ports, non-static expression
-actuals (#74, needs yavs-lower DESIGN.md request 7), generic types, subprograms and packages on entities, linkage ports, mode views
-(#75).
+one delta later (#186), linkage ports and mode-view ports, entities with generic types,
+subprograms and packages (yavs-sem `Db::instantiate_entity` clones the entity and architecture
+once per distinct map of those actuals, with its own mangled identity; generic constants stay
+instance data; #75), `others` in a configuration after component configurations naming
+specification-bound instances. Not yet: conversions of record ports, non-static expression
+actuals (#74, needs yavs-lower DESIGN.md request 7), defaults (`is <>`) of entity generic
+subprograms, configuration specifications inside an entity with generic types.
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data
@@ -369,7 +375,7 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in the reference simulator's
 format on stdout). Difftest: see `tests/corpus/RESULTS.md` (122 of 123 at 1, 4 and 4 shuffled
-threads on 2026-10-18; open: `generics/generic_types_2019` (generic types on entities, #75)).
+threads on 2026-10-18; `generics/generic_types_2019` and the other generic-type cases pass since #75).
 
 ## ffi (`crates/yavs-ffi`)
 

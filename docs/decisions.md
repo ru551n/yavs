@@ -448,6 +448,11 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   until the parser accepts the generic map on variable declarations.
 - **An unknown generic in a generic map does not hide a missing actual:** both `E1100` and
   `E1502` are reported, as the reference simulator does.
+- **Entities with generic types, subprograms or packages (#75):** the entity and architecture
+  are cloned once per distinct (entity, architecture, map of those actuals), not per instance:
+  like an ordinary architecture, the instances share code and differ in instance data (the
+  generic constants). The clone's mangled name carries the actuals (sem.md 5.3), so rule 4
+  identity holds per map. Rationale: shapes and lowered code depend on the actual types only.
 
 ## Design units and binding (yavs-sem, S5)
 

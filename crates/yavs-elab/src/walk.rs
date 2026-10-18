@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use yavs_diag::{Diagnostic, Span};
 use yavs_kernel::{Elem, GuardKind, PortMode, Range};
 use yavs_sem::decl::{Alias, DeclKind, ObjClass, ObjRole};
+use yavs_sem::generic::GenericActual;
 use yavs_sem::hir::{
     Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
     InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, StmtKind, UnitHir,
@@ -32,6 +33,8 @@ enum A {
     Open,
     Default,
     Parts(Vec<(Vec<LspStep>, ExprId)>),
+    /// The actual of a generic type, subprogram or package.
+    Generic(GenericActual),
     Conv {
         formal_conv: Option<DeclId>,
         actual_conv: Option<DeclId>,
@@ -63,8 +66,9 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
             Actual::Default => A::Default,
             Actual::Open => A::Open,
             Actual::Individual(p) => A::Parts(p.iter().map(|(s, e)| (s.to_vec(), *e)).collect()),
-            // Never read: `generic` reports generic types, subprograms and packages unsupported first.
-            Actual::Subtype(_) | Actual::Subprogram(_) | Actual::Package(_) => A::Default,
+            Actual::Subtype(st) => A::Generic(GenericActual::Subtype(*st)),
+            Actual::Subprogram(d) => A::Generic(GenericActual::Subprogram(*d)),
+            Actual::Package(i) => A::Generic(GenericActual::Package(*i)),
             Actual::Converted {
                 formal_conv,
                 actual_conv,
@@ -471,6 +475,13 @@ impl Elab<'_> {
         depth: u32,
         at: Span,
     ) -> R<ScopeId> {
+        // Generic types, subprograms and packages: elaborate the entity's clone for these
+        // actuals, whose generics are the generic constants only.
+        let (entity, arch, gens) = if self.db.has_non_constant_generics(entity) {
+            self.instantiate(entity, arch, gens, at)?
+        } else {
+            (entity, arch, gens)
+        };
         let s = self
             .m
             .hier
@@ -555,6 +566,57 @@ impl Elab<'_> {
         Ok(s)
     }
 
+    /// The clone of `entity`/`arch` for the generic type, subprogram and package actuals in
+    /// `gens`, and the associations of its generic constants.
+    fn instantiate(
+        &mut self,
+        entity: UnitId,
+        arch: UnitId,
+        gens: Vec<A>,
+        at: Span,
+    ) -> R<(UnitId, UnitId, Vec<A>)> {
+        let UnitHir::Entity { generics, .. } = &self.db.units[entity].hir else {
+            return Err(Box::new(ice(at, "instance of a non-entity")));
+        };
+        let generics = generics.to_vec();
+        let mut gens = gens.into_iter();
+        let mut actuals = Vec::with_capacity(generics.len());
+        let mut consts = Vec::new();
+        for &g in &generics {
+            let a = gens.next().unwrap_or(A::Default);
+            match (&self.db.decls[g].kind, a) {
+                (DeclKind::Object(_), a) => {
+                    actuals.push(None);
+                    consts.push(a);
+                }
+                (_, A::Generic(x)) => actuals.push(Some(x)),
+                _ => {
+                    let d = &self.db.decls[g];
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            codes::GENERIC_NO_VALUE,
+                            format!("generic `{}` has no actual", d.name),
+                        )
+                        .with_primary(at, "instantiated here without an actual for it")
+                        .with_secondary(d.span, "generic type, subprogram or package declared here")
+                        .with_help("associate it in the generic map of an instance; `-g` gives only generic constants"),
+                    ));
+                }
+            }
+        }
+        match self.db.instantiate_entity(entity, arch, &actuals, at) {
+            Ok((e, a)) => Ok((e, a, consts)),
+            Err(_) => {
+                let mut ds = self.db.take_diagnostics();
+                let last = ds.pop().map(Box::new).unwrap_or_else(|| {
+                    Box::new(ice(at, "entity instantiation failed without a diagnostic"))
+                });
+                self.errors.extend(ds);
+                Err(last)
+            }
+        }
+    }
+
     fn generic(
         &mut self,
         s: ScopeId,
@@ -610,6 +672,12 @@ impl Elab<'_> {
                     ));
                 }
             },
+            (_, A::Generic(_)) => {
+                return Err(Box::new(ice(
+                    decl.span,
+                    "generic type actual of a constant",
+                )));
+            }
             (_, A::Parts(_) | A::Conv { .. }) => {
                 return Err(unsupported(
                     decl.span,

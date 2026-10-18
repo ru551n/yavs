@@ -25,6 +25,9 @@ pub fn region(db: &Db, scope: ScopeId) -> String {
     let d = &db.decls[owner];
     match &d.kind {
         DeclKind::Unit(u) => {
+            if let Some(m) = db.generic.unit_names.get(u) {
+                return m.to_string();
+            }
             let u = &db.units[*u];
             let lib = db.libs[u.lib].name.key;
             match u.key {

@@ -995,9 +995,8 @@ fn block_generics_and_ports() {
     assert_eq!(e.nets.ports.len(), 1);
 }
 
-/// Incremental binding (LRM 7.3.2.3): a configuration's generic map over the default binding
-/// (#75). The parser does not take a binding indication without an
-/// entity aspect yet, so the test removes the aspect from the analyzed HIR.
+/// Incremental binding (LRM 7.3.2.3): a binding indication without an entity aspect in a
+/// configuration adds a generic map to the primary binding of a specification (#75).
 #[test]
 fn incremental_binding() {
     // LRM 7.3.2.3: u2's configuration adds a generic map to the primary binding of its
@@ -1288,4 +1287,72 @@ fn signal_bounds_from_the_initial_value() {
         panic!("record")
     };
     assert_eq!(dims(&fields[0].1), [(0, 3)]);
+}
+
+/// Entities with generic types and subprograms (#75): one clone per distinct map of those
+/// actuals, with its own mangled identity; a formal generic subprogram is a valid actual.
+#[test]
+fn generic_type_entities() {
+    let src = "
+      entity leaf is
+        generic (type t; init : t; function f(x : t) return t);
+        port (q : out t);
+      end;
+      architecture a of leaf is begin q <= f(init); end;
+      entity mid is
+        generic (type e; v : e; function g(x : e) return e);
+      end;
+      architecture a of mid is
+        signal s : e;
+      begin
+        u : entity work.leaf generic map (t => e, init => v, f => g) port map (s);
+      end;
+      entity t is end;
+      architecture a of t is
+        function inc(x : integer) return integer is begin return x + 1; end;
+        function neg(x : boolean) return boolean is begin return not x; end;
+        signal a, b, c : integer;
+        signal d : boolean;
+      begin
+        u1 : entity work.leaf generic map (t => integer, init => 1, f => inc) port map (a);
+        u2 : entity work.leaf generic map (t => integer, init => 2, f => inc) port map (b);
+        u3 : entity work.leaf generic map (t => boolean, init => true, f => neg) port map (d);
+        m : entity work.mid generic map (e => integer, v => 5, g => inc);
+      end;";
+    let mut db = analyze_rev("gentypes", src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let arch = |label: &str| {
+        e.hier
+            .scopes
+            .iter()
+            .find_map(|s| match s.kind {
+                ScopeKind::Instance { arch, .. } if s.name.key.as_str() == label => Some(arch),
+                _ => None,
+            })
+            .expect("instance")
+    };
+    // u1 and u2 differ only in a generic constant: one clone, instance data apart.
+    assert_eq!(arch("u1"), arch("u2"));
+    assert_ne!(arch("u1"), arch("u3"));
+    // The leaf inside `m` gets `t => integer` and `f => inc` through `mid`'s formals.
+    assert_eq!(arch("u"), arch("u1"));
+    let name = |a| yavs_sem::mangle::region(&db, db.units[a].scope);
+    assert!(name(arch("u1")).starts_with("work.leaf[t=>std.standard.integer,f=>"));
+    assert!(name(arch("u3")).starts_with("work.leaf[t=>std.standard.boolean,f=>"));
+    assert!(name(arch("u1")).ends_with("].a"), "{}", name(arch("u1")));
+    assert_eq!(sig_paths(&e).len(), 9);
+}
+
+/// A top-level entity with a generic type has no actual for it: `-g` gives only constants.
+#[test]
+fn top_level_generic_type_has_no_actual() {
+    let src = "entity t is generic (type g); end; architecture a of t is begin end;";
+    let mut db = analyze_rev("gentop", src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let Err(errs) = crate::elaborate(&mut db, top, &[], &ElabConfig::default()) else {
+        panic!("elaboration succeeded");
+    };
+    let got: Vec<&str> = errs.iter().map(|d| d.code).collect();
+    assert_eq!(got, [codes::GENERIC_NO_VALUE]);
 }

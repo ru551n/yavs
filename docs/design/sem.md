@@ -939,6 +939,13 @@ are stable text built from declaration paths:
 Per elaborated instance storage (one local package instance in an architecture instantiated 8
 times) is elab's concern; the code identity is the site's mangled name.
 
+A design entity with generic types, subprograms or packages is cloned with its architecture by
+`Db::instantiate_entity` (`generic/entity.rs`, #75), which elab calls per instance: one clone per
+distinct (entity, architecture, map of those actuals), like an ordinary architecture whose code
+every instance shares. Generic constants stay generics of the clone (instance data); the
+clone's generic list holds only them. Mangled names: `work.e[t=>std.standard.integer,f=>...]`
+for the entity, plus `.<arch>` for the architecture, so declarations inside get distinct names.
+
 ### 5.4 2019 additions
 
 | Feature | Sem work |

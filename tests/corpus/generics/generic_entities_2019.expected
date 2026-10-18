@@ -1,0 +1,6 @@
+exit	0
+diag	note	1000000	0	:generic_entities_2019:l3:_p0	lim 3
+diag	note	2000000	0	:generic_entities_2019:l5:_p0	lim 5
+diag	note	13000000	0	:generic_entities_2019:g(0):pi:_p1	1 1 same=3
+diag	note	26000000	0	:generic_entities_2019:g(1):pi:_p1	4 5 same=1
+diag	note	47000000	0	:generic_entities_2019:pc:_p1	b c same=1

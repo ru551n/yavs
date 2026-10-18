@@ -33,10 +33,10 @@ use crate::decl::{
 use crate::diag;
 use crate::hir::{
     Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Call, Choice, ChoiceSet, Delay, Expr, ExprKind,
-    External, LoopScheme, Lsp, LspStep, Mode, NewInit, ObjRoot, Rhs, Stmt, StmtKind, Target,
-    UnitHir, WaveElem, Waveform,
+    External, GenAlt, InstTarget, LoopScheme, Lsp, LspStep, Mode, NewInit, ObjRoot, ProcessInfo,
+    Rhs, Sensitivity, Stmt, StmtKind, Target, UnitHir, WaveElem, Waveform,
 };
-use crate::ids::{DeclId, ExprId, InstId, ScopeId, StmtId, SubtypeId, TypeId};
+use crate::ids::{DeclId, ExprId, InstId, ScopeId, StmtId, SubtypeId, TypeId, UnitId};
 use crate::implicit::ImplicitOp;
 use crate::loader::{UnitKey, UnitKind};
 use crate::scope::{Scope, ScopeKind, UseItem, Visible};
@@ -44,6 +44,9 @@ use crate::types::{
     BoundsFrom, Constrainedness, Constraint, RangeC, RecordElem, Resolution, SubtypeDef, TypeDef,
     TypeKind,
 };
+
+mod entity;
+pub use entity::GenericActual;
 
 /// The class of a generic type (2.9; M0 `GenericTypeDef`).
 #[derive(Clone, Debug)]
@@ -124,6 +127,12 @@ pub struct GenericState {
     pub(crate) unused: HashSet<DeclId>,
     /// The actuals a formal package with a generic map requires of its actual instance.
     pub(crate) wants: HashMap<InstId, Vec<(DeclId, Want)>>,
+    /// Design entities cloned per map of generic type, subprogram and package actuals
+    /// (`instantiate_entity`): (entity, architecture, actuals) to the clones.
+    #[allow(clippy::type_complexity)]
+    pub(crate) entities: HashMap<(UnitId, UnitId, Box<[Option<GenericActual>]>), (UnitId, UnitId)>,
+    /// Mangled names of those clones (5.3).
+    pub(crate) unit_names: HashMap<UnitId, Symbol>,
 }
 
 /// One association of a formal package's generic map (6.5.6.3).
@@ -1218,6 +1227,26 @@ impl Db {
         };
         let class = class.clone();
         self.check_class(&class, actual, span, r)?;
+        let warn = matches!(class, GenericClass::Private).then_some(scope);
+        self.seed_type(warn, inst_scope, gscope, f, t, actual, span, r, map)
+    }
+
+    /// Map formal type `t` (declared by `f` in `gscope`) to `actual` in `r`: the formal's
+    /// subtypes, a subtype declaration in `inst_scope`, and the formal's class operations
+    /// as the actual's predefined ones (Q9). `warn`: the instantiating region, for `W1506`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn seed_type(
+        &mut self,
+        warn: Option<ScopeId>,
+        inst_scope: ScopeId,
+        gscope: ScopeId,
+        f: DeclId,
+        t: TypeId,
+        actual: SubtypeId,
+        span: Span,
+        r: &mut Remap,
+        map: &mut GenericMap,
+    ) -> Result<(), Reported> {
         let base = self.base(actual);
         let first = self.types[t].first_subtype;
         let tbase = self.types[t].base_subtype;
@@ -1252,7 +1281,7 @@ impl Db {
                     r.decls.insert(d, x);
                     map.subprograms.insert(d, x);
                     if op.family == crate::implicit::Family::Eq
-                        && matches!(class, GenericClass::Private)
+                        && let Some(scope) = warn
                     {
                         self.warn_user_eq(scope, x, base, span);
                     }
@@ -2727,7 +2756,7 @@ impl Db {
         });
         r.stmts.insert(s, n);
         let kind = std::mem::replace(&mut self.stmts[s].kind, StmtKind::Null);
-        let new_kind = self.r_stmt_kind(r, span, &kind);
+        let new_kind = self.r_stmt_kind(r, &kind);
         self.stmts[s].kind = kind;
         self.stmts[n].kind = new_kind;
         n
@@ -2825,7 +2854,7 @@ impl Db {
         }
     }
 
-    fn r_stmt_kind(&mut self, r: &mut Remap, span: Span, k: &StmtKind) -> StmtKind {
+    fn r_stmt_kind(&mut self, r: &mut Remap, k: &StmtKind) -> StmtKind {
         use StmtKind as S;
         let oe = |db: &mut Db, r: &mut Remap, e: &Option<ExprId>| e.map(|e| db.r_expr(r, e));
         match k {
@@ -2915,15 +2944,141 @@ impl Db {
                 scope: self.r_scope(r, *scope),
                 body: self.r_stmts(r, body),
             },
-            _ => {
-                // Concurrent statements never occur in packages or subprograms.
-                self.ice(
-                    span,
-                    "concurrent statement inside a generic package or subprogram",
-                );
-                r.failed = true;
-                S::Null
+            // Concurrent statements: design entities cloned per generic map (`entity.rs`).
+            S::Process {
+                postponed,
+                sensitivity,
+                info,
+                scope,
+                body,
+            } => S::Process {
+                postponed: *postponed,
+                sensitivity: match sensitivity {
+                    Sensitivity::None => Sensitivity::None,
+                    Sensitivity::All => Sensitivity::All,
+                    Sensitivity::List(l) => {
+                        Sensitivity::List(l.iter().map(|l| self.r_lsp(r, l)).collect())
+                    }
+                },
+                info: self.r_info(r, info),
+                scope: self.r_scope(r, *scope),
+                body: self.r_stmts(r, body),
+            },
+            S::Block {
+                scope,
+                guard,
+                generics,
+                generic_map,
+                ports,
+                port_map,
+                body,
+            } => S::Block {
+                scope: self.r_scope(r, *scope),
+                guard: guard.map(|g| self.r_decl(r, g)),
+                generics: generics.iter().map(|&d| self.r_decl(r, d)).collect(),
+                generic_map: self.r_args(r, generic_map),
+                ports: ports.iter().map(|&d| self.r_decl(r, d)).collect(),
+                port_map: self.r_args(r, port_map),
+                body: self.r_stmts(r, body),
+            },
+            S::ConcSignalAssign {
+                postponed,
+                guarded,
+                target,
+                delay,
+                rhs,
+                info,
+            } => S::ConcSignalAssign {
+                postponed: *postponed,
+                guarded: *guarded,
+                target: self.r_target(r, target),
+                delay: self.r_delay(r, delay),
+                rhs: self.r_rhs(r, rhs, &mut |db, r, w| db.r_waveform(r, w)),
+                info: self.r_info(r, info),
+            },
+            S::ConcProcCall {
+                postponed,
+                call,
+                info,
+            } => S::ConcProcCall {
+                postponed: *postponed,
+                call: self.r_call(r, call),
+                info: self.r_info(r, info),
+            },
+            S::ConcAssert {
+                postponed,
+                cond,
+                report,
+                severity,
+                info,
+            } => S::ConcAssert {
+                postponed: *postponed,
+                cond: self.r_expr(r, *cond),
+                report: oe(self, r, report),
+                severity: oe(self, r, severity),
+                info: self.r_info(r, info),
+            },
+            S::Instance {
+                target,
+                scope,
+                generic_map,
+                port_map,
+            } => {
+                let target = match target {
+                    InstTarget::Component(c) => InstTarget::Component(self.r_decl(r, *c)),
+                    InstTarget::Entity { unit, arch } => InstTarget::Entity {
+                        unit: *unit,
+                        arch: *arch,
+                    },
+                    InstTarget::Configuration(u) => InstTarget::Configuration(*u),
+                };
+                S::Instance {
+                    target,
+                    scope: self.r_scope(r, *scope),
+                    generic_map: self.r_args(r, generic_map),
+                    port_map: self.r_args(r, port_map),
+                }
             }
+            S::ForGenerate {
+                param,
+                range,
+                scope,
+                body,
+            } => S::ForGenerate {
+                param: self.r_decl(r, *param),
+                range: self.r_range(r, range),
+                scope: self.r_scope(r, *scope),
+                body: self.r_stmts(r, body),
+            },
+            S::IfGenerate { alts } => S::IfGenerate {
+                alts: alts.iter().map(|a| self.r_gen_alt(r, a)).collect(),
+            },
+            S::CaseGenerate { expr, alts } => S::CaseGenerate {
+                expr: self.r_expr(r, *expr),
+                alts: alts
+                    .iter()
+                    .map(|(c, a)| (self.r_choices(r, c), self.r_gen_alt(r, a)))
+                    .collect(),
+            },
+        }
+    }
+
+    fn r_info(&mut self, r: &mut Remap, i: &ProcessInfo) -> ProcessInfo {
+        ProcessInfo {
+            drivers: i.drivers.iter().map(|l| self.r_lsp(r, l)).collect(),
+            reads_all: i
+                .reads_all
+                .as_ref()
+                .map(|v| v.iter().map(|l| self.r_lsp(r, l)).collect()),
+        }
+    }
+
+    fn r_gen_alt(&mut self, r: &mut Remap, a: &GenAlt) -> GenAlt {
+        GenAlt {
+            label: a.label,
+            cond: a.cond.map(|e| self.r_expr(r, e)),
+            scope: self.r_scope(r, a.scope),
+            body: self.r_stmts(r, &a.body),
         }
     }
 

@@ -53,6 +53,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | An external name as the actual of an `in` port is an expression actual: no port edge, the formal is driven by a kernel copy process `formal <= actual` (`NetGraph::copies`, built after the IR processes), one delta behind | #186, LRM 6.5.6.3, the reference simulator | `docs/decisions.md` "Elaboration", `docs/design/lrm-checks.md` L49 |
 | Names through an object alias are the aliased name; `LspStep::Rebase` and alias prefixes map indices by element position (`Model::rebase`) | LRM 6.6.2, #203 | `docs/decisions.md` "Lowering" |
 | A signal whose subtype leaves bounds open takes them from its evaluated initial value (`Model::shape_init`, element and record element bounds included); a package array signal's descriptor is written into package data after the package's initialisation | #187, LRM 6.4.2.3 (2019) | `docs/decisions.md` "Elaboration" |
+| An entity with generic types, subprograms or packages: `Elab::instantiate` asks yavs-sem for the clone of entity and architecture for those actuals (`Db::instantiate_entity`, one per distinct map) and elaborates the clone, its generic constants as usual; a missing actual (top level) is E2103 | Shapes and code depend on the actual types; rule 4 identity by mangling (#75) | `docs/design/sem.md` 5.3 |
 | Linkage ports are kernel `in` port edges; mode-view ports take each leaf's mode from `Db::port_mode_tree` (`leaf_modes`) | #75; LRM 6.5.2 | `docs/decisions.md` "Elaboration" |
 | Not-yet-supported constructs are `E9999` naming the slice; composite values elab cannot evaluate yet (multi-dimensional aggregates, arrays of composites passed to functions, shifts) `E2106` (`ponytail:` in `eval.rs`) | Fail early | crate docs, #77 |
 | Composite elaboration-time values: structural operations on `Val` here, function calls in yavs-interp through `call_values` | One evaluator for subprogram bodies, no expression thunks needing instance data | `docs/decisions.md` "Elaboration", #77 |
@@ -95,7 +96,6 @@ python3 tools/difftest/difftest.py --candidate yavs
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:elab`): #41
   `GenSelect::Index` evaluated without the generate's scope; #64 wire into `yavs run`; #68
   guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
-  non-static actuals in port maps; #75 generic types, subprograms and packages, binding without
-  entity aspect; #76 package signals, external names, user resolution, nested resolution; #77
+  non-static actuals in port maps; #76 package signals, external names, user resolution, nested resolution; #77
   composite values at elaboration (rest of E2106); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
   unlabeled: #6 remaining elaboration features.

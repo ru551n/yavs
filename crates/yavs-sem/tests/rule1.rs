@@ -1367,7 +1367,11 @@ mod corpus {
     /// them); `target` must analyze clean.
     pub(super) fn analyze_upto(manifest: &str, target: &str) -> Db {
         let root = std::env::var_os("YAVS_CORPUS").map_or_else(
-            || PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".cache/rsim-corpus"),
+            || {
+                std::env::home_dir()
+                    .expect("home directory")
+                    .join(".cache/rsim-corpus")
+            },
             PathBuf::from,
         );
         let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

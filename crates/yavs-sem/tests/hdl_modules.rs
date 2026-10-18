@@ -18,7 +18,11 @@ const MATH_PKG: (&str, &str) = ("math", "math/src/math_pkg.vhd");
 /// Analyze `(library, path under modules/)` in order; every file must be clean.
 fn analyze(files: &[(&str, &str)]) {
     let root = std::env::var_os("YAVS_CORPUS").map_or_else(
-        || PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".cache/rsim-corpus"),
+        || {
+            std::env::home_dir()
+                .expect("home directory")
+                .join(".cache/rsim-corpus")
+        },
         PathBuf::from,
     );
     let modules = root.join("hdl-modules/modules");

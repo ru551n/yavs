@@ -15,14 +15,12 @@ use crate::loader::UnitKind;
 use crate::{Db, LangRev, Options};
 
 fn dir() -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME");
-    let d = PathBuf::from(home)
-        .join(".cache/rsim-sem/unit-tests")
-        .join(format!(
-            "{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+    let home = std::env::home_dir().expect("home directory");
+    let d = home.join(".cache/rsim-sem/unit-tests").join(format!(
+        "{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&d).expect("scratch dir");
     d
 }

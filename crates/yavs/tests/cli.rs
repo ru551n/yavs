@@ -193,7 +193,11 @@ fn run(case: &Case, dir: &Path, tmp: &Path) -> (i32, String) {
         .expect("run yavs");
     let err = String::from_utf8(out.stderr)
         .expect("utf-8")
-        .replace(t, "$TMP");
+        .replace(t, "$TMP")
+        .replace(
+            "The system cannot find the file specified.",
+            "No such file or directory",
+        );
     (out.status.code().expect("exit code"), err)
 }
 
@@ -253,9 +257,13 @@ fn run_snapshot(name: &str, code: i32) {
     let _ = std::fs::remove_dir_all(&tmp);
     assert_eq!(o.status.code(), Some(code));
     let canon = dir.canonicalize().expect("dir");
+    // Windows: no `\\?\` prefix in the diagnostic, and `\` after the directory.
+    let canon = canon.to_str().expect("utf-8 dir");
+    let canon = canon.strip_prefix(r"\\?\").unwrap_or(canon);
     let err = String::from_utf8(o.stderr)
         .expect("utf-8")
-        .replace(canon.to_str().expect("utf-8 dir"), "$DIR");
+        .replace(canon, "$DIR")
+        .replace(r"$DIR\", "$DIR/");
     let path = dir.join(format!("{name}.stderr"));
     if std::env::var_os("YAVS_BLESS").is_some_and(|v| v == "1") {
         std::fs::write(&path, &err).expect("write");

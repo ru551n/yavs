@@ -299,6 +299,11 @@ fn eval(rev: Revision, func: &str, a: &[&str]) -> Out {
             &t,
         ),
         "vhdl_version" => env::vhdl_version(rev).as_bytes().to_vec(),
+        // The golden values come from NVC on Linux; on Windows the separator is `\`.
+        "dir_separator" if cfg!(windows) => {
+            assert_eq!(env::DIR_SEPARATOR, "\\");
+            b"/".to_vec()
+        }
         "dir_separator" => env::DIR_SEPARATOR.as_bytes().to_vec(),
         "gmtime_to_string" => e(env::time_record_to_string(
             &e(env::gmtime(real(a[0])))?,

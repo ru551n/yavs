@@ -8,10 +8,8 @@ use yavs_sem::{Db, LangRev, Options};
 use crate::{Case, ElabConfig, Elaborated, ScopeKind, Sel, codes};
 
 fn dir(name: &str) -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME");
-    let d = PathBuf::from(home)
-        .join(".cache/rsim-elab/unit-tests")
-        .join(name);
+    let home = std::env::home_dir().expect("home directory");
+    let d = home.join(".cache/rsim-elab/unit-tests").join(name);
     std::fs::create_dir_all(&d).expect("scratch dir");
     d
 }

@@ -835,7 +835,7 @@ fn nvc_cross_check() {
         "D\"A\"",
         "D\"1X\"",
     ];
-    let home = std::env::var_os("HOME").expect("HOME");
+    let home = std::env::home_dir().expect("home directory");
     let dir = std::path::Path::new(&home).join(format!(
         ".cache/rsim-sem-literal/nvc-{}",
         std::process::id()

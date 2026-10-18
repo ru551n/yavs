@@ -1,7 +1,6 @@
 //! Unit tests of generic.rs (sem.md section 5): instantiation by cloning,
 //! instance identity, formal mapping, defaults, diagnostics.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
@@ -12,7 +11,8 @@ static N: AtomicUsize = AtomicUsize::new(0);
 
 /// Analyze `src` as one file into `work`; scratch under `~/.cache/rsim-sem`.
 fn analyze(rev: LangRev, src: &str) -> Db {
-    let dir = PathBuf::from(std::env::var_os("HOME").expect("HOME"))
+    let dir = std::env::home_dir()
+        .expect("home directory")
         .join(".cache/rsim-sem/generic-tests");
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let n = N.fetch_add(1, Ordering::Relaxed);

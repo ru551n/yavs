@@ -6,8 +6,8 @@ use yavs_sem::{Db, LangRev, Options, default_stdlib};
 
 #[test]
 fn failed_file_hides_its_units() {
-    let home = std::env::var_os("HOME").expect("HOME");
-    let dir = std::path::PathBuf::from(home).join(format!(
+    let home = std::env::home_dir().expect("home directory");
+    let dir = home.join(format!(
         ".cache/rsim-sem/session-files-{}",
         std::process::id()
     ));

@@ -23,6 +23,7 @@ fn snap(d: &yavs_diag::Diagnostic, tmp: &Path) -> String {
         render(d, false)
             .trim_end()
             .replace(tmp.to_str().unwrap(), "<tmp>")
+            .replace('\\', "/")
     )
 }
 

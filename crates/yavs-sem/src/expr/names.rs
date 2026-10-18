@@ -14,7 +14,7 @@ use crate::db::{Db, Reported};
 use crate::decl::{Alias, DeclKind, char_key, operator_key};
 use crate::diag;
 use crate::hir::{Actual, Arg, AttrPrefix, Expr, ExprKind};
-use crate::ids::{DeclId, ExprId, ScopeId, SubtypeId, TypeId};
+use crate::ids::{ConstId, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 use crate::scope::Visible;
 use crate::stat::{ConstValue, Staticness};
 use crate::types::{Direction, TypeKind};
@@ -1135,6 +1135,7 @@ impl Db {
             }
             _ => return self.poison_expr(),
         };
+        let value = value.and_then(|c| self.rebound(c, subtype));
         self.add_expr(Expr {
             kind: ExprKind::Obj(d),
             subtype,
@@ -1142,6 +1143,32 @@ impl Db {
             stat,
             value,
         })
+    }
+
+    /// Folded array value `c` seen through constrained subtype `st`: the bounds of `st`, not
+    /// those of the initial value (a constant takes its subtype's bounds, LRM 6.4.2.2).
+    /// `None` (not folded) when the bounds of `st` are not static or a length differs, so
+    /// lowering evaluates the constant and its run-time check reports a mismatch.
+    fn rebound(&mut self, c: ConstId, st: SubtypeId) -> Option<ConstId> {
+        let ConstValue::Array(a) = &self.consts[c] else {
+            return Some(c);
+        };
+        let mut want = Vec::with_capacity(a.bounds.len());
+        for dim in 0..a.bounds.len() {
+            let Some(r) = crate::expr::aggregate::subtype_range(self, st, dim) else {
+                let constrained = matches!(
+                    self.subtypes[st].constraint,
+                    crate::types::Constraint::Array { dims: Some(_), .. }
+                );
+                return (!constrained).then_some(c);
+            };
+            want.push((r.left, r.dir, r.right));
+        }
+        if *a.bounds == *want {
+            return Some(c);
+        }
+        let v = ConstValue::Array(a.with_bounds(&want)?);
+        Some(self.add_const(v))
     }
 
     /// A function call with named or positional association; defaults are `Actual::Default`.

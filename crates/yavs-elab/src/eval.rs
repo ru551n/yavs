@@ -559,10 +559,12 @@ impl Model {
                 if in_pkg {
                     Self::check_body_elaborated(db, init, decl.scope)?;
                     let v = self.eval(db, init, None)?;
+                    let v = self.as_subtype(db, o.subtype, v, None, decl.span)?;
                     self.pkg.insert(d, v.clone());
                     Ok(v)
                 } else {
                     let v = self.eval(db, init, scope)?;
+                    let v = self.as_subtype(db, o.subtype, v, scope, decl.span)?;
                     if let Some(s) = scope {
                         self.set(s, d, v.clone());
                     }
@@ -593,6 +595,32 @@ impl Model {
                     decl.name
                 ),
                 "needs a globally static value",
+            )),
+        }
+    }
+
+    /// Array value `v` of a constant of subtype `st`: with the bounds of `st` when it is
+    /// constrained, not those of the initial value (LRM 6.4.2.2, 5.3.2.2).
+    fn as_subtype(
+        &mut self,
+        db: &Db,
+        st: SubtypeId,
+        v: Val,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<Val> {
+        let Val::Array(a) = &v else { return Ok(v) };
+        let Some(Shape::Array { dims, .. }) = self.shape(db, st, scope, span)? else {
+            return Ok(v);
+        };
+        let want: Vec<_> = dims.iter().map(|b| (b.left, b.dir, b.right)).collect();
+        match a.with_bounds(&want) {
+            Some(a) => Ok(Val::Array(a)),
+            None => Err(err(
+                codes::NOT_EVALUATED,
+                span,
+                "the initial value does not match the length of the constant's subtype",
+                "bound error",
             )),
         }
     }

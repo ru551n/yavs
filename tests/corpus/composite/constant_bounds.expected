@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:constant_bounds:_p0	xyzxyzxyzxyzabc
+diag	note	0	0	:constant_bounds:_p0	done
+diag	note	1000000	0	:constant_bounds:g:_p0	generate ok

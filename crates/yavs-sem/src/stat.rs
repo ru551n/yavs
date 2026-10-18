@@ -30,6 +30,31 @@ pub struct ArrayConst {
     pub elems: Elems,
 }
 
+impl ArrayConst {
+    /// This value under the bounds `want` of the constrained subtype of the object holding it
+    /// (LRM 5.3.2.2: the initial value is converted, so the object has its subtype's bounds,
+    /// not the value's). `None` when a dimension's length differs.
+    pub fn with_bounds(&self, want: &[(i64, Direction, i64)]) -> Option<ArrayConst> {
+        let len = |&(l, d, r): &(i64, Direction, i64)| {
+            let n = i128::from(if d == Direction::To { r } else { l })
+                - i128::from(if d == Direction::To { l } else { r });
+            n.max(-1)
+        };
+        if want.len() != self.bounds.len()
+            || !want
+                .iter()
+                .zip(&*self.bounds)
+                .all(|(w, b)| len(w) == len(b))
+        {
+            return None;
+        }
+        Some(ArrayConst {
+            bounds: want.into(),
+            elems: self.elems.clone(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Elems {
     /// 1-D arrays of enums with at most 256 literals: strings, bit and std_ulogic vectors.

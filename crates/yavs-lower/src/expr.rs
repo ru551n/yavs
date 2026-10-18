@@ -384,7 +384,13 @@ impl Fx<'_, '_> {
                     if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some() =>
                 {
                     let e = o.default.ok_or(Failed)?;
-                    let v = self.expr(e)?;
+                    let v = match self.expr(e)? {
+                        // The constant's own bounds, not the initialiser's (LRM 6.4.2.2).
+                        V::A(data, dope) => {
+                            V::A(data, self.dope_as(d, dope, Some(o.subtype), span)?)
+                        }
+                        v => v,
+                    };
                     if let V::S(r) = v {
                         self.check_scalar(
                             r,
@@ -539,6 +545,24 @@ impl Fx<'_, '_> {
     /// The descriptor of an array signal named by `e` (`None` for a scalar).
     fn dope_of_signal(&mut self, e: ExprId) -> R<Option<Reg>> {
         Ok(self.sig_name(e)?.2)
+    }
+
+    /// The descriptor under which constant `d` sees an array value with descriptor `dope`:
+    /// its subtype `st` when constrained (checked against the value, LRM 5.3.2.2), else `dope`.
+    fn dope_as(&mut self, d: DeclId, dope: Reg, st: Option<SubtypeId>, span: Span) -> R<Reg> {
+        let Some(st) = st else { return Ok(dope) };
+        let Some(want) = self.subtype_dope(st, span)? else {
+            return Ok(dope);
+        };
+        let (_, dims) = ty::array_of(self.db, self.db.base(st)).ok_or(Failed)?;
+        let what = self.msg(&self.db.decls[d].name.to_string(), yavs_ir::Dir::To);
+        self.emit(Inst::SubtypeCheck {
+            dope,
+            want,
+            dims,
+            what,
+        });
+        Ok(want)
     }
 
     /// The IR type of object `d`.

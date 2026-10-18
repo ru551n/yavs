@@ -144,7 +144,7 @@ composites, multi-dimensional aggregates, composite constants, access types (`ne
 that call the body's methods (#204), file objects and textio,
 `force`/`release` of scalar signals, shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`). Difftest: access 3/3,
-composite 5/5, force 3/3, protected 5/5, resolution 4/5, textio 2/3 at 1 and 4 threads.
+composite 6/6, force 3/3, protected 5/5, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
 ## sem robustness
 

@@ -116,7 +116,10 @@ pub struct Db {
     /// `(top AST node address, context subtype)` of the complete context being resolved.
     pub(crate) top_context: Option<(usize, SubtypeId)>,
     /// Folds that overflowed in the complete context being resolved (Q5).
-    pub(crate) overflow: Vec<ExprId>,
+    /// `Some(why)` when the operation has no value (division by zero, ...).
+    pub(crate) overflow: Vec<(ExprId, Option<&'static str>)>,
+    /// Bounds being resolved are required at analysis time (Q5: array type bounds).
+    pub(crate) required_ctx: bool,
     /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
     pub(crate) pending_implicit: Vec<crate::implicit::Pending>,
     /// How much of the arenas `validate` already checked.
@@ -210,6 +213,7 @@ impl Db {
             pending_implicit: Vec::new(),
             validated: Default::default(),
             overflow: Vec::new(),
+            required_ctx: false,
             context_subtype: None,
             top_context: None,
             tainted: HashSet::new(),

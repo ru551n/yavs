@@ -608,10 +608,13 @@ impl Db {
         let ast::Range::Simple { left, dir, right } = r else {
             return Err(self.unsupported(span, "a range attribute as a type definition", "S3"));
         };
+        let before = self.error_count();
         let l = self.static_expr(scope, left, Expected::Any);
         let rr = self.static_expr(scope, right, Expected::Any);
         let (lv, rv) = match (self.value(l).cloned(), self.value(rr).cloned()) {
             (Some(a), Some(b)) => (a, b),
+            // Already reported (an overflow, a division by zero): no follow-on `E1410`.
+            _ if self.error_count() > before => return Err(Reported),
             _ => {
                 for (e, ast) in [(l, left), (rr, right)] {
                     if self.value(e).is_none() && !self.is_poison_expr(e) {
@@ -657,8 +660,20 @@ impl Db {
         let conv = |db: &mut Db, e: ExprId, v: ConstValue| {
             let c = db.add_const(v);
             let sp = db.exprs[e].span;
+            // 5.2.3: a bound may be of any integer (floating) type; only a universal one converts implicitly.
+            let universal = matches!(
+                db.types[db.base(db.exprs[e].subtype)].kind,
+                TypeKind::UniversalInteger | TypeKind::UniversalReal
+            );
             db.add_expr(Expr {
-                kind: ExprKind::ImplicitConv { operand: e },
+                kind: if universal {
+                    ExprKind::ImplicitConv { operand: e }
+                } else {
+                    ExprKind::Conv {
+                        to: base_st,
+                        operand: e,
+                    }
+                },
                 subtype: base_st,
                 span: sp,
                 stat: Staticness::Locally,
@@ -761,7 +776,8 @@ impl Db {
                     crate::expr::literal::Abs::Int(n) => n.checked_mul(scale).ok_or_else(|| {
                         self.error(
                             Diagnostic::error(diag::OVERFLOW, "the unit's scale overflows 64 bits")
-                                .with_primary(e.span, "too large in base units"),
+                                .with_primary(name.span, "this unit")
+                                .with_secondary(e.span, "too large in base units"),
                         )
                     })?,
                     crate::expr::literal::Abs::Real(_) => {
@@ -826,7 +842,11 @@ impl Db {
                 let mut dims = Vec::new();
                 let mut idx = Vec::new();
                 for r in ranges {
-                    let (rc, t) = self.discrete_range(scope, r, None)?;
+                    // Array type bounds are required (Q5): overflow there is `E1401`.
+                    self.required_ctx = true;
+                    let res = self.discrete_range(scope, r, None);
+                    self.required_ctx = false;
+                    let (rc, t) = res?;
                     dims.push(rc);
                     idx.push(self.types[t].first_subtype);
                 }
@@ -900,11 +920,12 @@ impl Db {
                     Some(t) => t,
                     None => self.range_type_of(scope, left, right)?,
                 };
-                let l = self.expr(scope, left, Expected::Type(t));
+                let req = self.required_ctx;
+                let l = self.complete_context(scope, left, Expected::Type(t), req);
                 if self.is_poison_expr(l) {
                     return Err(Reported);
                 }
-                let rr = self.expr(scope, right, Expected::Type(t));
+                let rr = self.complete_context(scope, right, Expected::Type(t), req);
                 Ok((
                     RangeC::Explicit {
                         left: l,

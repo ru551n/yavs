@@ -37,7 +37,27 @@ impl Db {
     ) -> ExprId {
         self.context_subtype = Some(st);
         let t = self.base(st);
-        self.expr(scope, e, Expected::Type(t))
+        let id = self.expr(scope, e, Expected::Type(t));
+        self.check_in_subtype(id, st);
+        id
+    }
+
+    /// `E1403`: a static scalar value outside the static subtype it goes into (4.3).
+    pub(crate) fn check_in_subtype(&mut self, id: ExprId, st: crate::ids::SubtypeId) {
+        let (Some(v), Some((l, d, r))) = (self.value(id).cloned(), self.static_bounds(st)) else {
+            return;
+        };
+        if crate::stat::within(&v, &l, d, &r) == Some(false) {
+            let name = self.subtype_name(st);
+            let span = self.exprs[id].span;
+            self.report(
+                Diagnostic::error(
+                    diag::OUT_OF_SUBTYPE,
+                    format!("static value is outside subtype `{name}`"),
+                )
+                .with_primary(span, "out of range"),
+            );
+        }
     }
 
     /// Resolve a complete context whose value is required at analysis time
@@ -46,7 +66,7 @@ impl Db {
         self.complete_context(scope, e, exp, true)
     }
 
-    fn complete_context(
+    pub(crate) fn complete_context(
         &mut self,
         scope: ScopeId,
         e: &ast::Expr,
@@ -67,14 +87,20 @@ impl Db {
             .map(|st| (top as *const ast::Expr as usize, st));
         let id = self.resolve(scope, e, exp);
         self.top_context = saved_top;
-        for o in std::mem::replace(&mut self.overflow, saved_overflow) {
+        for (o, why) in std::mem::replace(&mut self.overflow, saved_overflow) {
             let span = self.exprs[o].span;
+            let msg = match why {
+                Some(w) => format!("{w} in a static expression"),
+                None => format!(
+                    "static arithmetic overflows `{}`",
+                    self.type_name(self.base(self.exprs[o].subtype))
+                ),
+            };
             let d = if required {
-                Diagnostic::error(diag::OVERFLOW, "static arithmetic overflows 64 bits")
-                    .with_primary(span, "this value overflows")
+                Diagnostic::error(diag::OVERFLOW, msg).with_primary(span, "no static value")
             } else {
-                Diagnostic::warning(diag::W_OVERFLOW, "static arithmetic overflows 64 bits")
-                    .with_primary(span, "this value overflows")
+                Diagnostic::warning(diag::W_OVERFLOW, msg)
+                    .with_primary(span, "no static value")
                     .with_note("the value is not needed during analysis; the run-time check stays")
             };
             self.report(d);

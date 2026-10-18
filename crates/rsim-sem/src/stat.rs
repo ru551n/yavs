@@ -65,6 +65,8 @@ enum Fold {
     No,
     /// Checked i64 arithmetic overflowed (rule 7).
     Overflow,
+    /// The operation has no value: division by zero, negative integer exponent.
+    Fails(&'static str),
 }
 
 fn bool_val(b: bool) -> ConstValue {
@@ -77,10 +79,20 @@ impl Db {
     pub(crate) fn fold_into(&mut self, id: ExprId) {
         match self.fold(id) {
             Ok(v) => {
+                // Outside the base range of its type is overflow too (Q2: the declared range).
+                let bs = self.types[self.base(self.exprs[id].subtype)].base_subtype;
+                if self
+                    .static_bounds(bs)
+                    .is_some_and(|(l, d, r)| within(&v, &l, d, &r) == Some(false))
+                {
+                    self.overflow.push((id, None));
+                    return;
+                }
                 let c = self.add_const(v);
                 self.exprs[id].value = Some(c);
             }
-            Err(Fold::Overflow) => self.overflow.push(id),
+            Err(Fold::Overflow) => self.overflow.push((id, None)),
+            Err(Fold::Fails(why)) => self.overflow.push((id, Some(why))),
             Err(Fold::No) => {}
         }
     }
@@ -249,7 +261,7 @@ fn fold_family(f: Family, v: &[ConstValue], result: &TypeKind) -> Result<ConstVa
             (x, y) => {
                 let (x, y) = x.as_int().zip(y.as_int()).ok_or(Fold::No)?;
                 if y == 0 {
-                    return Err(Fold::No);
+                    return Err(Fold::Fails("division by zero"));
                 }
                 Ok(wrap(ovf(x.checked_div(y))?))
             }
@@ -257,7 +269,11 @@ fn fold_family(f: Family, v: &[ConstValue], result: &TypeKind) -> Result<ConstVa
         (F::Rem | F::Mod, [a, b]) => {
             let (x, y) = a.as_int().zip(b.as_int()).ok_or(Fold::No)?;
             if y == 0 {
-                return Err(Fold::No);
+                return Err(Fold::Fails(if f == F::Mod {
+                    "`mod` by zero"
+                } else {
+                    "`rem` by zero"
+                }));
             }
             let r = ovf(x.checked_rem(y))?;
             let r = if f == F::Mod && r != 0 && ((r < 0) != (y < 0)) {
@@ -269,7 +285,8 @@ fn fold_family(f: Family, v: &[ConstValue], result: &TypeKind) -> Result<ConstVa
         }
         (F::Exp, [a, Int(n)]) => match a {
             Int(x) => {
-                let n = u32::try_from(*n).map_err(|_| Fold::No)?;
+                let n = u32::try_from(*n)
+                    .map_err(|_| Fold::Fails("negative exponent in integer `**`"))?;
                 Ok(Int(ovf(x.checked_pow(n))?))
             }
             Real(x) => {
@@ -323,6 +340,23 @@ fn fold_family(f: Family, v: &[ConstValue], result: &TypeKind) -> Result<ConstVa
             }))
         }
         _ => Err(Fold::No),
+    }
+}
+
+/// Whether scalar `v` lies in `l dir r`; `None` for non-scalars.
+pub(crate) fn within(
+    v: &ConstValue,
+    l: &ConstValue,
+    dir: Direction,
+    r: &ConstValue,
+) -> Option<bool> {
+    let (lo, hi) = if dir == Direction::To { (l, r) } else { (r, l) };
+    match (v, lo, hi) {
+        (ConstValue::Real(x), ConstValue::Real(a), ConstValue::Real(b)) => Some(a <= x && x <= b),
+        _ => {
+            let (x, a, b) = (v.as_int()?, lo.as_int()?, hi.as_int()?);
+            Some(a <= x && x <= b)
+        }
     }
 }
 

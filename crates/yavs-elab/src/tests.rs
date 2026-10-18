@@ -879,6 +879,8 @@ fn block_generics_and_ports() {
 /// entity aspect yet, so the test removes the aspect from the analyzed HIR.
 #[test]
 fn incremental_binding() {
+    // LRM 7.3.2.3: u2's configuration adds a generic map to the primary binding of its
+    // configuration specification; u1 keeps the default binding.
     let src = "entity inv is generic (W : natural := 1); end;
       architecture rtl of inv is signal s : bit_vector(W - 1 downto 0); begin end;
       entity top is end;
@@ -891,24 +893,12 @@ fn incremental_binding() {
       end;
       configuration cfg of top is
         for t
-          for u1 : inv use entity work.inv generic map (W => 3); end for;
+          for u2 : inv generic map (W => 3); end for;
         end for;
       end;";
-    let mut db = analyze("incremental", src);
-    let top = crate::find_top(&mut db, "work", "cfg").expect("top");
-    let cu = top.config.expect("configuration");
-    let yavs_sem::hir::UnitHir::Configuration(b) = &mut db.units[cu].hir else {
-        panic!("configuration")
-    };
-    for it in &mut b.items {
-        if let yavs_sem::hir::ConfigItem::Component(c) = it {
-            c.binding.as_mut().expect("binding").aspect = None;
-        }
-    }
-    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let (_, e) = elab("incremental", src, "cfg", &[]);
     let lens: Vec<u32> = e.nets.leaves.iter().map(|l| l.ty.len).collect();
-    // u1: W from the incremental map; u2 (bound by the specification): the default.
-    assert_eq!(lens, [3, 1]);
+    assert_eq!(lens, [1, 3]);
 }
 
 /// Conversion functions and type conversions in port maps run in the update phase (#74).

@@ -4,7 +4,7 @@
 package g is
   generic (n : natural);
   type rec is record a : integer; end record;
-end package;
+constant c : natural := n; end package;
 package i1 is new work.g generic map (n => 1);
 package i2 is new work.g generic map (n => 2);
 use work.i1, work.i2;

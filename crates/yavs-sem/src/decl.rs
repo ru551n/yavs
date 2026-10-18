@@ -313,7 +313,14 @@ impl Db {
         let end = decls.last().map_or(Span::default(), decl_span);
         use crate::scope::ScopeKind as K;
         match self.scopes[scope].kind {
-            K::Package | K::Protected | K::ProtectedBody | K::Instance => {}
+            // An entity's subprograms may get their bodies in an architecture (12.1).
+            K::Package | K::Protected | K::ProtectedBody | K::Instance | K::Entity => {}
+            K::Architecture => {
+                if let Some(e) = self.entity_of_arch(scope) {
+                    self.check_subprogram_bodies(e, end);
+                }
+                self.check_subprogram_bodies(scope, end);
+            }
             K::PackageBody => {
                 // A package's subprograms get their bodies in the package body (4.8).
                 // Its parent is the body's context region, whose parent is the package.
@@ -338,6 +345,15 @@ impl Db {
             let end = decls.last().map_or(Span::default(), decl_span);
             let _ = self.check_protected_bodies(scope, end);
         }
+    }
+
+    /// The entity region of an architecture region (its parent is the context region,
+    /// whose parent is the entity).
+    pub(crate) fn entity_of_arch(&self, arch: ScopeId) -> Option<ScopeId> {
+        self.scopes[arch]
+            .parent
+            .and_then(|c| self.scopes[c].parent)
+            .filter(|&e| self.scopes[e].kind == crate::scope::ScopeKind::Entity)
     }
 
     /// `E1230`: a subprogram declared in this region has no body in it (4.2, 4.3).
@@ -803,12 +819,17 @@ impl Db {
                 }
             }
             crate::scope::ScopeKind::ProtectedBody => regions.extend(self.scopes[scope].parent),
+            crate::scope::ScopeKind::Architecture => regions.extend(self.entity_of_arch(scope)),
             _ => {}
         }
         let profile = self.profile(new);
+        // ponytail: a spec in the entity takes the body of the last architecture analyzed
+        // in the session (one per elaboration in practice); per-architecture bodies would
+        // need the body keyed by architecture.
         let spec = regions.iter().find_map(|&r| {
+            let entity = self.scopes[r].kind == crate::scope::ScopeKind::Entity;
             self.scopes[r].names.get(&key)?.iter().copied().find(|&d| {
-                matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending)) && self.profile(d) == profile
+                matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.profile(d) == profile
             })
         });
         let pscope = match &self.decls[new].kind {

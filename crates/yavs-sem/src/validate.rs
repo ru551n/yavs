@@ -276,7 +276,11 @@ impl<'a> Cx<'a> {
             }
             let needs = match self.db.scopes[decl.scope].kind {
                 ScopeKind::Package => with_body.contains(&decl.scope),
-                ScopeKind::Protected | ScopeKind::ProtectedBody | ScopeKind::Instance => false,
+                // An entity's subprograms get their bodies from an architecture, if any.
+                ScopeKind::Protected
+                | ScopeKind::ProtectedBody
+                | ScopeKind::Instance
+                | ScopeKind::Entity => false,
                 _ => true,
             };
             if needs {

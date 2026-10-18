@@ -293,8 +293,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Function parameter modes:** `in` only (`E1360`), except that 2019 files allow `out`/`inout` on
   impure functions.
 - **Missing subprogram bodies (`E1230`)** are checked at the end of every declarative part except
-  packages (checked at the end of the package body) and protected types (s6). A package without
-  any analyzed body is not checked at analysis.
+  packages (checked at the end of the package body), protected types (s6) and entities (checked at
+  the end of an architecture, whose declarative part may hold the body: 12.1, #177). A package or
+  entity without any analyzed body or architecture is not checked at analysis. A spec in an entity
+  takes the body of the last architecture analyzed in the session (ponytail in `decl.rs`).
 - **A failed file hides all its units in the session** (`Db::analyze_file`): one session over
   many files gives the per-file result of one `yavs analyze` per file. A file fails when a unit
   reports an error, fails silently (8.2), or needs a unit that failed; then every unit of the file

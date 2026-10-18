@@ -520,7 +520,10 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   6.5.2, so it never drives its actual). A port with a 2019 mode view takes each record leaf's
   mode from `Db::port_mode_tree` (arrays of records: the element view for every element).
 - **Package constant calling a function of its own package** whose body is not elaborated yet
-  (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.
+  (LRM 14.4.2): E2114 with both spans, as NVC and Questa do. Since package data is initialised
+  at run time (#183), `Elaborated::lower` checks every constant of each run-time package's
+  declaration before lowering, so a constant only processes read is E2114 too, never
+  evaluated at package initialisation (#197, the LRM is clear).
 
 ## Runtime: default exit severity (user, 2026-10-18)
 
@@ -630,7 +633,9 @@ which tools/difftest parses.
   (`AddrSpace::Pkg`, `PackageIr`): an initialisation thunk evaluates its constants that are not
   locally static once (composites of static layout in place) and creates its protected shared
   variables, run once by the elaborator with `yavs_interp::init_package` (the package's data is
-  writable only there). Package signals take the first indices of every unit's signal table.
+  writable only there). A declaration constant calling a function of its own package never
+  reaches the thunk: yavs-elab rejects it first with E2114 (#197, see "Elaboration").
+  Package signals take the first indices of every unit's signal table.
   Composite package constants whose bounds are known only at run time are still re-evaluated
   at each use (ponytail).
 - **Allocators of shared objects (#184):** allocators in the initialisers of a shared protected

@@ -101,6 +101,22 @@ impl Elaborated {
             }
             res_regions.insert(crate::LeafId(k as u32), region);
         }
+        let packages = run_time_packages(db);
+        // A declaration's constant calling a subprogram of its own package runs before the
+        // body is elaborated (LRM 14.4.2): E2114, also for constants only processes read
+        // (#197).
+        for &u in &packages {
+            let scope = db.units[u].scope;
+            for &d in &db.scopes[scope].order {
+                if let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind
+                    && o.class == yavs_sem::decl::ObjClass::Constant
+                    && let Some(init) = o.default
+                {
+                    crate::eval::Model::check_body_elaborated(db, init, scope)
+                        .map_err(|d| vec![*d])?;
+                }
+            }
+        }
         if archs.is_empty() {
             return Ok(());
         }
@@ -109,7 +125,7 @@ impl Elaborated {
         // its declaration uses (LRM 14.4.2).
         // ponytail: a body using a package analyzed after its declaration is initialised too
         // early; order by the dependency graph if a design needs it.
-        for u in run_time_packages(db) {
+        for u in packages {
             l.package(u)?;
         }
         let mut idx = Vec::new();

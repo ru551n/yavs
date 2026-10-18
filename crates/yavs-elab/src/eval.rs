@@ -557,7 +557,7 @@ impl Model {
                     SemScope::Package | SemScope::PackageBody
                 );
                 if in_pkg {
-                    self.check_body_elaborated(db, init, decl.scope)?;
+                    Self::check_body_elaborated(db, init, decl.scope)?;
                     let v = self.eval(db, init, None)?;
                     self.pkg.insert(d, v.clone());
                     Ok(v)
@@ -600,7 +600,7 @@ impl Model {
     /// LRM 14.4.2: a package constant whose initial value calls a subprogram of the same
     /// package, whose body (in the package body) is not elaborated yet. NVC and Questa
     /// report it; fail early with both spans.
-    fn check_body_elaborated(&self, db: &Db, e: ExprId, pkg: yavs_sem::ScopeId) -> R<()> {
+    pub(crate) fn check_body_elaborated(db: &Db, e: ExprId, pkg: yavs_sem::ScopeId) -> R<()> {
         let mut stack = vec![e];
         while let Some(e) = stack.pop() {
             let ex = &db.exprs[e];

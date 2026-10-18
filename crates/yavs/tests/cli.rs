@@ -237,6 +237,13 @@ fn init_error() {
     run_snapshot("init_error", 2);
 }
 
+/// A package declaration's constant calling a function of its own package is E2114 even when
+/// only a process reads it (#197, LRM 14.4.2).
+#[test]
+fn body_not_elaborated() {
+    run_snapshot("body_not_elaborated", 2);
+}
+
 /// Analyze `tests/cli/NAME.vhd`, run its entity `NAME`, check the exit code and compare stderr
 /// with `NAME.stderr`.
 fn run_snapshot(name: &str, code: i32) {

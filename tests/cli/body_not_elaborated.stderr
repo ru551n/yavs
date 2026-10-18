@@ -1,0 +1,13 @@
+error[E2114]: subprogram `f` is called before its body is elaborated
+ --> $DIR/body_not_elaborated.vhd:5:27
+  |
+4 |   function f return integer;
+  |   ------------------------- declared here; its body is in the package body
+5 |   constant c : integer := f;
+  |                           ^ called while its package is elaborated
+  |
+  = note: the package declaration is elaborated before its body (LRM 14.4.2)
+  = help: move the constant into the package body, or the function into another package
+
+error: aborting due to 1 previous error
+

@@ -21,7 +21,11 @@ Decisions made with the user:
 - **Interop with the VUnit python bridge:** rsim needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), and an entry in the bridge's simulator table.
 - **Vendor libraries:**
   - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
-  - Synopsys `std_logic_arith`/`unsigned`/`signed` are a **clean-room** MIT/Apache reimplementation, written from documented behaviour and tested against NVC and GHDL output. They are never copied.
+  - Synopsys `std_logic_arith`/`unsigned`/`signed` are **deferred to M4b** (user, 2026-10-18). Two clean-room attempts were stopped by the content filter while writing the package declaration. The black-box testbenches and runner stay in `lib/synopsys/test/`.
+- **VUnit integration** (user, 2026-10-18):
+  - **Mixing VHDL-2008 and 2019 files in one project is allowed.** The manifest records the standard per file.
+  - **Each rsim defaults to `--threads 1`** under VUnit's `-p N`; users opt in through `rsim.sim_flags`.
+  - **`@file` response files are supported from the start.** VUnit uses them on Windows for long `runner_cfg` generics.
   - Installation is documented as VUnit `add_library` recipes, with no installer command.
 - **Repo:** `ru551n/rsim` on GitHub stays **private until the rename**, **Initial phase:** agents push straight to `main`, with no PRs and no CI. Once something works, CI is added on Linux x86_64, Linux aarch64 and Windows, and each milestone then lands as a PR that the user merges.
 - **External test inputs (never copied into the repo):** VESTs, NVC `test/regress` and GHDL `testsuite/gna`, fetched in CI or read from local checkouts, for parse, sem and differential runs.

@@ -83,6 +83,7 @@ const PASS: &[&str] = &[
     "resolution/std_logic_table",
     "run/agg_targets",
     "run/case_forms",
+    "run/cat_null",
     "run/cond_2019",
     "run/driving",
     "run/expr_forms",

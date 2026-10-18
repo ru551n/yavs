@@ -1936,6 +1936,7 @@ impl Fx<'_, '_> {
             _ => (false, false),
         };
         let mut ops = Vec::new();
+        let mut right_dope = None;
         for (k, &e) in ex.iter().enumerate() {
             let sc = if k == 0 { left_scalar } else { right_scalar };
             let v = self.expr(e)?;
@@ -1943,6 +1944,9 @@ impl Fx<'_, '_> {
                 (self.scal(v, span)?, None)
             } else {
                 let (d, p) = self.arr(v, span)?;
+                if k == 1 {
+                    right_dope = Some(p);
+                }
                 (d, Some(self.dope_len(p)))
             });
         }
@@ -2025,6 +2029,12 @@ impl Fx<'_, '_> {
                     });
                 }
             }
+        }
+        // Two null operands: the result is the right operand (LRM 9.2.5 a).
+        if let (Some(_), Some(rd)) = (ops[0].1, right_dope) {
+            let data = self.select(null, ops[1].0, data, RegTy::Ptr);
+            let dope = self.select(null, rd, dope, RegTy::Ptr);
+            return Ok(V::A(data, dope));
         }
         Ok(V::A(data, dope))
     }

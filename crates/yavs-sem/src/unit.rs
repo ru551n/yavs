@@ -173,7 +173,15 @@ impl Db {
         for item in &ast.context {
             self.context_item(context, item, false);
         }
-        self.declare(context, decl);
+        // The architecture's name belongs to the library, outside the entity's region, so a
+        // port or generic of the same name hides it inside the architecture (12.3).
+        // ponytail: skipped instead of declared further out; `arch.x` expanded names then
+        // fail only when a port has the architecture's name.
+        let hidden = matches!(ast.unit, L::Architecture(_))
+            && parent.is_some_and(|e| self.scopes[e].names.contains_key(&name.key));
+        if !hidden {
+            self.declare(context, decl);
+        }
         let scope_kind = match &ast.unit {
             L::Entity(_) => ScopeKind::Entity,
             L::Architecture(_) => ScopeKind::Architecture,

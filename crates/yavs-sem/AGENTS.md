@@ -57,7 +57,9 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Formal packages with a generic map are checked against the actual (`E1503`) | LRM clear, Questa rejects | `docs/decisions.md` "Generics" |
 | Incomplete types in protected method profiles only in library `std` (user, 2026-10-18, amends U-2) | `std.reflection` needs it | `docs/decisions.md` "Incomplete types in protected method profiles" |
 | Pure calls with globally static actuals are globally static; port array attributes globally static | OSVVM, matches all simulators | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes" (last bullets) |
-| Implicit vs explicit in one region: explicit wins | OSVVM RandomBasePkg | same section |
+| Implicit vs explicit (any region): explicit wins when a call is otherwise ambiguous | OSVVM RandomBasePkg, UVVM rand_pkg | same section |
+| An architecture's name is hidden by a port or generic of the same name (12.3: the name belongs to the library, outside the entity's region) | `architecture a of and2` with port `a`, NVC agrees | `src/unit.rs` (`hidden`) |
+| A conversion on an unconstrained formal is `E1312` (user, F8) | GHDL and Questa reject | `docs/design/rule1-review.md` F8 |
 | Reflection: `simple_name` etc. upper case, 1-based physical unit indices, 0-based element/literal indices (user, 2026-10-18) | Match NVC; VUnit record_dict | `docs/decisions.md` "Reflection: names, indices and case" |
 | Unimplemented constructs report `Db::unsupported(span, what, "S<n>")` (`E9999`) | Fail early, no `todo!()` | CONTRIBUTING "Conventions" |
 

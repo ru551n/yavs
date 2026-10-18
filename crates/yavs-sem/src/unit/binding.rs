@@ -1103,10 +1103,27 @@ impl Db {
                 )));
                 continue;
             }
+            // 2019 (LCS-2016-001): an open sub-element is left unassociated, which a
+            // port of mode `in` allows only with a default, as for a whole port (6.5.7.1).
+            if let ast::Actual::Open(sp) = &a.actual {
+                let in_no_default = matches!(&self.decls[f].kind, DeclKind::Object(o)
+                    if o.mode == Some(Mode::In) && o.default.is_none());
+                let msg = if self.file_rev() < crate::LangRev::Vhdl2019 {
+                    "a sub-element of a formal cannot be `open` before VHDL-2019"
+                } else if in_no_default {
+                    "a sub-element of a port of mode `in` without a default cannot be `open`"
+                } else {
+                    continue;
+                };
+                errs.keep::<()>(Err(self.error(
+                    Diagnostic::error(diag::MISSING_ACTUAL, msg).with_primary(*sp, "left open here"),
+                )));
+                continue;
+            }
             let (ast::Actual::Expr(e) | ast::Actual::Inertial(e)) = &a.actual else {
                 errs.keep::<()>(Err(self.unsupported(
                     span,
-                    "`open` or range actuals of sub-elements",
+                    "range actuals of sub-elements",
                     "S5",
                 )));
                 continue;

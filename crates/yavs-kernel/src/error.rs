@@ -96,6 +96,26 @@ impl SimError {
     }
 }
 
+impl ErrorKind {
+    /// The diagnostic code (yavs-diag registry: `E3000`-`E3099` belong to the kernel, an
+    /// internal error is `E9999` as in every stage).
+    pub fn code(&self) -> &'static str {
+        match self {
+            ErrorKind::TimeOverflow { .. } => "E3001",
+            ErrorKind::DeltaLimit { .. } => "E3002",
+            ErrorKind::PostponedDelta => "E3003",
+            ErrorKind::InvalidAssign(_) => "E3004",
+            ErrorKind::DeadlineInPast { .. } => "E3005",
+            ErrorKind::BadRef(_) => "E3006",
+            ErrorKind::Resolution { .. } => "E3007",
+            ErrorKind::Conversion { .. } => "E3008",
+            ErrorKind::Runtime(_) => "E3009",
+            ErrorKind::Usage(_) => "E3010",
+            ErrorKind::Internal(_) => "E9999",
+        }
+    }
+}
+
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

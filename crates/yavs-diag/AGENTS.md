@@ -52,7 +52,8 @@ Module-local decisions go here, in this section, in the same commit (root `AGENT
   `docs/cli-contract.md` section 0 promises `level`, `children` and `rendered`: they disagree
   (issue #158). Change either side deliberately, never silently.
 - Registry gaps: the CLI emits `E9000` for a caught panic in `yavs analyze` while the registry
-  says `E9999` (issue #159); kernel and interpreter runtime errors carry no code yet (#84).
+  says `E9999` (issue #159). Runtime errors carry `yavs_kernel::ErrorKind::code` (`E3001`-`E3010`)
+  and are rendered by `yavs_elab::Elaborated::runtime_diagnostic`; their explain texts are #136.
 - No `--explain` command exists yet; `yavs-sem` keeps explain texts in `src/diag.rs` (#136).
 
 ## 5. How to work here
@@ -73,6 +74,5 @@ YAVS_BLESS=1 cargo test -p yavs --test diag         # accept new output, then in
 - Every crate depends on this one: a signature change touches all of them. Prefer additive
   builder methods.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:diag`):
-  #136 keep the code registry and `--explain` texts complete; #84 kernel errors carry no
-  diagnostic code; #158 JSON format differs from the CLI contract; #159 `E9000` used for ICEs
+  #136 keep the code registry and `--explain` texts complete; #158 JSON format differs from the CLI contract; #159 `E9000` used for ICEs
   instead of `E9999`.

@@ -26,6 +26,30 @@ fn sim_err(m: String) -> SimError {
 }
 
 impl Elaborated {
+    /// A runtime error as a diagnostic (plan: yavs-diag): the kernel's code, the failing
+    /// statement as the primary span, one "called from here" label per outer VHDL frame, and
+    /// the time, delta and process as a note.
+    pub fn runtime_diagnostic(&self, e: &SimError) -> Diagnostic {
+        let mut d = Diagnostic::error(e.kind.code(), e.kind.to_string());
+        let prog = self.ir.as_ref().map(|ir| &*ir.program);
+        let spans = e
+            .trace
+            .iter()
+            .filter_map(|&s| prog.and_then(|p| p.stmts.get(s)).map(|i| i.span));
+        for (k, span) in spans.enumerate() {
+            d = if k == 0 {
+                d.with_primary(span, "")
+            } else {
+                d.with_secondary(span, "called from here")
+            };
+        }
+        let mut at = format!("at {}, delta {}", e.time, e.delta);
+        if let Some((_, path)) = &e.process {
+            at.push_str(&format!(", in process {path}"));
+        }
+        d.with_note(at)
+    }
+
     /// The instance scope a scope belongs to.
     pub fn instance_of(&self, mut s: ScopeId) -> ScopeId {
         loop {

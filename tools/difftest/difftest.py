@@ -91,6 +91,31 @@ NVC_CTL = re.compile(r"^(FINISH|STOP) called(?: with status (\d+))?$")
 GHDL_HDR = re.compile(r"^\S+?:\d+:\d+:@(\d+)([a-z]+):\((?:report|assertion) (\w+)\): (.*)$")
 GHDL_CTL = re.compile(r"^simulation (finished|stopped) @(\d+)([a-z]+)(?: with status (\d+))?$")
 GHDL_ERR = re.compile(r"^ghdl:error: (.*)$")
+YAVS_RTE = re.compile(r"^error\[(?:E3\d{3}|E9999)\]: (.*)$")
+YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)")
+
+
+def yavs_fatal(out, err):
+    """yavs prints a runtime error as a rustc-style diagnostic on stderr (code E3xxx or E9999,
+    a `= note: at T, delta D` line): turn it into NVC's `** Fatal` line at the end of stdout,
+    where its other output is, and drop the block and the "aborting" summary."""
+    lines, keep, fatal = err.splitlines(), [], []
+    i = 0
+    while i < len(lines):
+        m = YAVS_RTE.match(lines[i])
+        j = i + 1
+        while m and j < len(lines) and not lines[j].startswith("error"):
+            j += 1
+        at = [YAVS_AT.match(l) for l in lines[i:j]] if m else []
+        at = next((a for a in at if a), None)
+        if at:
+            fatal.append(f"** Fatal: {at.group(1)}{at.group(2)}+{at.group(3)}: {m.group(1)}")
+            i = j
+            continue
+        if not (fatal and lines[i].startswith("error: aborting due to")):
+            keep.append(lines[i])
+        i += 1
+    return "\n".join(out.splitlines() + fatal), "\n".join(keep)
 
 
 def norm_msg(m):
@@ -102,6 +127,8 @@ def normalise(rc, out, err, yavs=False):
     Event line: diag TAB sev TAB time_fs TAB delta TAB path TAB msg ('-' = absent)."""
     diags, outl = [], []
     cur = None
+    if yavs:
+        out, err = yavs_fatal(out, err)
     swallow = False
 
     def flush():

@@ -1,0 +1,16 @@
+error[E3009]: division by zero
+  --> $DIR/runtime_error.vhd:5:5
+   |
+ 5 |     return 10 / x;
+   |     ^^^^^^^^^^^^^^
+...
+ 9 |     return g(x - 1) + 1;
+   |     -------------------- called from here
+...
+16 |     v := h(1);
+   |     ---------- called from here
+   |
+   = note: at 3 ns, delta 0, in process :runtime_error:_p0
+
+error: aborting due to 1 previous error
+

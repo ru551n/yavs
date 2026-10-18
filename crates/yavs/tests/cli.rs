@@ -157,6 +157,41 @@ fn snapshots() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
+/// A runtime error is a rustc-style diagnostic on stderr (#84): the kernel's code, the failing
+/// statement, one label per calling frame, and the time, delta and process.
+#[test]
+fn runtime_error() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("runtime_error");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("run")
+    };
+    assert!(
+        yavs(&["analyze", &lib, "runtime_error.vhd"])
+            .status
+            .success()
+    );
+    let o = yavs(&["run", &lib, "runtime_error"]);
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert_eq!(o.status.code(), Some(1));
+    let canon = dir.canonicalize().expect("dir");
+    let err = String::from_utf8(o.stderr)
+        .expect("utf-8")
+        .replace(canon.to_str().expect("utf-8 dir"), "$DIR");
+    let path = dir.join("runtime_error.stderr");
+    if std::env::var_os("YAVS_BLESS").is_some_and(|v| v == "1") {
+        std::fs::write(&path, &err).expect("write");
+    } else {
+        assert_eq!(err, std::fs::read_to_string(&path).unwrap_or_default());
+    }
+}
+
 fn tempdir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("yavs-cli-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

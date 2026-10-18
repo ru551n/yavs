@@ -333,11 +333,8 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
         Ok(RunStatus::Ended(EndReason::Severity(_))) => 1,
         Ok(_) => 0,
         Err(err) => {
-            let msg = match &err.kind {
-                yavs_kernel::ErrorKind::Runtime(m) => m.clone(),
-                k => k.to_string(),
-            };
-            let _ = writeln!(o, "** Fatal: {}fs+{}: {msg}", err.time.as_fs(), err.delta);
+            let _ = o.flush();
+            out.emit(&db.sources, &e.runtime_diagnostic(&err));
             if err.exit_status() == 101 { 3 } else { 1 }
         }
     };

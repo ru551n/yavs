@@ -222,6 +222,10 @@ VUnit passes everything after `run`/`elab` in a response file (Conventions).
   so that VUnit's live output and timeouts work. `--color=always` forces ANSI
   colour on a pipe (VUnit passes it when it wants colour); without it yavs
   follows the TTY/`NO_COLOR` rules of plan `yavs-diag`.
+- Runtime errors (bound check, overflow, null access, delta limit, internal) are diagnostics
+  on stderr like every other error: code `E3001`-`E3010` per kernel `ErrorKind` (`E9999`
+  internal), the failing statement, one `called from here` label per calling subprogram,
+  and a note `at TIME, delta N, in process PATH`.
 - `--message-format=json` (section 0) is accepted by `run` and `elab` too, and
   covers runtime errors with their VHDL stacktrace; VUnit does not pass it today.
 

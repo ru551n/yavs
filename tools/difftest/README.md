@@ -87,7 +87,9 @@ working directory, so textio files land there. Exit codes 97 (analysis) and 98 (
 reserved for the harness: make a multi-step template `|| exit 97` / `|| exit 98` as `NVC` does, so
 that a compile failure is reported as such. yavs must print reports in NVC's format
 (`** Note: 5ns+0: text` plus an optional indented `Process ...` line) or the parser in
-`normalise()` gets a branch for its format; the canonical form is what matters.
+`normalise()` gets a branch for its format; the canonical form is what matters. yavs runtime
+errors are rustc-style diagnostics on stderr (`error[E3xxx]` with a `= note: at T, delta D`
+line); `yavs_fatal()` turns each into a `fatal` event.
 
 Thread-count invariance: if the template contains `{threads}`, `--threads 4` runs every test with
 1 and 4 threads and requires both outputs to be identical (unmasked) as well as equal to

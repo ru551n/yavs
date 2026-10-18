@@ -169,4 +169,3 @@ process code, and a panic anywhere in the kernel (a broken invariant), is caught
   its own buffered writes (M3: the interpreter can flush its stream through a serial path).
 - Records resolved as a whole composite are one byte-kind leaf whose element is the whole record;
   a logic field inside such a leaf is bytes, not planes.
-- Kernel errors carry no diagnostic code yet; yavs-diag assigns codes per `ErrorKind`.

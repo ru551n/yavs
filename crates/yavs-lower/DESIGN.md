@@ -206,9 +206,22 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   `OUTPUT` are the pre-opened cells 1 and 2 (constant cells).
 - `force`/`release`: whole scalar signals; default mode `out` for ports of mode out, inout and
   buffer, `in` otherwise (LRM 10.5.2.1).
-- Not yet: composite signals, shared variables in architectures (elaboration through
-  `call_shared`), user resolution functions in elaboration, 2008 slice-valued aggregate
-  elements, nested subprograms of protected methods reading state variables.
+- Shared variables of a protected type in an architecture: an instance cell with the object's
+  handle; its thunk creates the object in the shared heap (yavs-elab runs instance thunks with
+  `call_shared`). Composite constants of an architecture are re-evaluated at each use, like
+  package constants (#73).
+- User resolution functions: yavs-elab lowers them (`Ir::resolvers`) and the kernel resolver
+  calls `yavs_interp::resolve` (driving values as an array `0 to n - 1`); bit-plane leaves
+  are not handled yet.
+- Not yet: force of composite signals, 2008 slice-valued aggregate elements, nested
+  subprograms of protected methods reading state variables, methods of protected types in
+  generic package instances (generic instantiation, #71), user resolution of logic leaves.
+
+### Requests from lower2 to lower
+
+1. `textio/std_logic_textio` needs case statements over arrays (`case tri is when o"0"`,
+   #69) and object aliases (`alias sv : std_ulogic_vector ... is s`) in std_logic_1164's body.
+2. `protected/generic_package_prot` needs subprograms of generic package instances (#71).
 
 ## Requests from yavs-elab
 

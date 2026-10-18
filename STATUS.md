@@ -87,7 +87,9 @@ non-static aggregates (math_real). Design and conventions: `crates/yavs-lower/DE
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
 composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
 `deallocate`), process-local protected objects (`CallProt`), file objects and textio,
-`force`/`release` of scalar signals.
+`force`/`release` of scalar signals, shared protected variables (created through `call_shared`),
+user resolution functions (yavs-elab resolver over `yavs_interp::resolve`). Difftest: access 3/3,
+composite 5/5, force 3/3, protected 2/3, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
 ## sem robustness
 

@@ -49,3 +49,26 @@ Done: library directories (`rsim-lib.toml` manifest + `_RSIM_LIB` lock, rule 14)
 mapping, atomic manifest updates under an exclusive lock, shared-lock reads that never write,
 on-demand closure query (unknown library/unit with suggestion, cycles, stale hashes), multi-process
 concurrency test. The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file.
+
+## kernel (`crates/rsim-kernel`)
+
+LRM 14.7 cycle against an abstract `Process` trait, tested with hand-written processes: time with
+runtime resolution and checked arithmetic, drivers with transport and inertial (reject limit)
+preemption per element, resolution per driver segment, `'event`/`'active`/`'last_event`/
+`'last_value`/`'last_active`/`'transaction`, force/release/deposit, postponed processes, delta
+limit, parallel evaluation with ordered commit (threads and shuffle invariance tested on 1000
+processes), `SimControl` with run/step, interrupt, value-change bus and phase callbacks. Design in
+`crates/rsim-kernel/DESIGN.md`. Not yet: null transactions/guarded signals, ports, `'stable`,
+`'quiet`, `'delayed`.
+
+Benchmark (`cargo run --release -p rsim-kernel --example bench -- 10000 <work>`): 10000 counters
+on one clock, 10 us simulated (1000 rising edges), 24-core host, 8 worker threads.
+
+| work per activation | threads | events/s | process runs/s |
+|---|---|---|---|
+| 0 | 1 | 2.95 M | 5.9 M |
+| 0 | 8 | 3.12 M | 6.3 M |
+| 1000 | 1 | 1.41 M | 2.8 M |
+| 1000 | 8 | 2.51 M | 5.0 M |
+
+With trivial processes the serial update and commit phases dominate, so threads gain little.

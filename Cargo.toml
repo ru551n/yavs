@@ -14,6 +14,7 @@ rsim-diag = { path = "crates/rsim-diag" }
 rsim-syntax = { path = "crates/rsim-syntax" }
 annotate-snippets = "0.12.16"
 clap = { version = "4.6.7", features = ["derive"] }
+rayon = "1.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

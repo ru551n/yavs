@@ -807,6 +807,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsim-kernel"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
 name = "rsim-lib"
 version = "0.1.0"
 dependencies = [

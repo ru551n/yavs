@@ -58,3 +58,25 @@
   proposal for M6: JIT a function at O2 up to 40k LLVM IR instructions (under 1 s, under 100 MiB),
   keep larger units in the interpreter, and lower big processes as several functions rather
   than one. To be confirmed with real lowered code in M6.
+
+## Kernel crate and process interface (rsim-kernel)
+
+- **Crate:** the LRM 14.7 cycle lives in `crates/rsim-kernel`, independent of the IR. rsim-rt
+  (heap, std natives) builds on it.
+- **Process interface:** `Process::run(&mut Ctx) -> Result<(), SimError>` runs to the next
+  `wait`; the wait is stated through `Ctx::wait_on/wait_for/wait_at`. A `wait until` condition is
+  evaluated by the process, which re-suspends with its original absolute deadline.
+- **Event tracking:** per-element flat arrays (`event_cycle`, `last_event`, `last_value`, ...)
+  over the whole signal, with `Range` operations; inertial preemption is decided per element and
+  transactions are split. This is how rule 2 is read: no per-scalar objects, exact per-scalar
+  semantics.
+- **Forces and deposits** (from processes, `SimControl` or callbacks) are queued and applied in
+  the next cycle, as VHDL-2008 forces are. A deposit sets the driving value until a driver next
+  updates those elements.
+- **Delta numbering:** initialization is delta 0 at 0 fs; the first cycle at 0 fs is delta 1.
+  Default delta limit 10000.
+- **Delays** are truncated to the resolution limit (`Config::resolution`).
+- **Exit status of kernel errors:** 101 for internal errors (also a panic inside process code,
+  which is caught), 1 for every other error. Normal ends map from `EndReason` in the CLI.
+- **End of simulation:** `Idle` (nothing scheduled) is terminal like `stop`/`finish`;
+  `EndOfSim` fires once.

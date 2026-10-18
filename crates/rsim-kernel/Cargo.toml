@@ -1,0 +1,13 @@
+[package]
+name = "rsim-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "rsim simulation kernel: the VHDL LRM 14.7 cycle with parallel process evaluation"
+
+[dependencies]
+rayon.workspace = true
+
+[lints]
+workspace = true

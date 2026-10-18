@@ -24,7 +24,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 |---|---|
 | `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState`, `InterpProcess` (`new`, `with_debug`), `proc_flags`, `call`, `call_shared`, `resolve` |
 | `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with NVC-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
-| `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots |
+| `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
 | `src/implicit.rs` | `yavs.implicit.<family>.<type>[.<form>]` operations |
 | `src/textio.rs` | std.textio and TEXT file natives, `FILE_INPUT`/`FILE_OUTPUT`, std.env glue |
@@ -42,6 +42,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | Temporaries live until the next statement of their frame | Unconstrained results survive return without copy | same |
 | Natives by NATIVE.md symbol; undefined symbol fails `Runtime::new`, defined but unimplemented is a runtime error naming it | Fail early | same; `lib/NATIVE.md` |
 | Heap: generational handles, precise roots (`Func::roots`), mark and sweep at suspensions; skip collection rather than be unsound | Rule 6 | `docs/plan.md` rule 6, ir.md 1.6 |
+| Deallocated heap slots are quarantined until a suspension finds no address to them in the frames and temporaries; such addresses also keep objects alive in a collection | Addresses have no generation (#81) | `docs/decisions.md` "IR and interpreter" |
 | Disk files written directly by the owning process; `STD_OUTPUT` through the kernel stream | Write/close/reopen in one delta; ordered with `report` (orchestrator, 2026-10-18) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes" |
 | BIT/BOOLEAN elements of logic arrays use std_ulogic codes '0'/'1' (2/3); scalar BIT/BOOLEAN are positions 0/1 | Shared plane ops | same; `src/implicit.rs` docs |
 | Foreign arrays as C-layout copies left to right, logic elements one code byte, records as aligned structs, access as pointer; copy-back range-checked | NVC convention plus yavs additions | `docs/decisions.md` "IR and interpreter" |
@@ -59,8 +60,9 @@ Module-local decisions go in this section and ir.md section 9 in the same commit
   only touched by serial processes (kernel `ProcFlags::serial`, `proc_flags`).
 - **Checked i64 everywhere** through `yavs_std::arith`; never wrap, clamp or saturate.
 - **Generational handles:** a stale access value is a clean runtime error. Heap *addresses*
-  carry no generation yet, so reuse within one statement is undetected (#81); the GC does not
-  scan elements that need their own descriptor (#80).
+  carry no generation: deallocated slots wait in quarantine until a suspension finds no address
+  to them (`Machine::pinned`), so never hand out a freed slot any other way; the GC follows
+  descriptors (`heap::handles_in`).
 - A runtime error's `SimError::trace` is the VHDL stack as `StmtId`s, innermost first; keep it
   correct when adding call paths (natives calling back into IR).
 - `reflect.rs` has a test that NATIVE.md reflection rows and the implementation agree: add both.
@@ -85,8 +87,7 @@ python3 tools/difftest/difftest.py --candidate yavs              # end to end ag
 - Requests from lowering and elaboration are logged with answers in `crates/yavs-ir/README.md`
   "Requests".
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:interp`): #77 fold
-  calls and aggregates at elaboration (E2106); #79 unimplemented natives and `Elab*`; #80 GC does
-  not scan elements needing their own descriptor; #81 heap address has no generation; #97
+  calls and aggregates at elaboration (E2106); #79 unimplemented natives and `Elab*`; #97
   reflection runtime; #99 2019 time_record, call-path and assert-count natives; #156 reflection
   index bases. Older unlabeled: #4 `finish`/`stop` end the process at once; #9 array signals and
   constants in instance data; #10 `FToIRange` text.

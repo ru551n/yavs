@@ -407,6 +407,9 @@ impl Machine {
     pub(crate) fn after_suspend(&mut self) {
         if self.heap.since_gc > self.rt.limits.gc_threshold {
             self.collect();
+        } else if self.heap.has_quarantine() {
+            let pinned = self.pinned(HEAP);
+            self.heap.recycle(&pinned);
         }
         if let Some(d) = &self.dbg {
             let w = std::mem::take(&mut self.waits);
@@ -454,7 +457,45 @@ impl Machine {
                 }
             }
         }
-        self.heap.collect(prog, &roots)
+        let pinned = self.pinned(HEAP);
+        self.heap.collect(prog, &roots, &pinned)
+    }
+
+    /// Slot indices of `space` (a heap) that addresses in this process's frames and
+    /// temporaries may reach, sorted. Any aligned word that decodes to such an address counts:
+    /// a false hit only delays reuse or collection of one object.
+    pub(crate) fn pinned(&self, space: u8) -> Vec<u32> {
+        let words = self
+            .frames
+            .iter()
+            .flat_map(|f| f.slots.as_chunks::<8>().0)
+            .chain(self.temp.as_chunks::<8>().0);
+        let mut v: Vec<u32> = words
+            .map(|w| split(u64::from_le_bytes(*w)))
+            .filter(|&(sp, _, _)| sp == space)
+            .map(|(_, i, _)| i)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Make the shared heap's deallocated slots reusable at a suspension of this (serial)
+    /// process. ponytail: only this process's frames are searched for addresses; one that
+    /// another process holds across a wait (a shared object passed by reference to a
+    /// procedure that waits) is not seen. Search all serial processes if that ever matters.
+    pub(crate) fn recycle_shared(&mut self) {
+        if self
+            .sh
+            .as_ref()
+            .and_then(|s| s.heap.as_ref())
+            .is_some_and(Heap::has_quarantine)
+        {
+            let pinned = self.pinned(SHARED_HEAP);
+            if let Some(h) = self.sh.as_mut().and_then(|s| s.heap.as_mut()) {
+                h.recycle(&pinned);
+            }
+        }
     }
 
     fn top(&mut self) -> &mut Frame {

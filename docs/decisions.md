@@ -309,7 +309,17 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   records and access values are a "not implemented" runtime error until M3.
 - **Heap:** generational handles; mark and sweep of the private heap at suspensions with
   precise roots from `Func::roots`; collection is skipped (never unsound) for objects whose
-  handles cannot be located. The shared heap is not collected yet.
+  handles cannot be located. Handles inside objects are found through the object's descriptor,
+  so arrays whose elements need their own descriptor are scanned too (#80). The shared heap is
+  not collected yet.
+- **Heap addresses carry no generation; deallocated slots are quarantined instead** (#81,
+  yavs-interp). The address format has no room for a generation next to a 24-bit slot index
+  and a 32-bit offset, so a deallocated slot is not reused until its process suspends
+  (registers are dead then) and no aligned word in the process's frames or temporaries decodes
+  to an address of it. The same address search keeps such objects alive across a collection
+  (a by-reference parameter of a waiting procedure). An access through a stale address
+  therefore always meets the freed slot and is the runtime error `access to a deallocated
+  object`. Ceiling: for the shared heap only the suspending process's frames are searched.
 - **Debugging like Riviera-PRO and Questa** (user requirement): conditional line breakpoints
   (the condition is an IR function nested in the stopped frame's function) with hit counts,
   step in/over/out per process, a global step across processes, pause inside endless loops,

@@ -659,6 +659,155 @@ fn access_types_and_stale_handle() {
     assert_eq!(e.trace, [s_stale]);
 }
 
+fn new_int(fb: &mut FuncBuilder<'_>, int: TyId, v: i64) -> Reg {
+    let eight = fb.int(8);
+    let init = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc {
+        dst: init,
+        size: eight,
+    });
+    let vr = fb.int(v);
+    fb.emit(Inst::Store {
+        addr: init,
+        src: vr,
+        w: Width::B8,
+    });
+    let h = fb.reg(RegTy::I64);
+    fb.emit(Inst::New {
+        dst: h,
+        ty: int,
+        init,
+        size: eight,
+        shared: false,
+    });
+    h
+}
+
+fn deref(fb: &mut FuncBuilder<'_>, h: Reg, what: CheckMsgId) -> Reg {
+    let obj = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Deref {
+        dst: obj,
+        handle: h,
+        what,
+    });
+    obj
+}
+
+/// An address taken before `deallocate` meets the freed object even when `new` runs in the
+/// same statement: the slot is not reused before the process suspends (#81).
+#[test]
+fn freed_slot_not_reused_within_a_statement() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let acc = pb.ty(Ty::Access { target: int });
+    let what = pb.check_msg("p.all", Dir::To);
+    let p = pb.declare("p", FuncKind::Process, None);
+    let s;
+    {
+        let mut fb = pb.define(p);
+        let ps = fb.local("p", acc, 8, 8);
+        let qs = fb.local("q", acc, 8, 8);
+        fb.root(ps, RootKind::Handle);
+        fb.root(qs, RootKind::Handle);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let h = new_int(&mut fb, int, 41);
+        store(&mut fb, AddrSpace::Frame, ps, h, Width::B8);
+        s = stmt(&mut fb, StmtKind::VarAssign);
+        let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
+        let obj = deref(&mut fb, h, what);
+        let pa = fb.addr(AddrSpace::Frame, ps);
+        fb.emit(Inst::Free { ptr: pa });
+        let h = new_int(&mut fb, int, 2);
+        store(&mut fb, AddrSpace::Frame, qs, h, Width::B8);
+        let v = fb.int(5);
+        fb.emit(Inst::Store {
+            addr: obj,
+            src: v,
+            w: Width::B8,
+        });
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: p,
+        drives: vec![],
+    }];
+    let (_, r) = d.run(Time::ns(10));
+    let e = r.unwrap_err();
+    assert_eq!(
+        e.kind,
+        ErrorKind::Runtime("access to a deallocated object".into())
+    );
+    assert_eq!(e.trace, [s]);
+}
+
+/// An object reached only through an address in a frame slot survives a collection at a
+/// wait (a by-reference parameter of a procedure that waits keeps such an address).
+#[test]
+fn gc_keeps_objects_reached_by_address() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let acc = pb.ty(Ty::Access { target: int });
+    let what = pb.check_msg("p.all", Dir::To);
+    let p = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(p);
+        let ps = fb.local("p", acc, 8, 8);
+        let addr = fb.local("a", int, 8, 8);
+        fb.root(ps, RootKind::Handle);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let h = new_int(&mut fb, int, 41);
+        let obj = deref(&mut fb, h, what);
+        store(&mut fb, AddrSpace::Frame, addr, obj, Width::B8);
+        // Garbage to push the heap over the GC threshold.
+        for _ in 0..4 {
+            let h = new_int(&mut fb, int, 0);
+            store(&mut fb, AddrSpace::Frame, ps, h, Width::B8);
+        }
+        wait_for(&mut fb, NS);
+        stmt(&mut fb, StmtKind::Report);
+        let slot = fb.addr(AddrSpace::Frame, addr);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: a,
+            addr: slot,
+            w: Width::B8,
+        });
+        let v = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: v,
+            addr: a,
+            w: Width::B8,
+        });
+        report_image(&mut fb, "a.all = ", int, v);
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: p,
+        drives: vec![],
+    }];
+    let b = Bindings {
+        limits: Limits {
+            gc_threshold: 64,
+            ..Limits::default()
+        },
+        ..Bindings::default()
+    };
+    let rt = Runtime::new(d.prog.clone(), b).unwrap();
+    let (mut sim, t, _) = d.build_rt(1, rt, |p, _| p);
+    assert_eq!(
+        sim.run_until(Time::ns(10)),
+        Ok(RunStatus::Ended(EndReason::Idle))
+    );
+    let lines = t.0.lock().unwrap().clone();
+    assert!(has(&lines, "a.all = 41"), "{lines:#?}");
+}
+
 /// Garbage collected at suspensions keeps everything reachable from the root map.
 #[test]
 fn gc_keeps_roots() {

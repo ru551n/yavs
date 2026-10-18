@@ -4,6 +4,11 @@
 //! bumps the slot's generation, so a stale handle is a clean error, never a use of the slot's
 //! next occupant. Collection is mark and sweep from explicit roots; nothing is scanned
 //! conservatively and objects never move.
+//!
+//! An *address* into an object (from `Deref`) carries no generation, so a deallocated slot is
+//! not reused at once: it waits in quarantine until the owner suspends (registers are dead
+//! then) and [`Heap::recycle`] finds no address to it in the frames (#81). An access through
+//! a stale address therefore always meets the freed slot, a clean runtime error.
 
 use yavs_ir::{Program, Ty, TyId};
 
@@ -47,6 +52,8 @@ pub struct Heap {
     tag: u8,
     slots: Vec<Slot>,
     free: Vec<u32>,
+    /// Deallocated slots not reusable yet (module docs).
+    quarantine: Vec<u32>,
     /// Bytes allocated since the last collection.
     pub since_gc: u64,
 }
@@ -65,6 +72,7 @@ impl Heap {
             tag,
             slots: Vec::new(),
             free: Vec::new(),
+            quarantine: Vec::new(),
             since_gc: 0,
         }
     }
@@ -115,6 +123,7 @@ impl Heap {
     pub fn free(&mut self, h: u64) -> Result<(), HeapError> {
         let i = self.resolve(h)?;
         self.release(i);
+        self.quarantine.push(i);
         Ok(())
     }
 
@@ -122,7 +131,22 @@ impl Heap {
         let s = &mut self.slots[i as usize];
         s.data = None;
         s.generation = s.generation.wrapping_add(1).max(1);
-        self.free.push(i);
+    }
+
+    /// Whether deallocated slots wait for [`Heap::recycle`].
+    pub fn has_quarantine(&self) -> bool {
+        !self.quarantine.is_empty()
+    }
+
+    /// Make quarantined slots reusable, except those in `pinned` (sorted slot indices that
+    /// addresses held by the owner may still reach). Call only at a suspension.
+    pub fn recycle(&mut self, pinned: &[u32]) {
+        let (keep, go): (Vec<u32>, Vec<u32>) = self
+            .quarantine
+            .iter()
+            .partition(|i| pinned.binary_search(i).is_ok());
+        self.quarantine = keep;
+        self.free.extend(go);
     }
 
     pub fn data(&self, index: u32) -> Option<&[u8]> {
@@ -138,11 +162,17 @@ impl Heap {
         self.slots.get_mut(index as usize)?.data.as_deref_mut()
     }
 
-    /// Mark from `roots` and sweep. Returns false (and frees nothing) when an object's
-    /// handles cannot be found from its type, so a collection is never unsound.
-    pub fn collect(&mut self, prog: &Program, roots: &[u64]) -> bool {
+    /// Mark from `roots` and from the objects in `pinned` (sorted slot indices that addresses
+    /// still reach), sweep, then [`Heap::recycle`]. Returns false (and frees nothing) when an
+    /// object's handles cannot be found from its type, so a collection is never unsound.
+    pub fn collect(&mut self, prog: &Program, roots: &[u64], pinned: &[u32]) -> bool {
         let mut mark = vec![false; self.slots.len()];
         let mut work: Vec<u64> = roots.to_vec();
+        for &i in pinned {
+            if let Some(s) = self.slots.get(i as usize).filter(|s| s.data.is_some()) {
+                work.push(pack(self.tag, i, s.generation));
+            }
+        }
         while let Some(h) = work.pop() {
             if tag_of(h) != self.tag {
                 continue;
@@ -173,8 +203,10 @@ impl Heap {
         for (i, m) in mark.into_iter().enumerate() {
             if !m && self.slots[i].data.is_some() {
                 self.release(i as u32);
+                self.free.push(i as u32);
             }
         }
+        self.recycle(pinned);
         self.since_gc = 0;
         true
     }
@@ -212,49 +244,39 @@ pub fn has_handles(prog: &Program, ty: TyId) -> bool {
     go(prog, ty, 0)
 }
 
-/// Handles inside a heap object of `ty`. An array object is `[descriptor][elements]`.
+/// Handles inside a heap object of `ty`: `[descriptor][value]`, the descriptor empty when
+/// the type needs none.
 pub fn object_handles(prog: &Program, ty: TyId, data: &[u8], out: &mut Vec<u64>) -> bool {
     if !has_handles(prog, ty) {
         return true;
     }
-    match prog.types.get(ty) {
-        Some(Ty::Array { .. }) => {
-            let Some(dsz) = Ty::desc_size(&prog.types, ty) else {
-                return false;
-            };
-            let Ok((l, _)) = Ty::layout(&prog.types, &prog.consts, ty, data) else {
-                return false;
-            };
-            let Some(Ty::Array {
-                elem, elem_desc, ..
-            }) = prog.types.get(ty)
-            else {
-                return false;
-            };
-            // ponytail: elements needing their own descriptor are not scanned; collection is
-            // skipped for such objects (the return below), add when records of arrays of
-            // access values appear.
-            if elem_desc.is_none() && Ty::needs_desc(&prog.types, *elem) {
-                return false;
-            }
-            for k in 0..l.count {
-                let at = dsz + k * l.stride;
-                let Some(rest) = data.get(at as usize..) else {
-                    return false;
-                };
-                if !value_handles(prog, *elem, rest, out) {
-                    return false;
-                }
-            }
-            true
-        }
-        _ => value_handles(prog, ty, data, out),
+    let Some(dsz) = Ty::desc_size(&prog.types, ty) else {
+        return false;
+    };
+    match (data.get(..dsz as usize), data.get(dsz as usize..)) {
+        (Some(desc), Some(v)) => handles_in(prog, ty, desc, v, out),
+        _ => false,
     }
 }
 
-/// Handles inside a statically laid out value of `ty` at the start of `data`.
+/// Handles inside a statically laid out value of `ty` at the start of `data` (a
+/// `RootKind::Composite` slot); a type that needs a descriptor fails (no descriptor here).
 pub fn value_handles(prog: &Program, ty: TyId, data: &[u8], out: &mut Vec<u64>) -> bool {
-    match prog.types.get(ty) {
+    handles_in(prog, ty, &[], data, out)
+}
+
+/// Handles inside a value of `ty` constrained by `desc` (the descriptor format of
+/// `yavs_ir::ty`) at the start of `data`. False when the layout cannot be computed.
+fn handles_in(prog: &Program, ty: TyId, desc: &[u8], data: &[u8], out: &mut Vec<u64>) -> bool {
+    if !has_handles(prog, ty) {
+        return true;
+    }
+    let (types, consts) = (&prog.types, &prog.consts);
+    let const_desc = |c| match consts.get(c) {
+        Some(yavs_ir::ConstData::Bytes(b)) => Some(b.as_slice()),
+        _ => None,
+    };
+    match types.get(ty) {
         Some(Ty::Access { .. } | Ty::Protected { .. }) => match read_u64(data, 0) {
             Some(h) => {
                 out.push(h);
@@ -263,17 +285,52 @@ pub fn value_handles(prog: &Program, ty: TyId, data: &[u8], out: &mut Vec<u64>) 
             None => false,
         },
         Some(Ty::Record { fields }) => {
-            let Ok((l, _)) = Ty::layout(&prog.types, &prog.consts, ty, &[]) else {
+            let Ok((l, _)) = Ty::layout(types, consts, ty, desc) else {
                 return false;
             };
-            fields.iter().zip(&l.offsets).all(|(f, &off)| {
-                !has_handles(prog, f.ty)
-                    || data
-                        .get(off as usize..)
-                        .is_some_and(|d| value_handles(prog, f.ty, d, out))
+            let mut used = 0;
+            for (f, &off) in fields.iter().zip(&l.offsets) {
+                let fdesc = match f.desc {
+                    Some(c) => const_desc(c),
+                    None => desc.get(used..),
+                };
+                if f.desc.is_none() {
+                    let Some(n) = Ty::desc_size(types, f.ty) else {
+                        return false;
+                    };
+                    used += n as usize;
+                }
+                let ok = match (fdesc, data.get(off as usize..)) {
+                    (Some(fd), Some(d)) => handles_in(prog, f.ty, fd, d, out),
+                    _ => false,
+                };
+                if !ok {
+                    return false;
+                }
+            }
+            true
+        }
+        Some(Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        }) => {
+            let Ok((l, _)) = Ty::layout(types, consts, ty, desc) else {
+                return false;
+            };
+            let edesc = match elem_desc {
+                Some(c) => const_desc(*c),
+                None => desc.get(usize::from(*dims) * yavs_ir::DOPE_DIM_BYTES as usize..),
+            };
+            let Some(edesc) = edesc else {
+                return false;
+            };
+            (0..l.count).all(|k| {
+                k.checked_mul(l.stride)
+                    .and_then(|at| data.get(at as usize..))
+                    .is_some_and(|d| handles_in(prog, *elem, edesc, d, out))
             })
         }
-        Some(Ty::Array { .. }) => !has_handles(prog, ty),
         Some(_) => true,
         None => false,
     }
@@ -314,17 +371,88 @@ mod tests {
         ad.extend(b.to_le_bytes());
         let a = h.alloc(Obj::Typed(node), ad).unwrap();
         let c = h.alloc(Obj::Typed(node), vec![0; 16]).unwrap();
-        assert!(h.collect(&prog, &[a]));
+        assert!(h.collect(&prog, &[a], &[]));
         assert_eq!(h.live(), 2);
         assert_eq!(h.resolve(c), Err(HeapError::Stale));
         assert!(h.resolve(b).is_ok());
         h.free(a).unwrap();
         assert_eq!(h.free(a), Err(HeapError::Stale));
-        // The freed slot is reused with a new generation; the old handle stays stale.
+        let (ai, ci) = (h.resolve(b).unwrap() + 1, h.resolve(b).unwrap() + 2);
+        // A deallocated slot is not reused before `recycle` (#81); a collected one is.
         let d = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
-        assert_ne!(d, a);
+        assert_eq!(h.resolve(d), Ok(ci));
+        let e = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
+        assert_eq!(h.resolve(e), Ok(3));
+        // A pinned slot stays in quarantine; an unpinned one is reused with a new generation.
+        h.recycle(&[ai]);
+        let f = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
+        assert_eq!(h.resolve(f), Ok(4));
+        h.recycle(&[]);
+        let g = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
+        assert_eq!(h.resolve(g), Ok(ai));
+        assert_ne!(g, a);
         assert_eq!(h.resolve(a), Err(HeapError::Stale));
         assert_eq!(h.resolve(0), Err(HeapError::Null));
         assert_eq!(h.resolve(pack(SHARED, 0, 1)), Err(HeapError::WrongHeap));
+    }
+
+    /// An array of records whose elements need their own descriptor (an unconstrained
+    /// `string` field) next to an access field: the handles are found through the
+    /// descriptors (#80).
+    #[test]
+    fn elements_with_their_own_descriptor() {
+        let mut types = IdVec::new();
+        let int = types.push(Ty::Int { lo: 0, hi: 9 });
+        let chr = types.push(Ty::Enum {
+            lits: (0..=255u8).map(|c| format!("'{}'", c as char)).collect(),
+            logic: None,
+        });
+        let string = types.push(Ty::Array {
+            elem: chr,
+            elem_desc: None,
+            dims: 1,
+        });
+        let acc = types.push(Ty::Access { target: int });
+        let rec = types.push(Ty::Record {
+            fields: vec![
+                Field {
+                    name: "s".into(),
+                    ty: string,
+                    desc: None,
+                },
+                Field {
+                    name: "p".into(),
+                    ty: acc,
+                    desc: None,
+                },
+            ],
+        });
+        let arr = types.push(Ty::Array {
+            elem: rec,
+            elem_desc: None,
+            dims: 1,
+        });
+        let prog = Program {
+            types,
+            ..Program::default()
+        };
+        let mut h = Heap::new(PRIVATE);
+        let a = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
+        let b = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
+        let junk = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
+        // [0 to 1] of records with s: string(1 to 3); an element is 3 bytes, pad, 8-byte p.
+        let mut obj: Vec<u8> = [0i64, 1, 0, 1, 3, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        for p in [a, b] {
+            obj.extend(b"abc\0\0\0\0\0");
+            obj.extend(p.to_le_bytes());
+        }
+        let root = h.alloc(Obj::Typed(arr), obj).unwrap();
+        assert!(h.collect(&prog, &[root], &[]));
+        assert_eq!(h.live(), 3);
+        assert!(h.resolve(a).is_ok() && h.resolve(b).is_ok());
+        assert_eq!(h.resolve(junk), Err(HeapError::Stale));
     }
 }

@@ -298,6 +298,9 @@ impl Process for InterpProcess {
             self.m.sh = Some(std::mem::take(&mut **g));
         }
         let r = self.m.run(Some(&mut *ctx), 0);
+        if matches!(r, Ok(Outcome::Suspended)) {
+            self.m.recycle_shared();
+        }
         if let (Some(g), Some(st)) = (guard.as_mut(), self.m.sh.take()) {
             **g = st;
         }

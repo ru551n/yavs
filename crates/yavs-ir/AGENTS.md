@@ -60,7 +60,8 @@ the same commit (root `AGENTS.md` rule 24).
 - Element order inside logic leaves: row-major position `p` is kernel offset `n - 1 - p`
   (`docs/decisions.md` "Elaboration"); lowering of non-static indices must match
   `NetGraph::select`.
-- Heap addresses carry no generation yet (#81).
+- Heap addresses carry no generation; the interpreter quarantines deallocated slots instead
+  (#81, `docs/decisions.md`).
 
 ## 5. How to work here
 
@@ -77,4 +78,4 @@ cargo test -p yavs-lower -p yavs-elab                       # producers
 
 - Requests to IR/interp go in `crates/yavs-ir/README.md` "Requests" with a dated answer.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:ir`): #79
-  unimplemented natives and `Elab*` instructions; #81 heap address carries no generation.
+  unimplemented natives and `Elab*` instructions.

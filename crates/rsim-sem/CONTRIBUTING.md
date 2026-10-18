@@ -149,3 +149,21 @@ Wiring still open (M1 lead will do these in expr/names.rs unless someone asks fo
 `external_name` (`NameKind::External`), `protected_member` (selection from a protected object),
 `view_ref`, `match_signature` in attribute specifications and `use`, the aggregate resolver
 (`AggResolver` in expr/aggregate.rs) from `resolve` for `Expected::Type` aggregates.
+
+From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests; they need calls:
+
+- **expr/resolve.rs**: implement `aggregate::AggResolver` (cands, resolve, discrete_range,
+  type_mark) and call `resolve_aggregate(db, r, assocs, ctx_subtype, span)` for an aggregate with
+  `Expected::Type`; pass the context *subtype* (an `others` needs the constrained one), and
+  `aggregate::no_context` (E1320) for `Expected::Any`. Nested aggregates in elements are handled
+  inside, with the element subtype as context.
+- **stmt.rs** (case statements, case generates, selected assignments): `resolve_choices` per
+  alternative with the case expression's base type, then `check_case(db, expr_subtype, matching,
+  alts, span)` gives the `ChoiceSet`s. Elab calls `recheck_case` with its `ConstEval` when an
+  `intervals` is `None` (Q3).
+- **expr/names.rs**: describe the prefix as `attr::Prefix` and use `attr::select` (E1621, E1007
+  revision gates), `result_subtype`, `param_type`, `staticness` instead of the ad hoc table;
+  implicit signal attributes through `attr::implicit_signal`; user attributes `x'a` through
+  `attr::user_value`.
+- **decl.rs**: `attribute a : t;` through `attr::declare_attribute`; specifications through
+  `attr::specify` (value resolved with `attr::spec_subtype`, signature callback for overloads).

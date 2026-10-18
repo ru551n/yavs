@@ -39,6 +39,19 @@ impl Fx<'_, '_> {
                 w: Width::B4,
             },
         );
+        self.open_file(d, Space::Frame(self.depth), off)
+    }
+
+    /// Open file object `d` (its cell at `off` in `space`) as its declaration says, if it does.
+    pub fn open_file(&mut self, d: DeclId, space: Space, off: u32) -> R<()> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(self.cx.ice(decl.span, "not an object"));
+        };
+        let span = decl.span;
+        let t = db.base(o.subtype);
+        let tid = self.ty(t, span)?;
         let Some((kind, name)) = o.file_open else {
             return Ok(());
         };
@@ -55,7 +68,7 @@ impl Fx<'_, '_> {
             form: Form::Plain,
         };
         let sym = yavs_sem::mangle::implicit_native(db, &op);
-        let a = self.addr(Space::Frame(self.depth), off);
+        let a = self.addr(space, off);
         self.native(&sym, Some(tid), &[a, fat, kind], None, span)?;
         Ok(())
     }

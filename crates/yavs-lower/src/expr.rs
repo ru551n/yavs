@@ -8,6 +8,7 @@ use yavs_ir::{
 };
 use yavs_ir::{CheckKind, Inst};
 use yavs_sem::decl::{Body, DeclKind, Param, Subprogram};
+use yavs_sem::hir::UnitHir;
 use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Choice, ExprKind, PredefAttr};
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
 use yavs_sem::stat::{ConstValue, Elems};
@@ -364,8 +365,17 @@ impl Fx<'_, '_> {
                     let dst = self.int(i64::from(*pos));
                     Ok(V::S(dst))
                 }
-                // ponytail: a package constant is re-evaluated from its initialiser at each use;
-                // package instance data (AddrSpace::Pkg) when elaboration of packages lands.
+                // A deferred constant (LRM 4.8): the package body's full declaration.
+                DeclKind::Object(o)
+                    if o.class == yavs_sem::decl::ObjClass::Constant
+                        && o.default.is_none()
+                        && self.deferred_completion(d).is_some() =>
+                {
+                    let c = self.deferred_completion(d).ok_or(Failed)?;
+                    self.read_obj(c, span)
+                }
+                // A constant without run-time data (locally static, or a composite whose
+                // bounds are known only at run time, ponytail) is evaluated from its initialiser.
                 DeclKind::Object(o)
                     if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some() =>
                 {
@@ -388,6 +398,31 @@ impl Fx<'_, '_> {
                 )),
             },
         }
+    }
+
+    /// The full declaration in the package body of deferred constant `d`.
+    pub fn deferred_completion(&self, d: DeclId) -> Option<DeclId> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let key = decl.name.key();
+        db.units.iter().find_map(|(_, u)| {
+            let UnitHir::PackageBody { package } = u.hir else {
+                return None;
+            };
+            if db.units[package].scope != decl.scope {
+                return None;
+            }
+            db.scopes[u.scope]
+                .names
+                .get(&key)?
+                .iter()
+                .copied()
+                .find(|&c| {
+                    c != d
+                        && matches!(&db.decls[c].kind, DeclKind::Object(o)
+                        if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some())
+                })
+        })
     }
 
     fn obj_rt(&self, d: DeclId) -> RegTy {
@@ -1254,7 +1289,7 @@ impl Fx<'_, '_> {
         if let (Some(o), Body::Native(sym)) = (method, &sp.body) {
             return self.native_method(sp, sym.as_str(), o, args, span);
         }
-        if method.is_some() || db.method_of(callee).is_some() {
+        if method.is_some() || crate::protected::method_type(db, callee).is_some() {
             return self.method_call(callee, args, method, span);
         }
         match &sp.body {

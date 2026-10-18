@@ -234,6 +234,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             Space::Frame(d) => AddrSpace::Up(self.depth - d),
             Space::Inst => AddrSpace::Inst,
             Space::Pkg(p) => AddrSpace::Pkg(p),
+            Space::Shared => AddrSpace::Shared,
         };
         let dst = self.reg(RegTy::Ptr);
         self.emit(Inst::AddrOf { dst, space, off });
@@ -1409,7 +1410,26 @@ impl Fx<'_, '_> {
                 );
                 Ok(())
             }
-            // Files in packages are not registered: a use reports E2001 (M3).
+            ObjClass::File => {
+                // A file of a package is one object for every process: its cell lives in the
+                // shared variables area (serial processes, ir.md 3.5), opened here when its
+                // declaration says so.
+                let off = self.cx.shared_size.next_multiple_of(8);
+                self.cx.shared_size = off + 8;
+                self.cx.objs.insert(
+                    d,
+                    Obj::Scalar {
+                        space: Space::Shared,
+                        off,
+                        w: Width::B4,
+                    },
+                );
+                if o.file_open.is_some() {
+                    self.stmt_start(StmtKind::Decl, span);
+                    self.open_file(d, Space::Shared, off)?;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }

@@ -15,6 +15,24 @@ use crate::expr::V;
 use crate::func::{Fx, func_of};
 use crate::{Obj, R, Space, ty};
 
+/// The protected type whose method `d` is: declared in the protected type declaration
+/// (`Db::method_of`) or only in its body (a private method, which also sees the object).
+pub(crate) fn method_type(db: &Db, d: DeclId) -> Option<TypeId> {
+    if let Some(t) = db.method_of(d) {
+        return Some(t);
+    }
+    let d = db.entity(d);
+    // Implicit operations of types declared in the body are not methods.
+    if !matches!(db.decls[d].kind.subprogram()?.body, Body::Hir { .. }) {
+        return None;
+    }
+    let s = db.decls[d].scope;
+    if db.scopes[s].kind != yavs_sem::scope::ScopeKind::ProtectedBody {
+        return None;
+    }
+    db.protected_of_region(db.scopes[s].parent?)
+}
+
 /// The variables of protected type `t` in state order: 2019 private variables, then the
 /// body's variables and constants.
 pub(crate) fn state_vars(db: &Db, t: TypeId) -> Vec<DeclId> {
@@ -52,7 +70,7 @@ impl Fx<'_, '_> {
     /// state variable holding its address (or `[data, desc]` for composites).
     pub fn method_prologue(&mut self, d: DeclId, depth: u8, span: Span) -> R<()> {
         let db = self.db;
-        let Some(t) = db.method_of(d) else {
+        let Some(t) = method_type(db, d) else {
             return Ok(());
         };
         let off = self

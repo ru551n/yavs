@@ -193,6 +193,8 @@ pub struct Lowered {
     /// Packages with run-time objects, in the order [`Lowerer::package`] was called; the
     /// `index` of each is its `AddrSpace::Pkg` number.
     pub packages: Vec<PackageIr>,
+    /// Bytes of the shared variables area (`SharedState::vars`): file objects of packages.
+    pub shared_size: u32,
 }
 
 /// A package's objects at run time (LRM 14.4.2). The elaborator initialises each package
@@ -246,6 +248,8 @@ pub(crate) enum Space {
     Inst,
     /// Package data (`AddrSpace::Pkg`).
     Pkg(u32),
+    /// The shared variables area (`AddrSpace::Shared`, serial processes only).
+    Shared,
 }
 
 /// State shared by the functions being lowered.
@@ -272,6 +276,8 @@ pub(crate) struct Cx {
     pub pkg_sigs: Vec<SignalIr>,
     /// The entity and architecture regions of the architecture being lowered.
     pub arch_scopes: Vec<ScopeId>,
+    /// Bytes of the shared variables area allocated so far (package files).
+    pub shared_size: u32,
 }
 
 impl Cx {
@@ -343,6 +349,7 @@ impl<'a> Lowerer<'a> {
                 sig_dopes: HashMap::new(),
                 pkg_sigs: Vec::new(),
                 arch_scopes: Vec::new(),
+                shared_size: 0,
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -430,6 +437,7 @@ impl<'a> Lowerer<'a> {
                 program,
                 units: self.units,
                 packages: self.packages,
+                shared_size: self.cx.shared_size,
             }),
             Err(errs) => Err(errs.iter().map(verify_ice).collect()),
         }

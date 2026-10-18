@@ -28,6 +28,8 @@ pub struct Ir {
     pub packages: Vec<yavs_lower::PackageIr>,
     /// Source files of the program's statements, for `std.env` call paths.
     pub sources: yavs_interp::Sources,
+    /// Bytes of the shared variables area (file objects of packages).
+    pub shared_size: u32,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -152,6 +154,7 @@ impl Elaborated {
             res_regions,
             names,
             packages: lowered.packages,
+            shared_size: lowered.shared_size,
         });
         Ok(())
     }
@@ -262,7 +265,10 @@ impl Elaborated {
                 "the design has processes but was not lowered".into(),
             ));
         };
-        let shared = Arc::new(Mutex::new(SharedState::new(Vec::new())));
+        let shared = Arc::new(Mutex::new(SharedState::new(vec![
+            0;
+            ir.shared_size as usize
+        ])));
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), u64> = HashMap::new();
         // Package data, created once in order: each initialisation sees the packages before it.

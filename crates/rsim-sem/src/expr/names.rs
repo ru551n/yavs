@@ -1065,8 +1065,13 @@ impl Db {
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)?;
         let mut hargs = Vec::with_capacity(formals.len());
+        // 9.4.3: a pure function call with globally static actuals is globally static
+        // (sem folds only the implicit operations, so user calls never become locally static).
+        let pure = matches!(s.kind, crate::decl::SubprogramKind::Function { pure: true });
         let mut stat = if implicit {
             Staticness::Locally
+        } else if pure {
+            Staticness::Globally
         } else {
             Staticness::None
         };
@@ -1185,7 +1190,10 @@ impl Db {
                     ) => {
                         if self.constrainedness(self.exprs[p].subtype)
                             == crate::types::Constrainedness::Full
+                            || self.is_port_or_generic(p)
                         {
+                            // A port or generic gets its bounds once, at elaboration: like NVC,
+                            // GHDL and Questa, its array attributes are globally static (9.4.3).
                             Staticness::Globally
                         } else {
                             Staticness::None
@@ -1415,6 +1423,17 @@ impl Db {
             }
             Some(crate::types::RangeC::Attr { .. }) => Staticness::Globally,
             None => Staticness::Locally,
+        }
+    }
+
+    /// The expression names a port or generic of the enclosing design entity.
+    fn is_port_or_generic(&self, e: ExprId) -> bool {
+        match &self.exprs[e].kind {
+            ExprKind::Obj(d) => matches!(
+                &self.decls[*d].kind,
+                DeclKind::Object(o) if matches!(o.role, crate::decl::ObjRole::Port | crate::decl::ObjRole::Generic)
+            ),
+            _ => false,
         }
     }
 

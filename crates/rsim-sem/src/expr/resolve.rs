@@ -384,8 +384,13 @@ impl Db {
         let formals: Vec<TypeId> = s.params.iter().map(|p| self.base(p.subtype)).collect();
         let ret = s.ret.unwrap_or(self.poison.subtype);
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
+        // 9.4.3: a pure function call with globally static actuals is globally static
+        // (sem folds only the implicit operations, so user calls never become locally static).
+        let pure = matches!(s.kind, crate::decl::SubprogramKind::Function { pure: true });
         let mut stat = if implicit {
             Staticness::Locally
+        } else if pure {
+            Staticness::Globally
         } else {
             Staticness::None
         };

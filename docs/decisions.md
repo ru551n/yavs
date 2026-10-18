@@ -386,3 +386,8 @@ which tools/difftest parses.
   streams, so write, close and reopen-for-read in one delta works. Output stays independent of
   `--threads` because a file object belongs to one process or to serial processes. STD_OUTPUT
   still goes through the kernel output stream, ordered with `report`.
+- **Globally static calls and port attributes (9.4.3):** a call of a pure function whose actuals
+  are globally static is globally static (sem never folds it; only implicit operations become
+  locally static). Array attributes of a port or generic whose subtype is not fully constrained
+  are globally static too: its bounds are fixed at elaboration, and NVC, GHDL and Questa accept
+  such constants in static names (OSVVM AxiStreamReceiver).

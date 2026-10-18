@@ -482,6 +482,11 @@ impl Fx<'_, '_> {
         Ok(self.sig_name(e)?.1)
     }
 
+    /// The descriptor of an array signal named by `e` (`None` for a scalar).
+    fn dope_of_signal(&mut self, e: ExprId) -> R<Option<Reg>> {
+        Ok(self.sig_name(e)?.2)
+    }
+
     /// The IR type of object `d`.
     pub fn decl_ty(&mut self, d: DeclId, span: Span) -> R<TyId> {
         match ty::obj_subtype(self.db, d) {
@@ -2126,6 +2131,56 @@ impl Fx<'_, '_> {
                 let k = dim(self);
                 let r = self.dope_range(dope, k);
                 self.range_attr(attr, r, Some((dope, k)), span)
+            }
+            AttrPrefix::Expr(e) if matches!(attr, Driving | DrivingValue) => {
+                // The process's own driver of the whole signal (LRM 16.2.4).
+                let slot = match db.exprs[e].kind {
+                    ExprKind::Obj(d) => self.drivers.iter().position(|l| {
+                        l.root == yavs_sem::hir::ObjRoot::Decl(d) && l.path.is_empty()
+                    }),
+                    _ => None,
+                };
+                let Some(slot) = slot else {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "'driving of signal parameters and sub-elements"));
+                };
+                let slot = slot as u32;
+                if attr == Driving {
+                    let dst = self.reg(RegTy::I64);
+                    self.emit(Inst::Driving { dst, driver: slot });
+                    return Ok(V::S(dst));
+                }
+                let st = db.exprs[e].subtype;
+                let tid = self.ty(db.base(st), span)?;
+                if let Some(dope) = self.dope_of_signal(e)? {
+                    let (size, _) = self.layout(tid, dope);
+                    let buf = self.alloc(size);
+                    self.emit(Inst::DrivingValue {
+                        dst: buf,
+                        driver: slot,
+                    });
+                    return Ok(V::A(buf, dope));
+                }
+                let (_, rt, w) = self.scalar(st, span)?;
+                let logic = self.is_logic(tid);
+                let buf = self.alloc_n(if logic { 32 } else { 8 });
+                self.emit(Inst::DrivingValue {
+                    dst: buf,
+                    driver: slot,
+                });
+                if logic {
+                    let z = self.int(0);
+                    let c = self.reg(RegTy::I64);
+                    self.emit(Inst::LGet {
+                        dst: c,
+                        base: buf,
+                        idx: z,
+                    });
+                    let bias = self.code_bias(tid);
+                    return Ok(V::S(self.dec(c, bias)));
+                }
+                Ok(V::S(self.load(buf, w, rt)))
             }
             AttrPrefix::Expr(e)
                 if matches!(attr, Event | Active | LastEvent | LastActive | LastValue) =>

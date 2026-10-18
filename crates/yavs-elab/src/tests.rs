@@ -1093,3 +1093,22 @@ fn mode_view_and_linkage_ports() {
         [PortMode::Out, PortMode::Out, PortMode::In, PortMode::In]
     );
 }
+
+/// A record subtype resolved as a whole (LRM 4.6) fails early until #193.
+#[test]
+fn composite_resolved_as_a_whole_fails_early() {
+    let src = "
+      entity t is end;
+      architecture a of t is
+        type rec is record b : bit; n : integer; end record;
+        type rec_vec is array (natural range <>) of rec;
+        function res(v : rec_vec) return rec is begin return v(v'low); end;
+        subtype rrec is res rec;
+        signal s : rrec;
+      begin
+      end;";
+    assert_eq!(
+        err_codes("whole_res", src, "t", &[]),
+        [codes::NOT_IMPLEMENTED]
+    );
+}

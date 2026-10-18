@@ -828,6 +828,16 @@ impl Model {
                     res,
                 }))
             }
+            TypeKind::Array { .. } | TypeKind::Record { .. }
+                if matches!(db.subtypes[st].resolution, Some(Resolution::Function(_))) =>
+            {
+                Err(err(
+                    codes::NOT_IMPLEMENTED,
+                    span,
+                    "signals of a composite subtype resolved as a whole are not implemented yet",
+                    "resolved as a whole (#193)",
+                ))
+            }
             TypeKind::Array { elem, .. } => {
                 let (elem, (dims, ec)) = (
                     *elem,

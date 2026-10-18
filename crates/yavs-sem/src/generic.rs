@@ -1690,7 +1690,38 @@ impl Db {
         let DeclKind::GenericPackage(fi) = self.decls[f].kind else {
             return Err(Reported);
         };
-        let n = match a.map(|a| &a.actual) {
+        let i = self.package_actual(scope, f, a.map(|a| &a.actual), site, r)?;
+        if let Some(m) = self.generic.maps.get(&i) {
+            r.merge(&m.clone());
+        }
+        // The formal's region (the generic package itself) denotes the actual instance.
+        r.scopes.insert(self.insts[fi].scope, self.insts[i].scope);
+        let name = self.decls[f].name;
+        let new = self.new_decl(
+            inst_scope,
+            name,
+            DeclKind::PackageInst(i),
+            self.decls[f].span,
+        );
+        r.decls.insert(f, new);
+        map.packages.insert(f, i);
+        Ok(())
+    }
+
+    /// The package instance an actual of formal package `f` names, checked against the
+    /// formal's generic map (6.5.7.2). `r` maps the formal's wanted actuals.
+    pub(crate) fn package_actual(
+        &mut self,
+        scope: ScopeId,
+        f: DeclId,
+        a: Option<&ast::Actual>,
+        site: Span,
+        r: &mut Remap,
+    ) -> Result<InstId, Reported> {
+        let DeclKind::GenericPackage(fi) = self.decls[f].kind else {
+            return Err(self.ice(site, "formal package without an instance"));
+        };
+        let n = match a {
             Some(ast::Actual::Expr(ast::Expr {
                 kind: ast::ExprKind::Name(n),
                 ..
@@ -1730,21 +1761,28 @@ impl Db {
             ));
         };
         self.check_wants(r, fi, i, n.span)?;
+        Ok(i)
+    }
+
+    /// The actual of formal package `f` in a design entity's generic map: its
+    /// instance, with the generic package's types mapped to the instance's in
+    /// `inst_types` for the ports (6.5.6.3).
+    pub(crate) fn entity_package_actual(
+        &mut self,
+        scope: ScopeId,
+        f: DeclId,
+        a: &ast::Actual,
+        site: Span,
+    ) -> Result<InstId, Reported> {
+        let i = self.package_actual(scope, f, Some(a), site, &mut Remap::default())?;
         if let Some(m) = self.generic.maps.get(&i) {
-            r.merge(&m.clone());
+            let pairs: Vec<(TypeId, TypeId)> = m.types.iter().map(|(&o, &c)| (o, c)).collect();
+            for (o, c) in pairs {
+                let st = self.types[c].first_subtype;
+                self.inst_types.push((o, st));
+            }
         }
-        // The formal's region (the generic package itself) denotes the actual instance.
-        r.scopes.insert(self.insts[fi].scope, self.insts[i].scope);
-        let name = self.decls[f].name;
-        let new = self.new_decl(
-            inst_scope,
-            name,
-            DeclKind::PackageInst(i),
-            self.decls[f].span,
-        );
-        r.decls.insert(f, new);
-        map.packages.insert(f, i);
-        Ok(())
+        Ok(i)
     }
 
     // -- bodies ------------------------------------------------------------------------
@@ -2514,6 +2552,9 @@ impl Db {
                     },
                     Actual::Subtype(st) => Actual::Subtype(self.r_subtype(r, *st)),
                     Actual::Subprogram(d) => Actual::Subprogram(self.r_decl(r, *d)),
+                    // ponytail: the instance is kept; a formal package actual of an instance
+                    // inside a generic would need the instance remapped (no Remap of InstIds).
+                    Actual::Package(i) => Actual::Package(*i),
                 },
             })
             .collect()

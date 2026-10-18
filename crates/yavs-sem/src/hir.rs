@@ -139,6 +139,8 @@ pub enum Actual {
     Subtype(SubtypeId),
     /// The actual of a generic subprogram in an instance's generic map.
     Subprogram(DeclId),
+    /// The actual of a formal package in an instance's generic map: a package instance.
+    Package(InstId),
 }
 
 pub struct AggAssoc {

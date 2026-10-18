@@ -776,10 +776,13 @@ impl Db {
         match &self.decls[f].kind {
             DeclKind::GenericType(_) => return self.type_actual(scope, a, fspan),
             DeclKind::GenericSubprogram(_) => return self.subprogram_actual(scope, f, a, fspan),
+            DeclKind::GenericPackage(_) => {
+                return Ok(Actual::Package(self.entity_package_actual(scope, f, a, fspan)?));
+            }
             _ => {}
         }
         let DeclKind::Object(o) = &self.decls[f].kind else {
-            return Err(self.unsupported(fspan, "generic packages of design entities", "S4"));
+            return Err(self.ice(fspan, "formal generic of an unknown class"));
         };
         let (st, role, mode, has_default, class) = (
             o.subtype,

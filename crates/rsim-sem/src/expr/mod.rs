@@ -51,6 +51,8 @@ impl ClassMask {
 pub enum Via {
     Object,
     Call(DeclId),
+    /// Method call `x.m` of a protected object (or an access to one) of type `.1`.
+    Method(DeclId, TypeId),
     EnumLit(DeclId),
     /// Attribute of a type mark.
     Attr,

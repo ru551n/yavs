@@ -517,6 +517,17 @@ impl Db {
                 }
                 return;
             }
+            // `obj.m` of a protected object without a method `m` (E1100, E1105).
+            if let ast::NameKind::Selected {
+                prefix: obj,
+                suffix: ast::Suffix::Ident(m),
+            } = &base.kind
+                && let Ok(ts) = self.prefix_types(scope, obj)
+                && let Some((pt, _)) = ts.iter().find_map(|&t| self.method_target(t))
+                && self.protected_member(pt, *m, scope).is_err()
+            {
+                return;
+            }
         }
         if is.is_empty() {
             // An operand without any interpretation is the real problem (cascade, 8.2).
@@ -659,7 +670,7 @@ impl Db {
             .with_primary(e.span, "several interpretations fit");
         for i in best {
             match i.via {
-                Via::Call(c) | Via::EnumLit(c) => {
+                Via::Call(c) | Via::Method(c, _) | Via::EnumLit(c) => {
                     let sig = self.signature(c);
                     let sp = self.decls[c].span;
                     d = if sp != Span::default() {
@@ -838,11 +849,32 @@ impl Db {
             std::mem::take(&mut self.name_memo),
         );
         let r = (|| {
+            // Method calls `obj.m(..)`: each method with the type of `obj` it selects from.
+            let mut owners: Vec<(crate::ids::DeclId, TypeId)> = Vec::new();
             let ds = match self.classify(scope, prefix) {
                 NameRes::Overloads(ds) => ds,
                 NameRes::One(d) => vec![d],
                 NameRes::Value => {
-                    return Err(self.unsupported(prefix.span, "protected method calls", "S6"));
+                    let ast::NameKind::Selected {
+                        prefix: obj,
+                        suffix,
+                    } = &prefix.kind
+                    else {
+                        return Err(self.unsupported(prefix.span, "this procedure name", "S6"));
+                    };
+                    let Ok(ts) = self.prefix_types(scope, obj) else {
+                        return Err(crate::Reported);
+                    };
+                    let key = crate::unit::suffix_key(suffix);
+                    for &t in &ts {
+                        for d in key.map(|k| self.method_decls(t, k)).unwrap_or_default() {
+                            owners.push((d, t));
+                        }
+                    }
+                    if owners.is_empty() {
+                        return Err(self.no_method(scope, obj, suffix, &ts, prefix.span));
+                    }
+                    owners.iter().map(|o| o.0).collect()
                 }
                 other => return Err(self.report_name(scope, other)),
             };
@@ -902,6 +934,13 @@ impl Db {
                     best.push((d, convs));
                 }
             }
+            // A method call points at the method name, not at its object.
+            let callee_span = match &prefix.kind {
+                ast::NameKind::Selected { suffix, .. } if !owners.is_empty() => {
+                    crate::unit::suffix_span(suffix, prefix.span)
+                }
+                _ => prefix.span,
+            };
             let Some(min) = best.iter().map(|b| b.1).min() else {
                 let mut d = Diagnostic::error(
                     diag::NO_OVERLOAD,
@@ -910,7 +949,7 @@ impl Db {
                         self.decls[procs[0]].name
                     ),
                 )
-                .with_primary(prefix.span, "no matching procedure");
+                .with_primary(callee_span, "no matching procedure");
                 for &c in procs.iter().take(MAX_CANDIDATE_LABELS) {
                     let sig = self.signature(c);
                     let sp = self.decls[c].span;
@@ -934,7 +973,13 @@ impl Db {
                     d.with_help("use a selected name such as `pkg.proc`, or qualify an argument"),
                 ));
             }
-            let id = self.build_call(scope, best[0].0, args, n.span, None);
+            let method_of = match (&prefix.kind, owners.iter().find(|o| o.0 == best[0].0)) {
+                (ast::NameKind::Selected { prefix: obj, .. }, Some(&(_, t))) => {
+                    Some(self.method_object(scope, obj, t))
+                }
+                _ => None,
+            };
+            let id = self.build_call(scope, best[0].0, args, n.span, method_of);
             if self.is_poison_expr(id) {
                 return Err(crate::Reported);
             }
@@ -957,6 +1002,30 @@ impl Db {
         })();
         (self.memo, self.name_memo) = saved;
         r
+    }
+
+    /// No method `obj.suffix`: `protected_member` reports a missing method of
+    /// a protected object; anything else does not denote a procedure.
+    fn no_method(
+        &mut self,
+        scope: ScopeId,
+        obj: &ast::Name,
+        suffix: &ast::Suffix,
+        ts: &[TypeId],
+        span: Span,
+    ) -> crate::Reported {
+        let target = ts.iter().find_map(|&t| self.method_target(t));
+        match (target, suffix) {
+            (Some((pt, _)), ast::Suffix::Ident(i)) => match self.protected_member(pt, *i, scope) {
+                Err(r) => r,
+                Ok(_) => self.ice(span, "a method found only by protected_member"),
+            },
+            _ => self.error(
+                Diagnostic::error(diag::NOT_AN_OBJECT, "this name is not a procedure")
+                    .with_primary(span, "expected a procedure name")
+                    .with_secondary(obj.span, "this prefix is not a protected object"),
+            ),
+        }
     }
 }
 

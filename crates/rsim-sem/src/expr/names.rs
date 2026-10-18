@@ -249,6 +249,14 @@ impl Db {
         };
         let mut out = Vec::new();
         for t in ts {
+            for d in self.method_decls(t, key) {
+                if let Some(i) = self.value_interp(d, 0) {
+                    out.push(Interp {
+                        via: Via::Method(d, t),
+                        ..i
+                    });
+                }
+            }
             if let (Some(i), TypeKind::Record { elems }) =
                 (self.record_elem(t, key), &self.types[t].kind)
             {
@@ -568,6 +576,9 @@ impl Db {
             }
             NameRes::Error => return self.poison_cands(),
             NameRes::One(_) | NameRes::Value => {
+                if !slice {
+                    out.extend(self.method_call_cands(scope, prefix, args));
+                }
                 let Ok(ts) = self.prefix_types(scope, prefix) else {
                     return self.poison_cands();
                 };
@@ -580,6 +591,57 @@ impl Db {
             _ => {}
         }
         CandSet::Types(out)
+    }
+
+    /// `x.m(args)` with `x` a protected object or an access to one: the
+    /// methods `m` that accept `args`.
+    fn method_call_cands(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        args: &[ast::AssocElem],
+    ) -> Vec<Interp> {
+        let ast::NameKind::Selected {
+            prefix: obj,
+            suffix,
+        } = &prefix.kind
+        else {
+            return Vec::new();
+        };
+        let (Some(key), Ok(ts)) = (suffix_key(suffix), self.prefix_types(scope, obj)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for t in ts {
+            for d in self.method_decls(t, key) {
+                if let Some(i) = self.call_interp(scope, d, args) {
+                    out.push(Interp {
+                        via: Via::Method(d, t),
+                        ..i
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The object of method call `obj.m`, of type `t`, dereferenced when `t`
+    /// is an access type (8.3).
+    pub(crate) fn method_object(&mut self, scope: ScopeId, obj: &ast::Name, t: TypeId) -> ExprId {
+        let p = self.resolve_prefix(scope, obj, t);
+        match self.method_target(t) {
+            Some((pt, true)) if !self.is_poison_expr(p) => {
+                let span = self.exprs[p].span;
+                self.add_expr(Expr {
+                    kind: ExprKind::Deref { prefix: p },
+                    subtype: self.types[pt].first_subtype,
+                    span,
+                    stat: Staticness::None,
+                    value: None,
+                })
+            }
+            _ => p,
+        }
     }
 
     pub(crate) fn object_type(&self, d: DeclId) -> Option<TypeId> {
@@ -680,10 +742,21 @@ impl Db {
                 }
                 match i.via {
                     Via::Call(d) => self.build_call(scope, d, args, span, None),
+                    Via::Method(d, t) => {
+                        let ast::NameKind::Selected { prefix: obj, .. } = &prefix.kind else {
+                            return self.poison_expr();
+                        };
+                        let o = self.method_object(scope, obj, t);
+                        self.build_call(scope, d, args, span, Some(o))
+                    }
                     Via::Index(t) => self.build_index(scope, prefix, t, args, span),
                     Via::Slice(t) => self.build_slice(scope, prefix, t, args, span),
                     _ => self.poison_expr(),
                 }
+            }
+            (ast::NameKind::Selected { prefix, .. }, Via::Method(d, t)) => {
+                let o = self.method_object(scope, prefix, t);
+                self.build_call(scope, d, &[], span, Some(o))
             }
             (ast::NameKind::Selected { prefix, .. }, Via::Field(t, elem)) => {
                 let p = self.resolve_prefix(scope, prefix, t);

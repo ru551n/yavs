@@ -450,6 +450,41 @@ impl Db {
         }
         Ok(found)
     }
+
+    /// The protected type whose methods `x.m` selects when `x` has type `t`:
+    /// `t` itself, or the designated type of an access type (implicit
+    /// dereference, 8.3; the 2019 mirrors are accessed this way). The flag says
+    /// whether the prefix is dereferenced.
+    pub(crate) fn method_target(&self, t: TypeId) -> Option<(TypeId, bool)> {
+        let is_pt = |t: TypeId| matches!(self.types[t].kind, TypeKind::Protected { .. });
+        match self.types[t].kind {
+            TypeKind::Protected { .. } => Some((t, false)),
+            TypeKind::Access { designated } if is_pt(self.base(designated)) => {
+                Some((self.base(designated), true))
+            }
+            _ => None,
+        }
+    }
+
+    /// The methods named `key` of the protected type a value of type `t`
+    /// selects from, without reporting (the bottom-up pass; the top-down pass
+    /// reports through [`Db::protected_member`]).
+    pub(crate) fn method_decls(&self, t: TypeId, key: rsim_syntax::Symbol) -> Vec<DeclId> {
+        let Some((pt, _)) = self.method_target(t) else {
+            return Vec::new();
+        };
+        let TypeKind::Protected { decl_scope, .. } = self.types[pt].kind else {
+            return Vec::new();
+        };
+        self.scopes[decl_scope]
+            .names
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&d| self.decls[self.entity(d)].kind.subprogram().is_some())
+            .collect()
+    }
 }
 
 fn decl_span(d: &ast::Decl) -> Span {

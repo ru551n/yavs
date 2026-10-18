@@ -73,8 +73,6 @@ ovl/unknown_formal_name.vhd
 prot/assign_protected_variable.vhd
 prot/body_method_missing.vhd
 prot/equality_on_protected.vhd
-prot/method_unknown.vhd
-prot/method_wrong_args.vhd
 prot/protected_body_state_from_outside.vhd
 prot/protected_constant.vhd
 prot/shared_variable_array_not_protected.vhd

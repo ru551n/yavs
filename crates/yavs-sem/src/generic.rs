@@ -36,7 +36,7 @@ use crate::hir::{
     External, GenAlt, InstTarget, LoopScheme, Lsp, LspStep, Mode, NewInit, ObjRoot, ProcessInfo,
     Rhs, Sensitivity, Stmt, StmtKind, Target, UnitHir, WaveElem, Waveform,
 };
-use crate::ids::{DeclId, ExprId, InstId, ScopeId, StmtId, SubtypeId, TypeId, UnitId};
+use crate::ids::{DeclId, ExprId, InstId, ScopeId, StmtId, SubtypeId, TypeId, UnitId, ViewId};
 use crate::implicit::ImplicitOp;
 use crate::loader::{UnitKey, UnitKind};
 use crate::scope::{Scope, ScopeKind, UseItem, Visible};
@@ -2108,6 +2108,10 @@ impl Db {
         let new_kind = self.r_decl_kind(r, n, &kind);
         self.decls[d].kind = kind;
         self.decls[n].kind = new_kind;
+        if let Some(&pv) = self.forwarding.get(&d) {
+            let pv = self.r_decl(r, pv);
+            self.forwarding.insert(n, pv);
+        }
         n
     }
 
@@ -2157,14 +2161,54 @@ impl Db {
                 index: *index,
             },
             DeclKind::PackageInst(i) => DeclKind::PackageInst(self.r_instance(r, new, *i)),
-            DeclKind::View(_) => {
-                // ponytail: mode views are not analyzed yet (decl.rs reports S7), so none reach here.
-                let span = self.decls[new].span;
-                self.unsupported(span, "mode views in generic units", "S7");
-                r.failed = true;
-                DeclKind::Error
+            DeclKind::View(v) => {
+                let record = self.r_subtype(r, self.views[*v].record);
+                let elems = self.views[*v].elems.clone();
+                let elems = elems.iter().map(|&e| self.r_elem_mode(r, e)).collect();
+                DeclKind::View(self.views.push(crate::view::ViewDef {
+                    decl: new,
+                    record,
+                    elems,
+                    converse: None,
+                }))
             }
             DeclKind::Error => DeclKind::Error,
+        }
+    }
+
+    /// A mode view of the generic unit is cloned with its declaration (2019 6.5.2); the
+    /// converse of a clone is materialized again on use.
+    fn r_view(&mut self, r: &mut Remap, v: ViewId) -> ViewId {
+        let d = self.views[v].decl;
+        let n = self.r_decl(r, d);
+        match self.decls[n].kind {
+            DeclKind::View(n) => n,
+            _ => v,
+        }
+    }
+
+    fn r_elem_mode(&mut self, r: &mut Remap, e: crate::view::ElemMode) -> crate::view::ElemMode {
+        match e {
+            crate::view::ElemMode::View {
+                view,
+                converse,
+                array,
+            } => crate::view::ElemMode::View {
+                view: self.r_view(r, view),
+                converse,
+                array,
+            },
+            simple => simple,
+        }
+    }
+
+    fn r_mode(&mut self, r: &mut Remap, m: Mode) -> Mode {
+        match m {
+            Mode::View { view, array } => Mode::View {
+                view: self.r_view(r, view),
+                array,
+            },
+            other => other,
         }
     }
 
@@ -2247,7 +2291,7 @@ impl Db {
         Object {
             class: o.class,
             role: o.role.clone(),
-            mode: o.mode,
+            mode: o.mode.map(|m| self.r_mode(r, m)),
             subtype,
             default: o.default.map(|e| self.r_expr(r, e)),
             bounds: self.r_bounds(r, new, o, subtype),
@@ -2301,7 +2345,7 @@ impl Db {
             .map(|p| Param {
                 name: p.name,
                 class: p.class,
-                mode: p.mode,
+                mode: self.r_mode(r, p.mode),
                 subtype: self.r_subtype(r, p.subtype),
                 default: p.default.map(|e| self.r_expr(r, e)),
                 decl: p.decl.map(|d| self.r_decl(r, d)),
@@ -2735,6 +2779,10 @@ impl Db {
             },
             ExprKind::Deref { prefix } => ExprKind::Deref {
                 prefix: self.r_expr(r, *prefix),
+            },
+            ExprKind::PrivateVar { object, var } => ExprKind::PrivateVar {
+                object: self.r_expr(r, *object),
+                var: self.r_decl(r, *var),
             },
             ExprKind::Attr { attr, prefix, args } => ExprKind::Attr {
                 attr: *attr,

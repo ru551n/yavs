@@ -196,7 +196,11 @@ impl Db {
                     continue;
                 }
                 let Some(m) = mode else { continue };
-                if let Err(r) = self.check_nested_view(m, names[i].1, n) {
+                let at = match &el.mode {
+                    ast::Mode::View { name, .. } => name.span,
+                    _ => n.span,
+                };
+                if let Err(r) = self.check_nested_view(m, names[i].1, n, at) {
                     res = Err(r);
                 }
                 elems[i] = Some(m);
@@ -282,6 +286,7 @@ impl Db {
         m: ElemMode,
         elem: SubtypeId,
         n: &yavs_syntax::ast::Ident,
+        at: Span,
     ) -> Result<(), Reported> {
         let ElemMode::View { view, array, .. } = m else {
             return Ok(());
@@ -321,7 +326,8 @@ impl Db {
                     self.type_name(have)
                 ),
             )
-            .with_primary(n.span, "element type does not match the view"),
+            .with_primary(at, "view of another record type")
+            .with_secondary(n.span, "this element"),
         ))
     }
 

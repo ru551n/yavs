@@ -58,6 +58,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Default binding: directly visible entity wins over `work`, `W1703` when both; last architecture | Q4 | `docs/decisions.md` "Design units and binding" |
 | Formal packages with a generic map are checked against the actual (`E1503`) | LRM clear, the third reference simulator rejects | `docs/decisions.md` "Generics" |
 | Incomplete types in protected method profiles only in library `std` (user, 2026-10-18, amends U-2) | `std.reflection` needs it | `docs/decisions.md` "Incomplete types in protected method profiles" |
+| 2019 method aliases in a protected type declaration forward to the private variable: the call's object is `ExprKind::PrivateVar` (`Db::forwarding`); an alias of a method of another object is `E9999` (#32) | 5.6.2; the reference simulator agrees | sem.md 6.6, `docs/design/lrm-checks.md` L15 |
 | Pure calls with globally static actuals are globally static; port array attributes globally static | Seen in external verification components; matches all simulators | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes" (last bullets) |
 | Implicit vs explicit (any region): explicit wins when a call is otherwise ambiguous | Random packages of two verification libraries | same section |
 | An architecture's name is hidden by a port or generic of the same name (12.3: the name belongs to the library, outside the entity's region) | `architecture a of and2` with port `a`, the reference simulator agrees | `src/unit.rs` (`hidden`) |

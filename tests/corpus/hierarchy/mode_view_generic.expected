@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	1	:mode_view_generic:sl:_p0	d=42
+diag	note	2000000	0	:mode_view_generic:m:_p0	acked

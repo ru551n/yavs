@@ -106,8 +106,16 @@ An installed binary finds `lib/` next to itself (#43).
   `Db::instance_body`); `W1501`, `W1506`; design entities with generic types, subprograms or
   packages cloned with their architecture per distinct map for elab (`generic/entity.rs`,
   `Db::instantiate_entity`, concurrent statements cloned too). The fixed/float packages' declarations, generic bodies
-  and instance bodies analyze clean in 2008 and 2019 (#37). Open: anonymous generic
-  types, mode views in generic units, instantiating a generic protected type (parser request).
+  and instance bodies analyze clean in 2008 and 2019 (#37); mode views of generic packages and subprograms are
+  cloned with them (#32). Open: anonymous generic types, instantiating a generic protected type
+  (parser request).
+- 2019 mode views and private variables (S7, #32): view declarations (`E1901`, `E1902`),
+  `'converse` (`E1621` on a non-view), view ports and signal parameters (`E1903`), views in
+  generic units; private variables visible only in the protected body (`E1105`), method aliases
+  that forward to a private variable (`E1906` for an alias of anything else; forwarding through
+  other objects is `E9999`). View ports, nested and array views, and calls through method aliases
+  simulate (`hierarchy/mode_view_*`, `protected/private_variables`); signal parameters with a
+  view wait for record signal parameters in yavs-lower (#215).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`
   sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
@@ -156,8 +164,7 @@ configuration; `l : c;`), generic and port maps (positional, named, sub-element,
 alternative, component configurations with incremental binding), default binding
 (`Db::default_binding`, `W1703`), manifest dependencies on named architectures and default-bound
 entities. Negative tests in `tests/diag/sem/unit/`; unit tests in `src/unit/tests.rs`. Generic
-types, subprograms and packages on components and blocks go through `generic.rs`. Open: mode
-views (S7),
+types, subprograms and packages on components and blocks go through `generic.rs`. Open:
 subtype indications as generate specifications.
 
 ## lower (`crates/yavs-lower`, M2)

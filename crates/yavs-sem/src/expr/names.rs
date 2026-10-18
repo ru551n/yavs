@@ -1285,6 +1285,7 @@ impl Db {
         let Some((e, hargs, stat)) = self.call_args(scope, d, args, span) else {
             return self.poison_expr();
         };
+        let method_of = self.forwarded_object(d, method_of);
         let s = self.decls[e]
             .kind
             .subprogram()
@@ -1307,6 +1308,39 @@ impl Db {
             self.fold_into(id);
         }
         id
+    }
+
+    /// The object a call of `d` on `obj` (`None`: the implicit object) runs on: through
+    /// each method alias that forwards to a private variable (5.6.2), that variable of
+    /// the object.
+    pub(crate) fn forwarded_object(
+        &mut self,
+        mut d: DeclId,
+        mut obj: Option<ExprId>,
+    ) -> Option<ExprId> {
+        loop {
+            if let Some(&pv) = self.forwarding.get(&d) {
+                let DeclKind::Object(o) = &self.decls[pv].kind else {
+                    unreachable!("decl.rs records forwarding only to private variables");
+                };
+                let (subtype, span) = (o.subtype, self.decls[pv].span);
+                let kind = match obj {
+                    Some(object) => ExprKind::PrivateVar { object, var: pv },
+                    None => ExprKind::Obj(pv),
+                };
+                obj = Some(self.add_expr(Expr {
+                    kind,
+                    subtype,
+                    span,
+                    stat: Staticness::None,
+                    value: None,
+                }));
+            }
+            match &self.decls[d].kind {
+                DeclKind::Alias(Alias::NonObject { target }) => d = *target,
+                _ => return obj,
+            }
+        }
     }
 
     /// The callee entity and its actuals in formal order, with their combined staticness;

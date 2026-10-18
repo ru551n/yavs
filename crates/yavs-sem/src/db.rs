@@ -91,6 +91,9 @@ pub struct Db {
     pub attr_values: Arena<AttrValueId, AttrValue>,
     /// User attribute values by (entity, attribute name key) (attr.rs).
     pub attr_index: HashMap<(DeclId, Symbol), AttrValueId>,
+    /// 2019 method aliases `alias m is pv.m;` in a protected type declaration: the alias
+    /// to the private variable `pv` whose method it forwards (5.6.2).
+    pub(crate) forwarding: HashMap<DeclId, DeclId>,
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
     pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
@@ -219,6 +222,7 @@ impl Db {
             externals: Arena::new(),
             attr_values: Arena::new(),
             attr_index: HashMap::new(),
+            forwarding: HashMap::new(),
             attr_closed: HashSet::new(),
             pending_label_attrs: Vec::new(),
             well_known: WellKnown::default(),

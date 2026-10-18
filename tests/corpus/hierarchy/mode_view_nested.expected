@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	1	:mode_view_nested:sink:g(0):_p0	sink 0 data=10
+diag	note	0	1	:mode_view_nested:sink:g(1):_p0	sink 1 data=20
+diag	note	1000000	0	:mode_view_nested:mid:leaf:_p0	leaf 1 ready, tag='1'
+diag	note	1000000	0	:mode_view_nested:leaf:_p0	leaf 2 ready, tag='1'

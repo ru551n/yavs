@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	1	:mode_view_signal_parameter:_p0	got 3
+diag	note	5000000	1	:mode_view_signal_parameter:_p0	got 4
+diag	note	5000000	2	:mode_view_signal_parameter:m:_p0	sent

@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:private_variables:_p0	last=-1 hits=0
+diag	note	0	0	:private_variables:_p0	last=9 hits=2
+diag	note	0	0	:private_variables:_p0	doubled=4 other=2

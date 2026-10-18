@@ -215,6 +215,7 @@ impl<'a> Fx<'a, '_> {
             }
             ExprKind::Field { prefix, elem } => self.field(*prefix, *elem, span),
             ExprKind::Deref { prefix } => self.deref(*prefix, span),
+            ExprKind::PrivateVar { object, var } => self.private_var(*object, *var, span),
             ExprKind::New { init } => self.allocator(init, e.subtype, span),
             ExprKind::Null => Ok(V::S(self.int(0))),
             ExprKind::External(_) => Err(self.cx.unsupported(span, "external names (M3)")),

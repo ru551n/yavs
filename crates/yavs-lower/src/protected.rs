@@ -150,6 +150,31 @@ impl Fx<'_, '_> {
         Ok(())
     }
 
+    /// The handle of private variable `var` of protected object `object` (2019 5.6.2: the
+    /// object of a call through a forwarding method alias).
+    pub fn private_var(&mut self, object: ExprId, var: DeclId, span: Span) -> R<V> {
+        let db = self.db;
+        let t = db.base(db.exprs[object].subtype);
+        let Some(n) = state_vars(db, t).iter().position(|&v| v == var) else {
+            return Err(self
+                .cx
+                .ice(span, "private variable outside its protected type's state"));
+        };
+        let h = self.scalar_expr(object)?;
+        let what = self.msg("protected object", Dir::To);
+        let p = self.reg(RegTy::Ptr);
+        self.emit(Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        let state = self.state_of(t, span)?;
+        let ds = self.desc_size(state);
+        let base = self.offset(p, ds);
+        let (a, _) = self.field_addr(state, base, p, n as u32, span)?;
+        Ok(V::S(self.load(a, Width::B8, RegTy::I64)))
+    }
+
     /// A call of method `callee` on `obj` (or, inside a method, on `self`).
     pub fn method_call(
         &mut self,

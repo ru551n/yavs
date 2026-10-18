@@ -1054,6 +1054,11 @@ and result) is unique among homographs, so there is no code for it.
   protected type declaration that denotes anything other than a method of a protected type is an
   error (2019 5.6.2); `private shared variable` is an error (a grammar slip, VI#251); private
   variables may be of any type; methods made visible by an alias need no body [L15].
+- A call through such an alias runs on the private variable: `Db::forwarding` maps the alias to
+  the variable, and the call's `method_of` is `PrivateVar { object, var }` (from outside, `object`
+  the protected object) or `Obj(var)` (the implicit object inside the body), nested once per
+  forwarding alias of a chain. An alias of a method of any other object (a shared variable
+  outside a protected type) reports `E9999` (S7): the call would need that object at each use.
 - Body: bodies for every declared method (`E1230` for missing), plus any declarations.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.
@@ -1079,6 +1084,10 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 - Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
   per element the effective mode. Port association checks per element (an `in` element is not
   driven inside, etc.) use the same mode tree.
+- `'converse` of anything but a mode view is `E1621` at the attribute. A nested element view of
+  another record type is `E1901` at the view name.
+- In generic units views are cloned with their declaration (record subtype and nested views
+  remapped, `Mode::View` of ports and parameters too); a clone's converse is materialized again.
 - **Driver overlay** (rule 2): sem does not build drivers but gives M2 everything to
   build the one longest-static-prefix map (6.9): each port's mode tree and each assignment's LSP.
 
@@ -1152,6 +1161,7 @@ pub enum ExprKind {
     Slice { prefix: ExprId, range: RangeC },
     Field { prefix: ExprId, elem: u32 },
     Deref { prefix: ExprId },                    // `.all` and implicit dereference
+    PrivateVar { object: ExprId, var: DeclId },  // 2019: private variable of a protected object (6.6)
     Attr { attr: PredefAttr, prefix: AttrPrefix, args: Box<[ExprId]> },
     AttrValue { spec: AttrValueId },             // user-defined attribute
     Aggregate { assocs: Box<[AggAssoc]>, bounds: AggBounds },

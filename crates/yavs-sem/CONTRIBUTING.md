@@ -34,7 +34,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `external.rs` | external names (6.1) | S6 | owner: s6 |
 | `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6; protacc: #212 method profile check (small, in `decl.rs` `subprogram_spec`); semprot: protected and `--relaxed` negative suite #52 (wiring in `decl.rs` `object_decl`, `stmt.rs` variable assignment, `resolve.rs` operator errors) |
 | `alloc.rs` | allocators, dereference (`.all`, implicit), incomplete type uses, `'designated_subtype` (2.6, 3.7) | S6 | owner: alloc |
-| `view.rs` | mode views, `'converse` (6.7) | S7 | owner: s6 |
+| `view.rs` | mode views, `'converse` (6.7) | S7 | owner: s6; modeview: views in generic units, `'converse` checks, method aliases of private variables #32 |
 | `rev.rs` | mixed 2008/2019 designs: `since` of std/ieee declarations, `E1007`, `W1008` (0.1) | S7 | owner: semrev (#50) |
 | `reflect.rs` | 2019 `'reflect`, `std.reflection` mirrors (2.11) | S7 | owner: reflect |
 | `hir.rs` | HIR node shapes M2 consumes (section 7) | all | shapes fixed; changes need a note in sem.md |
@@ -162,7 +162,9 @@ An access to a protected type is dereferenced implicitly (`ExprKind::Deref`, bui
 `method_object`; alloc: switch it to `Db::deref` once that lands).
 
 Wiring still open (M1 lead will do these in expr/names.rs unless someone asks for them):
-`external_name` (`NameKind::External`), `view_ref`, `match_signature` in `use`. Done:
+`external_name` (`NameKind::External`), `match_signature` in `use`. Done (modeview, #32):
+`view_ref` through `Db::view_name`, method aliases of private variables (`Db::forwarding`,
+`forwarded_object` in names.rs builds `ExprKind::PrivateVar` as the call's object). Done:
 calls inside a protected body use the implicit object (`method_of: None`), `match_signature`
 in attribute specifications, the aggregate resolver. Linkage ports: reads are E1360 through
 `check_linkage_reads` from stmt.rs's `st_expr`/`st_target` (names).
@@ -253,8 +255,8 @@ From cli (`yavs analyze`):
 - `Unit::refs` are manifest dependencies on units not loaded during analysis (an instance's
   named architecture, the default-bound entity of a component); `unit_record` adds them.
 - Generic types, subprograms and packages on entities, components and blocks report `E9999`
-  (S4, generic); mode view ports report `E9999` (S7); a subtype indication as a generate
-  specification (`for g(natural range 1 to 2)`) reports `E9999`.
+  (S4, generic); a subtype indication as a generate specification (`for g(natural range 1 to
+  2)`) reports `E9999`.
 - An entity and its architecture are one region (12.1): `declare` in an architecture checks the
   entity's names (`E1101`).
 
@@ -278,9 +280,10 @@ generic.rs (S4) is in. What other modules can use, and what is still open:
   one is `E1505`. Request (parser): `generic_map_aspect` on variable declarations (2019 6.4.2.4),
   then generic.rs instantiates the type by cloning; a generic map in the protected type header is
   `E9999` until then.
-- Open: anonymous generic types (`type is private` in an interface object, S7), mode views inside
-  generic units (views are not analyzed yet), formal packages with a map stay opaque inside the
-  generic (their generics do not take the map's values).
+- Open: anonymous generic types (`type is private` in an interface object, S7), formal packages
+  with a map stay opaque inside the generic (their generics do not take the map's values). Mode
+  views are cloned with their declaration (`r_view`; the converse of a clone is materialized
+  again on use).
 - lib: the bodies of `fixed_generic_pkg` and `float_generic_pkg` and the instance bodies of
   `fixed_pkg`/`float_pkg` analyze clean (`tests/stdlib.rs`, #37).
 

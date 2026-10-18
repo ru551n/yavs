@@ -282,7 +282,9 @@ type declaration denotes anything other than a method of a protected type." `VI#
 "which is clearly wrong". The reference simulator 2019 (`u15.vhd`, `u15b.vhd`) accepts private variables of protected
 and of non-protected type, accepts method aliases with signatures without bodies for them in the
 protected body, and rejects an alias of a constant. Rule: as quoted, plus `E` for `private shared`;
-methods made visible by an alias need no body.
+methods made visible by an alias need no body. A call through such an alias calls the method on
+the private variable of the object (the reference simulator agrees, `protected/private_variables`
+in the difftest corpus).
 
 ### L16: `'CONVERSE` of `buffer` (2019)
 

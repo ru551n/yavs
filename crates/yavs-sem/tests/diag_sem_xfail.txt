@@ -1,5 +1,1 @@
 # Files of tests/diag/sem expected to fail until their slice lands (see diag_sem.rs).
-v2019/converse_on_non_view.vhd
-v2019/private_variable_outside_body.vhd
-v2019/private_variable_scalar_ok.vhd
-v2019/view_nested_wrong_record.vhd

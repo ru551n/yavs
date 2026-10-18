@@ -1357,6 +1357,7 @@ impl Db {
             let (callee, args, _) = self
                 .call_args(scope, best[0].0, args, n.span)
                 .ok_or(crate::Reported)?;
+            let method_of = self.forwarded_object(best[0].0, method_of);
             Ok(crate::hir::Call {
                 callee,
                 args,
@@ -1378,6 +1379,17 @@ impl Db {
         ts: &[TypeId],
         span: Span,
     ) -> crate::Reported {
+        // `sv.iv.m` with `iv` not selectable from `sv` (a private variable, E1105).
+        if let ast::NameKind::Selected {
+            prefix: inner,
+            suffix: ast::Suffix::Ident(m),
+        } = &obj.kind
+            && let Ok(its) = self.prefix_types(scope, inner)
+            && let Some((pt, _)) = its.iter().find_map(|&t| self.method_target(t))
+            && let Err(r) = self.protected_member(pt, *m, scope)
+        {
+            return r;
+        }
         let target = ts.iter().find_map(|&t| self.method_target(t));
         match (target, suffix) {
             (Some((pt, _)), ast::Suffix::Ident(i)) => match self.protected_member(pt, *i, scope) {

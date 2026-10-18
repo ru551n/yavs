@@ -64,6 +64,12 @@ pub enum ExprKind {
     Deref {
         prefix: ExprId,
     },
+    /// 2019: private variable `var` of protected object `object`, the object of a call
+    /// through a method alias that forwards to it (5.6.2). Only as `Call::method_of`.
+    PrivateVar {
+        object: ExprId,
+        var: DeclId,
+    },
     Attr {
         attr: PredefAttr,
         prefix: AttrPrefix,

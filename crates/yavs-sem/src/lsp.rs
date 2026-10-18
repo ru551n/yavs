@@ -222,9 +222,9 @@ impl Db {
                 self.walk_expr(*prefix, f);
                 self.walk_range(range, f);
             }
-            ExprKind::Field { prefix, .. } | ExprKind::Deref { prefix } => {
-                self.walk_expr(*prefix, f)
-            }
+            ExprKind::Field { prefix, .. }
+            | ExprKind::Deref { prefix }
+            | ExprKind::PrivateVar { object: prefix, .. } => self.walk_expr(*prefix, f),
             ExprKind::Call {
                 args, method_of, ..
             } => {
@@ -566,7 +566,8 @@ impl Db {
             | ExprKind::Index { .. }
             | ExprKind::Slice { .. }
             | ExprKind::Field { .. }
-            | ExprKind::Deref { .. } => {
+            | ExprKind::Deref { .. }
+            | ExprKind::PrivateVar { .. } => {
                 if let Some(l) = self.signal_lsp(e) {
                     push_unique(self, out, l);
                 }

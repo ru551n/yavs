@@ -518,9 +518,6 @@ impl Db {
 
     /// `constant`, `signal`, `variable`, `shared variable` declarations (6.4.2).
     fn object_decl(&mut self, scope: ScopeId, o: &ast::ObjectDecl) -> Result<(), crate::Reported> {
-        if o.private {
-            return Err(self.unsupported(o.span, "private variables", "S7"));
-        }
         let subtype = self.subtype_indication(scope, &o.subtype)?;
         self.check_generic_protected(subtype, o.subtype.span)?;
         let class = match o.class {
@@ -665,6 +662,48 @@ impl Db {
             // Indexed or sliced names denote parts of objects (6.6.2).
             _ => NameRes::Value,
         };
+        // `alias m is pv.m [sig];` (2019 5.6.2): a method of a protected object, typically
+        // of a private variable.
+        let mut via = None;
+        let res = match (&res, &name.kind) {
+            (
+                NameRes::Value,
+                ast::NameKind::Selected {
+                    prefix: obj,
+                    suffix,
+                },
+            ) => {
+                let key = crate::unit::suffix_key(suffix);
+                let ms: Vec<DeclId> = match (self.prefix_types(scope, obj), key) {
+                    (Ok(ts), Some(k)) => ts
+                        .iter()
+                        .filter_map(|&t| self.method_target(t))
+                        .flat_map(|(pt, _)| self.method_decls(pt, k))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if ms.is_empty() {
+                    res
+                } else {
+                    match self.classify(scope, obj) {
+                        NameRes::One(pv)
+                            if self.is_private_variable(pv) && self.decls[pv].scope == scope =>
+                        {
+                            via = Some(pv);
+                        }
+                        _ => {
+                            return Err(self.unsupported(
+                                name.span,
+                                "aliases of methods of objects other than a private variable of the protected type",
+                                "S7",
+                            ));
+                        }
+                    }
+                    NameRes::Overloads(ms)
+                }
+            }
+            _ => res,
+        };
         if let NameRes::Value = res {
             let target = self.object_name_expr(scope, name)?;
             let alias = self.object_alias(scope, a, target, subtype)?;
@@ -692,6 +731,9 @@ impl Db {
         };
         let decls = self.nonobject_alias(scope, a, &cands, sig.as_ref())?;
         for d in decls {
+            if let Some(pv) = via {
+                self.forwarding.insert(d, pv);
+            }
             self.declare(scope, d);
         }
         Ok(())
@@ -1156,6 +1198,26 @@ impl Db {
         if let ast::NameKind::Attribute { prefix, attr } = &n.kind
             && attr.key.as_str() == "converse"
         {
+            // 16.2: `'converse` is defined only for a mode view prefix.
+            if !matches!(prefix.kind, ast::NameKind::Attribute { .. }) {
+                let d = self.expanded_name_decl(scope, prefix)?;
+                let d = self.entity(d);
+                match self.decls[d].kind {
+                    DeclKind::View(_) => {}
+                    DeclKind::Error => return Err(crate::Reported),
+                    _ => {
+                        return Err(self.error(
+                            yavs_diag::Diagnostic::error(
+                                crate::diag::UNKNOWN_ATTRIBUTE,
+                                "attribute `converse` is only defined for mode views",
+                            )
+                            .with_primary(attr.span, "needs a mode view prefix")
+                            .with_secondary(self.decls[d].span, "not a mode view")
+                            .with_note("LRM 2019 16.2"),
+                        ));
+                    }
+                }
+            }
             let r = self.view_name(scope, prefix)?;
             return Ok(crate::view::ViewRef {
                 converse: !r.converse,

@@ -1,5 +1,5 @@
 -- yavs-test: std=2019
--- expect: E1901 10:9 view `vo` is for `other`, element `i` has type `inner`
+-- expect: E1901 10:14 view `vo` is for `other`, element `i` has type `inner`
 -- LRM 2019 6.5.2
 package p is
   type inner is record x : bit; end record;

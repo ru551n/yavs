@@ -22,9 +22,9 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead |
 | `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | M1 lead |
 | `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | owner: literal |
-| `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | free |
+| `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
-| `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | free |
+| `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate |
 | `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5) | S4 | free |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
 | `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | free |

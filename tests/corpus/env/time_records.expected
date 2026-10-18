@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:time_records:_p0	2001-09-09T01:46:40 2001-09-09T01:46:40.250 sunday day of year 251
+diag	note	0	0	:time_records:_p0	epoch 1000000000
+diag	note	0	0	:time_records:_p0	2001-09-10T01:46:40, difference 86400
+diag	note	0	0	:time_records:_p0	2001-09-09T02:46:40
+diag	note	0	0	:time_records:_p0	2001-09-09T01:45:40.250000
+diag	note	0	0	:time_records:_p0	1970-01-01T00:00:00 thursday

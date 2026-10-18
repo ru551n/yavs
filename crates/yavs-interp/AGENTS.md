@@ -22,12 +22,13 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState`, `InterpProcess` (`new`, `with_debug`), `proc_flags`, `call`, `call_shared`, `call_values` (composite arguments and results as data and descriptor bytes, `CallVal`), `resolve` |
+| `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`, `sources`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState`, `InterpProcess` (`new`, `with_debug`), `proc_flags`, `call`, `call_shared`, `call_values` (composite arguments and results as data and descriptor bytes, `CallVal`), `resolve` |
 | `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with NVC-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
 | `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
 | `src/implicit.rs` | `yavs.implicit.<family>.<type>[.<form>]` operations |
 | `src/textio.rs` | std.textio and TEXT file natives, `FILE_INPUT`/`FILE_OUTPUT`, std.env glue |
+| `src/env.rs` | 2019 std.env: call paths (`Sources`), the VHDL assert state (`Asserts`, cycle-deterministic), time_record |
 | `src/foreign.rs` | VHPIDIRECT marshalling (scalars, arrays, records, access, copy-back) |
 | `src/reflect.rs` | `std.reflection`: mirror objects and the 123 mirror methods; a test checks every NATIVE.md reflection row is implemented |
 | `src/debug.rs` | `DebugSession`, `Debugger`, `LineBp`/`HitCond`, `SignalBreak`, `FrameView`/`LocalView`, `ProcState`, `Stop`/`StopReason`, `Resume`, `format_scalar` |
@@ -48,6 +49,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | Foreign arrays as C-layout copies left to right, logic elements one code byte, records as aligned structs, access as pointer; copy-back range-checked | NVC convention plus yavs additions | `docs/decisions.md` "IR and interpreter" |
 | Debugging like Riviera-PRO/Questa: conditional line breakpoints with hit counts, step in/over/out, global step, signal breakpoints, process table; stops inside a process need `--threads 1` | User requirement | `docs/decisions.md` "IR and interpreter", ir.md 3.4 |
 | Reflection: TIME mirror values in resolution-limit units; unit indices 1-based; element/literal indices 0-based; names upper case; case-insensitive lookups (user, 2026-10-18) | VUnit `record_dict_pkg`, NVC | `docs/decisions.md` "Reflection: ..." (two sections) |
+| Assert state: each process sees the state at the start of its cycle plus its own changes; changes merge in process order at the next cycle | Rule 3 with parallel processes (#99) | `docs/decisions.md` "IR and interpreter" |
 | Check and overflow texts match NVC (`value 101 outside of PCT range 0 to 100 for variable P`, ...) | Strict difftest | `crates/yavs-ir/README.md` Requests answer 4 |
 | Runtime errors stop at once (bound, overflow, null, delta limit); a report at the stop severity ends the process | Error motto; exit severity (user, 2026-10-18) | `docs/plan.md` "Error-handling motto", `docs/decisions.md` "Runtime: default exit severity" |
 
@@ -79,7 +81,7 @@ python3 tools/difftest/difftest.py --candidate yavs              # end to end ag
 ```
 
 - A new native: row in `lib/NATIVE.md` (see `lib/AGENTS.md`), implementation in `native.rs` /
-  `implicit.rs` / `textio.rs` / `reflect.rs`, a test in `tests/`.
+  `implicit.rs` / `textio.rs` / `env.rs` / `reflect.rs`, a test in `tests/`.
 - No codes of its own: runtime errors are kernel `SimError`s with `ErrorKind::Runtime` (`E3009`)
   or `Internal` (`E9999`); the message text is what the user sees, so keep it NVC-compatible.
 
@@ -89,6 +91,6 @@ python3 tools/difftest/difftest.py --candidate yavs              # end to end ag
   "Requests".
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:interp`): #77 fold
   calls and aggregates at elaboration (E2106); #79 unimplemented natives and `Elab*`; #97
-  reflection runtime; #99 2019 time_record, call-path and assert-count natives; #156 reflection
-  index bases. Older unlabeled: #4 `finish`/`stop` end the process at once; #9 array signals and
+  reflection runtime; #191 exit status after `ClearVhdlAssert`. Older unlabeled: #4
+  `finish`/`stop` end the process at once; #9 array signals and
   constants in instance data; #10 `FToIRange` text.

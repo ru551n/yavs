@@ -74,7 +74,7 @@ VUnit's capability answers for yavs (`SimulatorInterface` hooks):
 |---|---|---|
 | `supports_vhdl_contexts` | True | 2008 |
 | `supports_vhdl_package_generics` | True | M3 |
-| `supports_vhdl_call_paths` | True | 2019 `std.env` call paths, M3/M4 |
+| `supports_vhdl_call_paths` | True | 2019 `std.env` call paths (`get_call_path`, `file_name`, `file_line`), implemented (#99) |
 | `has_valid_exit_code` | True | see section 5 |
 | `supports_vhpi` | True | M5 (`--vhpi`) |
 | `supports_coverage` | False | not in the contract (section 8) |

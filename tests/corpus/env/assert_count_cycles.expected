@@ -1,0 +1,5 @@
+exit	0
+diag	warning	0	0	:assert_count_cycles:a	from a
+diag	note	0	0	:assert_count_cycles:a	a sees 1
+diag	note	0	0	:assert_count_cycles:b	b sees 0
+diag	note	0	1	:assert_count_cycles:b	b then sees 1

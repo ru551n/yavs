@@ -1,0 +1,7 @@
+exit	0
+diag	warning	0	0	:assert_count:_p0	a1
+diag	warning	0	0	:assert_count:_p0	a2
+diag	note	0	0	:assert_count:_p0	r1
+diag	note	0	0	:assert_count:_p0	count 2, warnings 2, notes 1
+diag	note	0	0	:assert_count:_p0	after clear 0
+diag	note	0	0	:assert_count:_p0	format [], read severity error

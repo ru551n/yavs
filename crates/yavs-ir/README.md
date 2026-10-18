@@ -23,7 +23,8 @@ textual dump.
   access variables (`line`) by the address of the cell; an unconstrained array (`string`,
   `bit_vector`) as the address of a fat pair `[data, dope]`; a file object as the address of
   its 4-byte cell (`yavs_interp::FILE_INPUT` / `FILE_OUTPUT` are textio's pre-opened files);
-  a record (`directory`) by address. A heap array object is `[descriptor][elements]`. BIT
+  a record (`directory`, `time_record`) as a fat pair like an array (its data address first; a
+  record result is returned the same way). A heap array object is `[descriptor][elements]`. BIT
   and BOOLEAN elements of logic arrays are the std_ulogic codes of '0' and '1'.
 - Natives are `lib/NATIVE.md` symbols (`NativeRef`), implicit families carry their `TyId`;
   `yavs.attr.image` is the `'image` attribute. Foreign calls are `ForeignRef` (the elaborator
@@ -52,8 +53,10 @@ textual dump.
 - Exact instruction operand shapes for records with runtime layouts and `Elab*` instructions
   (their semantics belong to `yavs-elab`).
 - `InstData` gains child instances and package links when elaboration needs them.
-- Binary (non-TEXT) file `read`/`write`, the 2019 `time_record`, call-path, assert-count and
-  and PSL natives are not implemented (runtime error naming the symbol).
+- Binary (non-TEXT) file `read`/`write` and the PSL natives are not implemented (runtime error
+  naming the symbol); `SetVhdlAssertFormat` accepts only the empty (default) format.
+- Call paths need `Bindings::sources` (`yavs_interp::Sources::of(program, source_map)`;
+  yavs-elab passes it); without it they are a runtime error.
 
 ## Requests
 

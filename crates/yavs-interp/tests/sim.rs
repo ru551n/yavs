@@ -931,7 +931,7 @@ fn natives() {
     let ts_int = pb.native("yavs.implicit.to_string.integer", Some(int));
     let ts_real = pb.native("yavs.implicit.to_string.real", Some(real));
     let ts_ch = pb.native("yavs.implicit.to_string.character", Some(ch));
-    let missing = pb.native("yavs.env.gmtime.void.r_time_record", None);
+    let missing = pb.native("yavs.env.pslassertfailed.void.r_boolean", None);
     let p = pb.declare("p", FuncKind::Process, None);
     {
         let mut fb = pb.define(p);
@@ -991,7 +991,7 @@ fn natives() {
     assert_eq!(
         e.kind,
         ErrorKind::Runtime(
-            "native subprogram `yavs.env.gmtime.void.r_time_record` is not implemented in yavs yet"
+            "native subprogram `yavs.env.pslassertfailed.void.r_boolean` is not implemented in yavs yet"
                 .into()
         )
     );

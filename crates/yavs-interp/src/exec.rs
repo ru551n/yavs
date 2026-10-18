@@ -1872,6 +1872,11 @@ impl Machine {
                     .collect();
                 match ctx.as_deref_mut() {
                     Some(c) => {
+                        // A severity disabled by SetVhdlAssertEnable is neither shown nor
+                        // counted (as NVC).
+                        if !self.rt.asserts.report(c, s) {
+                            return Ok(Flow::Next);
+                        }
                         c.report(s, text);
                         // The simulation ends after this cycle: execute no further.
                         if s >= c.stop_severity() {

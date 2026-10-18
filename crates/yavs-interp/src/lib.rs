@@ -13,6 +13,7 @@
 //! `StmtId`s, innermost first. Broken invariants are `ErrorKind::Internal`.
 
 mod debug;
+mod env;
 mod exec;
 mod foreign;
 mod heap;
@@ -24,6 +25,7 @@ mod textio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub use env::Sources;
 use yavs_ffi::ForeignFn;
 use yavs_ir::{ForeignId, FuncId, FuncKind, Program};
 use yavs_kernel::{
@@ -114,6 +116,8 @@ pub struct Bindings {
     pub revision: Revision,
     /// The time resolution, for `resolution_limit`.
     pub resolution: TimeResolution,
+    /// The design's source files, for `std.env` call paths ([`Sources::of`]).
+    pub sources: Sources,
 }
 
 impl Default for Bindings {
@@ -125,6 +129,7 @@ impl Default for Bindings {
             limits: Limits::default(),
             revision: Revision::Vhdl2008,
             resolution: TimeResolution::Fs,
+            sources: Sources::default(),
         }
     }
 }
@@ -141,6 +146,9 @@ pub struct Runtime {
     pub(crate) limits: Limits,
     pub(crate) revision: Revision,
     pub(crate) resolution: TimeResolution,
+    pub(crate) sources: Sources,
+    /// VHDL assert counts and enables (`env.rs`).
+    pub(crate) asserts: env::Asserts,
     /// Open file objects; a file cell holds index + 1 (0: never opened).
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
 }
@@ -196,6 +204,8 @@ impl Runtime {
             limits: b.limits,
             revision: b.revision,
             resolution: b.resolution,
+            sources: b.sources,
+            asserts: Default::default(),
             files: Mutex::new(textio::FileSlot::preopened()),
             prog,
         }))

@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:call_path:main	OUTER at line 31
+diag	note	0	0	:call_path:main	outer sees depth 3
+diag	note	0	0	:call_path:main	file_line 32 in call_path.vhd
+diag	note	0	0	:call_path:main	MAIN at line 38
+diag	note	0	0	:call_path:main	main sees depth 2

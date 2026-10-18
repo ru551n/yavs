@@ -77,7 +77,7 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
             "`{symbol}` is not a native subprogram (lib/NATIVE.md defines the symbols)"
         ));
     }
-    if let Some(f) = crate::implicit::lookup(symbol) {
+    if let Some(f) = crate::implicit::lookup(symbol).or_else(|| crate::env::lookup(symbol)) {
         return Ok(Some(f));
     }
     let f: NativeFn = match (symbol, family, attr) {
@@ -389,9 +389,9 @@ fn seconds_to_time(
 }
 
 /// `DIR_OPEN (Dir, Path)`: DIRECTORY is `(Name: line; Items: access line_vector)`, two
-/// handles; Items is `[0 to n - 1][line handles]`.
+/// handles, passed as a fat pair like every composite; Items is `[0 to n - 1][line handles]`.
 fn dir_open(m: &mut Machine, a: &[u64]) -> R<u64> {
-    let dir = targ(a, 0)?;
+    let dir = crate::env::record_arg(m, targ(a, 0)?)?;
     let path = m.fat_bytes(targ(a, 1)?)?;
     let d = match env::dir_open(&path) {
         Ok(d) => d,
@@ -439,7 +439,8 @@ fn dir_close(
     _: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    let items = m.load(crate::exec::add_addr(targ(a, 0)?, 8)?, Width::B8)?;
+    let dir = crate::env::record_arg(m, targ(a, 0)?)?;
+    let items = m.load(crate::exec::add_addr(dir, 8)?, Width::B8)?;
     if items != 0 {
         let lines = m.line_vector_handles(items)?;
         for h in lines {
@@ -571,7 +572,7 @@ mod tests {
         );
         // Defined in NATIVE.md, not implemented yet.
         assert!(
-            lookup("yavs.env.gmtime.void.r_time_record")
+            lookup("yavs.env.pslassertfailed.void.r_boolean")
                 .unwrap()
                 .is_none()
         );

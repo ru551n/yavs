@@ -374,8 +374,10 @@ fn env_natives() {
             &[sub, no],
             true,
         );
+        // A record goes to a native as a fat pair, like an array.
+        let da = fb.addr(AddrSpace::Frame, dslot);
         let (da, p) = (
-            fb.addr(AddrSpace::Frame, dslot),
+            fat_of(&mut fb, da, 0, 0, false),
             fat_str(&mut fb, dir.as_bytes()),
         );
         let opened = native(
@@ -396,6 +398,7 @@ fn env_natives() {
         )
         .unwrap();
         let da = fb.addr(AddrSpace::Frame, dslot);
+        let da = fat_of(&mut fb, da, 0, 0, false);
         native(&mut fb, "yavs.env.dir_close.directory", None, &[da], false);
         // dir_deletedir(dir, recursive => true) = status_ok
         let (p, yes) = (fat_str(&mut fb, dir.as_bytes()), fb.int(1));

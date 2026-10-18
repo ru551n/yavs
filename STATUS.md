@@ -211,11 +211,12 @@ compact constants, natives by NATIVE.md symbol, foreign references, flag propaga
 (`crates/yavs-ir/README.md` says what is stable). `yavs-interp`: `InterpProcess` implements the
 kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
 yavs-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
-`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC,
+`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined),
 serial marking, kernel-free `call` / `call_shared` for elaboration, protected objects,
 std.textio (read/write of every textio type, readline/writeline/tee, hread/oread/sread,
 justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version
-strings, time conversions, resolution_limit), VHPIDIRECT calls with scalars, arrays,
+strings, time conversions, resolution_limit, the 2019 time_record functions, call paths and
+the VHDL assert state), VHPIDIRECT calls with scalars, arrays,
 records and access values (copy-back included), runtime errors with the VHDL stack as
 `SimError::trace`, and Riviera/Questa-style debug hooks (docs/design/ir.md 3.4).
 
@@ -227,7 +228,7 @@ tests (conditional line breakpoint with hit count, step over, step in with frame
 global step across processes, signal breakpoint and process table), verifier and layout tests.
 Also 5 foreign marshalling tests, 4 textio/file/env tests and a protected-type test.
 Not done: `Elab*` instructions (yavs-elab), records with runtime layouts beyond `LayoutOf`,
-binary file read/write, the 2019 time_record, call-path, assert-count and PSL natives.
+binary file read/write, the PSL natives, `SetVhdlAssertFormat` with a non-empty format.
 
 std.reflection (`yavs-interp/src/reflect.rs`, `yavs-lower/src/reflect.rs`): all 123 mirror
 methods and `'reflect` (value and subtype mirrors, built from the value and its descriptor;

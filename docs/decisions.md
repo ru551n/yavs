@@ -344,6 +344,25 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   (a by-reference parameter of a waiting procedure). An access through a stale address
   therefore always meets the freed slot and is the runtime error `access to a deallocated
   object`. Ceiling: for the shared heap only the suspending process's frames are searched.
+- **2019 `std.env` assert state, call paths and time_record** (#99, yavs-interp `env.rs`):
+  - The assert state (counts, enables, read severity) is global but read deterministically
+    (rule 3): a process sees the state as of the start of its cycle plus its own changes;
+    all processes' changes are applied in process order when the next cycle first touches the
+    state. NVC updates at once, so a same-cycle read across processes is order dependent there
+    (`tests/corpus/env/assert_count_cycles` is `ref=hand`).
+  - As NVC: report statements count too; a disabled severity is neither shown nor counted; the
+    no-argument `GetVhdlAssertCount`/`IsVhdlAssertFailed` cover warning, error and failure;
+    the read severity starts at ERROR. NVC's exit status follows the counts
+    (`ClearVhdlAssert` clears it), yavs's does not yet (#191).
+  - `SetVhdlAssertFormat` with a non-empty format is a "not implemented" runtime error; the
+    format stays the default and `GetVhdlAssertFormat` returns "".
+  - Call path elements are innermost first, names upper case, the line of the calling
+    statement, `file_path` the absolute directory; `to_string` of an element is NVC's
+    `<path>/<file>:<line>:<NAME>`. `to_string` of a vector honours `Separator` (LRM); NVC
+    1.23 ignores it and always uses LF.
+  - `DELTA - TREC` moves the record back by DELTA, like `TREC - DELTA`.
+  - Records are passed to natives as fat pairs, like arrays (what lowering emits; the README
+    said "by address", which broke `dir_open` end to end).
 - **Debugging like Riviera-PRO and Questa** (user requirement): conditional line breakpoints
   (the condition is an IR function nested in the stopped frame's function) with hit counts,
   step in/over/out per process, a global step across processes, pause inside endless loops,

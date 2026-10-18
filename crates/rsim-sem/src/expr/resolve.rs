@@ -8,7 +8,7 @@ use crate::db::Db;
 use crate::decl::operator_key;
 use crate::diag;
 use crate::hir::{Actual, Arg, Expr, ExprKind};
-use crate::ids::{ExprId, ScopeId, TypeId};
+use crate::ids::{DeclId, ExprId, ScopeId, TypeId};
 use crate::scope::Visible;
 use crate::stat::Staticness;
 use crate::types::TypeKind;
@@ -275,6 +275,9 @@ impl Db {
                     return self.poison_expr();
                 };
                 best.retain(|(_, c)| *c == min);
+                if best.len() > 1 {
+                    self.prefer_explicit(&mut best);
+                }
                 if best.len() > 1 {
                     self.ambiguous(e, &best.iter().map(|b| b.0).collect::<Vec<_>>());
                     return self.poison_expr();
@@ -724,6 +727,32 @@ impl Db {
             )
             .with_primary(e.span, format!("expected {want}")),
         );
+    }
+
+    /// Calls that are ambiguous only between implicit operations and explicit
+    /// subprograms declared in the same region (a 2019 composite `TO_STRING` and a
+    /// user `to_string(A; sep := " ")`): the explicit ones win, as in NVC, GHDL and
+    /// Questa (decisions.md).
+    fn prefer_explicit(&self, best: &mut Vec<(Interp, u32)>) {
+        let calls: Option<Vec<DeclId>> = best
+            .iter()
+            .map(|(i, _)| match i.via {
+                Via::Call(d) => Some(self.entity(d)),
+                _ => None,
+            })
+            .collect();
+        let Some(calls) = calls else { return };
+        let (imp, exp): (Vec<DeclId>, Vec<DeclId>) =
+            calls.iter().partition(|&&d| self.decls[d].implicit);
+        if imp.is_empty() || exp.is_empty() {
+            return;
+        }
+        let region = self.decls[exp[0]].scope;
+        if calls.iter().all(|&d| self.decls[d].scope == region) {
+            best.retain(
+                |(i, _)| matches!(i.via, Via::Call(d) if !self.decls[self.entity(d)].implicit),
+            );
+        }
     }
 
     fn ambiguous(&mut self, e: &ast::Expr, best: &[Interp]) {

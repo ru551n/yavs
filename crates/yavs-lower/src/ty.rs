@@ -180,7 +180,7 @@ pub(crate) fn obj_desc(db: &Db, d: yavs_sem::DeclId) -> String {
 }
 
 /// Elements (IR layout) and descriptor bytes of a folded array value of IR type `ty`.
-pub(crate) fn encode_array(prog: &Program, ty: TyId, v: &ConstValue) -> Option<(Vec<u8>, Vec<u8>)> {
+pub fn encode_array(prog: &Program, ty: TyId, v: &ConstValue) -> Option<(Vec<u8>, Vec<u8>)> {
     let ConstValue::Array(a) = v else {
         return None;
     };

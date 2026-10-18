@@ -31,7 +31,7 @@ use yavs_sem::decl::DeclKind;
 use yavs_sem::hir::UnitHir;
 use yavs_sem::{Db, DeclId, ScopeId, StmtId, TypeId, UnitId};
 
-pub use ty::signal_elem;
+pub use ty::{encode_array, signal_elem};
 
 /// A construct the lowering does not handle yet (yavs-diag registry: `E2000`-`E2099`).
 pub const NOT_IMPLEMENTED: &str = "E2001";
@@ -377,6 +377,14 @@ impl<'a> Lowerer<'a> {
         match f {
             Ok(f) if self.cx.diags.is_empty() => Ok(f),
             _ => Err(std::mem::take(&mut self.cx.diags)),
+        }
+    }
+
+    /// The IR type of `t` (lowered once), for callers marshalling values of it.
+    pub fn ty(&mut self, t: yavs_sem::TypeId) -> Result<yavs_ir::TyId, Vec<Diagnostic>> {
+        match ty::lower(self.db, &mut self.cx, &mut self.pb, t, Span::default()) {
+            Ok(id) => Ok(id),
+            Err(_) => Err(std::mem::take(&mut self.cx.diags)),
         }
     }
 

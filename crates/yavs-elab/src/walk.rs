@@ -300,7 +300,17 @@ fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
             );
         }
     }
-    if errs.is_empty() { Ok(()) } else { Err(errs) }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    // Bodies of generic package and subprogram instances (cloned from the generic body).
+    let insts: Vec<yavs_sem::InstId> = db.insts.iter().map(|(i, _)| i).collect();
+    for i in insts {
+        if db.instance_body(i).is_err() {
+            return Err(db.take_diagnostics());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn elaborate(

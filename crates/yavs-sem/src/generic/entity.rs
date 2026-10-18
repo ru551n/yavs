@@ -432,7 +432,7 @@ impl Db {
                 let formal = index.get(a.formal as usize).copied().flatten()?;
                 Some(Arg {
                     formal,
-                    actual: a.actual.clone(),
+                    ..a.clone()
                 })
             })
             .collect();

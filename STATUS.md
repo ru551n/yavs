@@ -80,7 +80,8 @@ An installed binary finds `lib/` next to itself (#43).
   for undeclared names that a loaded package (with `ieee` visible: `ieee_std_context`) declares.
 - Static checks (#53): array attribute dimensions must be locally static (`E1410`) and exist
   (`E1623`), static indices and slices outside a static index range warn (`W1404`), and an
-  unconstrained constant without a value outside a package is `E1212`.
+  constant without a value outside a package declaration is `E1224` (#213), and a deferred constant
+  without a full declaration in the package body is `E1230`.
 - `tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
   math_complex, numeric_std, numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019).
   `numeric_std_body_rule_1` is the rule 1 review: every object and object alias of the numeric_std

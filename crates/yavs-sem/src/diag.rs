@@ -41,8 +41,9 @@ codes! {
     BAD_DESIGNATED = "E1221", "In VHDL-2008 the designated type of an access type may not be a file type or a protected type (LRM 5.4.1); VHDL-2019 allows both.";
     BAD_FILE_ELEMENT = "E1222", "The element type of a file type may not be an access, protected or file type, or contain one.";
     BAD_OBJECT_TYPE = "E1223", "A constant, signal, generic, port or constant or signal parameter may not be of an access or file type, or contain one (LRM 6.4.2.2, 6.4.2.3, 6.5.2): only variables hold access values. VHDL-2019 allows constant parameters of access type. In VHDL-2008 the results and parameters of protected type methods may not be of such types either (LRM 5.6.2).";
+    DEFERRED_OUTSIDE_PACKAGE = "E1224", "A constant without a value is a deferred constant, which only a package declaration may hold (LRM 6.4.2.2); anywhere else the constant needs an initial value.";
     BAD_RESOLUTION = "E1225", "A resolution function must be a pure function with one constant parameter of a one-dimensional unconstrained array of the resolved type, returning that type.";
-    MISSING_BODY = "E1230", "A subprogram or protected type is declared but its body is missing.";
+    MISSING_BODY = "E1230", "A subprogram or protected type is declared but its body is missing, or a deferred constant of a package has no full declaration in the package body (LRM 4.8).";
     BAD_TYPE_DECL = "E1231", "The type definition is not legal, for example a range whose bounds are not of an integer or floating point type.";
     // E13xx expressions and overloading
     TYPE_MISMATCH = "E1300", "The expression has a different type than the context requires.";

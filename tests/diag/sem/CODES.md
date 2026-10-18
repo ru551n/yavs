@@ -60,8 +60,9 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1221 | 2008 access to a file or protected type | 8.1 |
 | E1222 | illegal file element type | 8.1 |
 | E1223 | constant (2008), signal, generic, port or parameter of an access or file type, also in 2008 protected method profiles | 8.1 |
+| E1224 | constant without a value outside a package declaration | 6.4.2.2 |
 | E1225 | bad resolution function | 8.1 |
-| E1230 | missing body | 8.1 |
+| E1230 | missing body (subprogram, protected type, deferred constant in a package body) | 8.1, 4.8 |
 | E1300 | type mismatch | 8.1 |
 | E1301 | no matching overload | 8.1 |
 | E1302 | ambiguous | 8.1 |

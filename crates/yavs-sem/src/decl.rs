@@ -332,6 +332,7 @@ impl Db {
                 }
                 if let Some(pkg) = up {
                     self.check_subprogram_bodies(pkg, end);
+                    self.check_deferred_completed(pkg, scope, end);
                 }
                 self.check_subprogram_bodies(scope, end);
             }
@@ -379,6 +380,36 @@ impl Db {
                 )
                 .with_primary(self.decls[d].name_span(), "declared here")
                 .with_secondary(end, "the region ends here without its body"),
+            );
+        }
+    }
+
+    /// `E1230`: a deferred constant of the package has no full declaration in its body (4.8).
+    fn check_deferred_completed(&mut self, pkg: ScopeId, body: ScopeId, end: Span) {
+        let missing: Vec<DeclId> = self.scopes[pkg]
+            .order
+            .iter()
+            .copied()
+            .filter(|&d| {
+                let decl = &self.decls[d];
+                !decl.implicit
+                    && matches!(&decl.kind, DeclKind::Object(o) if o.role == ObjRole::Deferred)
+                    && !self.scopes[body].names.get(&decl.name.key()).is_some_and(|v| {
+                        v.iter().any(|&f| matches!(&self.decls[f].kind, DeclKind::Object(o) if o.class == ObjClass::Constant && o.default.is_some()))
+                    })
+            })
+            .collect();
+        for d in missing {
+            let name = self.decls[d].name;
+            self.report(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::MISSING_BODY,
+                    format!(
+                        "deferred constant `{name}` has no full declaration in the package body"
+                    ),
+                )
+                .with_primary(self.decls[d].name_span(), "declared here")
+                .with_secondary(end, "the package body ends here without it"),
             );
         }
     }
@@ -525,25 +556,20 @@ impl Db {
         let from_init = default.is_some() && self.file_rev() >= LangRev::Vhdl2019;
         // 6.4.2.2: a constant without a value is deferred, and only a package declaration
         // may hold one; without a value an unconstrained one has no bounds either.
-        if !full
-            && class == ObjClass::Constant
+        if class == ObjClass::Constant
             && default.is_none()
             && self.scopes[scope].kind != crate::scope::ScopeKind::Package
         {
             let name = o.names.first().map_or(o.subtype.span, |n| n.span);
             self.report(
                 yavs_diag::Diagnostic::error(
-                    crate::diag::NOT_FULLY_CONSTRAINED,
+                    crate::diag::DEFERRED_OUTSIDE_PACKAGE,
                     match o.names.first() {
-                        Some(n) => format!(
-                            "constant `{}` of an unconstrained type needs an initial value",
-                            n.text
-                        ),
-                        None => "a constant of an unconstrained type needs an initial value".into(),
+                        Some(n) => format!("constant `{}` needs an initial value", n.text),
+                        None => "a constant needs an initial value".into(),
                     },
                 )
                 .with_primary(name, "declared here")
-                .with_secondary(o.subtype.span, "not fully constrained")
                 .with_note("only a package declaration may hold a deferred constant (LRM 6.4.2.2)"),
             );
         }

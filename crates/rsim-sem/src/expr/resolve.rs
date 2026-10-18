@@ -26,6 +26,20 @@ impl Db {
         self.complete_context(scope, e, exp, false)
     }
 
+    /// Resolve a complete context for a target of subtype `st` (assignment
+    /// targets, return values, initial values): an aggregate with `others` at
+    /// the top takes its bounds from `st` (9.3.3.3).
+    pub(crate) fn expr_in_subtype(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        st: crate::ids::SubtypeId,
+    ) -> ExprId {
+        self.context_subtype = Some(st);
+        let t = self.base(st);
+        self.expr(scope, e, Expected::Type(t))
+    }
+
     /// Resolve a complete context whose value is required at analysis time
     /// (type bounds, unit scales, choices): static overflow is error `E1401`.
     pub(crate) fn static_expr(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected) -> ExprId {
@@ -123,7 +137,7 @@ impl Db {
                         best.push((*i, c));
                     }
                 }
-                if exp == Expected::Condition && best.is_empty() {
+                if exp == Expected::Condition && best.is_empty() && !is.is_empty() {
                     return self.implicit_condition(scope, e, &is);
                 }
                 let Some(min) = best.iter().map(|(_, c)| *c).min() else {
@@ -430,6 +444,18 @@ impl Db {
             }
         }
         if is.is_empty() {
+            // An operand without any interpretation is the real problem (cascade, 8.2).
+            let operands: Vec<&ast::Expr> = match &e.kind {
+                K::Unary { operand, .. } => vec![operand],
+                K::Binary { left, right, .. } => vec![left, right],
+                _ => vec![],
+            };
+            for o in operands {
+                if matches!(self.cands(scope, o), CandSet::Types(v) if v.is_empty()) {
+                    self.resolve(scope, o, Expected::Any);
+                    return;
+                }
+            }
             let (what, sym) = match &e.kind {
                 K::Unary { op, .. } => ("operator", Some(unary_symbol(*op))),
                 K::Binary { op, .. } => ("operator", Some(binary_symbol(*op))),
@@ -607,10 +633,23 @@ impl crate::expr::aggregate::AggResolver for Resolver {
     }
 
     fn type_mark(&mut self, db: &mut Db, e: &ast::Expr) -> Option<crate::ids::SubtypeId> {
-        match &e.kind {
-            ast::ExprKind::Name(n) => db.quiet_type_mark(self.scope, n),
-            _ => None,
+        let ast::ExprKind::Name(n) = &e.kind else {
+            return None;
+        };
+        if let Some(st) = db.quiet_type_mark(self.scope, n) {
+            return Some(st);
         }
+        // A range attribute choice (`v'range => x`) is the subtype that range constrains.
+        let (range, ty) = db.range_attr(self.scope, n)?.ok()?;
+        let parent = db.types[ty].first_subtype;
+        Some(db.subtypes.push(crate::types::SubtypeDef {
+            base: ty,
+            name: None,
+            parent: Some(parent),
+            constraint: crate::types::Constraint::Range(range),
+            resolution: None,
+            span: n.span,
+        }))
     }
 }
 
@@ -623,5 +662,144 @@ fn class_name(e: &ast::Expr) -> &'static str {
             ..
         }) => "`null`",
         _ => "a string literal",
+    }
+}
+
+impl Db {
+    /// A procedure call statement (10.7, 11.4): overload resolution among the
+    /// visible procedures, complete argument list in formal order.
+    pub(crate) fn proc_call(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Result<crate::hir::Call, crate::Reported> {
+        use super::names::{NameRes, assoc_map};
+        let (prefix, args): (&ast::Name, &[ast::AssocElem]) = match &n.kind {
+            ast::NameKind::Apply { prefix, args } => (prefix, args),
+            _ => (n, &[]),
+        };
+        let saved = (
+            std::mem::take(&mut self.memo),
+            std::mem::take(&mut self.name_memo),
+        );
+        let r = (|| {
+            let ds = match self.classify(scope, prefix) {
+                NameRes::Overloads(ds) => ds,
+                NameRes::One(d) => vec![d],
+                NameRes::Value => {
+                    return Err(self.unsupported(prefix.span, "protected method calls", "S6"));
+                }
+                other => return Err(self.report_name(scope, other)),
+            };
+            let procs: Vec<crate::ids::DeclId> = ds
+                .iter()
+                .copied()
+                .filter(|&d| matches!(self.decls[self.entity(d)].kind.subprogram(), Some(s) if matches!(s.kind, crate::decl::SubprogramKind::Procedure)))
+                .collect();
+            if procs.is_empty() {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_AN_OBJECT,
+                        format!("`{}` is not a procedure", self.decls[ds[0]].name),
+                    )
+                    .with_primary(prefix.span, "expected a procedure name")
+                    .with_secondary(self.decls[ds[0]].span, "declared here"),
+                ));
+            }
+            let mut best: Vec<(crate::ids::DeclId, u32)> = Vec::new();
+            for &d in &procs {
+                let e = self.entity(d);
+                let Some(s) = self.decls[e].kind.subprogram() else {
+                    continue;
+                };
+                let formals: Vec<(rsim_syntax::Symbol, TypeId, bool)> = s
+                    .params
+                    .iter()
+                    .map(|p| (p.name.key, self.base(p.subtype), p.default.is_some()))
+                    .collect();
+                let Some(map) = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)
+                else {
+                    continue;
+                };
+                let mut convs = 0;
+                let mut ok = true;
+                for (k, (_, ft, has_default)) in formals.iter().enumerate() {
+                    match map[k] {
+                        Some(a) => match &args[a].actual {
+                            ast::Actual::Expr(x) => {
+                                let c = self.cands(scope, x);
+                                match self.best_cost(&c, Expected::Type(*ft)) {
+                                    Some(c) => convs += c,
+                                    None => ok = false,
+                                }
+                            }
+                            ast::Actual::Open(_) => {}
+                            _ => ok = false,
+                        },
+                        None if *has_default => {}
+                        None => ok = false,
+                    }
+                    if !ok {
+                        break;
+                    }
+                }
+                if ok && !best.iter().any(|(b, _)| self.entity(*b) == e) {
+                    best.push((d, convs));
+                }
+            }
+            let Some(min) = best.iter().map(|b| b.1).min() else {
+                let mut d = Diagnostic::error(
+                    diag::NO_OVERLOAD,
+                    format!(
+                        "no visible procedure `{}` accepts these arguments",
+                        self.decls[procs[0]].name
+                    ),
+                )
+                .with_primary(prefix.span, "no matching procedure");
+                for &c in procs.iter().take(MAX_CANDIDATE_LABELS) {
+                    let sig = self.signature(c);
+                    let sp = self.decls[c].span;
+                    d = if sp != Span::default() {
+                        d.with_secondary(sp, sig)
+                    } else {
+                        d.with_note(format!("candidate: {sig}"))
+                    };
+                }
+                return Err(self.error(d));
+            };
+            best.retain(|b| b.1 == min);
+            if best.len() > 1 {
+                let mut d = Diagnostic::error(diag::AMBIGUOUS, "this procedure call is ambiguous")
+                    .with_primary(prefix.span, "several procedures fit");
+                for (c, _) in &best {
+                    let sig = self.signature(*c);
+                    d = d.with_secondary(self.decls[*c].span, sig);
+                }
+                return Err(self.error(
+                    d.with_help("use a selected name such as `pkg.proc`, or qualify an argument"),
+                ));
+            }
+            let id = self.build_call(scope, best[0].0, args, n.span, None);
+            if self.is_poison_expr(id) {
+                return Err(crate::Reported);
+            }
+            // The call expression only carried the arguments; it is not referenced.
+            match std::mem::replace(&mut self.exprs[id].kind, ExprKind::Error) {
+                ExprKind::Call {
+                    callee,
+                    args,
+                    method_of,
+                    ..
+                } => Ok(crate::hir::Call {
+                    callee,
+                    args,
+                    method_of,
+                    span: n.span,
+                }),
+                _ => Err(crate::Reported),
+            }
+        })();
+        (self.memo, self.name_memo) = saved;
+        r
     }
 }

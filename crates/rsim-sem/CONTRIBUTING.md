@@ -184,3 +184,14 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
 - `seq_stmts(scope, stmts)` (decl.rs's hook) is implemented; nested bodies inherit `wait` and
   driver rules through `Db::stmt_owners`, so analyze bodies declared in a process while it is open
   (they are: `st_decls` runs inside the process).
+
+## Requests from the M1 lead
+
+- **stmt**: resolve values that have a target subtype with
+  `Db::expr_in_subtype(scope, e, target_subtype)` (variable and signal assignment values,
+  `return` values with the function's return subtype), so `x := (others => '0')` takes its
+  bounds from `x` (E1325 otherwise; std_logic_1164 and numeric_std bodies hit this).
+- **names**: `.all` and implicit dereference of access values (`L.all'length`, `p.field`,
+  `p(i)` with `p` an access): classify returns `Unsupported` for `.all` today; std_logic_1164's
+  body needs it.
+- **stmt** uses `Db::proc_call(scope, name)` (resolve.rs) through `st_proc_call` (done).

@@ -21,9 +21,24 @@ const UNITS: &[(&str, &str)] = &[
     ("ieee", "fixed_float_types"),
 ];
 
+/// Packages whose bodies analyze clean too.
+const BODIES: &[&str] = &[
+    "math_real",
+    "math_complex",
+    "numeric_std_unsigned",
+    "numeric_bit_unsigned",
+];
+
 fn analyze(rev: LangRev, lib: &str, unit: &str) -> Db {
+    analyze_with(rev, lib, unit, false)
+}
+
+fn analyze_with(rev: LangRev, lib: &str, unit: &str, body: bool) -> Db {
     let mut db = Db::new(Options::new(rev, default_stdlib()));
-    let r = db.load_primary(lib, unit);
+    let mut r = db.load_primary(lib, unit).map(|_| ());
+    if body && r.is_ok() {
+        r = db.load_body(lib, unit).map(|_| ());
+    }
     let text: String = db
         .diagnostics()
         .iter()
@@ -41,6 +56,15 @@ fn stdlib_units_analyze_clean() {
     for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {
         for (lib, unit) in UNITS {
             analyze(rev, lib, unit);
+        }
+    }
+}
+
+#[test]
+fn ieee_bodies_analyze_clean() {
+    for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {
+        for unit in BODIES {
+            analyze_with(rev, "ieee", unit, true);
         }
     }
 }

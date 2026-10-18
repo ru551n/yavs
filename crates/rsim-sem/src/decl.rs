@@ -379,17 +379,16 @@ impl Db {
             return Err(self.unsupported(o.span, "private variables", "S7"));
         }
         let subtype = self.subtype_indication(scope, &o.subtype)?;
-        let base = self.base(subtype);
         let class = match o.class {
             ast::ObjectClass::Constant => ObjClass::Constant,
             ast::ObjectClass::Signal => ObjClass::Signal,
             ast::ObjectClass::Variable => ObjClass::Variable,
             ast::ObjectClass::SharedVariable => ObjClass::SharedVariable,
         };
-        let default = o.default.as_ref().map(|e| {
-            self.context_subtype = Some(subtype);
-            self.expr(scope, e, crate::expr::Expected::Type(base))
-        });
+        let default = o
+            .default
+            .as_ref()
+            .map(|e| self.expr_in_subtype(scope, e, subtype));
         let full = self.constrainedness(subtype) == crate::types::Constrainedness::Full;
         let bounds = if full {
             BoundsFrom::Subtype

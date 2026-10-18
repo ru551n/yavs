@@ -1,4 +1,4 @@
-//! `cargo run -p rsim-sem --example analyze -- [--std 2019] [--design-std 2019] FILE...`:
+//! `cargo run -p rsim-sem --example analyze -- [--std 2019] [--design-std 2019] FILE|@lib.pkg...`:
 //! analyze files into `work` and print the diagnostics (development aid until
 //! `rsim analyze` exists). `RAW=1` prints the diagnostic structs instead.
 
@@ -21,6 +21,13 @@ fn main() {
     let design = take("--design-std").unwrap_or(file_rev);
     let mut db = Db::new(Options::new(design, default_stdlib()));
     for f in &args {
+        // `@lib.pkg` loads a package and its body from the library instead of a file.
+        if let Some((lib, pkg)) = f.strip_prefix('@').and_then(|u| u.split_once('.')) {
+            if db.load_primary(lib, pkg).is_ok() {
+                let _ = db.load_body(lib, pkg);
+            }
+            continue;
+        }
         let _ = db.analyze_file("work", f.as_ref(), file_rev);
     }
     for d in db.diagnostics() {

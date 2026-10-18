@@ -1690,8 +1690,8 @@ impl Db {
 
     /// expr (lead): a procedure call statement: overload resolution with a
     /// procedure result, complete argument list in formal order.
-    fn st_proc_call(&mut self, _scope: ScopeId, n: &ast::Name) -> Result<Call, Reported> {
-        Err(self.unsupported(n.span, "procedure calls", "S2"))
+    fn st_proc_call(&mut self, scope: ScopeId, n: &ast::Name) -> Result<Call, Reported> {
+        self.proc_call(scope, n)
     }
 
     /// types (lead): a discrete range and the subtype a loop or generate

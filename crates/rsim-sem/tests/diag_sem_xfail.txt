@@ -295,7 +295,5 @@ vis/missing_use_std_logic.vhd
 vis/near_miss_labels_and_expanded.vhd
 vis/near_miss_local_hides_outer.vhd
 vis/process_variable_outside.vhd
-vis/self_reference_in_initializer.vhd
 vis/subprogram_local_via_expanded_name.vhd
-vis/undeclared_reported_once.vhd
 vis/use_item_from_body.vhd

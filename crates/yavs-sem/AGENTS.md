@@ -65,6 +65,9 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | A conversion on an unconstrained formal is `E1312` (user, F8) | GHDL and Questa reject | `docs/design/rule1-review.md` F8 |
 | `'stable`/`'quiet`/`'transaction`/`'delayed` in a subprogram: an error only of a formal signal parameter (4.2.2.2); of another signal the implicit signal is declared in the nearest region outside the subprogram | GHDL and Questa accept | `src/expr/names.rs` `build_attr` |
 | Reflection: `simple_name` etc. upper case, 1-based physical unit indices, 0-based element/literal indices (user, 2026-10-18) | Match NVC; VUnit record_dict | `docs/decisions.md` "Reflection: names, indices and case" |
+| 2019 files: signals and variables take missing bounds from the initial value (L20), ports of class variable of a protected type (L21), `open` sub-element actuals (L23); 2008 files keep the old errors | LCS-2016-019/047/001, NVC agrees | `docs/design/lrm-checks.md` L20, L21, L23 |
+| A subprogram declared in an entity gets its body in an architecture; `E1230` is checked at the end of the architecture | 12.1: one declarative region | `docs/decisions.md` "Missing subprogram bodies" |
+| `A'INDEX(n)` and `R'RECORD` are type marks (`attr.rs` `index_type_mark`, `range_record_type_mark`); one anonymous range record type per scalar base type, cached in `Db::range_records` | L12, L14 | `docs/design/lrm-checks.md` |
 | Unimplemented constructs report `Db::unsupported(span, what, "S<n>")` (`E9999`) | Fail early, no `todo!()` | CONTRIBUTING "Conventions" |
 
 Module-local decisions go in this section and in the matching sem.md section, LRM readings in

@@ -158,9 +158,8 @@ impl Fx<'_, '_> {
                 self.decls(*scope)?;
                 self.stmts(body)
             }
-            H::Force { .. } | H::Release { .. } => {
-                Err(self.cx.unsupported(span, "force and release (M2 slice 4)"))
-            }
+            H::Force { target, mode, rhs } => self.force(target, *mode, rhs, span),
+            H::Release { target, mode } => self.release(target, *mode, span),
             _ => Err(self
                 .cx
                 .ice(span, "concurrent statement in a sequential region")),
@@ -633,6 +632,29 @@ impl Fx<'_, '_> {
                     span,
                 )?;
                 self.term(Inst::Ret { v: Some(r) });
+            }
+            crate::expr::V::A(data, dope) if self.is_general(db.base(ret), span)? => {
+                let t = db.base(ret);
+                let tid = self.ty(t, span)?;
+                let mut dope = dope;
+                if let Some(want) = self.desc_of(ret, Some(dope), span)? {
+                    self.check_desc(
+                        t,
+                        tid,
+                        dope,
+                        want,
+                        &format!("the result of {}", self.name),
+                        span,
+                    )?;
+                    dope = want;
+                }
+                // The descriptor may live in this frame: copy it out with the result.
+                let nd = self.copy_desc(tid, dope);
+                let fat = self.alloc_n(16);
+                self.store(fat, data, Width::B8);
+                let d = self.offset(fat, 8);
+                self.store(d, nd, Width::B8);
+                self.term(Inst::Ret { v: Some(fat) });
             }
             crate::expr::V::A(data, mut dope) => {
                 let dims = ty::array_of(db, db.base(ret)).map_or(1, |x| x.1);

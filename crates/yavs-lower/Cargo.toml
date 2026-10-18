@@ -11,6 +11,7 @@ yavs-diag.workspace = true
 yavs-sem = { path = "../yavs-sem" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
+yavs-syntax.workspace = true
 
 [dev-dependencies]
 yavs-interp = { path = "../yavs-interp" }

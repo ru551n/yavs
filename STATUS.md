@@ -84,6 +84,10 @@ verifier, the interpreter and the kernel (a stand-in elaborator): 27 of 36 match
 The rest wait on: `'value` native, NVC check texts, failure stopping the process, NVC's process
 order within a cycle (`multi_process_order`), sem `ExprKind::Error` in two files, array signals,
 non-static aggregates (math_real). Design and conventions: `crates/yavs-lower/DESIGN.md`.
+Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
+composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
+`deallocate`), process-local protected objects (`CallProt`), file objects and textio,
+`force`/`release` of scalar signals.
 
 ## sem robustness
 

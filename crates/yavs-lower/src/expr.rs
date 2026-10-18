@@ -123,11 +123,11 @@ impl Fx<'_, '_> {
         self.bin(IntOp::Sub, v, b)
     }
 
-    fn is_logic(&mut self, tid: TyId) -> bool {
+    pub(crate) fn is_logic(&mut self, tid: TyId) -> bool {
         Ty::logic_leaf(self.fb.program().types(), tid).is_some()
     }
 
-    fn rt_of(&self, t: TypeId) -> RegTy {
+    pub(crate) fn rt_of(&self, t: TypeId) -> RegTy {
         if ty::is_real(self.db, t) {
             RegTy::F64
         } else {
@@ -181,10 +181,10 @@ impl Fx<'_, '_> {
             ExprKind::Aggregate { assocs, bounds } => {
                 self.aggregate(assocs, bounds, e.subtype, span)
             }
-            ExprKind::Field { .. } => Err(self.cx.unsupported(span, "record fields (M3)")),
-            ExprKind::Deref { .. } | ExprKind::New { .. } | ExprKind::Null => {
-                Err(self.cx.unsupported(span, "access values (M3)"))
-            }
+            ExprKind::Field { prefix, elem } => self.field(*prefix, *elem, span),
+            ExprKind::Deref { prefix } => self.deref(*prefix, span),
+            ExprKind::New { init } => self.allocator(init, e.subtype, span),
+            ExprKind::Null => Ok(V::S(self.int(0))),
             ExprKind::External(_) => Err(self.cx.unsupported(span, "external names (M3)")),
             ExprKind::AttrValue { .. } => Err(self.cx.unsupported(span, "user-defined attributes")),
             ExprKind::Open | ExprKind::Error => {
@@ -205,11 +205,15 @@ impl Fx<'_, '_> {
             return Ok(V::S(dst));
         }
         let ConstValue::Array(a) = v else {
-            return Err(self
-                .cx
-                .unsupported(span, "record and access constants (M3)"));
+            return match v {
+                ConstValue::Null => Ok(V::S(self.int(0))),
+                _ => self.konst_comp(v, st, span),
+            };
         };
         let t = self.db.base(st);
+        if self.is_general(t, span)? {
+            return self.konst_comp(v, st, span);
+        }
         let tid = self.ty(t, span)?;
         let Some((elem, _)) = ty::array_of(self.db, t) else {
             return Err(self.cx.ice(span, "array constant of a non-array type"));
@@ -563,6 +567,9 @@ impl Fx<'_, '_> {
     /// The descriptor of an array subtype with index constraints; `None` when it has none.
     pub fn subtype_dope(&mut self, st: SubtypeId, span: Span) -> R<Option<Reg>> {
         let db = self.db;
+        if self.is_general(db.base(st), span)? {
+            return self.desc_of(st, None, span);
+        }
         let Constraint::Array {
             dims: Some(dims), ..
         } = &db.subtypes[st].constraint
@@ -622,10 +629,10 @@ impl Fx<'_, '_> {
         let db = self.db;
         let t = db.base(st);
         let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
-            return Err(self.cx.unsupported(span, "record aggregates (M3)"));
+            return self.aggregate_comp(assocs, bounds, st, span);
         };
-        if indexes.len() != 1 {
-            return Err(self.cx.unsupported(span, "multi-dimensional aggregates"));
+        if indexes.len() != 1 || self.is_general(t, span)? {
+            return self.aggregate_comp(assocs, bounds, st, span);
         }
         if assocs.iter().any(|a| a.slice_piece) {
             return Err(self
@@ -988,10 +995,8 @@ impl Fx<'_, '_> {
         if let (Some(o), Body::Native(sym)) = (method, &sp.body) {
             return self.native_method(sp, sym.as_str(), o, args, span);
         }
-        if method.is_some() {
-            return Err(self
-                .cx
-                .unsupported(span, "protected type method calls (M3)"));
+        if method.is_some() || db.method_of(callee).is_some() {
+            return self.method_call(callee, args, method, span);
         }
         match &sp.body {
             Body::Implicit(op) => self.implicit(op, sp, args, span),
@@ -1011,7 +1016,7 @@ impl Fx<'_, '_> {
                     });
                     return Ok(None);
                 };
-                let rt = if ty::is_array(db, db.base(ret)) {
+                let rt = if self.is_comp(db.base(ret)) {
                     RegTy::Ptr
                 } else {
                     self.rt_of(db.base(ret))
@@ -1038,7 +1043,7 @@ impl Fx<'_, '_> {
     }
 
     /// `[data, dope]` at `fat`.
-    fn fat_value(&mut self, fat: Reg) -> V {
+    pub(crate) fn fat_value(&mut self, fat: Reg) -> V {
         let data = self.load(fat, Width::B8, RegTy::Ptr);
         let d = self.offset(fat, 8);
         let dope = self.load(d, Width::B8, RegTy::Ptr);
@@ -1112,7 +1117,7 @@ impl Fx<'_, '_> {
                         },
                     };
                     if let Some(want) = self.subtype_dope(p.subtype, es)? {
-                        let dims = ty::array_of(db, db.base(p.subtype)).map_or(1, |x| x.1);
+                        let dims = ty::array_of(db, db.base(p.subtype)).map_or(0, |x| x.1);
                         let what = self.msg(&p.name.text.to_string(), Dir::To);
                         self.emit(Inst::SubtypeCheck {
                             dope,
@@ -1160,7 +1165,7 @@ impl Fx<'_, '_> {
             return Ok(None);
         };
         let db = self.db;
-        let arr = ty::is_array(db, db.base(ret));
+        let arr = self.is_comp(db.base(ret));
         let dst = self.reg(if arr {
             RegTy::Ptr
         } else {
@@ -1205,6 +1210,29 @@ impl Fx<'_, '_> {
         let real = ty::is_real(db, t);
         let res = sp.ret;
         use Family::*;
+        match op.family {
+            Deallocate => return self.deallocate(ex[0], span).map(|()| None),
+            FileOpen | FileClose | Read | Write | Endfile | Flush | FileState | FileMode
+            | FilePosition | FileSize | FileSeek | FileTruncate | FileRewind | FileCanseek => {
+                return self.file_op(op, sp, args, span);
+            }
+            Eq | Neq if matches!(db.types[t].kind, TypeKind::Access { .. }) => {
+                let a = self.scalar_expr(ex[0])?;
+                let b = self.scalar_expr(ex[1])?;
+                return Ok(Some(V::S(self.cmp(cmp_op(op.family), a, b))));
+            }
+            Eq | Neq
+                if self.is_comp(t)
+                    && (self.is_general(t, span)?
+                        || ty::array_of(db, t).is_some_and(|x| x.1 > 1)) =>
+            {
+                let a = self.expr(ex[0])?;
+                let b = self.expr(ex[1])?;
+                let r = self.comp_eq(t, a, b, span)?;
+                return Ok(Some(V::S(if op.family == Neq { self.not(r) } else { r })));
+            }
+            _ => {}
+        }
         let v = match op.family {
             And | Or | Nand | Nor if scalar && ex.len() == 2 => {
                 let a = self.scalar_expr(ex[0])?;
@@ -1506,7 +1534,7 @@ impl Fx<'_, '_> {
     }
 
     /// Element type facts of an array type: (IR type, logic, element width).
-    fn elem_facts(&mut self, t: TypeId, span: Span) -> R<(TyId, bool, Width)> {
+    pub(crate) fn elem_facts(&mut self, t: TypeId, span: Span) -> R<(TyId, bool, Width)> {
         let tid = self.ty(t, span)?;
         let logic = self.is_logic(tid);
         let Some((elem, _)) = ty::array_of(self.db, t) else {
@@ -1517,7 +1545,7 @@ impl Fx<'_, '_> {
     }
 
     /// Lexicographic comparison of 1-D arrays of discrete elements (LRM 9.2.3).
-    fn array_cmp(&mut self, op: CmpOp, a: V, b: V, t: TypeId, span: Span) -> R<Reg> {
+    pub(crate) fn array_cmp(&mut self, op: CmpOp, a: V, b: V, t: TypeId, span: Span) -> R<Reg> {
         let (ad, ap) = self.arr(a, span)?;
         let (bd, bp) = self.arr(b, span)?;
         let (_, logic, w) = self.elem_facts(t, span)?;
@@ -1941,7 +1969,7 @@ impl Fx<'_, '_> {
     // ---- names ----
 
     /// Position (0-based from the left, all dimensions flattened) of `indices` in `dope`.
-    fn flat_pos(&mut self, dope: Reg, indices: &[ExprId], what: &str) -> R<Reg> {
+    pub(crate) fn flat_pos(&mut self, dope: Reg, indices: &[ExprId], what: &str) -> R<Reg> {
         let mut acc: Option<Reg> = None;
         for (k, &ix) in indices.iter().enumerate() {
             let i = self.scalar_expr(ix)?;
@@ -1971,7 +1999,7 @@ impl Fx<'_, '_> {
         acc.ok_or(Failed)
     }
 
-    fn prefix_name(&self, e: ExprId) -> String {
+    pub(crate) fn prefix_name(&self, e: ExprId) -> String {
         match self.db.exprs[e].kind {
             ExprKind::Obj(d) => self.db.decls[d].name.to_string(),
             _ => "array".into(),
@@ -1981,6 +2009,9 @@ impl Fx<'_, '_> {
     fn index(&mut self, prefix: ExprId, indices: &[ExprId], span: Span) -> R<V> {
         let db = self.db;
         let t = db.base(db.exprs[prefix].subtype);
+        if self.is_general(t, span)? {
+            return self.index_comp(prefix, indices, span);
+        }
         let (_, logic, w) = self.elem_facts(t, span)?;
         let what = self.prefix_name(prefix);
         let v = self.expr(prefix)?;
@@ -2005,7 +2036,7 @@ impl Fx<'_, '_> {
     }
 
     /// Start position, length and descriptor of slice `range` of an array with `dope`.
-    fn slice_of(
+    pub(crate) fn slice_of(
         &mut self,
         dope: Reg,
         range: &RangeC,
@@ -2059,6 +2090,9 @@ impl Fx<'_, '_> {
     fn slice(&mut self, prefix: ExprId, range: &RangeC, span: Span) -> R<V> {
         let db = self.db;
         let t = db.base(db.exprs[prefix].subtype);
+        if self.is_general(t, span)? {
+            return self.slice_comp(prefix, range, span);
+        }
         let (tid, logic, w) = self.elem_facts(t, span)?;
         let what = self.prefix_name(prefix);
         let v = self.expr(prefix)?;
@@ -2118,7 +2152,7 @@ impl Fx<'_, '_> {
                         let dope = self.load(dp, Width::B8, RegTy::Ptr);
                         let t = db.base(st);
                         let tid = self.ty(t, span)?;
-                        let dims = ty::array_of(db, t).map_or(1, |x| x.1);
+                        let dims = ty::array_of(db, t).map_or(0, |x| x.1);
                         Ok(Place::Array {
                             data,
                             dope,
@@ -2127,11 +2161,23 @@ impl Fx<'_, '_> {
                             dims,
                         })
                     }
+                    None if matches!(&db.decls[*d].kind, DeclKind::Object(o) if o.class == yavs_sem::decl::ObjClass::File) =>
+                    {
+                        let addr = self.file_cell(*d, span)?;
+                        Ok(Place::Scalar {
+                            addr,
+                            w: Width::B4,
+                            st,
+                        })
+                    }
                     _ => Err(self.cx.unsupported(span, "this assignment target")),
                 }
             }
             ExprKind::Index { prefix, indices } => {
                 let t = db.base(db.exprs[*prefix].subtype);
+                if self.is_general(t, span)? {
+                    return self.index_place_comp(*prefix, indices, span);
+                }
                 let (elem, _) = ty::array_of(db, t).ok_or(Failed)?;
                 let what = self.prefix_name(*prefix);
                 let Place::Array {
@@ -2170,6 +2216,9 @@ impl Fx<'_, '_> {
                 Ok(Place::Scalar { addr, w, st: elem })
             }
             ExprKind::Slice { prefix, range } => {
+                if self.is_general(db.base(db.exprs[*prefix].subtype), span)? {
+                    return self.slice_place_comp(*prefix, range, span);
+                }
                 let what = self.prefix_name(*prefix);
                 let Place::Array {
                     data,
@@ -2214,7 +2263,9 @@ impl Fx<'_, '_> {
                     dims,
                 })
             }
-            _ => Err(self.cx.unsupported(span, "aggregate and record targets")),
+            ExprKind::Field { prefix, elem } => self.field_place(*prefix, *elem, span),
+            ExprKind::Deref { prefix } => self.deref_place(*prefix, span),
+            _ => Err(self.cx.unsupported(span, "aggregate targets")),
         }
     }
 
@@ -2303,7 +2354,7 @@ impl Fx<'_, '_> {
                 let Some(want) = self.subtype_dope(to, span)? else {
                     return Ok(v);
                 };
-                let dims = ty::array_of(db, db.base(to)).map_or(1, |x| x.1);
+                let dims = ty::array_of(db, db.base(to)).map_or(0, |x| x.1);
                 let what = self.msg(&ty::subtype_name(db, to), Dir::To);
                 self.emit(Inst::SubtypeCheck {
                     dope: p,

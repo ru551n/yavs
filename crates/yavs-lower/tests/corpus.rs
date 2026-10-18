@@ -64,6 +64,12 @@ const PASS: &[&str] = &[
     "reflect/arrays",
     "reflect/multidim",
     "reflect/scalars",
+    "access/access_string_array",
+    "access/linked_list",
+    "composite/unconstrained_records",
+    "textio/file_roundtrip",
+    "force/force_drivers",
+    "force/force_in",
 ];
 
 const GROUPS: &[&str] = &[
@@ -77,6 +83,11 @@ const GROUPS: &[&str] = &[
     "env",
     "run",
     "reflect",
+    "access",
+    "composite",
+    "protected",
+    "textio",
+    "force",
 ];
 
 fn corpus() -> PathBuf {

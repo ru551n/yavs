@@ -9,8 +9,13 @@
 //! Fail early: a construct this crate does not lower yet is an `E2001` diagnostic naming it,
 //! never a guessed value; a broken HIR invariant is `E9999`. Any error means no program.
 
+mod access;
+mod composite;
 mod expr;
+mod file;
+mod force;
 mod func;
+mod protected;
 mod reflect;
 mod stmt;
 mod ty;

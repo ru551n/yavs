@@ -25,6 +25,14 @@ impl ProgramBuilder {
         self.prog.types.push(t)
     }
 
+    /// Replace type `id` (recursive types: an access type is pushed before the record that
+    /// designates it and completed afterwards).
+    pub fn set_ty(&mut self, id: TyId, t: Ty) {
+        if let Some(x) = self.prog.types.get_mut(id) {
+            *x = t;
+        }
+    }
+
     pub fn konst(&mut self, c: ConstData) -> ConstId {
         self.prog.consts.push(c)
     }
@@ -76,6 +84,16 @@ impl ProgramBuilder {
 
     pub fn types(&self) -> &IdVec<TyId, Ty> {
         &self.prog.types
+    }
+
+    /// [`Ty::layout`] against the types and constants built so far (static layouts of
+    /// constants).
+    pub fn layout(
+        &self,
+        ty: TyId,
+        desc: &[u8],
+    ) -> Result<(crate::Layout, usize), crate::LayoutError> {
+        Ty::layout(&self.prog.types, &self.prog.consts, ty, desc)
     }
 
     /// Declare a function so it can be called before it is defined.

@@ -36,7 +36,21 @@ pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
         ObjClass::Signal => {
             return Err(cx.unsupported(span, "signal parameters of mode out and inout"));
         }
-        ObjClass::File => return Err(cx.unsupported(span, "file parameters (M3)")),
+        // A file object is passed as the address of its cell (yavs-ir README, natives).
+        ObjClass::File => return Ok(Shape::Ref),
+        _ => {}
+    }
+    match &db.types[db.base(p.subtype)].kind {
+        yavs_sem::types::TypeKind::Record { .. } => return Ok(Shape::Arr),
+        // A protected object is its handle; the state is shared by reference.
+        yavs_sem::types::TypeKind::Protected { .. } => return Ok(Shape::Val),
+        yavs_sem::types::TypeKind::Access { .. } => {
+            return Ok(if p.mode == HMode::In {
+                Shape::Val
+            } else {
+                Shape::Ref
+            });
+        }
         _ => {}
     }
     if ty::is_array(db, db.base(p.subtype)) {
@@ -126,6 +140,8 @@ pub(crate) struct Fx<'a, 'b> {
     pub drivers: Vec<DeclId>,
     /// The IR statement being lowered.
     pub cur: Option<yavs_ir::StmtId>,
+    /// In a protected type method: the frame depth and slot of `self`.
+    pub prot_self: Option<(u8, u32)>,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -149,6 +165,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             name,
             drivers: Vec::new(),
             cur: None,
+            prot_self: None,
         }
     }
 
@@ -319,7 +336,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                 ObjClass::SharedVariable => {
                     Err(self.cx.unsupported(decl.span, "shared variables (M3)"))
                 }
-                ObjClass::File => Err(self.cx.unsupported(decl.span, "file objects (M3)")),
+                ObjClass::File => {
+                    self.stmt_start(StmtKind::Decl, decl.span);
+                    self.local_file(d)
+                }
                 ObjClass::Signal => Err(self.cx.ice(decl.span, "signal in a sequential region")),
             };
             ok &= r.is_ok();
@@ -336,6 +356,14 @@ impl<'a, 'b> Fx<'a, 'b> {
         self.stmt_start(StmtKind::Decl, decl.span);
         let name = decl.name.to_string();
         let t = db.base(o.subtype);
+        match &db.types[t].kind {
+            yavs_sem::types::TypeKind::Protected { .. } => {
+                return self.local_prot(d, t, decl.span);
+            }
+            yavs_sem::types::TypeKind::Access { .. } => return self.local_access(d),
+            _ if self.is_general(t, decl.span)? => return self.local_comp(d),
+            _ => {}
+        }
         if ty::is_array(db, t) {
             let tid = self.ty(t, decl.span)?;
             let (_, dims) = ty::array_of(db, t).ok_or(Failed)?;
@@ -526,6 +554,7 @@ pub(crate) fn subprogram(
     }
     fx.ret = sp.ret;
     fx.stmt_start(StmtKind::Subprogram, decl.span);
+    fx.method_prologue(d, depth, decl.span)?;
     // The body's own parameter declarations (a body completing a specification has its own
     // region, sem.md 1.3), in order.
     let body_params: Vec<DeclId> = db.scopes[*scope]

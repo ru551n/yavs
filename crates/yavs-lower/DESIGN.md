@@ -179,6 +179,32 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   lowered, and verified. Once yavs-interp runs, the same files run through yavs-kernel and are
   compared with their `.expected` via `tools/difftest` (`--candidate yavs`).
 
+## Composites (lower2: `composite.rs`, `access.rs`, `protected.rs`, `file.rs`, `force.rs`)
+
+- A composite value is `V::A(data, desc)` for records and arrays alike; `desc` is the type's
+  descriptor (`Ty::desc_size` bytes: array dims, then the element part when the array type gives
+  none; a record's fields without a static constraint). Static descriptors are pool constants,
+  others are built from the constraint, unconstrained parts from the actual (rule 1).
+- Record fields: `Field` over `LayoutOf`; a scalar field is loaded, a composite one is
+  `V::A(field address, field descriptor)`. `Place::Array` serves record targets too
+  (`dims` 0).
+- Arrays of composites: element address `data + pos * stride` (stride from the layout);
+  arrays of logic arrays are one plane vector, a row is an `LCopy` range.
+- Objects of record and composite-array type are a slot `[data, desc, handle]` over a private
+  heap object `[descriptor][value]`, the handle a GC root. Access variables are handle slots;
+  allocators build the same `[descriptor][value]` object, so `p.all` keeps its bounds.
+- Protected: the object is a handle to the state record (`Ty::Protected { state }`); a method
+  gets `self` as its first parameter and a slot per state variable holding its address in the
+  state (`Obj::ScalarRef` / `Obj::Array`), so the body's names need no new `Obj` kind. Calls
+  are `CallProt`; a call without a prefix inside a method passes `self`.
+- Files: a 4-byte cell (`Obj::Scalar`, `B4`); natives take its address. textio's `INPUT` and
+  `OUTPUT` are the pre-opened cells 1 and 2 (constant cells).
+- `force`/`release`: whole scalar signals; default mode `out` for ports of mode out, inout and
+  buffer, `in` otherwise (LRM 10.5.2.1).
+- Not yet: composite signals, shared variables in architectures (elaboration through
+  `call_shared`), user resolution functions in elaboration, 2008 slice-valued aggregate
+  elements, nested subprograms of protected methods reading state variables.
+
 ## Requests from yavs-elab
 
 yavs-elab (`Elaborated::lower`, `Elaborated::build`) lowers every architecture that owns a

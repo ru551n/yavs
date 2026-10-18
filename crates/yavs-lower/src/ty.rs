@@ -41,20 +41,21 @@ pub(crate) fn lower(
         }
         TypeKind::Floating | TypeKind::UniversalReal => Ty::Real,
         TypeKind::Array { indexes, elem } => {
-            let elem = lower(db, cx, pb, db.base(*elem), span)?;
-            if !matches!(pb.types().get(elem), Some(t) if t.scalar_size().is_some()) {
-                return Err(cx.unsupported(span, "arrays of composite elements"));
+            let elem_t = lower(db, cx, pb, db.base(*elem), span)?;
+            if !matches!(pb.types().get(elem_t), Some(t) if t.scalar_size().is_some()) {
+                return crate::composite::array_ty(db, cx, pb, t, *elem, elem_t, span);
             }
             Ty::Array {
-                elem,
+                elem: elem_t,
                 elem_desc: None,
                 dims: indexes.len() as u8,
             }
         }
-        TypeKind::Record { .. } => return Err(cx.unsupported(span, "record types (M3)")),
-        TypeKind::Access { .. } => return Err(cx.unsupported(span, "access types (M3)")),
-        TypeKind::File { .. } => return Err(cx.unsupported(span, "file types (M3)")),
-        TypeKind::Protected { .. } => return Err(cx.unsupported(span, "protected types (M3)")),
+        TypeKind::Record { .. }
+        | TypeKind::Access { .. }
+        | TypeKind::File { .. }
+        | TypeKind::Protected { .. }
+        | TypeKind::Incomplete { .. } => return crate::composite::lower_ty(db, cx, pb, t, span),
         _ => return Err(cx.unsupported(span, "generic and incomplete types")),
     };
     let id = pb.ty(ty);

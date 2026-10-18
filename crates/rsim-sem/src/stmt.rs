@@ -920,7 +920,8 @@ impl Db {
         st: Option<SubtypeId>,
     ) -> Result<ExprId, Reported> {
         let Some(st) = st else {
-            return self.st_expr(scope, e, Expected::Any);
+            // Only the value of an aggregate target has no target subtype: it is composite.
+            return self.st_expr(scope, e, Expected::Composite);
         };
         let id = self.expr_in_subtype(scope, e, st);
         if self.is_poison_expr(id) {

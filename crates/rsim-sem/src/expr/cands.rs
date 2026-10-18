@@ -253,6 +253,12 @@ impl Db {
                 .filter(|&b| b == i.ty || i.ty == poison)
                 .map(|_| i.convs),
             Expected::Discrete => self.types[i.ty].kind.is_discrete().then_some(i.convs),
+            Expected::Composite => (i.ty == poison
+                || matches!(
+                    self.types[i.ty].kind,
+                    TypeKind::Array { .. } | TypeKind::Record { .. } | TypeKind::Error
+                ))
+            .then_some(i.convs),
             Expected::Type(t) => {
                 if i.ty == t || i.ty == poison || t == poison {
                     return Some(i.convs);

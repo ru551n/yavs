@@ -709,6 +709,7 @@ impl Db {
             Expected::Type(_) => format!("`{}`", want_name.unwrap_or_default()),
             Expected::Condition => "BOOLEAN".into(),
             Expected::Discrete => "a discrete type".into(),
+            Expected::Composite => "a composite type".into(),
             Expected::Any => "a value".into(),
         };
         self.report(

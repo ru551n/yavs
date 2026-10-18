@@ -23,6 +23,8 @@ pub enum Expected {
     Any,
     /// Range bounds without a type mark: both universal gives INTEGER.
     Discrete,
+    /// The value assigned to an aggregate target: any composite type (10.5.2.1, 10.6.2.1).
+    Composite,
 }
 
 /// Literal forms typed only by context.

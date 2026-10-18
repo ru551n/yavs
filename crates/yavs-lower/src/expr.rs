@@ -1212,12 +1212,14 @@ impl Fx<'_, '_> {
     fn actual(&mut self, a: &Arg, p: &Param, span: Span) -> R<ExprId> {
         match &a.actual {
             Actual::Expr(e) => Ok(*e),
-            Actual::Default => p
+            // `open` for a parameter with a default means the default (LRM 6.5.6.2).
+            Actual::Default | Actual::Open if p.default.is_some() => p
                 .default
-                .ok_or_else(|| self.cx.ice(span, "default actual without a default")),
+                .ok_or_else(|| self.cx.ice(span, "parameter default")),
+            Actual::Default => Err(self.cx.ice(span, "default actual without a default")),
             Actual::Open => Err(self
                 .cx
-                .unsupported(span, "open actuals of `in` and array parameters")),
+                .unsupported(span, "open actuals of parameters without a default")),
             _ => Err(self
                 .cx
                 .unsupported(span, "individual and converted associations")),

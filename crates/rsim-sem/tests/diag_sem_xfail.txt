@@ -30,7 +30,6 @@ expr/mismatch_help_integer_to_vector.vhd
 expr/mismatch_help_vector_to_unsigned.vhd
 expr/mismatch_in_subprogram_arg_label.vhd
 expr/out_parameter_actual_constant.vhd
-expr/read_linkage_port.vhd
 expr/signal_param_actual_variable.vhd
 expr/type_mismatch_in_range.vhd
 ext/external_signal_assign_variable_name.vhd
@@ -73,7 +72,6 @@ ovl/unknown_formal_name.vhd
 prot/assign_protected_variable.vhd
 prot/body_method_missing.vhd
 prot/equality_on_protected.vhd
-prot/protected_body_state_from_outside.vhd
 prot/protected_constant.vhd
 prot/shared_variable_array_not_protected.vhd
 prot/shared_variable_not_protected.vhd

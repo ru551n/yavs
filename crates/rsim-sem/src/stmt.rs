@@ -604,6 +604,7 @@ impl Db {
                 if self.is_poison_expr(id) {
                     return Err(Reported);
                 }
+                self.check_linkage_reads(id, false)?;
                 Ok(Some(id))
             }
         }
@@ -672,7 +673,7 @@ impl Db {
                 }
             }
             ast::SignalAssignKind::Release { mode } => {
-                let e = self.st_expr(scope, &sa.target, Expected::Any)?;
+                let e = self.st_target(scope, &sa.target, Expected::Any)?;
                 let lsps = self.check_target(e, TargetKind::Release)?;
                 let target = Target { expr: e, lsps };
                 self.check_force_mode(&target, *mode)?;
@@ -798,11 +799,11 @@ impl Db {
                     .with_help("qualify the right-hand side (`t'(...)`) so it has one type"),
                 ));
             };
-            let e = self.st_expr(scope, target, Expected::Type(ty))?;
+            let e = self.st_target(scope, target, Expected::Type(ty))?;
             let lsps = self.check_target(e, kind)?;
             Ok((Target { expr: e, lsps }, rhs))
         } else {
-            let e = self.st_expr(scope, target, Expected::Any)?;
+            let e = self.st_target(scope, target, Expected::Any)?;
             let lsps = self.check_target(e, kind)?;
             // The target's subtype, so an `others` aggregate takes its bounds (9.3.3.3).
             let st = self.exprs[e].subtype;
@@ -923,10 +924,10 @@ impl Db {
         };
         let id = self.expr_in_subtype(scope, e, st);
         if self.is_poison_expr(id) {
-            Err(Reported)
-        } else {
-            Ok(id)
+            return Err(Reported);
         }
+        self.check_linkage_reads(id, false)?;
+        Ok(id)
     }
 
     fn var_value(
@@ -1688,10 +1689,25 @@ impl Db {
     ) -> Result<ExprId, Reported> {
         let id = self.expr(scope, e, exp);
         if self.is_poison_expr(id) {
-            Err(Reported)
-        } else {
-            Ok(id)
+            return Err(Reported);
         }
+        self.check_linkage_reads(id, false)?;
+        Ok(id)
+    }
+
+    /// expr (names): an assignment target; its root object is written, not read.
+    fn st_target(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        exp: Expected,
+    ) -> Result<ExprId, Reported> {
+        let id = self.expr(scope, e, exp);
+        if self.is_poison_expr(id) {
+            return Err(Reported);
+        }
+        self.check_linkage_reads(id, true)?;
+        Ok(id)
     }
 
     /// expr (lead): a name as an object or value without expected type

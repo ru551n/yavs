@@ -26,6 +26,57 @@ impl Db {
         self.complete_context(scope, e, exp, false)
     }
 
+    /// E1360: `e` reads a port of mode `linkage` (6.5.6.3). Attribute prefixes are not
+    /// reads; with `target`, neither is the object an assignment target names.
+    pub(crate) fn check_linkage_reads(
+        &mut self,
+        e: ExprId,
+        target: bool,
+    ) -> Result<(), crate::Reported> {
+        let mut all = Vec::new();
+        self.walk_expr(e, &mut |x| all.push(x));
+        let mut skip = Vec::new();
+        for &x in &all {
+            if let ExprKind::Attr {
+                prefix: crate::hir::AttrPrefix::Expr(p),
+                ..
+            } = self.exprs[x].kind
+            {
+                self.walk_expr(p, &mut |y| skip.push(y));
+            }
+        }
+        if target {
+            let mut root = e;
+            while let ExprKind::Index { prefix, .. }
+            | ExprKind::Slice { prefix, .. }
+            | ExprKind::Field { prefix, .. } = self.exprs[root].kind
+            {
+                root = prefix;
+            }
+            skip.push(root);
+        }
+        for x in all {
+            if skip.contains(&x) {
+                continue;
+            }
+            if let ExprKind::Obj(d) = self.exprs[x].kind
+                && let crate::decl::DeclKind::Object(o) = &self.decls[d].kind
+                && o.mode == Some(crate::hir::Mode::Linkage)
+            {
+                let name = self.decls[d].name;
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::CLASS_MISUSE,
+                        format!("cannot read port `{name}` of mode `linkage`"),
+                    )
+                    .with_primary(self.exprs[x].span, "read here")
+                    .with_note("a `linkage` port can only be associated with another `linkage` port (LRM 6.5.6.3)"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve a complete context for a target of subtype `st` (assignment
     /// targets, return values, initial values): an aggregate with `others` at
     /// the top takes its bounds from `st` (9.3.3.3).

@@ -152,8 +152,10 @@ An access to a protected type is dereferenced implicitly (`ExprKind::Deref`, bui
 `method_object`; alloc: switch it to `Db::deref` once that lands).
 
 Wiring still open (M1 lead will do these in expr/names.rs unless someone asks for them):
-`external_name` (`NameKind::External`), `view_ref`, `match_signature` in attribute specifications and `use`, the aggregate resolver
-(`AggResolver` in expr/aggregate.rs) from `resolve` for `Expected::Type` aggregates.
+`external_name` (`NameKind::External`), `view_ref`, `match_signature` in `use`. Done:
+calls inside a protected body use the implicit object (`method_of: None`), `match_signature`
+in attribute specifications, the aggregate resolver. Linkage ports: reads are E1360 through
+`check_linkage_reads` from stmt.rs's `st_expr`/`st_target` (names).
 
 From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests; they need calls:
 

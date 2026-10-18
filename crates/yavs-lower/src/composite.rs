@@ -344,6 +344,13 @@ impl Fx<'_, '_> {
         if ds == 0 {
             return Ok(Some(self.bytes_addr(Vec::new())));
         }
+        if let Constraint::FromObject {
+            expr,
+            elem_depth: 0,
+        } = c
+        {
+            return self.dope_of(*expr).map(Some);
+        }
         if let Some(b) = static_desc(self.db, self.fb.program(), t, c, tid) {
             return Ok(Some(self.bytes_addr(b)));
         }

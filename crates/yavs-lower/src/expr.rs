@@ -182,7 +182,7 @@ impl<'a> Fx<'a, '_> {
                 args,
                 method_of,
                 ..
-            } => match self.call(*callee, args, *method_of, span)? {
+            } => match self.call(*callee, args, *method_of, Some(e.subtype), span)? {
                 Some(v) => Ok(v),
                 None => Err(self.cx.ice(span, "procedure call in an expression")),
             },
@@ -1278,7 +1278,7 @@ impl<'a> Fx<'a, '_> {
 
     /// The descriptor of an array expression, without reading its elements when it names an
     /// object.
-    fn dope_of(&mut self, e: ExprId) -> R<Reg> {
+    pub(crate) fn dope_of(&mut self, e: ExprId) -> R<Reg> {
         if let ExprKind::Obj(d) = self.db.exprs[e].kind {
             match self.cx.objs.get(&d).copied() {
                 Some(Obj::Array { space, off }) => {
@@ -1445,6 +1445,15 @@ impl<'a> Fx<'a, '_> {
     /// The descriptor of an array subtype with index constraints; `None` when it has none.
     pub fn subtype_dope(&mut self, st: SubtypeId, span: Span) -> R<Option<Reg>> {
         let db = self.db;
+        // `x'subtype` of an unconstrained object, a named return value's subtype: the
+        // object's own descriptor.
+        if let Constraint::FromObject {
+            expr,
+            elem_depth: 0,
+        } = db.subtypes[st].constraint
+        {
+            return self.dope_of(expr).map(Some);
+        }
         if self.is_general(db.base(st), span)? {
             return self.desc_of(st, None, span);
         }
@@ -1859,12 +1868,13 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
-    /// A call; `None` for a procedure.
+    /// A call; `None` for a procedure. `res` is a function call's result subtype.
     pub fn call(
         &mut self,
         callee: DeclId,
         args: &[Arg],
         method: Option<ExprId>,
+        res: Option<SubtypeId>,
         span: Span,
     ) -> R<Option<V>> {
         let db = self.db;
@@ -1886,9 +1896,25 @@ impl<'a> Fx<'a, '_> {
                 self.copy_out(span)?;
                 Ok(r)
             }
-            Body::Hir { .. } => {
+            Body::Hir { scope, .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
-                let cells = self.cells(sp, args, span, false)?;
+                let mut cells = self.cells(sp, args, span, false)?;
+                // A named return value (2019, 4.2.1): the result subtype's descriptor follows
+                // the arguments, as an array parameter (the data cell is unused).
+                if db.ret_names.contains_key(scope) {
+                    let st = res.or(sp.ret).unwrap_or(db.poison.subtype);
+                    let Some(dope) = self.subtype_dope(st, span)? else {
+                        return Err(self.cx.unsupported(
+                            span,
+                            &format!(
+                                "a call of `{}` (a named return value) whose context gives no \
+                                 constrained result subtype",
+                                decl.name
+                            ),
+                        ));
+                    };
+                    cells.extend([dope, dope]);
+                }
                 let args = self.fb.regs(&cells);
                 let Some(ret) = sp.ret else {
                     self.emit(Inst::Call {

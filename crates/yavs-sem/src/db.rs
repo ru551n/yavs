@@ -94,6 +94,10 @@ pub struct Db {
     /// 2019 method aliases `alias m is pv.m;` in a protected type declaration: the alias
     /// to the private variable `pv` whose method it forwards (5.6.2).
     pub(crate) forwarding: HashMap<DeclId, DeclId>,
+    /// 2019 named return values (`return r of t`, 4.2.1), by the function's parameter region:
+    /// the hidden constant whose descriptor is the call's result subtype (M2 passes it after
+    /// the parameters) and the subtype `r` it constrains.
+    pub ret_names: HashMap<ScopeId, (DeclId, SubtypeId)>,
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
     pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
@@ -223,6 +227,7 @@ impl Db {
             attr_values: Arena::new(),
             attr_index: HashMap::new(),
             forwarding: HashMap::new(),
+            ret_names: HashMap::new(),
             attr_closed: HashSet::new(),
             pending_label_attrs: Vec::new(),
             well_known: WellKnown::default(),

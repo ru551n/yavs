@@ -92,7 +92,7 @@ impl Fx<'_, '_> {
             }
             H::Report { report, severity } => self.report(Some(*report), *severity, 0, span),
             H::ProcCall(c) | H::ConcProcCall { call: c, .. } => {
-                self.call(c.callee, &c.args, c.method_of, c.span)?;
+                self.call(c.callee, &c.args, c.method_of, None, c.span)?;
                 Ok(())
             }
             H::If { branches, else_ } => {

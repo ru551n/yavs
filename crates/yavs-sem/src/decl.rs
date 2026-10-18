@@ -983,6 +983,69 @@ impl Db {
         Ok(())
     }
 
+    /// `return r of t` (2019, 4.2.1, LCS-2016-072b): `r` denotes the result subtype, which
+    /// the call takes from its context (the target's subtype). `r` is a subtype whose bounds
+    /// come at run time from a hidden constant of type `t` that M2 passes with each call.
+    fn named_return(
+        &mut self,
+        scope: ScopeId,
+        pscope: ScopeId,
+        r: Ident,
+        ret: crate::ids::SubtypeId,
+        generic: bool,
+    ) -> Result<(), crate::Reported> {
+        let base = self.base(ret);
+        // ponytail: arrays only; records, generic subprograms and protected methods need
+        // the hidden descriptor in record lowering, instance cloning and method calls.
+        if !matches!(self.types[base].kind, crate::types::TypeKind::Array { .. }) {
+            return Err(self.unsupported(r.span, "named return values of a non-array type", "S7"));
+        }
+        if generic || self.scopes[scope].kind == crate::scope::ScopeKind::Protected {
+            return Err(self.unsupported(
+                r.span,
+                "named return values of generic subprograms and protected methods",
+                "S7",
+            ));
+        }
+        let hidden = self.new_decl(
+            pscope,
+            Designator::Ident(r),
+            DeclKind::Object(Object {
+                class: ObjClass::Constant,
+                role: ObjRole::Plain,
+                mode: Some(Mode::In),
+                subtype: ret,
+                default: None,
+                bounds: crate::types::BoundsFrom::Actual,
+                signal_kind: None,
+                file_open: None,
+            }),
+            r.span,
+        );
+        let expr = self.add_expr(crate::hir::Expr {
+            kind: crate::hir::ExprKind::Obj(hidden),
+            subtype: ret,
+            span: r.span,
+            stat: crate::stat::Staticness::None,
+            value: None,
+        });
+        let st = self.subtypes.push(crate::types::SubtypeDef {
+            base,
+            name: Some(r),
+            parent: Some(ret),
+            constraint: crate::types::Constraint::FromObject {
+                expr,
+                elem_depth: 0,
+            },
+            resolution: self.subtypes[ret].resolution.clone(),
+            span: r.span,
+        });
+        let d = self.new_decl(pscope, Designator::Ident(r), DeclKind::Subtype(st), r.span);
+        self.declare(pscope, d);
+        self.ret_names.insert(pscope, (hidden, st));
+        Ok(())
+    }
+
     /// A subprogram declaration (4.2): parameters in their own region, result type.
     /// The caller declares the returned entity. A generic map in the header is the
     /// caller's (`header_instance`): this returns the uninstantiated subprogram.
@@ -1067,8 +1130,8 @@ impl Db {
         if let (true, Some(r), Some(n)) = (method_2008, ret, &s.return_type) {
             self.check_not_access_or_file("protected method result", r, n.span)?;
         }
-        if s.return_ident.is_some() {
-            return Err(self.unsupported(s.span, "named return values", "S7"));
+        if let (Some(r), Some(ret)) = (s.return_ident, ret) {
+            self.named_return(scope, pscope, r, ret, generics.is_some())?;
         }
         let mangled = yavs_syntax::Symbol::intern(&crate::mangle::subprogram(
             self,

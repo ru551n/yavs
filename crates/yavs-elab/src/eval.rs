@@ -481,6 +481,25 @@ impl Model {
         if sp.ret.is_none() {
             return Err(not_scalar("not a function"));
         }
+        // A named return value (2019, 4.2.1): an array of the call's result subtype goes
+        // last, for its bounds (yavs-lower passes the descriptor the same way).
+        if let yavs_sem::decl::Body::Hir { scope: ps, .. } = &sp.body
+            && db.ret_names.contains_key(ps)
+        {
+            let Some(Shape::Array { dims, elem, .. }) =
+                self.shape(db, ex.subtype, scope, ex.span)?
+            else {
+                return Err(not_scalar("a named return value of this subtype"));
+            };
+            let Shape::Scalar { left, .. } = *elem else {
+                return Err(not_scalar("a named return value of this subtype"));
+            };
+            let n = dims.iter().map(|b| b.len()).product();
+            vals.push(Val::Array(ArrayConst {
+                bounds: dims.iter().map(|b| (b.left, b.dir, b.right)).collect(),
+                elems: Elems::Runs(Box::new([(n, left)])),
+            }));
+        }
         let failed = |f: crate::pkgcall::Fail| match f {
             crate::pkgcall::Fail::Unsupported(w) => not_scalar(w),
             crate::pkgcall::Fail::Runtime(msg) => err(

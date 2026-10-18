@@ -348,7 +348,10 @@ impl Db {
                 Err(_) => self.poison_expr(),
             },
             K::Paren(inner) => self.build(scope, inner, i),
-            K::Name(n) => self.build_name(scope, n, i, e.span),
+            K::Name(n) => {
+                let id = self.build_name(scope, n, i, e.span);
+                self.named_return_context(e, id)
+            }
             K::Unary { op, operand } => {
                 if *op == ast::UnaryOp::Minus
                     && let K::Literal(l) = &operand.kind
@@ -475,6 +478,49 @@ impl Db {
                 self.ice(
                     e.span,
                     "a class-typed expression that is not a literal, aggregate or allocator",
+                );
+                self.poison_expr()
+            }
+        }
+    }
+
+    /// A call of a function with a named return value (4.2.1, 2019) gets the context
+    /// subtype as its result subtype: M2 passes its descriptor to the function. Without a
+    /// fully constrained context subtype it is `E1304` (lrm-checks L62).
+    fn named_return_context(&mut self, e: &ast::Expr, id: ExprId) -> ExprId {
+        let ExprKind::Call { callee, .. } = self.exprs[id].kind else {
+            return id;
+        };
+        let Some(ps) = self.decls[callee].kind.subprogram().and_then(|s| s.scope) else {
+            return id;
+        };
+        if !self.ret_names.contains_key(&ps) {
+            return id;
+        }
+        match self.top_context {
+            Some((node, st))
+                if node == e as *const ast::Expr as usize
+                    && self.base(st) == self.base(self.exprs[id].subtype)
+                    && self.constrainedness(st) == crate::types::Constrainedness::Full =>
+            {
+                self.exprs[id].subtype = st;
+                id
+            }
+            _ => {
+                let name = self.decls[callee].name;
+                self.report(
+                    Diagnostic::error(
+                        diag::NAMED_RETURN_CONTEXT,
+                        format!(
+                            "`{name}` has a named return value, but this context gives no \
+                             constrained result subtype"
+                        ),
+                    )
+                    .with_primary(e.span, "result subtype not known here")
+                    .with_help(
+                        "assign the call to a constrained object, or qualify it with a \
+                         constrained subtype",
+                    ),
                 );
                 self.poison_expr()
             }

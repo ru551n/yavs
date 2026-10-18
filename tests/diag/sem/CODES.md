@@ -67,6 +67,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1300 | type mismatch | 8.1 |
 | E1301 | no matching overload | 8.1 |
 | E1302 | ambiguous | 8.1 |
+| E1304 | named return value (2019) without a constrained context subtype (#33) | 4.2.1 (2019) |
 | E1310 | formal associated twice | 8.1 |
 | E1311 | missing actual | 8.1 |
 | E1312 | conversion on an unconstrained formal (rule 1 review F8) | 6.5.7.1 |

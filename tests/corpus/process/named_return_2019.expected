@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:named_return_2019:_p0	v1 012
+diag	note	0	0	:named_return_2019:_p0	s2 01
+diag	note	0	0	:named_return_2019:_p0	v2 101
+diag	note	0	0	:named_return_2019:_p0	v3 00000001
+diag	note	0	0	:named_return_2019:_p0	c1 01
+diag	note	1000000	0	:named_return_2019:_p0	s1 03
+diag	note	1000000	0	:named_return_2019:_p0	s3 000111

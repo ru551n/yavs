@@ -124,7 +124,10 @@ An installed binary finds `lib/` next to itself (#43).
 - 2019 conditional expressions (`a when c else b` in initial values, assignments, actuals,
   `return` and parentheses), the conditional `return` and `unaffected` in variable and force
   assignments analyze, lower and run (#33; difftest `process/conditional_expr_2019`,
-  `process/unaffected_2019`). Open: named return values (`return r of t`), `return when c;`.
+  `process/unaffected_2019`). Named return values (`return r of t`) of array type take the
+  result subtype from the call's context and run (`process/named_return_2019`). Open: named
+  return values of record and scalar types, in generic subprograms and protected methods
+  (#33 follow-up), `return when c;`.
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 

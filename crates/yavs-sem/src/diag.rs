@@ -51,6 +51,7 @@ codes! {
     NO_OVERLOAD = "E1301", "None of the visible subprograms or literals with this name accepts these operands.";
     AMBIGUOUS = "E1302", "More than one interpretation fits; qualify an operand or use a selected name.";
     BAD_OPERATOR_DECL = "E1303", "An operator symbol that is not a VHDL operator, or an operator function with the wrong number of parameters (LRM 4.5.2).";
+    NAMED_RETURN_CONTEXT = "E1304", "A function with a named return value (`return r of t`, VHDL-2019) takes its result subtype from the context of the call: the call must be the value of an assignment, initial value or `return`, an actual of a constrained formal or a qualified expression, of a fully constrained subtype.";
     FORMAL_TWICE = "E1310", "A formal is associated more than once.";
     MISSING_ACTUAL = "E1311", "A formal without a default has no actual.";
     FORMAL_CONV_UNCONSTRAINED = "E1312", "A conversion on the formal side of an association needs a formal of a fully constrained subtype: its bounds would have to come back from the actual through the conversion (6.5.7.1; GHDL and Questa reject it too).";

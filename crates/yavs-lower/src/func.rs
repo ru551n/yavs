@@ -804,6 +804,30 @@ pub(crate) fn subprogram(
         }
         fx.cx.objs.insert(pd, obj);
     }
+    // A named return value (2019): the caller passes the result subtype's descriptor last.
+    if let Some(&(hidden, _)) = db.ret_names.get(scope) {
+        let name = db.decls[hidden].name.to_string();
+        let off = fx
+            .fb
+            .param(&name, Width::B8, ParamClass::Value, Mode::In, None);
+        let dope = fx.fb.param(
+            &format!("{name}'dope"),
+            Width::B8,
+            ParamClass::Value,
+            Mode::In,
+            None,
+        );
+        if dope != off + 8 {
+            return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
+        }
+        fx.cx.objs.insert(
+            hidden,
+            Obj::Array {
+                space: Space::Frame(depth),
+                off,
+            },
+        );
+    }
     let decls = fx.decls(*scope);
     let body = fx.stmts(stmts);
     fx.end(decl.span);

@@ -41,6 +41,14 @@ pub(crate) fn sig(l: &mut Lowerer, db: &Db, f: DeclId) -> Result<Sig, Vec<Diagno
     for p in sp.map(|s| &s.params[..]).unwrap_or(&[]) {
         params.push(l.ty(db.base(p.subtype))?);
     }
+    // A named return value: the result subtype's array comes last (`Evaluator::call`).
+    if let Some(s) = sp
+        && let yavs_sem::decl::Body::Hir { scope, .. } = &s.body
+        && db.ret_names.contains_key(scope)
+        && let Some(r) = s.ret
+    {
+        params.push(l.ty(db.base(r))?);
+    }
     let ret = match sp.and_then(|s| s.ret) {
         Some(r) => Some(l.ty(db.base(r))?),
         None => None,

@@ -1208,6 +1208,7 @@ pub fn resolve_aggregate(
         TypeKind::Record { .. } => record_agg(db, r, ty, ctx, assocs, span),
         TypeKind::Array { indexes, elem } => {
             let (indexes, elem) = (indexes.to_vec(), *elem);
+            let n_dims = indexes.len() as u32;
             // The element subtype with the context's element constraint applied (2008).
             let elem = db.element_subtype(ctx).unwrap_or(elem);
             let cx = ArrCx {
@@ -1217,6 +1218,19 @@ pub fn resolve_aggregate(
                 elem,
                 ctx_dims: match &db.subtypes[ctx].constraint {
                     Constraint::Array { dims: Some(d), .. } => Some(d.to_vec()),
+                    // `x'subtype`, a named return value's subtype: `x'range(k)` (#33).
+                    &Constraint::FromObject {
+                        expr,
+                        elem_depth: 0,
+                    } => Some(
+                        (1..=n_dims)
+                            .map(|dim| RangeC::Attr {
+                                prefix: crate::hir::AttrPrefix::Expr(expr),
+                                reverse: false,
+                                dim,
+                            })
+                            .collect(),
+                    ),
                     _ => None,
                 },
             };

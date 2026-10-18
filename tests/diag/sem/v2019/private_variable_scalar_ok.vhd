@@ -1,7 +1,6 @@
 -- rsim-test: std=2019
 -- expect: none
--- private variables may be of any type (docs/design/lrm-checks.md L15; NVC accepts)
--- LRM 2019 5.6.2
+-- LRM 2019 5.6.2 (no rule found that a private variable must be protected; permissive, as NVC)
 package p is
   type outer is protected
     private variable iv : integer;

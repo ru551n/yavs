@@ -24,7 +24,7 @@ alias/object_alias_non_static.vhd
 alias/subprogram_needs_signature.vhd
 alias/subtype_mismatch.vhd
 attr/attribute_of_others_ok.vhd
-attr/attribute_spec_wrong_class_overload.vhd
+attr/attribute_spec_overloaded_ok.vhd
 attr/dimension_arg_on_scalar_type.vhd
 attr/event_on_constant.vhd
 attr/high_on_function.vhd
@@ -60,7 +60,7 @@ drv/sensitivity_not_signal.vhd
 drv/sensitivity_variable.vhd
 drv/signal_assign_in_procedure_not_param.vhd
 drv/signal_assign_in_procedure_param_ok.vhd
-drv/stable_attr_in_subprogram.vhd
+drv/stable_attr_in_subprogram_ok.vhd
 expr/assert_condition_integer.vhd
 expr/assign_to_constant.vhd
 expr/assign_to_loop_parameter.vhd
@@ -68,7 +68,7 @@ expr/assign_type_mismatch.vhd
 expr/condition_ambiguous_ops.vhd
 expr/condition_not_boolean_integer.vhd
 expr/condition_std_logic_ok.vhd
-expr/condition_std_logic_without_package.vhd
+expr/condition_std_logic_type_only_ok.vhd
 expr/conversion_array_different_elements.vhd
 expr/conversion_integer_to_array.vhd
 expr/conversion_unrelated.vhd
@@ -276,8 +276,8 @@ v2019/generic_class_physical_actual_integer.vhd
 v2019/generic_class_private_no_ops.vhd
 v2019/generic_class_scalar_actual_record.vhd
 v2019/generic_class_scalar_ops_ok.vhd
-v2019/private_variable_not_protected.vhd
 v2019/private_variable_outside_body.vhd
+v2019/private_variable_scalar_ok.vhd
 v2019/view_element_duplicate.vhd
 v2019/view_element_missing.vhd
 v2019/view_element_unknown.vhd

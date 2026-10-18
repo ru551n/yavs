@@ -1098,6 +1098,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsim-lower"
+version = "0.1.0"
+dependencies = [
+ "rsim-diag",
+ "rsim-interp",
+ "rsim-ir",
+ "rsim-kernel",
+ "rsim-logic",
+ "rsim-sem",
+]
+
+[[package]]
 name = "rsim-sem"
 version = "0.1.0"
 dependencies = [

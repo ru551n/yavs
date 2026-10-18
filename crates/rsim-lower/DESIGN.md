@@ -1,0 +1,164 @@
+# rsim-lower: typed HIR to rsim-ir
+
+Binding inputs: `docs/plan.md` (rules 1, 5, 6, 7, 10, 12, the error motto, "Designed for the
+GUI"), `docs/design/ir.md` (sections 1.2 to 1.5, 2, 7), `docs/design/sem.md` section 7. This
+crate owns no IR types: it builds `rsim_ir::Program` through rsim-ir's builder and runs the
+rsim-ir verifier on every function it emits.
+
+## Shape
+
+- Input: an analyzed `rsim_sem::Db` (no error diagnostics; lowering a unit with errors is an ICE)
+  and the units to lower. Output: functions added to one `Program`, plus a `UnitIr` per design
+  unit (decl slots, elab function, process functions).
+- One `Func` per process, subprogram body and elab body **per design unit**, shared by every
+  instance (ir.md 2). Generics, signals and declared constants of the unit are instance data
+  (`Space::Inst`), never folded into code, unless sem folded the expression to a `ConstId`
+  (locally static: same value in every instance).
+- Each subprogram is lowered once, on first reference (worklist keyed by `DeclId`), so the std and
+  ieee bodies a design never calls are not lowered. The caller loads the package bodies it needs
+  (`Db::load_body`) before lowering.
+- Every emitted instruction carries the current `StmtId`. HIR `StmtId`s map 1:1 to IR `StmtId`s
+  (`StmtInfo { span, func, kind, parent }`); declaration initialisers and the implicit wait of a
+  process get their own IR statements with the declaration's span. A `Stmt{id}` marker opens each
+  statement (debug hook, ir.md 1.5).
+- Coverage: with `LowerOptions::coverage` set, a `Cover{item}` is emitted at each statement and at
+  the head of each branch arm (if/elsif/else, case alternative, loop body, conditional assignment
+  arm); `CovInfo` gets the span. Off by default, so default code has no counters.
+
+## Registers, slots, temporaries
+
+- Objects (variables, constants with a value, loop parameters, parameters) are frame slots, never
+  registers. Registers are temporaries of one statement (the builder hands out fresh ones; reuse
+  is a later pass). No register is live across `Suspend`: a `wait` is a statement of its own, its
+  deadline and a `for` loop's bounds live in slots.
+- Composite temporaries (results of `&`, `'image`, slices of logic arrays) are `Alloc`ed: they live
+  until the next `Stmt` of the frame that made them, so a callee's result survives until the
+  caller's statement ends.
+- An array object's slot is `[data, dope pointer, heap handle, dope (24 bytes per dimension)]`;
+  the elements are a private heap object (`New`, rooted by the handle, rule 6), so the size can
+  be a runtime value without a second static path.
+
+## Values and descriptors (rule 1)
+
+- Scalars: one register (i64, f64 bits, or the enumeration position).
+- Arrays: `(data, dope)` register pairs. Every array subtype the code needs gets a descriptor:
+  a pool constant when sem folded all bounds, else `MakeDope` from the lowered `RangeC`s (the same
+  format either way).
+- Logic arrays (`LogicKind` leaf: STD_ULOGIC, BIT, BOOLEAN) are bit-planes (ir.md 1.3); element
+  `i` from the left of an `n`-element array is plane element `n - 1 - i`. Codes equal positions.
+- String literals and other folded arrays are `ConstData` (`Bytes` used in place, `Runs` and
+  `Logic` copied with `CopyConst`, rule 12).
+
+## Contract with rsim-interp and rsim-elab
+
+- Calls: one cell per scalar `in` parameter (8-byte slot); the address of the actual for a scalar
+  `out`/`inout` variable; two cells (data, dope) per array parameter. A constrained formal gets
+  the formal's descriptor after a length check. A function's array result is the address of a
+  fat pair `[data, dope]` in temporary memory (the dope copied out of the callee's frame).
+- Natives: NATIVE.md symbols; implicit families via `rsim_sem::mangle::implicit_native` with the
+  operated type as `NativeRef::ty`; `'image` is `rsim.attr.image`, `'value` `rsim.attr.value`
+  (taking the string as a fat pair address). Array arguments to natives are fat pair addresses.
+- `UnitIr` per architecture: instance constants (offset, width, a parameterless function
+  computing the value), signals (IR type, a function computing the initial value; kernel element
+  representation from `signal_elem`), processes in statement order with their driver slots (one
+  per signal the process drives, whole signal). Process names `_p<n>` follow the statement index.
+
+## Mapping table
+
+### Expressions (slice 1)
+
+| HIR | IR |
+|---|---|
+| `Const(c)` / any expr with `value: Some(c)` scalar | `Const`/`ConstF` |
+| `Const(c)` composite | pool constant + `CopyConst` into a temp (or used in place when read only) |
+| `Obj(d)` variable/constant/param | `AddrOf{Frame or Up(depth) or Inst or Pkg, slot}` then `Load` (scalar) or the address (composite) |
+| `Obj(d)` signal | `SigVal` then `SigReadScalar` (scalar) or `SigRead` into a temp |
+| `Obj(d)` loop / generate param | `Load` of its slot / instance slot |
+| `Call` implicit, scalar int/phys `add sub mul div rem mod exp neg abs pos` | checked `Add`..`Pow`, `Neg`, `Abs` (rule 7), then `Check{Range}` against the result subtype when narrower than the base |
+| `Call` implicit, real arithmetic | `FAdd`..`FPow` |
+| `Call` implicit `eq neq lt le gt ge` on scalars | `Cmp` / `FCmp` |
+| `Call` implicit `and or xor nand nor xnor not` on BOOLEAN/BIT | short-circuit `CondBr` for `and`/`or`/`nand`/`nor` (LRM 9.2.2), else `And/Or/Xor/Not` |
+| `Call` implicit `minimum maximum` scalar | `Cmp` + select |
+| `Call` implicit on arrays (`cat`, relational, logical, shifts) | logic arrays: `LCopy` / `LogicOp`; others: `CallNative` with the family symbol |
+| `Call` implicit `to_string`, `'image` and friends | `CallNative` (NATIVE.md section 2 symbol, rsim-std implements) |
+| `Call` with `Body::Native(sym)` | `CallNative` |
+| `Call` with `Body::Hir` | `Call{func}` with arguments per 3. Subprograms |
+| `Call` with `Body::Foreign` | `CallForeign` (M3) |
+| `Call` with `implicit_cond` | the `??` family (`Cond`) |
+| `Index` | dope bound `Check{Index}` then `Index` / `LGet` |
+| `Slice` | `Check{Index}` on both ends unless null, new dope, address arithmetic or `LCopy` |
+| `Field` | `Field{layout, n}` (M3) |
+| `Attr` on a type mark, scalar `left right high low ascending` | constant from the subtype's lowered range |
+| `Attr` `pos val succ pred leftof rightof` | arithmetic on positions plus `Check{Range}` |
+| `Attr` `image value` | `CallNative` (`rsim-std` `image`/`value`) with the type descriptor |
+| `Attr` on an array object `left right high low length ascending` | `DopeLen` / dope loads for the dimension |
+| `Attr` `range reverse_range` | only inside `RangeC::Attr`: the dope of the prefix, direction flipped |
+| `Attr` on a signal `event active last_event last_active last_value` | `SigAttr` |
+| `Attr` `simple_name path_name instance_name` | instance-data string (elab computes the path) |
+| `Aggregate` | static: one pool constant; dynamic: dope from `AggBounds`, then per association `Store`/`LSet`/`Fill`/`LCopy` |
+| `Qualified` | operand, then `SubtypeCheck`/`Check{Range}` against `to` |
+| `Conv` int/real/enum | `IToF` / `FToI` (checked round) / position move, then `Check{Range}` |
+| `Conv` array (closely related) | element conversion only when the element types differ, new dope from `to` or the operand |
+| `ImplicitConv` | no code for universal_integer to integer types beyond a `Check{Range}`; `IToF` for universal_integer to a real type |
+| `Conditional` (2019) | branches into one result register or temp |
+
+Bound checks on assignment: every scalar store into an object with a narrower subtype than its
+type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays get
+`Check{Length}` per dimension (implicit subtype conversion, LRM 14.7.3).
+
+### Sequential statements (slice 1, 2)
+
+| HIR | IR |
+|---|---|
+| `VarAssign` simple | value, checks, `Store` / `Copy` / `LCopy` into the target address |
+| `VarAssign` conditional / selected | branches, one store per arm |
+| `SignalAssign` | waveform elements into a temp of `(time, value)` pairs (after-times checked ascending and non-negative), `Drive{driver_slot of the target's Lsp, target SigVal, mode}`; `Delay::Default` = inertial with reject = first after-time |
+| `If` | `CondBr` chain |
+| `Case` with `intervals` | `Case{v, table}` over the folded intervals; array (string) cases: a `CallNative` compare chain |
+| `Case` matching (`case?`) | `MEq` compare chain |
+| `Loop Forever` / `While` | header block, `CondBr` |
+| `Loop For` | range bounds evaluated once into slots, direction known statically or tested at run time, null range skips, the parameter slot written each iteration (no overflow at the last value: compare before increment) |
+| `Next` / `Exit` | `Br` to the loop's continue / exit block (optional `CondBr`) |
+| `Wait` | ir.md 1.5 sequence: `WaitOn` per `Lsp` (or the signals of `until` when `on` is empty, LRM 10.2), `WaitAt deadline`, `Suspend`, re-test `until`, loop |
+| `Assert` | `CondBr` on the condition; the failing arm builds the message (`"Assertion violation."` default) and `Report{severity default error}` |
+| `Report` | message, `Report{severity default note}` |
+| `ProcCall` | as a call statement; a `MAY_SUSPEND` callee: arguments to slots first |
+| `Return` | value into the return slot, checks against the return subtype, `Ret` |
+| `Null` | `Stmt` marker only |
+| `SeqBlock` (2019) | its declarations as slots of the enclosing frame, then its body |
+| `Force` / `Release` | `Force` / `Release` (slice 4) |
+
+### Subprograms (slice 1)
+
+- Frame: one slot per parameter, local declaration and result. Nested subprograms reach outer
+  slots with `Up{depth, slot}` through the static link.
+- Parameters by class and mode:
+  - constant / in variable scalar: value copied into the callee slot; composite in: by reference
+    (fat pointer `{data, dope}`), copied only when it is an unaligned logic slice (ir.md 1.3).
+  - out / inout variable scalar: caller passes the address; callee works on a local copy that is
+    written back at return (copy-in/copy-out), so a range check failure leaves the actual intact.
+  - signal parameters: a `SigVal` reference; `out`/`inout` signal parameters carry the caller's
+    driver slot.
+  - unconstrained parameters take the actual's dope; partially constrained ones merge the
+    formal's constraint with the actual's (rule 1); constrained formals check the actual's length.
+- `Actual::Default`: the default expression is lowered in the caller's context.
+- Result: functions return scalars in a register, composites as a fat pointer into the callee's
+  temp copied out by the caller before the callee's temp area is released.
+- `MAY_SUSPEND` is computed by rsim-ir's propagation pass; lowering only emits `Wait`/calls.
+
+### Processes and signal assignments (slice 2)
+
+- `Process` with a sensitivity list: body, then `WaitOn` each signal and `Suspend` (LRM 11.3);
+  `all` uses `ProcessInfo::reads_all`.
+- Concurrent signal assignment, assert, procedure call: an implicit process (`IMPLICIT` flag)
+  with sensitivity from `ProcessInfo`, guarded assignments behind the `GUARD` signal.
+- Driver slots: one per entry of `ProcessInfo::drivers`, in order; a target's `Lsp` is matched to
+  its slot. Non-static index parts of the target become the `SigVal` offset at run time.
+
+## Testing
+
+- Unit tests: lower small inline VHDL processes and assert the verifier passes and the expected
+  instruction kinds appear with statement ids.
+- Corpus: every `tests/corpus/{scalar,arith,process,report}` file is analyzed against `lib/`,
+  lowered, and verified. Once rsim-interp runs, the same files run through rsim-kernel and are
+  compared with their `.expected` via `tools/difftest` (`--candidate rsim`).

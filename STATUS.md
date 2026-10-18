@@ -72,6 +72,17 @@ types, subprograms and packages on components and blocks go through `generic.rs`
 views (S7),
 subtype indications as generate specifications.
 
+## lower (`crates/rsim-lower`, M2)
+
+HIR to IR for top-level architectures without ports or generics: scalar expressions, arrays of
+scalars with runtime descriptors (bit-planes for logic arrays), subprograms, processes and
+concurrent assert/assignment/call, all wait forms, signal assignments to whole scalar signals.
+`tests/corpus.rs` runs `tests/corpus/{scalar,arith,process,report}` through sem, lowering, the
+verifier, the interpreter and the kernel (a stand-in elaborator): 10 of 26 match NVC exactly.
+The rest wait on: `'value` native, NVC check texts, failure stopping the process, NVC's process
+order within a cycle (`multi_process_order`), sem `ExprKind::Error` in two files, array signals,
+non-static aggregates (math_real). Design and conventions: `crates/rsim-lower/DESIGN.md`.
+
 ## logic (`crates/rsim-logic`)
 
 Done ahead of M3: `StdULogic` with the IEEE 1164 tables (checked against the vendored package

@@ -20,6 +20,7 @@
 //! | `E2100`-`E2199`, `W2100`-`W2199` | `rsim-elab`: elaboration (`rsim_elab::codes`) |
 //! | `E0900`-`E0999`, `W0900`-`W0999` | `rsim-vhpi` (E0901, E0902, W0903, W0904 in use) |
 //! | `L0000`-`L0099` | `rsim-lib`: library manifests and closure queries |
+//! | `E2000`-`E2099` | `rsim-lower`: HIR to IR lowering (E2001 not lowered yet) |
 //! | `E9999` | internal compiler error in any stage ("this is a bug in rsim") |
 //!
 //! A code is never reused for a different meaning. An empty code is only for

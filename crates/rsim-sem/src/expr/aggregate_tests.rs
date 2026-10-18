@@ -239,10 +239,7 @@ impl Mock {
 
 impl AggResolver for Mock {
     fn cands(&mut self, db: &mut Db, e: &ast::Expr) -> CandSet {
-        let ty = |t| Interp {
-            ty: t,
-            via: Via::Other,
-        };
+        let ty = |t| Interp::new(t, Via::Other);
         match &e.kind {
             ast::ExprKind::Literal(l) => match &l.kind {
                 ast::LiteralKind::Abstract(_) => {

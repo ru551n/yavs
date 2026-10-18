@@ -799,10 +799,7 @@ impl Fx<'_, '_> {
             let ltid = self.ty(db.base(leaf.st), span)?;
             let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), ltid).is_some();
             let rel = &leaf.path[path.len()..];
-            let size = match ldope {
-                Some(dp) => Some(self.layout(ltid, dp).0),
-                None => None,
-            };
+            let size = ldope.map(|dp| self.layout(ltid, dp).0);
             let stride = match size {
                 Some(sz) => {
                     let seven = self.int(7);

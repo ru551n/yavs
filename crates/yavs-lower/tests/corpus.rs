@@ -114,6 +114,7 @@ const PASS: &[&str] = &[
     "run/driving",
     "run/expr_forms",
     "run/generic_subprog",
+    "run/open_actual",
     "run/out_slice",
     "run/record_one_field",
     "run/record_signals",

@@ -1005,7 +1005,7 @@ impl Db {
                                     None => ok = false,
                                 }
                             }
-                            ast::Actual::Open(_) => {}
+                            ast::Actual::Open(_) if *has_default => {}
                             _ => ok = false,
                         },
                         None if *has_default => {}

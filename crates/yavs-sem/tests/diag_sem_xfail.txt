@@ -57,6 +57,7 @@ ovl/missing_actual.vhd
 ovl/no_matching_candidates_listed.vhd
 ovl/no_matching_operator_vector_integer.vhd
 ovl/no_matching_return_type.vhd
+ovl/open_actual_no_default.vhd
 ovl/positional_then_named_same_formal.vhd
 ovl/procedure_used_as_function.vhd
 ovl/too_many_positional.vhd

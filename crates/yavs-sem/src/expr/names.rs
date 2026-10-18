@@ -766,16 +766,14 @@ impl Db {
         let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)?;
         let mut convs = 0;
         for (i, (_, ft, has_default)) in formals.iter().enumerate() {
-            match map[i] {
-                Some(a) => {
-                    let ast::Actual::Expr(x) = &args[a].actual else {
-                        return None;
-                    };
+            match map[i].map(|a| &args[a].actual) {
+                Some(ast::Actual::Expr(x)) => {
                     let c = self.cands(scope, x);
                     convs += self.best_cost(&c, Expected::Type(*ft))?;
                 }
-                None if *has_default => {}
-                None => return None,
+                // 6.5.6.2: `open` stands for the default expression.
+                None | Some(ast::Actual::Open(_)) if *has_default => {}
+                _ => return None,
             }
         }
         Some(Interp {

@@ -422,6 +422,25 @@ impl Db {
             .get(&name.key)
             .cloned()
             .unwrap_or_default();
+        if found.is_empty()
+            && let Some(b) = body
+            && let Some(&d) = self.scopes[b].names.get(&name.key).and_then(|v| v.first())
+            && !self.is_within(from, b)
+        {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::PRIVATE,
+                    format!(
+                        "`{}` is not in the visible part of protected type `{}`",
+                        name.text,
+                        self.type_name(t)
+                    ),
+                )
+                .with_primary(name.span, "declared in the protected body")
+                .with_secondary(self.decls[d].span, "declared here")
+                .with_note("only the methods of the protected type declaration can be used from outside its body (LRM 5.6.2)"),
+            ));
+        }
         if found.is_empty() {
             return Err(self.error(
                 Diagnostic::error(

@@ -283,7 +283,7 @@ fn elab_and_run() {
          architecture t of busy is begin process begin report \"hi\"; wait for 1 ns;\n\
            report \"bad\" severity error; wait for 1 ns; report \"after\"; wait; end process; end;\n\
          use std.env.all; entity fin is end;\n\
-         architecture t of fin is begin process begin wait for 3 ns; finish(3); end process; end;\n",
+         architecture t of fin is begin process begin wait for 3 ns; finish(3);\n           report \"unreachable\"; wait; end process; end;\n",
     )
     .expect("write");
     let lib = format!("--work=work:{}/lib", tmp.display());
@@ -342,6 +342,8 @@ fn elab_and_run() {
     let (code, _, out) = yavs(&["run", &lib, "fin", "--threads=4"]);
     assert_eq!(code, 3);
     assert!(out.contains("FINISH called with status 3"), "{out}");
+    // `finish` ends the calling process at once (#4).
+    assert!(!out.contains("unreachable"), "{out}");
     let (code, _, _) = yavs(&["run", &lib, "fin", "--stop-time=2ns"]);
     assert_eq!(code, 0);
     let _ = std::fs::remove_dir_all(&tmp);

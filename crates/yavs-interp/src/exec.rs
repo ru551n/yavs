@@ -1519,6 +1519,14 @@ impl Machine {
                         v.ok_or_else(|| ice(format!("native `{}` returned no value", n.symbol)))?;
                     self.set(d, v);
                 }
+                // `std.env.stop`/`finish` end the calling process at once (LRM 16.5): the
+                // simulation ends after this cycle, so execute no further, as for a report
+                // at the stop severity.
+                if n.symbol.starts_with("yavs.env.stop.")
+                    || n.symbol.starts_with("yavs.env.finish.")
+                {
+                    return Ok(Flow::Suspend);
+                }
             }
             Inst::CallForeign { foreign, args, dst } => {
                 let v = self.foreign(prog, f, foreign, args)?;

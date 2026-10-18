@@ -100,6 +100,7 @@ reference for these files. Every test whose error rested only on an unclear rule
 | `drv/stable_attr_in_subprogram` | `drv/stable_attr_in_subprogram_ok` | E1620 to `none` | LRM 4.2.2.2 forbids `'STABLE`, `'QUIET`, `'TRANSACTION`, `'DELAYED` in a subprogram only for formal signal parameters; GHDL and Questa accept other signals |
 | `drv/delayed_attr_in_subprogram` | same | adjusted: the prefix is now a formal signal parameter, E1620 at 8:12 | keeps E1620 on the clear 4.2.2.2 rule; NVC, GHDL and Questa all reject it |
 | `attr/attribute_spec_wrong_class_overload` | `attr/attribute_spec_overloaded_ok` | E1611 to `none` | LRM 7.2 is clear the other way: an overloaded entity tag without a signature decorates every matching declaration (GHDL, Questa accept) |
+| `typ/not_a_type_entity` | same, plus `typ/not_a_type_entity_used` | E1201 to E1100 | not a policy case but a test error: `e` is not directly visible without a use clause (12.3, 12.4); NVC and GHDL report it as undeclared. The E1201 case moved to the new file, which adds `use work.e;` |
 
 Kept, because the rule is clear in the LRM even where a tool accepts: `agg/others_with_other_choice_same_assoc`
 (9.3.3.3), `hom/interface_param_twice` (homographs), `typ/incomplete_not_completed` (5.4.2),
@@ -463,7 +464,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `static_value_outside_computed` | E1403 @7 | rejects @7 | warns |
 | `static_value_outside_subtype` | E1403 @6 | rejects @6 | warns |
 
-### typ (36)
+### typ (37)
 
 | File | Expected | NVC | GHDL |
 |---|---|---|---|
@@ -489,7 +490,8 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `index_constraint_arity_too_many` | E1214 @5 | rejects @5 | rejects @5 |
 | `index_type_mismatch` | E1300 @7 | rejects @7 | rejects @7 |
 | `not_a_type_constant` | E1201 @6 | rejects @6 | rejects @6 |
-| `not_a_type_entity` | E1201 @6 | rejects @6 | rejects @6 |
+| `not_a_type_entity` | E1100 @6 | rejects @6 | rejects @6 |
+| `not_a_type_entity_used` | E1201 @7 | rejects @7 | rejects @7 |
 | `not_a_type_function` | E1201 @6 | rejects @6 | rejects @6 |
 | `port_partial_ok_constant_unconstrained_ok` | none | accepts | accepts |
 | `range_constraint_on_array` | E1211 @5 | rejects @5 | rejects @5 |

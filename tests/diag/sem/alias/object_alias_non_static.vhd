@@ -1,5 +1,5 @@
 -- yavs-test: std=2008
--- expect: E1610 10:11 the aliased name must be a static name
+-- expect: E1610 10:16 the aliased name is not a static name of an object
 -- LRM 6.6.2
 entity e is end entity;
 architecture a of e is

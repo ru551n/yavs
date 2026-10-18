@@ -405,8 +405,9 @@ impl Db {
                             self.type_name(have)
                         ),
                     )
+                    // The written indication: a bare type mark's subtype span is its declaration.
                     .with_primary(
-                        self.subtypes[st].span,
+                        ast.subtype.as_ref().map_or(ast.span, |s| s.span),
                         format!("type `{}`", self.type_name(want)),
                     )
                     .with_secondary(

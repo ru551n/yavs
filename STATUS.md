@@ -127,7 +127,7 @@ An installed binary finds `lib/` next to itself (#43).
   `process/unaffected_2019`). Named return values (`return r of t`) of array type take the
   result subtype from the call's context and run (`process/named_return_2019`). Open: named
   return values of record and scalar types, in generic subprograms and protected methods
-  (#33 follow-up), `return when c;`.
+  (#239), `return when c;`.
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 

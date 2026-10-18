@@ -7,8 +7,18 @@ together, on-demand analysis), `docs/decisions.md`, `lib/README.md`, `lib/NATIVE
 
 LRM references are to IEEE 1076-2008 clause numbers, which 1076-2019 mostly keeps. The former
 **(unsure)** items and Q1/Q2 were checked on 2026-10-18; `docs/design/lrm-checks.md` has the
-evidence per item (tagged `[L<n>]`, `[Q<n>]` here) and the questions still open (`U-<n>`). Nothing
+evidence per item (tagged `[L<n>]`, `[Q<n>]` here) and the user decisions (`U-<n>`, section 11). Nothing
 here is taken from NVC, GHDL or rust_hdl code.
+
+## LRM interpretation policy (user, 2026-10-18)
+
+- **LRM clear:** follow it and fail early, even where a simulator is more lenient.
+- **LRM unclear or silent:** be permissive. Accept the union of what NVC, GHDL, Questa and
+  Riviera accept, and pick the semantics that let the most designs elaborate.
+- **Warn only when simulators give different results** for code rsim accepts (for example
+  W1506, U-6), never just because a rule is unclear.
+
+Each ruling is in `lrm-checks.md` (verdict table) and section 11 (U-1 to U-6, L8).
 
 ## 0. Scope and shape
 
@@ -374,7 +384,8 @@ pub enum BoundsFrom {
 
 Bounds of an integer or physical type declaration must be locally static (5.2.3.1) and are folded.
 The base range of an anonymous integer base type is implementation-defined (it must contain the
-declared range); rsim takes the declared range, see Q2 [Q2].
+declared range); rsim takes the declared range and checks intermediate results against it, as
+NVC does (user decision U-1) [Q2].
 
 ### 2.4 Array types (5.3.2)
 
@@ -404,8 +415,8 @@ element names in a record constraint: `E1213`.
   (`E1220` otherwise). Before completion it may be used only as the designated type of an access
   type, and, per `lib/README.md`, as a return type of methods in a protected type declaration
   whose completion appears later in the region (std 2019 `reflection` needs this). No LRM text
-  for it was found and NVC/GHDL reject the pattern in user code; rsim accepts it only in
-  subprogram profiles inside a protected type declaration, 2019 only (U-2) [L4].
+  for it was found; rsim accepts it in subprogram profiles inside a protected type declaration,
+  in 2008 and 2019 (user decision U-2, permissive) [L4].
 - File types (5.5): element type cannot be access, protected, file, or contain those (`E1222`);
   multi-dimensional arrays as file element are an error in 2008 and 2019 (`E1222`) [L5].
 - Protected types (5.6): see 6.6.
@@ -671,11 +682,12 @@ it covers must have the same type (9.3.3.2).
 **Array aggregate**: for an n-dimensional array, each element is an (n-1)-dimensional
 aggregate or, for 1-D (2008), an expression of either the element type **or the aggregate's own
 type** (a slice-like positional piece). For each element, intersect `cands(expr)` with
-`{elem type, aggregate type}`; exactly one must remain, else `E1323`. The LRM has no tie-break [L8]. The aggregate's own type is a candidate only for a positional
+`{elem type, aggregate type}`. The LRM has no tie-break [L8]. The aggregate's own type is a candidate only for a positional
 association or a discrete-range choice (9.3.3.3), and an element that is itself an aggregate takes
 the element type (otherwise `((fs, "fs "), (ps, "ps "))` for an array of records would be
 ambiguous; GHDL and NVC do the same). A remaining tie, such as an overloaded `f` returning both
-types, is `E1323` (as GHDL; NVC picks the element type).
+types, takes the element type (NVC; user decision L8, permissive), with no `E1323`. `E1323`
+stays for an element that fits neither type.
 
 Choices: index expressions, discrete ranges, subtype names, `others`. Rules (9.3.3.3):
 - `others` last and alone in its association; needs a constrained context subtype (`E1325`).
@@ -865,7 +877,9 @@ ambiguous). Cloning keeps every resolved reference and only remaps ids:
   distinct per instance: two `fixed_generic_pkg` instances have different `ufixed` types);
 - references to formals are replaced by the actuals (`types`, `consts`, `subprograms`, `packages`);
 - calls to an implicit op of a formal generic type are remapped to the same family's implicit op
-  of the actual type (Q9 for the private-type `=` question);
+  of the actual type; for a 2008 `type T`, `=`/`/=` become the actual's **predefined** `=`/`/=`,
+  and `W1506` warns at the instantiation when a different user `"="` for the actual type is
+  visible there (NVC would use that one; U-6);
 - folded constants that depended on generics are dropped and re-folded if the actual is locally
   static.
 
@@ -1025,8 +1039,9 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 
 - `view v of r_t is a, b : in; c : out; d : view w; end view;` every element of `r_t` exactly once
   (`E1901` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
-- `v'converse` is a view with `in`/`out` swapped, `inout` and `buffer` unchanged (user ruling
-  U-4, as NVC; GHDL maps `buffer` to `in`) [L16], nested views conversed recursively. Sem materializes it as a `ViewDef`
+- `v'converse` is a view with `in`/`out` swapped and `inout` and `buffer` unchanged (NVC; user
+  decision U-4, permissive: a `buffer` element may be read and driven) [L16], nested views
+  conversed recursively. Sem materializes it as a `ViewDef`
   on first use.
 - Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
   per element the effective mode. Port association checks per element (an `in` element is not
@@ -1164,7 +1179,7 @@ Sem takes `E1xxx` / `W1xxx`:
 | E17xx | configurations, binding, components | E1700 instantiated name is not a component, entity or configuration, E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity |
 | E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1803 sensitivity name not static, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1812 unresolved signal with multiple sources, E1813 entity statement not passive, E1820 case coverage/duplicates, E1830 pure function side effect |
 | E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
-| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
+| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1506 an instance of a 2008 `type T` uses the actual's predefined `=`/`/=` while a different user `"="` for the actual type is visible at the instantiation (U-6; NVC uses the user one), W1703 default binding ambiguity (GHDL #66), W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
 
 Codes are `pub const` in `rsim-sem::diag` with an `--explain` text each (one paragraph plus a
 minimal example), checked by a test that every constant has an explain entry.
@@ -1261,12 +1276,14 @@ end of S3 on real code (numeric_std), so a rework does not cost the later slices
 
 Q3 to Q9 and Q11 were accepted by the user as recommended (2026-10-18). Q10 was replaced by the
 mixed-revision rule in 0.1. Q1 and Q2 were checked on 2026-10-18 (`lrm-checks.md`): Q1 follows the
-LRM text, Q2's premise was wrong and is back with the user as U-1.
+LRM text, Q2's premise was wrong and is back with the user as U-1. The user answered U-1 to U-6
+and L8 on 2026-10-18 under the LRM interpretation policy (top of this file); the rows below record
+them.
 
 | # | Topic | Decision | Status |
 |---|---|---|---|
 | Q1 | universal preference (`x := 2 ** 3`), LRM 9.3.6 | 2.8: convert only convertible universal operands, only with a unique numeric target, and only when no interpretation without conversion exists (GHDL agrees; NVC prefers converting) | checked, corrected to the LRM text |
-| Q2 | base range of an anonymous integer base type (`t'base'high`) | proposed: base range = declared range, operations checked against it (NVC; GHDL and NVC both report the declared range for `'base`, neither uses 32/64-bit) | checked; open as U-1 in `lrm-checks.md` |
+| Q2 | base range of an anonymous integer base type (`t'base'high`) | base range = declared range, intermediate results checked against it (NVC; GHDL and NVC both report the declared range for `'base`, neither uses 32/64-bit) | decided (U-1) |
 | Q3 | 2008 locally static ieee calls without an interpreter in M1 | classified in M1; their choice checks deferred to elab through a `ConstEval` hook implemented by M2's interpreter | decided |
 | Q4 | default binding | last architecture in manifest order, note when several; directly visible entity preferred over `work` (GHDL #66), `W1703` | decided |
 | Q5 | overflow folding where the value is not required | error `E1401` only in required contexts (type and array bounds, physical unit scales, choices, attribute dimension arguments); `W1401` elsewhere, e.g. a constant initializer, with the runtime check kept | decided |
@@ -1276,3 +1293,10 @@ LRM text, Q2's premise was wrong and is back with the user as U-1.
 | Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has implicit `=` and `/=` (6.5.3), mapped to the actual's **predefined** `=`/`/=` (GHDL; NVC uses the `"="` visible at the instantiation, e.g. `numeric_std."="`; U-6) | corrected 2026-10-18 (`lrm-checks.md` L18); the "no implicit `=`" half is withdrawn |
 | Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007` error, `W1008` warning | decided |
 | Q11 | bit-string expansion | in sem, `E1331` at the literal | decided |
+| U-1 | base range of `type T is range L to R` | declared range; intermediate results checked (NVC) | decided |
+| U-2 | incomplete types in protected method profiles | allowed in subprogram profiles inside a protected type declaration, 2008 and 2019 (permissive) | decided |
+| U-3 | range record names | `<T>_RANGE_RECORD` only for `std.standard` types; the direction type is `RANGE_DIRECTION` (LRM 16.3, `lib` patched) | decided |
+| U-4 | `buffer` under `'converse` | stays `buffer`, so both reading and driving are allowed (permissive) | decided |
+| U-5 | conditional expressions as interface defaults | accepted bare and parenthesized (permissive) | decided |
+| U-6 | `=` of a 2008 `type T` instance | the actual's predefined `=`/`/=`; `W1506` at the instantiation when a different user `"="` for the actual type is visible there | decided |
+| L8 | aggregate element: element type vs aggregate type tie | the element type (NVC), no `E1323` for that case | decided |

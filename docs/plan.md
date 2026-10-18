@@ -87,6 +87,7 @@ Every error is reported through `rsim-diag` in the rustc format: code, spans, la
 - **Runtime errors stop the simulation at once** (bound check, overflow, null access, delta limit, assertion at or above `--exit-severity`), with a clear exit code. Nothing is clamped or wrapped.
 - **Internal invariants are checked.** A broken invariant becomes an internal compiler error rendered at the span being processed, with "this is a bug in rsim" and a report hint. It is never undefined behaviour or a bare panic message.
 - **External tools and plugins:** non-zero exit codes and error statuses are propagated and never swallowed.
+- **LRM interpretation policy** (user, 2026-10-18): where the LRM is clear, follow it and fail early. Where it is unclear or silent, be permissive: accept the union of what NVC, GHDL, Questa and Riviera accept, and pick the semantics that let the most designs elaborate. Warn only where those simulators give different results. The rulings per item are in `docs/design/lrm-checks.md`.
 
 ## Design rules from the GHDL and NVC issue trackers
 Both simulators kept running into these bug classes; issue numbers are in brackets.

@@ -1,8 +1,17 @@
 # LRM checks for `sem.md`
 
-Status: done 2026-10-18 for every **(unsure)** item and for Q1/Q2 of `sem.md` section 11.
+Status: done 2026-10-18 for every **(unsure)** item and for Q1/Q2 of `sem.md` section 11; the open questions were decided by the user the same day (section "Decisions").
 
 Clause numbers: IEEE 1076-2008 / 1076-2019 (the same unless both are given).
+
+**Policy** (user, 2026-10-18; `docs/plan.md`, `sem.md` "LRM interpretation policy"): where the LRM
+is clear, follow it and fail early; where it is unclear or silent, be permissive (the union of what
+NVC, GHDL, Questa and Riviera accept, semantics that let the most designs elaborate), and warn only
+where the simulators give different results. Every item that was "still ambiguous" or open as a
+question U-n is resolved below under that policy ("Decisions").
+
+Questa Starter 2025.3 (`vcom -2008/-2019`) was added as a third black box after the first pass;
+Riviera was not available.
 
 ## Method and sources
 
@@ -28,15 +37,15 @@ LCS text was read.
 |---|---|---|---|---|
 | Q1 | universal vs INTEGER interpretation | 9.3.6 | **corrected** | an implicit conversion is used only when no interpretation without it exists; only convertible operands convert |
 | Q1a | "named numbers (`constant N := 8;`)" | 6.4.2.2 | **corrected** | VHDL has no named numbers; the syntax is an error in both tools |
-| Q2 | `t'base'high` of `type t is range L to R` | 5.2.3.1 | **corrected** (the "as NVC/GHDL" premise is false) | base range = declared range; question U-1 |
+| Q2 | `t'base'high` of `type t is range L to R` | 5.2.3.1 | **corrected** (the "as NVC/GHDL" premise is false) | base range = declared range, intermediate results checked (U-1, decided) |
 | L1 | 2019 reserved words | 15.10 | confirmed | 2019 adds exactly `private` and `view` |
 | L2 | same entity through an alias (12.4 c) | 12.3, 12.4 | **corrected** | no exception for object aliases; non-object aliases of the same entity do not conflict (both tools) |
 | L3 | `work` in context declarations | 13.3 (not 13.4) | confirmed, clause corrected | error for `library work`, and for `work.` prefixes in use clauses **and context references** |
-| L4 | incomplete types in protected method profiles | 5.4.2 | still ambiguous | accept only in subprogram profiles inside a protected type declaration (question U-2) |
+| L4 | incomplete types in protected method profiles | 5.4.2 | unclear, **permissive** | accept in subprogram profiles inside a protected type declaration, 2008 and 2019 (U-2, decided) |
 | L5 | multi-dimensional arrays as file element | 5.5 | confirmed | error in 2008 and 2019 |
 | L6 | implicit ops of 2019 generic type classes | 6.5.3 | confirmed in principle, list not verified | an interface type of class C gets exactly the predefined ops every type of class C has |
-| L7 | `<T>_RANGE_RECORD` per scalar type | 5.2.1, 16.2.6, 16.3 (2019) | **corrected** | every scalar type has an anonymous range record; the name `<T>_RANGE_RECORD` only for `std.standard` types (question U-3) |
-| L8 | aggregate element of element type or aggregate type | 9.3.3.3 | **corrected** | no LRM tie-break; aggregates and named non-range choices take the element type; otherwise ambiguity `E1323` |
+| L7 | `<T>_RANGE_RECORD` per scalar type | 5.2.1, 16.2.6, 16.3 (2019) | **corrected** | every scalar type has an anonymous range record; the name `<T>_RANGE_RECORD` only for `std.standard` types; direction type `RANGE_DIRECTION` (U-3, decided) |
+| L8 | aggregate element of element type or aggregate type | 9.3.3.3 | **corrected**, tie unclear, **permissive** | no LRM tie-break; aggregates and named non-range choices take the element type; a remaining tie takes the element type (NVC), no `E1323` (decided) |
 | L9 | case on a non-locally-static 1-D char array | 10.9 | confirmed | all choices the same length (analysis error), expression length checked at run time |
 | L10 | locally static calls into ieee packages | 9.4.2 | confirmed | exactly `std_logic_1164`, `numeric_bit`, `numeric_std`, `numeric_bit_unsigned`, `numeric_std_unsigned` |
 | L11 | where `is name` of a subprogram default resolves | 6.5.6.2 | confirmed (NVC; GHDL crashes) | resolved at the formal's declaration; `is <>` at the instantiation, by the formal's designator |
@@ -44,11 +53,11 @@ LCS text was read.
 | L13 | 2019 `'IMAGE` on objects | 16.2 (2019) | confirmed | `o'IMAGE` for an object of scalar type (NVC 2019) |
 | L14 | 2019 `'INDEX` | 16.2 (2019) | confirmed | `A'INDEX` / `A'INDEX(n)`, a subtype; only in a type mark |
 | L15 | 2019 private variables and method aliases | 5.6.2 | confirmed | quote below; `private shared variable` is an error |
-| L16 | `buffer` under `'CONVERSE` | 6.5.2 / 16.2 (2019) | still ambiguous: tools disagree | question U-4 |
+| L16 | `buffer` under `'CONVERSE` | 6.5.2 / 16.2 (2019) | unclear (tools disagree), **permissive** | `buffer` stays `buffer`: both read and drive allowed (U-4, decided) |
 | L17 | NVC `--relaxed` list (R3) | n/a | **corrected** | NVC does not relax case choices; drop R3 |
-| L18 | Q9: implicit `=`/`/=` on a 2008 interface type `type T` | 6.5.3 | **corrected** | `=` and `/=` are implicitly declared; they map to the actual's predefined operators (question U-6 for the NVC difference) |
-| P1 | parser: "every `end <keyword>` optional in 2019" (`decisions.md`) | 6.8 (2019), LCS-2016-055a | **corrected** | only `end component` loses its keyword; every other ending keeps the 2008 rule |
-| P2 | parser: positions of 2019 conditional expressions (`decisions.md`) | 9.1, 6.4.2, 6.5.7.1, 10.5.2, 10.6.2, 10.14 (2019) | **corrected** | add the parenthesized primary; interface defaults are unconfirmed (question U-5) |
+| L18 | Q9: implicit `=`/`/=` on a 2008 interface type `type T` | 6.5.3 | **corrected**; which `=` is used differs between tools | `=` and `/=` are implicitly declared; they map to the actual's predefined operators, warning `W1506` when NVC would pick a different visible user `"="` (U-6, decided) |
+| P1 | parser: "every `end <keyword>` optional in 2019" (`decisions.md`) | 6.8 (2019), LCS-2016-055a | **corrected**, clear | only `end component` loses its keyword; every other ending keeps the 2008 rule (NVC, GHDL, Questa agree); implemented |
+| P2 | parser: positions of 2019 conditional expressions (`decisions.md`) | 9.1, 6.4.2, 6.5.7.1, 10.5.2, 10.6.2, 10.14 (2019) | **corrected**; interface defaults unclear, **permissive** | add the parenthesized primary; interface defaults accept the bare and the parenthesized form (U-5, decided); implemented |
 
 ## Items
 
@@ -100,7 +109,8 @@ Tools (`q2b.vhd`, `q2c.vhd`, `type small is range 0 to 10`):
 
 So neither tool uses "the smallest of 32 or 64 bit": both report the declared range as the base
 range. NVC also checks intermediate results against it; GHDL computes in a wider type and checks
-only on assignment, which is inconsistent with its own `'BASE'HIGH`. Question U-1.
+only on assignment, which is inconsistent with its own `'BASE'HIGH`. Decided (U-1): the declared
+range, intermediate results checked against it, as NVC.
 
 ### L1: 2019 reserved words (15.10)
 
@@ -142,7 +152,10 @@ of protected types declared before `type VALUE_MIRROR is access VALUE_MIRROR_PT;
 the same pattern in user code in 2019 ("invalid use of incomplete type", `u4.vhd`) and also as the
 return type of an ordinary function (`u4b.vhd`), so they special-case `std.reflection`. The 2008 rule
 (recalled): before the full declaration, the only allowed use is as the type mark of an access type
-definition. No 2019 text found that widens it. Question U-2.
+definition. No 2019 text found that widens it, and the IEEE package itself relies on the wider use,
+so the LRM is unclear. Decided (U-2, permissive): accepted in subprogram profiles inside a protected
+type declaration, in 2008 and 2019; an incomplete type elsewhere (an object, an ordinary function
+profile) stays an error.
 
 ### L5: file element types (5.5)
 
@@ -179,8 +192,10 @@ does not have a range record"). GHDL 19 supports none of it.
 
 Rule for rsim: every scalar type (and the universal types) gets an anonymous range record type with
 elements `LEFT`, `RIGHT` (of the type) and `DIRECTION`, created with the type; `R'RECORD` denotes it
-and `R'VALUE` gives the value, for `R` an attribute name denoting a range. Question U-3 covers the
-names `<T>_RANGE_RECORD` and `DIRECTION`/`RANGE_DIRECTION`.
+and `R'VALUE` gives the value, for `R` an attribute name denoting a range. Decided (U-3): the names
+`<T>_RANGE_RECORD` exist only for the `std.standard` types; the direction type is `RANGE_DIRECTION`
+(LRM 16.3), and `tools/derive_libs.py` patches the IEEE `standard.vhdl` (which says `DIRECTION`)
+to match.
 
 ### L8: array aggregate elements (9.3.3.3)
 
@@ -197,8 +212,8 @@ GHDL "type of element is ambiguous"; NVC takes the element type.
 
 Rule for rsim: the aggregate's own type is a candidate only for a positional association or a
 discrete-range choice; an element that is an aggregate (or string or bit-string literal whose type
-would be the aggregate type only through the context) takes the element type; any remaining tie is
-`E1323` (GHDL, LRM-consistent).
+would be the aggregate type only through the context) takes the element type. The LRM is silent on
+a remaining tie; decided (permissive): it takes the element type, as NVC, with no `E1323`.
 
 ### L9: case on a non-locally-static 1-D character array (10.9)
 
@@ -246,7 +261,8 @@ methods made visible by an alias need no body.
 
 NVC maps `in`↔`out` and keeps `inout` and `buffer`; GHDL maps `in`→`out`, `out`→`in`,
 `buffer`→`in`, `inout`→`inout` (both from their mode mapping, not from runs: GHDL 19 does not
-analyze views end to end). No LRM text found. Question U-4.
+analyze views end to end). No LRM text found. Decided (U-4, permissive): `buffer` stays `buffer`
+(NVC), so an element of mode `buffer` may be read and driven through the converse view.
 
 ### L17: NVC `--relaxed` (R3)
 
@@ -278,6 +294,8 @@ The text says "predefined", which reads as the actual type's predefined operator
 for rsim: implicitly declare `=`/`/=` after every interface type (2008 and 2019 `private`); at
 instantiation they denote the actual's predefined `=`/`/=`, matching the existing remap rule of
 `sem.md` 5.1. Code that wants `numeric_std."="` declares a formal `function "=" ... is <>`.
+Decided (U-6): since the tools give different results, the instantiation gets warning `W1506` when
+a user `"="` for the actual type other than the predefined one is visible there.
 
 Effect on rsim: any check that rejects `=` on a 2008 `type T` without an interface `"="` must be
 removed, and a negative test that expects such an error must become a positive one.
@@ -292,13 +310,15 @@ one 2019 ending rule (`require_std(STD_19, "optional end component")`).
 Black-box (`~/.cache/rsim-lrmcheck/t/ends/`, each construct closed by a bare `end;`, with a control
 file per construct that spells the keyword and passes NVC 2019):
 
-| Ending | NVC 2008 | NVC 2019 | GHDL 19 |
-|---|---|---|---|
-| `end component` | error | **accepted** | error |
-| `end record`, `end units`, `end protected`, `end protected body`, `end view` | error | error | error |
-| `end process`, `end block`, `end generate`, `end if`, `end case`, `end loop`, `end for` (block configuration) | error | error | error |
+| Ending | NVC 2008 | NVC 2019 | GHDL 19 | Questa 2025.3 `-2019` |
+|---|---|---|---|---|
+| `end component` | error | **accepted** | error | **accepted** |
+| `end record`, `end units`, `end protected`, `end protected body`, `end view` | error | error | error | error ("expecting RECORD" etc.) |
+| `end process`, `end block`, `end generate`, `end if`, `end case`, `end loop`, `end for` (block configuration) | error | error | error | error |
 
-Parser change for `crates/rsim-syntax` (not made here): in 2019 mode only the reserved word
+No simulator accepts the other forms and the LCS text is clear, so the LRM rule applies.
+Parser change for `crates/rsim-syntax` (implemented; a bare `end;` elsewhere is E0002 with a help
+naming LCS-2016-055a, and a 2008 `end;` for a component is E0004): in 2019 mode only the reserved word
 `component` after `end` of a component declaration is optional; every other construct requires its
 closing keyword exactly as in 2008. (Endings that are already optional in 2008, such as `end
 [entity]`, `end [architecture]`, `end [package [body]]`, `end [function]`, are unchanged.)
@@ -338,9 +358,9 @@ Black-box NVC 2019 (`~/.cache/rsim-lrmcheck/t/cond/`; GHDL 19 accepts none of th
 | actuals: function call, procedure call, port map, generic map | accepted | 6.5.7.1 |
 | parenthesized primary `3 + (1 when g else 2)`, `integer'((1 when g else 2))`, `if (a when g else b) then` | **rejected** (NVC gap) | `VI#385` |
 | unparenthesized in qualified expression, aggregate element, index, `report`, `wait for` | rejected | not in the grammar |
-| generic, port and parameter defaults | rejected | not confirmed either way (question U-5) |
+| generic, port and parameter defaults | rejected | not confirmed either way (U-5: accepted, permissive) |
 
-Parser change for `crates/rsim-syntax` (not made here):
+Parser change for `crates/rsim-syntax` (implemented):
 1. Add `( conditional_expression )` as a primary in 2019 mode: a parenthesized expression followed
    by `when` is a conditional expression; this covers every expression position, including
    `T'((a when c else b))`.
@@ -349,8 +369,8 @@ Parser change for `crates/rsim-syntax` (not made here):
    simple variable assignments and simple force assignments.
 3. `unaffected` (and the trailing `[ when condition ]` without `else`) only in simple variable
    assignments, simple force assignments and `return`; not in initial values or actuals.
-4. Interface defaults: keep or drop according to U-5; until then the evidence (NVC rejects, no
-   grammar line seen) says drop.
+4. Interface defaults: accepted bare and parenthesized (U-5, permissive: no grammar line was seen
+   either way).
 5. Unparenthesized in a qualified expression is an error with a help to add parentheses.
 
 ## Changes to code paths
@@ -363,37 +383,31 @@ universal preference, aggregate or visibility logic yet. One implemented item is
   only) next to the existing `value`, which then also accepts a range prefix. `record` is a
   reserved word, so the parser must accept it after `'` (as NVC does). The table also needs
   `image` on object prefixes [L13].
-- `db.rs` keeps `direction: Option<TypeId>` for the std type that `lib/std/2019/standard.vhdl`
-  calls `DIRECTION`; the LRM and NVC call it `RANGE_DIRECTION` (U-3).
+- `db.rs` keeps `direction: Option<TypeId>` for the std type; `lib/std/2019/standard.vhdl` now
+  says `RANGE_DIRECTION` (patched in `tools/derive_libs.py`, U-3) and `WellKnown` looks it up by
+  that name.
 
 Future paths: Q1 (overload selection, S2), Q2 (`Constraint` of integer base types, S1), L2 (12.4
 filter), L7 (`std.standard` implicit decls), L8 (aggregate elements); P1/P2 change
 `crates/rsim-syntax` (M0 parser, implemented) and `docs/decisions.md` "Parser".
 
-## Questions for the user
+## Decisions (user, 2026-10-18)
 
-- **U-1 (Q2) base range of `type T is range L to R`.** Options: (a) base range = declared range,
-  operations checked against it (NVC; consistent with what both tools report for `T'BASE`);
-  (b) as (a) for `'BASE`, but arithmetic in i64 checked only on assignment (GHDL; accepts more
-  code, `T'BASE'HIGH` then lies); (c) 32/64-bit base range (the old recommendation; no tool does it,
-  `T'BASE'HIGH` differs from both). **Recommendation: (a)**, with `W1401`-style help naming the type
-  when an intermediate overflows.
-- **U-2 (L4) incomplete types in protected method profiles.** **Recommendation:** accept a type
-  mark of an incomplete type only in subprogram profiles inside a protected type declaration, in
-  2019 only, completed later in the same region (needed for `std.reflection`); error elsewhere.
-- **U-3 (L7) range record names.** **Recommendation:** declare `<T>_RANGE_RECORD` only for the
-  `std.standard` types that `standard.vhdl` lists (as NVC); user scalar types get only the anonymous
-  record through `'RECORD`. Separately, `lib/std/2019/standard.vhdl` says `DIRECTION` where the LRM
-  (16.3) and NVC say `RANGE_DIRECTION`: decide which name `lib` ships (recommendation: the LRM name,
-  which the lib owner must change; `VI#97` is still open).
-- **U-5 (P2) conditional expressions as interface defaults** (`generic (h : integer := 1 when g
-  else 2)`). No grammar line was seen; NVC rejects; the parenthesized form is legal anyway through the
-  primary rule. **Recommendation:** reject the unparenthesized form (fail early), with a help that
-  suggests parentheses.
-- **U-6 (L18) which `=` a 2008 `type T` instance uses.** GHDL: the actual's predefined `=`; NVC:
-  the `"="` directly visible at the instantiation (e.g. `numeric_std`). **Recommendation:** the
-  predefined one (the LRM says "predefined"; it is also what `sem.md` 5.1 already does), with a
-  warning at the instantiation when an explicit `"="` for the actual type is directly visible
-  there, since the result differs from NVC.
-- **U-4 (L16) `buffer` under `'CONVERSE`.** **Recommendation:** `buffer`→`in` (GHDL), since a
-  buffer port is an output and its converse must not drive; revisit when the LRM text is at hand.
+Taken under the policy at the top. The options and evidence are in the items above.
+
+- **U-1 (Q2) base range of `type T is range L to R`:** the declared range; intermediate results are
+  checked against it (NVC), with a help naming the type when an intermediate overflows.
+- **U-2 (L4) incomplete types in protected method profiles:** allowed in subprogram profiles inside a
+  protected type declaration, completed later in the same region, in **both** 2008 and 2019
+  (permissive; `std.reflection` needs it in 2019).
+- **U-3 (L7) range record names:** `<T>_RANGE_RECORD` only for the `std.standard` types; user scalar
+  types get only the anonymous record through `'RECORD`. The direction type is `RANGE_DIRECTION`
+  (LRM 16.3); `lib/std/2019/standard.vhdl` is patched to match.
+- **U-4 (L16) `buffer` under `'CONVERSE`:** stays `buffer` (NVC; permissive: both read and drive are
+  allowed).
+- **U-5 (P2) conditional expressions as interface defaults:** accepted, both bare
+  (`generic (h : integer := 1 when g else 2)`) and parenthesized (permissive).
+- **U-6 (L18) which `=` a 2008 `type T` instance uses:** the actual type's predefined `=`/`/=`
+  (the LRM says "predefined"), with warning `W1506` at the instantiation when a different user
+  `"="` for the actual type is visible there, since NVC would use that one.
+- **L8 aggregate element tie:** the element type (NVC); no `E1323` for that case.

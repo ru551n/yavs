@@ -72,6 +72,7 @@ const PASS: &[&str] = &[
     "generics/subprog_instance_overload_2019",
     "hierarchy/component_binding",
     "hierarchy/incremental_binding",
+    "hierarchy/inertial_port_actual",
     "hierarchy/instance_path_names",
     "hierarchy/process_local_names",
     "hierarchy/mode_view_ports",

@@ -428,6 +428,7 @@ impl Db {
             hargs.push(Arg {
                 formal: k as u16,
                 actual: Actual::Expr(id),
+                inertial: false,
             });
         }
         let id = self.add_expr(Expr {
@@ -595,6 +596,7 @@ impl Db {
                         args: Box::new([Arg {
                             formal: 0,
                             actual: Actual::Expr(op),
+                            inertial: false,
                         }]),
                         method_of: None,
                         implicit_cond: true,

@@ -381,8 +381,8 @@ once per distinct map of those actuals, with its own mangled identity; generic c
 instance data; #75), `others` in a configuration after component configurations naming
 specification-bound instances, non-static expression actuals of `in` ports and of parts of
 them driven by their equivalent IR process one delta later, static expression parts in the
-formal's initial value (#74). Not yet: conversions of record ports, record-typed or `inertial`
-signal-name expression actuals (#74), configuration specifications inside an entity with
+formal's initial value (#74). Not yet: conversions of record ports, record-typed signal-name
+expression actuals (#74); `inertial` signal-name actuals are expression actuals (#233), configuration specifications inside an entity with
 generic types.
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and

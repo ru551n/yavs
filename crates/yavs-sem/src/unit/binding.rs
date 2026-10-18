@@ -577,6 +577,10 @@ impl Db {
         let mut args = Vec::with_capacity(formals.len());
         for (k, m) in map.into_iter().enumerate() {
             let f = formals[k];
+            let m_idx = match &m {
+                Assoc::Whole { idx, .. } => Some(*idx),
+                _ => None,
+            };
             let actual = match m {
                 // After an association error a missing actual is likely a cascade.
                 Assoc::None if errs.0 => None,
@@ -597,6 +601,7 @@ impl Db {
                 args.push(Arg {
                     formal: k as u16,
                     actual,
+                    inertial: matches!(m_idx, Some(i) if matches!(assocs[i].actual, ast::Actual::Inertial(_))),
                 });
             }
         }
@@ -937,6 +942,15 @@ impl Db {
                 actual_conv: conv,
                 actual: x,
             });
+        }
+        if mode != Some(Mode::In) && matches!(a, ast::Actual::Inertial(_)) {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::CLASS_MISUSE,
+                    "an `inertial` actual (an expression) is only allowed for an `in` port",
+                )
+                .with_primary(self.exprs[id].span, "not allowed here"),
+            ));
         }
         if mode != Some(Mode::In) && !self.is_signal_name(id) {
             let what = match self.lsp(id).map(|l| l.root) {
@@ -1551,6 +1565,7 @@ impl Db {
             args.push(Arg {
                 formal: k as u16,
                 actual,
+                inertial: false,
             });
         }
         Ok(args.into())

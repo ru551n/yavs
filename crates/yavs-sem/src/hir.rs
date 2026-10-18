@@ -120,6 +120,9 @@ pub struct Arg {
     /// Index into the callee's formals.
     pub formal: u16,
     pub actual: Actual,
+    /// The port actual was written `inertial`: an expression actual even for a signal name
+    /// (LRM 6.5.6.3).
+    pub inertial: bool,
 }
 
 /// One part of an individual association: its path, actual and formal part.

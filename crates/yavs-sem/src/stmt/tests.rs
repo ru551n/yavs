@@ -882,6 +882,7 @@ fn instance_out_ports_are_sources() {
             port_map: Box::new([Arg {
                 formal,
                 actual: Actual::Expr(so),
+                inertial: false,
             }]),
         })
     };
@@ -1015,10 +1016,12 @@ fn procedure_call_actuals_drive_and_read() {
             Arg {
                 formal: 0,
                 actual: Actual::Expr(ae),
+                inertial: false,
             },
             Arg {
                 formal: 1,
                 actual: Actual::Expr(be),
+                inertial: false,
             },
         ]),
         method_of: None,

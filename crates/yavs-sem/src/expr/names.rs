@@ -1372,6 +1372,7 @@ impl Db {
             hargs.push(Arg {
                 formal: k as u16,
                 actual,
+                inertial: false,
             });
         }
         Some((e, hargs.into(), stat))

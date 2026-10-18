@@ -814,6 +814,7 @@ mod tests {
             .map(|(formal, e)| Arg {
                 formal,
                 actual: Actual::Expr(e),
+                inertial: false,
             })
             .collect();
         ex(

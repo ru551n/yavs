@@ -2571,6 +2571,7 @@ impl Db {
         args.iter()
             .map(|a| Arg {
                 formal: a.formal,
+                inertial: a.inertial,
                 actual: match &a.actual {
                     Actual::Expr(e) => Actual::Expr(self.r_expr(r, *e)),
                     Actual::Default => Actual::Default,

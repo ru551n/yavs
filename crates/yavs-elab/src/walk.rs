@@ -27,7 +27,8 @@ type R<T> = Result<T, Box<Diagnostic>>;
 
 /// How one formal is associated (from a HIR map, or a default binding by name).
 enum A {
-    Expr(ExprId),
+    /// The expression and whether it was written `inertial`.
+    Expr(ExprId, bool),
     /// A component local of the same name (default binding, LRM 7.3.3).
     Local(DeclId),
     Open,
@@ -62,7 +63,7 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
     let mut v: Vec<A> = (0..n).map(|_| A::Default).collect();
     for a in args {
         let x = match &a.actual {
-            Actual::Expr(e) => A::Expr(*e),
+            Actual::Expr(e) => A::Expr(*e, a.inertial),
             Actual::Default => A::Default,
             Actual::Open => A::Open,
             Actual::Individual(p) => A::Parts(p.iter().map(|(s, e, _)| (s.to_vec(), *e)).collect()),
@@ -655,7 +656,7 @@ impl Elab<'_> {
                         .with_note(m),
                     )
                 })?,
-            (_, A::Expr(e)) => self.m.eval(db, *e, gscope)?,
+            (_, A::Expr(e, _)) => self.m.eval(db, *e, gscope)?,
             (_, A::Local(l)) => self.m.value_of(db, *l, gscope, at)?,
             (_, A::Default | A::Open) => match o.default {
                 Some(d) => self.m.eval(db, d, Some(s))?,
@@ -957,9 +958,10 @@ impl Elab<'_> {
         };
         // The actual: a signal name, a value, or nothing.
         let actual = match (a, ascope) {
-            (A::Expr(e), Some(sc)) => match self.m.name_ref(self.db, *e, sc)? {
-                Some(n) => Some((n, db.exprs[*e].span)),
-                None => {
+            (A::Expr(e, inertial), Some(sc)) => match self.m.name_ref(self.db, *e, sc)? {
+                // `inertial` makes even a signal name an expression actual (LRM 6.5.6.3).
+                Some(n) if !*inertial => Some((n, db.exprs[*e].span)),
+                _ => {
                     if mode != PortMode::In {
                         return Err(Box::new(ice(
                             db.exprs[*e].span,
@@ -1134,7 +1136,7 @@ impl Elab<'_> {
             .m
             .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
         let fl = self.m.select(fo, &[], span)?.0;
-        if mode == PortMode::In && matches!(a, A::Expr(e) if external_root(db, *e)) {
+        if mode == PortMode::In && matches!(a, A::Expr(e, _) if external_root(db, *e)) {
             // An external name actual is an expression actual (#186, docs/decisions.md
             // "Elaboration"): the formal is driven by `formal <= actual`, one delta later.
             return self.m.copies(&fl, &al, aspan);

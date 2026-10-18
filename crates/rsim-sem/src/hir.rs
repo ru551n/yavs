@@ -115,12 +115,14 @@ pub enum AttrPrefix {
     Entity(DeclId),
 }
 
+#[derive(Clone)]
 pub struct Arg {
     /// Index into the callee's formals.
     pub formal: u16,
     pub actual: Actual,
 }
 
+#[derive(Clone)]
 pub enum Actual {
     Expr(ExprId),
     /// The formal's default.

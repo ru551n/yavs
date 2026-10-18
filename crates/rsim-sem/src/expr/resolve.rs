@@ -938,17 +938,18 @@ impl Db {
             if self.is_poison_expr(id) {
                 return Err(crate::Reported);
             }
-            // The call expression only carried the arguments; it is not referenced.
-            match std::mem::replace(&mut self.exprs[id].kind, ExprKind::Error) {
+            // The call expression only carried the arguments; it stays a valid,
+            // unreferenced `Call` (the validator walks the whole arena).
+            match &self.exprs[id].kind {
                 ExprKind::Call {
                     callee,
                     args,
                     method_of,
                     ..
                 } => Ok(crate::hir::Call {
-                    callee,
-                    args,
-                    method_of,
+                    callee: *callee,
+                    args: args.clone(),
+                    method_of: *method_of,
                     span: n.span,
                 }),
                 _ => Err(crate::Reported),

@@ -90,11 +90,14 @@ impl Elaborated {
                 .units
                 .get(&arch)
                 .ok_or_else(|| sim_err("architecture not lowered".into()))?;
-            let inst = match insts.get(&i) {
+            // One instance data per region (instance, block, generate iteration): values and
+            // signals are looked up from the process's enclosing region outwards.
+            let region = self.hier.scope(p.scope).parent.unwrap_or(i);
+            let inst = match insts.get(&region) {
                 Some(d) => d.clone(),
                 None => {
-                    let d = Arc::new(self.inst_data(&rt, u, i, &shared)?);
-                    insts.insert(i, d.clone());
+                    let d = Arc::new(self.inst_data(&rt, u, region, &shared)?);
+                    insts.insert(region, d.clone());
                     d
                 }
             };
@@ -150,7 +153,19 @@ impl Elaborated {
             data: vec![0; u.inst_size as usize],
             ..Default::default()
         };
-        for c in &u.consts {
+        // Generics and constants elaboration computed; the rest come from their thunks.
+        let mut known = std::collections::HashSet::new();
+        for v in &u.values {
+            if let Some(val) = self.value(i, v.decl) {
+                UnitIr::write_value(&rt.prog, v, val, &mut inst.data)
+                    .map_err(|m| sim_err(format!("instance data: {m}")))?;
+                known.insert(v.decl);
+            }
+            // ponytail: a value without an elaborated value here belongs to a nested region
+            // (a generate parameter, say) that processes of this region never read; values of
+            // this region that elaboration could not fold are E2106 in elaboration already.
+        }
+        for c in u.consts.iter().filter(|c| !known.contains(&c.decl)) {
             // With the shared state: a shared protected variable's thunk creates its object.
             let v = yavs_interp::call_shared(
                 rt.clone(),

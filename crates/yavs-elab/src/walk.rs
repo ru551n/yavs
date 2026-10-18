@@ -793,6 +793,9 @@ impl Elab<'_> {
         let DeclKind::Object(o) = &decl.kind else {
             return Err(Box::new(ice(span, "port is not an object")));
         };
+        if o.class == ObjClass::Variable {
+            return Err(unsupported(span, "variable ports (2019)", "M3"));
+        }
         let component = matches!(self.m.hier.scope(s).kind, ScopeKind::Component { .. });
         let mode = match o.mode {
             Some(Mode::In) => PortMode::In,

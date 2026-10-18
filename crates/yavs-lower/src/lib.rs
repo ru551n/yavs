@@ -82,6 +82,10 @@ pub struct InstConst {
     pub w: Width,
     /// `FuncKind::Thunk` returning the value.
     pub init: FuncId,
+    /// Declared in the entity or architecture itself (not in a block or generate): one value
+    /// per instance, shared by the instance data of all its regions. A shared variable's
+    /// thunk creates its object, so it must run once per instance (LRM 6.4.2.4).
+    pub instance_level: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +270,8 @@ pub(crate) struct Cx {
     pub sig_dopes: HashMap<DeclId, u32>,
     /// Signals of packages: the first entries of every unit's signal table.
     pub pkg_sigs: Vec<SignalIr>,
+    /// The entity and architecture regions of the architecture being lowered.
+    pub arch_scopes: Vec<ScopeId>,
 }
 
 impl Cx {
@@ -336,6 +342,7 @@ impl<'a> Lowerer<'a> {
                 names: Vec::new(),
                 sig_dopes: HashMap::new(),
                 pkg_sigs: Vec::new(),
+                arch_scopes: Vec::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),

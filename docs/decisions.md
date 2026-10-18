@@ -511,6 +511,9 @@ which tools/difftest parses.
   yavs-elab builds one instance data per region (instance, block, generate iteration) and
   looks values and signals up from the process's region outwards. Slots of nested regions'
   values and signals stay empty in outer regions, whose processes never name them.
+  Constants and shared variables declared in the entity or architecture itself
+  (`InstConst::instance_level`) are computed once per instance and shared by all its regions
+  (#190).
 - **Instance values:** generics, generate parameters and non-static constants are written by
   the elaborator from its folded values (`UnitIr::write_value`); scalar constants it cannot
   fold run a thunk. Locally static constants have no slot. Composite constants of an

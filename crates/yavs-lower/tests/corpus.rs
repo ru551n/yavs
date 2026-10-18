@@ -84,6 +84,7 @@ const PASS: &[&str] = &[
     "run/cond_2019",
     "run/driving",
     "run/expr_forms",
+    "run/shared_generate",
     "run/sig_arrays",
     "run/sig_attrs",
     "run/sig_out",

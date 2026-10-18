@@ -251,6 +251,8 @@ impl Elaborated {
         let rt = Runtime::new(ir.program.clone(), Bindings::default())?;
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         let shared = Arc::new(Mutex::new(SharedState::new(Vec::new())));
+        // Cells of instance-level constants and shared variables, computed once per instance.
+        let mut once: HashMap<(ScopeId, yavs_sem::DeclId), u64> = HashMap::new();
         // Instance data of the regions whose resolution functions read it (#164).
         let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
         for (&leaf, &region) in &ir.res_regions {
@@ -264,7 +266,7 @@ impl Elaborated {
                         .units
                         .get(&arch)
                         .ok_or_else(|| sim_err("architecture not lowered".into()))?;
-                    let d = Arc::new(self.inst_data(&rt, u, region, &shared)?);
+                    let d = Arc::new(self.inst_data(&rt, u, region, &shared, &mut once)?);
                     insts.insert(region, d.clone());
                     d
                 }
@@ -301,7 +303,7 @@ impl Elaborated {
                 let inst = match insts.get(&region) {
                     Some(d) => d.clone(),
                     None => {
-                        let d = Arc::new(self.inst_data(&rt, u, region, &shared)?);
+                        let d = Arc::new(self.inst_data(&rt, u, region, &shared, &mut once)?);
                         insts.insert(region, d.clone());
                         d
                     }
@@ -354,6 +356,7 @@ impl Elaborated {
         u: &UnitIr,
         i: ScopeId,
         shared: &Arc<Mutex<SharedState>>,
+        once: &mut HashMap<(ScopeId, yavs_sem::DeclId), u64>,
     ) -> Result<InstData, SimError> {
         let mut inst = InstData {
             data: vec![0; u.inst_size as usize],
@@ -380,15 +383,33 @@ impl Elaborated {
             }
         }
         for c in u.consts.iter().filter(|c| !known.contains(&c.decl)) {
-            // With the shared state: a shared protected variable's thunk creates its object.
-            let v = yavs_interp::call_shared(
-                rt.clone(),
-                c.init,
-                Arc::new(inst.clone()),
-                &[],
-                Some(shared),
-            )?
-            .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))?;
+            // An instance-level constant or shared variable is one object for all regions of
+            // the instance (#190): its thunk runs once per instance.
+            let key = (self.instance_of(i), c.decl);
+            let cached = if c.instance_level {
+                once.get(&key).copied()
+            } else {
+                None
+            };
+            let v = match cached {
+                Some(v) => v,
+                None => {
+                    // With the shared state: a shared protected variable's thunk creates its
+                    // object.
+                    let v = yavs_interp::call_shared(
+                        rt.clone(),
+                        c.init,
+                        Arc::new(inst.clone()),
+                        &[],
+                        Some(shared),
+                    )?
+                    .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))?;
+                    if c.instance_level {
+                        once.insert(key, v);
+                    }
+                    v
+                }
+            };
             let n = c.w.bytes() as usize;
             inst.data[c.off as usize..c.off as usize + n].copy_from_slice(&v.to_le_bytes()[..n]);
         }

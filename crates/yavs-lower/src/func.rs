@@ -812,6 +812,7 @@ pub(crate) fn architecture(
     };
     cx.inst_size = 0;
     cx.names.clear();
+    cx.arch_scopes = vec![e.scope, u.scope];
     let mut ok = true;
     let scopes = [e.scope, u.scope];
     let decls = iface.iter().chain(
@@ -1042,6 +1043,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     off,
                     w,
                     init,
+                    instance_level: cx.arch_scopes.contains(&decl.scope),
                 });
             }
             Ok(())

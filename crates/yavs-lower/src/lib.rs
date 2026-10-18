@@ -204,7 +204,9 @@ pub(crate) enum Obj {
     /// An array in instance data: byte offsets of its elements and descriptor at `off`.
     InstArray { off: u32 },
     /// A signal parameter: the slot holds a signal reference (two cells).
-    SignalRef { space: Space, off: u32 },
+    /// With `out`: an `out`/`inout` signal parameter, the caller's driver slot in the cell
+    /// at `off + 16`.
+    SignalRef { space: Space, off: u32, out: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -686,7 +686,20 @@ impl Fx<'_, '_> {
                 "assignments to external names and implicit signals",
             ));
         }
-        let slot = self.driver_of(lsp)?;
+        let param_slot = match lsp.root {
+            ObjRoot::Decl(d) => match self.cx.objs.get(&d).copied() {
+                Some(Obj::SignalRef { out: true, .. }) => Some(self.driver_slot_of(d, span)?),
+                Some(Obj::SignalRef { out: false, .. }) => {
+                    return Err(self.cx.ice(span, "assignment to an `in` signal parameter"));
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let slot = match param_slot {
+            Some(_) => 0,
+            None => self.driver_of(lsp)?,
+        };
         let (_, sref, tdope) = self.sig_name(target.expr)?;
         let st = db.exprs[target.expr].subtype;
         let tid = self.ty(db.base(st), span)?;
@@ -790,14 +803,24 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        self.emit(Inst::Drive {
-            driver: slot,
-            target: Some(sref),
-            wave,
-            n,
-            mode,
-            reject,
-        });
+        match param_slot {
+            Some(slot) => self.emit(Inst::DriveSlot {
+                slot,
+                target: sref,
+                wave,
+                n,
+                mode,
+                reject,
+            }),
+            None => self.emit(Inst::Drive {
+                driver: slot,
+                target: Some(sref),
+                wave,
+                n,
+                mode,
+                reject,
+            }),
+        }
         Ok(())
     }
 

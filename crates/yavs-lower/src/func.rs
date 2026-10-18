@@ -24,6 +24,8 @@ pub(crate) enum Shape {
     Arr,
     /// Scalar `in` signal: a signal reference (two cells).
     Sig,
+    /// Scalar `out`/`inout` signal: a signal reference and the caller's driver slot.
+    SigOut,
 }
 
 pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
@@ -32,10 +34,11 @@ pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
             return Err(cx.unsupported(span, "array signal parameters"));
         }
         ObjClass::Signal if p.mode == HMode::In => return Ok(Shape::Sig),
-        // ponytail: `Drive` names a static driver slot; an `out` signal parameter needs the
-        // caller's slot at run time (yavs-ir request).
+        ObjClass::Signal if matches!(p.mode, HMode::Out | HMode::Inout) => {
+            return Ok(Shape::SigOut);
+        }
         ObjClass::Signal => {
-            return Err(cx.unsupported(span, "signal parameters of mode out and inout"));
+            return Err(cx.unsupported(span, "buffer, linkage and view signal parameters"));
         }
         // A file object is passed as the address of its cell (yavs-ir README, natives).
         ObjClass::File => return Ok(Shape::Ref),
@@ -694,6 +697,27 @@ pub(crate) fn subprogram(
                 Obj::SignalRef {
                     space: Space::Frame(depth),
                     off,
+                    out: false,
+                }
+            }
+            Shape::SigOut => {
+                let off = fx
+                    .fb
+                    .param(&name, Width::Sig, ParamClass::Signal, mode, None);
+                let slot = fx.fb.param(
+                    &format!("{name}'driver"),
+                    Width::B8,
+                    ParamClass::Value,
+                    Mode::In,
+                    None,
+                );
+                if slot != off + 16 {
+                    return Err(fx.cx.ice(decl.span, "signal parameter slots not adjacent"));
+                }
+                Obj::SignalRef {
+                    space: Space::Frame(depth),
+                    off,
+                    out: true,
                 }
             }
             Shape::Arr => {

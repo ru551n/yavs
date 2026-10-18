@@ -419,11 +419,38 @@ impl Fx<'_, '_> {
                 }
                 None => Ok(self.sigval(sig)),
             },
-            Some(Obj::SignalRef { space, off }) => {
+            Some(Obj::SignalRef { space, off, .. }) => {
                 let a = self.addr(space, off);
                 Ok(self.load(a, Width::Sig, RegTy::Sig))
             }
             _ => Err(self.cx.unsupported(span, "this signal (ports, M2 slice 3)")),
+        }
+    }
+
+    /// The driver slot through which this process drives signal `d` (an actual of an `out`
+    /// signal parameter): its first `ProcessInfo::drivers` entry rooted at `d`, or the slot a
+    /// signal parameter was given.
+    pub fn driver_slot_of(&mut self, d: DeclId, span: Span) -> R<Reg> {
+        if let Some(Obj::SignalRef {
+            space,
+            off,
+            out: true,
+        }) = self.cx.objs.get(&d).copied()
+        {
+            let a = self.addr(space, off + 16);
+            return Ok(self.load(a, Width::B8, RegTy::I64));
+        }
+        // ponytail: the first entry with the same root; a process driving several parts of
+        // one signal through procedure calls needs the actual's LSP from sem.
+        match self
+            .drivers
+            .iter()
+            .position(|l| l.root == yavs_sem::hir::ObjRoot::Decl(d))
+        {
+            Some(k) => Ok(self.int(k as i64)),
+            None => Err(self
+                .cx
+                .ice(span, "out signal actual without a driver of the process")),
         }
     }
 
@@ -1256,6 +1283,11 @@ impl Fx<'_, '_> {
                     }
                 },
                 Shape::Sig => cells.push(self.sig_expr(e)?),
+                Shape::SigOut => {
+                    let (d, sref, _) = self.sig_name(e)?;
+                    let slot = self.driver_slot_of(d, es)?;
+                    cells.extend([sref, slot]);
+                }
                 Shape::Arr => {
                     let (data, mut dope) = match p.mode {
                         yavs_sem::hir::Mode::In => {

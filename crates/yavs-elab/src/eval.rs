@@ -1352,13 +1352,16 @@ pub(crate) fn find_call(
     None
 }
 
-/// Whether expression `e` calls an impure function.
+/// Whether expression `e` calls an impure function with a VHDL body (natives such as `now`
+/// change no package state).
 pub(crate) fn calls_impure(db: &Db, e: ExprId) -> bool {
     find_call(db, e, &mut |c| {
-        matches!(
-            db.decls[c].kind.subprogram().map(|s| &s.kind),
-            Some(yavs_sem::decl::SubprogramKind::Function { pure: false })
-        )
+        db.decls[c].kind.subprogram().is_some_and(|s| {
+            matches!(
+                s.kind,
+                yavs_sem::decl::SubprogramKind::Function { pure: false }
+            ) && matches!(s.body, yavs_sem::decl::Body::Hir { .. })
+        })
     })
     .is_some()
 }

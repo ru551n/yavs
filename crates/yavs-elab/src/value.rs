@@ -390,6 +390,9 @@ impl Model {
                     ) if is_composite(db, e) && xs.iter().all(|&x| is_composite(db, x)) => {
                         self.logical(db, e, f, xs, scope)?
                     }
+                    (Family::ToString, [x]) if !is_composite(db, *x) => {
+                        self.text_of(db, e, *x, scope)?
+                    }
                     _ if is_composite(db, e) || xs.iter().any(|&x| is_composite(db, x)) => {
                         return Err(not_yet(db, e, "a predefined operator on composite values"));
                     }
@@ -398,6 +401,34 @@ impl Model {
             }
             _ => return Ok(None),
         }))
+    }
+
+    /// `TO_STRING` of an integer or enumeration value (LRM 5.7): its image, a character
+    /// literal without the apostrophes, as a STRING `1 to n`.
+    fn text_of(&mut self, db: &Db, e: ExprId, x: ExprId, scope: Option<ScopeId>) -> R<Val> {
+        use yavs_sem::types::TypeKind;
+        let v = self.eval(db, x, scope)?;
+        let text = match (&db.types[db.base(db.exprs[x].subtype)].kind, &v) {
+            (TypeKind::Integer | TypeKind::UniversalInteger, Val::Int(i)) => {
+                yavs_std::image::integer_image(*i)
+            }
+            (TypeKind::Enum { lits }, Val::Enum(p)) => {
+                let Some(&l) = lits.get(*p as usize) else {
+                    return Err(fails(db, e, "enumeration position out of range".into()));
+                };
+                let name = db.decls[l].name.to_string();
+                match name.as_bytes() {
+                    [b'\'', c, b'\''] => vec![*c],
+                    n => yavs_std::image::identifier_image(n),
+                }
+            }
+            _ => return Err(not_yet(db, e, "TO_STRING of this type")),
+        };
+        let n = text.len() as u64;
+        Ok(make(
+            &[span(1, Direction::To, n)],
+            text.into_iter().map(|b| Val::Enum(u32::from(b))).collect(),
+        ))
     }
 
     /// Element-wise logical operators on BIT and BOOLEAN arrays (LRM 9.2.2): the result has

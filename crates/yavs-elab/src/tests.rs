@@ -612,6 +612,57 @@ fn elaboration_calls_with_package_state_restart() {
     assert_eq!(first, run(&e));
 }
 
+/// A constant whose impure initial value elaboration cannot hold (a record with an array
+/// element) is left to its run-time thunk: the call made during elaboration is undone, so it
+/// runs once and later elaboration-time calls see the state without it. The thunk runs after
+/// the replayed calls (the `ponytail:` in `walk.rs`), so `third` comes before `named`.
+#[test]
+fn unfoldable_impure_constant_runs_once() {
+    let src = "package reg is
+        type counter_t is protected
+          impure function bump return natural;
+          impure function count return natural;
+        end protected;
+        type named_t is record s : string(1 to 2); id : natural; end record;
+        impure function next_id return natural;
+        impure function new_named return named_t;
+        impure function ids return natural;
+      end;
+      package body reg is
+        type counter_t is protected body
+          variable n : natural := 0;
+          impure function bump return natural is begin n := n + 1; return n; end;
+          impure function count return natural is begin return n; end;
+        end protected body;
+        shared variable c : counter_t;
+        impure function next_id return natural is begin return c.bump; end;
+        impure function new_named return named_t is begin return (\"ab\", c.bump); end;
+        impure function ids return natural is begin return c.count; end;
+      end;
+      use work.reg.all;
+      entity t is end; architecture a of t is
+        constant first : natural := next_id;
+        constant named : named_t := new_named;
+        constant third : natural := next_id;
+      begin
+        process begin
+          report \"first=\" & integer'image(first) & \" named=\" & integer'image(named.id)
+            & \" third=\" & integer'image(third) & \" ids=\" & integer'image(ids);
+          wait;
+        end process;
+      end;";
+    let (mut db, mut e) = elab("unfoldable", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    sim.subscribe(Box::new(Collect(got.clone())));
+    sim.run_until(yavs_kernel::Time::MAX).expect("run");
+    assert_eq!(
+        *got.lock().expect("lock"),
+        ["0 0 first=1 named=3 third=2 ids=3"]
+    );
+}
+
 /// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).
 #[test]
 fn bit_and_boolean_use_std_ulogic_codes() {

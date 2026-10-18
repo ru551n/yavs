@@ -183,6 +183,8 @@ pub(crate) struct Session {
     /// from the package data (`true`).
     lowered: Vec<(DeclId, bool)>,
     live: Option<Live>,
+    /// A call failed after it may have changed the package state.
+    dirty: bool,
 }
 
 impl Session {
@@ -198,6 +200,29 @@ impl Session {
         Ok(result)
     }
 
+    /// A point to return to with [`Session::undo`].
+    pub(crate) fn mark(&self) -> usize {
+        self.log.len()
+    }
+
+    /// Undo the calls made since `mark`: the package state is rebuilt from the earlier calls.
+    pub(crate) fn undo(&mut self, db: &Db, mark: usize) -> Result<(), String> {
+        if self.log.len() == mark && !self.dirty {
+            return Ok(());
+        }
+        self.log.truncate(mark);
+        self.live = None;
+        match self.rebuild(db) {
+            Ok(l) => {
+                self.live = Some(l);
+                self.dirty = false;
+                Ok(())
+            }
+            Err(Fail::Lower(m) | Fail::Runtime(m)) => Err(m),
+            Err(Fail::Unsupported(w)) => Err(w.into()),
+        }
+    }
+
     /// The value of package constant `d` in the package data (its initial value ran when
     /// the package was elaborated).
     pub(crate) fn package_const(&mut self, db: &Db, d: DeclId) -> Result<Val, Fail> {
@@ -210,7 +235,10 @@ impl Session {
         if self.live.as_ref().is_none_or(|l| !l.sigs.contains_key(&d)) {
             self.lowered.push((d, constant));
             match self.rebuild(db) {
-                Ok(l) => self.live = Some(l),
+                Ok(l) => {
+                    self.live = Some(l);
+                    self.dirty = false;
+                }
                 Err(e) => {
                     self.lowered.pop();
                     return Err(e);
@@ -225,7 +253,9 @@ impl Session {
             .sigs
             .get(&d)
             .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
-        run(&live.rt, s, args, Some(&live.shared))
+        let r = run(&live.rt, s, args, Some(&live.shared));
+        self.dirty |= r.is_err();
+        r
     }
 
     /// Lower the packages and `lowered`, initialise the packages and replay the log.

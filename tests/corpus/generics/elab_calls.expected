@@ -1,5 +1,5 @@
 exit	0
 diag	note	0	0	:elab_calls:u1:_p0	child x id 2 own 3 width 6
 diag	note	0	0	:elab_calls:u2:_p0	child y id 4 own 5 width 5
-diag	note	0	0	:elab_calls:_p0	top first 1 sized 2 root 0 r from_root 2
+diag	note	0	0	:elab_calls:_p0	top first 1 sized 2 root 0 r from_root 2 n2xtrue t 1
 diag	note	1000000	0	:elab_calls:_p0	handles 6

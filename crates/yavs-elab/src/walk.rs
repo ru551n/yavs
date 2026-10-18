@@ -808,14 +808,26 @@ impl Elab<'_> {
                 (ObjClass::Signal, ObjRole::ImplicitSignal) => {
                     self.implicit_signal(s, d)?;
                 }
-                // A constant whose initial value calls an impure function is evaluated here,
-                // in declaration order, so its side effects on package state happen once and
-                // in order (LRM 14.4.2); other constants are evaluated when first needed.
+                // A constant whose initial value calls an impure user function is evaluated
+                // here, in declaration order, so its side effects on package state happen once
+                // and in order (LRM 14.4.2); other constants are evaluated when first needed.
                 (ObjClass::Constant, ObjRole::Plain)
                     if o.default.is_some_and(|e| crate::eval::calls_impure(db, e)) =>
                 {
-                    let span = decl.span;
-                    self.m.value_of(db, d, Some(s), span)?;
+                    let mark = self.m.session.mark();
+                    match self.m.value_of(db, d, Some(s), decl.span) {
+                        Ok(_) => {}
+                        // ponytail: a value elaboration cannot hold yet (an array of records,
+                        // say) is left to the constant's run-time thunk, which runs after the
+                        // elaboration-time calls of every region; the calls made before the
+                        // failure are undone so that none runs twice.
+                        Err(x) if x.code == crate::codes::NOT_EVALUATED => {
+                            self.m.session.undo(db, mark).map_err(|m| {
+                                Box::new(ice(decl.span, &format!("undoing calls: {m}")))
+                            })?;
+                        }
+                        Err(x) => return Err(x),
+                    }
                 }
                 _ => {}
             }

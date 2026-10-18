@@ -66,12 +66,18 @@ use work.elab_calls_reg.all;
 package elab_calls_cfg is
   constant root : handle_t := new_handle('r');
   impure function after_root(h : handle_t := root) return natural;
+  impure function at_start return natural;
 end package;
 
 package body elab_calls_cfg is
   impure function after_root(h : handle_t := root) return natural is
   begin
     return handles - h.id;
+  end function;
+  -- NOW is 0 fs during elaboration.
+  impure function at_start return natural is
+  begin
+    return now / 1 fs;
   end function;
 end package body;
 
@@ -102,6 +108,8 @@ architecture a of elab_calls is
   -- The number of handles so far sizes a signal: the calls have run in order.
   signal sized : bit_vector(1 to handles);
   signal from_root : bit_vector(1 to after_root);
+  constant name_v : string := "n" & to_string(handles) & to_string('x') & to_string(true);
+  signal t : bit_vector(0 to at_start);
 begin
   u1 : entity work.elab_calls_child generic map (h => new_handle('x'), width => plain(handles));
   u2 : entity work.elab_calls_child generic map (h => new_handle('y'), width => handles);
@@ -109,7 +117,7 @@ begin
   begin
     report "top first " & integer'image(first.id) & " sized " & integer'image(sized'length)
       & " root " & integer'image(root.id) & " " & root.tag & " from_root "
-      & integer'image(from_root'length);
+      & integer'image(from_root'length) & " " & name_v & " t " & integer'image(t'length);
     wait for 1 ns;
     report "handles " & integer'image(handles);
     assert handles = 6 severity failure;

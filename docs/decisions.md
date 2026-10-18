@@ -539,9 +539,12 @@ a note and a help suggesting an access type, as the reference simulators reject 
   the processes see the same state and `build` stays repeatable (rule 4); a replayed call
   returning another value is an internal error. Not chosen: handing the session's heap and
   package data to the simulation program, whose type, function and constant-pool ids differ.
-  ponytail: a new function relowers the session and replays the log (O(functions x calls));
-  instance thunks run after all replays, so an impure call in a constant elaboration could not
-  fold sees the elaboration-time calls of later regions first.
+  `NOW` is 0 fs during elaboration (yavs-interp), and `TO_STRING` of integer and enumeration
+  values is evaluated on `ConstValue`s. ponytail: a new function relowers the session and
+  replays the log (O(functions x calls)); a constant with an impure initial value elaboration
+  cannot hold yet (E2106, say a record with an array element) is left to its run-time thunk,
+  the calls made for it are undone, and the thunk runs after all replays, so it sees the
+  elaboration-time calls of later declarations and regions first.
 - **Package objects at run time** (#183, elab agent with the lowering agent, 2026-10-18):
   packages outside std with signals, shared variables, files or constants sem did not fold are
   lowered (`Lowerer::package`) before the architectures and initialised once at build time

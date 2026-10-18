@@ -120,6 +120,9 @@ pub struct Db {
     pub(crate) overflow: Vec<(ExprId, Option<&'static str>)>,
     /// Bounds being resolved are required at analysis time (Q5: array type bounds).
     pub(crate) required_ctx: bool,
+    /// A type mark may name an incomplete type: the designated subtype of an
+    /// access type definition is being analyzed (alloc.rs, 5.4.2).
+    pub(crate) incomplete_ok: bool,
     /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
     pub(crate) pending_implicit: Vec<crate::implicit::Pending>,
     /// How much of the arenas `validate` already checked.
@@ -220,6 +223,7 @@ impl Db {
             validated: Default::default(),
             overflow: Vec::new(),
             required_ctx: false,
+            incomplete_ok: false,
             context_subtype: None,
             top_context: None,
             tainted: HashSet::new(),

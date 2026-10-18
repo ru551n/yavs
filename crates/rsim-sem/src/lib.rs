@@ -26,6 +26,7 @@
 //! [`Db::diagnostics`].
 
 pub mod alias;
+pub mod alloc;
 pub mod attr;
 pub mod db;
 pub mod decl;

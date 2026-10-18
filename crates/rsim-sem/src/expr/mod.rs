@@ -64,6 +64,8 @@ pub enum Via {
     Slice(TypeId),
     /// Element `.1` of a prefix of record type `.0`.
     Field(TypeId, u32),
+    /// `.all` of a prefix of this access type.
+    Deref(TypeId),
     Literal,
     Other,
 }

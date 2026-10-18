@@ -457,7 +457,17 @@ impl Db {
                 ids.push(u);
             }
         }
-        if self.error_count() > before {
+        // A unit that failed, or needed one that failed, without a new error
+        // depends on a unit that failed earlier in this session (8.2: silent);
+        // the file still failed. A failed file is not recorded, so none of its
+        // units is visible to later files, as with one `rsim analyze` per file.
+        if self.error_count() > before
+            || ids.len() < keys.len()
+            || ids.iter().any(|u| self.tainted.contains(u))
+        {
+            for &k in &keys {
+                self.libs[lib].units.insert(k, UnitSlot::Failed);
+            }
             return Err(Reported);
         }
         // HIR invariants (sem.md 7.3) in debug builds.

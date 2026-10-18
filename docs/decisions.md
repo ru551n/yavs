@@ -257,6 +257,11 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Missing subprogram bodies (`E1230`)** are checked at the end of every declarative part except
   packages (checked at the end of the package body) and protected types (s6). A package without
   any analyzed body is not checked at analysis.
+- **A failed file hides all its units in the session** (`Db::analyze_file`): one session over
+  many files gives the per-file result of one `rsim analyze` per file. A file fails when a unit
+  reports an error, fails silently (8.2), or needs a unit that failed; then every unit of the file
+  is `Failed`, since the CLI records no unit of a failed file. Before, in-session counts were
+  inflated by dependents of failed units (vunit-2008: 133 in-session against 108 per file).
 - **Type names in messages** are qualified by their region (`work.i1.rec`) only when two names in
   one message collide.
 

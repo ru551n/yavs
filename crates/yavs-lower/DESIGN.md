@@ -180,9 +180,10 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 
 - Unit tests: lower small inline VHDL processes and assert the verifier passes and the expected
   instruction kinds appear with statement ids.
-- Corpus: every `tests/corpus/{scalar,arith,process,report}` file is analyzed against `lib/`,
-  lowered, and verified. Once yavs-interp runs, the same files run through yavs-kernel and are
-  compared with their `.expected` via `tools/difftest` (`--candidate yavs`).
+- Corpus: `tests/corpus.rs` analyzes every file of the `tests/corpus` groups in its `GROUPS`
+  list against `lib/`, elaborates it with yavs-elab (which lowers through this crate) and runs it
+  on yavs-kernel; files in `PASS` must match their `.expected` exactly. The full differential
+  run is `tools/difftest` (`--candidate yavs`).
 
 ## Composites (lower2: `composite.rs`, `access.rs`, `protected.rs`, `file.rs`, `force.rs`)
 

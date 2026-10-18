@@ -406,8 +406,9 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   signals (two port edges per port, uncollapsed); it is not part of path names, the bound entity
   instance carries the label.
 - **Interim evaluator:** globally static expressions are folded with sem's static folder over
-  generic and constant values (`Db::fold_with`); everything else is E2106 until yavs-interp runs
-  elaboration code (ir.md 3.6).
+  generic and constant values (`Db::fold_with`); calls of user functions with scalar arguments
+  and results run in yavs-interp after lowering the function alone (ir.md 3.6); composite values
+  (aggregates, array arguments or results) are still E2106 (#77).
 - **Package constant calling a function of its own package** whose body is not elaborated yet
   (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.
 

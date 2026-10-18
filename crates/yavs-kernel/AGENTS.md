@@ -1,0 +1,93 @@
+# AGENTS.md: yavs-kernel
+
+Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-kernel`.
+The design is `crates/yavs-kernel/DESIGN.md` (data layout, the cycle, the commit protocol, how
+the IR plugs in, error handling, open questions); read it before editing.
+
+## 1. Purpose and boundaries
+
+- The LRM 14.7 simulation cycle: time with runtime resolution, signals and drivers (transport and
+  inertial preemption per element), resolution, uncollapsed ports with conversions, implicit
+  signals, guarded signals and null transactions, force/release/deposit, postponed processes,
+  delta limit, **parallel process evaluation with a deterministic commit**, and `SimControl`
+  (run/step/interrupt, observers on an event bus, phase callbacks).
+- Does not: know the IR, VHDL types or the heap. Processes are opaque `Process` trait objects
+  (`yavs-interp`, later `yavs-llvm`); values are bytes or bit-plane logic described by
+  `SignalType`. It does not print anything (the CLI's `Observer` prints reports).
+- Depends on: `yavs-logic`, `rayon`. Called by: `yavs-interp` (implements `Process`, uses `Ctx`),
+  `yavs-ir` (types like `StmtId`), `yavs-lower`, `yavs-elab` (`Builder`), `yavs` (`Config`,
+  `SimControl`, `Observer`). Planned subscribers: `yavs-wave`, `yavs-vhpi`, DAP.
+
+## 2. Map
+
+| File | Responsibility |
+|---|---|
+| `src/lib.rs` | Re-exports (the public API is exactly this list) |
+| `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`), `PortMode` |
+| `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
+| `src/process.rs` | `Process` trait, `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `stop`/`finish`, `force`/`release`, streams), `ProcId`, `Severity`, `StreamId` |
+| `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
+| `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
+| `src/time.rs` | `Time` (checked fs arithmetic), `Unit`, `TimeError` |
+| `src/error.rs` | `SimError` (boxed `ErrorInfo { kind, time, delta, process, trace }`), `ErrorKind`, `StmtId`, `exit_status()` |
+| `tests/scenarios.rs`, `tests/kernel_asks.rs`, `tests/determinism.rs` | Cycle scenarios; K1 to K7 asks of ir.md; 1 vs 8 threads and shuffle seeds on 1000+ processes |
+| `examples/bench.rs` | `cargo run --release -p yavs-kernel --example bench -- 10000 <work>` |
+
+## 3. Design decisions that bind this module
+
+| Decision | Why | Source |
+|---|---|---|
+| Ready processes run in parallel (rayon); they read only current-cycle values and write their own driver queue and effect buffer | No data races without `unsafe` | `docs/plan.md` "Parallel kernel design", DESIGN.md "Parallel evaluation" |
+| Effects (report, assert, files, `stop`/`finish`, force) are committed in elaboration (`ProcId`) order | `--threads 1` and `N` byte-identical | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3 |
+| Processes touching non-protected shared variables or protected types are `serial` through M3 (user decision) | No locks needed yet | `docs/decisions.md` "Kernel round 2" (Protected types), DESIGN.md |
+| `--shuffle` permutes execution order with a seeded splitmix64, commit order fixed | Expose order-dependent testbenches (NVC #614) | `docs/plan.md`, DESIGN.md |
+| `SimControl` is the only way to drive simulation (CLI, DAP, VHPI) | GUI-ready design | `docs/plan.md` "Designed for the GUI" |
+| Per-element flat event arrays over whole signals, no per-scalar objects | Rule 2 | `docs/plan.md` rule 2, `docs/decisions.md` "Kernel crate and process interface" |
+| Logic signals stored as bit-planes, everything else as bytes (K7) | User, 2026-10-18 | `docs/decisions.md` "Kernel round 2", "Packed logic vectors" |
+| Uncollapsed ports, conversions in the update phase without an extra delta (K1) | Rule 3 | `docs/plan.md` rule 3, `docs/decisions.md` "Kernel round 2" |
+| Forces and deposits queued and applied next cycle | VHDL-2008 force semantics | `docs/decisions.md` "Kernel crate and process interface" |
+| Delta numbering: init is delta 0 at 0 fs; default delta limit 10000; delays truncated to the resolution | Clear, NVC-compatible report times | same |
+| Exit status: 101 internal (also a caught panic in process code), 1 otherwise; `Idle` is terminal like `stop`/`finish` | Error motto | same; DESIGN.md "Error handling" |
+| `SimError` is boxed and latches | Hot-path `Result` one word | `docs/decisions.md` "Kernel round 2" |
+| Time is checked i64 fs with a runtime resolution | Rule 7 | `docs/plan.md` rule 7 |
+| GC safepoint: the commit phase (no `Ctx` exists) | NVC #1649 deadlock | DESIGN.md "Parallel evaluation" |
+
+Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
+rule 24).
+
+## 4. Invariants and pitfalls
+
+- **Determinism across threads** is the check that matters: anything that depends on scheduling
+  (hash-map order, thread ids, timing) in the commit phase breaks it. `tests/determinism.rs` must
+  stay green at 1 and 8 threads with several seeds.
+- `#![forbid(unsafe_code)]` via workspace lints: keep it that way.
+- Bad ids or ranges are `ErrorKind::BadRef`, never an index panic; a panic is still caught and
+  becomes `Internal` (exit 101, the CLI maps it to 3).
+- User files: the kernel's K6 streams exist, but the interpreter writes disk files directly so
+  write/close/reopen in one delta works (`docs/decisions.md` "IR and interpreter"); `STD_OUTPUT`
+  still goes through `StreamId::OUTPUT` to stay ordered with `report` (#82 records the K6 gap).
+- Records resolved as a whole composite are one byte leaf: logic fields inside are bytes (#83).
+- Kernel errors have no diagnostic code yet (#84).
+
+## 5. How to work here
+
+```sh
+CARGO_BUILD_JOBS=6 cargo test -p yavs-kernel
+cargo test -p yavs-interp -p yavs-elab               # main users; run after API changes
+cargo run --release -p yavs-kernel --example bench -- 10000 0
+python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and 4 (tools/difftest)
+```
+
+- Add a scenario test with hand-written processes (`tests/common/mod.rs` helpers); a
+  thread-sensitive change also gets a case in `tests/determinism.rs`.
+- No diagnostic codes owned yet (#84 proposes codes per `ErrorKind`).
+
+## 6. Coordination
+
+- Kernel API changes ripple into `yavs-interp` (process), `yavs-elab` (builder) and the CLI;
+  `docs/design/ir.md` sections 3.2 and 6 describe the seam.
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #82
+  write-then-read of a user file inside one delta (K6); #83 records resolved as a whole store
+  logic fields as bytes; #84 errors carry no diagnostic code; #103 update/commit phases are
+  single-threaded; #107 `--threads N` determinism across the difftest and shared variables.
+  Questions on report order vs NVC: #11, #12.

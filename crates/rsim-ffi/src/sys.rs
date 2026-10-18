@@ -186,6 +186,16 @@ impl ForeignFn {
         Ok(ForeignFn { ptr, sig })
     }
 
+    /// Binds a Rust `extern "C"` function pointer. Safe: the signature
+    /// follows from the pointer's type, and a safe `extern "C" fn` is
+    /// sound to call with any argument values of its parameter types.
+    pub fn from_fn<F: crate::CFnPtr>(f: F) -> ForeignFn {
+        ForeignFn {
+            ptr: f.addr(),
+            sig: F::signature(),
+        }
+    }
+
     pub fn signature(&self) -> &Signature {
         &self.sig
     }

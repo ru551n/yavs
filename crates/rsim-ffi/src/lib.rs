@@ -22,6 +22,9 @@ mod sys;
 pub mod vhdl;
 
 pub use sys::{ForeignFn, call};
+pub use typed::{CArgType, CFnPtr, CRetType};
+
+mod typed;
 
 /// Most arguments one call may take. More is an error, not a crash.
 pub const MAX_ARGS: usize = 64;

@@ -43,6 +43,11 @@ otherwise.
   cleared the assert counts since.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--wave out.fst`` records the whole design as an FST file that waveform viewers read. It is
+  finished on normal end, on ``--stop-time`` and on Ctrl-C. ``--wave-include GLOB`` and
+  ``--wave-exclude GLOB`` (repeatable, matching paths such as ``tb.u1.count``) choose what is
+  recorded, and arrays larger than ``--wave-max-array`` (default 65536) are left out with a
+  warning. Several delta cycles at one time step give one change with the final value.
 
 Diagnostics
 -----------
@@ -55,5 +60,5 @@ explanation. ``-Werror`` turns warnings into errors, ``-Werror=CODE``, ``-Wno-CO
 Not implemented yet
 -------------------
 
-``--wave``, ``--load``, ``--vhpi`` and ``--dap`` are accepted but report that they are not
+``--load``, ``--vhpi`` and ``--dap`` are accepted but report that they are not
 implemented yet, instead of being ignored.

@@ -74,6 +74,19 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     ("E0104", "The design has no top level to elaborate."),
     ("E0105", "`--stop-time` is not a valid time such as `10ms`."),
+    // yavs-wave
+    (
+        "E0801",
+        "The waveform file given to `--wave` cannot be created or written (missing directory, permissions, full disk).",
+    ),
+    (
+        "W0802",
+        "An array or vector has more elements than `--wave-max-array` and is left out of the waveform.",
+    ),
+    (
+        "E0803",
+        "The Ctrl-C handler for `--wave` cannot be installed.",
+    ),
     // yavs-vhpi
     (
         "E0901",

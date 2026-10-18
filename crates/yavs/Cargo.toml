@@ -15,6 +15,7 @@ yavs-lib = { path = "../yavs-lib" }
 yavs-sem = { path = "../yavs-sem" }
 yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
+yavs-wave = { path = "../yavs-wave" }
 
 [lints]
 workspace = true
@@ -26,3 +27,6 @@ corpus = []
 [[test]]
 name = "corpus"
 required-features = ["corpus"]
+
+[dev-dependencies]
+wellen = "0.25.7"

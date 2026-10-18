@@ -1,15 +1,19 @@
 //! SIGINT/SIGTERM (and Ctrl-C on Windows) support.
 //!
-//! The handler only sets a flag. The kernel polls it between time steps, stops, and calls
-//! [`crate::WaveWriter::finish`], so the file is complete after Ctrl-C.
+//! The first signal only calls `stop`: `yavs run` passes the kernel's `Interrupt::stop`, the
+//! kernel ends between cycles, and the recorder finishes the file. A second signal exits at
+//! once with status 1 (a process stuck inside one cycle never polls); the file is then readable
+//! up to its last flush.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Install the handler once per process and return the flag it sets.
-pub fn install() -> Result<Arc<AtomicBool>, ctrlc::Error> {
-    let flag = Arc::new(AtomicBool::new(false));
-    let f = flag.clone();
-    ctrlc::set_handler(move || f.store(true, Ordering::SeqCst))?;
-    Ok(flag)
+/// Install the handler once per process.
+pub fn install(stop: impl Fn() + Send + 'static) -> Result<(), ctrlc::Error> {
+    let seen = AtomicBool::new(false);
+    ctrlc::set_handler(move || {
+        if seen.swap(true, Ordering::SeqCst) {
+            std::process::exit(1);
+        }
+        stop();
+    })
 }

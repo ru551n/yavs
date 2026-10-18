@@ -8,7 +8,8 @@
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
 | M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites next (#112) |
-| M3 to M10 | not started (crate spikes below) |
+| M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
+| M3, M5, M6, M8 to M10 | not started (crate spikes below) |
 
 ### External test runner: its own VHDL suites (#112)
 

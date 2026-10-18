@@ -1420,6 +1420,7 @@ name = "yavs"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "wellen",
  "yavs-diag",
  "yavs-elab",
  "yavs-kernel",
@@ -1427,6 +1428,7 @@ dependencies = [
  "yavs-sem",
  "yavs-std",
  "yavs-syntax",
+ "yavs-wave",
 ]
 
 [[package]]
@@ -1566,6 +1568,9 @@ dependencies = [
  "tempfile",
  "wavefst",
  "wellen",
+ "yavs-elab",
+ "yavs-kernel",
+ "yavs-sem",
 ]
 
 [[package]]

@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
-  `yavs-kernel`, `clap`. Not yet wired: `yavs-vhpi` (M5), `yavs-wave` (M7), `yavs-llvm` (M6),
+  `yavs-kernel`, `yavs-wave`, `clap`. Not yet wired: `yavs-vhpi` (M5), `yavs-llvm` (M6),
   `yavs-ffi` via `--load` (M3). Nothing depends on this crate.
 
 ## 2. Map
@@ -41,7 +41,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Reports on stdout as `** Note: <fs>fs+<delta>: msg` then `    Process <path>` | tools/difftest parses the reference simulator's format | `docs/decisions.md` "Runtime: default exit severity", `docs/cli-contract.md` 5 |
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
 | A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and test runner users need the VHDL location | `docs/cli-contract.md` 5 |
-| Unimplemented flags (`--wave`, `--load`, `--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
+| Unimplemented flags (`--load`, `--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
 Module-local decisions go in this section in the same commit; CLI or test-runner-facing behaviour goes
@@ -87,4 +87,4 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   binary; output format changes break their parsers.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:cli`): #64 wire
   lowering, interpreter and kernel into `yavs run`; #95 `--load`; #110 test runner simulator interface;
-  #116 `--wave`; #135 native Windows build; #22 bootstrap mode.
+  #135 native Windows build; #22 bootstrap mode.

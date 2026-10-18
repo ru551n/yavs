@@ -38,6 +38,8 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// Parsed once per process, boxing RunArgs buys nothing.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Check that VHDL files parse.
     Parse {

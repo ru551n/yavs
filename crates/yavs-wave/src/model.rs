@@ -265,6 +265,15 @@ impl HierarchyBuilder {
         if !self.sel.included(&path) || self.sel.excluded(&path) {
             return;
         }
+        if let SigType::Vector { bounds, .. } = &ty
+            && bounds.len() > self.sel.max_array_elems as u64
+        {
+            self.skipped.push(Skipped {
+                path,
+                elems: bounds.len(),
+            });
+            return;
+        }
         let sig = Signal {
             name: name.into(),
             id,

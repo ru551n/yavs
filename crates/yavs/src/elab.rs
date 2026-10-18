@@ -6,6 +6,8 @@
 //! closure, or `--std`), then elaborated.
 
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Args as ClapArgs;
 use yavs_diag::{Diagnostic, MessageFormat, SourceMap};
@@ -61,6 +63,15 @@ pub struct RunArgs {
     /// Write an FST of the whole design.
     #[arg(long, value_name = "FILE.fst")]
     wave: Option<String>,
+    /// Record only signals whose path (`top.u1.sig`) matches this glob (repeatable).
+    #[arg(long, value_name = "GLOB")]
+    wave_include: Vec<String>,
+    /// Do not record signals or scopes whose path matches this glob (repeatable).
+    #[arg(long, value_name = "GLOB")]
+    wave_exclude: Vec<String>,
+    /// Leave out arrays and vectors with more elements than this.
+    #[arg(long, value_name = "N", default_value = "65536")]
+    wave_max_array: usize,
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
@@ -262,7 +273,6 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     for (given, what) in [
-        (a.wave.is_some(), "`--wave` (M7)"),
         (!a.load.is_empty(), "`--load` (M3)"),
         (!a.vhpi.is_empty(), "`--vhpi` (M5)"),
         (a.dap.is_some(), "`--dap` (M8)"),
@@ -314,6 +324,58 @@ pub fn run(
         })
         .collect();
     sim.subscribe(Box::new(Printer { names }));
+    let wave_error = |path: &str, err: yavs_wave::Error| {
+        Diagnostic::error("E0801", format!("cannot write the waveform file `{path}`"))
+            .with_note(err.to_string())
+    };
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let recorder = match &a.wave {
+        None => None,
+        Some(path) => {
+            let sel = yavs_wave::Selection {
+                include: a.wave_include.clone(),
+                exclude: a.wave_exclude.clone(),
+                max_array_elems: a.wave_max_array,
+            };
+            let cfg = yavs_wave::WaveConfig::default();
+            match yavs_wave::record(&db, &e, std::path::Path::new(path), sel, cfg) {
+                Ok((rec, skipped)) => {
+                    for s in skipped {
+                        out.emit(
+                            &none,
+                            &Diagnostic::warning(
+                                "W0802",
+                                format!("`{}` is not recorded in the waveform", s.path),
+                            )
+                            .with_note(format!(
+                                "it has {} elements, more than `--wave-max-array={}`",
+                                s.elems, a.wave_max_array
+                            )),
+                        );
+                    }
+                    sim.subscribe(Box::new(rec.clone()));
+                    // Ctrl-C ends the run between cycles so the file is finished (rule 11).
+                    let (stop, flag) = (sim.interrupt(), interrupted.clone());
+                    if let Err(err) = yavs_wave::interrupt::install(move || {
+                        flag.store(true, Ordering::Relaxed);
+                        stop.stop();
+                    }) {
+                        out.emit(
+                            &none,
+                            &Diagnostic::error("E0803", "cannot install the Ctrl-C handler")
+                                .with_note(err.to_string()),
+                        );
+                        return out.finish(2);
+                    }
+                    Some((path, rec))
+                }
+                Err(err) => {
+                    out.emit(&none, &wave_error(path, err));
+                    return out.finish(2);
+                }
+            }
+        }
+    };
     let r = sim.run_until(stop);
     let mut o = std::io::stdout().lock();
     let code = match r {
@@ -331,6 +393,18 @@ pub fn run(
             if (0..=125).contains(&c) { c as u8 } else { 1 }
         }
         Ok(RunStatus::Ended(EndReason::Severity(_))) => 1,
+        // Ctrl-C, or the recorder stopped the run after a write error (reported below).
+        Ok(RunStatus::Ended(EndReason::Requested)) => {
+            if interrupted.load(Ordering::Relaxed) {
+                let _ = writeln!(
+                    o,
+                    "** Note: {}fs+{}: simulation interrupted",
+                    sim.now().as_fs(),
+                    sim.delta()
+                );
+            }
+            1
+        }
         Ok(_) => 0,
         Err(err) => {
             let _ = o.flush();
@@ -340,6 +414,13 @@ pub fn run(
     };
     let _ = o.flush();
     drop(o);
+    let mut code = code;
+    if let Some((path, rec)) = recorder
+        && let Err(err) = rec.finish(&sim)
+    {
+        out.emit(&none, &wave_error(path, err));
+        code = code.max(1);
+    }
     // A report of severity error or failure fails the run even below `--exit-severity`, unless
     // ClearVhdlAssert cleared the counts since: the status follows the VHDL assert counts of
     // std.env (as the reference simulator; test runners only look at zero or non-zero).

@@ -57,7 +57,10 @@ fn main() -> Result<(), Error> {
     b.up();
     let h = b.finish();
 
-    let stop = interrupt::install().expect("signal handler");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    interrupt::install(move || flag.store(true, std::sync::atomic::Ordering::SeqCst))
+        .expect("signal handler");
     let mut w = WaveWriter::create(&path, &h, WaveConfig::default())?;
     // std_ulogic positions: U X 0 1 Z W L H -
     w.change(0, SignalId(0), &[2])?;

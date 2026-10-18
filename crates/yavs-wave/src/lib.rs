@@ -2,7 +2,9 @@
 //!
 //! The kernel side is a seam of two things: a [`Hierarchy`] description built with
 //! [`HierarchyBuilder`] and a stream of `(time, SignalId, value bytes)` calls to
-//! [`WaveWriter::change`]. Nothing here depends on the kernel.
+//! [`WaveWriter::change`]. The sink itself does not depend on the kernel; [`record`] builds the
+//! hierarchy of an elaborated design and returns the [`Recorder`] that subscribes to the
+//! kernel's value-change bus.
 //!
 //! Value byte layouts, per declared [`SigType`]:
 //! - [`SigType::Vector`] (bit/std_logic family): one byte per element, the enumeration position.
@@ -15,6 +17,7 @@
 
 mod model;
 mod select;
+mod sim;
 mod writer;
 
 pub mod interrupt;
@@ -24,4 +27,5 @@ pub use model::{
     ScopeKind, SigType, Signal, SignalId, Skipped,
 };
 pub use select::Selection;
+pub use sim::{Recorder, record};
 pub use writer::{Error, WaveConfig, WaveWriter};

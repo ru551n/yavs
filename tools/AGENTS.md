@@ -1,0 +1,68 @@
+# AGENTS.md: tools/
+
+Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
+`tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
+`tools/difftest/AGENTS.md` (differential simulation corpus).
+
+## 1. Purpose and boundaries
+
+- Developer and CI scripts around the Rust workspace: fetching external corpora, deriving and
+  checking the vendored IEEE libraries, generating `lib/NATIVE.md`, NVC reference runs, the
+  rename sweep, the analysis corpus runner and the differential test harness.
+- Not part of any crate; nothing here is built by cargo. Python is stdlib only (run with
+  `python3 -I`), shell is bash or POSIX sh.
+- Inputs are external checkouts in a cache directory, never repository content (root rule 7).
+
+## 2. Map
+
+| Path | What |
+|---|---|
+| `fetch-corpus.sh [DIR]` | Fetch the external corpora (VUnit, OSVVM, OsvvmLibraries, UVVM, rust_hdl, NVC tests, VESTs, GHDL gna, hdl-modules, open-logic, en_cl_fix, PoC, ...) at pinned commits into `DIR` (default `~/.cache/rsim-corpus`), sparse where possible |
+| `derive_libs.py <packages-checkout> <outdir>` | Derive `lib/std` and `lib/ieee` from IEEE VASG Packages: byte-for-byte upstream plus the edits listed in `lib/SOURCES.md` |
+| `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
+| `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
+| `check-nvc.sh [2008|2019]` | Analyze `lib/` with NVC in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
+| `rename-yavs.sh` | Idempotent rsim to yavs sweep for worktrees that still carry the old name |
+| `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
+| `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |
+
+## 3. Design decisions that bind this module
+
+| Decision | Why | Source |
+|---|---|---|
+| External corpora are fetched at pinned commits into a cache, never committed | Licences, repo size | root `AGENTS.md` rule 7, `docs/plan.md` "External test inputs" |
+| Every reference simulator run is `timeout 300 systemd-run --user --scope -p MemoryMax=2G`, at most 8 at once | Shared host (OOM history) | root `AGENTS.md` rule 15, `docs/plan.md` "Working rules" |
+| Scratch output under `~/.cache/rsim-*` (old name kept on purpose) | `/tmp` is a small shared tmpfs; directories exist on disk | root `AGENTS.md` rule 20, `docs/decisions.md` "Project name" |
+| `lib/` changes only through `derive_libs.py` | Reproducible from upstream, hashes stay valid | `lib/SOURCES.md`, `lib/AGENTS.md` |
+| NVC, GHDL, Questa are dev-only references | Approved dependencies | root `AGENTS.md` rule 9 |
+| Exit statuses always propagate; never pipe a check into `grep`/`tail` | Error motto | root `AGENTS.md` rule 13 |
+
+Decisions about the tooling go in this section (or the subdirectory guide) in the same commit
+(root `AGENTS.md` rule 24).
+
+## 4. Invariants and pitfalls
+
+- Pinned commits in `fetch-corpus.sh` and the expected lists in `tests/parse-corpus/` and
+  `tools/corpus/*.expected` move together: bump a commit, re-run, review the list diff.
+- `update-ieee-libs.sh` contacts opensource.ieee.org (a read-only fetch); it runs the check even
+  with unknown arguments.
+- Disk is shared and often near full (`df -h ~`): the corpora take several GB in
+  `~/.cache/rsim-corpus`.
+
+## 5. How to work here
+
+```sh
+tools/fetch-corpus.sh                                  # ~/.cache/rsim-corpus
+YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus
+tools/update-ieee-libs.sh                              # lib/ still equals upstream plus edits
+tools/check-nvc.sh 2019
+```
+
+- No diagnostic codes.
+
+## 6. Coordination
+
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label tools`): #62 re-run
+  `report.sh` and refresh `tools/corpus/RESULTS.md`; #63 gate analysis corpora in CI with
+  expected-failure lists; #65 difftest: all `tests/corpus` groups equal to NVC at 1, 4 and 4
+  shuffled threads. Infra: #87 periodic fuzz and parse-corpus gate, #134 CI.

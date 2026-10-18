@@ -98,5 +98,5 @@ Thread-count invariance: if the template contains `{threads}`, `--threads 4` run
 ## Corpus
 
 Grouped by directory: `scalar arith process delta sigassign postponed report env resolution
-force composite access protected textio generics hierarchy`. Written from scratch (no
+force composite access protected textio generics hierarchy reflect`. Written from scratch (no
 NVC/GHDL test files). A few use `std=2019`. See `git log` and the file list (`--list`).

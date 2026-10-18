@@ -987,6 +987,7 @@ impl SimControl {
                 delta: self.delta,
                 cycle: self.cycle,
                 resolution: self.cfg.resolution,
+                stop_severity: self.cfg.stop_severity,
                 signals: &self.signals,
                 drivers: &self.drivers,
                 names: &self.names,

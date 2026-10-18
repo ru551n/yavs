@@ -112,6 +112,7 @@ pub(crate) struct Shared<'a> {
     pub delta: u32,
     pub cycle: u64,
     pub resolution: Unit,
+    pub stop_severity: Severity,
     pub signals: &'a [Signal],
     pub drivers: &'a [DriverInfo],
     pub names: &'a [String],
@@ -132,6 +133,12 @@ impl Ctx<'_> {
 
     pub fn delta(&self) -> u32 {
         self.sh.delta
+    }
+
+    /// `Config::stop_severity`: a report at this severity ends the simulation after the
+    /// current cycle, so the process should not execute past it.
+    pub fn stop_severity(&self) -> Severity {
+        self.sh.stop_severity
     }
 
     pub fn process(&self) -> ProcId {

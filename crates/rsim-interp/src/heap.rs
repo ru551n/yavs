@@ -247,3 +247,53 @@ pub fn value_handles(prog: &Program, ty: TyId, data: &[u8], out: &mut Vec<u64>) 
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsim_ir::{Field, IdVec, Program};
+
+    #[test]
+    fn handles_and_collection() {
+        let mut types = IdVec::new();
+        let int = types.push(Ty::Int { lo: 0, hi: 9 });
+        let node = types.push(Ty::Record {
+            fields: vec![
+                Field {
+                    name: "v".into(),
+                    ty: int,
+                    desc: None,
+                },
+                Field {
+                    name: "next".into(),
+                    ty: TyId(2),
+                    desc: None,
+                },
+            ],
+        });
+        types.push(Ty::Access { target: node });
+        let prog = Program {
+            types,
+            ..Program::default()
+        };
+        let mut h = Heap::new(PRIVATE);
+        // a -> b, c unreachable.
+        let b = h.alloc(node, vec![0; 16]).unwrap();
+        let mut ad = vec![0; 8];
+        ad.extend(b.to_le_bytes());
+        let a = h.alloc(node, ad).unwrap();
+        let c = h.alloc(node, vec![0; 16]).unwrap();
+        assert!(h.collect(&prog, &[a]));
+        assert_eq!(h.live(), 2);
+        assert_eq!(h.resolve(c), Err(HeapError::Stale));
+        assert!(h.resolve(b).is_ok());
+        h.free(a).unwrap();
+        assert_eq!(h.free(a), Err(HeapError::Stale));
+        // The freed slot is reused with a new generation; the old handle stays stale.
+        let d = h.alloc(int, vec![0; 8]).unwrap();
+        assert_ne!(d, a);
+        assert_eq!(h.resolve(a), Err(HeapError::Stale));
+        assert_eq!(h.resolve(0), Err(HeapError::Null));
+        assert_eq!(h.resolve(pack(SHARED, 0, 1)), Err(HeapError::WrongHeap));
+    }
+}

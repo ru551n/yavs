@@ -784,7 +784,9 @@ fn form_holds(form: Form, prefix: PrefixForm) -> bool {
 }
 
 fn describe(db: &Db, prefix: &Prefix) -> String {
-    let ty = prefix.subtype.map(|st| format!("`{}`", db.subtype_name(st)));
+    let ty = prefix
+        .subtype
+        .map(|st| format!("`{}`", db.subtype_name(st)));
     let form = match prefix.form {
         PrefixForm::TypeMark => "a type mark",
         PrefixForm::Object { signal: true } => "a signal",
@@ -1154,23 +1156,52 @@ pub fn specify(
                 {
                     found.push(owner);
                 }
-                let found: Vec<DeclId> = found
-                    .into_iter()
-                    .filter(|&d| in_class(db, d, class))
-                    .collect();
                 if found.is_empty() {
                     failed = Some(db.error(
                         Diagnostic::error(
-                            diag::ENTITY_CLASS,
+                            diag::NOT_DECLARED,
                             format!(
-                                "no {} named `{}` is declared in this declarative part",
-                                class.as_str(),
+                                "`{}` is not declared in this declarative part",
                                 des_text(des)
                             ),
                         )
                         .with_primary(sp, "not found in this region")
                         .with_note("an attribute specification names entities declared in the same declarative part (LRM 7.2)"),
                     ));
+                    continue;
+                }
+                let first = found[0];
+                let found: Vec<DeclId> = found
+                    .into_iter()
+                    .filter(|&d| in_class(db, d, class))
+                    .collect();
+                if found.is_empty() {
+                    let (msg, label) = match entity_class(db, first) {
+                        Some(k) => (
+                            format!(
+                                "`{}` is a {}, not a {}",
+                                des_text(des),
+                                k.as_str(),
+                                class.as_str()
+                            ),
+                            format!("`{}` has entity class `{}`", des_text(des), k.as_str()),
+                        ),
+                        None => (
+                            format!(
+                                "`{}` cannot be decorated as a {}",
+                                des_text(des),
+                                class.as_str()
+                            ),
+                            "this entity class does not match".to_string(),
+                        ),
+                    };
+                    failed = Some(
+                        db.error(
+                            Diagnostic::error(diag::ENTITY_CLASS, msg)
+                                .with_primary(spec.class_span, label)
+                                .with_secondary(sp, "named here"),
+                        ),
+                    );
                     continue;
                 }
                 match sig {

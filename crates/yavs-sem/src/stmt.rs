@@ -1670,8 +1670,12 @@ impl Db {
             return Err(self.ice(span, "instantiated unit has no generics and ports"));
         };
         let mut errs = Errs::default();
+        // The generic map records the actuals of generic types in `inst_types`, so generic
+        // subprograms and ports of those types take them (6.5.6.2).
+        self.inst_types.clear();
         let generic_map = errs.keep(self.st_assoc(scope, &gens, gmap, span));
         let port_map = errs.keep(self.st_assoc(scope, &ports, pmap, span));
+        self.inst_types.clear();
         errs.finish(())?;
         Ok(StmtKind::Instance {
             target,

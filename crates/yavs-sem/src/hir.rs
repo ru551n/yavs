@@ -135,6 +135,10 @@ pub enum Actual {
         actual_conv: Option<DeclId>,
         actual: ExprId,
     },
+    /// The actual of a generic type in an instance's generic map (6.5.7.2).
+    Subtype(SubtypeId),
+    /// The actual of a generic subprogram in an instance's generic map.
+    Subprogram(DeclId),
 }
 
 pub struct AggAssoc {

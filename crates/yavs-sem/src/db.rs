@@ -120,6 +120,8 @@ pub struct Db {
     pub(crate) overflow: Vec<(ExprId, Option<&'static str>)>,
     /// Bounds being resolved are required at analysis time (Q5: array type bounds).
     pub(crate) required_ctx: bool,
+    /// Generic types of the instance whose port map is being resolved, with their actuals.
+    pub(crate) inst_types: Vec<(TypeId, SubtypeId)>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     pub(crate) incomplete_ok: bool,
@@ -223,6 +225,7 @@ impl Db {
             validated: Default::default(),
             overflow: Vec::new(),
             required_ctx: false,
+            inst_types: Vec::new(),
             incomplete_ok: false,
             context_subtype: None,
             top_context: None,

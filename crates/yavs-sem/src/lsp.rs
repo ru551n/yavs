@@ -297,7 +297,7 @@ impl Db {
                     self.walk_expr(*e, f);
                 }
             }
-            Actual::Default | Actual::Open => {}
+            Actual::Default | Actual::Open | Actual::Subtype(_) | Actual::Subprogram(_) => {}
         }
     }
 
@@ -488,7 +488,7 @@ impl Db {
                     f(*e, u);
                 }
             }
-            Actual::Default | Actual::Open => {}
+            Actual::Default | Actual::Open | Actual::Subtype(_) | Actual::Subprogram(_) => {}
         }
     }
 

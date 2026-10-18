@@ -2512,6 +2512,8 @@ impl Db {
                         actual_conv: actual_conv.map(|d| self.r_decl(r, d)),
                         actual: self.r_expr(r, *actual),
                     },
+                    Actual::Subtype(st) => Actual::Subtype(self.r_subtype(r, *st)),
+                    Actual::Subprogram(d) => Actual::Subprogram(self.r_decl(r, *d)),
                 },
             })
             .collect()

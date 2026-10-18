@@ -574,6 +574,13 @@ impl Db {
                 }
                 Assoc::Parts(parts) => errs.keep(self.partial(scope, f, assocs, &parts)),
             };
+            // Later generic subprograms and the port map see this type's actual.
+            if let (Some(Actual::Subtype(st)), DeclKind::GenericType(t)) =
+                (&actual, &self.decls[f].kind)
+            {
+                let t = *t;
+                self.inst_types.push((t, *st));
+            }
             if let Some(actual) = actual {
                 args.push(Arg {
                     formal: k as u16,
@@ -766,11 +773,24 @@ impl Db {
         formal_conv: Option<DeclId>,
         fspan: Span,
     ) -> Result<Actual, Reported> {
+        match &self.decls[f].kind {
+            DeclKind::GenericType(_) => return self.type_actual(scope, a, fspan),
+            DeclKind::GenericSubprogram(_) => return self.subprogram_actual(scope, f, a, fspan),
+            _ => {}
+        }
         let DeclKind::Object(o) = &self.decls[f].kind else {
-            return Err(Reported);
+            return Err(self.unsupported(fspan, "generic packages of design entities", "S4"));
         };
         let (st, role, mode, has_default) =
             (o.subtype, o.role.clone(), o.mode, o.default.is_some());
+        // A port of a generic type of this instance has the type's actual.
+        // ponytail: only ports whose type is the generic type itself; composites built from
+        // it need the instance substitution of generic.rs.
+        let st = self
+            .inst_types
+            .iter()
+            .find(|(t, _)| *t == self.base(st))
+            .map_or(st, |&(_, a)| a);
         let e = match a {
             ast::Actual::Open(sp) => {
                 if role == ObjRole::Port && mode == Some(Mode::In) && !has_default {
@@ -892,6 +912,114 @@ impl Db {
             },
             None => Actual::Expr(id),
         })
+    }
+
+    /// `t => integer`, `t => std_logic_vector(7 downto 0)`: a generic type's actual.
+    fn type_actual(
+        &mut self,
+        scope: ScopeId,
+        a: &ast::Actual,
+        at: Span,
+    ) -> Result<Actual, Reported> {
+        let st = match a {
+            ast::Actual::Subtype(si) => self.subtype_indication(scope, si)?,
+            ast::Actual::Expr(ast::Expr {
+                kind: ast::ExprKind::Name(n),
+                ..
+            }) => match self.index_constrained_name(scope, n) {
+                Some(st) => st?,
+                None => self.type_mark(scope, n)?,
+            },
+            _ => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_A_TYPE,
+                        "the actual of a generic type must be a subtype",
+                    )
+                    .with_primary(at, "not a subtype indication"),
+                ));
+            }
+        };
+        Ok(Actual::Subtype(st))
+    }
+
+    /// `img => ii`: a subprogram whose profile is the formal's with the instance's type
+    /// actuals substituted (6.5.7.2; `is <>` defaults are not resolved here).
+    fn subprogram_actual(
+        &mut self,
+        scope: ScopeId,
+        f: DeclId,
+        a: &ast::Actual,
+        at: Span,
+    ) -> Result<Actual, Reported> {
+        let ast::Actual::Expr(ast::Expr {
+            kind: ast::ExprKind::Name(n),
+            ..
+        }) = a
+        else {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::TYPE_MISMATCH,
+                    "the actual of a generic subprogram must be a subprogram name",
+                )
+                .with_primary(at, "not a subprogram name"),
+            ));
+        };
+        let subst = |db: &Db, st: SubtypeId| {
+            let t = db.base(st);
+            db.inst_types
+                .iter()
+                .find(|(g, _)| *g == t)
+                .map_or(t, |&(_, a)| db.base(a))
+        };
+        let Some(fs) = self.decls[f].kind.subprogram() else {
+            return Err(Reported);
+        };
+        let want: Vec<crate::ids::TypeId> =
+            fs.params.iter().map(|p| subst(self, p.subtype)).collect();
+        let want_ret = fs.ret.map(|r| subst(self, r));
+        let cands = match self.classify(scope, n) {
+            crate::expr::names::NameRes::One(d) => vec![d],
+            crate::expr::names::NameRes::Overloads(ds) => ds,
+            other => return Err(self.report_name(scope, other)),
+        };
+        let fits: Vec<DeclId> = cands
+            .into_iter()
+            .map(|d| self.entity(d))
+            .filter(|&d| match self.decls[d].kind.subprogram() {
+                Some(s) => {
+                    s.params.len() == want.len()
+                        && s.params
+                            .iter()
+                            .zip(&want)
+                            .all(|(p, &w)| self.base(p.subtype) == w)
+                        && s.ret.map(|r| self.base(r)) == want_ret
+                }
+                None => false,
+            })
+            .collect();
+        match fits.as_slice() {
+            [d] => Ok(Actual::Subprogram(*d)),
+            _ => Err(self.error(
+                Diagnostic::error(
+                    diag::TYPE_MISMATCH,
+                    format!(
+                        "no single visible `{}` matches generic subprogram `{}`",
+                        self.source_text(n.span),
+                        self.decls[f].name
+                    ),
+                )
+                .with_primary(
+                    n.span,
+                    if fits.is_empty() {
+                        "no subprogram with this profile"
+                    } else {
+                        "several subprograms fit"
+                    },
+                )
+                .with_secondary(self.decls[f].span, "generic subprogram declared here"),
+            )),
+        }
     }
 
     fn is_signal_name(&self, e: ExprId) -> bool {

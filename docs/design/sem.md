@@ -1131,6 +1131,8 @@ pub enum Actual {
     Open,
     Individual(Box<[(Box<[LspStep]>, ExprId)]>), // sub-element association
     Converted { formal_conv: Option<DeclId>, actual_conv: Option<DeclId>, actual: ExprId },
+    Subtype(SubtypeId),     // actual of a generic type in an instance's generic map
+    Subprogram(DeclId),     // actual of a generic subprogram in an instance's generic map
 }
 ```
 

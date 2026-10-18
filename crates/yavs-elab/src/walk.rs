@@ -63,6 +63,8 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
             Actual::Default => A::Default,
             Actual::Open => A::Open,
             Actual::Individual(p) => A::Parts(p.iter().map(|(s, e)| (s.to_vec(), *e)).collect()),
+            // Never read: `generic` reports generic types and subprograms unsupported first.
+            Actual::Subtype(_) | Actual::Subprogram(_) => A::Default,
             Actual::Converted {
                 formal_conv,
                 actual_conv,

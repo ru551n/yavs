@@ -877,6 +877,7 @@ fn instance_out_ports_are_sources() {
         let so = fx.obj(s);
         fx.stmt(StmtKind::Instance {
             target: InstTarget::Component(comp),
+            scope: fx.db.root,
             generic_map: Box::new([]),
             port_map: Box::new([Arg {
                 formal,

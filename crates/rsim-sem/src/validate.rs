@@ -696,6 +696,7 @@ impl<'a> Cx<'a> {
                 target,
                 generic_map,
                 port_map,
+                ..
             } => {
                 let (g, p) = match target {
                     crate::hir::InstTarget::Component(c) => match &self.db.decls[*c].kind {

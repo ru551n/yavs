@@ -1667,6 +1667,7 @@ impl Db {
         errs.finish(())?;
         Ok(StmtKind::Instance {
             target,
+            scope,
             generic_map: generic_map.unwrap_or_default(),
             port_map: port_map.unwrap_or_default(),
         })

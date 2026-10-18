@@ -415,6 +415,9 @@ pub enum StmtKind {
     },
     Instance {
         target: InstTarget,
+        /// The region the instance statement is in: `Db::default_binding(scope, component)`
+        /// for a component instance without a configuration (7.3.3).
+        scope: ScopeId,
         generic_map: Box<[Arg]>,
         port_map: Box<[Arg]>,
     },

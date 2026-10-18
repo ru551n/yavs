@@ -138,6 +138,7 @@ end architecture;"
         generic_map,
         port_map,
         target,
+        ..
     } = &r.db.stmts[stmts[0]].kind
     else {
         panic!("instance");
@@ -302,12 +303,13 @@ fn default_binding_prefers_the_directly_visible_entity() {
     let s = r.arch_stmts("a")[0];
     let StmtKind::Instance {
         target: InstTarget::Component(c),
+        scope,
         ..
     } = r.db.stmts[s].kind
     else {
         panic!("component instance");
     };
-    let scope = r.unit(UnitKind::Architecture, "a").scope;
+    assert_eq!(scope, r.unit(UnitKind::Architecture, "a").scope);
     let mut db = r.db;
     let (e, arch) = db.default_binding(scope, c).expect("bound");
     assert_eq!(db.libs[db.units[e].lib].name.key.as_str(), "other");
@@ -340,12 +342,13 @@ fn default_binding_takes_the_last_architecture() {
     let s = r.arch_stmts("a")[0];
     let StmtKind::Instance {
         target: InstTarget::Component(c),
+        scope,
         ..
     } = r.db.stmts[s].kind
     else {
         panic!("component instance");
     };
-    let scope = r.unit(UnitKind::Architecture, "a").scope;
+    assert_eq!(scope, r.unit(UnitKind::Architecture, "a").scope);
     let mut db = r.db;
     let (_, arch) = db.default_binding(scope, c).expect("bound");
     assert_eq!(arch.map(|a| a.to_string()).as_deref(), Some("r2"));

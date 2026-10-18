@@ -1,0 +1,17 @@
+error[E1001]: unknown library `nolib`
+ --> nolib.vhd:1:9
+  |
+1 | library nolib;
+  |         ^^^^^ not a mapped library
+  |
+  = note: mapped libraries: ieee, std
+  = help: map it with `nolib:PATH`
+
+error[E1100]: `nolib` is not declared
+ --> nolib.vhd:2:5
+  |
+2 | use nolib.p.all;
+  |     ^^^^^ not found in this scope
+
+error: aborting due to 2 previous errors
+

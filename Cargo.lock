@@ -1010,6 +1010,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "rsim-diag",
+ "rsim-lib",
+ "rsim-sem",
  "rsim-syntax",
 ]
 

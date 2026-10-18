@@ -1,0 +1,8 @@
+error[E1100]: `undefined_name` is not declared
+ --> bad.vhd:2:27
+  |
+2 |   constant c : integer := undefined_name;
+  |                           ^^^^^^^^^^^^^^ not found in this scope
+
+error: aborting due to 1 previous error
+

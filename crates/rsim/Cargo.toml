@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 clap.workspace = true
 rsim-diag.workspace = true
+rsim-lib = { path = "../rsim-lib" }
+rsim-sem = { path = "../rsim-sem" }
 rsim-syntax.workspace = true
 
 [lints]

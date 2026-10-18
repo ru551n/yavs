@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod analyze;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use rsim_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
 use rsim_syntax::{Encoding, Options, Std};
@@ -41,10 +43,12 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Analyze one VHDL file into a library.
+    Analyze(analyze::Args),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum StdArg {
+pub(crate) enum StdArg {
     #[value(name = "2008")]
     V2008,
     #[value(name = "2019")]
@@ -59,7 +63,7 @@ enum EncodingArg {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum Color {
+pub(crate) enum Color {
     Auto,
     Always,
     Never,
@@ -72,7 +76,7 @@ enum Format {
     Json,
 }
 
-fn parse_define(s: &str) -> Result<(String, String), String> {
+pub(crate) fn parse_define(s: &str) -> Result<(String, String), String> {
     match s.split_once('=') {
         Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
         _ => Err(format!("expected NAME=VALUE, found `{s}`")),
@@ -83,7 +87,24 @@ fn parse_define(s: &str) -> Result<(String, String), String> {
 const READ_ERROR: &str = "E0100";
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let args = match analyze::expand_response_files(
+        std::env::args_os().map(|a| a.to_string_lossy().into_owned()),
+    ) {
+        Ok(a) => a,
+        Err(d) => {
+            eprint!(
+                "{}",
+                rsim_diag::render(
+                    &SourceMap::default(),
+                    &d,
+                    MessageFormat::Human,
+                    ColorChoice::Auto.use_color()
+                )
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let cli = Cli::parse_from(args);
     let color = match cli.color {
         Color::Auto => ColorChoice::Auto,
         Color::Always => ColorChoice::Always,
@@ -100,12 +121,15 @@ fn main() -> ExitCode {
         EncodingArg::Latin1 => Encoding::Latin1,
         EncodingArg::Utf8 => Encoding::Utf8,
     };
-    let Command::Parse {
-        std,
-        defines,
-        dump_ast,
-        files,
-    } = cli.command;
+    let (std, defines, dump_ast, files) = match cli.command {
+        Command::Parse {
+            std,
+            defines,
+            dump_ast,
+            files,
+        } => (std, defines, dump_ast, files),
+        Command::Analyze(a) => return analyze::run(a, format, color, encoding),
+    };
     let opts = Options {
         std: match std {
             StdArg::V2008 => Std::Vhdl2008,

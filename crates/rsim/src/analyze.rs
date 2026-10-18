@@ -1,0 +1,238 @@
+//! `rsim analyze` and response-file expansion (docs/cli-contract.md sections 0, 4).
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::Args as ClapArgs;
+use rsim_diag::{Diagnostic, MessageFormat, Severity, SourceMap};
+use rsim_lib::{Libraries, Library};
+use rsim_sem::{Db, LangRev, Options};
+use rsim_syntax::Encoding;
+
+use crate::StdArg;
+
+#[derive(ClapArgs)]
+pub struct Args {
+    /// Language standard of this file.
+    #[arg(long, value_enum, default_value = "2008")]
+    std: StdArg,
+    /// The library analyzed into, `NAME:PATH`.
+    #[arg(long, value_name = "NAME:PATH", required = true)]
+    work: String,
+    /// Another library, `NAME:PATH` (repeatable).
+    #[arg(long = "map", value_name = "NAME:PATH")]
+    maps: Vec<String>,
+    /// Relax some LRM checks (sem.md 8.4).
+    #[arg(long)]
+    relaxed: bool,
+    /// Define a conditional analysis identifier, `NAME=VALUE`.
+    #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
+    defines: Vec<(String, String)>,
+    /// `-Werror` makes warnings errors; other `-W` forms are not implemented yet.
+    #[arg(short = 'W', value_name = "FLAG")]
+    warn: Vec<String>,
+    file: PathBuf,
+}
+
+/// Replace every `@FILE` argument (after the program name) by the lines of FILE.
+pub fn expand_response_files(
+    args: impl Iterator<Item = String>,
+) -> Result<Vec<String>, Box<Diagnostic>> {
+    let mut out = Vec::new();
+    for (i, a) in args.enumerate() {
+        let Some(path) = a.strip_prefix('@').filter(|_| i > 0) else {
+            out.push(a);
+            continue;
+        };
+        let text = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| String::from_utf8(b).map_err(|_| "not valid UTF-8".to_string()))
+            .map_err(|e| {
+                Box::new(
+                    Diagnostic::error("E0101", format!("cannot read response file `{path}`"))
+                        .with_note(e),
+                )
+            })?;
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        if text.is_empty() {
+            continue;
+        }
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        out.extend(
+            text.split('\n')
+                .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()),
+        );
+    }
+    Ok(out)
+}
+
+/// The `lib/` tree: `$RSIM_STDLIB`, else `lib/` in the executable's directory or
+/// up to three parents (installed `bin/../lib`, `target/debug/../../lib`), else
+/// the source checkout it was built from.
+fn stdlib() -> PathBuf {
+    if std::env::var_os("RSIM_STDLIB").is_none()
+        && let Ok(exe) = std::env::current_exe()
+        && let Some(p) = exe
+            .ancestors()
+            .skip(1)
+            .take(4)
+            .map(|d| d.join("lib"))
+            .find(|d| d.join("std").is_dir() && d.join("ieee").is_dir())
+    {
+        return p;
+    }
+    rsim_sem::default_stdlib()
+}
+
+struct Out {
+    format: MessageFormat,
+    color: bool,
+    errors: usize,
+    warnings: usize,
+    werror: bool,
+}
+
+impl Out {
+    fn emit(&mut self, sources: &SourceMap, d: &Diagnostic) {
+        match d.severity {
+            Severity::Error => self.errors += 1,
+            Severity::Warning if self.werror => self.errors += 1,
+            Severity::Warning => self.warnings += 1,
+            Severity::Note => {}
+        }
+        let _ = std::io::stderr()
+            .lock()
+            .write_all(rsim_diag::render(sources, d, self.format, self.color).as_bytes());
+    }
+    fn finish(&self, code: u8) -> ExitCode {
+        if self.errors > 0 && self.format == MessageFormat::Human {
+            let s = if self.errors == 1 { "" } else { "s" };
+            let d = Diagnostic::error(
+                "",
+                format!("aborting due to {} previous error{s}", self.errors),
+            );
+            let _ = std::io::stderr().lock().write_all(
+                rsim_diag::render(&SourceMap::default(), &d, self.format, self.color).as_bytes(),
+            );
+        }
+        ExitCode::from(code)
+    }
+}
+
+pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> ExitCode {
+    let mut out = Out {
+        format,
+        color,
+        errors: 0,
+        warnings: 0,
+        werror: a.warn.iter().any(|w| w == "error"),
+    };
+    let none = SourceMap::default();
+    // Usage errors: exit 2.
+    let mut libs = Libraries::new();
+    for spec in std::iter::once(&a.work).chain(&a.maps) {
+        let name = spec
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let r = if name == "std" || name == "ieee" {
+            Err(Box::new(
+                Diagnostic::error("E0102", format!("library `{name}` is provided by rsim"))
+                    .with_help("remove the `std`/`ieee` mapping; rsim resolves them itself"),
+            ))
+        } else {
+            libs.add_spec(spec)
+        };
+        if let Err(d) = r {
+            out.emit(&none, &d);
+            return out.finish(2);
+        }
+    }
+    if let Some(w) = a.warn.iter().find(|w| *w != "error") {
+        out.emit(
+            &none,
+            &Diagnostic::error("E0103", format!("unsupported warning option `-W{w}`")),
+        );
+        return out.finish(2);
+    }
+    let (work, _) = a.work.split_once(':').expect("checked by add_spec");
+    let work_lib: Library = libs.get(work).expect("just added").clone();
+
+    let rev = match a.std {
+        StdArg::V2008 => LangRev::Vhdl2008,
+        StdArg::V2019 => LangRev::Vhdl2019,
+    };
+    let std_name = if matches!(a.std, StdArg::V2008) {
+        "2008"
+    } else {
+        "2019"
+    };
+    let mut opts = Options::new(rev, stdlib());
+    // A work library without a manifest is a valid empty library (contract section 3);
+    // the analyzer only learns about it once something was recorded.
+    if !work_lib.dir.join(rsim_lib::MANIFEST_FILE).exists() {
+        let mut l = Libraries::new();
+        for n in libs.names().filter(|n| *n != work_lib.name) {
+            l.add(n, libs.get(n).expect("listed").dir.clone());
+        }
+        libs = l;
+    }
+    opts.libraries = libs;
+    opts.relaxed = a.relaxed;
+    opts.defines = a.defines;
+
+    let bytes = std::fs::read(&a.file);
+    if encoding == Encoding::Utf8
+        && let Ok(b) = &bytes
+    {
+        let mut sm = SourceMap::default();
+        if let (_, Some(d)) =
+            rsim_syntax::load_source(&mut sm, a.file.display().to_string(), b.clone(), encoding)
+        {
+            out.emit(&sm, &d);
+            return out.finish(1);
+        }
+    }
+
+    std::panic::set_hook(Box::new(|_| {}));
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut db = Db::new(opts);
+        let r = db.analyze_file(work, &a.file, rev);
+        for d in db.diagnostics() {
+            out.emit(&db.sources, d);
+        }
+        r
+    }));
+    let records = match run {
+        Err(p) => {
+            let msg = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            out.errors += 1;
+            let d = Diagnostic::error("E9000", "internal compiler error: this is a bug in rsim")
+                .with_note(format!("panicked: {msg}"))
+                .with_note(format!("while analyzing `{}`", a.file.display()));
+            let _ = std::io::stderr()
+                .lock()
+                .write_all(rsim_diag::render(&none, &d, format, color).as_bytes());
+            return out.finish(3);
+        }
+        Ok(r) => r,
+    };
+    let records = match records {
+        Ok(r) if out.errors == 0 => r,
+        _ => return out.finish(1),
+    };
+    // bytes was readable or analysis would have failed.
+    let bytes = bytes.unwrap_or_default();
+    let hash = rsim_lib::hash_content(&bytes);
+    if let Err(d) = work_lib.update_file(std_name, Path::new(&a.file), &hash, records) {
+        out.emit(&none, &d);
+        return out.finish(1);
+    }
+    out.finish(0)
+}

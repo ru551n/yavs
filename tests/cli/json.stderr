@@ -1,0 +1,1 @@
+{"severity":"error","code":"E1100","message":"`undefined_name` is not declared","spans":[{"file":"bad.vhd","byte_start":41,"byte_end":55,"line_start":2,"column_start":27,"line_end":2,"column_end":41,"primary":true,"label":"not found in this scope"}],"notes":[],"help":[]}

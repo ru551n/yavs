@@ -195,3 +195,10 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
   `p(i)` with `p` an access): classify returns `Unsupported` for `.all` today; std_logic_1164's
   body needs it.
 - **stmt** uses `Db::proc_call(scope, name)` (resolve.rs) through `st_proc_call` (done).
+
+From cli (`rsim analyze`):
+
+- **loader.rs** `parse_into_cache` hardcodes `Encoding::Auto` and drops the diagnostic of
+  `load_source`. Request: an `encoding` field in `rsim_sem::Options` (default `Auto`) passed to
+  `load_source`, and its diagnostic reported through `Db::error`. The CLI only pre-checks
+  `--encoding=utf8`; `--encoding=latin1` is accepted but has no effect on `analyze` until then.

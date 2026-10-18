@@ -13,7 +13,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 |---|---|---|---|
 | `ids.rs` | typed ids, `Arena` | S1 | done |
 | `db.rs` | `Db`, arenas, `WellKnown`, `Poison`, diagnostics helpers (`error`, `ice`, `unsupported`) | S1 | done; add fields additively |
-| `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead |
+| `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead; encoding: #20 (Options.encoding) |
 | `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170 |
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead |
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead |

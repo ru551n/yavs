@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:individual_assoc_parts:_p0	show 2 5 1001
+diag	note	0	0	:individual_assoc_parts:_p0	flip 1Z
+diag	note	1000000	0	:individual_assoc_parts:_p0	done

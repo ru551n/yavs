@@ -607,9 +607,22 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
+    /// The driver slot for actual `e` of an `out` signal parameter, whose signal is `d`:
+    /// the driven signal, through any alias (LRM 6.6.2).
+    pub(crate) fn out_driver_slot(&mut self, d: DeclId, e: ExprId) -> R<Reg> {
+        let d = match self.db.lsp(e).map(|l| l.root) {
+            Some(yavs_sem::hir::ObjRoot::Decl(r)) => r,
+            _ => d,
+        };
+        self.driver_slot_of(d, self.db.exprs[e].span)
+    }
+
     /// Write `out`/`inout` temporaries back to their actuals after a procedure call. The
     /// actual's place is computed again: no register lives across a call that may suspend.
     pub fn copy_out(&mut self, span: Span) -> R<()> {
+        for (slot, f, parts) in std::mem::take(&mut self.writeback_parts) {
+            self.through_formal(f, slot, &parts, false, span)?;
+        }
         for (off, e, st) in std::mem::take(&mut self.writeback) {
             let Some(e) = e else { continue };
             if self.is_comp(self.db.base(st)) {
@@ -1936,6 +1949,10 @@ impl<'a> Fx<'a, '_> {
             let Some(p) = sp.params.get(a.formal as usize) else {
                 return Err(self.cx.ice(span, "argument for a missing formal"));
             };
+            if let Actual::Individual(parts) = &a.actual {
+                self.individual_cells(p, parts, native, span, &mut cells)?;
+                continue;
+            }
             let e = self.actual(a, p, span)?;
             let es = db.exprs[e].span;
             match shape(db, self.cx, p, span)? {
@@ -1980,12 +1997,7 @@ impl<'a> Fx<'a, '_> {
                 }
                 Shape::SigOut => {
                     let (d, sref, dope) = self.sig_name(e)?;
-                    // The driven signal, through any alias (LRM 6.6.2).
-                    let d = match db.lsp(e).map(|l| l.root) {
-                        Some(yavs_sem::hir::ObjRoot::Decl(r)) => r,
-                        _ => d,
-                    };
-                    let slot = self.driver_slot_of(d, es)?;
+                    let slot = self.out_driver_slot(d, e)?;
                     cells.extend([sref, slot]);
                     cells.extend(dope);
                 }

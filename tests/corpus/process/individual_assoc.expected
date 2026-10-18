@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:individual_assoc:_p0	show 1 1 0 false
+diag	note	0	0	:individual_assoc:_p0	swap 4 to 5
+diag	note	0	0	:individual_assoc:_p0	total 26
+diag	note	0	0	:individual_assoc:_p0	bits 0:01
+diag	note	1000000	0	:individual_assoc:_p0	show 7 7 1 false
+diag	note	2000000	0	:individual_assoc:_p0	done

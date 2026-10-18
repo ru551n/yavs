@@ -704,6 +704,13 @@ which tools/difftest parses.
   emits the guard process (`GUARD <= condition`, zero delay) and guarded assignments that
   disconnect `bus`/`register` targets when GUARD is false (disconnection after 0 fs until
   disconnection specifications reach the HIR).
+- **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
+  associated part by part is a temporary of its subtype; every part is copied in before the
+  call (also for `out`: a composite formal shows its actual's value) and back after it for
+  `out`/`inout`. A signal formal is a reference to one kernel range, so it takes one part only;
+  several parts are `E2001` (one reference simulator rejects them too). An unconstrained
+  formal's bounds run from the lowest to the highest index named, in the index subtype's
+  direction, as yavs-elab does for ports.
 - **Matching case** (`case?`, `select?`) compares with `?=` on BIT and STD_ULOGIC elements:
   '-' matches anything, metavalues match nothing, L/H match 0/1 (LRM 9.2.3).
 - **`'path_name`/`'instance_name`** are strings in instance data (`UnitIr::names`), written by

@@ -10,6 +10,7 @@
 //! never a guessed value; a broken HIR invariant is `E9999`. Any error means no program.
 
 mod access;
+mod assoc;
 mod composite;
 mod expr;
 mod file;

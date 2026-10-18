@@ -13,6 +13,7 @@ yavs-ir verifier on every function it emits.
 | `func.rs` | `Fx`, frames, parameters, declarations, subprograms, processes, architectures | lower |
 | `expr.rs` | scalar expressions, calls, implicit operations, attributes, names, 1-D arrays, aggregates of scalars | lower |
 | `stmt.rs` | sequential statements, waits, signal assignments | lower |
+| `assoc.rs` | individual association of subprogram parameters | lower |
 | `ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` (core); record/access/file/protected `Ty` arms | lower (core), lower2 (composite arms) |
 | `composite.rs`, `access.rs`, `protected.rs`, `file.rs`, ... | records, nested arrays, access types, protected types, textio/files, resolution, force/release | lower2 |
 
@@ -72,7 +73,12 @@ a call into your module in a small commit.
   slices); two cells (data, dope) per array parameter. Signal parameters: the signal reference
   (two cells), then the caller's driver slot for `out`/`inout`, then the actual's descriptor for
   arrays; assignments to an `out` signal parameter use `DriveSlot`. A constrained formal gets
-  the formal's descriptor after a length check. A function's array result is the address of a
+  the formal's descriptor after a length check. An individually associated parameter
+  (`Actual::Individual`, 6.5.7.1, `assoc.rs`) of variable or constant class is a temporary of
+  the formal's subtype: each part is copied in through its formal part (a name of the formal,
+  bound to the temporary while it is lowered) and, for `out`/`inout`, copied back after the
+  call; a signal formal takes one part as its reference. An unconstrained formal's bounds run
+  from the lowest to the highest index named, in the index subtype's direction. A function's array result is the address of a
   fat pair `[data, dope]` in temporary memory (the dope copied out of the callee's frame).
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image`, `'value` `yavs.attr.value`

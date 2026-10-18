@@ -59,7 +59,7 @@ An installed binary finds `lib/` next to itself (#43).
 - Subprogram calls with sub-element (individual) associations (`pr(x(0) => s)`, `f(r.i => 1)`,
   slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
   typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210).
-  Lowering them is #71.
+  Lowering runs them (#71), except signal formals with more than one part.
 - Mixed 2008/2019 designs (#50, sem.md 0.1, `src/rev.rs`): under a 2019 design revision a 2008
   file that names a std/ieee declaration the 2008 copy lacks (`std.env.tool_name`,
   `std.reflection`) gets `E1007` and does not see such declarations through use clauses;
@@ -161,7 +161,7 @@ expressions with runtime descriptors (bit-planes for logic arrays), aggregates, 
 attributes including 'path_name/'instance_name, 'driving/'driving_value and signal attributes
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
-(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), copy-out of logic elements and slices; nested names of signals of arrays of arrays
+(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); nested names of signals of arrays of arrays
 (`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`) as targets, actuals and sensitivity (#89); package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
 bounds too, shared protected variables, package signals and files); composite architecture

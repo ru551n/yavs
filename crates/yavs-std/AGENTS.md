@@ -39,6 +39,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | All VHDL text is Latin-1 `[u8]`, one byte per CHARACTER; identifiers keep declared spelling | Matches the runtime STRING layout; rule 8 | `docs/decisions.md` "std value conversion" |
 | Output formats follow NVC byte for byte where the LRM leaves them open (`%.15g` reals, `time'image` in fs, ...) | NVC is the difftest reference | `docs/decisions.md` "std value conversion" |
 | The LRM wins where NVC is wrong or crashes; each case listed with its reason in `golden/nvc-deviations.txt` | LRM policy | same; `docs/plan.md` "LRM interpretation policy" |
+| Real literals (any base) are correctly rounded, ties to even, subnormals included; NVC flushes based subnormals | LRM: nearest value | `docs/decisions.md` "std value conversion" |
 | Leniencies kept: leading `+`, integer literal for a real, `5ns`, format effectors as whitespace | Accepted by NVC/GHDL | same |
 | READ: failed READ leaves the line unchanged (GHDL), TIME accepts decimals, CRs before LF dropped, WRITELINE writes LF everywhere | Permissive, deterministic across platforms | same |
 | env: exact TIME_RECORD arithmetic, errors outside years 1..4095, sorted `DIRECTORY.items`, TOOL_* name yavs | Fail early, determinism | same |
@@ -57,7 +58,8 @@ Module-local decisions go in this section in the same commit; a new NVC deviatio
   `AGENTS.md` rule 15) and review the diff. A deviation needs a reason line.
 - Tests that touch the file system use pid-suffixed temp dirs (`yavs-std-file-<pid>`); env tests
   rely on unset variable names `YAVS_STD_SURELY_UNSET_VARIABLE`/`YAVS_TEXTIO_TEST_UNSET_VARIABLE`.
-- Known perf debt: textio reads are O(len) per call and value parsing accumulates in f64 (#105).
+- Known perf debt: a textio read is O(len of the line) (one `drain`); the interpreter glue's
+  copy and reallocation per READ/WRITE dominates (#196). Real conversion is exact in every base.
 
 ## 5. How to work here
 
@@ -75,6 +77,6 @@ python3 crates/yavs-std/golden/gen.py              # regenerate goldens with NVC
 
 - The textio and env runtime glue is in `crates/yavs-interp/src/{native,textio}.rs`; symbols are
   in `lib/NATIVE.md`.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:std`): #105 textio
-  O(len) reads and f64 accumulation; #94 numeric_std, fixed and float packages from source; #97
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:std`): #196 (interp)
+  quadratic textio lines; #97
   reflection runtime with resolution-limit TIME mirrors.

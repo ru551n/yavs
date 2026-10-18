@@ -127,8 +127,8 @@ fn err(what: What, l: &[u8], at: usize, expected: &'static str) -> ConvError {
 
 /// Consume `n` bytes from the front of the line.
 fn consume(line: &mut Vec<u8>, n: usize) {
-    // ponytail: O(len) per read; a cursor in the runtime's line object if
-    // reading many values from one huge line shows up in profiles.
+    // ponytail: one memmove of the rest per read; the interpreter glue copies and
+    // reallocates the whole line per call anyway, which dominates (#196).
     line.drain(..n);
 }
 

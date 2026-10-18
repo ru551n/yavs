@@ -178,6 +178,11 @@ milestone users care about works.
   unit names) and rejects what is not one literal (`Fo o`, `1__0`, `.5`, `5.`); overflow is an
   error, never wrapped; `to_string(real, format)` is full C99 printf for one real (flags, `%a`,
   literal text), with anything else an error; no fixed output buffer limits.
+- **Real literals are correctly rounded in every base** (ties to even, subnormals rounded at
+  2^-1074, `Abstract::to_f64` through exact big-integer arithmetic), for source literals (sem)
+  and `'VALUE` alike (#105). NVC agrees for decimal and normal-range based literals and flushes a
+  based subnormal it should round (`2#1.1#E-1075` is 0 in NVC, 2^-1074 here); the LRM's "nearest
+  value" wins.
 - **Leniencies kept from NVC/GHDL**: a leading `+`, an integer literal for a real, no separator
   in `5ns`, and format effectors (HT, CR, LF, VT, FF) as whitespace around a value.
 - **READ**: numbers are `[sign] digits [. digits] [E [sign] digits]` with no underscores or bases

@@ -179,8 +179,7 @@ impl Abstract {
         Some(v)
     }
 
-    /// The value as the nearest f64 (exact rounding for base 10; for other
-    /// bases exact while the mantissa fits 53 bits).
+    /// The value as the nearest f64, correctly rounded (ties to even) in every base.
     pub fn to_f64(&self) -> f64 {
         let e = self.exp.saturating_sub(self.frac_len as i64);
         if self.base == 10 {
@@ -188,14 +187,7 @@ impl Abstract {
             t.push_str(&format!("e{e}"));
             t.parse().unwrap_or(f64::NAN)
         } else {
-            // ponytail: f64 accumulation, inexact past 2^53 or for bases that
-            // are not powers of two; a big-rational path if it ever matters.
-            let m = self
-                .digits
-                .iter()
-                .fold(0f64, |a, &d| a * self.base as f64 + d as f64);
-            let e = i32::try_from(e).unwrap_or(if e < 0 { i32::MIN } else { i32::MAX });
-            m * (self.base as f64).powi(e)
+            based_to_f64(self.base, &self.digits, e)
         }
     }
 
@@ -228,6 +220,136 @@ impl Abstract {
         let r = num % den;
         let q = if r >= den - r { q + 1 } else { q };
         i128::try_from(q).ok()
+    }
+}
+
+/// `digits` (in `base`) times `base^e`, correctly rounded to f64 (ties to even), through exact
+/// big-integer arithmetic: `num / den` scaled by `2^s` to 54 bits (53 plus a guard bit), the
+/// remainder as the sticky bit, then one rounding step. Subnormals round at 2^-1074.
+fn based_to_f64(base: u32, digits: &[u8], e: i64) -> f64 {
+    let digits = &digits[digits.iter().take_while(|&&d| d == 0).count()..];
+    if digits.is_empty() {
+        return 0.0;
+    }
+    // base^(mag - 1) <= value < base^mag: decide overflow and underflow before building
+    // big numbers, which also bounds `e` below.
+    let mag = (digits.len() as i64).saturating_add(e);
+    let lb = f64::from(base).log2();
+    if (mag - 1) as f64 * lb > 1025.0 {
+        return f64::INFINITY;
+    }
+    if mag as f64 * lb < -1080.0 {
+        return 0.0;
+    }
+    let mut num = vec![0u32];
+    for &d in digits {
+        mul_add(&mut num, base, u32::from(d));
+    }
+    let mut den = vec![1u32];
+    for _ in 0..e.unsigned_abs() {
+        mul_add(if e > 0 { &mut num } else { &mut den }, base, 0);
+    }
+    // num / den lies in [2^(k-1), 2^(k+1)) for k = bitlen(num) - bitlen(den).
+    let k = bit_len(&num) as i64 - bit_len(&den) as i64;
+    let mut s = 53 - k;
+    if cmp_shifted(&num, s, &den, 53) == std::cmp::Ordering::Less {
+        s += 1;
+    }
+    s = s.min(1075);
+    let (mut n, d) = if s >= 0 {
+        (shl(&num, s as usize), den)
+    } else {
+        (num, shl(&den, s.unsigned_abs() as usize))
+    };
+    let mut q = 0u64;
+    for i in (0..=54).rev() {
+        let t = shl(&d, i);
+        if cmp(&n, &t) != std::cmp::Ordering::Less {
+            sub(&mut n, &t);
+            q |= 1 << i;
+        }
+    }
+    let sticky = n.iter().any(|&w| w != 0);
+    let mut m = q >> 1;
+    if q & 1 == 1 && (sticky || m & 1 == 1) {
+        m += 1;
+    }
+    ldexp(m, 1 - s)
+}
+
+/// `m * 2^e` for `m <= 2^53`; exact unless it overflows (to infinity).
+fn ldexp(m: u64, mut e: i64) -> f64 {
+    let pow2 = |k: i64| f64::from_bits(((k + 1023) as u64) << 52);
+    let mut x = m as f64;
+    while e > 1000 {
+        x *= pow2(1000);
+        e -= 1000;
+    }
+    while e < -1000 {
+        x *= pow2(-1000);
+        e += 1000;
+    }
+    x * pow2(e)
+}
+
+// Little-endian base-2^32 naturals, just enough for `based_to_f64`.
+
+fn mul_add(a: &mut Vec<u32>, m: u32, add: u32) {
+    let mut carry = u64::from(add);
+    for w in a.iter_mut() {
+        let v = u64::from(*w) * u64::from(m) + carry;
+        *w = v as u32;
+        carry = v >> 32;
+    }
+    if carry != 0 {
+        a.push(carry as u32);
+    }
+}
+
+fn bit_len(a: &[u32]) -> usize {
+    a.iter()
+        .rposition(|&w| w != 0)
+        .map_or(0, |i| i * 32 + 32 - a[i].leading_zeros() as usize)
+}
+
+fn shl(a: &[u32], n: usize) -> Vec<u32> {
+    let (words, bits) = (n / 32, n % 32);
+    let mut out = vec![0u32; words];
+    let mut carry = 0u32;
+    for &w in a {
+        out.push(if bits == 0 { w } else { (w << bits) | carry });
+        carry = if bits == 0 { 0 } else { w >> (32 - bits) };
+    }
+    out.push(carry);
+    out
+}
+
+fn cmp(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
+    let len = a.len().max(b.len());
+    let at = |x: &[u32], i: usize| x.get(i).copied().unwrap_or(0);
+    (0..len)
+        .rev()
+        .map(|i| at(a, i).cmp(&at(b, i)))
+        .find(|o| o.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// `num * 2^s` against `den * 2^t` (`t >= 0`).
+fn cmp_shifted(num: &[u32], s: i64, den: &[u32], t: usize) -> std::cmp::Ordering {
+    if s >= 0 {
+        cmp(&shl(num, s as usize), &shl(den, t))
+    } else {
+        cmp(num, &shl(den, t + s.unsigned_abs() as usize))
+    }
+}
+
+/// `a -= b` for `a >= b`.
+fn sub(a: &mut [u32], b: &[u32]) {
+    let mut borrow = 0i64;
+    for (i, w) in a.iter_mut().enumerate() {
+        let v = i64::from(*w) - i64::from(b.get(i).copied().unwrap_or(0)) - borrow;
+        *w = v.rem_euclid(1 << 32) as u32;
+        borrow = i64::from(v < 0);
     }
 }
 
@@ -471,6 +593,68 @@ pub fn character_value(s: &[u8]) -> R<u8> {
 mod tests {
     use super::*;
     use crate::types::time_type;
+
+    /// Based reals are correctly rounded (#105): against exact f64 division and products,
+    /// ties to even, subnormals, overflow and the f64 limits.
+    #[test]
+    fn based_reals_round_correctly() {
+        let v = |s: &str| real_value(s.as_bytes(), RealBounds::REAL).unwrap();
+        assert_eq!(v("3#0.1#"), 1.0 / 3.0);
+        assert_eq!(v("7#0.1#E-3"), 1.0 / 2401.0);
+        assert_eq!(v("13#0.C#"), 12.0 / 13.0);
+        assert_eq!(v("5#0.0001#"), 1.0 / 625.0);
+        // 2^53 + 1 is a tie: to even (down); 2^53 + 3 rounds up.
+        assert_eq!(v("16#20000000000001.0#"), 9007199254740992.0);
+        assert_eq!(v("16#20000000000003.0#"), 9007199254740996.0);
+        // Sticky bits past the guard bit decide a near-tie.
+        assert_eq!(v("16#20000000000001.00000000001#"), 9007199254740994.0);
+        assert_eq!(v("2#1.0#E-1074"), f64::from_bits(1));
+        assert_eq!(v("2#1.0#E-1075"), 0.0);
+        assert_eq!(v("2#1.1#E-1075"), f64::from_bits(1));
+        assert_eq!(v("2#1.1#E-1074"), f64::from_bits(2));
+        let ones = "1".repeat(52);
+        assert_eq!(v(&format!("2#1.{ones}#E1023")), f64::MAX);
+        // MAX plus just under half an ulp still rounds to MAX; half an ulp is a tie to infinity.
+        assert_eq!(v(&format!("2#1.{ones}0111#E1023")), f64::MAX);
+        assert!(real_value(format!("2#1.{ones}1#E1023").as_bytes(), RealBounds::REAL).is_err());
+        assert_eq!(v("3#1.0#E-700"), 3f64.powi(-700));
+        assert_eq!(v("16#0.000#"), 0.0);
+        assert!(real_value(b"16#1.0#E300", RealBounds::REAL).is_err());
+        assert_eq!(v("16#1.0#E-300"), 0.0);
+        // Exact quotients and products of f64-exact integers in every base.
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        for _ in 0..2000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let base = 2 + (seed % 15) as u32;
+            let m = (seed >> 20) % (1 << 40);
+            let n = (seed >> 8) % 8;
+            let p = u64::from(base).pow(n as u32);
+            let text = format!("{base}#{}.0#", to_base(m, base));
+            let lit = lex_abstract(text.as_bytes(), 0, What::Real).unwrap().0;
+            let mut neg = lit.clone();
+            neg.exp = -(n as i64);
+            assert_eq!(neg.to_f64(), m as f64 / p as f64, "{text}E-{n}");
+            if m.checked_mul(p).is_some_and(|x| x < (1 << 53)) {
+                let mut pos = lit;
+                pos.exp = n as i64;
+                assert_eq!(pos.to_f64(), (m * p) as f64, "{text}E{n}");
+            }
+        }
+    }
+
+    fn to_base(mut m: u64, base: u32) -> String {
+        let mut s = Vec::new();
+        loop {
+            s.push(char::from_digit((m % u64::from(base)) as u32, base).unwrap());
+            m /= u64::from(base);
+            if m == 0 {
+                break;
+            }
+        }
+        s.iter().rev().collect()
+    }
 
     #[test]
     fn integers() {

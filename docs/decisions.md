@@ -20,3 +20,14 @@
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel
   stops between time steps and calls `finish`, which is also done on drop.
+
+## Packed logic vectors: bit-planes (rsim-logic)
+
+- **Choice:** `LogicVec` is stored as four bit-planes (`Vec<[u64; 4]>`, 64 elements per block),
+  not 4-bit nibbles. The nibble layout stays behind `--features nibbles` since it costs about
+  100 lines and shares all tests and benchmarks.
+- **Why:** equal speed up to 32 elements, then 8x to 10x faster logic ops and resolution, and
+  40x to 140x faster numeric add/compare at 1024+ elements (a 0/1 vector is plain `u64` words).
+  Memory is the same 4 bits per element. Full table in `crates/rsim-logic/LAYOUT.md`.
+- **Costs:** `to_string` is 2x slower (per-element decode); a 1-element vector takes 32 bytes, so
+  the kernel keeps scalar signals as bare `StdULogic`. VHPI/FST need a transpose per element.

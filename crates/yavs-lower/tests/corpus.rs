@@ -68,6 +68,8 @@ const PASS: &[&str] = &[
     "ieee/fixed_pkg_ops_2019",
     "ieee/float_pkg_ops",
     "ieee/float_pkg_ops_2019",
+    "ieee/ieee_textio",
+    "ieee/ieee_textio_2019",
     "ieee/ieee_warnings",
     "ieee/math_complex_ops",
     "ieee/math_complex_ops_2019",

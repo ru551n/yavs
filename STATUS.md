@@ -244,10 +244,17 @@ of arrays, `std_ulogic`/`bit`/`boolean` as bit-planes), the sub-element map
 (`NetGraph::select`), uncollapsed ports with unconstrained formals taking the actual's bounds,
 static expression actuals, per-process merged drivers, multiple-source check across the
 hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
-Elaboration-time evaluation folds globally static expressions with `Db::fold_with`; function
-calls and aggregates wait for yavs-interp (E2106). Not yet: conversion functions and
-non-static expression actuals in port maps, implicit signals, guarded blocks and signals,
-package signals, external names, user resolution functions, generic types and subprograms.
+Elaboration-time evaluation folds globally static expressions with `Db::fold_with` and runs
+user function calls with scalar arguments and results in yavs-interp (the function lowered
+alone); composite values are E2106 (#77). Also done: package bodies and generic instance bodies
+loaded before elaboration, a package needing a body without one (E2116), conversion functions
+and scalar type conversions in port maps (kernel converters), implicit signals (`'stable`,
+`'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`),
+external signal names bound in elaboration order (E2117), guarded blocks and `bus`/`register`
+signals, blocks with generics and ports, incremental binding, nested and record element
+resolution, user resolution functions. Not yet: composite conversions, non-static expression
+actuals (#74), generic types, subprograms and packages on entities, linkage ports, mode views
+(#75).
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data
@@ -255,10 +262,9 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in NVC's
-format on stdout). Difftest (`tools/difftest`, yavs template): 25 of 75 pass at `--threads 1`
-and `4`. `generics/` and `hierarchy/` wait for lowering of generics, ports and generates
-(requests in `crates/yavs-lower/DESIGN.md`) and four files for sem fixes
-(`crates/yavs-sem/CONTRIBUTING.md`); with `--print-hierarchy`, 5 of their 9 elaborate.
+format on stdout). Difftest: see `tests/corpus/RESULTS.md` (71 of 78 at 1, 4 and 4 shuffled
+threads on 2026-10-18; the open `generics/` and `hierarchy/` cases stop in sem analysis or in
+lowering of `'path_name`).
 
 ## ffi (`crates/yavs-ffi`)
 

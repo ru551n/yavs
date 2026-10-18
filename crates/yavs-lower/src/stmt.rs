@@ -592,8 +592,82 @@ impl Fx<'_, '_> {
 
     fn assign(&mut self, target: ExprId, e: ExprId, what: &str, span: Span) -> R<()> {
         let v = self.expr(e)?;
+        if let ExprKind::Aggregate { assocs, .. } = &self.db.exprs[target].kind {
+            return self.assign_aggregate(assocs, v, e, span);
+        }
         let p: Place = self.place(target)?;
         self.store_place(p, v, self.db.exprs[e].subtype, what, span)
+    }
+
+    /// `(a, b) := v` (LRM 10.6.2.1): each element of the aggregate target gets the matching
+    /// element of the value, positionally or by index choice. Scalar elements only.
+    fn assign_aggregate(
+        &mut self,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        v: crate::expr::V,
+        e: ExprId,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let t = db.base(db.exprs[e].subtype);
+        let Some((elem, 1)) = ty::array_of(db, t) else {
+            return Err(self
+                .cx
+                .unsupported(span, "aggregate targets of records and matrices"));
+        };
+        let (data, dope) = self.arr(v, span)?;
+        let tid = self.ty(t, span)?;
+        let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_some();
+        let bias = self.code_bias(tid);
+        let (_, rt, w) = self.scalar(elem, span)?;
+        let count = self.dope_len(dope);
+        let m = self.msg("aggregate target", Dir::To);
+        for (k, a) in assocs.iter().enumerate() {
+            if a.slice_piece {
+                return Err(self.cx.unsupported(span, "slices in aggregate targets"));
+            }
+            let pos = match a.choices.first() {
+                None => self.int(k as i64),
+                Some(Choice::Expr(c)) if a.choices.len() == 1 => {
+                    let i = self.scalar_expr(*c)?;
+                    let p = self.reg(RegTy::I64);
+                    self.emit(Inst::Pos {
+                        dst: p,
+                        dope,
+                        dim: 0,
+                        idx: i,
+                        what: m,
+                    });
+                    p
+                }
+                _ => return Err(self.cx.unsupported(span, "this aggregate target choice")),
+            };
+            let x = if logic {
+                let one = self.int(1);
+                let last = self.bin(IntOp::Sub, count, one);
+                let idx = self.bin(IntOp::Sub, last, pos);
+                let c = self.reg(RegTy::I64);
+                self.emit(Inst::LGet {
+                    dst: c,
+                    base: data,
+                    idx,
+                });
+                self.dec(c, bias)
+            } else {
+                let a = self.reg(RegTy::Ptr);
+                self.emit(Inst::Index {
+                    dst: a,
+                    base: data,
+                    pos,
+                    stride: w.bytes(),
+                });
+                self.load(a, w, rt)
+            };
+            let what = self.target_name(a.value);
+            let p = self.place(a.value)?;
+            self.store_place(p, crate::expr::V::S(x), elem, &what, span)?;
+        }
+        Ok(())
     }
 
     fn target_name(&self, e: ExprId) -> String {

@@ -186,7 +186,11 @@ impl Fx<'_, '_> {
             ExprKind::New { init } => self.allocator(init, e.subtype, span),
             ExprKind::Null => Ok(V::S(self.int(0))),
             ExprKind::External(_) => Err(self.cx.unsupported(span, "external names (M3)")),
-            ExprKind::AttrValue { .. } => Err(self.cx.unsupported(span, "user-defined attributes")),
+            // The value of a user-defined attribute is its specification's expression.
+            ExprKind::AttrValue { spec } => {
+                let v = db.attr_values[*spec].value;
+                self.expr(v)
+            }
             ExprKind::Open | ExprKind::Error => {
                 Err(self.cx.ice(span, "open or poisoned expression"))
             }
@@ -452,6 +456,21 @@ impl Fx<'_, '_> {
                 .cx
                 .ice(span, "out signal actual without a driver of the process")),
         }
+    }
+
+    /// Write `out`/`inout` temporaries back to their actuals after a procedure call. The
+    /// actual's place is computed again: no register lives across a call that may suspend.
+    pub fn copy_out(&mut self, span: Span) -> R<()> {
+        for (off, e, st) in std::mem::take(&mut self.writeback) {
+            let Some(e) = e else { continue };
+            let (_, rt, w) = self.scalar(st, span)?;
+            let t = self.addr(Space::Frame(self.depth), off);
+            let v = self.load(t, w, rt);
+            let p = self.place(e)?;
+            let what = format!("parameter of {}", self.name);
+            self.store_place(p, V::S(v), st, &what, span)?;
+        }
+        Ok(())
     }
 
     /// The signal an expression names.
@@ -1159,7 +1178,9 @@ impl Fx<'_, '_> {
             Actual::Default => p
                 .default
                 .ok_or_else(|| self.cx.ice(span, "default actual without a default")),
-            Actual::Open => Err(self.cx.unsupported(span, "open actuals")),
+            Actual::Open => Err(self
+                .cx
+                .unsupported(span, "open actuals of `in` and array parameters")),
             _ => Err(self
                 .cx
                 .unsupported(span, "individual and converted associations")),
@@ -1189,7 +1210,9 @@ impl Fx<'_, '_> {
             Body::Implicit(op) => self.implicit(op, sp, args, span),
             Body::Native(sym) => {
                 let cells = self.cells(sp, args, span, true)?;
-                self.native(sym.as_str(), None, &cells, sp.ret, span)
+                let r = self.native(sym.as_str(), None, &cells, sp.ret, span)?;
+                self.copy_out(span)?;
+                Ok(r)
             }
             Body::Hir { .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
@@ -1201,6 +1224,7 @@ impl Fx<'_, '_> {
                         args,
                         dst: None,
                     });
+                    self.copy_out(span)?;
                     return Ok(None);
                 };
                 let rt = if self.is_comp(db.base(ret)) {
@@ -1276,11 +1300,26 @@ impl Fx<'_, '_> {
                 }
                 Shape::Ref => match self.place(e)? {
                     Place::Scalar { addr, .. } => cells.push(addr),
-                    _ => {
-                        return Err(self
-                            .cx
-                            .unsupported(es, "a logic array element as out parameter"));
+                    Place::Logic { data, idx, st } => {
+                        // Copy-in/copy-out through a frame temporary (LRM 6.5.6.2 allows it
+                        // for scalars); the actual is written back after the call.
+                        let off = self.fb.slot(8, 8);
+                        let t = self.addr(Space::Frame(self.depth), off);
+                        let code = self.reg(RegTy::I64);
+                        self.emit(Inst::LGet {
+                            dst: code,
+                            base: data,
+                            idx,
+                        });
+                        let tid = self.ty(db.base(st), es)?;
+                        let bias = self.code_bias(tid);
+                        let v = self.dec(code, bias);
+                        let (_, _, w) = self.scalar(p.subtype, es)?;
+                        self.store(t, v, w);
+                        cells.push(t);
+                        self.writeback.push((off, Some(e), p.subtype));
                     }
+                    _ => return Err(self.cx.ice(es, "array place for a scalar parameter")),
                 },
                 Shape::Sig => cells.push(self.sig_expr(e)?),
                 Shape::SigOut => {
@@ -2589,9 +2628,7 @@ impl Fx<'_, '_> {
             let (fe, _) = ty::array_of(db, ft).ok_or(Failed)?;
             let (te, _) = ty::array_of(db, tt).ok_or(Failed)?;
             if db.base(fe) != db.base(te) {
-                return Err(self
-                    .cx
-                    .unsupported(span, "array conversions between different element types"));
+                return self.conv_elements(to, operand, fe, te, span);
             }
             return self.qualified(to, operand, span);
         }
@@ -2631,15 +2668,16 @@ impl Fx<'_, '_> {
         &mut self,
         alts: &[(ExprId, Option<ExprId>)],
         st: SubtypeId,
-        span: Span,
+        _span: Span,
     ) -> R<V> {
         let db = self.db;
-        if ty::is_array(db, db.base(st)) {
-            return Err(self
-                .cx
-                .unsupported(span, "conditional expressions of array type"));
-        }
-        let dst = self.reg(self.rt_of(db.base(st)));
+        let comp = self.is_comp(db.base(st));
+        let dst = self.reg(if comp {
+            RegTy::Ptr
+        } else {
+            self.rt_of(db.base(st))
+        });
+        let dst2 = self.reg(RegTy::Ptr);
         let j = self.block();
         for &(v, c) in alts {
             let next = self.block();
@@ -2649,8 +2687,13 @@ impl Fx<'_, '_> {
                 self.branch(c, t, next);
                 self.at(t);
             }
-            let r = self.scalar_expr(v)?;
-            self.emit(Inst::Move { dst, src: r });
+            match self.expr(v)? {
+                V::S(r) => self.emit(Inst::Move { dst, src: r }),
+                V::A(d, p) => {
+                    self.emit(Inst::Move { dst, src: d });
+                    self.emit(Inst::Move { dst: dst2, src: p });
+                }
+            }
             self.jump(j);
             self.at(next);
             if c.is_none() {
@@ -2665,7 +2708,111 @@ impl Fx<'_, '_> {
             self.term(Inst::Unreachable { what });
         }
         self.at(j);
-        Ok(V::S(dst))
+        Ok(if comp { V::A(dst, dst2) } else { V::S(dst) })
+    }
+
+    /// Conversion between closely related array types whose element types differ (LRM
+    /// 9.3.6): element by element, each converted like a scalar.
+    fn conv_elements(
+        &mut self,
+        to: SubtypeId,
+        operand: ExprId,
+        fe: SubtypeId,
+        te: SubtypeId,
+        span: Span,
+    ) -> R<V> {
+        let db = self.db;
+        let (ft, tt) = (db.base(db.exprs[operand].subtype), db.base(to));
+        let v = self.expr(operand)?;
+        let (sd, sp) = self.arr(v, span)?;
+        let (stid, slogic, sw) = self.elem_facts(ft, span)?;
+        let (ttid, tlogic, tw) = self.elem_facts(tt, span)?;
+        if ty::array_of(db, tt).map_or(1, |x| x.1) != 1 {
+            return Err(self
+                .cx
+                .unsupported(span, "multi-dimensional array conversions"));
+        }
+        let dope = match self.subtype_dope(to, span)? {
+            Some(want) => {
+                let what = self.msg(&ty::subtype_name(db, to), Dir::To);
+                self.emit(Inst::SubtypeCheck {
+                    dope: sp,
+                    want,
+                    dims: 1,
+                    what,
+                });
+                want
+            }
+            None => sp,
+        };
+        let (size, count) = self.layout(ttid, dope);
+        let data = self.alloc(size);
+        let (sb, tb) = (self.code_bias(stid), self.code_bias(ttid));
+        let (sreal, treal) = (ty::is_real(db, db.base(fe)), ty::is_real(db, db.base(te)));
+        let name = ty::subtype_name(db, te);
+        self.for_n(count, |fx, i| {
+            let e = if slogic {
+                let c = fx.elem_at(sd, i, count, true, sw);
+                fx.dec(c, sb)
+            } else {
+                let a = fx.reg(RegTy::Ptr);
+                fx.emit(Inst::Index {
+                    dst: a,
+                    base: sd,
+                    pos: i,
+                    stride: sw.bytes(),
+                });
+                fx.load(a, sw, if sreal { RegTy::F64 } else { RegTy::I64 })
+            };
+            let x = match (sreal, treal) {
+                (true, false) => {
+                    let r = fx.scalar_bounds(te, span)?;
+                    let dir = ir_dir(r.dir);
+                    let (lo, hi) = fx.low_high(r);
+                    let what = fx.fb.program().check_msg_for("", dir, &name);
+                    let dst = fx.reg(RegTy::I64);
+                    fx.emit(Inst::FToIRange {
+                        dst,
+                        src: e,
+                        lo,
+                        hi,
+                        what,
+                    });
+                    dst
+                }
+                (false, true) => {
+                    let dst = fx.reg(RegTy::F64);
+                    fx.emit(Inst::IToF { dst, src: e });
+                    dst
+                }
+                _ => {
+                    fx.check_scalar(e, Some(fe), te, "", span)?;
+                    e
+                }
+            };
+            if tlogic {
+                let one = fx.int(1);
+                let last = fx.bin(IntOp::Sub, count, one);
+                let idx = fx.bin(IntOp::Sub, last, i);
+                let c = fx.enc(x, tb);
+                fx.emit(Inst::LSet {
+                    base: data,
+                    idx,
+                    v: c,
+                });
+            } else {
+                let a = fx.reg(RegTy::Ptr);
+                fx.emit(Inst::Index {
+                    dst: a,
+                    base: data,
+                    pos: i,
+                    stride: tw.bytes(),
+                });
+                fx.store(a, x, tw);
+            }
+            Ok(())
+        })?;
+        Ok(V::A(data, dope))
     }
 }
 

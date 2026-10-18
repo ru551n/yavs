@@ -139,6 +139,7 @@ impl Fx<'_, '_> {
                 args,
                 dst: None,
             });
+            self.copy_out(span)?;
             return Ok(None);
         };
         let t = db.base(ret);

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:expr_forms:_p0	v=0000
+diag	note	0	0	:expr_forms:_p0	p=12
+diag	note	0	0	:expr_forms:_p0	r2=20
+diag	note	0	0	:expr_forms:_p0	i3=3
+diag	note	0	0	:expr_forms:_p0	pq=78 b='1''0'
+diag	note	0	0	:expr_forms:_p0	sig 13

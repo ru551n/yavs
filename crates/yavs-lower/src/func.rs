@@ -148,6 +148,9 @@ pub(crate) struct Fx<'a, 'b> {
     pub prot_self: Option<(u8, u32)>,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
+    /// Copy-out after the call being lowered: (frame slot of the temporary, actual,
+    /// subtype of the formal) for `out`/`inout` actuals passed through a temporary.
+    pub writeback: Vec<(u32, Option<yavs_sem::ExprId>, SubtypeId)>,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -173,6 +176,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             cur: None,
             prot_self: None,
             guard: None,
+            writeback: Vec::new(),
         }
     }
 

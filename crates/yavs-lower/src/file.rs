@@ -104,6 +104,8 @@ impl Fx<'_, '_> {
         let cells = self.cells(sp, args, span, true)?;
         let tid = self.ty(op.ty, span)?;
         let sym = yavs_sem::mangle::implicit_native(self.db, op);
-        self.native(&sym, Some(tid), &cells, sp.ret, span)
+        let r = self.native(&sym, Some(tid), &cells, sp.ret, span)?;
+        self.copy_out(span)?;
+        Ok(r)
     }
 }

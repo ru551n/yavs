@@ -1069,7 +1069,7 @@ impl Db {
     }
 
     /// Sub-element associations of one formal (6.5.7.1): `f(0) => a, f(1) => b`.
-    fn partial(
+    pub(crate) fn partial(
         &mut self,
         scope: ScopeId,
         f: DeclId,
@@ -1106,11 +1106,12 @@ impl Db {
                 )));
                 continue;
             };
-            let Some((root, steps, stat, _)) = self.lsp_parts(fe) else {
+            let Some((root, steps, stat, cut)) = self.lsp_parts(fe) else {
                 errs.keep::<()>(Err(self.ice(span, "formal sub-element without a prefix")));
                 continue;
             };
-            if root != ObjRoot::Decl(f) || stat < crate::stat::Staticness::Locally {
+            // `cut`: a non-static index or range, which `lsp_parts` drops from `steps`.
+            if root != ObjRoot::Decl(f) || cut || stat < crate::stat::Staticness::Locally {
                 errs.keep::<()>(Err(self.error(
                     Diagnostic::error(
                         diag::NOT_STATIC,

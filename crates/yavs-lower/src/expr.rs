@@ -450,11 +450,11 @@ impl Fx<'_, '_> {
                         let Some(dope) = self.subtype_dope(*st, span)? else {
                             return Err(self.cx.ice(span, "range of an unconstrained array type"));
                         };
-                        self.dope_range(dope, *dim as u8)
+                        self.dope_range(dope, dim.saturating_sub(1) as u8)
                     }
                     AttrPrefix::Expr(e) => {
                         let dope = self.dope_of(*e)?;
-                        self.dope_range(dope, *dim as u8)
+                        self.dope_range(dope, dim.saturating_sub(1) as u8)
                     }
                     AttrPrefix::Entity(_) => {
                         return Err(self.cx.ice(span, "range of a named entity"));

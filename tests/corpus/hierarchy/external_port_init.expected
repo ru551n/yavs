@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:external_port_init:m:_p0	i='1' @0 fs
+diag	note	0	1	:external_port_init:m:_p0	i='0' @0 fs
+diag	note	5000000	1	:external_port_init:m:_p0	i='1' @5000000 fs

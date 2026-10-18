@@ -318,7 +318,8 @@ signals, blocks with generics and ports, incremental binding, nested and record 
 resolution, user resolution functions (one declared in an entity or architecture reads its
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays
 resolved as a whole (every driving process drives every leaf, #193; nested in another
-composite: E9999). Not yet: conversions of record ports, non-static expression
+composite: E9999), an external name as an `in` port actual driven by its equivalent process
+one delta later (#186). Not yet: conversions of record ports, non-static expression
 actuals (#74, needs yavs-lower DESIGN.md request 7), generic types, subprograms and packages on entities, linkage ports, mode views
 (#75).
 
@@ -328,10 +329,8 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in the reference simulator's
-format on stdout). Difftest: see `tests/corpus/RESULTS.md` (93 of 96 at 1, 4 and 4 shuffled
-threads on 2026-10-18; open: `generics/generic_types_2019` (generic types on entities, #75),
-`hierarchy/external_port_actual` (expression actuals, #74), `hierarchy/mode_view_ports` (record
-port elements in lowering)).
+format on stdout). Difftest: see `tests/corpus/RESULTS.md` (122 of 123 at 1, 4 and 4 shuffled
+threads on 2026-10-18; open: `generics/generic_types_2019` (generic types on entities, #75)).
 
 ## ffi (`crates/yavs-ffi`)
 

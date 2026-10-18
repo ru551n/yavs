@@ -855,6 +855,30 @@ fn external_names() {
     assert_eq!(err.code, codes::EXTERNAL_NOT_FOUND);
 }
 
+/// An external name as an `in` port actual is an expression actual (#186): no port edge,
+/// the formal is driven by the equivalent process `i <= actual`.
+#[test]
+fn external_port_actual_is_an_expression() {
+    let src = "entity leaf is end; architecture a of leaf is signal hidden : bit; begin end;
+      entity mon is port (i : in bit); end; architecture a of mon is begin end;
+      entity t is end; architecture a of t is
+      begin
+        l : entity work.leaf;
+        m : entity work.mon port map (i => << signal .t.l.hidden : bit >>);
+      end;";
+    let (_, e) = elab("external_port", src, "t", &[]);
+    let id = |n: &str| {
+        (0..e.nets.leaves.len() as u32)
+            .map(crate::LeafId)
+            .find(|&l| e.leaf_name(l).ends_with(n))
+            .expect(n)
+    };
+    let (hidden, i) = (id(":l:hidden"), id(":m:i"));
+    let one = Range::new(0, 1);
+    assert_eq!(e.nets.copies, [((i, one), (hidden, one))]);
+    assert!(e.nets.ports.is_empty());
+}
+
 /// Blocks with generic and port clauses (#75).
 #[test]
 fn block_generics_and_ports() {

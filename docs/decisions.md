@@ -551,6 +551,19 @@ a note and a help suggesting an access type, as the reference simulators reject 
   calls the function through `call_values` and unpacks the result. `(f) t` with a composite
   element resolves each element as a whole. Not yet (E9999, #76): such a composite inside
   another composite, and resolved subelements below one.
+- **External name as a port actual** (#186, orchestrator, 2026-10-18; LRM 8.7, 6.5.6.3, 14.7;
+  `docs/design/lrm-checks.md` L49): `i => << signal ... >>` on an `in` port is an expression
+  actual, not a signal name actual, as the reference simulator does. The formal is its own
+  signal with its own initial value (its default, else the subtype's `'left`), driven by the
+  equivalent process `i <= actual;` sensitive to the actual (`NetGraph::copies`, one kernel
+  process per leaf part after the IR processes, named `<formal>'actual`). That process is the
+  extra delta: it runs at initialisation and on every event of the actual, and its zero-delay
+  transaction updates the formal in the next simulation cycle (14.7.5), where a signal-name
+  actual would hand its effective value down in the same update phase (14.7.3). So the formal
+  shows the actual's value from delta 1 on (from the formal's default at delta 0 when the two
+  differ). Only whole `in` associations; `out`/`inout`, individual and converted
+  associations with an external actual stay port edges. Not chosen: the formal as
+  `actual'delayed(0 ns)`, which has the right event delta but starts at the actual's value.
 
 ## Runtime: default exit severity (user, 2026-10-18)
 

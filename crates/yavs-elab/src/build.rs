@@ -163,6 +163,24 @@ impl Elaborated {
                 Boxed(proc),
             );
         }
+        for &((fl, fr), (al, ar)) in &self.nets.copies {
+            let src = yavs_kernel::SignalId(al.0).slice(ar.offset, ar.len);
+            let d = b.driver(yavs_kernel::SignalId(fl.0).slice(fr.offset, fr.len));
+            let logic = matches!(self.nets.leaf(al).ty.elem, yavs_kernel::Elem::Logic);
+            let name = format!("{}'actual", self.leaf_name(fl));
+            // `formal <= actual;`, sensitive to the actual (LRM 6.5.6.3, 11.6).
+            let copy = move |ctx: &mut yavs_kernel::Ctx<'_>| {
+                if logic {
+                    let v = ctx.logic(src)?;
+                    ctx.drive(d, &v)?;
+                } else {
+                    let v = ctx.value(src)?.to_vec();
+                    ctx.drive(d, &v)?;
+                }
+                ctx.wait_on(src)
+            };
+            b.process(&name, ProcFlags::default(), &[d], copy);
+        }
         b.build(cfg)
     }
 }

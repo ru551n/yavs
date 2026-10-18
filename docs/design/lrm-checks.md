@@ -70,6 +70,7 @@ LCS text was read.
 | L46 | constants, signals, generics, ports and constant/signal parameters of an access or file type (#198) | 6.4.2.2, 6.4.2.3, 6.5.2 | confirmed | `E1223` in 2008 and 2019, also for a composite with such a subelement (the reference simulators reject all of them in both revisions); library `std` is exempt for parameters, since the IEEE 2019 `std.env` source declares constant parameters of `DIRECTORY` and `CALL_PATH_VECTOR_PTR` |
 | L47 | expanded names whose prefix is a process, block, generate or loop label or a subprogram (#54) | 8.3 | clear | legal only inside the named construct (`p1.v` in process `p1`); outside, a suffix declared in the construct is `E1103` at the suffix. A subprogram prefix outside it stays a selection from the call's value (`f.x` of a record result), and `f.v` is `E1103` only when no candidate returns a record or an access value |
 | L48 | expanded names and use clauses naming a declaration of a package body (#54) | 12.3, 12.4 | clear | `work.p.hidden` and `use work.p.hidden` for an item of the body are `E1105` (not in the visible part) when the body is analyzed, else `E1100`; a use clause or context reference whose prefix is not a package, library or instance (or not a context declaration) is `E1104` at the offending suffix |
+| L49 | an external name as the actual of an `in` port (#186) | 8.7, 6.5.6.3, 6.5.7.1, 14.7 | unclear (tools disagree), **permissive** | an expression actual: the formal keeps its own initial value and is driven by `formal <= actual`, one delta behind the actual (the reference simulator) |
 | P1 | parser: "every `end <keyword>` optional in 2019" (`decisions.md`) | 6.8 (2019), LCS-2016-055a | **corrected**, clear | only `end component` loses its keyword; every other ending keeps the 2008 rule (the reference simulators agree); implemented |
 | P2 | parser: positions of 2019 conditional expressions (`decisions.md`) | 9.1, 6.4.2, 6.5.7.1, 10.5.2, 10.6.2, 10.14 (2019) | **corrected**; interface defaults unclear, **permissive** | add the parenthesized primary; interface defaults accept the bare and the parenthesized form (U-5, decided); implemented |
 
@@ -314,6 +315,32 @@ a user `"="` for the actual type other than the predefined one is visible there.
 
 Effect on yavs: any check that rejects `=` on a 2008 `type T` without an interface `"="` must be
 removed, and a negative test that expects such an error must become a positive one.
+
+### L49: an external name as the actual of an `in` port (8.7, 6.5.6.3, 14.7)
+
+`hierarchy/external_port_actual` and `hierarchy/external_port_init`: `m : entity work.mon port
+map (i => << signal .top.l.hidden : bit >>)`. Two readings:
+
+- **A signal name actual.** 8.7 makes the external name denote the signal object itself, and
+  6.5.7.1 allows a signal name as the actual of a signal port. The formal then gets the actual's
+  effective value in the same update phase (14.7.3.3, port propagation without a delta), and
+  starts at the actual's initial value.
+- **An expression actual.** 6.5.6.3 associates a port whose actual is not a static signal name
+  with an anonymous signal driven by an equivalent concurrent assignment `anon <= actual`. 8.1
+  does not clearly list an external name among the static names, and the external name is only
+  bound during elaboration (14.4.1). The equivalent process runs once at initialisation and
+  again on every event of the actual (11.6); its zero-delay transaction matures in the next
+  simulation cycle (14.7.5.3), so the formal follows the actual one delta later and starts at
+  its own initial value (its default, else `'left` of its subtype).
+
+The reference simulator takes the second reading: events at delta 1 where the actual changes at
+delta 0, and with a port default `'1'` and an actual of `'0'` the formal is `'1'` at delta 0 and
+`'0'` at delta 1. The second reference simulator follows the first reading (the formal starts at the
+actual's value). The third reference simulator was not checked (no licence in that session).
+Rule for yavs (orchestrator decision on #186, permissive, rule 2): the second reading. Elab
+records the pair in `NetGraph::copies` and builds the equivalent process as a kernel process
+instead of a port edge (`docs/decisions.md` "Elaboration"). Revisit if the third reference
+simulator agrees with the first reading.
 
 ### P1: optional closing keywords (2019)
 

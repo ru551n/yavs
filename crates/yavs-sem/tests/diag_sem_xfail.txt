@@ -92,15 +92,7 @@ v2019/conditional_expression_ok.vhd
 v2019/converse_on_non_view.vhd
 v2019/private_variable_outside_body.vhd
 v2019/private_variable_scalar_ok.vhd
-v2019/view_element_duplicate.vhd
-v2019/view_element_missing.vhd
-v2019/view_element_unknown.vhd
 v2019/view_nested_wrong_record.vhd
-v2019/view_not_a_view.vhd
-v2019/view_of_non_record.vhd
-v2019/view_ok.vhd
-v2019/view_port_mode_misuse.vhd
-v2019/view_unknown.vhd
 vis/body_item_from_outside.vhd
 vis/expanded_name_process_variable_outside.vhd
 vis/missing_use_numeric_std.vhd

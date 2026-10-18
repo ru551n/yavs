@@ -459,7 +459,12 @@ impl Db {
             D::GroupTemplate(x) => Err(self.unsupported(x.span, "group templates", "S6")),
             D::Disconnect(x) => Err(self.unsupported(x.span, "disconnection specifications", "S5")),
             D::ConfigSpec(x) => self.config_spec(scope, x),
-            D::View(x) => Err(self.unsupported(x.span, "mode views", "S7")),
+            D::View(x) => {
+                let record = self.subtype_indication(scope, &x.subtype)?;
+                let d = self.declare_view(scope, x, record, &mut |db, n| db.view_name(scope, n))?;
+                self.declare(scope, d);
+                Ok(())
+            }
         }
     }
 
@@ -544,6 +549,28 @@ impl Db {
             Some(si) => Some(self.subtype_indication(scope, si)?),
             None => None,
         };
+        // `alias v2 is v'converse` (2019): an alias of the converse mode view. The alias
+        // denotes the converse view itself.
+        // ponytail: declared as a view, not an Alias; an alias-of-view marker is needed only
+        // if something must tell the two apart.
+        if let ast::NameKind::Attribute { attr, .. } = &name.kind
+            && attr.key.as_str() == "converse"
+        {
+            let r = self.view_name(scope, name)?;
+            let v = self.effective_view(r);
+            let ast::Designator::Ident(id) = a.designator else {
+                return Err(self.error(
+                    yavs_diag::Diagnostic::error(
+                        crate::diag::BAD_ALIAS,
+                        "an alias of a mode view must be named by an identifier",
+                    )
+                    .with_primary(a.span, "operator or character designator"),
+                ));
+            };
+            let d = self.new_decl(scope, Designator::Ident(id), DeclKind::View(v), id.span);
+            self.declare(scope, d);
+            return Ok(());
+        }
         let res = match &name.kind {
             ast::NameKind::Simple(_)
             | ast::NameKind::Selected { .. }
@@ -987,6 +1014,25 @@ impl Db {
         }
     }
 
+    /// A mode view name: a view, an alias of one, or `v'converse` (2019 6.5.2, 16.2).
+    pub(crate) fn view_name(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Result<crate::view::ViewRef, crate::Reported> {
+        if let ast::NameKind::Attribute { prefix, attr } = &n.kind
+            && attr.key.as_str() == "converse"
+        {
+            let r = self.view_name(scope, prefix)?;
+            return Ok(crate::view::ViewRef {
+                converse: !r.converse,
+                ..r
+            });
+        }
+        let d = self.expanded_name_decl(scope, n)?;
+        self.view_ref(d, false, n.span)
+    }
+
     fn interface_object(
         &mut self,
         scope: ScopeId,
@@ -999,8 +1045,27 @@ impl Db {
             Some(ast::Mode::Inout) => Mode::Inout,
             Some(ast::Mode::Buffer) => Mode::Buffer,
             Some(ast::Mode::Linkage) => Mode::Linkage,
+            Some(ast::Mode::View { name, array }) if role == ObjRole::Port => {
+                // `p : view v [of t]`: the view gives the mode of each element (2019 6.5.2).
+                let r = self.view_name(scope, name)?;
+                let st = match &o.subtype {
+                    Some(ast::IncompleteSubtype::Subtype(si)) => {
+                        Some(self.subtype_indication(scope, si)?)
+                    }
+                    None => None,
+                    _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
+                };
+                let (mode, subtype) = self.view_port(
+                    o.class.or(Some(ast::InterfaceClass::Signal)),
+                    r,
+                    *array,
+                    st,
+                    o.span,
+                )?;
+                return Ok(self.declare_interface(scope, o, role, ObjClass::Signal, mode, subtype));
+            }
             Some(ast::Mode::View { .. }) => {
-                return Err(self.unsupported(o.span, "mode views", "S7"));
+                return Err(self.unsupported(o.span, "mode views outside port clauses", "S7"));
             }
         };
         let (class, want) = match role {
@@ -1034,6 +1099,19 @@ impl Db {
                 self.check_not_protected("port", subtype, n.span)?;
             }
         }
+        Ok(self.declare_interface(scope, o, role, class, mode, subtype))
+    }
+
+    /// Declare the names of interface object `o`, with its default resolved in `subtype`.
+    fn declare_interface(
+        &mut self,
+        scope: ScopeId,
+        o: &ast::InterfaceObject,
+        role: ObjRole,
+        class: ObjClass,
+        mode: Mode,
+        subtype: crate::ids::SubtypeId,
+    ) -> Vec<DeclId> {
         let default = o
             .default
             .as_ref()
@@ -1063,7 +1141,7 @@ impl Db {
             self.declare(scope, decl);
             out.push(decl);
         }
-        Ok(out)
+        out
     }
 
     /// `E1303`: an operator symbol that is not a VHDL operator, or the wrong number

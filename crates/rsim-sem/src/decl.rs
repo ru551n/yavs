@@ -826,6 +826,11 @@ impl Db {
             Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(scope, si)?,
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
+        if role == ObjRole::Port {
+            for n in &o.names {
+                self.check_not_protected("port", subtype, n.span)?;
+            }
+        }
         let default = o
             .default
             .as_ref()
@@ -847,7 +852,7 @@ impl Db {
                     subtype,
                     default,
                     bounds,
-                    signal_kind: None,
+                    signal_kind: o.bus.then_some(ast::SignalKind::Bus),
                     file_open: None,
                 }),
                 name.span,

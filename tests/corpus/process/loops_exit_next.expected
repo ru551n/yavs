@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:loops_exit_next:_p0	n=6
+diag	note	0	0	:loops_exit_next:_p0	n=-2
+diag	note	0	0	:loops_exit_next:_p0	down 10
+diag	note	0	0	:loops_exit_next:_p0	down 9
+diag	note	0	0	:loops_exit_next:_p0	down 8
+diag	note	0	0	:loops_exit_next:_p0	down 7
+diag	note	0	0	:loops_exit_next:_p0	n=3

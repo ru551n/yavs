@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:string_attrs:_p0	hello 'h' 111
+diag	note	0	0	:string_attrs:_p0	high=5
+diag	note	0	0	:string_attrs:_p0	bv=1010 hex=A5
+diag	note	0	0	:string_attrs:_p0	ostr=17 bstr=101

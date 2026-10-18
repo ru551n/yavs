@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:finish_in_function_call_order:_p0	a
+diag	note	1000000	0	:finish_in_function_call_order:_p0	b
+diag	finish	1000000	0	-	0

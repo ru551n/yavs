@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:time_arith:_p0	10000000 fs -3000000 fs 21000000 fs 3500000 fs
+diag	note	0	0	:time_arith:_p0	10500000 fs 3500000 fs ratio 7
+diag	note	0	0	:time_arith:_p0	1000000 fs 1000000 fs

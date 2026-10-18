@@ -1,0 +1,2 @@
+exit	1
+diag	error	0	0	:error_then_end:_p0	an error, simulation still ends normally

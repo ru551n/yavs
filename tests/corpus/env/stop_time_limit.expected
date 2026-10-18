@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:stop_time_limit:_p1	clk='0' @0 fs
+diag	note	10000000	0	:stop_time_limit:_p1	clk='1' @10000000 fs
+diag	note	20000000	0	:stop_time_limit:_p1	clk='0' @20000000 fs
+diag	note	30000000	0	:stop_time_limit:_p1	clk='1' @30000000 fs
+diag	note	40000000	0	:stop_time_limit:_p1	clk='0' @40000000 fs
+diag	note	50000000	0	:stop_time_limit:_p1	clk='1' @50000000 fs

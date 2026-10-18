@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:real_arith:_p0	div 2500 mul 1000
+diag	note	0	0	:real_arith:_p0	sqrt 4 floor 2 ceil 3
+diag	note	0	0	:real_arith:_p0	round 3 -3 trunc -2
+diag	note	0	0	:real_arith:_p0	pow 256 100
+diag	note	0	0	:real_arith:_p0	int 3 4 -1

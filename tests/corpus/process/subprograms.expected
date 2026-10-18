@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:subprograms:_p0	fib(15)=610
+diag	note	0	0	:subprograms:_p0	v=7
+diag	note	0	0	:subprograms:_p0	a=42 b=0
+diag	note	0	0	:subprograms:_p0	tag 7
+diag	note	1000000	0	:subprograms:_p0	s=9

@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:concurrent_assign:_p3	b=-2147483648 c=-2147483648 d=-2147483648 @0 fs
+diag	note	0	1	:concurrent_assign:_p3	b=1 c=0 d=100 @0 fs
+diag	note	1000000	2	:concurrent_assign:_p3	b=6 c=10 d=100 @1000000 fs
+diag	note	2000000	2	:concurrent_assign:_p3	b=6 c=15 d=200 @2000000 fs
+diag	note	3000000	2	:concurrent_assign:_p3	b=6 c=-1 d=300 @3000000 fs

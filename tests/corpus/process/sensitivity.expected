@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:sensitivity:_p0	sens x=0 y=0 @0 fs
+diag	note	0	0	:sensitivity:_p2	z=0 @0 fs
+diag	note	1000000	1	:sensitivity:_p0	sens x=1 y=0 @1000000 fs
+diag	note	1000000	2	:sensitivity:_p2	z=1 @1000000 fs
+diag	note	2000000	1	:sensitivity:_p0	sens x=1 y=2 @2000000 fs
+diag	note	2000000	2	:sensitivity:_p2	z=3 @2000000 fs
+diag	note	4000000	1	:sensitivity:_p0	sens x=5 y=5 @4000000 fs
+diag	note	4000000	2	:sensitivity:_p2	z=10 @4000000 fs

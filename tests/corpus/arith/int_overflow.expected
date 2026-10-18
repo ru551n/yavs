@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:int_overflow:_p0	start
+diag	fatal	0	0	-	result of 2147483647 + 1 cannot be represented as INTEGER

@@ -1,0 +1,6 @@
+exit	0
+diag	note	1000000	0	:force_in:_p0	s=1
+diag	note	2000000	0	:force_in:_p0	forced s=5
+diag	note	3000000	0	:force_in:_p0	assign while forced s=5
+diag	note	4000000	0	:force_in:_p0	released s=7
+diag	note	5000000	0	:force_in:_p0	assigned s=9

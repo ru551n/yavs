@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:linked_list:_p0	node 25
+diag	note	0	0	:linked_list:_p0	node 16
+diag	note	0	0	:linked_list:_p0	node 9
+diag	note	0	0	:linked_list:_p0	node 4
+diag	note	0	0	:linked_list:_p0	node 1
+diag	note	0	0	:linked_list:_p0	sum=55

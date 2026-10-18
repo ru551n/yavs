@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:for_generate:g(0):_p1	bit 0 = '0' @0 fs
+diag	note	0	0	:for_generate:g(1):_p1	bit 1 = '0' @0 fs
+diag	note	0	0	:for_generate:g(2):_p1	bit 2 = '0' @0 fs
+diag	note	0	0	:for_generate:g(3):_p1	bit 3 = '0' @0 fs
+diag	note	1000000	0	:for_generate:g(0):_p1	bit 0 = '1' @1000000 fs
+diag	note	2000000	0	:for_generate:g(1):_p1	bit 1 = '1' @2000000 fs
+diag	note	3000000	0	:for_generate:g(2):_p1	bit 2 = '1' @3000000 fs
+diag	note	4000000	0	:for_generate:g(3):_p1	bit 3 = '1' @4000000 fs

@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:resolved_record_port:_p0	'Z'
+diag	note	2000000	0	:resolved_record_port:_p0	'1'
+diag	note	3000000	0	:resolved_record_port:_p0	'X'
+diag	note	4000000	0	:resolved_record_port:_p0	'0'

@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:if_case_generate:gg(0):u:g:_p0	mode zero
+diag	note	0	0	:if_case_generate:gg(0):u:e:_p0	plain 0
+diag	note	0	0	:if_case_generate:gg(1):u:g:_p0	mode one or two: 1
+diag	note	0	0	:if_case_generate:gg(1):u:e:_p0	plain 1
+diag	note	0	0	:if_case_generate:gg(2):u:g:_p0	mode one or two: 2
+diag	note	0	0	:if_case_generate:gg(2):u:e:_p0	extra for 2
+diag	note	0	0	:if_case_generate:gg(3):u:g:_p0	other mode 3
+diag	note	0	0	:if_case_generate:gg(3):u:e:_p0	extra for 3

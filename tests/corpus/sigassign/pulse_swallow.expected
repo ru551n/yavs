@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:pulse_swallow:_p3	inertial '0' @0 fs
+diag	note	0	0	:pulse_swallow:_p4	transport '0' @0 fs
+diag	note	15000000	0	:pulse_swallow:_p4	transport '1' @15000000 fs
+diag	note	17000000	0	:pulse_swallow:_p4	transport '0' @17000000 fs
+diag	note	37000000	0	:pulse_swallow:_p3	inertial '1' @37000000 fs
+diag	note	37000000	0	:pulse_swallow:_p4	transport '1' @37000000 fs
+diag	note	45000000	0	:pulse_swallow:_p3	inertial '0' @45000000 fs
+diag	note	45000000	0	:pulse_swallow:_p4	transport '0' @45000000 fs

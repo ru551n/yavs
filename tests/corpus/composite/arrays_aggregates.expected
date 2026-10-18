@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:arrays_aggregates:_p0	sum c=17
+diag	note	0	0	:arrays_aggregates:_p0	sum v=210 slice=90
+diag	note	0	0	:arrays_aggregates:_p0	v1=40 v3=60
+diag	note	0	0	:arrays_aggregates:_p0	overlap v2=40 v4=60

@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	0	:force_out_port:_p0	s=4
+diag	note	2000000	0	:force_out_port:_p0	force out s=11
+diag	note	3000000	0	:force_out_port:_p0	release s=4

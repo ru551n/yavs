@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:case_if:_p0	add -> 9
+diag	note	0	0	:case_if:_p0	sub -> 3
+diag	note	0	0	:case_if:_p0	mul -> 18
+diag	note	0	0	:case_if:_p0	nop -> 0
+diag	note	0	0	:case_if:_p0	low
+diag	note	0	0	:case_if:_p0	low
+diag	note	0	0	:case_if:_p0	mid
+diag	note	0	0	:case_if:_p0	mid
+diag	note	0	0	:case_if:_p0	high 4
+diag	note	0	0	:case_if:_p0	high 5

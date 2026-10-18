@@ -1,0 +1,11 @@
+exit	1
+diag	note	0	0	:severities:_p0	default is note
+diag	note	0	0	:severities:_p0	note
+diag	warning	0	0	:severities:_p0	warning
+diag	error	0	0	:severities:_p0	error
+diag	note	0	0	:severities:_p0	assert note
+diag	warning	0	0	:severities:_p0	assert warning
+diag	error	0	0	:severities:_p0	assert error
+diag	warning	0	0	-	Assertion violation
+diag	error	0	0	-	Assertion violation
+diag	note	1000000	0	:severities:_p0	continues after error at 1000000 fs

@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:write_read_line:_p0	i=-3 r=4.5 b=true c=[ ] s=abc t=20000 fs
+diag	note	0	0	:write_read_line:_p0	read at end ok=false
+diag	note	0	0	:write_read_line:_p0	line=tail
+out	int=42 true 15 ns 1010
+out	    7ab  |

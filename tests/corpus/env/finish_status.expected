@@ -1,0 +1,3 @@
+exit	3
+diag	note	0	0	:finish_status:_p0	working
+diag	finish	4000000	0	-	3

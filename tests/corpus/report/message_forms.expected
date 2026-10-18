@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:message_forms:_p0	
+diag	note	0	0	:message_forms:_p0	 leading and trailing 
+diag	note	0	0	:message_forms:_p0	0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+diag	note	0	0	:message_forms:_p0	tab\tand quote " and percent %d %s
+diag	note	0	0	:message_forms:_p0	multi\nline\nmessage
+diag	note	0	0	:message_forms:_p0	1-1false1000 fs

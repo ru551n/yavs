@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:multi_process_order:p3	p3 at 0
+diag	note	1000000	0	:multi_process_order:p1	p1 start
+diag	note	1000000	0	:multi_process_order:p2	p2 start
+diag	note	2000000	0	:multi_process_order:p3	p3 at 2
+diag	note	2000000	0	:multi_process_order:p1	p1 end
+diag	note	3000000	0	:multi_process_order:p2	p2 end

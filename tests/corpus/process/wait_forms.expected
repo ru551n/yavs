@@ -1,0 +1,10 @@
+exit	0
+diag	note	5000000	0	:wait_forms:timeout_p	timeout1 @5000000 fs
+diag	note	10000000	1	:wait_forms:on_a	a=1 @10000000 fs
+diag	note	10000000	1	:wait_forms:timeout_p	event @10000000 fs
+diag	note	10000000	2	:wait_forms:timeout_p	zero wait delta
+diag	note	20000000	1	:wait_forms:on_a	a or b: 1,5 @20000000 fs
+diag	note	30000000	1	:wait_forms:on_a	a or b again @30000000 fs
+diag	note	30000000	1	:wait_forms:until_p	until a=2 b=6 @30000000 fs
+diag	note	40000000	1	:wait_forms:until_p	until go @40000000 fs
+diag	note	45000000	0	:wait_forms:until_p	timeout @45000000 fs

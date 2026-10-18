@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:tb_inertial:_p1	s=0 @0 fs
+diag	note	15000000	0	:tb_inertial:_p1	s=2 @15000000 fs
+diag	note	35000000	0	:tb_inertial:_p1	s=3 @35000000 fs

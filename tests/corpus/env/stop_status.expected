@@ -1,0 +1,3 @@
+exit	2
+diag	note	4000000	0	:stop_status:_p0	stopping
+diag	stop	4000000	0	-	2

@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:enum_attrs:_p0	image=green 'x' violet
+diag	note	0	0	:enum_attrs:_p0	value=blue
+diag	note	0	0	:enum_attrs:_p0	bit='1' sev=warning
+diag	note	0	0	:enum_attrs:_p0	0:red
+diag	note	0	0	:enum_attrs:_p0	1:green
+diag	note	0	0	:enum_attrs:_p0	2:blue
+diag	note	0	0	:enum_attrs:_p0	3:'x'
+diag	note	0	0	:enum_attrs:_p0	4:violet

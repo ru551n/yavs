@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:array_attrs:_p0	ri 2
+diag	note	0	0	:array_attrs:_p0	ri 3
+diag	note	0	0	:array_attrs:_p0	ri 4
+diag	note	0	0	:array_attrs:_p0	ri 5
+diag	note	0	0	:array_attrs:_p0	ri 6
+diag	note	0	0	:array_attrs:_p0	ri 7
+diag	note	0	0	:array_attrs:_p0	len=5 sub=2

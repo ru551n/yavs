@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:failure_exit:_p0	before
+diag	failure	3000000	0	:failure_exit:_p0	fatal condition

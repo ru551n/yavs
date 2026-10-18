@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:tb_reject:_p1	s=0 @0 fs
+diag	note	9000000	0	:tb_reject:_p1	s=2 @9000000 fs
+diag	note	30000000	0	:tb_reject:_p1	s=7 @30000000 fs
+diag	note	34000000	0	:tb_reject:_p1	s=8 @34000000 fs

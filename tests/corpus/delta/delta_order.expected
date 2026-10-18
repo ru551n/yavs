@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:delta_order:_p2	c=0 @0 fs
+diag	note	0	1	:delta_order:_p0	after zero wait a=1
+diag	note	0	2	:delta_order:_p2	c=1 @0 fs
+diag	note	1000000	1	:delta_order:_p0	a=2 b=1
+diag	note	1000000	2	:delta_order:_p2	c=2 @1000000 fs

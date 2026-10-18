@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:generic_map:u1:_p1	dflt w=4 d=1000000 fs
+diag	note	0	0	:generic_map:u2:_p1	two w=2 d=3000000 fs
+diag	note	0	0	:generic_map:_p0	a=0000 b=00 @0 fs
+diag	note	1000000	0	:generic_map:_p0	a=1111 b=00 @1000000 fs
+diag	note	3000000	0	:generic_map:_p0	a=1111 b=11 @3000000 fs

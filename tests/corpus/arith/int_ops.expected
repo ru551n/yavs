@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:int_ops:_p0	div -3 -2
+diag	note	0	0	:int_ops:_p0	mod -3 1 2
+diag	note	0	0	:int_ops:_p0	rem 2 -2
+diag	note	0	0	:int_ops:_p0	abs 5 exp 1024 -8
+diag	note	0	0	:int_ops:_p0	neg -17 mul -85
+diag	note	0	0	:int_ops:_p0	minmax 17 -5

@@ -1,0 +1,3 @@
+exit	0
+diag	warning	3000000	1	:concurrent_assert:_p0	s too large: 3
+diag	warning	4000000	1	:concurrent_assert:_p0	s too large: 4

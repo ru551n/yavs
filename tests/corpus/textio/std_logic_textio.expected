@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:std_logic_textio:_p0	0101
+diag	note	0	0	:std_logic_textio:_p0	ZZZZ
+diag	note	0	0	:std_logic_textio:_p0	A5 245 10100101
+out	10100101 A5 52 10100101

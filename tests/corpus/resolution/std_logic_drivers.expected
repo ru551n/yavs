@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:std_logic_drivers:_p4	s='1' v=10
+diag	note	6000000	0	:std_logic_drivers:_p4	s='1'
+diag	note	11000000	0	:std_logic_drivers:_p4	s='1'
+diag	note	16000000	0	:std_logic_drivers:_p4	s='1'

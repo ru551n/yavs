@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:delta_chain:mon	s=000000 @0 fs
+diag	note	1000000	0	:delta_chain:mon	s=100000 @1000000 fs
+diag	note	1000000	1	:delta_chain:mon	s=110000 @1000000 fs
+diag	note	1000000	2	:delta_chain:mon	s=111000 @1000000 fs
+diag	note	1000000	3	:delta_chain:mon	s=111100 @1000000 fs
+diag	note	1000000	4	:delta_chain:mon	s=111110 @1000000 fs
+diag	note	1000000	5	:delta_chain:mon	s=111111 @1000000 fs

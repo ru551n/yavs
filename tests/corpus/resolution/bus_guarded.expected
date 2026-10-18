@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:bus_guarded:_p0	idle 'U'
+diag	note	1000000	0	:bus_guarded:_p0	one '1'
+diag	note	2000000	0	:bus_guarded:_p0	released 'Z'
+diag	note	3000000	0	:bus_guarded:_p0	two '0'
+diag	note	4000000	0	:bus_guarded:_p0	conflict 'X'

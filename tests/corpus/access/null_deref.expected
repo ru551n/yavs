@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:null_deref:_p0	before
+diag	fatal	0	0	-	null access dereference

@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	0	:port_modes_conversion:_p0	i=1 o=2 b=2
+diag	note	2000000	0	:port_modes_conversion:_p0	i=2 o=3 b=4
+diag	note	3000000	0	:port_modes_conversion:_p0	i=3 o=4 b=6

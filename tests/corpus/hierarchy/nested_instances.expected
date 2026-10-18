@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:nested_instances:_p0	o='0' @0 fs
+diag	note	1000000	0	:nested_instances:_p0	o='1' @1000000 fs
+diag	note	2000000	0	:nested_instances:_p0	o='0' @2000000 fs
+diag	note	12000000	0	:nested_instances:_p0	o='1' @12000000 fs
+diag	note	22000000	0	:nested_instances:_p0	o='0' @22000000 fs

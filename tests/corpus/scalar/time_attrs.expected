@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:time_attrs:_p0	t=1500000 fs 2000000000 fs -7000000 fs
+diag	note	0	0	:time_attrs:_p0	pos=5000 val=77 fs
+diag	note	0	0	:time_attrs:_p0	value=3000000 fs
+diag	note	1500000	0	:time_attrs:_p0	now=1500000 fs

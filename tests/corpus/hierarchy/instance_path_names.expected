@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:instance_path_names:a1:_p0	inst=:instance_path_names(t):a1@leaf(a): path=:instance_path_names:a1:
+diag	note	0	0	:instance_path_names:a1:_p0	sig=:instance_path_names(t):a1@leaf(a):s / :instance_path_names:a1:s
+diag	note	0	0	:instance_path_names:g(0):b:_p0	inst=:instance_path_names(t):g(0):b@leaf(a): path=:instance_path_names:g(0):b:
+diag	note	0	0	:instance_path_names:g(0):b:_p0	sig=:instance_path_names(t):g(0):b@leaf(a):s / :instance_path_names:g(0):b:s
+diag	note	0	0	:instance_path_names:g(1):b:_p0	inst=:instance_path_names(t):g(1):b@leaf(a): path=:instance_path_names:g(1):b:
+diag	note	0	0	:instance_path_names:g(1):b:_p0	sig=:instance_path_names(t):g(1):b@leaf(a):s / :instance_path_names:g(1):b:s

@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:records:_p0	tri 4,5
+diag	note	0	0	:records:_p0	10 111
+diag	note	0	0	:records:_p0	sq  000true

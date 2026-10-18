@@ -1,0 +1,4 @@
+exit	1
+diag	error	0	0	:assert_user_message:_p0	check failed: bad arith
+diag	error	0	0	:assert_user_message:_p0	check failed: inside procedure at 0 fs
+diag	error	2000000	0	:assert_user_message:_p0	check failed: later

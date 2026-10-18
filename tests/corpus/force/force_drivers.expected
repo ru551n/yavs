@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:force_drivers:_p3	s='0' @0 fs
+diag	note	8000000	1	:force_drivers:_p3	s='1' @8000000 fs
+diag	note	22000000	0	:force_drivers:_p3	s='0' @22000000 fs
+diag	note	33000000	1	:force_drivers:_p3	s='X' @33000000 fs
+diag	note	36000000	1	:force_drivers:_p3	s='0' @36000000 fs

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:file_roundtrip:_p0	got 100
+diag	note	0	0	:file_roundtrip:_p0	got 200
+diag	note	0	0	:file_roundtrip:_p0	got 300
+diag	note	0	0	:file_roundtrip:_p0	got 400
+diag	note	0	0	:file_roundtrip:_p0	total=1000
+diag	note	0	0	:file_roundtrip:_p0	missing status ok=false

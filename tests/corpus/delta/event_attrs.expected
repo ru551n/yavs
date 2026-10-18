@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:event_attrs:_p1	ev=false act=false same.ev=false same.act=false last_event=9223372036854775807 fs last_value=0 @0 fs
+diag	note	5000000	1	:event_attrs:_p1	ev=true act=true same.ev=false same.act=true last_event=0 fs last_value=0 @5000000 fs
+diag	note	8000000	1	:event_attrs:_p1	ev=true act=true same.ev=false same.act=false last_event=0 fs last_value=1 @8000000 fs

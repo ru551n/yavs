@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:stack:_p0	size=5
+diag	note	0	0	:stack:_p0	pop 15
+diag	note	0	0	:stack:_p0	pop 12
+diag	note	0	0	:stack:_p0	pop 9
+diag	note	0	0	:stack:_p0	pop 6
+diag	note	0	0	:stack:_p0	pop 3

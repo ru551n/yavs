@@ -1,0 +1,5 @@
+exit	0
+diag	note	5000000	2	:stable_quiet:_p3	stable=false quiet=false @5000000 fs
+diag	note	7000000	1	:stable_quiet:_p3	stable=true quiet=true @7000000 fs
+diag	note	15000000	2	:stable_quiet:_p3	stable=false quiet=false @15000000 fs
+diag	note	17000000	1	:stable_quiet:_p3	stable=true quiet=true @17000000 fs

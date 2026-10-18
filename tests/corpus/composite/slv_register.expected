@@ -1,0 +1,4 @@
+exit	0
+diag	note	2000000	0	:slv_register:_p0	q=00000001
+diag	note	4000000	0	:slv_register:_p0	q=00000010
+diag	note	6000000	0	:slv_register:_p0	q=00000011

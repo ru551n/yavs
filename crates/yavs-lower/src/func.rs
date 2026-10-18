@@ -30,8 +30,11 @@ pub(crate) enum Shape {
 
 pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
     match p.class {
-        ObjClass::Signal if ty::is_array(db, db.base(p.subtype)) => {
-            return Err(cx.unsupported(span, "array signal parameters"));
+        ObjClass::Signal
+            if !ty::is_array(db, db.base(p.subtype))
+                && !db.types[db.base(p.subtype)].kind_is_scalar() =>
+        {
+            return Err(cx.unsupported(span, "record signal parameters"));
         }
         ObjClass::Signal if p.mode == HMode::In => return Ok(Shape::Sig),
         ObjClass::Signal if matches!(p.mode, HMode::Out | HMode::Inout) => {
@@ -742,6 +745,21 @@ pub(crate) fn subprogram(
                 }
             }
         };
+        if let Obj::SignalRef { off, out, .. } = obj
+            && ty::is_array(db, db.base(p.subtype))
+        {
+            // An array signal parameter: the actual's descriptor follows (DESIGN.md).
+            let dope = fx.fb.param(
+                &format!("{name}'dope"),
+                Width::B8,
+                ParamClass::Value,
+                Mode::In,
+                None,
+            );
+            if dope != off + if out { 24 } else { 16 } {
+                return Err(fx.cx.ice(decl.span, "signal parameter slots not adjacent"));
+            }
+        }
         fx.cx.objs.insert(pd, obj);
     }
     let decls = fx.decls(*scope);
@@ -930,14 +948,16 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
     match o.class {
         ObjClass::Signal => {
             let t = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
-            if array
-                && !matches!(
-                    db.subtypes[o.subtype].constraint,
-                    yavs_sem::types::Constraint::Array { dims: Some(_), .. }
-                )
-            {
-                return Err(cx.unsupported(decl.span, "unconstrained array ports"));
-            }
+            let dope = if array {
+                let Some(size) = yavs_ir::Ty::desc_size(pb.types(), t) else {
+                    return Err(cx.ice(decl.span, "array type without a descriptor size"));
+                };
+                let off = cx.inst_alloc(size as u32);
+                cx.sig_dopes.insert(d, off);
+                Some(off)
+            } else {
+                None
+            };
             let (st, def) = (o.subtype, o.default);
             let init = if array
                 || matches!(
@@ -974,6 +994,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 name,
                 ty: t,
                 init,
+                dope,
             });
             Ok(())
         }

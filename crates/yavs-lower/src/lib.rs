@@ -93,6 +93,10 @@ pub struct SignalIr {
     /// `FuncKind::Thunk` returning the initial value of a scalar signal (`None` for ports
     /// and arrays: the elaborator computes initial values itself).
     pub init: Option<FuncId>,
+    /// An array signal's descriptor in instance data (`Ty::desc_size` bytes at this offset),
+    /// written by the elaborator from the signal's bounds in each instance: ports take their
+    /// actual's bounds.
+    pub dope: Option<u32>,
 }
 
 /// A generic or constant in instance data.
@@ -234,6 +238,8 @@ pub(crate) struct Cx {
     /// `'path_name`/`'instance_name` slots its code reads.
     pub inst_size: u32,
     pub names: Vec<InstName>,
+    /// Instance-data descriptor offsets of array signals (`SignalIr::dope`).
+    pub sig_dopes: HashMap<DeclId, u32>,
 }
 
 impl Cx {
@@ -301,6 +307,7 @@ impl<'a> Lowerer<'a> {
                 refl: HashMap::new(),
                 inst_size: 0,
                 names: Vec::new(),
+                sig_dopes: HashMap::new(),
             },
             units: Vec::new(),
         }

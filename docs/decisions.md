@@ -496,3 +496,7 @@ which tools/difftest parses.
   yavs-elab per region: a design unit names its instance, a signal or constant the region that
   declares it, a process label its process; other objects (variables) are named from the
   process's region (ponytail: the process segment is missing for process variables).
+- **Array signal descriptors** live in instance data (`SignalIr::dope`), written by yavs-elab from
+  each signal object's bounds, so unconstrained ports take their actual's bounds. Array signal
+  parameters pass the signal reference, the driver slot (`out`/`inout`) and the actual's
+  descriptor; their elements and slices are sub-ranges of the reference.

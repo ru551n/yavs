@@ -324,13 +324,12 @@ impl Fx<'_, '_> {
                 let (data, dope) = self.inst_array(off);
                 Ok(V::A(data, dope))
             }
-            Some(Obj::Signal { .. }) if self.sig_dope(d, span)?.is_some() => {
+            Some(Obj::Signal { .. } | Obj::SignalRef { .. })
+                if self.sig_dope(d, span)?.is_some() =>
+            {
                 let dope = self.sig_dope(d, span)?.ok_or(Failed)?;
                 let s = self.sig_of(d, span)?;
-                let DeclKind::Object(o) = &decl.kind else {
-                    return Err(self.cx.ice(span, "signal is not an object"));
-                };
-                let tid = self.ty(db.base(o.subtype), span)?;
+                let tid = self.decl_ty(d, span)?;
                 let (size, _) = self.layout(tid, dope);
                 let buf = self.alloc(size);
                 self.emit(Inst::SigRead { dst: buf, sig: s });
@@ -495,6 +494,15 @@ impl Fx<'_, '_> {
         if !ty::is_array(self.db, self.db.base(o.subtype)) {
             return Ok(None);
         }
+        if let Some(&off) = self.cx.sig_dopes.get(&d) {
+            return Ok(Some(self.addr(Space::Inst, off)));
+        }
+        if let Some(Obj::SignalRef { space, off, out }) = self.cx.objs.get(&d).copied() {
+            // An array signal parameter: the actual's descriptor follows the reference (and
+            // the driver slot of an `out` parameter).
+            let a = self.addr(space, off + if out { 24 } else { 16 });
+            return Ok(Some(self.load(a, Width::B8, RegTy::Ptr)));
+        }
         match self.subtype_dope(o.subtype, span)? {
             Some(d) => Ok(Some(d)),
             None => Err(self.cx.unsupported(span, "unconstrained array signals")),
@@ -511,7 +519,7 @@ impl Fx<'_, '_> {
         let (prefix, sel) = match &x.kind {
             ExprKind::Obj(d) => {
                 let dope = match self.cx.objs.get(d) {
-                    Some(Obj::Signal { .. }) => self.sig_dope(*d, span)?,
+                    Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => self.sig_dope(*d, span)?,
                     _ => None,
                 };
                 return Ok((*d, self.sig_of(*d, span)?, dope));
@@ -541,10 +549,10 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<(Reg, Option<Reg>)> {
         let db = self.db;
-        let Some(Obj::Signal { sig }) = self.cx.objs.get(&d).copied() else {
-            return Err(self
-                .cx
-                .unsupported(span, "sub-elements of signal parameters"));
+        let sig = match self.cx.objs.get(&d).copied() {
+            Some(Obj::Signal { sig }) => Ok(sig),
+            Some(Obj::SignalRef { .. }) => Err(self.sig_of(d, span)?),
+            _ => return Err(self.cx.ice(span, "selection of a non-signal")),
         };
         let Some(dope) = self.sig_dope(d, span)? else {
             return Err(self.cx.ice(span, "indexed scalar signal"));
@@ -564,7 +572,7 @@ impl Fx<'_, '_> {
                     pos
                 };
                 let one = self.int(1);
-                Ok((self.sigval_at(sig, off, one), None))
+                Ok((self.sub_sig(sig, off, one), None))
             }
             Err(range) => {
                 let (p, n, nd) = self.slice_of(dope, range, &what, span)?;
@@ -574,9 +582,27 @@ impl Fx<'_, '_> {
                 } else {
                     p
                 };
-                Ok((self.sigval_at(sig, off, n), Some(nd)))
+                Ok((self.sub_sig(sig, off, n), Some(nd)))
             }
         }
+    }
+
+    /// Elements `offset .. offset + len` (kernel order) of instance signal `Ok(sig)`, or of the
+    /// signal reference `Err(r)` (a signal parameter: the offset is relative to its elements).
+    pub fn sub_sig(&mut self, sig: Result<u32, Reg>, offset: Reg, len: Reg) -> Reg {
+        let r = match sig {
+            Ok(sig) => return self.sigval_at(sig, offset, len),
+            Err(r) => r,
+        };
+        // `[base << 32 | offset, len]`: move the offset, replace the length.
+        let buf = self.alloc_n(16);
+        self.store(buf, r, Width::Sig);
+        let lo = self.load(buf, Width::B8, RegTy::I64);
+        let moved = self.bin(IntOp::Add, lo, offset);
+        self.store(buf, moved, Width::B8);
+        let hi = self.offset(buf, 8);
+        self.store(hi, len, Width::B8);
+        self.load(buf, Width::Sig, RegTy::Sig)
     }
 
     /// Elements `offset .. offset + len` (kernel order) of instance signal `sig`.
@@ -1321,11 +1347,16 @@ impl Fx<'_, '_> {
                     }
                     _ => return Err(self.cx.ice(es, "array place for a scalar parameter")),
                 },
-                Shape::Sig => cells.push(self.sig_expr(e)?),
+                Shape::Sig => {
+                    let (_, sref, dope) = self.sig_name(e)?;
+                    cells.push(sref);
+                    cells.extend(dope);
+                }
                 Shape::SigOut => {
-                    let (d, sref, _) = self.sig_name(e)?;
+                    let (d, sref, dope) = self.sig_name(e)?;
                     let slot = self.driver_slot_of(d, es)?;
                     cells.extend([sref, slot]);
+                    cells.extend(dope);
                 }
                 Shape::Arr => {
                     let (data, mut dope) = match p.mode {
@@ -2090,27 +2121,26 @@ impl Fx<'_, '_> {
                 let r = self.dope_range(dope, k);
                 self.range_attr(attr, r, Some((dope, k)), span)
             }
-            AttrPrefix::Expr(e) if ty::is_array(db, db.base(db.exprs[e].subtype)) => {
-                let dope = self.dope_of(e)?;
-                let k = dim(self);
-                let r = self.dope_range(dope, k);
-                self.range_attr(attr, r, Some((dope, k)), span)
-            }
-            AttrPrefix::Expr(e) => {
-                let ExprKind::Obj(d) = db.exprs[e].kind else {
-                    return Err(self
-                        .cx
-                        .unsupported(span, "signal attributes of a sub-element"));
-                };
+            AttrPrefix::Expr(e)
+                if matches!(attr, Event | Active | LastEvent | LastActive | LastValue) =>
+            {
+                // A signal, signal element or slice, or signal parameter (LRM 16.2.4).
+                let (_, s, dope) = self.sig_name(e)?;
+                let st = db.exprs[e].subtype;
                 let kind = match attr {
                     Event => AttrKind::Event,
                     Active => AttrKind::Active,
                     LastEvent => AttrKind::LastEvent,
                     LastActive => AttrKind::LastActive,
-                    LastValue => {
-                        let st = db.exprs[e].subtype;
-                        let (tid, rt, w) = self.scalar(st, span)?;
-                        let s = self.sig_of(d, span)?;
+                    _ => {
+                        let tid = self.ty(db.base(st), span)?;
+                        if let Some(dope) = dope {
+                            let (size, _) = self.layout(tid, dope);
+                            let buf = self.alloc(size);
+                            self.emit(Inst::SigLastValue { dst: buf, sig: s });
+                            return Ok(V::A(buf, dope));
+                        }
+                        let (_, rt, w) = self.scalar(st, span)?;
                         let logic = self.is_logic(tid);
                         // A logic leaf arrives as one block of planes.
                         let buf = self.alloc_n(if logic { 32 } else { 8 });
@@ -2128,18 +2158,24 @@ impl Fx<'_, '_> {
                         }
                         return Ok(V::S(self.load(buf, w, rt)));
                     }
-                    _ => {
-                        return Err(self.cx.unsupported(
-                            span,
-                            &format!("attribute '{} (implicit signals, M2 slice 4)", attr.name()),
-                        ));
-                    }
                 };
-                let s = self.sig_of(d, span)?;
                 let dst = self.reg(RegTy::I64);
                 self.emit(Inst::SigAttr { dst, kind, sig: s });
                 Ok(V::S(dst))
             }
+            AttrPrefix::Expr(e) if ty::is_array(db, db.base(db.exprs[e].subtype)) => {
+                let dope = self.dope_of(e)?;
+                let k = dim(self);
+                let r = self.dope_range(dope, k);
+                self.range_attr(attr, r, Some((dope, k)), span)
+            }
+            AttrPrefix::Expr(_) => Err(self.cx.unsupported(
+                span,
+                &format!(
+                    "attribute '{} of an object (implicit signals, M2 slice 4)",
+                    attr.name()
+                ),
+            )),
             AttrPrefix::Entity(d) if attr == SimpleName => {
                 let name = db.decls[d].name.to_string().to_ascii_lowercase();
                 let n = name.len() as i64;

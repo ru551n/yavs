@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:sig_arrays:u:_p0	cnt d=0011 len=4 left=7
+diag	note	1000000	0	:sig_arrays:_p0	s=0011 s(5)='1' v(2)=2 sl=01
+diag	note	1000000	1	:sig_arrays:u:_p0	cnt d=1010 len=4 left=7
+diag	note	2000000	0	:sig_arrays:_p0	s=1010 s(5)='1' v(2)=2 sl=01
+diag	note	2000000	0	:sig_arrays:_p0	b=0101

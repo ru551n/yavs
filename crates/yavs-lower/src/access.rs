@@ -26,8 +26,7 @@ impl Fx<'_, '_> {
     fn deref_obj(&mut self, prefix: ExprId, span: Span) -> R<(yavs_ir::Reg, SubtypeId)> {
         let des = self.designated(self.db.exprs[prefix].subtype, span)?;
         let h = self.scalar_expr(prefix)?;
-        // NVC's wording, so the differential corpus compares exactly.
-        let what = self.msg("null access dereference", Dir::To);
+        let what = self.msg("access value", Dir::To);
         let p = self.reg(RegTy::Ptr);
         self.emit(Inst::Deref {
             dst: p,

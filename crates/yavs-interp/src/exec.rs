@@ -1545,7 +1545,8 @@ impl Machine {
                 let h = self.r(handle);
                 let (w, _) = self.check_msg(what);
                 if h == 0 {
-                    return rt_err(format!("null access value dereferenced: {w}"));
+                    // NVC's wording; the statement span names the place.
+                    return rt_err("null access dereference");
                 }
                 let (hp, space) = self.heap_of(h)?;
                 let i = match hp.resolve(h) {

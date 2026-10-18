@@ -64,5 +64,5 @@ cargo bench -p yavs-logic                                      # update LAYOUT.m
 ## 6. Coordination
 
 - Changes that affect storage are kernel changes too: read `crates/yavs-kernel/DESIGN.md`.
-- Open issues (snapshot 2026-10-18): none labelled `crate:logic`. Related: #83 kernel records
-  resolved as a whole store logic fields as bytes.
+- Open issues (snapshot 2026-10-18): none labelled `crate:logic`. #83 (records resolved as a
+  whole) was closed with logic fields kept on planes.

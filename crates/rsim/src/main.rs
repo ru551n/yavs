@@ -5,13 +5,19 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod analyze;
+mod elab;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rsim_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
 use rsim_syntax::{Encoding, Options, Std};
 
 #[derive(Parser)]
-#[command(name = "rsim", version, about = "A VHDL simulator")]
+#[command(
+    name = "rsim",
+    version,
+    about = "A VHDL simulator",
+    args_override_self = true
+)]
 struct Cli {
     /// When to colour diagnostics.
     #[arg(long, global = true, value_enum, default_value = "auto")]
@@ -45,6 +51,10 @@ enum Command {
     },
     /// Analyze one VHDL file into a library.
     Analyze(analyze::Args),
+    /// Elaborate a design (no simulation).
+    Elab(elab::Common),
+    /// Elaborate and simulate a design.
+    Run(elab::RunArgs),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -129,6 +139,8 @@ fn main() -> ExitCode {
             files,
         } => (std, defines, dump_ast, files),
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
+        Command::Elab(a) => return elab::elab(a, format, color),
+        Command::Run(a) => return elab::run(a, format, color),
     };
     let opts = Options {
         std: match std {

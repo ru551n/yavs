@@ -323,3 +323,23 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 `std.env.resolution_limit`, as Riviera-PRO does (NVC returns femtoseconds). The LRM is unclear,
 and VUnit's `record_dict_pkg` (PR #1239) relies on this reading. With the default femtosecond
 resolution both readings give the same number. Applies to the M3 runtime that builds mirrors.
+## Elaboration (rsim-elab, M2)
+
+- **Element order inside a kernel leaf:** composites flatten row major, leftmost first; a logic
+  leaf (bit-planes) mirrors it, kernel offset `n - 1 - p` for row-major position `p` (element 0 of
+  rsim-logic is the rightmost element). `NetGraph::select` is the one implementation; lowering
+  computing offsets of non-static indices must use the same rule.
+- **Logic leaves:** every leaf whose scalar is `std_ulogic`, `bit` or `boolean` (scalars too) is
+  `Elem::Logic` with the enumeration position as the code, matching `rsim_ir::LogicKind`. Other
+  enums are 1 or 4 bytes, integers, physicals and reals 8.
+- **Records** become one leaf per field (arrays of records: struct of arrays).
+- **Unlabeled processes** are named `_pN`, N counting the unlabeled process-like statements of
+  the region (NVC's names, so difftest paths match).
+- **Component instances** get a hidden `Component` scope holding the component ports as their own
+  signals (two port edges per port, uncollapsed); it is not part of path names, the bound entity
+  instance carries the label.
+- **Interim evaluator:** globally static expressions are folded with sem's static folder over
+  generic and constant values (`Db::fold_with`); everything else is E2006 until rsim-interp runs
+  elaboration code (ir.md 3.6).
+- **Package constant calling a function of its own package** whose body is not elaborated yet
+  (LRM 14.4.2): E2014 with both spans, as NVC and Questa do.

@@ -289,3 +289,20 @@ generic.rs (S4) is in. What other modules can use, and what is still open:
 - Blocked in lib: the bodies of `fixed_generic_pkg` and `float_generic_pkg` (so the instance
   bodies of `fixed_pkg`/`float_pkg`) need aggregates with `others` from a return or parameter
   context (`E1325`), `.all` and allocators; the declarations and instances analyze clean.
+
+## Requests from elab (rsim-elab)
+
+Corpus groups `tests/corpus/hierarchy` and `generics` (difftest) stop in analysis:
+
+- **units/names**: `architecture a of and2 is begin y <= a and b; end;` with a port `a`: E1361
+  "this name does not denote a value" at `a` (the architecture's own name hides the port).
+  `hierarchy/component_binding.vhd`, `hierarchy/nested_instances.vhd`.
+- **stmt/aggregate**: `o <= (others => '1')` for a port `o` of an unconstrained subtype (bounds
+  from the actual at elaboration, 9.3.3.3; NVC accepts): E1325. `generics/generic_map.vhd`. The
+  same E1325 for a concurrent assignment to a constrained `std_logic_vector` signal,
+  `s <= (others => 'Z');`.
+- **generic**: `generics/generic_types_2019.vhd`: generic subprogram `img` of a generic type `t`
+  called with `a : t` is E1301; `port map (1, 2)` for ports of type `t` with `t => integer` is
+  E1300.
+- **units**: for elaboration of `for` generates under a configuration, `GenSelect::Index`
+  expressions are evaluated without the generate's scope (fine while they are locally static).

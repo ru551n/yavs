@@ -6,7 +6,7 @@
 |---|---|
 | M0: workspace, lexer and parser | done: `rsim parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
-| M2: IR, interpreter, elaboration, kernel | `rsim-ir` and `rsim-interp` done against hand-written IR (below); lowering and elaboration in progress |
+| M2: IR, interpreter, elaboration, kernel | `rsim-ir` and `rsim-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
 | M3 to M10 | not started (crate spikes below) |
 
 ## sem (`crates/rsim-sem`, M1)
@@ -177,6 +177,30 @@ tests (conditional line breakpoint with hit count, step over, step in with frame
 global step across processes, signal breakpoint and process table), verifier and layout tests.
 Not done: `Elab*` instructions (rsim-elab), records with runtime layouts beyond `LayoutOf`,
 protected types beyond `CallProt` dispatch, files and textio natives, foreign arrays.
+
+## elab (`crates/rsim-elab`, M2)
+
+Done (without processes, which need rsim-lower and rsim-interp): `find_top` (`ENTITY`,
+`ENTITY.ARCH`, `CONFIGURATION`), `elaborate` as a pure function (restart test: two elaborations
+and two kernel builds give identical results), hierarchy with LRM `'path_name`/`'instance_name`
+in both LRM and original spelling, unlabeled processes `_pN`, generics (actuals, `-g` overrides
+through the rsim-std `'value` parser, defaults, range check), constants on demand, for/if/case
+generates, blocks, entity/component/configuration instances, binding (configuration declaration,
+then specification, then default binding), signals split into kernel leaves (records as struct
+of arrays, `std_ulogic`/`bit`/`boolean` as bit-planes), the sub-element map
+(`NetGraph::select`), uncollapsed ports with unconstrained formals taking the actual's bounds,
+static expression actuals, per-process merged drivers, multiple-source check across the
+hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
+Elaboration-time evaluation folds globally static expressions with `Db::fold_with`; function
+calls and aggregates wait for rsim-interp (E2006). Not yet: conversion functions and
+non-static expression actuals in port maps, implicit signals, guarded blocks and signals,
+package signals, external names, user resolution functions, generic types and subprograms.
+
+CLI: `rsim elab` and `rsim run` per docs/cli-contract.md (closure from the manifests, design
+revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes). `run` simulates
+only designs without processes until processes are lowered; otherwise it reports E9999.
+Corpus `hierarchy/` and `generics/`: 5 of 9 elaborate (`--print-hierarchy`); the other 4 stop in
+analysis.
 
 ## ffi (`crates/rsim-ffi`)
 

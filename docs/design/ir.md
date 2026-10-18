@@ -505,6 +505,9 @@ pub struct SubElemMap;                    // (ObjId, &[Sel]) <-> Vec<(LeafId, Ra
   (recursively, arrays of records become one leaf per field, struct of arrays); a type resolved
   as a whole composite (`resolved_record_port`) is one leaf whose element is the whole composite
   value. Storage and event tracking are therefore per contiguous vector, never per scalar.
+- **Element order** (implemented in `rsim_elab::NetGraph::select`): a leaf's elements are row
+  major, leftmost first; logic leaves mirror it (kernel offset `n - 1 - p`), since rsim-logic's
+  element 0 is the rightmost.
 - `SubElemMap` is the one mapping from a VHDL name (object plus static index/field selectors) to
   `(leaf, element range)` pairs, and back. Drivers, force/deposit, VHPI handles, waves, coverage
   toggles and DAP all go through it.

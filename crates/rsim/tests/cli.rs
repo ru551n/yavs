@@ -267,3 +267,65 @@ fn concurrent_batches() {
     }
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// `rsim elab` and `rsim run` (cli-contract section 5): exit codes and diagnostic codes.
+#[test]
+fn elab_and_run() {
+    let tmp = tempdir("elab");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity leaf is generic (W : natural := 1); end;\n\
+         architecture a of leaf is signal s : bit_vector(W - 1 downto 0); begin end;\n\
+         entity top is generic (N : positive := 2; MSG : string := \"x\"); end;\n\
+         architecture t of top is begin u : entity work.leaf generic map (W => N); end;\n\
+         entity busy is end;\n\
+         architecture t of busy is begin process begin wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let rsim = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_rsim"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        (
+            o.status.code().expect("exit code"),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let s = src.display().to_string();
+    assert_eq!(rsim(&["analyze", &lib, &s]).0, 0);
+    // Generics after TOP, the long verbatim form, repeated options (last wins).
+    let (code, err, out) = rsim(&[
+        "elab",
+        &lib,
+        "--print-hierarchy",
+        "top.t",
+        "-gN=3",
+        "-gMSG=enabled_test_cases : a,b/c\\d.e",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(":top:u:s"), "{out}");
+    let rsp = tmp.join("args.rsp");
+    std::fs::write(&rsp, format!("{lib}\ntop\n-gN=4\n-gnope=1\n")).expect("rsp");
+    let (code, err, _) = rsim(&["elab", &format!("@{}", rsp.display())]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("warning[W2005]"), "{err}");
+    let (code, err, _) = rsim(&["elab", &lib, "top", "-gN=0"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("error[E2004]"), "{err}");
+    let (code, err, _) = rsim(&["elab", &lib, "nothing"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("error[L0031]"), "{err}");
+    // A design without processes runs to event starvation.
+    let (code, err, _) = rsim(&["run", &lib, "--exit-severity=error", "top"]);
+    assert_eq!(code, 0, "{err}");
+    // Processes need rsim-lower and rsim-interp: a clear not-implemented error.
+    let (code, err, _) = rsim(&["run", &lib, "busy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("error[E9999]"), "{err}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

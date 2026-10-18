@@ -1,0 +1,331 @@
+//! `rsim elab` and `rsim run` (docs/cli-contract.md section 5).
+//!
+//! The design is re-analyzed from source: the closure of TOP is read from the library
+//! manifests (each under a shared lock held only for the read, rule 14), every file is
+//! analyzed with its recorded standard against one `std`/`ieee` revision (the newest in the
+//! closure, or `--std`), then elaborated.
+
+use std::process::ExitCode;
+
+use clap::Args as ClapArgs;
+use rsim_diag::{Diagnostic, MessageFormat, SourceMap};
+use rsim_lib::{Libraries, UnitKind, UnitRef};
+use rsim_sem::{Db, LangRev, Options};
+
+use crate::StdArg;
+use crate::analyze::{Out, stdlib};
+
+#[derive(ClapArgs)]
+pub struct Common {
+    /// Design revision of std/ieee; default: the newest standard in the design's closure.
+    #[arg(long, value_enum)]
+    std: Option<StdArg>,
+    /// The library holding the top level, `NAME:PATH`.
+    #[arg(long, value_name = "NAME:PATH", required = true)]
+    work: String,
+    /// Another library, `NAME:PATH` (repeatable).
+    #[arg(long = "map", value_name = "NAME:PATH")]
+    maps: Vec<String>,
+    /// Relax some LRM checks (sem.md 8.4).
+    #[arg(long)]
+    relaxed: bool,
+    /// `-Werror` makes warnings errors.
+    #[arg(short = 'W', value_name = "FLAG")]
+    warn: Vec<String>,
+    /// Print the elaborated hierarchy (for debugging rsim).
+    #[arg(long, hide = true)]
+    print_hierarchy: bool,
+    /// `ENTITY`, `ENTITY.ARCH` or `CONFIGURATION` in the work library.
+    #[arg(value_name = "TOP")]
+    top: String,
+    /// A generic of the top level, `-gNAME=VALUE` (the value is taken verbatim).
+    #[arg(short = 'g', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
+    generics: Vec<(String, String)>,
+}
+
+#[derive(ClapArgs)]
+pub struct RunArgs {
+    #[command(flatten)]
+    common: Common,
+    /// A report at or above this severity stops the simulation with exit 1.
+    #[arg(long, value_enum, default_value = "error")]
+    exit_severity: SeverityArg,
+    /// Suppress warnings raised inside `ieee` packages.
+    #[arg(long, value_name = "on|off")]
+    ieee_warnings: Option<String>,
+    /// Write an FST of the whole design.
+    #[arg(long, value_name = "FILE.fst")]
+    wave: Option<String>,
+    /// Stop the simulation at this time, e.g. `10ms`.
+    #[arg(long, value_name = "TIME")]
+    stop_time: Option<String>,
+    /// Worker threads for process evaluation.
+    #[arg(long, default_value = "1")]
+    threads: usize,
+    /// Randomize process execution order.
+    #[arg(long)]
+    shuffle: bool,
+    /// Load a shared library for foreign subprograms.
+    #[arg(long, value_name = "LIB")]
+    load: Vec<String>,
+    /// Load a VHPI plugin, `LIB[:ENTRY]`.
+    #[arg(long, value_name = "LIB[:ENTRY]")]
+    vhpi: Vec<String>,
+    /// Serve the Debug Adapter Protocol on this port.
+    #[arg(long, value_name = "PORT")]
+    dap: Option<u16>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum SeverityArg {
+    Note,
+    Warning,
+    Error,
+    Failure,
+}
+
+/// The elaborated design, or the exit code of the failed stage.
+fn elaborate(
+    c: &Common,
+    format: MessageFormat,
+    color: bool,
+) -> Result<(Out, Db, rsim_elab::Elaborated), (Out, u8)> {
+    let mut out = Out::new(format, color, c.warn.iter().any(|w| w == "error"));
+    let none = SourceMap::default();
+    let mut libs = Libraries::new();
+    for spec in std::iter::once(&c.work).chain(&c.maps) {
+        let name = spec
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let r = if name == "std" || name == "ieee" {
+            Err(Box::new(
+                Diagnostic::error("E0102", format!("library `{name}` is provided by rsim"))
+                    .with_help("remove the `std`/`ieee` mapping; rsim resolves them itself"),
+            ))
+        } else {
+            libs.add_spec(spec)
+        };
+        if let Err(d) = r {
+            out.emit(&none, &d);
+            return Err((out, 2));
+        }
+    }
+    if let Some(w) = c.warn.iter().find(|w| *w != "error") {
+        out.emit(
+            &none,
+            &Diagnostic::error("E0103", format!("unsupported warning option `-W{w}`")),
+        );
+        return Err((out, 2));
+    }
+    let (work, _) = c.work.split_once(':').expect("checked by add_spec");
+    let work = rsim_lib::fold(work);
+    // The closure of TOP: an architecture, an entity (with its latest architecture) or a
+    // configuration.
+    let refs: Vec<UnitRef> = match c.top.split_once('.') {
+        Some((e, a)) => vec![UnitRef::new(
+            &work,
+            UnitKind::Architecture,
+            &format!("{}/{}", rsim_lib::fold(e), rsim_lib::fold(a)),
+        )],
+        None => vec![
+            UnitRef::new(&work, UnitKind::Entity, &c.top),
+            UnitRef::new(&work, UnitKind::Configuration, &c.top),
+        ],
+    };
+    let mut files = Err(None);
+    for r in &refs {
+        match rsim_lib::closure(&libs, r) {
+            Ok(f) => {
+                files = Ok(f);
+                break;
+            }
+            Err(d) if files.is_err() => files = Err(Some(d)),
+            Err(_) => {}
+        }
+    }
+    let files = match files {
+        Ok(f) => f,
+        Err(d) => {
+            let d = d.unwrap_or_else(|| Box::new(Diagnostic::error("E0104", "no top level")));
+            out.emit(&none, &d);
+            return Err((out, 2));
+        }
+    };
+    let rev = match c.std {
+        Some(StdArg::V2008) => LangRev::Vhdl2008,
+        Some(StdArg::V2019) => LangRev::Vhdl2019,
+        None if files.iter().any(|f| f.std == "2019") => LangRev::Vhdl2019,
+        None => LangRev::Vhdl2008,
+    };
+    let mut opts = Options::new(rev, stdlib());
+    opts.libraries = libs;
+    opts.relaxed = c.relaxed;
+    let mut db = Db::new(opts);
+    let analyzed = db.analyze_closure(&files);
+    let diags = db.take_diagnostics();
+    for d in &diags {
+        out.emit(&db.sources, d);
+    }
+    if analyzed.is_err() || out.errors > 0 {
+        return Err((out, 2));
+    }
+    let r = rsim_elab::find_top(&mut db, &work, &c.top).and_then(|t| {
+        rsim_elab::elaborate(&mut db, t, &c.generics, &rsim_elab::ElabConfig::default())
+    });
+    match r {
+        Ok(e) => {
+            for d in &e.warnings {
+                out.emit(&db.sources, d);
+            }
+            if out.errors > 0 {
+                return Err((out, 2));
+            }
+            Ok((out, db, e))
+        }
+        Err(ds) => {
+            for d in &ds {
+                out.emit(&db.sources, d);
+            }
+            Err((out, 2))
+        }
+    }
+}
+
+fn print_hierarchy(db: &Db, e: &rsim_elab::Elaborated) {
+    use rsim_elab::Case;
+    let mut s = String::new();
+    for (i, sc) in e.hier.scopes.iter().enumerate() {
+        let id = rsim_elab::ScopeId(i as u32);
+        if matches!(sc.kind, rsim_elab::ScopeKind::Component { .. }) {
+            continue;
+        }
+        s.push_str(&e.hier.instance_name(id, db, Case::Original));
+        s.push('\n');
+        for &o in &sc.objs {
+            let l = e.nets.obj(o);
+            s.push_str(&format!(
+                "{}{} ({:?})\n",
+                e.hier.path_name(id, Case::Original),
+                l.name.text,
+                l.kind
+            ));
+        }
+    }
+    print!("{s}");
+}
+
+pub fn elab(a: Common, format: MessageFormat, color: bool) -> ExitCode {
+    match elaborate(&a, format, color) {
+        Ok((out, db, e)) => {
+            if a.print_hierarchy {
+                print_hierarchy(&db, &e);
+            }
+            out.finish(0)
+        }
+        Err((out, code)) => out.finish(code),
+    }
+}
+
+pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
+    let (mut out, db, e) = match elaborate(&a.common, format, color) {
+        Ok(x) => x,
+        Err((out, code)) => return out.finish(code),
+    };
+    if a.common.print_hierarchy {
+        print_hierarchy(&db, &e);
+    }
+    let none = SourceMap::default();
+    let unsupported = |what: &str| {
+        Diagnostic::error("E9999", format!("{what} is not implemented yet in rsim"))
+            .with_note("this is a limitation of rsim, not an error in the design")
+    };
+    for (given, what) in [
+        (a.wave.is_some(), "`--wave` (M7)"),
+        (!a.load.is_empty(), "`--load` (M3)"),
+        (!a.vhpi.is_empty(), "`--vhpi` (M5)"),
+        (a.dap.is_some(), "`--dap` (M8)"),
+    ] {
+        if given {
+            out.emit(&none, &unsupported(what));
+            return out.finish(2);
+        }
+    }
+    if !e.procs.is_empty() {
+        let p = &e.procs[0];
+        let d = unsupported("running processes")
+            .with_primary(db.stmts[p.stmt].span, "this process needs the IR")
+            .with_note(
+                "processes are lowered by rsim-lower and run by rsim-interp, which are not \
+                 wired into `rsim run` yet (M2 slice 1)",
+            );
+        out.emit(&db.sources, &d);
+        return out.finish(2);
+    }
+    let cfg = rsim_kernel::Config {
+        threads: a.threads.max(1),
+        shuffle: a.shuffle.then_some(0x5eed),
+        stop_severity: match a.exit_severity {
+            SeverityArg::Note => rsim_kernel::Severity::Note,
+            SeverityArg::Warning => rsim_kernel::Severity::Warning,
+            SeverityArg::Error => rsim_kernel::Severity::Error,
+            SeverityArg::Failure => rsim_kernel::Severity::Failure,
+        },
+        ..Default::default()
+    };
+    let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do
+    let stop = match &a.stop_time {
+        None => rsim_kernel::Time::MAX,
+        Some(t) => match parse_time(t) {
+            Ok(t) => t,
+            Err(m) => {
+                out.emit(
+                    &none,
+                    &Diagnostic::error("E0105", format!("invalid `--stop-time={t}`")).with_note(m),
+                );
+                return out.finish(2);
+            }
+        },
+    };
+    let none_proc = |_: &rsim_elab::ProcInst, _: &[rsim_kernel::DriverId]| {
+        Err(rsim_kernel::SimError::new(
+            rsim_kernel::ErrorKind::Internal("process without IR".into()),
+        ))
+    };
+    let mut sim = match e.build_with(cfg, none_proc) {
+        Ok(s) => s,
+        Err(err) => {
+            out.emit(
+                &none,
+                &Diagnostic::error("E9999", format!("internal error: {err}"))
+                    .with_note("this is a bug in rsim"),
+            );
+            return out.finish(3);
+        }
+    };
+    match sim.run_until(stop) {
+        Ok(_) => out.finish(0),
+        Err(err) => {
+            out.emit(&none, &Diagnostic::error("E9999", err.to_string()));
+            out.finish(1)
+        }
+    }
+}
+
+/// `10ms`, `1.5 ns`: a TIME literal (the `time'value` parser).
+fn parse_time(t: &str) -> Result<rsim_kernel::Time, String> {
+    let b = t.trim().as_bytes();
+    let split = b
+        .iter()
+        .position(|c| c.is_ascii_alphabetic())
+        .unwrap_or(b.len());
+    let text = format!("{} {}", t.trim()[..split].trim(), &t.trim()[split..]);
+    let fs = rsim_std::value::physical_value(
+        text.as_bytes(),
+        &rsim_std::types::time_type(),
+        rsim_std::types::Bounds::I64,
+    )
+    .map_err(|e| e.to_string())?;
+    rsim_kernel::Time::from_vhdl(fs).map_err(|e| format!("{e:?}"))
+}

@@ -1,0 +1,105 @@
+//! Building the kernel model from an [`Elaborated`] design. `build_with` can be called any
+//! number of times on the same design (in-process restart, rule 4).
+
+use rsim_kernel::{
+    Builder, Config, DriverId, PortConv, ProcFlags, Process, Resolution, SimControl, SimError,
+};
+
+use crate::hier::{Case, LeafRes};
+use crate::{Elaborated, ProcInst};
+
+struct Boxed(Box<dyn Process>);
+
+impl Process for Boxed {
+    fn run(&mut self, ctx: &mut rsim_kernel::Ctx<'_>) -> Result<(), SimError> {
+        self.0.run(ctx)
+    }
+}
+
+fn usage(m: String) -> SimError {
+    SimError::new(rsim_kernel::ErrorKind::Usage(m))
+}
+
+impl Elaborated {
+    /// Kernel signal names: the leaf's object path, plus record fields.
+    pub fn leaf_name(&self, l: crate::LeafId) -> String {
+        let leaf = self.nets.leaf(l);
+        let o = self.nets.obj(leaf.obj);
+        let mut n = format!(
+            "{}{}",
+            self.hier.path_name(o.scope, Case::Original),
+            o.name.text
+        );
+        let mut shape = &o.shape;
+        for &f in &leaf.path {
+            loop {
+                match shape {
+                    crate::Shape::Array { elem, .. } => shape = elem,
+                    crate::Shape::Record { fields, .. } => {
+                        let (name, s) = &fields[f as usize];
+                        n.push('.');
+                        n.push_str(name.text.as_str());
+                        shape = s;
+                        break;
+                    }
+                    crate::Shape::Scalar { .. } => break,
+                }
+            }
+        }
+        n
+    }
+
+    /// The kernel model. `make` creates the process object of each process instance, given
+    /// its kernel drivers (in `ProcInst::drivers` order).
+    pub fn build_with(
+        &self,
+        cfg: Config,
+        mut make: impl FnMut(&ProcInst, &[DriverId]) -> Result<Box<dyn Process>, SimError>,
+    ) -> Result<SimControl, SimError> {
+        let mut b = Builder::new();
+        for (i, leaf) in self.nets.leaves.iter().enumerate() {
+            let name = self.leaf_name(crate::LeafId(i as u32));
+            let id = match &leaf.resolution {
+                None => b.signal(&name, leaf.ty, &leaf.init),
+                Some(LeafRes::StdLogic) => {
+                    b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::StdLogic)
+                }
+                Some(LeafRes::Func(_)) => {
+                    return Err(usage(format!(
+                        "signal {name}: user resolution functions need rsim-interp (M3)"
+                    )));
+                }
+            };
+            debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
+        }
+        for e in &self.nets.ports {
+            let sig = |(l, r): (crate::LeafId, rsim_kernel::Range)| {
+                rsim_kernel::SignalId(l.0).slice(r.offset, r.len)
+            };
+            b.port(sig(e.formal), sig(e.actual), e.mode, PortConv::default());
+        }
+        for p in &self.procs {
+            let ds: Vec<DriverId> = p
+                .drivers
+                .iter()
+                .map(|&d| {
+                    let d = &self.nets.drivers[d];
+                    b.driver(rsim_kernel::SignalId(d.leaf.0).slice(d.range.offset, d.range.len))
+                })
+                .collect();
+            let proc = make(p, &ds)?;
+            let name = self.hier.path_name(p.scope, Case::Lrm);
+            let name = name.strip_suffix(':').unwrap_or(&name);
+            b.process(
+                name,
+                ProcFlags {
+                    postponed: p.postponed,
+                    serial: false,
+                },
+                &ds,
+                Boxed(proc),
+            );
+        }
+        b.build(cfg)
+    }
+}

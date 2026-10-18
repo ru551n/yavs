@@ -1010,8 +1010,11 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "rsim-diag",
+ "rsim-elab",
+ "rsim-kernel",
  "rsim-lib",
  "rsim-sem",
+ "rsim-std",
  "rsim-syntax",
 ]
 
@@ -1020,6 +1023,19 @@ name = "rsim-diag"
 version = "0.1.0"
 dependencies = [
  "annotate-snippets",
+]
+
+[[package]]
+name = "rsim-elab"
+version = "0.1.0"
+dependencies = [
+ "rsim-diag",
+ "rsim-kernel",
+ "rsim-lib",
+ "rsim-logic",
+ "rsim-sem",
+ "rsim-std",
+ "rsim-syntax",
 ]
 
 [[package]]

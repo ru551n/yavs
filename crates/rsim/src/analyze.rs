@@ -75,7 +75,7 @@ pub fn expand_response_files(
 /// The `lib/` tree: `$RSIM_STDLIB`, else `lib/` in the executable's directory or
 /// up to three parents (installed `bin/../lib`, `target/debug/../../lib`), else
 /// the source checkout it was built from.
-fn stdlib() -> PathBuf {
+pub(crate) fn stdlib() -> PathBuf {
     if std::env::var_os("RSIM_STDLIB").is_none()
         && let Ok(exe) = std::env::current_exe()
         && let Some(p) = exe
@@ -90,16 +90,26 @@ fn stdlib() -> PathBuf {
     rsim_sem::default_stdlib()
 }
 
-struct Out {
+pub(crate) struct Out {
     format: MessageFormat,
     color: bool,
-    errors: usize,
+    pub(crate) errors: usize,
     warnings: usize,
     werror: bool,
 }
 
 impl Out {
-    fn emit(&mut self, sources: &SourceMap, d: &Diagnostic) {
+    pub(crate) fn new(format: MessageFormat, color: bool, werror: bool) -> Out {
+        Out {
+            format,
+            color,
+            errors: 0,
+            warnings: 0,
+            werror,
+        }
+    }
+
+    pub(crate) fn emit(&mut self, sources: &SourceMap, d: &Diagnostic) {
         match d.severity {
             Severity::Error => self.errors += 1,
             Severity::Warning if self.werror => self.errors += 1,
@@ -110,7 +120,7 @@ impl Out {
             .lock()
             .write_all(rsim_diag::render(sources, d, self.format, self.color).as_bytes());
     }
-    fn finish(&self, code: u8) -> ExitCode {
+    pub(crate) fn finish(&self, code: u8) -> ExitCode {
         if self.errors > 0 && self.format == MessageFormat::Human {
             let s = if self.errors == 1 { "" } else { "s" };
             let d = Diagnostic::error(
@@ -126,13 +136,7 @@ impl Out {
 }
 
 pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> ExitCode {
-    let mut out = Out {
-        format,
-        color,
-        errors: 0,
-        warnings: 0,
-        werror: a.warn.iter().any(|w| w == "error"),
-    };
+    let mut out = Out::new(format, color, a.warn.iter().any(|w| w == "error"));
     let none = SourceMap::default();
     // Usage errors: exit 2.
     let mut libs = Libraries::new();

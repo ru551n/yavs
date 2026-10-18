@@ -454,3 +454,12 @@ which tools/difftest parses.
 - **2019 `TO_STRING` of an array** whose element type is not a character enumeration is
   `(e1,e2,...)` as NVC prints it; a null such array gives `()` (NVC prints `)`).
 - **`MINIMUM`/`MAXIMUM` of a null array** give the element type's `'HIGH`/`'LOW` (NVC agrees).
+
+## Differential testing (tools/difftest, M2 conformance, 2026-10-18)
+
+- **Default assert message (#12):** for `assert c;` without a report expression NVC prints a source
+  snippet instead of the `Process` line. yavs keeps its CLI format (cli-contract section 5: the
+  `Process` line after every report), and the difftest normaliser drops the path of an
+  `Assertion violation` event on both sides.
+- **Exit 2 is not always an elaboration failure:** `stop(2)` exits 2 like NVC, so the yavs template
+  runs `yavs elab` first and maps only its failure to "elaboration failed".

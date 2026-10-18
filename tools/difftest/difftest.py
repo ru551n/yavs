@@ -107,6 +107,8 @@ def normalise(rc, out, err, yavs=False):
     def flush():
         nonlocal cur
         if cur:
+            if cur[4] == "Assertion violation":
+                cur[3] = "-"  # NVC prints a source snippet, not the process, for the default message
             cur[4] = esc(cur[4])
             diags.append("\t".join(["diag"] + cur))
         cur = None

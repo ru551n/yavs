@@ -46,7 +46,9 @@ non-ASCII characters, multi-line reports mixed with other stdout).
 = status) and fatal runtime errors. Normalisation: severity lowercased; time converted to
 femtoseconds from whatever unit the simulator printed; NVC source snippets, "Process/Procedure"
 traces and GHDL `instance:`/`from:` lines dropped (the first process trace gives `path`);
-NVC's trailing full stop on "Assertion violation." removed; `FINISH called`/`simulation finished`
+NVC's trailing full stop on "Assertion violation." removed and the path of that default assert
+message dropped (NVC prints a source snippet instead of the process; yavs keeps the `Process`
+line of its CLI format); `FINISH called`/`simulation finished`
 unified; `ghdl:info:` lines dropped. Streams are kept in separate sections (report text goes
 to stderr in NVC and stdout in GHDL, so cross-stream order is not compared).
 

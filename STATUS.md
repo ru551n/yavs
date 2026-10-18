@@ -45,6 +45,11 @@ An installed binary finds `lib/` next to itself (#43).
 - Instances of one generic subprogram declared under one name (`function f is new f generic map (...)`)
   overload by their instantiated profiles, next to ordinary overloads and across use clauses (#28):
   `tests/diag/sem/gen/subprogram_instances_*`, difftest `generics/subprog_instance_overload` (2008, 2019).
+- A subprogram header with a generic list and a generic map (`function f generic (type t) generic map
+  (t => integer) parameter (v : t) return t`) declares an instance through the `is new` path, also
+  with a separate body that repeats the header (#227, L61): `tests/diag/sem/gen/subprogram_header_map_*`,
+  difftest `generics/subprog_header_map_2019`. A type, subprogram or package interface in a
+  parameter list is `E1232` (4.2.2.1).
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

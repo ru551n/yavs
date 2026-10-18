@@ -122,6 +122,8 @@ pub struct GenericState {
     pub(crate) maps: HashMap<InstId, Remap>,
     /// The generic spec the subprogram body being analyzed completes (`prepare_generic_body`).
     pub(crate) reuse: Option<DeclId>,
+    /// Uninstantiated subprograms of headers with a generic map (`header_instance`).
+    pub(crate) header: HashSet<DeclId>,
     /// Generic constants, types and packages of packages and subprograms not yet
     /// looked up (`W1501`; `Db::lookup` removes them).
     pub(crate) unused: HashSet<DeclId>,
@@ -425,6 +427,13 @@ impl Db {
                 Ok(vec![decl])
             }
             ast::InterfaceDecl::Subprogram(s) => {
+                if s.spec.generic_map.is_some() {
+                    return Err(self.unsupported(
+                        s.spec.span,
+                        "generic subprograms with a generic map as a generic",
+                        "S4",
+                    ));
+                }
                 let d = self.subprogram_spec(scope, &s.spec)?;
                 if let DeclKind::Subprogram(mut sp) =
                     std::mem::replace(&mut self.decls[d].kind, DeclKind::Error)
@@ -889,8 +898,55 @@ impl Db {
                 return Err(self.error(d));
             }
         };
-        let s = self.decls[g].kind.subprogram().expect("filtered above");
-        let formals = s.generics.clone().expect("filtered above");
+        let assocs = x.generic_map.as_deref().unwrap_or(&[]);
+        let dname = crate::alias::designator(&x.designator);
+        let d = self.instantiate_subprogram(scope, g, assocs, dname, x.span)?;
+        self.declare(scope, d);
+        Ok(())
+    }
+
+    /// A subprogram declaration with a generic list and a generic map in its header
+    /// (4.2.1): `g` is the uninstantiated subprogram `subprogram_spec` built from it,
+    /// never declared; the instance is returned for the caller to declare.
+    pub(crate) fn header_instance(
+        &mut self,
+        scope: ScopeId,
+        g: DeclId,
+        s: &ast::SubprogramSpec,
+    ) -> Result<DeclId, Reported> {
+        let Some(assocs) = &s.generic_map else {
+            return Ok(g);
+        };
+        self.generic.header.insert(g);
+        let name = self.decls[g].name;
+        self.instantiate_subprogram(scope, g, assocs, name, s.span)
+    }
+
+    /// The uninstantiated subprogram behind `d` when `d` is the instance a header
+    /// generic map declared (`header_instance`).
+    pub(crate) fn header_generic(&self, d: DeclId) -> Option<DeclId> {
+        let Body::Instance(i) = self.decls[d].kind.subprogram()?.body else {
+            return None;
+        };
+        let g = self.insts[i].generic;
+        self.generic.header.contains(&g).then_some(g)
+    }
+
+    /// Instance `dname` of generic subprogram `g` with generic map `assocs` (4.4):
+    /// generics bound, profile cloned, body cloned on demand (`instance_body`).
+    fn instantiate_subprogram(
+        &mut self,
+        scope: ScopeId,
+        g: DeclId,
+        assocs: &[ast::AssocElem],
+        dname: Designator,
+        span: Span,
+    ) -> Result<DeclId, Reported> {
+        let s = self.decls[g]
+            .kind
+            .subprogram()
+            .expect("a generic subprogram");
+        let formals = s.generics.clone().expect("a generic subprogram");
         let gscope = s.scope.expect("specs have a parameter region");
         let kind = s.kind;
         let params: Vec<(Param, Option<DeclId>)> = s
@@ -912,15 +968,12 @@ impl Db {
             .collect();
         let ret = s.ret;
         let what = format!("subprogram `{}`", self.decls[g].name);
-        let assocs = x.generic_map.as_deref().unwrap_or(&[]);
         let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
-        let dname = crate::alias::designator(&x.designator);
-        let d = self.new_decl(scope, dname, DeclKind::Error, x.span);
+        let d = self.new_decl(scope, dname, DeclKind::Error, span);
         let new_scope = self.add_scope(ScopeKind::Subprogram, Some(scope), Some(d));
         let mut r = Remap::new(gscope, new_scope);
         let mut map = GenericMap::default();
         let overflow = self.overflow.len();
-        let span = x.span;
         let bound = self.bind_formals(
             scope, new_scope, span, gscope, &formals, &actuals, &mut r, &mut map,
         );
@@ -965,8 +1018,7 @@ impl Db {
             body: Body::Instance(inst),
             mangled,
         });
-        self.declare(scope, d);
-        Ok(())
+        Ok(d)
     }
 
     /// Match a generic map against the formals (6.5.7.2): positional first,
@@ -3108,14 +3160,23 @@ impl Db {
             _ => {}
         }
         let names: Vec<Symbol> = list.iter().flat_map(interface_keys).collect();
+        let mapped = spec.generic_map.is_some();
         let found = regions.iter().find_map(|&r| {
-            self.scopes[r].names.get(&key)?.iter().copied().find(|&d| {
-                matches!(self.decls[d].kind.subprogram(), Some(s)
-                if matches!(s.body, Body::Pending)
-                    && s.generics.as_ref().is_some_and(|g| {
-                        g.iter().map(|&x| self.decls[x].name.key()).collect::<Vec<_>>() == names
-                    }))
-            })
+            self.scopes[r]
+                .names
+                .get(&key)?
+                .iter()
+                .copied()
+                .find_map(|d| {
+                    // A body with a header generic map completes the generic of a spec with one.
+                    let d = if mapped { self.header_generic(d)? } else { d };
+                    matches!(self.decls[d].kind.subprogram(), Some(s)
+                    if matches!(s.body, Body::Pending)
+                        && s.generics.as_ref().is_some_and(|g| {
+                            g.iter().map(|&x| self.decls[x].name.key()).collect::<Vec<_>>() == names
+                        }))
+                    .then_some(d)
+                })
         });
         self.generic.reuse = found;
     }

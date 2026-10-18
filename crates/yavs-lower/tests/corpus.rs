@@ -70,6 +70,7 @@ const PASS: &[&str] = &[
     "generics/package_generics",
     "generics/subprog_instance_overload",
     "generics/subprog_instance_overload_2019",
+    "generics/subprog_header_map_2019",
     "hierarchy/component_binding",
     "hierarchy/incremental_binding",
     "hierarchy/inertial_port_actual",

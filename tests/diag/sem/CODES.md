@@ -63,6 +63,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1224 | constant without a value outside a package declaration | 6.4.2.2 |
 | E1225 | bad resolution function | 8.1 |
 | E1230 | missing body (subprogram, protected type, deferred constant in a package body) | 8.1, 4.8 |
+| E1232 | type, subprogram or package interface in a parameter list | 4.2.2.1 |
 | E1300 | type mismatch | 8.1 |
 | E1301 | no matching overload | 8.1 |
 | E1302 | ambiguous | 8.1 |

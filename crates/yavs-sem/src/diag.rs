@@ -45,6 +45,7 @@ codes! {
     BAD_RESOLUTION = "E1225", "A resolution function must be a pure function with one constant parameter of a one-dimensional unconstrained array of the resolved type, returning that type.";
     MISSING_BODY = "E1230", "A subprogram or protected type is declared but its body is missing, or a deferred constant of a package has no full declaration in the package body (LRM 4.8).";
     BAD_TYPE_DECL = "E1231", "The type definition is not legal, for example a range whose bounds are not of an integer or floating point type.";
+    NON_OBJECT_PARAM = "E1232", "A subprogram's parameter list declares only interface constants, signals, variables and files (LRM 4.2.2.1). Type, subprogram and package interfaces belong in its generic list: `function f generic (type t) parameter (x : t) return t`.";
     // E13xx expressions and overloading
     TYPE_MISMATCH = "E1300", "The expression has a different type than the context requires.";
     NO_OVERLOAD = "E1301", "None of the visible subprograms or literals with this name accepts these operands.";

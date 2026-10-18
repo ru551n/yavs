@@ -483,6 +483,7 @@ impl Db {
             D::File(f) => self.file_decl(scope, f),
             D::Subprogram(s) => {
                 let d = self.subprogram_spec(scope, s)?;
+                let d = self.header_instance(scope, d, s)?;
                 self.declare(scope, d);
                 Ok(())
             }
@@ -889,10 +890,13 @@ impl Db {
         // ponytail: a spec in the entity takes the body of the last architecture analyzed
         // in the session (one per elaboration in practice); per-architecture bodies would
         // need the body keyed by architecture.
+        // A body with a header generic map (4.2.1) completes the generic of such a spec.
+        let mapped = b.spec.generic_map.is_some();
         let spec = regions.iter().find_map(|&r| {
             let entity = self.scopes[r].kind == crate::scope::ScopeKind::Entity;
-            self.scopes[r].names.get(&key)?.iter().copied().find(|&d| {
-                matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending | Body::Foreign(_)) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.profile(d) == profile
+            self.scopes[r].names.get(&key)?.iter().copied().find_map(|d| {
+                let d = if mapped { self.header_generic(d)? } else { d };
+                (matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending | Body::Foreign(_)) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.profile(d) == profile).then_some(d)
             })
         });
         let pscope = match &self.decls[new].kind {
@@ -906,7 +910,9 @@ impl Db {
                 d
             }
             None => {
-                self.declare(scope, new);
+                // The instance is declared before the body, so the body sees its name (12.3).
+                let d = self.header_instance(scope, new, &b.spec)?;
+                self.declare(scope, d);
                 new
             }
         };
@@ -936,15 +942,13 @@ impl Db {
     }
 
     /// A subprogram declaration (4.2): parameters in their own region, result type.
-    /// The caller declares the returned entity.
+    /// The caller declares the returned entity. A generic map in the header is the
+    /// caller's (`header_instance`): this returns the uninstantiated subprogram.
     pub(crate) fn subprogram_spec(
         &mut self,
         scope: ScopeId,
         s: &ast::SubprogramSpec,
     ) -> Result<DeclId, crate::Reported> {
-        if s.generic_map.is_some() {
-            return Err(self.unsupported(s.span, "subprograms with a generic map", "S4"));
-        }
         let name = match &s.designator {
             ast::Designator::Ident(i) => Designator::Ident(*i),
             ast::Designator::Operator(op, _) => Designator::operator(op.as_str()),
@@ -969,8 +973,16 @@ impl Db {
             && !self.in_std_library(scope);
         let mut params = Vec::new();
         for p in s.params.iter().flatten() {
-            let ast::InterfaceDecl::Object(o) = p else {
-                return Err(self.unsupported(s.span, "non-object parameters", "S4"));
+            // 4.2.2.1: only constants, signals, variables and files are parameters.
+            let o = match p {
+                ast::InterfaceDecl::Object(o) => o,
+                ast::InterfaceDecl::Type(t) => return Err(self.non_object_param("type", t.span)),
+                ast::InterfaceDecl::Subprogram(x) => {
+                    return Err(self.non_object_param("subprogram", x.spec.span));
+                }
+                ast::InterfaceDecl::Package(x) => {
+                    return Err(self.non_object_param("package", x.span));
+                }
             };
             let first = params.len();
             params.extend(self.param_decls(pscope, o, kind)?);
@@ -1040,6 +1052,19 @@ impl Db {
             mangled,
         });
         Ok(decl)
+    }
+
+    fn non_object_param(&mut self, what: &str, at: Span) -> crate::Reported {
+        self.error(
+            yavs_diag::Diagnostic::error(
+                crate::diag::NON_OBJECT_PARAM,
+                format!("a {what} interface declaration is not a parameter"),
+            )
+            .with_primary(at, "not a constant, signal, variable or file")
+            .with_help(format!(
+                "declare the {what} in the subprogram's generic list: `generic (...) parameter (...)`"
+            )),
+        )
     }
 
     /// `component c is generic (...); port (...); end component;` (6.8): generics

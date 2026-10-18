@@ -332,6 +332,9 @@ impl Db {
             ));
         }
         *slot = Some(body);
+        if self.scopes[body].parent != Some(decl_scope) {
+            self.scopes[body].outer = self.scopes[body].parent;
+        }
         self.scopes[body].parent = Some(decl_scope);
         Ok(t)
     }

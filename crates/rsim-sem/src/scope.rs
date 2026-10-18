@@ -47,6 +47,10 @@ pub struct Scope {
     pub uses: Vec<UseItem>,
     /// 2019: index into `order` where `private variable`s start (5.6.2).
     pub private_from: Option<usize>,
+    /// A protected body's lexically enclosing region (a package body, say) once
+    /// its `parent` became the protected type's declaration region: lookup
+    /// continues there after the declaration region (12.3).
+    pub outer: Option<ScopeId>,
 }
 
 impl Scope {
@@ -58,6 +62,7 @@ impl Scope {
             names: HashMap::new(),
             order: Vec::new(),
             uses: Vec::new(),
+            outer: None,
             private_from: None,
         }
     }
@@ -248,6 +253,18 @@ impl Db {
         true
     }
 
+    /// The next enclosing region for visibility: a protected body continues with
+    /// its declaration region, then with the region the body is written in.
+    fn next_region(&self, s: ScopeId, outer: &mut Option<ScopeId>) -> Option<ScopeId> {
+        let sc = &self.scopes[s];
+        if sc.kind == ScopeKind::ProtectedBody && sc.outer.is_some() {
+            *outer = sc.outer;
+        } else if sc.kind == ScopeKind::Protected && outer.is_some() {
+            return outer.take();
+        }
+        sc.parent
+    }
+
     /// Visibility (sem.md 1.4, LRM 12.3 and 12.4).
     pub fn lookup(&mut self, scope: ScopeId, key: Symbol) -> Visible {
         // 1. Direct visibility, innermost region first.
@@ -255,6 +272,7 @@ impl Db {
         let mut single: Option<DeclId> = None;
         let mut regions = Vec::new();
         let mut cur = Some(scope);
+        let mut outer = None;
         'walk: while let Some(s) = cur {
             regions.push(s);
             if let Some(ds) = self.scopes[s].names.get(&key) {
@@ -278,7 +296,7 @@ impl Db {
                     break;
                 }
             }
-            cur = self.scopes[s].parent;
+            cur = self.next_region(s, &mut outer);
         }
         if let Some(d) = single {
             self.generic.unused.remove(&d);
@@ -289,7 +307,7 @@ impl Db {
             if !regions.contains(&s) {
                 regions.push(s);
             }
-            cur = self.scopes[s].parent;
+            cur = self.next_region(s, &mut outer);
         }
 
         // 2. Potential visibility through use clauses of every enclosing region.
@@ -399,6 +417,7 @@ impl Db {
     fn visible_keys(&self, scope: ScopeId) -> Vec<Symbol> {
         let mut out = Vec::new();
         let mut cur = Some(scope);
+        let mut outer = None;
         while let Some(s) = cur {
             out.extend(self.scopes[s].names.keys().copied());
             for u in &self.scopes[s].uses {
@@ -408,7 +427,7 @@ impl Db {
                     UseItem::Library(_) => {}
                 }
             }
-            cur = self.scopes[s].parent;
+            cur = self.next_region(s, &mut outer);
         }
         out.sort();
         out.dedup();

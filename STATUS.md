@@ -234,7 +234,7 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (rsim-
 
 CLI: `rsim elab` and `rsim run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in NVC's
-format on stdout). Difftest (`tools/difftest`, rsim template): 23 of 75 pass at `--threads 1`
+format on stdout). Difftest (`tools/difftest`, rsim template): 25 of 75 pass at `--threads 1`
 and `4`. `generics/` and `hierarchy/` wait for lowering of generics, ports and generates
 (requests in `crates/rsim-lower/DESIGN.md`) and four files for sem fixes
 (`crates/rsim-sem/CONTRIBUTING.md`); with `--print-hierarchy`, 5 of their 9 elaborate.

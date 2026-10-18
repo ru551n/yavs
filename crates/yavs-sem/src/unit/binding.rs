@@ -16,7 +16,7 @@ use crate::hir::{
 };
 use crate::ids::{DeclId, LibId, ScopeId, SubtypeId, UnitId};
 use crate::loader::{LibSource, UnitKey, UnitKind, UnitSlot};
-use crate::scope::{ScopeKind, UseItem};
+use crate::scope::{ScopeKind, UseItem, Visible};
 
 /// A configuration specification whose instance labels are resolved once
 /// the statement part of its region has been analyzed.
@@ -314,12 +314,24 @@ impl Db {
         l: Ident,
         entity: Ident,
         context: &[ast::ContextItem],
+        scope: Option<ScopeId>,
     ) -> Result<(), Reported> {
         let is_work = l.key.as_str() == "work";
-        // ponytail: library clauses reached through `context c;` are not seen here.
-        let named = context.iter().any(|c| {
+        let mut named = context.iter().any(|c| {
             matches!(c, ast::ContextItem::Library { names, .. } if names.iter().any(|n| n.key == l.key))
         });
+        // Library clauses spliced in by `context c;` are in the scope (13.4).
+        if let Some(s) = scope {
+            named |= matches!(
+                self.lookup(s, l.key),
+                Visible::One(d) if matches!(self.decls[d].kind, DeclKind::Library(_))
+            );
+        } else if context
+            .iter()
+            .any(|c| matches!(c, ast::ContextItem::Context { .. }))
+        {
+            return Ok(());
+        }
         if !is_work && !named {
             return Err(self.error(
                 Diagnostic::error(diag::NOT_DECLARED, format!("`{}` is not declared", l.text))

@@ -104,10 +104,16 @@ impl Db {
         use ast::LibraryUnit as L;
         let lib = self.units[unit].lib;
         let name = self.units[unit].name;
+        // Checked before the primary lookup; a name that may come from a context reference
+        // is checked again once the context scope exists (below).
+        let ctx_ref = ast
+            .context
+            .iter()
+            .any(|c| matches!(c, ast::ContextItem::Context { .. }));
         if let L::Architecture(a) = &ast.unit
             && let Some(l) = a.entity_lib
         {
-            self.arch_entity_lib(lib, l, a.entity, &ast.context)?;
+            self.arch_entity_lib(lib, l, a.entity, &ast.context, None)?;
         }
         // Secondary units start from their primary's region.
         let primary = match &ast.unit {
@@ -173,6 +179,12 @@ impl Db {
         self.implicit_context(unit, context, ast.span)?;
         for item in &ast.context {
             self.context_item(context, item, false);
+        }
+        if let L::Architecture(a) = &ast.unit
+            && let Some(l) = a.entity_lib
+            && ctx_ref
+        {
+            self.arch_entity_lib(lib, l, a.entity, &ast.context, Some(context))?;
         }
         // The architecture's name belongs to the library, outside the entity's region, so a
         // port or generic of the same name hides it inside the architecture (12.3).

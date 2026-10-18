@@ -640,11 +640,15 @@ impl Db {
         };
         self.decls_in(pscope, &b.decls);
         let stmts = self.seq_stmts(pscope, &b.stmts);
-        if let DeclKind::Subprogram(s) = &mut self.decls[target].kind {
-            s.body = Body::Hir {
-                scope: pscope,
-                stmts,
-            };
+        // The body's own declaration (not declared when it completes a spec) gets the
+        // body too, so no subprogram is left pending (validate, 7.3).
+        for d in [target, new] {
+            if let DeclKind::Subprogram(s) = &mut self.decls[d].kind {
+                s.body = Body::Hir {
+                    scope: pscope,
+                    stmts: stmts.clone(),
+                };
+            }
         }
         Ok(())
     }

@@ -411,19 +411,8 @@ fn json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-fn json_strs(out: &mut String, items: &[String]) {
-    out.push('[');
-    for (i, s) in items.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        json_str(out, s);
-    }
-    out.push(']');
-}
-
 fn render_json(sources: &SourceMap, diag: &Diagnostic) -> String {
-    let mut o = String::from("{\"severity\":");
+    let mut o = String::from("{\"level\":");
     json_str(&mut o, diag.severity.as_str());
     o.push_str(",\"code\":");
     json_str(&mut o, diag.code);
@@ -452,10 +441,23 @@ fn render_json(sources: &SourceMap, diag: &Diagnostic) -> String {
         json_str(&mut o, &l.message);
         o.push('}');
     }
-    o.push_str("],\"notes\":");
-    json_strs(&mut o, &diag.notes);
-    o.push_str(",\"help\":");
-    json_strs(&mut o, &diag.help);
+    // rustc-compatible children: notes then help, each a childless diagnostic.
+    o.push_str("],\"children\":[");
+    let kids = diag
+        .notes
+        .iter()
+        .map(|m| ("note", m))
+        .chain(diag.help.iter().map(|m| ("help", m)));
+    for (i, (level, m)) in kids.enumerate() {
+        if i > 0 {
+            o.push(',');
+        }
+        let _ = write!(o, "{{\"level\":\"{level}\",\"message\":");
+        json_str(&mut o, m);
+        o.push_str(",\"spans\":[],\"children\":[],\"rendered\":null}");
+    }
+    o.push_str("],\"rendered\":");
+    json_str(&mut o, &render_human(sources, diag, false));
     o.push_str("}\n");
     o
 }
@@ -519,10 +521,14 @@ mod tests {
         );
         let j = render(&sm, &d, MessageFormat::Json, false);
         assert!(
-            j.starts_with("{\"severity\":\"error\",\"code\":\"E0001\""),
+            j.starts_with("{\"level\":\"error\",\"code\":\"E0001\""),
             "{j}"
         );
         assert!(j.contains("\"line_start\":2,\"column_start\":12"), "{j}");
-        assert!(j.ends_with("\"help\":[\"use `end entity e;`\"]}\n"), "{j}");
+        assert!(
+            j.contains("\"children\":[{\"level\":\"help\",\"message\":\"use `end entity e;`\""),
+            "{j}"
+        );
+        assert!(j.contains("\"rendered\":\"error[E0001]: mismatched name\\n"), "{j}");
     }
 }

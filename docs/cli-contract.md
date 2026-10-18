@@ -39,9 +39,12 @@ Conventions:
 - Errors are rustc-format diagnostics (code, primary span, notes) on stderr.
   Within one stage, analysis may report all independent errors before stopping.
 - `--message-format=json` prints the same diagnostics as one JSON object per
-  line on stderr, with at least: `level`, `code`, `message`, `spans`
-  (`file`, `line`, `column`, `label`), `children` (notes/help) and `rendered`
-  (the human text). VUnit may later pass it to surface diagnostics in its own
+  line on stderr, with at least: `level`, `code` (plain string, e.g. `"E0002"`),
+  `message`, `spans` (`file`, `byte_start`, `byte_end`, `line_start`,
+  `column_start`, `line_end`, `column_end`, `primary`, `label`), `children`
+  (notes then help, each `{level, message, spans, children, rendered}`) and
+  `rendered` (the human text, without colour). Names follow rustc's JSON.
+  VUnit may later pass it to surface diagnostics in its own
   report; until then it uses the human format.
 - VUnit's side: it merges yavs's stderr into stdout and shows all of it, it
   never masks the exit code (a non-zero `analyze` is a compile failure, a

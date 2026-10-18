@@ -36,7 +36,7 @@ Everything is in `src/lib.rs` (about 530 lines).
 | An empty code is only for summary lines ("aborting due to N previous errors") | Not a real diagnostic | crate docs |
 | Spans are byte offsets into the file on disk, also for Latin-1 files | `--encoding=auto|latin1|utf8` (user decision) | `docs/decisions.md` "Parser", source encoding |
 | Colour off when stderr is not a TTY or `NO_COLOR` is set; `--color` overrides | plan architecture table | `ColorChoice::use_color` |
-| JSON shape is part of the VUnit contract | Tools parse it | `docs/cli-contract.md` section 0 (see pitfall below) |
+| JSON shape is rustc-compatible (`level`, `children`, `rendered`); the contract won over the old `severity`/`notes`/`help` (#158) | Editors, DAP and VUnit can reuse rustc JSON handling | `docs/cli-contract.md` section 0 |
 
 Module-local decisions go here, in this section, in the same commit (root `AGENTS.md` rule 24).
 
@@ -47,10 +47,11 @@ Module-local decisions go here, in this section, in the same commit (root `AGENT
 - Snapshot output is part of review: any change in human or JSON text changes
   `tests/diag/*.stderr`, `tests/cli/*.stderr` and `crates/yavs-sem` snapshots. Bless and read the
   diff (`YAVS_BLESS=1`).
-- The JSON keys are `severity`, `code`, `message`, `spans[]` (`file`, `byte_start`, `byte_end`,
-  `line_start`, `column_start`, `line_end`, `column_end`, `primary`, `label`), `notes`, `help`.
-  `docs/cli-contract.md` section 0 promises `level`, `children` and `rendered`: they disagree
-  (issue #158). Change either side deliberately, never silently.
+- The JSON keys are rustc-compatible (#158, `docs/cli-contract.md` section 0): `level`, `code` (plain
+  string), `message`, `spans[]` (`file`, `byte_start`, `byte_end`, `line_start`, `column_start`,
+  `line_end`, `column_end`, `primary`, `label`), `children[]` (notes then help, each `{level,
+  message, spans:[], children:[], rendered:null}`), `rendered` (human text, no colour). Change
+  the contract and the renderer together.
 - Registry gaps: the CLI emits `E9000` for a caught panic in `yavs analyze` while the registry
   says `E9999` (issue #159). Runtime errors carry `yavs_kernel::ErrorKind::code` (`E3001`-`E3010`)
   and are rendered by `yavs_elab::Elaborated::runtime_diagnostic`; their explain texts are #136.
@@ -74,5 +75,5 @@ YAVS_BLESS=1 cargo test -p yavs --test diag         # accept new output, then in
 - Every crate depends on this one: a signature change touches all of them. Prefer additive
   builder methods.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:diag`):
-  #136 keep the code registry and `--explain` texts complete; #158 JSON format differs from the CLI contract; #159 `E9000` used for ICEs
+  #136 keep the code registry and `--explain` texts complete; #159 `E9000` used for ICEs
   instead of `E9999`.

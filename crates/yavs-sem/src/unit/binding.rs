@@ -912,8 +912,12 @@ impl Db {
             return Ok(Actual::Expr(id));
         }
         // Port actuals (6.5.6.3, 6.5.7.1): a conversion of a signal, or for
-        // modes other than `in` a signal name.
+        // modes other than `in` a signal name. A conversion is written `name(actual)`: an
+        // operator (`not s`) or an `inertial` actual is an expression.
+        let call_syntax =
+            matches!(a, ast::Actual::Expr(x) if matches!(x.kind, ast::ExprKind::Name(_)));
         let actual_conv = match &self.exprs[id].kind {
+            _ if !call_syntax => None,
             ExprKind::Call { callee, args, .. } if args.len() == 1 => match &args[0].actual {
                 Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
                 _ => None,

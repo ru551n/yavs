@@ -193,6 +193,27 @@ fn conversion_functions_in_port_maps() {
 }
 
 #[test]
+fn operator_actual_is_an_expression() {
+    // `not x` is not `function_name(actual)` syntax (6.5.7.1): an expression actual.
+    let r = one(
+        "opact",
+        "entity sub is port (i : in bit); end entity;
+         entity top is end entity;
+         architecture a of top is
+           signal x : bit;
+         begin
+           u : entity work.sub port map (i => not x);
+         end architecture;",
+    );
+    r.clean();
+    let s = r.arch_stmts("a")[0];
+    let StmtKind::Instance { port_map, .. } = &r.db.stmts[s].kind else {
+        panic!("instance");
+    };
+    assert!(matches!(port_map[0].actual, Actual::Expr(_)));
+}
+
+#[test]
 fn association_errors() {
     let src = format!(
         "{SUB}

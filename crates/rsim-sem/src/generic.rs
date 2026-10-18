@@ -1509,7 +1509,23 @@ impl Db {
         let fname = self.decls[f].name;
         let actual = match a.map(|a| &a.actual) {
             Some(ast::Actual::Expr(e)) => {
-                let ast::ExprKind::Name(n) = &e.kind else {
+                // `Match => "="`: an operator symbol parses as a string literal (6.5.7.2).
+                let op_name;
+                let n = match &e.kind {
+                    ast::ExprKind::Name(n) => Some(n),
+                    ast::ExprKind::Literal(ast::Literal {
+                        kind: ast::LiteralKind::String(sym),
+                        ..
+                    }) if crate::decl::is_operator_symbol(sym.as_str()) => {
+                        op_name = ast::Name {
+                            kind: ast::NameKind::Operator(*sym),
+                            span: e.span,
+                        };
+                        Some(&op_name)
+                    }
+                    _ => None,
+                };
+                let Some(n) = n else {
                     return Err(self.error(
                         Diagnostic::error(
                             diag::TYPE_MISMATCH,

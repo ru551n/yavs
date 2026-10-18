@@ -60,6 +60,48 @@ pub fn operator_key(op: &str) -> Symbol {
     Symbol::intern(&format!("\"{}\"", op.to_ascii_lowercase()))
 }
 
+/// Whether `text` (between the quotes) is a VHDL operator symbol (9.2).
+pub fn is_operator_symbol(text: &str) -> bool {
+    matches!(
+        text.to_ascii_lowercase().as_str(),
+        "and"
+            | "or"
+            | "nand"
+            | "nor"
+            | "xor"
+            | "xnor"
+            | "not"
+            | "abs"
+            | "??"
+            | "="
+            | "/="
+            | "<"
+            | "<="
+            | ">"
+            | ">="
+            | "?="
+            | "?/="
+            | "?<"
+            | "?<="
+            | "?>"
+            | "?>="
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "mod"
+            | "rem"
+            | "**"
+            | "&"
+            | "sll"
+            | "srl"
+            | "sla"
+            | "sra"
+            | "rol"
+            | "ror"
+    )
+}
+
 /// Lookup key of character literal `c`.
 pub fn char_key(c: char) -> Symbol {
     Symbol::intern(&format!("'{c}'"))

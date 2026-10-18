@@ -2,7 +2,7 @@
 
 This is the part of the `rsim` command line that VUnit (`vunit/sim_if/rsim.py`,
 branch `feature/rsim`) relies on. Anything not listed here is free to change.
-A conforming fake lives in VUnit's `tests/acceptance/fake_rsim/rsim`.
+A conforming fake lives in VUnit's `tests/acceptance/rsim/fake_bin/rsim`.
 
 Conventions:
 
@@ -15,6 +15,21 @@ Conventions:
 - Options may appear in any order before the positional arguments. If an option
   that takes one value is repeated, the last one wins (VUnit relies on this for
   `--exit-severity`, which it always appends after user flags).
+- Response files: an argument `@FILE`, in any position and for every
+  subcommand, is replaced in place by the arguments read from FILE:
+  - FILE is UTF-8 (a leading BOM is ignored), one argument per line. Lines end
+    in `\n` or `\r\n`; the terminator of the last line is optional.
+  - Each line is one argument taken verbatim: no quoting, no escapes, no
+    trimming of spaces, no comments. An empty line is an empty argument.
+  - Expansion is not recursive: a line starting with `@` is a literal
+    argument. An argument containing a line break cannot be written; VUnit
+    raises an error for one.
+  - A relative FILE is relative to the current directory. A missing or
+    unreadable FILE is a usage error (exit 2).
+  - VUnit always passes `rsim run @FILE` / `rsim elab @FILE`, with everything
+    after the subcommand in `<test output>/rsim/args.rsp`. That keeps
+    `runner_cfg` clear of the Windows 32K command line limit and quoting.
+    `analyze` is called with plain arguments.
 
 ## 0. Errors: fail early, fail clearly
 
@@ -59,15 +74,26 @@ VUnit's capability answers for rsim (`SimulatorInterface` hooks):
 | `supports_vhdl_call_paths` | True | 2019 `std.env` call paths, M3/M4 |
 | `has_valid_exit_code` | True | see section 5 |
 | `supports_vhpi` | True | M5 (`--vhpi`) |
-| `supports_coverage` | False | until M9 defines `--cov` and a merge command |
+| `supports_coverage` | False | not in the contract (section 8) |
 | `supports_gui_flag` | True | waves opened in Surfer, section 6 |
 
 ## 2. Standards
 
-`--std=2008` or `--std=2019`. Default 2008. Any other value is a usage error
-(exit 2). VUnit raises an error itself for a project containing VHDL-93/2002
-files, and for a project mixing 2008 and 2019 files (one `--std` is used for
-the whole project, on both `analyze` and `run`/`elab`).
+`--std=2008` or `--std=2019`. Any other value is a usage error (exit 2). VUnit
+raises an error itself for a project containing VHDL-93/2002 files.
+
+- A project may mix 2008 and 2019 files. `analyze --std=STD` gives the
+  standard of that one file (default 2008), and rsim records it per file in the
+  library manifest. VUnit passes each file's own standard.
+- `run`/`elab` re-analyze every file with its recorded standard. Their `--std`
+  is optional and VUnit does not pass it: the design is elaborated with the
+  standard recorded for the top level's unit, and that standard selects the
+  `std` and `ieee` versions and the run-time semantics of the whole design
+  (e.g. 64-bit `integer` in 2019, plan rule 7). `--std` on `run`/`elab`
+  overrides it. A 2008 unit used from a 2019 design (or the other way round)
+  that cannot be bound under the elaboration standard is an elaboration error
+  naming both units and their standards (exit 2), never a silent
+  reinterpretation.
 
 ## 3. Libraries
 
@@ -98,7 +124,7 @@ the whole project, on both `analyze` and `run`/`elab`).
 ## 4. `rsim analyze`
 
 ```
-rsim analyze --std=STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
+rsim analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
              [rsim.global_flags] [rsim.a_flags] FILE
 ```
 
@@ -117,13 +143,15 @@ rsim analyze --std=STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
 ## 5. `rsim run` and `rsim elab`
 
 ```
-rsim run  --std=STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
+rsim run  [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
           [--ieee-warnings=off] [rsim.global_flags] [rsim.elab_flags]
           [rsim.sim_flags] --exit-severity=LEVEL [--wave=FILE.fst]
           TOP [-gNAME=VALUE ...]
-rsim elab --std=STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
+rsim elab [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
           [rsim.global_flags] [rsim.elab_flags] TOP [-gNAME=VALUE ...]
 ```
+
+VUnit passes everything after `run`/`elab` in a response file (Conventions).
 
 - `run` elaborates and simulates in one process (no elaboration artefact is
   saved: no-cache design). `elab` elaborates only, for VUnit's
@@ -151,6 +179,10 @@ rsim elab --std=STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by VUnit, used through
   `rsim.sim_flags` or simulator hooks (the VUnit python bridge adds `--load`).
+- Threads: rsim defaults to `--threads=1`. VUnit already runs `-p N`
+  simulations in parallel and never passes a thread count; a user who wants
+  parallel process evaluation inside one simulation opts in with
+  `rsim.sim_flags`, e.g. `["--threads=4"]`.
 - Exit codes:
   - 0: simulation ended without failure: event starvation, `std.env.finish`
     or `std.env.stop` with no status or status 0, or `--stop-time` reached.
@@ -180,10 +212,11 @@ VUnit `-g/--gui` (until `rsim-gui` exists): VUnit runs `rsim run ...
 `--script FILE`. Only FST is written; VUnit warns and ignores `--viewer-fmt`
 values other than `fst`.
 
-Later: when `rsim-gui` lands, `-g` will run `rsim run --dap=PORT ...` and start
-`rsim-gui` attached to it; that needs a contract addition for the port
-handshake (rsim printing `dap listening on 127.0.0.1:PORT` to stdout, or
-`--dap=0` choosing a free port and printing it).
+Later: when `rsim-gui` lands, `-g` will run `rsim run --dap=0 ...` and start
+`rsim-gui` attached to it. `--dap=0` makes rsim pick a free port, and its first
+line on stderr is then exactly `rsim: DAP listening on 127.0.0.1:<port>`;
+VUnit reads that line to connect the GUI. `--dap=PORT` with a fixed port
+prints the same line.
 
 ## 7. Environment
 
@@ -193,5 +226,5 @@ can add `elab_flags`, `run_flags` and run environment; VUnit applies
 
 ## 8. Not covered yet
 
-Coverage (`--cov`, merge): VUnit reports `supports_coverage() == False` until
-M9 defines `rsim run --cov=FILE` and `rsim cov merge -o OUT FILES...`.
+Coverage: not part of the VUnit contract; VUnit reports
+`supports_coverage() == False`.

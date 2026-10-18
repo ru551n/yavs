@@ -423,6 +423,16 @@ Parser change for `crates/yavs-syntax` (implemented):
    either way).
 5. Unparenthesized in a qualified expression is an error with a help to add parentheses.
 
+### L50: an open `in` port of an unconstrained array subtype with a default (6.5.6.3, 14.3.5)
+
+`hierarchy/open_port_default`: `port (p : in bit_vector := "101")` left `open` or unassociated.
+The LRM does not say what bounds the port has when no actual supplies them: 6.5.6.3 gives the
+port its default as the value of an unassociated `in` port, and 14.3.5 (port elaboration) only
+constrains an unconstrained port from its actual. The reference simulators accept it in 2008
+and 2019 and give the port the bounds of its default. Rule 2: permissive. yavs takes the bounds
+from the default value (`Model::shape_init`, as for 2019 signals, #187). An open unconstrained
+`in` port without a default stays an error (`E1311`, sem). Other modes are unchanged (`E2111`).
+
 ## Changes to code paths
 
 `crates/yavs-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,

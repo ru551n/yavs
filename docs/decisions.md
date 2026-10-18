@@ -569,7 +569,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   descriptor lives in package data (`PackageIr::signals[..].dope`), written by the elaborator
   after the package's initialisation. Ports are interface declarations, not signal
   declarations: the LCS does not cover them, an unconstrained port still takes its bounds from
-  its actual (an open one with a default is a separate question, #218). Not yet: record signals
+  its actual (an open one with a default takes the default's bounds, #218). Not yet: record signals
   whose fields take bounds this way (lowering, #215).
 - **Linkage ports and mode views** (#75, elab agent, 2026-10-18): a linkage port is an
   uncollapsed port edge with the kernel mode `in` (VHDL code cannot read or update it, LRM
@@ -602,6 +602,10 @@ a note and a help suggesting an access type, as the reference simulators reject 
   differ). Only whole `in` associations; `out`/`inout`, individual and converted
   associations with an external actual stay port edges. Not chosen: the formal as
   `actual'delayed(0 ns)`, which has the right event delta but starts at the actual's value.
+
+- **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
+  14.3.5, `docs/design/lrm-checks.md` L50): accepted in 2008 and 2019; the port takes the
+  bounds of its default value (`Model::shape_init`). Without a default it stays `E1311`.
 
 ## Runtime: default exit severity (user, 2026-10-18)
 

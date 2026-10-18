@@ -1062,7 +1062,14 @@ impl Elab<'_> {
             _ => None,
         };
         let Some(((ao, asels), aspan)) = actual else {
-            // open or default
+            // open or default; an unconstrained `in` port takes the bounds of its default
+            // (#218, docs/design/lrm-checks.md L50)
+            let own = match (own, &init) {
+                (None, Some(v)) if mode == PortMode::In => {
+                    self.m.shape_init(db, subtype, Some(v), Some(s), span)?
+                }
+                (o, _) => o,
+            };
             let Some(shape) = own else {
                 return Err(Box::new(
                     Diagnostic::error(

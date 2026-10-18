@@ -336,7 +336,7 @@ through the yavs-std `'value` parser, defaults, range check), constants on deman
 generates, blocks, entity/component/configuration instances, binding (configuration declaration,
 then specification, then default binding), signals split into kernel leaves (records as struct
 of arrays, `std_ulogic`/`bit`/`boolean` as bit-planes), the sub-element map
-(`NetGraph::select`), uncollapsed ports with unconstrained formals taking the actual's bounds,
+(`NetGraph::select`), uncollapsed ports with unconstrained formals taking the actual's bounds (an open `in` port, the default's, #218),
 static expression actuals, per-process merged drivers, multiple-source check across the
 hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
 Elaboration-time evaluation folds globally static expressions with `Db::fold_with`, evaluates

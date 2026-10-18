@@ -336,6 +336,26 @@ fn ports_take_unconstrained_bounds_from_the_actual() {
     assert_eq!(e.nets.ports[1].mode, PortMode::Out);
 }
 
+/// An open or unassociated unconstrained `in` port with a default takes the default's bounds
+/// (#218). Without a default sem rejects it first (E1311, tests/diag/sem/ovl).
+#[test]
+fn open_unconstrained_in_port_takes_the_default_bounds() {
+    let sub = "entity c is port (i : in bit_vector := \"101\"); end;
+      architecture a of c is begin end;
+      entity t is end; architecture a of t is begin ";
+    for map in [
+        "u : entity work.c port map (i => open); end;",
+        "u : entity work.c; end;",
+    ] {
+        let (_, e) = elab("open_default", &format!("{sub}{map}"), "t", &[]);
+        let i = &e.nets.objs[0];
+        let crate::Shape::Array { dims, .. } = &i.shape else {
+            panic!("array")
+        };
+        assert_eq!((dims[0].left, dims[0].right), (0, 2));
+    }
+}
+
 #[test]
 fn port_length_mismatch() {
     let src = "entity c is port (i : in bit_vector(3 downto 0)); end;

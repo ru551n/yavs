@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:open_port_default_2019:u1:_p0	p'length = 3 q'length = 4
+diag	note	0	0	:open_port_default_2019:u1:_p0	p'left = 0 q'right = 3
+diag	note	0	0	:open_port_default_2019:u2:_p0	p'length = 3 q'length = 4
+diag	note	0	0	:open_port_default_2019:u2:_p0	p'left = 0 q'right = 3

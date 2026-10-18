@@ -71,6 +71,8 @@ const PASS: &[&str] = &[
     "hierarchy/process_local_names",
     "hierarchy/mode_view_ports",
     "hierarchy/nested_instances",
+    "hierarchy/open_port_default",
+    "hierarchy/open_port_default_2019",
     "hierarchy/package_const_once",
     "hierarchy/package_shared",
     "hierarchy/package_signal",

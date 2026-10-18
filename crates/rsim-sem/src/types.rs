@@ -8,7 +8,7 @@ use rsim_syntax::ast::Ident;
 
 use crate::generic::GenericClass;
 use crate::hir::AttrPrefix;
-use crate::ids::{DeclId, ExprId, ScopeId, SubtypeId, TypeId};
+use crate::ids::{DeclId, ExprId, Id, ScopeId, SubtypeId, TypeId};
 use rsim_diag::Span;
 
 pub use rsim_syntax::ast::Direction;
@@ -312,6 +312,7 @@ impl Db {
         if let ast::TypeDef::ProtectedBody(b) = def {
             return self.protected_body(scope, name, b, td.span);
         }
+        let first_subtype = self.subtypes.next_id();
         let decl = match incomplete {
             Some(d) => d,
             None => self.new_decl(scope, Designator::Ident(name), DeclKind::Error, td.span),
@@ -326,7 +327,10 @@ impl Db {
                 self.array_type(scope, decl, name, indexes, element, td.span)?
             }
             ast::TypeDef::Access(si) => {
-                let designated = self.subtype_indication(scope, si)?;
+                self.incomplete_ok = true;
+                let designated = self.subtype_indication(scope, si);
+                self.incomplete_ok = false;
+                let designated = designated?;
                 self.new_type(
                     decl,
                     name,
@@ -379,12 +383,37 @@ impl Db {
                 },
             );
             self.types[old].kind = full;
-            self.types[old].first_subtype = self.types[ty].first_subtype;
-            self.types[old].base_subtype = self.types[ty].base_subtype;
             self.types[old].anonymous = self.types[ty].anonymous;
-            let (fs, bs) = (self.types[old].first_subtype, self.types[old].base_subtype);
-            self.subtypes[fs].base = old;
-            self.subtypes[bs].base = old;
+            // Every subtype of the full definition belongs to `old`.
+            for i in first_subtype.index()..self.subtypes.len() {
+                let s = SubtypeId::from_index(i);
+                if self.subtypes[s].base == ty {
+                    self.subtypes[s].base = old;
+                }
+            }
+            // Access types declared before the completion designate the incomplete
+            // type's first subtype: it takes the full first subtype's constraint.
+            let (old_fs, fs) = (self.types[old].first_subtype, self.types[ty].first_subtype);
+            let c = self.subtypes[fs].constraint.clone();
+            let parent = self.subtypes[fs].parent;
+            self.subtypes[old_fs].constraint = c;
+            self.subtypes[old_fs].parent = parent;
+            let bs = self.types[ty].base_subtype;
+            self.types[old].base_subtype = if bs == fs { old_fs } else { bs };
+            let lits: Vec<DeclId> = match &self.types[old].kind {
+                TypeKind::Enum { lits } => lits.to_vec(),
+                TypeKind::Physical { units } => units.iter().map(|u| u.decl).collect(),
+                _ => Vec::new(),
+            };
+            for l in lits {
+                match &mut self.decls[l].kind {
+                    DeclKind::EnumLit { ty: lt, .. } | DeclKind::PhysUnit { ty: lt, .. } => {
+                        *lt = old
+                    }
+                    _ => {}
+                }
+                self.declare(scope, l);
+            }
             self.register_well_known_type(scope, name, old);
             self.declare_implicit_ops(old, scope);
             return Ok(());
@@ -1556,6 +1585,7 @@ impl Db {
                 {
                     return Ok(self.types[c].first_subtype);
                 }
+                self.check_incomplete_use(scope, t, n.span)?;
                 Ok(self.types[t].first_subtype)
             }
             DeclKind::Subtype(s) => Ok(s),

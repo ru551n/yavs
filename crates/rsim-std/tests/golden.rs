@@ -341,14 +341,17 @@ fn eval(rev: Revision, func: &str, a: &[&str]) -> Out {
     })
 }
 
-fn readline_case(data: &[u8]) -> Out {
-    let dir = std::env::temp_dir().join(format!("rsim-std-golden-{}", std::process::id()));
+/// A file path no other case uses: the tests run in parallel in one process.
+fn scratch(kind: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("golden");
     std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join(format!(
-        "rl-{:x}.txt",
-        data.iter()
-            .fold(0u64, |h, &b| h.wrapping_mul(31).wrapping_add(b as u64))
-    ));
+    dir.join(format!("{kind}-{}-{n}.txt", std::process::id()))
+}
+
+fn readline_case(data: &[u8]) -> Out {
+    let p = scratch("rl");
     std::fs::write(&p, data).unwrap();
     let mut f = rsim_std::file::TextFile::open(
         p.to_str().unwrap().as_bytes(),
@@ -373,12 +376,7 @@ fn readline_case(data: &[u8]) -> Out {
 
 fn writeline_case(lines: &[Vec<u8>]) -> Out {
     use rsim_std::file::{FileOpenKind, TextFile};
-    let dir = std::env::temp_dir().join(format!("rsim-std-golden-wl-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join(format!(
-        "wl-{}.txt",
-        lines.len() * 1000 + lines.iter().map(Vec::len).sum::<usize>()
-    ));
+    let p = scratch("wl");
     let mut f = TextFile::open(p.to_str().unwrap().as_bytes(), FileOpenKind::Write)
         .map_err(|s| format!("{s:?}"))?;
     let mut empty = true;

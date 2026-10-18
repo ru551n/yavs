@@ -60,6 +60,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Implicit vs explicit (any region): explicit wins when a call is otherwise ambiguous | OSVVM RandomBasePkg, UVVM rand_pkg | same section |
 | An architecture's name is hidden by a port or generic of the same name (12.3: the name belongs to the library, outside the entity's region) | `architecture a of and2` with port `a`, NVC agrees | `src/unit.rs` (`hidden`) |
 | A conversion on an unconstrained formal is `E1312` (user, F8) | GHDL and Questa reject | `docs/design/rule1-review.md` F8 |
+| `'stable`/`'quiet`/`'transaction`/`'delayed` in a subprogram: an error only of a formal signal parameter (4.2.2.2); of another signal the implicit signal is declared in the nearest region outside the subprogram | GHDL and Questa accept | `src/expr/names.rs` `build_attr` |
 | Reflection: `simple_name` etc. upper case, 1-based physical unit indices, 0-based element/literal indices (user, 2026-10-18) | Match NVC; VUnit record_dict | `docs/decisions.md` "Reflection: names, indices and case" |
 | Unimplemented constructs report `Db::unsupported(span, what, "S<n>")` (`E9999`) | Fail early, no `todo!()` | CONTRIBUTING "Conventions" |
 

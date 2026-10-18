@@ -1166,6 +1166,10 @@ impl Db {
                 (AttrPrefix::Entity(d), stat, None)
             }
             Via::AttrOf(t) => {
+                let p = self.resolve_prefix(scope, prefix, t);
+                // 4.2.2.2: of a formal signal parameter these attributes are not allowed;
+                // of another signal they are, and the implicit signal lives outside the
+                // subprogram (GHDL, Questa).
                 if matches!(
                     a,
                     PredefAttr::Delayed
@@ -1173,15 +1177,22 @@ impl Db {
                         | PredefAttr::Quiet
                         | PredefAttr::Transaction
                 ) && self.in_subprogram(scope)
+                    && let Some(crate::hir::ObjRoot::Decl(d)) = self.lsp(p).map(|l| l.root)
+                    && matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == crate::decl::ObjRole::Param)
                 {
                     self.report(
-                        Diagnostic::error(diag::SIGNAL_ATTR_IN_SUBPROGRAM, format!("`'{}` is not allowed in a subprogram", attr.text))
-                            .with_primary(attr.span, "creates an implicit signal")
-                            .with_note("LRM 16.2.4: implicit signal attributes are only allowed outside subprograms"),
+                        Diagnostic::error(
+                            diag::SIGNAL_ATTR_IN_SUBPROGRAM,
+                            format!(
+                                "implicit signal attribute `{}` of formal signal parameter `{}` cannot be read in a subprogram",
+                                attr.text, self.decls[d].name
+                            ),
+                        )
+                        .with_primary(prefix.span, "a formal signal parameter")
+                        .with_note("LRM 4.2.2.2: `'stable`, `'quiet`, `'transaction` and `'delayed` of a formal signal parameter are not allowed"),
                     );
                     return self.poison_expr();
                 }
-                let p = self.resolve_prefix(scope, prefix, t);
                 let stat = match (a, &self.types[t].kind) {
                     (
                         PredefAttr::Left
@@ -1248,6 +1259,38 @@ impl Db {
             hargs.push(id);
         }
         let subtype = self.types[i.ty].first_subtype;
+        // `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` declare an implicit
+        // signal (16.2.4, sem.md 6.3); the name reads it.
+        if let (
+            PredefAttr::Delayed | PredefAttr::Stable | PredefAttr::Quiet | PredefAttr::Transaction,
+            AttrPrefix::Expr(p),
+        ) = (a, aprefix)
+        {
+            let st = if a == PredefAttr::Delayed {
+                self.exprs[p].subtype
+            } else {
+                subtype
+            };
+            let mut region = scope;
+            while self.in_subprogram(region)
+                && let Some(up) = self.scopes[region].parent
+            {
+                region = up;
+            }
+            return match crate::attr::implicit_signal(
+                self,
+                a,
+                false,
+                region,
+                p,
+                hargs.first().copied(),
+                st,
+                span,
+            ) {
+                Ok(d) => self.object_ref(d, span),
+                Err(_) => self.poison_expr(),
+            };
+        }
         let id = self.add_expr(Expr {
             kind: ExprKind::Attr {
                 attr: a,

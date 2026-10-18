@@ -320,7 +320,7 @@ fn errors_are_structured_and_nothing_is_called() {
         Err(FfiError::NullFunction)
     );
     let f = see_i64 as *const c_void;
-    let big = sig(&vec![CType::I64; MAX_ARGS + 1], None);
+    let big = sig(&[CType::I64; MAX_ARGS + 1], None);
     assert_eq!(
         unsafe { ForeignFn::new(f, big) },
         Err(FfiError::TooManyArgs {

@@ -343,7 +343,15 @@ impl Db {
         let Some(ast) = ast else {
             return Err(self.not_found(lib, key, at));
         };
+        // sem.md 0.1: what the 2008 copy of a std/ieee package lacks gets `since: V2019`.
+        let fresh = (self.rev == LangRev::Vhdl2019
+            && matches!(key, UnitKey::Primary(_))
+            && matches!(self.libs[lib].source, LibSource::StdDir(_)))
+        .then(|| self.fresh_in_2019(key, &path, &ast, file));
         let r = self.analyze_unit(lib, key, ast, file, rev);
+        if let (Ok(u), Some(f)) = (&r, fresh) {
+            self.mark_fresh(*u, f);
+        }
         if r.is_err() {
             self.libs[lib].units.insert(key, UnitSlot::Failed);
         }
@@ -361,7 +369,15 @@ impl Db {
     ) -> Result<UnitId, Reported> {
         let r = self.load_unit(lib, key, at);
         match r {
-            Ok(u) => self.note_dep(u),
+            Ok(u) => {
+                self.note_dep(u);
+                if let Some(at) = at
+                    && self.decls[self.units[u].decl].since > self.file_rev()
+                {
+                    let what = format!("{}.{}", self.libs[lib].name.text, self.span_text(at));
+                    self.not_in_file_rev(what, at);
+                }
+            }
             Err(_) => {
                 if let Some(c) = self.cur() {
                     self.tainted.insert(c.unit);

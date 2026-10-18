@@ -105,6 +105,9 @@ pub struct Db {
     #[allow(dead_code)]
     /// Undeclared names already reported, per (unit, key) (8.2).
     pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
+    /// Spans already given `E1007` or `W1008` by rev.rs (once per construct: names are
+    /// classified once per resolution pass).
+    pub(crate) rev_reported: HashSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
     /// The same for name nodes.
@@ -230,6 +233,7 @@ impl Db {
             files: HashMap::new(),
             stack: Vec::new(),
             undeclared: HashSet::new(),
+            rev_reported: HashSet::new(),
             memo: HashMap::new(),
             name_memo: HashMap::new(),
             pending_implicit: Vec::new(),

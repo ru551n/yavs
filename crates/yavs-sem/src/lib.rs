@@ -42,6 +42,7 @@ pub mod lsp;
 pub mod mangle;
 pub mod protected;
 pub mod reflect;
+pub mod rev;
 pub mod scope;
 pub mod stat;
 pub mod stdlib;

@@ -8,6 +8,7 @@ use crate::LangRev;
 use crate::db::{Db, Reported, UnitCx};
 use crate::decl::{Decl, DeclKind, Designator};
 use crate::diag;
+use crate::expr::names::NameRes;
 use crate::hir::UnitHir;
 use crate::ids::{DeclId, LibId, ScopeId, UnitId};
 use crate::loader::{Unit, UnitKey, UnitKind, UnitSlot};
@@ -486,6 +487,11 @@ impl Db {
                     match self.scopes[s].names.get(&key) {
                         Some(ds) if !ds.is_empty() => {
                             let ds = ds.clone();
+                            let at = suffix_span(suffix, n.span);
+                            let ds = match self.rev_gate(NameRes::Overloads(ds), n.span, at) {
+                                NameRes::Overloads(ds) => ds,
+                                _ => continue,
+                            };
                             UseItem::One(self.with_type_associates(s, ds))
                         }
                         _ => {

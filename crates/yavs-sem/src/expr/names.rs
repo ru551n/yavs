@@ -67,12 +67,13 @@ impl Db {
     /// Resolve a simple or expanded name (no arguments, no attribute).
     pub(crate) fn classify(&mut self, scope: ScopeId, n: &ast::Name) -> NameRes {
         if let Some((key, ident)) = name_ident(n) {
-            return match self.lookup(scope, key) {
+            let r = match self.lookup(scope, key) {
                 Visible::One(d) => NameRes::One(d),
                 Visible::Overloads(ds) => NameRes::Overloads(ds),
                 Visible::None => NameRes::Missing(ident),
                 Visible::Hidden(c) => NameRes::Conflict(ident, c),
             };
+            return self.rev_gate(r, n.span, n.span);
         }
         match &n.kind {
             ast::NameKind::Selected { prefix, suffix } => {
@@ -146,7 +147,11 @@ impl Db {
                                 }
                                 Err(_) => NameRes::Error,
                             },
-                            Region::Scope(s) => self.in_region(s, suffix_span(suffix, n.span), key),
+                            Region::Scope(s) => {
+                                let at = suffix_span(suffix, n.span);
+                                let r = self.in_region(s, at, key);
+                                self.rev_gate(r, n.span, at)
+                            }
                         }
                     }
                     // `f.v` names `v` in subprogram `f` only inside `f` (8.3); outside it
@@ -1562,6 +1567,13 @@ impl Db {
                 Ok(d) => self.object_ref(d, span),
                 Err(_) => self.poison_expr(),
             };
+        }
+        match aprefix {
+            AttrPrefix::Subtype(st) if !is_array => self.integer_bound_changed(a, st, span),
+            AttrPrefix::Expr(p) if !is_array => {
+                self.integer_bound_changed(a, self.exprs[p].subtype, span)
+            }
+            _ => {}
         }
         let id = self.add_expr(Expr {
             kind: ExprKind::Attr {

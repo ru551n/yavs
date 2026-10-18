@@ -56,6 +56,11 @@ An installed binary finds `lib/` next to itself (#43).
   slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
   typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210).
   Lowering them is #71.
+- Mixed 2008/2019 designs (#50, sem.md 0.1, `src/rev.rs`): under a 2019 design revision a 2008
+  file that names a std/ieee declaration the 2008 copy lacks (`std.env.tool_name`,
+  `std.reflection`) gets `E1007` and does not see such declarations through use clauses;
+  `'left`/`'right`/`'high`/`'low` of an INTEGER subtype whose bound differs (64-bit INTEGER) get
+  `W1008` once per construct.
 - Object types: constants, signals, generics, ports and constant or signal parameters of an access
   or file type (or containing one) are `E1223` (#198; constant parameters are legal in 2019; 2008 protected method profiles too, #212); protected ones `E1905`.
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms

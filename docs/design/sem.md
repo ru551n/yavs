@@ -71,6 +71,13 @@ Known 2008-vs-2019 differences and their handling:
 | 2019-only constructs (views, private variables, generic type classes, 2019 attributes, conditional expressions) in a 2008 file | `E1910` (normally already a syntax error from M0) |
 | 2008 constructs illegal under 2019 rules | none known; if one is found it is `E1007` |
 
+`since` is set when a std/ieee package is loaded under a 2019 design (`src/rev.rs`): an item of
+the 2019 package whose kind, designator and (for subprograms) profile type marks have no match in
+the 2008 copy is `V2019`, and so is a whole unit without a 2008 copy. Declarations newer than the
+file are left out of potential visibility for that file, so a 2008 file keeps its 2008 overload
+sets and conflicts; when nothing else is visible the name is `E1007`. `W1008` for INTEGER is given
+for `'left`, `'right`, `'high` and `'low` whose value lies outside the 32-bit range (L52).
+
 `E1007`: "`<name>` is not available in VHDL-2008", primary at the reference, note "file `<path>`
 is analyzed as VHDL-2008 (`--std=2008` in the manifest); the design is elaborated with the
 VHDL-2019 std/ieee because `<unit>` (`<path>`) is VHDL-2019". `E1007` is an error (fail early).

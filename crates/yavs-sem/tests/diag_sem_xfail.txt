@@ -10,15 +10,6 @@ expr/mismatch_in_subprogram_arg_label.vhd
 expr/out_parameter_actual_constant.vhd
 expr/signal_param_actual_variable.vhd
 expr/type_mismatch_in_range.vhd
-mix/env_2019_unit_used_via_selected_name.vhd
-mix/env_localtime_call_in_2008_file.vhd
-mix/env_tool_name_in_2008_file.vhd
-mix/integer_high_in_2008_file.vhd
-mix/integer_left_2008_file.vhd
-mix/integer_range_attribute_2008.vhd
-mix/natural_high_in_2008_file.vhd
-mix/natural_range_in_2008_file.vhd
-mix/reflection_library_unit_in_2008_file.vhd
 prot/assign_protected_variable.vhd
 prot/body_method_missing.vhd
 prot/equality_on_protected.vhd
@@ -26,7 +17,6 @@ prot/protected_constant.vhd
 prot/shared_variable_array_not_protected.vhd
 prot/shared_variable_not_protected.vhd
 prot/signal_of_protected_type.vhd
-relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd
 relax/shared_variable_unprotected_relaxed.vhd
 v2019/conditional_expression_branch_mismatch.vhd

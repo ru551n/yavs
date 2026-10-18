@@ -39,6 +39,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Codes and `--explain` texts (`codes!` macro, `EXPLAIN`) | `src/diag.rs` |
 | Names, overloads, literals, aggregates | `src/expr/{names,cands,resolve,literal,aggregate}.rs` |
 | Native symbols and mangling (`lib/NATIVE.md`) | `src/mangle.rs`, `src/implicit.rs` |
+| Mixed 2008/2019 designs: `since` of std/ieee declarations (compared with the 2008 copy at load), `E1007` gate on names and use clauses, `W1008` for INTEGER bounds (sem.md 0.1, lrm-checks L52) | `src/rev.rs` |
 | Tests: negative suite runner, xfail list, std/ieee corpus, rule 1 dumps, reflection, attributes, external-library corpus | `tests/diag_sem.rs`, `tests/diag_sem_xfail.txt`, `tests/stdlib.rs`, `tests/rule1.rs`, `tests/reflect.rs`, `tests/user_attributes.rs`, `tests/hdl_modules.rs` |
 | `cargo run -p yavs-sem --example analyze -- [--std 2019] FILE...` | `examples/analyze.rs` |
 

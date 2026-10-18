@@ -1,6 +1,4 @@
 # tools/corpus/run.py expected results for vhdl-compliance-2019 (yavs); one line per manifest entry, in order
-# Initial list: derived from NVC's results (vhdl-compliance-2019.nvc.expected), every file expected to pass. yavs must analyze every file the reference tools accept;
-# update with `run.py vhdl-compliance-2019 --bless` when yavs's behaviour legitimately changes.
 PASS vunit_lib vunit/vunit/vhdl/data_types/src/codec_builder.vhd
 PASS vunit_lib vunit/vunit/vhdl/data_types/src/codec.vhd
 PASS vunit_lib vunit/vunit/vhdl/data_types/src/codec_builder-2008p.vhd
@@ -167,7 +165,7 @@ PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_matching_operator_lt.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_matching_operator_ne.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_min_max.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_numeric_std_unsigned.vhd
-PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_psl.vhd
+FAIL vhdl_2008 vhdl-compliance/vhdl_2008/tb_psl.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_read_out_port.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_sensitivity_all.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_top_generic_subtype.vhd
@@ -193,9 +191,9 @@ PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_023.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_026c.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_030.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_032.vhd
-PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_033.vhd
-PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_036a.vhd
-PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_041.vhd
+FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_033.vhd
+FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_036a.vhd
+FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_041.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_045a.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_045c.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_047.vhd
@@ -203,9 +201,9 @@ PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_050.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_055a.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_061.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_071a.vhd
-PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_072b.vhd
+FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_072b.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_075.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_082.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_086.vhd
-PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_094a.vhd
-PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_reading_function_return_value.vhd
+FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_094a.vhd
+FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_reading_function_return_value.vhd

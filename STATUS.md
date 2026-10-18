@@ -36,7 +36,7 @@ With the signal-alias fix of #203 tried locally, `check` passed 156 of 156 runna
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on
 ubuntu-24.04, ubuntu-24.04-arm and windows-latest (MSVC) for every push to main and every pull
-request (#134); not yet in CI: JIT tier, corpus gates (#63). `.github/workflows/release.yml`
+request (#134); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63); not yet in CI: JIT tier. `.github/workflows/release.yml`
 builds and packages `yavs` with `lib/` for the three targets on a `v*` tag and publishes a
 pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives.
 An installed binary finds `lib/` next to itself (#43).

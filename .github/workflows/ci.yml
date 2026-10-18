@@ -1,6 +1,6 @@
 # Root AGENTS.md rule 13 on the three release platforms (#134). Default features only: the LLVM
-# tier (`--features llvm`) needs an LLVM install and is not built here. The external corpora
-# (#63) and the qemu/Wine ffi runs are not part of CI yet.
+# tier (`--features llvm`) needs an LLVM install and is not built here. The qemu/Wine ffi runs are not part of CI yet.
+# The `corpus` job gates the analysis corpora (#63) on Linux x86_64.
 name: CI
 
 on:
@@ -33,3 +33,32 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
+
+  # Analysis corpora (tools/corpus): fetched at pinned revisions into the runner cache, never
+  # part of the repository. Fails on any difference from the checked-in expected lists, in
+  # both directions: a regression and an unexpected pass (bless it and review the diff).
+  corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      YAVS_CORPUS: ${{ github.workspace }}/.corpus-cache
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: .corpus-cache
+          key: corpus-${{ hashFiles('tools/fetch-corpus.sh') }}
+      - run: tools/fetch-corpus.sh "$YAVS_CORPUS"
+      - run: cargo build --release --locked -p yavs
+      - name: Run every analysis corpus against its expected list
+        run: |
+          export PATH="$PWD/target/release:$PATH"
+          failed=
+          for t in tools/corpus/*.toml; do
+            m=$(basename "$t" .toml)
+            python3 tools/corpus/run.py "$m" --no-wrap --keep-going --out "$RUNNER_TEMP/corpus/$m" > "$RUNNER_TEMP/$m.log" 2>&1 \
+              || { failed="$failed $m"; echo "::group::$m differs"; grep -h '^DIFF\|differ from' "$RUNNER_TEMP/$m.log"; echo "::endgroup::"; }
+          done
+          test -z "$failed" || { echo "corpora differing from their expected lists:$failed"; exit 1; }

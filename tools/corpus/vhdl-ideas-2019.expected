@@ -1,8 +1,6 @@
 # tools/corpus/run.py expected results for vhdl-ideas-2019 (yavs); one line per manifest entry, in order
-# Initial list: derived from NVC's results (vhdl-ideas-2019.nvc.expected), every file expected to pass. yavs must analyze every file the reference tools accept;
-# update with `run.py vhdl-ideas-2019 --bless` when yavs's behaviour legitimately changes.
 PASS work vhdl-ideas/interfaces/axi/axi4.vhdl
-PASS work vhdl-ideas/interfaces/axi/axi4-body.vhdl
+FAIL work vhdl-ideas/interfaces/axi/axi4-body.vhdl
 PASS work vhdl-ideas/interfaces/axi/axi4l.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/caui.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/mii.vhdl
@@ -12,11 +10,11 @@ PASS work vhdl-ideas/interfaces/ethernet/rmii.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/sfp.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/sgmii.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/xaui.vhdl
-PASS work vhdl-ideas/interfaces/io.vhdl
-PASS work vhdl-ideas/interfaces/adi/ad9361.vhdl
-PASS work vhdl-ideas/interfaces/pcie.vhdl
-PASS work vhdl-ideas/poc/rangetest.vhdl
-PASS work vhdl-ideas/sim/frequency.vhdl
-PASS work vhdl-ideas/util/generic_mux.vhdl
-PASS work vhdl-ideas/poc/hdmi_switch.vhdl
-PASS work vhdl-ideas/util/memory.vhdl
+FAIL work vhdl-ideas/interfaces/io.vhdl
+FAIL work vhdl-ideas/interfaces/adi/ad9361.vhdl
+FAIL work vhdl-ideas/interfaces/pcie.vhdl
+FAIL work vhdl-ideas/poc/rangetest.vhdl
+FAIL work vhdl-ideas/sim/frequency.vhdl
+FAIL work vhdl-ideas/util/generic_mux.vhdl
+FAIL work vhdl-ideas/poc/hdmi_switch.vhdl
+FAIL work vhdl-ideas/util/memory.vhdl

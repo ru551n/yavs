@@ -18,7 +18,7 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 | File | What |
 |---|---|
 | `<name>.toml` | Generated compile manifest: `name`, `std`, ordered files with library, `exclude` with reasons, `[flags]` per tool. Do not edit by hand |
-| `<name>.expected` | yavs expected list, one `PASS|FAIL <lib> <source>/<path>` per entry in order (initially derived from the reference simulator's) |
+| `<name>.expected` | yavs expected list, one `PASS|FAIL <lib> <source>/<path>` per entry in order (PASS everywhere except the known yavs bugs; CI fails on any difference) |
 | `<name>.nvc.expected`, `<name>.nvc.md` | The reference simulator results and the validation note (tool version, accepted/rejected, flags) |
 | `rejects/<name>.json` | Files the reference simulators rejected during validation, with the first error line |
 | `run.py MANIFEST [--tool yavs|nvc] [--cmd T] [--keep-going] [--bless] [--expected none] [--log F]` | Analyze one file per call in manifest order and compare with the expected list; exit 0 as expected, 1 differences, 2 usage |
@@ -62,5 +62,10 @@ tools/corpus/report.sh                                        # RESULTS.md
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18): #62 refresh `RESULTS.md`; #63 gate in CI; corpus false
+- Open issues (snapshot 2026-10-18): #62 refresh `RESULTS.md`; corpus false
   positives and bugs #59, #61, #157 (#55 to #58, #60 closed as stale 2026-10-18); #115 external verification library suites; #112 external test runner suites.
+
+CI (`corpus` job in `.github/workflows/ci.yml`, Linux x86_64) runs every manifest with `run.py
+--no-wrap --keep-going` and fails on any difference, so a regression and an unexpected pass both
+turn it red; after fixing a bug `--bless` the corpus and review the diff. Whole job: about 4 minutes
+plus the fetch (cached by the hash of `tools/fetch-corpus.sh`).

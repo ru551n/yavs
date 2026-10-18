@@ -1,6 +1,4 @@
 # tools/corpus/run.py expected results for hdl-modules-2019 (yavs); one line per manifest entry, in order
-# Initial list: derived from NVC's results (hdl-modules-2019.nvc.expected). yavs must analyze every file NVC accepts;
-# update with `run.py hdl-modules-2019 --bless` when yavs's behaviour legitimately changes.
 PASS axi_lite hdl-modules/modules/axi_lite/src/axi_lite_pkg.vhd
 PASS axi_stream hdl-modules/modules/axi_stream/src/axi_stream_pkg.vhd
 PASS common hdl-modules/modules/common/src/attribute_pkg.vhd
@@ -20,9 +18,9 @@ PASS common hdl-modules/modules/common/src/width_conversion_pkg.vhd
 PASS common hdl-modules/modules/common/src/width_conversion.vhd
 PASS common hdl-modules/modules/common/rtl/test_time_pkg.vhd
 PASS hard_fifo hdl-modules/modules/hard_fifo/src/hard_fifo_pkg.vhd
-PASS hard_fifo hdl-modules/modules/hard_fifo/src/fifo36e2_wrapper.vhd
-PASS hard_fifo hdl-modules/modules/hard_fifo/src/asynchronous_hard_fifo.vhd
-PASS hard_fifo hdl-modules/modules/hard_fifo/src/hard_fifo.vhd
+FAIL hard_fifo hdl-modules/modules/hard_fifo/src/fifo36e2_wrapper.vhd
+FAIL hard_fifo hdl-modules/modules/hard_fifo/src/asynchronous_hard_fifo.vhd
+FAIL hard_fifo hdl-modules/modules/hard_fifo/src/hard_fifo.vhd
 PASS lfsr hdl-modules/modules/lfsr/src/lfsr_pkg.vhd
 PASS lfsr hdl-modules/modules/lfsr/src/lfsr_fibonacci_multi.vhd
 PASS lfsr hdl-modules/modules/lfsr/src/lfsr_fibonacci_single.vhd

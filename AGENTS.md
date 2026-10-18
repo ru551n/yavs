@@ -111,7 +111,7 @@ to, and those documents win over your memory.
 
 ### Git and collaboration
 17. **Current phase: push straight to `main`** (no branches, no PRs). CI
-    (`.github/workflows/ci.yml`) runs the rule 13 checks on Linux x86_64, Linux aarch64 and
+    (`.github/workflows/ci.yml`) runs the rule 13 checks (plus the analysis corpus gate, Linux x86_64 only) on Linux x86_64, Linux aarch64 and
     Windows x86_64 for every push: watch your run (`gh run watch`) and fix a red one. Rebase on
     `origin/main` first; push only with no rebase in progress and a clean tree. If the push is
     rejected, rebase again and re-run the checks. **Before every push run

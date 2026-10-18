@@ -98,7 +98,9 @@ a call into your module in a small commit.
   processes of the architecture, its blocks and generates, with one driver slot per
   `ProcessInfo::drivers` entry. A subprogram declared in a process (at any depth) runs only
   in that process, so its signal assignments use the process's driver slots (`Cx::proc_drivers`,
-  LRM 14.7.2, #206). The elaborator builds one instance data per region (instance,
+  LRM 14.7.2, #206). An actual of a `signal out` parameter passes the driver slot of its own
+  longest static prefix (`driver_of`, #231), so calls on different parts of one signal each
+  drive their part. The elaborator builds one instance data per region (instance,
   block, generate iteration), looking values and signals up from the process's region
   outwards. Locally static constants have no slot: their folded value is used directly.
 

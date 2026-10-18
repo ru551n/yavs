@@ -899,7 +899,7 @@ impl Fx<'_, '_> {
     /// The instance signal and driver slot of a whole-signal target.
     /// The driver slot of a target's longest static prefix: the `ProcessInfo::drivers` entry
     /// with the same root and path (slots are 1:1 with those entries, as yavs-elab expects).
-    fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
+    pub(crate) fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
         let key = format!("{:?}{:?}", lsp.root, lsp.path);
         let exact = self
             .drivers

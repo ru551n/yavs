@@ -1,0 +1,12 @@
+exit	0
+diag	note	1000000	0	:tb_out_param_elements:check	s12 10101 01011 00000 00000 00000 
+diag	note	1000000	0	:tb_out_param_elements:check	s24 00000 10101 00000 01011 00000 
+diag	note	1000000	0	:tb_out_param_elements:check	s25 00000 10101 00000 00000 01011 
+diag	note	1000000	0	:tb_out_param_elements:check	s13 10101 00000 01011 00000 00000 
+diag	note	1000000	0	:tb_out_param_elements:check	s14 10101 00000 00000 01011 00000 
+diag	note	1000000	0	:tb_out_param_elements:check	s15 10101 00000 00000 00000 01011 
+diag	note	1000000	0	:tb_out_param_elements:check	s35 00000 00000 10101 00000 01011 
+diag	note	1000000	0	:tb_out_param_elements:check	s51 01011 00000 00000 00000 10101 
+diag	note	1000000	0	:tb_out_param_elements:check	v 1010011011
+diag	note	1000000	0	:tb_out_param_elements:check	e 01010010
+diag	note	1000000	0	:tb_out_param_elements:check	w 00111 00111 00000 00000 11100 11100 

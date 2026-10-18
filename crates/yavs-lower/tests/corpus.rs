@@ -169,6 +169,7 @@ const PASS: &[&str] = &[
     "sigassign/assign_inertial",
     "sigassign/assign_reject",
     "sigassign/assign_transport",
+    "sigassign/out_param_elements",
     "sigassign/proc_local_drivers",
     "sigassign/pulse_swallow",
     "sigassign/signal_alias",

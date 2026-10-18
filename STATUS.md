@@ -18,7 +18,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner (none this 
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 256 | 1 | 0 | two calls of a procedure with a `signal out` parameter on different constant elements #231 |
+| check | 256 | 1 | 0 | two calls of a procedure with a `signal out` parameter on different constant elements #231 (fixed since, not re-measured) |
 | com | 46 | 99 | 0 | protected method called from a subprogram nested in a method of the same body #221 |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
@@ -164,7 +164,7 @@ expressions with runtime descriptors (bit-planes for logic arrays), aggregates, 
 attributes including 'path_name/'instance_name, 'driving/'driving_value and signal attributes
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
-(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); nested names of signals of arrays of arrays
+(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); nested names of signals of arrays of arrays
 (`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`) as targets, actuals and sensitivity (#89);
 2008 array-valued pieces of positional aggregates as values and targets (#89); package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time

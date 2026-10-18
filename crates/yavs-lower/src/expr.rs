@@ -590,8 +590,7 @@ impl<'a> Fx<'a, '_> {
             let a = self.addr(space, off + 16);
             return Ok(self.load(a, Width::B8, RegTy::I64));
         }
-        // ponytail: the first entry with the same root; a process driving several parts of
-        // one signal through procedure calls needs the actual's LSP from sem.
+        // The first entry with the same root: callers with the actual's LSP use `driver_of`.
         match self
             .drivers
             .iter()
@@ -610,10 +609,20 @@ impl<'a> Fx<'a, '_> {
     /// The driver slot for actual `e` of an `out` signal parameter, whose signal is `d`:
     /// the driven signal, through any alias (LRM 6.6.2).
     pub(crate) fn out_driver_slot(&mut self, d: DeclId, e: ExprId) -> R<Reg> {
-        let d = match self.db.lsp(e).map(|l| l.root) {
+        let lsp = self.db.lsp(e);
+        let d = match lsp.as_ref().map(|l| l.root) {
             Some(yavs_sem::hir::ObjRoot::Decl(r)) => r,
             _ => d,
         };
+        // A signal of the process (not a signal parameter passed on): the driver of the
+        // actual's longest static prefix, which sem collected for this call (LRM 14.7.2, #231).
+        if let (Some(l), false) = (
+            lsp,
+            matches!(self.cx.objs.get(&d), Some(Obj::SignalRef { out: true, .. })),
+        ) {
+            let slot = self.driver_of(&l)?;
+            return Ok(self.int(i64::from(slot)));
+        }
         self.driver_slot_of(d, self.db.exprs[e].span)
     }
 

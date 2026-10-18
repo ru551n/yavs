@@ -507,7 +507,12 @@ impl Db {
             {
                 continue;
             }
-            let Some(st) = attr::result_subtype(self, info, p, dim) else {
+            let st = if info.result == attr::Result_::Mirror {
+                self.mirror_subtype(p.form == PrefixForm::TypeMark)
+            } else {
+                attr::result_subtype(self, info, p, dim)
+            };
+            let Some(st) = st else {
                 continue;
             };
             let via = match *src {
@@ -1151,6 +1156,10 @@ impl Db {
                 )
             }
         };
+        if a == PredefAttr::Reflect {
+            // A mirror is a fresh access value (16.2): never static.
+            stat = Staticness::None;
+        }
         let t = arg_t.unwrap_or(self.poison.ty);
         let is_array = matches!(self.types[t].kind, TypeKind::Array { .. });
         let mut hargs = Vec::new();

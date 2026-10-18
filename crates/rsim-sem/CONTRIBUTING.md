@@ -145,9 +145,14 @@ Hooks the M1 lead calls; the module owner fills the body (keep the signature):
   universal types at the start of `std.standard`), `flush_pending_implicit()` after every
   `std.standard` type and subtype.
 
+Protected method calls are wired (reflect): `obj.m` / `obj.m(args)` in names.rs
+(`Via::Method`, `method_call_cands`, `method_object`) and in `proc_call`, through
+`Db::method_target` / `Db::method_decls` (protected.rs, quiet) and `protected_member` (reports).
+An access to a protected type is dereferenced implicitly (`ExprKind::Deref`, built inline in
+`method_object`; alloc: switch it to `Db::deref` once that lands).
+
 Wiring still open (M1 lead will do these in expr/names.rs unless someone asks for them):
-`external_name` (`NameKind::External`), `protected_member` (selection from a protected object),
-`view_ref`, `match_signature` in attribute specifications and `use`, the aggregate resolver
+`external_name` (`NameKind::External`), `view_ref`, `match_signature` in attribute specifications and `use`, the aggregate resolver
 (`AggResolver` in expr/aggregate.rs) from `resolve` for `Expected::Type` aggregates.
 
 From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests; they need calls:
@@ -204,6 +209,16 @@ From names (attr):
   `p(i)` with `p` an access): classify returns `Unsupported` for `.all` today; std_logic_1164's
   body needs it.
 - **stmt** uses `Db::proc_call(scope, name)` (resolve.rs) through `st_proc_call` (done).
+
+From reflect (reflect.rs):
+
+- **generic**: `to_dict generic (type record_t) parameter (value : record_t)` (VUnit
+  record_dict_pkg) needs generic subprogram declarations, bodies and `function f is new f generic
+  map (record_t => t)` instances overloaded under one name. `value'reflect` is an ordinary
+  `ExprKind::Attr` with `AttrPrefix::Expr`; the instance clone must remap that prefix (and with it
+  the reflected subtype) like any other attribute, nothing reflection-specific.
+- **M3 (runtime)**: open question for the user: the unit of `PHYSICAL_VALUE_MIRROR.value`.
+  record_dict_pkg multiplies it by `std.env.resolution_limit` (Riviera-PRO); NVC returns fs.
 
 From cli (`rsim analyze`):
 

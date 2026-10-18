@@ -40,6 +40,7 @@ pub mod loader;
 pub mod lsp;
 pub mod mangle;
 pub mod protected;
+pub mod reflect;
 pub mod scope;
 pub mod stat;
 pub mod stmt;

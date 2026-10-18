@@ -55,6 +55,12 @@ fn analyze_with(rev: LangRev, lib: &str, unit: &str, body: bool) -> Db {
     db
 }
 
+/// `std.reflection` exists only in 2019; its methods return incomplete types (U-2).
+#[test]
+fn reflection_analyzes_clean() {
+    analyze(LangRev::Vhdl2019, "std", "reflection");
+}
+
 #[test]
 fn stdlib_units_analyze_clean() {
     for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {

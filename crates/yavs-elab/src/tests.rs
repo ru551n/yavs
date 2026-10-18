@@ -1008,3 +1008,65 @@ fn resolution_function_in_a_block_fails_early() {
         .collect();
     assert_eq!(codes, [codes::NOT_IMPLEMENTED]);
 }
+
+#[test]
+fn composite_values_at_elaboration() {
+    let src = "
+      package p is
+        type iv is array (natural range <>) of integer;
+        function rev(v : iv) return iv;
+      end;
+      package body p is
+        function rev(v : iv) return iv is
+          variable r : iv(v'range);
+        begin
+          for i in v'range loop r(i) := v(v'high - i + v'low); end loop;
+          return r;
+        end;
+      end;
+      use work.p.all;
+      entity t is end;
+      architecture a of t is
+        constant c : iv := rev((1, 2) & 3);
+        signal s : bit_vector(c(0) downto 1);
+      begin
+      end;";
+    let (_, e) = elab("composite_vals", src, "t", &[]);
+    let o = e
+        .nets
+        .objs
+        .iter()
+        .find(|o| o.name.key.as_str() == "s")
+        .expect("s");
+    assert_eq!(o.shape.len(), 3);
+
+    let md = "
+      entity t is end;
+      architecture a of t is
+        type m is array (0 to 1, 0 to 1) of integer;
+        constant c : m := ((1, 2), (3, 4));
+        signal s : bit_vector(c(1, 0) downto 0);
+      begin
+      end;";
+    let (_, e) = elab("composite_md", md, "t", &[]);
+    let o = e
+        .nets
+        .objs
+        .iter()
+        .find(|o| o.name.key.as_str() == "s")
+        .expect("s");
+    assert_eq!(o.shape.len(), 4);
+
+    let bad = "
+      entity t is end;
+      architecture a of t is
+        constant c : bit_vector := not (\"01\" and \"11\");
+        constant d : bit_vector := c sll 1;
+        signal s : bit_vector(d'length downto 0);
+      begin
+      end;";
+    assert_eq!(
+        err_codes("composite_op", bad, "t", &[]),
+        [codes::NOT_EVALUATED]
+    );
+}

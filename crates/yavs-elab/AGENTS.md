@@ -23,7 +23,8 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 |---|---|
 | `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `warnings`, `ir`; `signal`, `value`), `codes` |
 | `src/walk.rs` | The elaborator: instances, generics, generates, blocks, binding (configuration declaration, then specification, then default binding), ports, processes, depth-first in statement order |
-| `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls for scalar user functions; `-g` overrides via the yavs-std `'value` parser |
+| `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls of user functions (`call_values`); `-g` overrides via the yavs-std `'value` parser |
+| `src/value.rs` | Composite values: aggregates, indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; `encode`/`decode` between `Val` and IR memory (arrays and records of scalars) |
 | `src/hier.rs` | `Hierarchy`/`Scope`/`ScopeKind` (path names in `Case::Lrm` and original spelling), `NetGraph` (`select`: the one sub-element map), `Leaf`, `SigObj`, `PortEdge`, `DriverDecl`, `ImplicitKind` |
 | `src/sim.rs` | `Elaborated::lower` (yavs-lower), `Elaborated::build(Config) -> SimControl`, `runtime_diagnostic` (a kernel `SimError` as a coded diagnostic with the VHDL call stack as labels), `Ir`, `instance_of` |
 | `src/build.rs` | `Elaborated::build_with` (kernel `Builder`, repeatable), `leaf_name` |
@@ -45,7 +46,8 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | Package constant calling a function of its own package before its body is elaborated: `E2114` with both spans | LRM 14.4.2, NVC and Questa | `docs/decisions.md` "Elaboration" |
 | Default binding, selected entity names, block configuration of a default-bound instance | Permissive per LRM policy | `docs/decisions.md` "Design units and binding" |
 | A user resolution function declared in an entity or architecture runs with that instance's `InstData` (`Ir::res_regions`, its architecture lowered even without processes); declared in a block, generate or subprogram: E9999 | #164: it reads the region's constants and generics | this file |
-| Not-yet-supported constructs are `E9999` naming the slice; composite elaboration-time values `E2106` (`ponytail:` in `eval.rs`) | Fail early | crate docs, #77 |
+| Not-yet-supported constructs are `E9999` naming the slice; composite values elab cannot evaluate yet (multi-dimensional aggregates, arrays of composites passed to functions, shifts) `E2106` (`ponytail:` in `eval.rs`) | Fail early | crate docs, #77 |
+| Composite elaboration-time values: structural operations on `Val` here, function calls in yavs-interp through `call_values` | One evaluator for subprogram bodies, no expression thunks needing instance data | `docs/decisions.md` "Elaboration", #77 |
 
 Module-local decisions go in this section and ir.md section 4 or `docs/decisions.md`
 "Elaboration" in the same commit (root `AGENTS.md` rule 24).
@@ -86,5 +88,5 @@ python3 tools/difftest/difftest.py --candidate yavs
   guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
   non-static actuals in port maps; #75 generic types, subprograms and packages, binding without
   entity aspect; #76 package signals, external names, user resolution, nested resolution; #77
-  composite values at elaboration (E2106); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
+  composite values at elaboration (rest of E2106); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
   unlabeled: #6 remaining elaboration features.

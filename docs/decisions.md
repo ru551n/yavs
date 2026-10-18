@@ -430,8 +430,15 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   instance carries the label.
 - **Interim evaluator:** globally static expressions are folded with sem's static folder over
   generic and constant values (`Db::fold_with`); calls of user functions with scalar arguments
-  and results run in yavs-interp after lowering the function alone (ir.md 3.6); composite values
-  (aggregates, array arguments or results) are still E2106 (#77).
+  and results run in yavs-interp after lowering the function alone (ir.md 3.6). Composite
+  values (#77, elab agent, 2026-10-18): structural operations (one-dimensional and record
+  aggregates, indexing, slices, fields, concatenation, composite `=`/`/=`, logical operators
+  on BIT and BOOLEAN arrays, conversions to constrained array subtypes) are evaluated on
+  `ConstValue`s in yavs-elab; everything else (ieee and user functions) runs in yavs-interp,
+  with arrays of scalars and records of scalars marshalled by `yavs_interp::call_values` in the
+  IR layout. Not chosen: lowering a thunk per expression, which would need instance data for
+  every scope's generics before elaboration has built it. Still E2106: multi-dimensional
+  aggregates, composite arguments with composite elements, shifts and other array operators.
 - **Package constant calling a function of its own package** whose body is not elaborated yet
   (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.
 

@@ -12,6 +12,7 @@ mod build;
 mod eval;
 mod hier;
 mod sim;
+mod value;
 mod walk;
 
 #[cfg(test)]

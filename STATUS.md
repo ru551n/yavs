@@ -246,9 +246,11 @@ of arrays, `std_ulogic`/`bit`/`boolean` as bit-planes), the sub-element map
 (`NetGraph::select`), uncollapsed ports with unconstrained formals taking the actual's bounds,
 static expression actuals, per-process merged drivers, multiple-source check across the
 hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
-Elaboration-time evaluation folds globally static expressions with `Db::fold_with` and runs
-user function calls with scalar arguments and results in yavs-interp (the function lowered
-alone); composite values are E2106 (#77). Also done: package bodies and generic instance bodies
+Elaboration-time evaluation folds globally static expressions with `Db::fold_with`, evaluates
+aggregates, indexing, slices, fields, concatenation and composite equality itself, and runs user
+function calls in yavs-interp (the function lowered alone; arrays and records of scalars as
+arguments and results through `call_values`); multi-dimensional aggregates and other array
+operators are still E2106 (#77). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
 and scalar type conversions in port maps (kernel converters), implicit signals (`'stable`,
 `'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`),

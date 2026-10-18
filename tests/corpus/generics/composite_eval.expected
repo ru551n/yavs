@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:composite_eval:g(0):_p0	g 3 11
+diag	note	0	0	:composite_eval:g(1):_p0	g 5 7
+diag	note	0	0	:composite_eval:g(2):_p0	g 7 5
+diag	note	0	0	:composite_eval:c:_p0	same
+diag	note	1000000	0	:composite_eval:_p0	k=3 len=3 n=12 s=6 o1=10 o2=15 t2=4 r1=-4y

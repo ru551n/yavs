@@ -1,10 +1,7 @@
 //! Tests of design units, associations, binding and configurations
-//! (binding.rs). Each test analyzes real files, written to
-//! `~/.cache/rsim-sem/unit-tests/<pid>-<thread>` (never into the repo): one
-//! directory per test thread, so parallel tests and other worktrees' runs never
-//! overwrite each other's files.
-
-use std::path::PathBuf;
+//! (binding.rs). Each test analyzes real files, written to its own
+//! temporary directory (never into the repo), so parallel tests and other
+//! worktrees' runs never overwrite each other's files.
 
 use yavs_lib::{UnitKind as LibKind, UnitRecord, UnitRef};
 
@@ -13,17 +10,6 @@ use crate::hir::{
 };
 use crate::loader::UnitKind;
 use crate::{Db, LangRev, Options};
-
-fn dir() -> PathBuf {
-    let home = std::env::home_dir().expect("home directory");
-    let d = home.join(".cache/rsim-sem/unit-tests").join(format!(
-        "{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&d).expect("scratch dir");
-    d
-}
 
 struct Run {
     db: Db,
@@ -74,10 +60,11 @@ impl Run {
 
 /// Analyze `(library, source)` files in order, in one session.
 fn run(test: &str, files: &[(&str, &str)]) -> Run {
+    let tmp = tempfile::tempdir().expect("scratch dir");
     let mut db = Db::new(Options::new(LangRev::Vhdl2008, crate::default_stdlib()));
     let mut records = Vec::new();
     for (k, (lib, src)) in files.iter().enumerate() {
-        let path = dir().join(format!("{test}_{k}.vhd"));
+        let path = tmp.path().join(format!("{test}_{k}.vhd"));
         std::fs::write(&path, src).expect("write source");
         records.push(
             db.analyze_file(lib, &path, LangRev::Vhdl2008)

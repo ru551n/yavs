@@ -12,6 +12,9 @@ yavs-lib = { path = "../yavs-lib" }
 yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true
 

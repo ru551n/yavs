@@ -1444,6 +1444,7 @@ dependencies = [
 name = "yavs-elab"
 version = "0.3.0"
 dependencies = [
+ "tempfile",
  "yavs-diag",
  "yavs-ffi",
  "yavs-interp",
@@ -1535,6 +1536,7 @@ dependencies = [
 name = "yavs-sem"
 version = "0.3.0"
 dependencies = [
+ "tempfile",
  "yavs-diag",
  "yavs-lib",
  "yavs-std",

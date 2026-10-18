@@ -1,25 +1,17 @@
-//! Elaboration tests on real VHDL, analyzed into `~/.cache/rsim-elab/unit-tests`.
-
-use std::path::PathBuf;
+//! Elaboration tests on real VHDL, analyzed from a per-process temporary directory.
 
 use yavs_kernel::{Elem, PortMode, Range};
 use yavs_sem::{Db, LangRev, Options};
 
 use crate::{Case, ElabConfig, Elaborated, ScopeKind, Sel, codes};
 
-fn dir(name: &str) -> PathBuf {
-    let home = std::env::home_dir().expect("home directory");
-    let d = home.join(".cache/rsim-elab/unit-tests").join(name);
-    std::fs::create_dir_all(&d).expect("scratch dir");
-    d
-}
-
 fn analyze(name: &str, src: &str) -> Db {
     analyze_rev(name, src, LangRev::Vhdl2008)
 }
 
-fn analyze_rev(name: &str, src: &str, rev: LangRev) -> Db {
-    let p = dir(name).join("t.vhd");
+fn analyze_rev(_name: &str, src: &str, rev: LangRev) -> Db {
+    let tmp = tempfile::tempdir().expect("scratch dir");
+    let p = tmp.path().join("t.vhd");
     std::fs::write(&p, src).expect("write");
     let mut db = Db::new(Options::new(rev, yavs_sem::default_stdlib()));
     let r = db.analyze_file("work", &p, rev);

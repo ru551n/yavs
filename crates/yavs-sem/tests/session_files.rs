@@ -6,12 +6,8 @@ use yavs_sem::{Db, LangRev, Options, default_stdlib};
 
 #[test]
 fn failed_file_hides_its_units() {
-    let home = std::env::home_dir().expect("home directory");
-    let dir = home.join(format!(
-        ".cache/rsim-sem/session-files-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let tmp = tempfile::tempdir().expect("scratch dir");
+    let dir = tmp.path();
     let file = |name: &str, text: &str| {
         let p = dir.join(name);
         std::fs::write(&p, text).expect("write");
@@ -38,5 +34,4 @@ fn failed_file_hides_its_units() {
         .map(|d| format!("{} {}", d.code, d.message))
         .collect();
     assert_eq!(db.error_count(), errors, "cascades stay silent: {msgs:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

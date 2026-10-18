@@ -838,12 +838,8 @@ fn nvc_cross_check() {
         "D\"A\"",
         "D\"1X\"",
     ];
-    let home = std::env::home_dir().expect("home directory");
-    let dir = std::path::Path::new(&home).join(format!(
-        ".cache/rsim-sem-literal/nvc-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let nvc = |dir: &std::path::Path, src: &str| -> (bool, String) {
         std::fs::write(dir.join("t.vhd"), src).unwrap();
         let o = Command::new("timeout")
@@ -898,5 +894,4 @@ fn nvc_cross_check() {
         );
         assert!(!success, "NVC accepts {lit}: {out}");
     }
-    std::fs::remove_dir_all(&dir).unwrap();
 }

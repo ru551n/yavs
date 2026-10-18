@@ -1,26 +1,17 @@
 //! Unit tests of generic.rs (sem.md section 5): instantiation by cloning,
 //! instance identity, formal mapping, defaults, diagnostics.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use super::*;
 use crate::stat::ConstValue;
 use crate::{LangRev, Options, default_stdlib};
 
-static N: AtomicUsize = AtomicUsize::new(0);
-
-/// Analyze `src` as one file into `work`; scratch under `~/.cache/rsim-sem`.
+/// Analyze `src` as one file into `work`; scratch in a temporary directory.
 fn analyze(rev: LangRev, src: &str) -> Db {
-    let dir = std::env::home_dir()
-        .expect("home directory")
-        .join(".cache/rsim-sem/generic-tests");
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("{}-{n}.vhd", std::process::id()));
+    let tmp = tempfile::tempdir().expect("scratch dir");
+    let path = tmp.path().join("t.vhd");
     std::fs::write(&path, src).expect("write scratch file");
     let mut db = Db::new(Options::new(rev, default_stdlib()));
     let _ = db.analyze_file("work", &path, rev);
-    let _ = std::fs::remove_file(&path);
     db
 }
 

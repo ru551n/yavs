@@ -7,30 +7,28 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
-| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites next (#112) |
+| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 8 of 11 pass completely, the other three fail on #221 and #231, table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
 | M3, M5, M6, M8 to M10 | not started (crate spikes below) |
 
 ### External test runner: its own VHDL suites (#112)
 
-`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at b358882; pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
+`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at e07bb49; pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner (none this time).
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 242 | 1 | 14 | constant bounds #209 (after #203) |
-| com | 0 | 135 | 10 | protected body initialiser #204 (fixed, not re-measured) |
-| data_types | 151 | 31 | 28 | #77 (`new_queue` at elaboration, behind #205), process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files of scalars and scalar arrays done (#79, not re-measured) |
-| dictionary | 8 | 0 | 0 | none (after #203) |
-| logging | 112 | 1 | 0 | #207 |
-| path | 2 | 0 | 0 | none (after #203) |
-| random | 0 | 4 | 0 | #204 (fixed, not re-measured) |
+| check | 256 | 1 | 0 | two calls of a procedure with a `signal out` parameter on different constant elements #231 |
+| com | 46 | 99 | 0 | protected method called from a subprogram nested in a method of the same body #221 |
+| data_types | 210 | 0 | 0 | none |
+| dictionary | 8 | 0 | 0 | none |
+| logging | 113 | 0 | 0 | none |
+| path | 2 | 0 | 0 | none |
+| random | 4 | 0 | 0 | none |
 | record_dict (2019) | 6 | 0 | 0 | none |
-| run | 4 | 1 | 0 | #206 (after #203) |
-| string_ops | 3 | 1 | 11 | #209 |
-| verification_components | 0 | 523 | 4 | #204 (impure calls at elaboration now run against package state, #77, but lowering the packages stops at #204); `tb_axi_stream_protocol_checker` does not analyze (#210) and is left out |
-
-The `check`, `dictionary`, `path` and `run` rows were re-measured with the signal-alias fix of #203.
+| run | 5 | 0 | 0 | none |
+| string_ops | 15 | 0 | 0 | none |
+| verification_components | 47 | 480 | 0 | #221 (all 480; failures behind it are not visible yet); `tb_axi_stream_protocol_checker` is left out |
 
 ## CI and releases
 

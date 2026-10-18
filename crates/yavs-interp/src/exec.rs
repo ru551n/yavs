@@ -195,10 +195,9 @@ fn op_symbol(op: IntOp) -> &'static str {
     }
 }
 
-/// A real as check messages show it: the shorter of plain and exponent form (`3e10`).
+/// A real as check messages show it: `real'image` (`%.15g`, NVC's form: `30000000000`).
 fn real_text(x: f64) -> String {
-    let (p, e) = (format!("{x}"), format!("{x:e}"));
-    if e.len() < p.len() { e } else { p }
+    String::from_utf8_lossy(&yavs_std::image::real_image(x)).into_owned()
 }
 
 /// `<kind> <v> outside of [<subtype> ]range <bounds>[ for <what>]` (NVC's wording).

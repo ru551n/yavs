@@ -325,7 +325,7 @@ pub enum Inst {
         src: Reg,
     },
     /// `FToI` checked against the integer subtype `lo .. hi`; the message shows the real
-    /// (`value 3e10 outside of INTEGER range ...`).
+    /// (`value 30000000000 outside of INTEGER range ...`).
     FToIRange {
         dst: Reg,
         src: Reg,

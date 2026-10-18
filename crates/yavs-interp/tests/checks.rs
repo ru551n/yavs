@@ -95,7 +95,25 @@ fn messages() {
     });
     assert_eq!(
         e,
-        Err("value 3e10 outside of INTEGER range -2147483648 to 2147483647".into())
+        Err("value 30000000000 outside of INTEGER range -2147483648 to 2147483647".into())
+    );
+    let e = eval(FuncKind::Function, |fb| {
+        let w = fb.program().check_msg_for("", Dir::To, "INTEGER");
+        let x = fconst(fb, 1e30);
+        let (lo, hi) = integer(fb);
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::FToIRange {
+            dst,
+            src: x,
+            lo,
+            hi,
+            what: w,
+        });
+        dst
+    });
+    assert_eq!(
+        e,
+        Err("value 1e+30 outside of INTEGER range -2147483648 to 2147483647".into())
     );
     let e = eval(FuncKind::Function, |fb| {
         let w = fb.program().check_msg_for("signal R", Dir::To, "UNIT");

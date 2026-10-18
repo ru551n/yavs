@@ -70,7 +70,7 @@ through lowering and the interpreter (`crates/yavs-lower/tests/corpus.rs`):
    running to its next suspension, so `report/failure_exit` prints a report NVC never reaches.
 4. **NVC-compatible check texts** (difftest is strict for yavs): range checks read
    `value 101 outside of PCT range 0 to 100 for variable P` (subtype name, then the object),
-   real to integer `value 3e10 outside of INTEGER range ...`, integer overflow
+   real to integer `value 30000000000 outside of INTEGER range ...`, integer overflow
    `result of 2147483647 + 1 cannot be represented as INTEGER`, division `division by zero`.
    The overflow text needs the operands and the type in the instruction: a checked `Bin` with a
    result range (or a `CheckKind::Overflow` taking `a`, `b` and the op) would do. Lowering emits
@@ -91,7 +91,7 @@ Answers (yavs-ir/yavs-interp, 2026-10-18):
 4. Done: `ProgramBuilder::check_msg_for(what, dir, subtype)`; `Check`/`Pos` read `value 101
    outside of PCT range 0 to 100 for variable P` (`index ...` for index checks); new
    `Inst::BinRange {op, dst, a, b, lo, hi, what}` gives `result of 2147483647 + 1 cannot be
-   represented as INTEGER`; new `Inst::FToIRange {dst, src, lo, hi, what}` gives `value 3e10
+   represented as INTEGER`; new `Inst::FToIRange {dst, src, lo, hi, what}` gives `value 30000000000
    outside of INTEGER range ...`; every integer division by zero reads `division by zero`.
 5. Done: `Inst::FCheck {v, lo, hi, what}` on F64 registers.
 6. Accepted on this side: `yavs.implicit.to_hstring.<type>` and `.to_ostring.<type>` are valid

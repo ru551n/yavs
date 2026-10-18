@@ -979,26 +979,17 @@ impl Db {
                 }
                 _ => None,
             };
-            let id = self.build_call(scope, best[0].0, args, n.span, method_of);
-            if self.is_poison_expr(id) {
-                return Err(crate::Reported);
-            }
-            // The call expression only carried the arguments; it stays a valid,
-            // unreferenced `Call` (the validator walks the whole arena).
-            match &self.exprs[id].kind {
-                ExprKind::Call {
-                    callee,
-                    args,
-                    method_of,
-                    ..
-                } => Ok(crate::hir::Call {
-                    callee: *callee,
-                    args: args.clone(),
-                    method_of: *method_of,
-                    span: n.span,
-                }),
-                _ => Err(crate::Reported),
-            }
+            // No call expression: a procedure call is a statement (10.7), so nothing is
+            // left unreferenced in the arena.
+            let (callee, args, _) = self
+                .call_args(scope, best[0].0, args, n.span)
+                .ok_or(crate::Reported)?;
+            Ok(crate::hir::Call {
+                callee,
+                args,
+                method_of,
+                span: n.span,
+            })
         })();
         (self.memo, self.name_memo) = saved;
         r

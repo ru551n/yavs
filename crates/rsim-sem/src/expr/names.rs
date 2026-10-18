@@ -988,17 +988,48 @@ impl Db {
         span: Span,
         method_of: Option<ExprId>,
     ) -> ExprId {
-        let e = self.entity(d);
-        let Some(s) = self.decls[e].kind.subprogram() else {
+        let Some((e, hargs, stat)) = self.call_args(scope, d, args, span) else {
             return self.poison_expr();
         };
-        let formals: Vec<(Symbol, SubtypeId)> =
-            s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
+        let s = self.decls[e]
+            .kind
+            .subprogram()
+            .expect("call_args checked the callee");
         let ret = s.ret.unwrap_or(self.poison.subtype);
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
-        let Some(map) = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args) else {
-            return self.poison_expr();
-        };
+        let id = self.add_expr(Expr {
+            kind: ExprKind::Call {
+                callee: e,
+                args: hargs,
+                method_of,
+                implicit_cond: false,
+            },
+            subtype: ret,
+            span,
+            stat,
+            value: None,
+        });
+        if implicit && stat == Staticness::Locally {
+            self.fold_into(id);
+        }
+        id
+    }
+
+    /// The callee entity and its actuals in formal order, with their combined staticness;
+    /// `None` when already reported. Procedure calls use this directly (no call expression).
+    pub(crate) fn call_args(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        args: &[ast::AssocElem],
+        span: Span,
+    ) -> Option<(DeclId, Box<[Arg]>, Staticness)> {
+        let e = self.entity(d);
+        let s = self.decls[e].kind.subprogram()?;
+        let formals: Vec<(Symbol, SubtypeId)> =
+            s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
+        let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
+        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)?;
         let mut hargs = Vec::with_capacity(formals.len());
         let mut stat = if implicit {
             Staticness::Locally
@@ -1017,7 +1048,7 @@ impl Db {
                     other => {
                         let sp = actual_span(other).unwrap_or(span);
                         self.unsupported(sp, "this kind of actual", "S2");
-                        return self.poison_expr();
+                        return None;
                     }
                 },
                 None => Actual::Default,
@@ -1027,22 +1058,7 @@ impl Db {
                 actual,
             });
         }
-        let id = self.add_expr(Expr {
-            kind: ExprKind::Call {
-                callee: e,
-                args: hargs.into(),
-                method_of,
-                implicit_cond: false,
-            },
-            subtype: ret,
-            span,
-            stat,
-            value: None,
-        });
-        if implicit && stat == Staticness::Locally {
-            self.fold_into(id);
-        }
-        id
+        Some((e, hargs.into(), stat))
     }
 
     fn build_conversion(

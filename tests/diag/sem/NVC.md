@@ -279,13 +279,13 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `generic_type_opaque_arithmetic` | E1301 @11 | rejects @11 | rejects @11 |
 | `generic_used_ok` | none | accepts | accepts |
 | `instantiate_non_package` | E1501 @5 | rejects @5 | rejects @5 |
-| `missing_generic_actual` | E1502 @8 | rejects @8 | rejects @8 |
+| `missing_generic_actual` | E1502 @9, E1100 @9 | rejects @9 | rejects @9 |
 | `no_generic_map_missing` | E1502 @8 | rejects @8 | rejects @8 |
 | `not_a_generic_unit` | E1501 @7 | rejects @7 | rejects @7 |
 | `package_generic_uninstantiated_use` | E1505 @9 | rejects @9 | rejects @9 |
 | `subprogram_actual_profile_mismatch` | E1300 @10 | rejects @10 | rejects @10 |
 | `subprogram_default_none_visible` | E1504 @7 | rejects @7 | rejects @7 |
-| `type_actual_missing` | E1502 @8 | rejects @8 | rejects @8 |
+| `type_actual_missing` | E1502 @9, E1100 @9 | rejects @9 | rejects @9 |
 | `type_actual_not_a_type` | E1201 @7 | rejects @7 | rejects @7 |
 | `type_actual_not_access` | E1503 @7 | rejects @7 | rejects @5,6 |
 | `type_actual_not_array` | E1503 @7 | rejects @7 | rejects @5,6 |

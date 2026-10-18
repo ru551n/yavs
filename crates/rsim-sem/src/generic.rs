@@ -549,7 +549,7 @@ impl Db {
         let formals = formals.clone();
         let what = format!("package `{}`", self.decls[g].name);
         let assocs = p.generic_map.as_deref().unwrap_or(&[]);
-        let actuals = self.associate(&what, &formals, assocs)?;
+        let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
         let mut r = Remap::new(gscope, inst_scope);
         let mut map = GenericMap::default();
         let overflow = self.overflow.len();
@@ -568,7 +568,7 @@ impl Db {
         }
         self.overflow.truncate(overflow);
         bound?;
-        if r.failed {
+        if r.failed || !assoc_ok {
             return Err(Reported);
         }
         let mangled = Symbol::intern(&crate::mangle::region(self, inst_scope));
@@ -669,7 +669,7 @@ impl Db {
         let ret = s.ret;
         let what = format!("subprogram `{}`", self.decls[g].name);
         let assocs = x.generic_map.as_deref().unwrap_or(&[]);
-        let actuals = self.associate(&what, &formals, assocs)?;
+        let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
         let dname = crate::alias::designator(&x.designator);
         let d = self.new_decl(scope, dname, DeclKind::Error, x.span);
         let new_scope = self.add_scope(ScopeKind::Subprogram, Some(scope), Some(d));
@@ -684,6 +684,9 @@ impl Db {
             self.fill_scope(&mut r, gscope, new_scope);
         }
         bound?;
+        if !assoc_ok {
+            return Err(Reported);
+        }
         let params: Box<[Param]> = params
             .into_iter()
             .map(|(p, decl)| Param {
@@ -723,13 +726,15 @@ impl Db {
     }
 
     /// Match a generic map against the formals (6.5.7.2): positional first,
-    /// then named; `E1310` twice, `E1100` unknown. One entry per formal.
+    /// then named; `E1310` twice, `E1100` unknown. One entry per formal; the
+    /// flag is false after an error (binding still runs, so a missing actual is
+    /// reported too).
     fn associate<'a>(
         &mut self,
         what: &str,
         formals: &[DeclId],
         assocs: &'a [ast::AssocElem],
-    ) -> Result<Vec<Option<&'a ast::AssocElem>>, Reported> {
+    ) -> (Vec<Option<&'a ast::AssocElem>>, bool) {
         let mut out: Vec<Option<&ast::AssocElem>> = vec![None; formals.len()];
         let mut failed = false;
         let mut pos = 0;
@@ -804,7 +809,7 @@ impl Db {
             }
             out[i] = Some(a);
         }
-        if failed { Err(Reported) } else { Ok(out) }
+        (out, !failed)
     }
 
     /// Bind each formal to its actual (or default), in order, seeding `r` (5.2).

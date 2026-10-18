@@ -1071,8 +1071,14 @@ impl Db {
                 return Err(self.unsupported(o.span, "mode views outside port clauses", "S7"));
             }
         };
+        // 2019 ports of class variable (6.5.2, LCS-2016-047): checked below to be
+        // of a protected type with mode inout.
+        let var_port = role == ObjRole::Port
+            && o.class == Some(ast::InterfaceClass::Variable)
+            && self.file_rev() >= LangRev::Vhdl2019;
         let (class, want) = match role {
             ObjRole::Generic => (ObjClass::Constant, Some(ast::InterfaceClass::Constant)),
+            _ if var_port => (ObjClass::Variable, Some(ast::InterfaceClass::Variable)),
             _ => (ObjClass::Signal, Some(ast::InterfaceClass::Signal)),
         };
         let what = if role == ObjRole::Generic {
@@ -1097,7 +1103,18 @@ impl Db {
             Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(scope, si)?,
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
-        if role == ObjRole::Port {
+        if var_port {
+            let t = self.base(subtype);
+            if !matches!(self.types[t].kind, crate::types::TypeKind::Protected { .. } | crate::types::TypeKind::Error) || mode != Mode::Inout {
+                return Err(self.error(
+                    yavs_diag::Diagnostic::error(
+                        crate::diag::CLASS_MISUSE,
+                        "a variable port must be of a protected type and have mode `inout`",
+                    )
+                    .with_primary(o.span, "variable port"),
+                ));
+            }
+        } else if role == ObjRole::Port {
             for n in &o.names {
                 self.check_not_protected("port", subtype, n.span)?;
             }

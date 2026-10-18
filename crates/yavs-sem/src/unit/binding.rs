@@ -781,8 +781,8 @@ impl Db {
         let DeclKind::Object(o) = &self.decls[f].kind else {
             return Err(self.unsupported(fspan, "generic packages of design entities", "S4"));
         };
-        let (st, role, mode, has_default) =
-            (o.subtype, o.role.clone(), o.mode, o.default.is_some());
+        let (st, role, mode, has_default, class) =
+            (o.subtype, o.role.clone(), o.mode, o.default.is_some(), o.class);
         // A port of a generic type of this instance has the type's actual.
         // ponytail: only ports whose type is the generic type itself; composites built from
         // it need the instance substitution of generic.rs.
@@ -857,6 +857,22 @@ impl Db {
             return Err(Reported);
         }
         if role != ObjRole::Port {
+            return Ok(Actual::Expr(id));
+        }
+        // A 2019 variable port takes a shared variable or another variable port (6.5.7.1).
+        if class == ObjClass::Variable {
+            let ok = matches!(self.exprs[id].kind, ExprKind::Obj(d)
+                if matches!(&self.decls[d].kind, DeclKind::Object(o)
+                    if o.class == ObjClass::SharedVariable || (o.class == ObjClass::Variable && o.role == ObjRole::Port)));
+            if !ok {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::CLASS_MISUSE,
+                        "the actual of a variable port must be a shared variable or a variable port",
+                    )
+                    .with_primary(self.exprs[id].span, "not a shared variable"),
+                ));
+            }
             return Ok(Actual::Expr(id));
         }
         // Port actuals (6.5.6.3, 6.5.7.1): a conversion of a signal, or for

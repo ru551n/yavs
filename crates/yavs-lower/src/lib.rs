@@ -60,6 +60,18 @@ pub struct UnitIr {
     pub signals: Vec<SignalIr>,
     /// Processes in elaboration order, concurrent statements included.
     pub processes: Vec<ProcessIr>,
+    /// `'path_name` and `'instance_name` strings the elaborator writes with
+    /// [`UnitIr::write_string`] (LRM 16.2.5, lower case).
+    pub names: Vec<InstName>,
+}
+
+/// A `'path_name` (`instance: false`) or `'instance_name` of named entity `decl`, as seen from
+/// the region whose instance data is being built; an array slot at `off`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstName {
+    pub decl: DeclId,
+    pub instance: bool,
+    pub off: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -96,6 +108,29 @@ pub struct InstValue {
 }
 
 impl UnitIr {
+    /// Write string `s` (a STRING `1 to len`) into the array slot at `off` of `data`.
+    pub fn write_string(off: u32, s: &str, data: &mut Vec<u8>) -> Result<(), String> {
+        let off = off as usize;
+        if data.len() < off + 16 {
+            return Err("instance data too short for a name".into());
+        }
+        let mut put = |bytes: &[u8]| {
+            let at = data.len().next_multiple_of(8);
+            data.resize(at, 0);
+            data.extend_from_slice(bytes);
+            at as u64
+        };
+        let e = put(s.as_bytes());
+        let dope: Vec<u8> = [1i64, s.len() as i64, 0]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        let d = put(&dope);
+        data[off..off + 8].copy_from_slice(&e.to_le_bytes());
+        data[off + 8..off + 16].copy_from_slice(&d.to_le_bytes());
+        Ok(())
+    }
+
     /// Write value `v` of `iv` into instance data `data` (at least `inst_size` bytes): a
     /// scalar into its cell, an array appended (elements in the IR layout, bit-planes for
     /// logic arrays, then the descriptor) with the offsets stored at `iv.off`.
@@ -193,9 +228,20 @@ pub(crate) struct Cx {
     pub objs: HashMap<DeclId, Obj>,
     /// `std.reflection` entries per subtype (`reflect.rs`).
     pub refl: HashMap<yavs_sem::SubtypeId, yavs_ir::ReflId>,
+    /// Instance data of the architecture being lowered: bytes allocated so far, and the
+    /// `'path_name`/`'instance_name` slots its code reads.
+    pub inst_size: u32,
+    pub names: Vec<InstName>,
 }
 
 impl Cx {
+    /// `size` bytes of instance data of the architecture being lowered (8-byte aligned).
+    pub fn inst_alloc(&mut self, size: u32) -> u32 {
+        let off = self.inst_size.next_multiple_of(8);
+        self.inst_size = off + size;
+        off
+    }
+
     pub fn error(&mut self, code: &'static str, span: Span, msg: impl Into<String>) -> Failed {
         self.diags
             .push(Diagnostic::error(code, msg.into()).with_primary(span, ""));
@@ -251,6 +297,8 @@ impl<'a> Lowerer<'a> {
                 scope_func: HashMap::new(),
                 objs: HashMap::new(),
                 refl: HashMap::new(),
+                inst_size: 0,
+                names: Vec::new(),
             },
             units: Vec::new(),
         }

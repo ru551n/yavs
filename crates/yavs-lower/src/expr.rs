@@ -2079,9 +2079,32 @@ impl Fx<'_, '_> {
                 });
                 self.konst(&v, st, span)
             }
-            AttrPrefix::Entity(_) => Err(self
-                .cx
-                .unsupported(span, "'path_name and 'instance_name (M2 slice 3)")),
+            AttrPrefix::Entity(d) if matches!(attr, PathName | InstanceName) => {
+                let instance = attr == InstanceName;
+                let off = match self
+                    .cx
+                    .names
+                    .iter()
+                    .find(|n| n.decl == d && n.instance == instance)
+                {
+                    Some(n) => n.off,
+                    None => {
+                        let off = self.cx.inst_alloc(16);
+                        self.cx.names.push(crate::InstName {
+                            decl: d,
+                            instance,
+                            off,
+                        });
+                        off
+                    }
+                };
+                let (data, dope) = self.inst_array(off);
+                Ok(V::A(data, dope))
+            }
+            AttrPrefix::Entity(_) => Err(self.cx.unsupported(
+                span,
+                &format!("attribute '{} of a named entity", attr.name()),
+            )),
         }
     }
 

@@ -760,7 +760,10 @@ pub(crate) fn architecture(
         consts: Vec::new(),
         signals: Vec::new(),
         processes: Vec::new(),
+        names: Vec::new(),
     };
+    cx.inst_size = 0;
+    cx.names.clear();
     let mut ok = true;
     let scopes = [e.scope, u.scope];
     let decls = iface.iter().chain(
@@ -773,6 +776,12 @@ pub(crate) fn architecture(
         ok &= inst_object(db, pb, cx, &mut ir, d).is_ok();
     }
     ok &= region(db, pb, cx, &mut ir, stmts, None).is_ok();
+    // Subprograms declared in the architecture use its instance data too ('path_name).
+    while let Some((d, depth)) = cx.queue.pop() {
+        ok &= subprogram(db, pb, cx, d, depth).is_ok();
+    }
+    ir.inst_size = cx.inst_size;
+    ir.names = std::mem::take(&mut cx.names);
     if ok { Ok(ir) } else { Err(Failed) }
 }
 
@@ -943,8 +952,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 return Ok(());
             }
             let t = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
-            let off = ir.inst_size.next_multiple_of(8);
-            ir.inst_size = off + if array { 16 } else { 8 };
+            let off = cx.inst_alloc(if array { 16 } else { 8 });
             ir.values.push(InstValue {
                 decl: d,
                 name: name.clone(),

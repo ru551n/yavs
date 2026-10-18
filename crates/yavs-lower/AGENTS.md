@@ -44,6 +44,10 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | Coverage counters only with `LowerOptions::coverage` | Default code has no counters | DESIGN.md "Shape", rule 10 |
 | Unlowered constructs are `E2001` naming the construct; broken HIR invariants `E9999`; any error means no program | Error motto | crate docs, DESIGN.md |
 | `force` default mode `out` for out/inout/buffer ports, `in` otherwise | LRM 10.5.2.1 | DESIGN.md "Composites" |
+| Instance data per region (instance, block, generate iteration); values written by the elaborator (`write_value`, `write_string`), thunks only for unfoldable scalar constants | Generate parameters, generics per instance, shared code | `docs/decisions.md` "Lowering" |
+| One driver slot per `ProcessInfo::drivers` entry, in order | yavs-elab maps slots to LSP ranges | `docs/decisions.md` "Lowering" |
+| Guarded blocks: GUARD's default is the condition; a `_guard` process drives GUARD | LRM 11.2, 11.6 | `docs/decisions.md` "Lowering" |
+| Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).

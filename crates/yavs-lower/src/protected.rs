@@ -290,8 +290,7 @@ pub(crate) fn shared_var(
     let name = decl.name.to_string();
     let span = decl.span;
     let init = crate::func::thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))?;
-    let off = ir.inst_size.next_multiple_of(8);
-    ir.inst_size = off + 8;
+    let off = cx.inst_alloc(8);
     cx.objs.insert(
         d,
         Obj::Scalar {

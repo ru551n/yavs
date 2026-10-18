@@ -492,3 +492,7 @@ which tools/difftest parses.
   disconnection specifications reach the HIR).
 - **Matching case** (`case?`, `select?`) compares with `?=` on BIT and STD_ULOGIC elements:
   '-' matches anything, metavalues match nothing, L/H match 0/1 (LRM 9.2.3).
+- **`'path_name`/`'instance_name`** are strings in instance data (`UnitIr::names`), written by
+  yavs-elab per region: a design unit names its instance, a signal or constant the region that
+  declares it, a process label its process; other objects (variables) are named from the
+  process's region (ponytail: the process segment is missing for process variables).

@@ -19,6 +19,8 @@ pub struct Ir {
     pub units: HashMap<UnitId, UnitIr>,
     /// The function of each user resolution function of a signal.
     pub resolvers: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
+    /// `'path_name`/`'instance_name` strings per (region, named entity, instance?).
+    pub names: HashMap<(ScopeId, yavs_sem::DeclId, bool), String>,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -94,12 +96,75 @@ impl Elaborated {
         for (a, i) in archs.into_iter().zip(idx) {
             units.insert(a, lowered.units[i].clone());
         }
+        let mut names = HashMap::new();
+        for p in &self.procs {
+            let i = self.instance_of(p.scope);
+            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+                continue;
+            };
+            let region = self.hier.scope(p.scope).parent.unwrap_or(i);
+            for n in units
+                .get(&arch)
+                .map(|u: &UnitIr| u.names.as_slice())
+                .unwrap_or(&[])
+            {
+                let text = self.name_of(db, region, n.decl, n.instance);
+                names.insert((region, n.decl, n.instance), text);
+            }
+        }
         self.ir = Some(Ir {
             program: Arc::new(lowered.program),
             units,
             resolvers,
+            names,
         });
         Ok(())
+    }
+
+    /// `'path_name` (or `'instance_name`) of named entity `d` seen from `region` (LRM 16.2.5,
+    /// lower case): a design unit names its instance, an object the region declaring it, a
+    /// process label its process.
+    fn name_of(&self, db: &Db, region: ScopeId, d: yavs_sem::DeclId, instance: bool) -> String {
+        use yavs_sem::decl::DeclKind;
+        let text = |s: ScopeId| {
+            if instance {
+                self.hier.instance_name(s, db, crate::Case::Lrm)
+            } else {
+                self.hier.path_name(s, crate::Case::Lrm)
+            }
+        };
+        let chain: Vec<ScopeId> =
+            std::iter::successors(Some(region), |&s| self.hier.scope(s).parent).collect();
+        match &db.decls[d].kind {
+            DeclKind::Unit(_) => {
+                let i = self.instance_of(region);
+                text(i)
+            }
+            DeclKind::Label(stmt) => {
+                let p = chain.iter().flat_map(|&s| self.hier.scope(s).children.iter()).find(|&&c| {
+                    matches!(self.hier.scope(c).kind, ScopeKind::Process { stmt: x } if x == *stmt)
+                });
+                match p {
+                    Some(&p) => text(p),
+                    None => format!(
+                        "{}{}",
+                        text(region),
+                        db.decls[d].name.to_string().to_ascii_lowercase()
+                    ),
+                }
+            }
+            _ => {
+                let declared = chain.iter().copied().find(|&s| {
+                    self.sigs.contains_key(&(s, d))
+                        || self
+                            .model_vals
+                            .get(s.index())
+                            .is_some_and(|m| m.contains_key(&d))
+                });
+                let name = db.decls[d].name.to_string().to_ascii_lowercase();
+                format!("{}{name}", text(declared.unwrap_or(region)))
+            }
+        }
     }
 
     /// The kernel model with interpreter processes (after [`Elaborated::lower`]). Can be
@@ -215,6 +280,14 @@ impl Elaborated {
             // ponytail: a value without an elaborated value here belongs to a nested region
             // (a generate parameter, say) that processes of this region never read; values of
             // this region that elaboration could not fold are E2106 in elaboration already.
+        }
+        if let Some(ir) = &self.ir {
+            for n in &u.names {
+                if let Some(t) = ir.names.get(&(i, n.decl, n.instance)) {
+                    UnitIr::write_string(n.off, t, &mut inst.data)
+                        .map_err(|m| sim_err(format!("instance data: {m}")))?;
+                }
+            }
         }
         for c in u.consts.iter().filter(|c| !known.contains(&c.decl)) {
             // With the shared state: a shared protected variable's thunk creates its object.

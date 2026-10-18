@@ -43,3 +43,9 @@ created the JIT.
 Codegen at O1/O2 grows faster than linearly in the size of one function (10x the instructions
 costs 25x to 30x the time); O0 stays close to linear. Proposed threshold: O2 up to 40k
 instructions per function, larger units stay interpreted (docs/decisions.md).
+## lib (`crates/rsim-lib`)
+
+Done: library directories (`rsim-lib.toml` manifest + `_RSIM_LIB` lock, rule 14), `NAME:PATH`
+mapping, atomic manifest updates under an exclusive lock, shared-lock reads that never write,
+on-demand closure query (unknown library/unit with suggestion, cycles, stale hashes), multi-process
+concurrency test. The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file.

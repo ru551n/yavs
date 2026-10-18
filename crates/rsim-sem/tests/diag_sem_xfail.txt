@@ -85,7 +85,6 @@ stat/static_index_out_of_range_process.vhd
 stat/static_slice_out_of_range.vhd
 typ/access_to_unconstrained_new.vhd
 typ/constant_unconstrained_needs_value.vhd
-typ/incomplete_used_as_object.vhd
 use/context_not_a_context.vhd
 use/overloaded_function_clash.vhd
 use/prefix_is_type.vhd

@@ -11,6 +11,7 @@ Layout: `<area>/<name>.vhd`. Areas follow sem.md:
 | `use` | use clauses, library/context clauses, potential visibility |
 | `unit` | design units, binding, components, configurations |
 | `typ` | types, subtypes, constraints, incomplete/file/resolution |
+| `acc` | access types, allocators, dereference |
 | `stat` | static evaluation, ranges, overflow, static length and index checks |
 | `ovl` | overload resolution, ambiguity, associations, operators |
 | `agg` | aggregates, choices, case coverage |

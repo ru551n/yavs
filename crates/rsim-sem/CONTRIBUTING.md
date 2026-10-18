@@ -222,6 +222,19 @@ From reflect (reflect.rs):
 - **M3 (runtime)**: open question for the user: the unit of `PHYSICAL_VALUE_MIRROR.value`.
   record_dict_pkg multiplies it by `std.env.resolution_limit` (Riviera-PRO); NVC returns fs.
 
+From alloc (alloc.rs):
+
+- **expr/resolve.rs** `proc_call` replaces the call expression with `ExprKind::Error` after taking
+  its arguments; the debug HIR validation reports that as an internal error for every procedure
+  call statement (so `deallocate(p)` cannot have a negative-suite test yet).
+- **expr/names.rs / resolve.rs**: protected method calls are still `E9999` (procedures) or
+  `E1301` (functions); VUnit's `*_ptr_pkg` bodies now stop there. For an access-to-protected
+  prefix (`p.m`, 2019) use `Db::with_designated` and `Db::deref_to` as selected names do.
+- **U-2**: NVC, GHDL and Questa 2026.1 all reject incomplete types in protected method profiles in
+  user code (`tests/diag/sem/NVC.md`); consider limiting the ruling to `std`.
+- ponytail: allocators do not filter overloads by designated type (`f(new integer)` with `f`
+  overloaded on two access types is `E1302`), as `null` is.
+
 From cli (`rsim analyze`):
 
 - **loader.rs** `parse_into_cache` hardcodes `Encoding::Auto` and drops the diagnostic of

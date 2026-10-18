@@ -56,6 +56,7 @@ LCS text was read.
 | L16 | `buffer` under `'CONVERSE` | 6.5.2 / 16.2 (2019) | unclear (tools disagree), **permissive** | `buffer` stays `buffer`: both read and drive allowed (U-4, decided) |
 | L17 | NVC `--relaxed` list (R3) | n/a | **corrected** | NVC does not relax case choices; drop R3 |
 | L18 | Q9: implicit `=`/`/=` on a 2008 interface type `type T` | 6.5.3 | **corrected**; which `=` is used differs between tools | `=` and `/=` are implicitly declared; they map to the actual's predefined operators, warning `W1506` when NVC would pick a different visible user `"="` (U-6, decided) |
+| L19 | access types designating file and protected types | 5.4.1 | 2008 clear; 2019 tools disagree, **permissive** | 2008: `E1221` (NVC, GHDL and Questa reject both); 2019: accepted (NVC and GHDL accept both, Questa 2026.1 rejects both) |
 | P1 | parser: "every `end <keyword>` optional in 2019" (`decisions.md`) | 6.8 (2019), LCS-2016-055a | **corrected**, clear | only `end component` loses its keyword; every other ending keeps the 2008 rule (NVC, GHDL, Questa agree); implemented |
 | P2 | parser: positions of 2019 conditional expressions (`decisions.md`) | 9.1, 6.4.2, 6.5.7.1, 10.5.2, 10.6.2, 10.14 (2019) | **corrected**; interface defaults unclear, **permissive** | add the parenthesized primary; interface defaults accept the bare and the parenthesized form (U-5, decided); implemented |
 

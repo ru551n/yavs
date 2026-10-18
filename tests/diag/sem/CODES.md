@@ -54,6 +54,7 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 | E1213 | bad record constraint | 8.1 |
 | E1214 | index constraint arity | 8.1 |
 | E1220 | incomplete type not completed or misused | 8.1 |
+| E1221 | 2008 access to a file or protected type | 8.1 |
 | E1222 | illegal file element type | 8.1 |
 | E1225 | bad resolution function | 8.1 |
 | E1230 | missing body | 8.1 |

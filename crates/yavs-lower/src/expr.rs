@@ -303,6 +303,10 @@ impl Fx<'_, '_> {
         let decl = &db.decls[d];
         let obj = self.cx.objs.get(&d).copied();
         match obj {
+            Some(Obj::RecSignal) => {
+                let st = ty::obj_subtype(db, d).ok_or(Failed)?;
+                self.read_record_signal(d, &[], st, span)
+            }
             Some(Obj::Scalar { space, off, w }) => {
                 let rt = self.obj_rt(d);
                 let a = self.addr(space, off);
@@ -490,7 +494,10 @@ impl Fx<'_, '_> {
             .iter()
             .position(|l| l.root == yavs_sem::hir::ObjRoot::Decl(d))
         {
-            Some(k) => Ok(self.int(k as i64)),
+            Some(k) => {
+                let slot = self.driver_base.get(k).copied().unwrap_or(k as u32);
+                Ok(self.int(i64::from(slot)))
+            }
             None => Err(self
                 .cx
                 .ice(span, "out signal actual without a driver of the process")),
@@ -573,6 +580,16 @@ impl Fx<'_, '_> {
         let db = self.db;
         let x = &db.exprs[e];
         let span = x.span;
+        if let Some((d, path)) = self.field_path(e) {
+            let leaves = self.leaves_under(d, &path);
+            let [leaf] = leaves.as_slice() else {
+                return Err(self
+                    .cx
+                    .unsupported(span, "record parts of record signals here"));
+            };
+            let (r, dope) = self.leaf_sig(leaf, span)?;
+            return Ok((d, r, dope));
+        }
         let (prefix, sel) = match &x.kind {
             ExprKind::Obj(d) => {
                 let dope = match self.cx.objs.get(d) {
@@ -642,6 +659,120 @@ impl Fx<'_, '_> {
                 Ok((self.sub_sig(sig, off, n), Some(nd)))
             }
         }
+    }
+
+    /// `(signal, field path)` when `e` names a record signal or a field of one.
+    pub fn field_path(&self, e: ExprId) -> Option<(DeclId, Vec<u32>)> {
+        let mut path = Vec::new();
+        let mut e = e;
+        loop {
+            match &self.db.exprs[e].kind {
+                ExprKind::Field { prefix, elem } => {
+                    path.insert(0, *elem);
+                    e = *prefix;
+                }
+                ExprKind::Obj(d) if matches!(self.cx.objs.get(d), Some(Obj::RecSignal)) => {
+                    return Some((*d, path));
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// The leaves of record signal `d` under field path `path`, in leaf order.
+    pub fn leaves_under(&self, d: DeclId, path: &[u32]) -> Vec<crate::RecLeaf> {
+        self.cx
+            .rec_leaves
+            .get(&d)
+            .map(|ls| {
+                ls.iter()
+                    .filter(|l| l.path.starts_with(path))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A reference to all of leaf `l` of a record signal, and its descriptor for an array.
+    pub fn leaf_sig(&mut self, l: &crate::RecLeaf, span: Span) -> R<(Reg, Option<Reg>)> {
+        if !ty::is_array(self.db, self.db.base(l.st)) {
+            return Ok((self.sigval(l.sig), None));
+        }
+        let Some(dope) = self.subtype_dope(l.st, span)? else {
+            return Err(self
+                .cx
+                .unsupported(span, "unconstrained array fields of record signals"));
+        };
+        let tid = self.ty(self.db.base(l.st), span)?;
+        let (_, count) = self.layout(tid, dope);
+        let z = self.int(0);
+        Ok((self.sigval_at(l.sig, z, count), Some(dope)))
+    }
+
+    /// Read the part of record signal `d` at field path `path` (of subtype `st`) into a new
+    /// record value, leaf by leaf.
+    pub fn read_record_signal(
+        &mut self,
+        d: DeclId,
+        path: &[u32],
+        st: SubtypeId,
+        span: Span,
+    ) -> R<V> {
+        let t = self.db.base(st);
+        let tid = self.ty(t, span)?;
+        let Some(desc) = self.desc_of(st, None, span)? else {
+            return Err(self.cx.unsupported(span, "unconstrained record signals"));
+        };
+        let size = self.size_of(tid, desc);
+        let buf = self.alloc(size);
+        for l in self.leaves_under(d, path) {
+            let (addr, _) = self.leaf_addr(t, tid, buf, desc, &l.path[path.len()..], span)?;
+            let (s, dope) = self.leaf_sig(&l, span)?;
+            if dope.is_some() {
+                self.emit(Inst::SigRead { dst: addr, sig: s });
+                continue;
+            }
+            let ltid = self.ty(self.db.base(l.st), span)?;
+            let (_, rt, w) = self.scalar(l.st, span)?;
+            let raw = self.reg(RegTy::I64);
+            self.emit(Inst::SigReadScalar { dst: raw, sig: s });
+            let bias = self.code_bias(ltid);
+            let v = self.dec(raw, bias);
+            let v = if rt == RegTy::F64 {
+                let f = self.reg(RegTy::F64);
+                self.emit(Inst::Move { dst: f, src: v });
+                f
+            } else {
+                v
+            };
+            self.store(addr, v, w);
+        }
+        Ok(V::A(buf, desc))
+    }
+
+    /// Address (and descriptor) of the field at `path` inside the record of type `t` at
+    /// `(base, desc)`.
+    pub fn leaf_addr(
+        &mut self,
+        t: TypeId,
+        tid: TyId,
+        base: Reg,
+        desc: Reg,
+        path: &[u32],
+        span: Span,
+    ) -> R<(Reg, Reg)> {
+        let (mut t, mut tid, mut base, mut desc) = (t, tid, base, desc);
+        for &n in path {
+            let (a, d) = self.field_addr(tid, base, desc, n, span)?;
+            let TypeKind::Record { elems } = &self.db.types[t].kind else {
+                return Err(self.cx.ice(span, "field path through a non-record"));
+            };
+            t = self.db.base(elems[n as usize].subtype);
+            tid = self.ty(t, span)?;
+            base = a;
+            desc = d;
+        }
+        Ok((base, desc))
     }
 
     /// Elements `offset .. offset + len` (kernel order) of instance signal `Ok(sig)`, or of the
@@ -2232,7 +2363,7 @@ impl Fx<'_, '_> {
                         .cx
                         .unsupported(span, "'driving of signal parameters and sub-elements"));
                 };
-                let slot = slot as u32;
+                let slot = self.driver_base.get(slot).copied().unwrap_or(slot as u32);
                 if attr == Driving {
                     let dst = self.reg(RegTy::I64);
                     self.emit(Inst::Driving { dst, driver: slot });

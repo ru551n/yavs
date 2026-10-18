@@ -243,3 +243,28 @@ pub(crate) fn obj_subtype(db: &Db, d: yavs_sem::DeclId) -> Option<SubtypeId> {
         _ => None,
     }
 }
+
+pub(crate) fn is_record(db: &Db, t: TypeId) -> bool {
+    matches!(db.types[t].kind, TypeKind::Record { .. })
+}
+
+/// The leaves of a signal of subtype `st` (docs/decisions.md "Elaboration": one kernel signal
+/// per record field, recursively): (field path, leaf subtype). `None` for arrays of records
+/// (a struct of arrays in the kernel, not lowered yet).
+pub(crate) fn leaves(db: &Db, st: SubtypeId) -> Option<Vec<(Vec<u32>, SubtypeId)>> {
+    let t = db.base(st);
+    match &db.types[t].kind {
+        TypeKind::Record { elems } => {
+            let mut out = Vec::new();
+            for (i, e) in elems.iter().enumerate() {
+                for (mut p, s) in leaves(db, e.subtype)? {
+                    p.insert(0, i as u32);
+                    out.push((p, s));
+                }
+            }
+            Some(out)
+        }
+        TypeKind::Array { elem, .. } if is_record(db, db.base(*elem)) => None,
+        _ => Some(vec![(Vec::new(), st)]),
+    }
+}

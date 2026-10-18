@@ -605,3 +605,8 @@ which tools/difftest parses.
   object and of package objects, and allocators executed inside a method of a protected object
   in the shared heap (or anything it calls), allocate in the shared heap, so shared state never
   points into a private heap that dies with its process or with an elaboration call.
+- **Record signals** have one `SignalIr` per leaf (`SignalIr::path`, field indices), mapped by
+  yavs-elab to the kernel leaf with that path. A longest static prefix covers one driver slot
+  per leaf below its fields, so `ProcessIr::drivers` is the flattening of `ProcInst::lsps`.
+  Reading a record signal reads it leaf by leaf into a record value; driving it drives each
+  leaf with its field.

@@ -143,6 +143,8 @@ pub(crate) struct Fx<'a, 'b> {
     /// The result subtype of a function.
     pub ret: Option<SubtypeId>,
     pub name: String,
+    /// First driver slot of each `drivers` entry (a record LSP covers several).
+    pub driver_base: Vec<u32>,
     /// Driver slots of a process: the signal declaration each slot drives.
     pub drivers: Vec<hir::Lsp>,
     /// The IR statement being lowered.
@@ -179,6 +181,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             ret: None,
             name,
             drivers: Vec::new(),
+            driver_base: Vec::new(),
             cur: None,
             prot_self: None,
             guard: None,
@@ -963,6 +966,29 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
     }
     let array = ty::is_array(db, db.base(o.subtype));
     match o.class {
+        ObjClass::Signal if ty::is_record(db, db.base(o.subtype)) => {
+            // One kernel signal per leaf (field), in leaf order.
+            let Some(leaves) = ty::leaves(db, o.subtype) else {
+                return Err(cx.unsupported(decl.span, "record signals with arrays of records"));
+            };
+            let mut out = Vec::new();
+            for (path, st) in leaves {
+                let t = ty::lower(db, cx, pb, db.base(st), decl.span)?;
+                let sig = ir.signals.len() as u32;
+                ir.signals.push(SignalIr {
+                    decl: d,
+                    name: name.clone(),
+                    ty: t,
+                    init: None,
+                    path: path.clone(),
+                    dope: None,
+                });
+                out.push(crate::RecLeaf { path, st, sig });
+            }
+            cx.rec_leaves.insert(d, out);
+            cx.objs.insert(d, Obj::RecSignal);
+            Ok(())
+        }
         ObjClass::Signal => {
             let t = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
             let dope = if array {
@@ -1011,6 +1037,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 name,
                 ty: t,
                 init,
+                path: Vec::new(),
                 dope,
             });
             Ok(())
@@ -1119,16 +1146,31 @@ fn process(
     if let Some(sc) = scope {
         cx.scope_func.insert(sc, (f, 0));
     }
-    // One driver slot per longest static prefix, in `ProcessInfo::drivers` order.
+    // Driver slots: per longest static prefix, in `ProcessInfo::drivers` order, one per kernel
+    // signal it covers (one, or the leaves of a record signal below its fields).
     let mut sigs = Vec::new();
+    let mut bases = Vec::new();
     for l in &info.drivers {
         let hir::ObjRoot::Decl(d) = l.root else {
             return Err(cx.unsupported(l.span, "drivers of external names and implicit signals"));
         };
-        let Some(&Obj::Signal { sig }) = cx.objs.get(&d) else {
-            return Err(cx.unsupported(l.span, "drivers of signals outside the architecture"));
-        };
-        sigs.push(sig);
+        bases.push(sigs.len() as u32);
+        match cx.objs.get(&d) {
+            Some(&Obj::Signal { sig }) => sigs.push(sig),
+            Some(Obj::RecSignal) => {
+                let path = lsp_fields(l);
+                let leaves = cx.rec_leaves.get(&d).cloned().unwrap_or_default();
+                sigs.extend(
+                    leaves
+                        .iter()
+                        .filter(|x| x.path.starts_with(&path))
+                        .map(|x| x.sig),
+                );
+            }
+            _ => {
+                return Err(cx.unsupported(l.span, "drivers of signals outside the architecture"));
+            }
+        }
     }
     let drivers = info.drivers.clone();
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name.clone());
@@ -1136,6 +1178,7 @@ fn process(
         fx.fb.flag(FuncFlags::IMPLICIT);
     }
     fx.drivers = drivers;
+    fx.driver_base = bases;
     fx.guard = guard;
     fx.stmt_start(StmtKind::Process, st.span);
     let mut r = Ok(());
@@ -1317,6 +1360,7 @@ impl Fx<'_, '_> {
                     name: decl.name.to_string(),
                     ty,
                     init: None,
+                    path: Vec::new(),
                     dope: None,
                 };
                 self.cx.pkg_sigs.push(s.clone());
@@ -1483,4 +1527,15 @@ impl Fx<'_, '_> {
         }
         (out.len() as u64 == n).then_some(out)
     }
+}
+
+/// The leading field selections of a longest static prefix (its record path).
+pub(crate) fn lsp_fields(l: &hir::Lsp) -> Vec<u32> {
+    l.path
+        .iter()
+        .map_while(|s| match s {
+            hir::LspStep::Field(n) => Some(*n),
+            _ => None,
+        })
+        .collect()
 }

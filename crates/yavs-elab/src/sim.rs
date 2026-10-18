@@ -357,14 +357,19 @@ impl Elaborated {
                             self.hier.path_name(p.scope, crate::Case::Original)
                         ))
                     })?;
+                // One driver slot per kernel signal of each longest static prefix, in order
+                // (a record prefix covers one leaf per field), matching `ProcessIr::drivers`.
+                let entries: Vec<_> = p.lsps.iter().flatten().collect();
+                if entries.len() != pir.drivers.len() {
+                    return Err(sim_err(format!(
+                        "{}: {} driver slots lowered, {} elaborated",
+                        self.hier.path_name(p.scope, crate::Case::Original),
+                        pir.drivers.len(),
+                        entries.len()
+                    )));
+                }
                 let mut drivers = Vec::with_capacity(pir.drivers.len());
-                for (k, &sig) in pir.drivers.iter().enumerate() {
-                    let [(d, _, range)] = p.lsps.get(k).map(|v| v.as_slice()).unwrap_or(&[]) else {
-                        return Err(sim_err(format!(
-                            "driver {k} of {} spans several kernel signals (records, M3)",
-                            self.hier.path_name(p.scope, crate::Case::Original)
-                        )));
-                    };
+                for (&sig, (d, _, range)) in pir.drivers.iter().zip(entries) {
                     let pos = p.drivers.iter().position(|x| x == d).ok_or_else(|| {
                         SimError::new(ErrorKind::Internal("driver not owned".into()))
                     })?;
@@ -484,16 +489,20 @@ impl Elaborated {
                 }
                 inst.data[at..at + n].copy_from_slice(&desc[..n]);
             }
+            // The leaf the entry names (a record signal has one entry per field leaf).
             let (a, b) = self.nets.obj(o).leaves;
-            if b.0 != a.0 + 1 {
+            let Some(leaf) = (a.0..b.0)
+                .map(crate::LeafId)
+                .find(|&l| self.nets.leaf(l).path == s.path)
+            else {
                 return Err(sim_err(format!(
-                    "signal `{}` has several kernel signals (records, M3)",
-                    s.name
+                    "signal `{}` has no kernel signal for field path {:?}",
+                    s.name, s.path
                 )));
-            }
+            };
             inst.sigs.push(InstSig {
-                signal: yavs_kernel::SignalId(a.0),
-                ty: self.nets.leaf(a).ty,
+                signal: yavs_kernel::SignalId(leaf.0),
+                ty: self.nets.leaf(leaf).ty,
             });
         }
         Ok(inst)

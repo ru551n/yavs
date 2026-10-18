@@ -97,6 +97,10 @@ pub struct SignalIr {
     /// `FuncKind::Thunk` returning the initial value of a scalar signal (`None` for ports
     /// and arrays: the elaborator computes initial values itself).
     pub init: Option<FuncId>,
+    /// The leaf of a record signal: field indices from the signal's root (empty for a
+    /// signal that is one kernel signal). A record signal has one entry per leaf, in leaf
+    /// order (docs/decisions.md "Elaboration": one leaf per field).
+    pub path: Vec<u32>,
     /// An array signal's descriptor in instance data (`Ty::desc_size` bytes at this offset),
     /// written by the elaborator from the signal's bounds in each instance: ports take their
     /// actual's bounds.
@@ -230,6 +234,8 @@ pub(crate) enum Obj {
     Array { space: Space, off: u32 },
     /// Instance signal `sig`.
     Signal { sig: u32 },
+    /// A record signal: one instance signal per leaf (`Cx::rec_leaves`).
+    RecSignal,
     /// A composite of static layout stored in place: `size` bytes of elements at `off`, then
     /// its descriptor.
     Fixed { space: Space, off: u32, size: u32 },
@@ -278,6 +284,16 @@ pub(crate) struct Cx {
     pub arch_scopes: Vec<ScopeId>,
     /// Bytes of the shared variables area allocated so far (package files).
     pub shared_size: u32,
+    /// The leaves of record signals, in leaf order.
+    pub rec_leaves: HashMap<DeclId, Vec<RecLeaf>>,
+}
+
+/// One kernel signal of a record signal.
+#[derive(Clone, Debug)]
+pub(crate) struct RecLeaf {
+    pub path: Vec<u32>,
+    pub st: yavs_sem::SubtypeId,
+    pub sig: u32,
 }
 
 impl Cx {
@@ -350,6 +366,7 @@ impl<'a> Lowerer<'a> {
                 pkg_sigs: Vec::new(),
                 arch_scopes: Vec::new(),
                 shared_size: 0,
+                rec_leaves: HashMap::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),

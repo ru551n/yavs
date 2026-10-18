@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:record_signals:watch	r=0 '0' 0000 false
+diag	note	1000000	1	:record_signals:watch	r=5 '1' 1010 true
+diag	note	2000000	1	:record_signals:watch	r=7 '1' 0110 true
+diag	note	4000000	0	:record_signals:watch	r=7 '1' 1111 false
+diag	note	5000000	0	:record_signals:_p1	q=7 1111

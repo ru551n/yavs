@@ -8,7 +8,7 @@ use yavs_ir::{Dir, Inst, Mode, ParamClass, Reg, RegTy, RootKind, Ty, TyId, Width
 use yavs_sem::decl::{Body, DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::Arg;
 use yavs_sem::types::TypeKind;
-use yavs_sem::{Db, DeclId, ExprId, TypeId};
+use yavs_sem::{Db, DeclId, ExprId, ScopeId, TypeId};
 
 use crate::composite::scalar_w;
 use crate::expr::V;
@@ -67,18 +67,33 @@ impl Fx<'_, '_> {
     }
 
     /// Method prologue (before the other parameters): the `self` parameter and a slot per
-    /// state variable holding its address (or `[data, desc]` for composites).
-    pub fn method_prologue(&mut self, d: DeclId, depth: u8, span: Span) -> R<()> {
+    /// state variable holding its address (or `[data, desc]` for composites). A subprogram
+    /// declared (at any depth) in a method takes that method's `self` through the static
+    /// link and binds the state in its own frame (LRM 5.6.2, #221).
+    pub fn method_prologue(&mut self, d: DeclId, scope: ScopeId, depth: u8, span: Span) -> R<()> {
         let db = self.db;
-        let Some(t) = method_type(db, d) else {
-            return Ok(());
+        let (t, sd, so) = match method_type(db, d) {
+            Some(t) => {
+                let off = self
+                    .fb
+                    .param("self", Width::B8, ParamClass::Value, Mode::In, None);
+                self.cx.method_self.insert(scope, (t, depth, off));
+                (t, depth, off)
+            }
+            None => {
+                let mut s = Some(db.decls[d].scope);
+                loop {
+                    let Some(sc) = s else { return Ok(()) };
+                    if let Some(&m) = self.cx.method_self.get(&sc) {
+                        break m;
+                    }
+                    s = db.scopes[sc].parent;
+                }
+            }
         };
-        let off = self
-            .fb
-            .param("self", Width::B8, ParamClass::Value, Mode::In, None);
-        self.prot_self = Some((depth, off));
+        self.prot_self = Some((sd, so));
         let state = self.state_of(t, span)?;
-        let p = self.deref_self(depth, off);
+        let p = self.deref_self(sd, so);
         self.bind_state(t, state, p, depth, span)
     }
 

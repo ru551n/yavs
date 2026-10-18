@@ -695,7 +695,7 @@ pub(crate) fn subprogram(
     }
     fx.ret = sp.ret;
     fx.stmt_start(StmtKind::Subprogram, decl.span);
-    fx.method_prologue(d, depth, decl.span)?;
+    fx.method_prologue(d, *scope, depth, decl.span)?;
     // The body's own parameter declarations (a body completing a specification has its own
     // region, sem.md 1.3), in order.
     let body_params: Vec<DeclId> = db.scopes[*scope]

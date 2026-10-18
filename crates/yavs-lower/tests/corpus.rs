@@ -121,6 +121,7 @@ const PASS: &[&str] = &[
     "protected/counter",
     "protected/generic_package_prot",
     "protected/method_in_init",
+    "protected/method_nested",
     "protected/stack",
     "reflect/arrays",
     "reflect/index_bases",

@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	0	:method_nested:_p0	shared p:3 p:4/10 3
+diag	note	0	0	:method_nested:_p0	local p:4 p:5/16 5

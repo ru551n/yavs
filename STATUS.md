@@ -19,7 +19,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner (none this 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
 | check | 256 | 1 | 0 | two calls of a procedure with a `signal out` parameter on different constant elements #231 (fixed since, not re-measured) |
-| com | 46 | 99 | 0 | protected method called from a subprogram nested in a method of the same body #221 |
+| com | 46 | 99 | 0 | protected method called from a subprogram nested in a method of the same body #221 (fixed, not re-measured) |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
 | logging | 113 | 0 | 0 | none |
@@ -28,7 +28,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner (none this 
 | record_dict (2019) | 6 | 0 | 0 | none |
 | run | 5 | 0 | 0 | none |
 | string_ops | 15 | 0 | 0 | none |
-| verification_components | 47 | 480 | 0 | #221 (all 480; failures behind it are not visible yet); `tb_axi_stream_protocol_checker` is left out |
+| verification_components | 47 | 480 | 0 | #221 (all 480, fixed, not re-measured; failures behind it are not visible yet); `tb_axi_stream_protocol_checker` is left out |
 
 ## CI and releases
 
@@ -175,13 +175,14 @@ minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
 composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
 `deallocate`), process-local protected objects (`CallProt`), protected state initial values
-that call the body's methods (#204), file objects and textio,
+that call the body's methods (#204), subprograms nested in protected methods calling the
+body's methods and naming its variables (#221), file objects and textio,
 `force`/`release` of scalar signals, signals of arrays of records and of records with
 array-of-record fields (struct of arrays; whole, element, field, bit and slice targets,
 element sensitivity, resolution as a whole, #200; field and element bounds from the initial
 value, a partially constrained subtype or a port's actual, #215), shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`). Difftest: access 3/3,
-composite 6/6, force 3/3, protected 5/5, resolution 4/5, textio 2/3 at 1 and 4 threads.
+composite 6/6, force 3/3, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
 ## sem robustness
 

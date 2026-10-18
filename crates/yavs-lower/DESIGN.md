@@ -232,7 +232,11 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - Protected: the object is a handle to the state record (`Ty::Protected { state }`); a method
   gets `self` as its first parameter and a slot per state variable holding its address in the
   state (`Obj::ScalarRef` / `Obj::Array`), so the body's names need no new `Obj` kind. Calls
-  are `CallProt`; a call without a prefix inside a method passes `self`.
+  are `CallProt`; a call without a prefix inside a method passes `self`. A subprogram
+  declared (at any depth) inside a method finds that method's `self` slot by walking its
+  enclosing regions (`Cx::method_self`), reaches it through the static link and binds the
+  state variables again in its own frame, so its calls and names act on the enclosing
+  method's object (LRM 5.6.2, #221).
 - A new protected object (`prot_new`): the initial values that give a variable its
   constraint are evaluated first (they build the state descriptor); then the object is
   created with default values and the other initial values run in declaration order with
@@ -255,9 +259,9 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   aggregate targets each piece takes as many elements as its target has, the cover checked
   first (#89).
 - Not yet: force of composite signals, named or multi-dimensional aggregates with
-  array-valued pieces and pieces whose element subtype is not fixed by the type, nested
-  subprograms of protected methods reading state variables, methods of protected types in
-  generic package instances (generic instantiation, #71), user resolution of logic leaves.
+  array-valued pieces and pieces whose element subtype is not fixed by the type, methods
+  of protected types in generic package instances (generic instantiation, #71), user
+  resolution of logic leaves.
 
 ### Requests from lower2 to lower
 

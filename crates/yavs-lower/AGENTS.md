@@ -59,6 +59,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | Foreign calls: symbol is the last word after `VHPIDIRECT` (else the name), C types from the formal's own subtype, result range-checked; signal and file parameters, composite results are `E2001` | Reference simulator conventions, fail early | `docs/decisions.md` "Foreign subprograms and `--load`" |
 | Individually associated parameters: a temporary formal of variable or constant class, parts copied in for every mode and back for `out`/`inout`; a signal formal takes one part only (`E2001` otherwise); unconstrained bounds lowest to highest index named, index subtype direction | LRM 6.5.7.1; a signal reference spans one kernel range; same bounds rule as elab's ports | DESIGN.md "Contract with yavs-interp and yavs-elab", #71 |
 | Protected state initial values run on the new object (`self` and the state bound), except those giving a variable its constraint, which run before it exists | LRM 5.6.2: methods called from initial values act on the object being elaborated (#204) | DESIGN.md "Composites" |
+| A subprogram nested in a protected method takes the method's `self` through the static link and binds the state in its own frame | LRM 5.6.2: calls and names in it act on the enclosing method's object (#221) | DESIGN.md "Composites" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).

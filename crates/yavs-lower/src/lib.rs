@@ -304,6 +304,9 @@ pub(crate) struct Cx {
     /// Driver LSPs and slot bases of each process region: subprograms declared in a process
     /// drive through its drivers (LRM 14.7.2).
     pub proc_drivers: HashMap<ScopeId, (Vec<yavs_sem::hir::Lsp>, Vec<u32>)>,
+    /// Protected type, frame depth and `self` slot of each method body region: subprograms
+    /// declared in a method act on its object (LRM 5.6.2, #221).
+    pub method_self: HashMap<ScopeId, (TypeId, u8, u32)>,
     pub objs: HashMap<DeclId, Obj>,
     /// `std.reflection` entries per subtype (`reflect.rs`).
     pub refl: HashMap<yavs_sem::SubtypeId, yavs_ir::ReflId>,
@@ -399,6 +402,7 @@ impl<'a> Lowerer<'a> {
                 queue: Vec::new(),
                 scope_func: HashMap::new(),
                 proc_drivers: HashMap::new(),
+                method_self: HashMap::new(),
                 objs: HashMap::new(),
                 refl: HashMap::new(),
                 inst_size: 0,

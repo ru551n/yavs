@@ -228,11 +228,13 @@ Few dependencies: rsim calls C through **its own trampolines**, one per ABI, in 
 `rsim-ffi` (the only `unsafe` besides `rsim-vhpi`; `forbid(unsafe_code)` elsewhere).
 
 ```rust
-pub enum CArg { I64(i64), F64(f64), Ptr(*mut u8) }      // the whole C type set
-pub enum CRet { Void, I32, U8, I64, F64 }               // declared result kind
-struct CallFrame { int: [u64; 8], float: [f64; 8], stack: *const u64, nstack: usize, func: usize }
-struct RetPair { i: u64, f: f64 }                       // rax/x0 and xmm0/d0 after the call
-pub unsafe fn call(func: *const (), args: &[CArg], ret: CRet) -> CRetVal;  // classify + trampoline
+pub enum CType { I8, I16, I32, I64, U8, U16, U32, F32, F64, Ptr }   // the whole C type set
+pub struct Signature { pub params: Vec<CType>, pub ret: Option<CType> }
+pub enum Arg { I8(i8), .., F64(f64), Ptr(*mut c_void) }              // Ret is the same plus Void
+impl ForeignFn {
+    pub unsafe fn new(ptr: *const c_void, sig: Signature) -> Result<Self, FfiError>; // null, > 64 args
+    pub fn call(&self, args: &[Arg]) -> Result<Ret, FfiError>;   // safe: callers forbid unsafe
+}
 ```
 
 - **Classification is Rust, the stub is asm.** `call` assigns arguments to registers and stack
@@ -247,22 +249,25 @@ pub unsafe fn call(func: *const (), args: &[CArg], ret: CRet) -> CRetVal;  // cl
 | Win64 (Windows x86_64) | rcx rdx r8 r9 **by position** | xmm0-xmm3 by the same position | 32-byte shadow space, then args 5+ in 8-byte slots; `rsp` 16-aligned |
 
 - **VHDL to C mapping** (checked at elaboration; anything else is an error naming the subprogram
-  and parameter, fail early):
+  and parameter, fail early). It follows the NVC user manual (`nvc(1)`, "VHPIDIRECT"), which
+  defines integers, reals, enumerations and both array kinds; records and access values are
+  rsim additions. `rsim_ffi::vhdl::lower` implements it:
 
 | VHDL | C | Passing |
 |---|---|---|
-| `integer` (2008, 32-bit range) / 2019 64-bit integer | `int32_t` / `int64_t` | value, sign-extended to 64 bits |
-| enumeration up to 256 literals (`boolean`, `character`, `bit`, `std_ulogic`) | `uint8_t` | value, zero-extended |
+| integer type or subtype | smallest of `int8_t`..`int64_t` holding the range (`integer` is `int32_t`) | value, sign-extended to 64 bits |
+| enumeration | smallest of `uint8_t`/`uint16_t`/`uint32_t` holding the literals (`boolean`, `character`, `bit`, `std_ulogic` are `uint8_t`) | value, zero-extended |
 | physical (`time`) | `int64_t` | value (in resolution units, as stored) |
 | `real` | `double` | value |
+| access | `void *` | value |
 | constrained array | element pointer | marshalled into a C-layout temp (`int32_t`/`uint8_t`/`double` elements, logic arrays transposed from planes to one code byte per element), copied back for `out`/`inout` |
-| unconstrained array | pointer to `struct { void *data; int64_t left, right; uint8_t dir; }` per dimension | same marshalling; the struct is rsim's own documented convention |
+| unconstrained array | element pointer, then one `int64_t` length argument per dimension | same marshalling; NVC's convention, so C written for NVC works unchanged (bounds and direction are not passed) |
 | record of the scalar kinds above | pointer to a C struct with natural alignment | marshalled both ways |
 | scalar `out`/`inout` | pointer to a C-typed temp | written back after the call |
-| function result | `void`, `int32_t`, `uint8_t`, `int64_t`, `double` | the interpreter narrows `RetPair.i` by `CRet` (sign/zero extension), then range-checks |
+| function result | `void` or any scalar C type above | `rsim-ffi` narrows the result register to the declared type (sign/zero extension); the interpreter range-checks |
 
-- Not supported (elaboration error): composite results, struct-by-value, varargs, access-typed
-  parameters, callbacks from C into VHDL (VHPI covers that).
+- Not supported (elaboration error): composite results, struct-by-value, varargs, callbacks
+  from C into VHDL (VHPI covers that).
 - Symbols: `attribute foreign of f : function is "VHPIDIRECT [lib] symbol"`; looked up in
   `--load` libraries (reusing `rsim-vhpi`'s plugin loader), then in the executable. A missing
   symbol is an elaboration error that lists every library searched.

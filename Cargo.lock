@@ -1021,6 +1021,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsim-ffi"
+version = "0.1.0"
+
+[[package]]
 name = "rsim-kernel"
 version = "0.1.0"
 dependencies = [

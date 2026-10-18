@@ -1,6 +1,6 @@
 # tools/corpus/run.py expected results for vhdl-ideas-2019 (yavs); one line per manifest entry, in order
 PASS work vhdl-ideas/interfaces/axi/axi4.vhdl
-FAIL work vhdl-ideas/interfaces/axi/axi4-body.vhdl
+PASS work vhdl-ideas/interfaces/axi/axi4-body.vhdl
 PASS work vhdl-ideas/interfaces/axi/axi4l.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/caui.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/mii.vhdl

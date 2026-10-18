@@ -219,6 +219,10 @@ impl Db {
         if let ast::ExprKind::Paren(inner) = &e.kind {
             return self.resolve(scope, inner, exp);
         }
+        // With a type from context, each alternative is checked against it: precise errors.
+        if let (ast::ExprKind::Conditional(alts), Expected::Type(t)) = (&e.kind, exp) {
+            return self.conditional(scope, e, alts, t);
+        }
         let cs = self.cands(scope, e);
         match cs {
             CandSet::Class(m) => match exp {
@@ -385,10 +389,7 @@ impl Db {
                 self.unsupported(e.span, "allocators", "S6");
                 self.poison_expr()
             }
-            K::Conditional(_) => {
-                self.unsupported(e.span, "conditional expressions", "S7");
-                self.poison_expr()
-            }
+            K::Conditional(alts) => self.conditional(scope, e, alts, i.ty),
             K::Unaffected | K::Error => self.poison_expr(),
         }
     }
@@ -468,6 +469,7 @@ impl Db {
                     .unwrap_or(self.poison.expr)
             }
             ast::ExprKind::New(a) => self.allocator(scope, a, t, e.span),
+            ast::ExprKind::Conditional(alts) => self.conditional(scope, e, alts, t),
             _ => {
                 self.ice(
                     e.span,
@@ -476,6 +478,66 @@ impl Db {
                 self.poison_expr()
             }
         }
+    }
+
+    /// A 2019 conditional expression `a when c else b` of type `t` (9.3.x): every
+    /// alternative is of type `t` and takes the context subtype, if any; static when
+    /// all its parts are (permissive), folded when the chosen alternative is known.
+    fn conditional(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        alts: &[(ast::Expr, Option<ast::Expr>)],
+        t: TypeId,
+    ) -> ExprId {
+        let ctx = match self.top_context {
+            Some((node, st)) if node == e as *const ast::Expr as usize && self.base(st) == t => {
+                Some(st)
+            }
+            _ => None,
+        };
+        let mut out = Vec::with_capacity(alts.len());
+        let mut stat = Staticness::Locally;
+        // Folding: the value of the first alternative whose condition is statically true.
+        let (mut value, mut open) = (None, true);
+        for (v, c) in alts {
+            let v = match ctx {
+                Some(st) => self.resolve_in(scope, v, st),
+                None => self.resolve(scope, v, Expected::Type(t)),
+            };
+            let c = c
+                .as_ref()
+                .map(|c| self.resolve(scope, c, Expected::Condition));
+            stat = stat.min(self.exprs[v].stat);
+            if let Some(c) = c {
+                stat = stat.min(self.exprs[c].stat);
+            }
+            if open {
+                match c.map(|c| self.value(c)) {
+                    None | Some(Some(crate::stat::ConstValue::Enum(1))) => {
+                        value = self.exprs[v].value;
+                        open = false;
+                    }
+                    Some(Some(crate::stat::ConstValue::Enum(0))) => {}
+                    Some(_) => open = false,
+                }
+            }
+            out.push((v, c));
+        }
+        if out
+            .iter()
+            .any(|&(v, c)| self.is_poison_expr(v) || c.is_some_and(|c| self.is_poison_expr(c)))
+        {
+            return self.poison_expr();
+        }
+        let subtype = ctx.unwrap_or(self.types[t].first_subtype);
+        self.add_expr(Expr {
+            kind: ExprKind::Conditional { alts: out.into() },
+            subtype,
+            span: e.span,
+            stat,
+            value,
+        })
     }
 
     /// 9.2.9: a condition of a type other than BOOLEAN goes through a visible `??`.

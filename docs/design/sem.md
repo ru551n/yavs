@@ -1126,7 +1126,10 @@ pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC), Rebase(Subty
   names both. Everything else (generates, globally static indices, ports driven from outside) is
   elab's, which builds the full map. The reference simulators report the same cases at elaboration.
 - `return e` in a function where `e` is a 2019 conditional expression without a final `else` is
-  the conditional return (10.14): when no condition holds, execution continues.
+  the conditional return (10.14): when no condition holds, execution continues. Sem lowers every
+  conditional `return`, and every variable or force assignment with an `unaffected` value, to an
+  HIR `If` with one plain statement per alternative and an empty body for `unaffected` (#33), so
+  M2 needs nothing new; other conditional expressions are `ExprKind::Conditional` (lrm-checks L60).
 
 ## 7. Typed HIR (what M2 consumes)
 

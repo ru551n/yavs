@@ -389,18 +389,31 @@ impl Db {
                 let severity = self.severity(scope, severity.as_ref())?;
                 StmtKind::Report { report, severity }
             }
-            K::SignalAssign(sa) => self.seq_signal_assign(cx, sa)?,
-            K::VariableAssign { target, rhs } => {
-                let (target, rhs) = self.assign_parts(
-                    scope,
-                    target,
-                    rhs,
-                    TargetKind::Variable,
-                    &mut |db, e, ty| db.var_value(scope, e, ty),
-                )?;
-                self.check_protected_assign(target.expr)?;
-                StmtKind::VarAssign { target, rhs }
-            }
+            K::SignalAssign(sa) => self.seq_signal_assign(cx, sa, s.span)?,
+            K::VariableAssign { target, rhs } => match unaffected_alts(rhs) {
+                Some(alts) => self.split_alts(cx, &alts, s.span, &mut |db, cx, v| {
+                    let (target, rhs) = db.assign_parts(
+                        cx.scope,
+                        target,
+                        &ast::Rhs::Simple(v),
+                        TargetKind::Variable,
+                        &mut |db, e, ty| db.value_expr(cx.scope, e, ty),
+                    )?;
+                    db.check_protected_assign(target.expr)?;
+                    Ok(StmtKind::VarAssign { target, rhs })
+                })?,
+                None => {
+                    let (target, rhs) = self.assign_parts(
+                        scope,
+                        target,
+                        rhs,
+                        TargetKind::Variable,
+                        &mut |db, e, ty| db.value_expr(scope, e, ty),
+                    )?;
+                    self.check_protected_assign(target.expr)?;
+                    StmtKind::VarAssign { target, rhs }
+                }
+            },
             K::ProcedureCall(n) => {
                 let call = self.st_proc_call(scope, n)?;
                 self.check_call_outside_process(cx, &call)?;
@@ -487,6 +500,23 @@ impl Db {
                 } else {
                     StmtKind::Exit { loop_, when }
                 }
+            }
+            // 2019 conditional return (10.14): when no condition holds, execution goes on.
+            K::Return(Some(
+                e @ ast::Expr {
+                    kind: ast::ExprKind::Conditional(_) | ast::ExprKind::Unaffected,
+                    ..
+                },
+            )) => {
+                let alts: Vec<_> = match &e.kind {
+                    ast::ExprKind::Conditional(alts) => {
+                        alts.iter().map(|(v, c)| (v, c.as_ref())).collect()
+                    }
+                    _ => vec![(e, None)],
+                };
+                self.split_alts(cx, &alts, s.span, &mut |db, cx, v| {
+                    Ok(StmtKind::Return(db.return_value(cx, Some(v), s.span)?))
+                })?
             }
             K::Return(v) => StmtKind::Return(self.return_value(cx, v.as_ref(), s.span)?),
             K::Null => StmtKind::Null,
@@ -651,6 +681,7 @@ impl Db {
         &mut self,
         cx: &StmtCx,
         sa: &ast::SignalAssign,
+        span: Span,
     ) -> Result<StmtKind, Reported> {
         let scope = cx.scope;
         let kind = match &sa.kind {
@@ -659,6 +690,23 @@ impl Db {
                     self.signal_assign(scope, &sa.target, delay.as_ref(), rhs)?;
                 self.check_driver_outside_process(cx, &target.lsps)?;
                 StmtKind::SignalAssign { target, delay, rhs }
+            }
+            ast::SignalAssignKind::Force { mode, rhs } if let Some(alts) = unaffected_alts(rhs) => {
+                self.split_alts(cx, &alts, span, &mut |db, cx, v| {
+                    let (target, rhs) = db.assign_parts(
+                        cx.scope,
+                        &sa.target,
+                        &ast::Rhs::Simple(v),
+                        TargetKind::Force,
+                        &mut |db, e, ty| db.value_expr(cx.scope, e, ty),
+                    )?;
+                    db.check_force_mode(&target, *mode)?;
+                    Ok(StmtKind::Force {
+                        target,
+                        mode: *mode,
+                        rhs,
+                    })
+                })?
             }
             ast::SignalAssignKind::Force { mode, rhs } => {
                 let (target, rhs) = self.assign_parts(
@@ -941,16 +989,46 @@ impl Db {
         Ok(id)
     }
 
-    fn var_value(
+    /// A 2019 `conditional_or_unaffected_expression` in a statement (10.5.2.1, 10.6.2.1,
+    /// 10.14): an `if` with the statement `one` builds for each value, none for `unaffected`.
+    fn split_alts(
         &mut self,
-        scope: ScopeId,
-        e: &ast::Expr,
-        ty: Option<SubtypeId>,
-    ) -> Result<ExprId, Reported> {
-        if let ast::ExprKind::Unaffected = e.kind {
-            return Err(self.unsupported(e.span, "`unaffected` in a variable assignment", "S7"));
+        cx: &StmtCx,
+        alts: &[(&ast::Expr, Option<&ast::Expr>)],
+        span: Span,
+        one: &mut dyn FnMut(&mut Db, &StmtCx, &ast::Expr) -> Result<StmtKind, Reported>,
+    ) -> Result<StmtKind, Reported> {
+        let mut errs = Errs::default();
+        let (mut branches, mut else_) = (Vec::new(), None);
+        for &(v, c) in alts {
+            let body = if matches!(v.kind, ast::ExprKind::Unaffected) {
+                Some(Box::default())
+            } else {
+                errs.keep(one(self, cx, v)).map(|k| {
+                    let id = self.new_stmt(None, span);
+                    self.stmts[id].kind = k;
+                    Box::from([id])
+                })
+            };
+            match c {
+                Some(c) => {
+                    let c = errs.keep(self.st_expr(cx.scope, c, Expected::Condition));
+                    if let (Some(c), Some(b)) = (c, body) {
+                        branches.push((c, b));
+                    }
+                }
+                None => else_ = body,
+            }
         }
-        self.value_expr(scope, e, ty)
+        errs.finish(())?;
+        if branches.is_empty() {
+            // A lone `unaffected`.
+            return Ok(StmtKind::Null);
+        }
+        Ok(StmtKind::If {
+            branches: branches.into(),
+            else_,
+        })
     }
 
     fn rhs<A, H>(
@@ -1920,6 +1998,18 @@ impl crate::expr::aggregate::AggResolver for ChoiceResolver {
 }
 
 /// Resolves one right-hand side piece, given the target subtype if known.
+/// The alternatives of a variable or force assignment value with an `unaffected` in it.
+fn unaffected_alts(rhs: &ast::Rhs<ast::Expr>) -> Option<Vec<(&ast::Expr, Option<&ast::Expr>)>> {
+    let alts: Vec<_> = match rhs {
+        ast::Rhs::Simple(v) => vec![(v, None)],
+        ast::Rhs::Conditional(alts) => alts.iter().map(|(v, c)| (v, c.as_ref())).collect(),
+        ast::Rhs::Selected { .. } => return None,
+    };
+    alts.iter()
+        .any(|(v, _)| matches!(v.kind, ast::ExprKind::Unaffected))
+        .then_some(alts)
+}
+
 type Each<'a, A, H> = dyn FnMut(&mut Db, &A, Option<SubtypeId>) -> Result<H, Reported> + 'a;
 
 /// The value type of a resolved right-hand side piece.

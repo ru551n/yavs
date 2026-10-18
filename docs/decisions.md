@@ -270,7 +270,8 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   `( conditional_expression )` (VI#385). The operand of a qualified expression is not a primary,
   so `T'(a when c else b)` is an error with a help to write `T'((a when c else b))`. `unaffected`
   and a final `when c` without `else` only in simple variable and force assignments and `return`;
-  selected variable assignments take plain expressions. Not yet parsed: the plain `return when c;`.
+  selected variable assignments take plain expressions. In a 2008 file a conditional expression is
+  `E0004` at its `when` (#33). Not yet parsed: the plain `return when c;`.
   A `generic map` after a name is part of the name (a call of an uninstantiated subprogram) only
   inside expressions.
 - **Strict where tools differ:** `abs x ** 2`, chained relations (`a > b = c`) and mixed logical

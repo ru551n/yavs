@@ -128,9 +128,6 @@ impl Parser<'_> {
     /// initial values, interface defaults and association actuals.
     pub(super) fn cond_expr(&mut self) -> PResult<Expr> {
         let first = self.expr()?;
-        if self.std < crate::Std::Vhdl2019 {
-            return Ok(first);
-        }
         self.cond_rest(first, false, Self::expr)
     }
 
@@ -139,9 +136,6 @@ impl Parser<'_> {
     /// final `when c` needs no `else`).
     pub(super) fn return_value(&mut self) -> PResult<Expr> {
         let first = self.var_value()?;
-        if self.std < crate::Std::Vhdl2019 {
-            return Ok(first);
-        }
         self.cond_rest(first, true, Self::var_value)
     }
 
@@ -156,6 +150,8 @@ impl Parser<'_> {
         if !self.at_kw(Kw::When) {
             return Ok(first);
         }
+        let when = self.span();
+        self.require_2019(when, "a conditional expression");
         let start = first.span;
         let mut branches = Vec::new();
         let mut v = first;
@@ -421,7 +417,6 @@ impl Parser<'_> {
                     );
                     return Err(Recover);
                 }
-                self.require_2019(when, "a conditional expression");
                 let first = elems.pop().map(|e| e.value).ok_or(Recover)?;
                 let e = self.cond_rest(first, false, Self::expr)?;
                 self.expect(Tok::RParen)?;

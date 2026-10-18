@@ -107,6 +107,10 @@ An installed binary finds `lib/` next to itself (#43).
   sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
   architecture. Initializer-bound signals elaborate and run (#187; records and arrays of records with such fields, #215); elab
   reports variable ports unsupported (#188).
+- 2019 conditional expressions (`a when c else b` in initial values, assignments, actuals,
+  `return` and parentheses), the conditional `return` and `unaffected` in variable and force
+  assignments analyze, lower and run (#33; difftest `process/conditional_expr_2019`,
+  `process/unaffected_2019`). Open: named return values (`return r of t`), `return when c;`.
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 

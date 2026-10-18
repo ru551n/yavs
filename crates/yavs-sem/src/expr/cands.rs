@@ -115,7 +115,64 @@ impl Db {
                 }
                 c
             }
-            K::Conditional(_) | K::Unaffected | K::Error => self.poison_cands(),
+            // 2019: the types every alternative can have.
+            K::Conditional(alts) => {
+                let mut acc: Option<CandSet> = None;
+                for (v, _) in alts {
+                    let c = self.cands(scope, v);
+                    acc = Some(match acc {
+                        None => c,
+                        Some(a) => self.meet(a, c),
+                    });
+                }
+                acc.unwrap_or_else(|| self.poison_cands())
+            }
+            K::Unaffected | K::Error => self.poison_cands(),
+        }
+    }
+
+    /// The interpretations two candidate sets share (a conditional expression's alternatives).
+    fn meet(&self, a: CandSet, b: CandSet) -> CandSet {
+        if self.is_poison_set(&a) {
+            return b;
+        }
+        if self.is_poison_set(&b) {
+            return a;
+        }
+        match (a, b) {
+            (CandSet::Class(x), CandSet::Class(y)) => CandSet::Class(ClassMask(x.0 & y.0)),
+            (CandSet::Types(is), CandSet::Class(m)) | (CandSet::Class(m), CandSet::Types(is)) => {
+                CandSet::Types(
+                    is.into_iter()
+                        .filter(|i| self.class_admits(m, i.ty))
+                        .collect(),
+                )
+            }
+            (CandSet::Types(xs), CandSet::Types(ys)) => {
+                let mut out: Vec<Interp> = Vec::new();
+                for x in &xs {
+                    for y in &ys {
+                        // A convertible universal side takes the other side's type.
+                        let i = if x.ty == y.ty {
+                            Interp {
+                                convertible: x.convertible && y.convertible,
+                                convs: x.convs.max(y.convs),
+                                ..Interp::new(x.ty, Via::Other)
+                            }
+                        } else if self.cost(x, super::Expected::Type(y.ty)).is_some() {
+                            Interp::new(y.ty, Via::Other)
+                        } else if self.cost(y, super::Expected::Type(x.ty)).is_some() {
+                            Interp::new(x.ty, Via::Other)
+                        } else {
+                            continue;
+                        };
+                        if !out.iter().any(|o| o.ty == i.ty) {
+                            out.push(i);
+                        }
+                    }
+                }
+                CandSet::Types(out)
+            }
         }
     }
 

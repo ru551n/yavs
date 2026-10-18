@@ -192,8 +192,8 @@ PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_026c.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_030.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_032.vhd
 FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_033.vhd
-FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_036a.vhd
-FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_041.vhd
+PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_036a.vhd
+PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_041.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_045a.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_045c.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_047.vhd
@@ -205,5 +205,5 @@ FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_072b.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_075.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_082.vhd
 PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_086.vhd
-FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_094a.vhd
+PASS vhdl_2019 vhdl-compliance/vhdl_2019/tb_094a.vhd
 FAIL vhdl_2019 vhdl-compliance/vhdl_2019/tb_reading_function_return_value.vhd

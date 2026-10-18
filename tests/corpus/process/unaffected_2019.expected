@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:unaffected_2019:_p0	kept 21
+diag	note	0	0	:unaffected_2019:_p0	kept 21
+diag	note	0	0	:unaffected_2019:_p0	chain 8
+diag	note	0	0	:unaffected_2019:_p0	chain 8
+diag	note	1000000	0	:unaffected_2019:_p0	forced 42
+diag	note	2000000	0	:unaffected_2019:_p0	not forced 0

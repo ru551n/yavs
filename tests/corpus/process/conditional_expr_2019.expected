@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:conditional_expr_2019:_p0	sign of zero
+diag	note	0	0	:conditional_expr_2019:_p0	sign 1 -1 0
+diag	note	0	0	:conditional_expr_2019:_p0	yes no!
+diag	note	0	0	:conditional_expr_2019:_p0	plus 21
+diag	note	0	0	:conditional_expr_2019:_p0	no else 21
+diag	note	0	0	:conditional_expr_2019:_p0	chain 8

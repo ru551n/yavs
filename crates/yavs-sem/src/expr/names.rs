@@ -849,7 +849,15 @@ impl Db {
         let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
         let mut convs = 0;
         for (i, (_, ft, has_default)) in formals.iter().enumerate() {
-            match map[i].map(|a| &args[a].actual) {
+            let whole = match &map[i] {
+                Slot::Whole(a) => Some(&args[*a].actual),
+                Slot::None => None,
+                Slot::Parts(parts) => {
+                    convs += self.parts_cost(scope, d, i, args, parts)?;
+                    continue;
+                }
+            };
+            match whole {
                 Some(ast::Actual::Expr(x)) => {
                     let c = self.cands(scope, x);
                     convs += self.best_cost(&c, Expected::Type(*ft))?;
@@ -863,6 +871,53 @@ impl Db {
             convs,
             ..Interp::new(ret, Via::Call(d))
         })
+    }
+
+    /// The conversion cost of the sub-element associations `parts` of formal `k` of
+    /// subprogram `d` (6.5.7.1): each actual against the type of its formal part.
+    /// `None` if one does not fit.
+    pub(crate) fn parts_cost(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        k: usize,
+        args: &[ast::AssocElem],
+        parts: &[usize],
+    ) -> Option<u32> {
+        let s = self.decls[self.entity(d)].kind.subprogram()?;
+        let p = s.params.get(k)?.decl?;
+        // The formal part names this candidate's formal: resolve it in a region that
+        // holds only the formal (L42), with fresh memos, since another candidate's
+        // formal of the same name has another type.
+        let fscope = self.add_scope(crate::scope::ScopeKind::Block, Some(scope), None);
+        let key = self.decls[p].name.key();
+        self.scopes[fscope].names.insert(key, vec![p]);
+        let saved = (
+            std::mem::take(&mut self.memo),
+            std::mem::take(&mut self.name_memo),
+        );
+        let mut types = Vec::with_capacity(parts.len());
+        for &a in parts {
+            let t = match args[a]
+                .formal
+                .as_ref()
+                .map(|f| self.name_cands_uncached(fscope, f))
+            {
+                Some(CandSet::Types(is)) if is.len() == 1 => Some(is[0].ty),
+                _ => None,
+            };
+            types.push(t);
+        }
+        (self.memo, self.name_memo) = saved;
+        let mut convs = 0;
+        for (&a, t) in parts.iter().zip(types) {
+            let ast::Actual::Expr(x) = &args[a].actual else {
+                return None;
+            };
+            let c = self.cands(scope, x);
+            convs += self.best_cost(&c, Expected::Type(t?))?;
+        }
+        Some(convs)
     }
 
     // -- top-down ---------------------------------------------------------------
@@ -1235,6 +1290,7 @@ impl Db {
         let s = self.decls[e].kind.subprogram()?;
         let formals: Vec<(Symbol, SubtypeId)> =
             s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
+        let decls: Vec<Option<DeclId>> = s.params.iter().map(|p| p.decl).collect();
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
         let mut hargs = Vec::with_capacity(formals.len());
@@ -1249,8 +1305,18 @@ impl Db {
             Staticness::None
         };
         for (k, (_, ft)) in formals.iter().enumerate() {
-            let actual = match map[k] {
-                Some(a) => match &args[a].actual {
+            let actual = match &map[k] {
+                Slot::Parts(parts) => {
+                    let p = decls[k]?;
+                    let parts: Vec<(usize, Span)> = parts
+                        .iter()
+                        .map(|&a| (a, args[a].formal.as_ref().map_or(span, |f| f.span)))
+                        .collect();
+                    let actual = self.partial(scope, p, args, &parts).ok()?;
+                    stat = Staticness::None;
+                    actual
+                }
+                Slot::Whole(a) => match &args[*a].actual {
                     ast::Actual::Expr(x) => {
                         let id = self.resolve_in(scope, x, *ft);
                         stat = stat.min(self.exprs[id].stat);
@@ -1263,7 +1329,7 @@ impl Db {
                         return None;
                     }
                 },
-                None => Actual::Default,
+                Slot::None => Actual::Default,
             };
             hargs.push(Arg {
                 formal: k as u16,
@@ -1765,19 +1831,40 @@ pub(crate) enum AssocErr {
     Unknown(usize),
     /// A named association of a formal associated before.
     Twice(usize),
-    /// Positional after named, or a formal that is not a simple name.
+    /// Positional after named, or a formal designator rooted in no formal (a conversion).
     Other,
 }
 
-/// Map formals (by key) to association indexes: positional first, then named.
-/// `Err` if the association does not fit (too many, unknown or repeated name).
-// ponytail: named association by simple formal name only; sub-element and conversion
-// formals (6.5.7.1) come with S5.
+/// The associations of one formal (6.5.7.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Slot {
+    None,
+    /// Associated as a whole by this association.
+    Whole(usize),
+    /// Associated individually by these associations: `f(0) => a, f(1) => b`.
+    Parts(Vec<usize>),
+}
+
+/// The formal a formal designator names: `f` in `f`, `f(0)`, `f.e`, `f(1 to 3)`.
+pub(crate) fn formal_root(n: &ast::Name) -> Option<Ident> {
+    match &n.kind {
+        ast::NameKind::Simple(i) => Some(*i),
+        ast::NameKind::Apply { prefix, .. } | ast::NameKind::Selected { prefix, .. } => {
+            formal_root(prefix)
+        }
+        _ => None,
+    }
+}
+
+/// Map formals (by key) to their associations: positional first, then named, a formal
+/// either whole or by sub-elements (6.5.7.1). `Err` if the association does not fit
+/// (too many, unknown or repeated name).
+// ponytail: no conversion formals (`conv(f) => a`) in calls; they are `AssocErr::Other`.
 pub(crate) fn assoc_map(
     formals: &[Symbol],
     args: &[ast::AssocElem],
-) -> Result<Vec<Option<usize>>, AssocErr> {
-    let mut map = vec![None; formals.len()];
+) -> Result<Vec<Slot>, AssocErr> {
+    let mut map = vec![Slot::None; formals.len()];
     let mut named = false;
     for (k, a) in args.iter().enumerate() {
         match &a.formal {
@@ -1788,21 +1875,23 @@ pub(crate) fn assoc_map(
                 if k >= formals.len() {
                     return Err(AssocErr::TooMany(k));
                 }
-                map[k] = Some(k);
+                map[k] = Slot::Whole(k);
             }
             Some(f) => {
                 named = true;
-                let ast::NameKind::Simple(i) = &f.kind else {
-                    return Err(AssocErr::Other);
+                let whole = matches!(f.kind, ast::NameKind::Simple(_));
+                let i = formal_root(f).ok_or(AssocErr::Other)?;
+                let pos = match formals.iter().position(|&x| x == i.key) {
+                    Some(p) => p,
+                    None if whole => return Err(AssocErr::Unknown(k)),
+                    None => return Err(AssocErr::Other),
                 };
-                let pos = formals
-                    .iter()
-                    .position(|&x| x == i.key)
-                    .ok_or(AssocErr::Unknown(k))?;
-                if map[pos].is_some() {
-                    return Err(AssocErr::Twice(k));
+                match (&mut map[pos], whole) {
+                    (s @ Slot::None, true) => *s = Slot::Whole(k),
+                    (s @ Slot::None, false) => *s = Slot::Parts(vec![k]),
+                    (Slot::Parts(v), false) => v.push(k),
+                    _ => return Err(AssocErr::Twice(k)),
                 }
-                map[pos] = Some(k);
             }
         }
     }

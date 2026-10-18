@@ -765,12 +765,19 @@ impl Db {
             {
                 continue;
             }
-            if let crate::hir::Actual::Expr(e) | crate::hir::Actual::Converted { actual: e, .. } =
-                &a.actual
-                && let Some(l) = self.lsp(*e)
-                && self.is_signal(l.root)
-            {
-                out.push(l);
+            let es: Vec<ExprId> = match &a.actual {
+                crate::hir::Actual::Expr(e) | crate::hir::Actual::Converted { actual: e, .. } => {
+                    vec![*e]
+                }
+                crate::hir::Actual::Individual(parts) => parts.iter().map(|p| p.1).collect(),
+                _ => continue,
+            };
+            for e in es {
+                if let Some(l) = self.lsp(e)
+                    && self.is_signal(l.root)
+                {
+                    out.push(l);
+                }
             }
         }
     }

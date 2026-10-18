@@ -1027,7 +1027,7 @@ impl Db {
         scope: ScopeId,
         n: &ast::Name,
     ) -> Result<crate::hir::Call, crate::Reported> {
-        use super::names::{NameRes, assoc_map};
+        use super::names::{NameRes, Slot, assoc_map};
         let (prefix, args): (&ast::Name, &[ast::AssocElem]) = match &n.kind {
             ast::NameKind::Apply { prefix, args } => (prefix, args),
             _ => (n, &[]),
@@ -1122,8 +1122,12 @@ impl Db {
                 let mut convs = 0;
                 let mut ok = true;
                 for (k, (_, ft, has_default)) in formals.iter().enumerate() {
-                    match map[k] {
-                        Some(a) => match &args[a].actual {
+                    match &map[k] {
+                        Slot::Parts(parts) => match self.parts_cost(scope, d, k, args, parts) {
+                            Some(c) => convs += c,
+                            None => ok = false,
+                        },
+                        Slot::Whole(a) => match &args[*a].actual {
                             ast::Actual::Expr(x) => {
                                 let c = self.cands(scope, x);
                                 match self.best_cost(&c, Expected::Type(*ft)) {
@@ -1134,8 +1138,8 @@ impl Db {
                             ast::Actual::Open(_) if *has_default => {}
                             _ => ok = false,
                         },
-                        None if *has_default => {}
-                        None => ok = false,
+                        Slot::None if *has_default => {}
+                        Slot::None => ok = false,
                     }
                     if !ok {
                         break;
@@ -1337,7 +1341,7 @@ impl Db {
         args: &[ast::AssocElem],
         callee: Span,
     ) -> Option<crate::Reported> {
-        use super::names::{AssocErr, assoc_map};
+        use super::names::{AssocErr, Slot, assoc_map};
         let e = self.entity(d);
         let s = self.decls[e].kind.subprogram()?;
         let keys: Vec<yavs_syntax::Symbol> = s.params.iter().map(|p| p.name.key).collect();
@@ -1346,21 +1350,22 @@ impl Db {
             crate::decl::SubprogramKind::Function { .. } => "function",
         };
         let name = self.decls[e].name;
-        let formal = |k: usize| match &args[k].formal {
-            Some(ast::Name {
-                kind: ast::NameKind::Simple(i),
-                span,
-            }) => Some((*i, *span)),
-            _ => None,
+        let formal = |k: usize| {
+            let f = args[k].formal.as_ref()?;
+            Some((super::names::formal_root(f)?, f.span))
         };
         let d = match assoc_map(&keys, args) {
             Ok(map) => {
                 // No actual, or `open` (6.5.6.2), for a formal without a default.
                 let (p, m) = s.params.iter().zip(&map).find(|(p, m)| {
                     p.default.is_none()
-                        && m.is_none_or(|a| matches!(args[a].actual, ast::Actual::Open(_)))
+                        && match m {
+                            Slot::None => true,
+                            Slot::Whole(a) => matches!(args[*a].actual, ast::Actual::Open(_)),
+                            Slot::Parts(_) => false,
+                        }
                 })?;
-                let how = if m.is_some() {
+                let how = if *m != Slot::None {
                     "is open"
                 } else {
                     "has no actual"
@@ -1422,7 +1427,7 @@ impl Db {
         cands: &[DeclId],
         args: &[ast::AssocElem],
     ) -> Option<Diagnostic> {
-        use super::names::assoc_map;
+        use super::names::{Slot, assoc_map};
         // Per candidate, the formal (decl, subtype) of each association.
         let mut per: Vec<Vec<(Option<DeclId>, crate::ids::SubtypeId)>> = Vec::new();
         for &c in cands {
@@ -1431,7 +1436,12 @@ impl Db {
             let map = assoc_map(&keys, args).ok()?;
             let mut f = vec![(None, self.poison.subtype); args.len()];
             for (k, m) in map.iter().enumerate() {
-                if let Some(a) = *m {
+                let at: &[usize] = match m {
+                    Slot::None => &[],
+                    Slot::Whole(a) => std::slice::from_ref(a),
+                    Slot::Parts(v) => v,
+                };
+                for &a in at {
                     f[a] = (s.params[k].decl, s.params[k].subtype);
                 }
             }

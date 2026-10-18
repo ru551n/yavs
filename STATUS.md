@@ -52,6 +52,10 @@ An installed binary finds `lib/` next to itself (#43).
   result type (`E1301`), an ambiguous procedure call reported at the one actual that decides it
   (`E1302` with a qualification help in the declaration's spelling), candidate lists in help, and
   hints for calls from several packages and for vector/integer operators.
+- Subprogram calls with sub-element (individual) associations (`pr(x(0) => s)`, `f(r.i => 1)`,
+  slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
+  typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210).
+  Lowering them is #71.
 - Object types: constants, signals, generics, ports and constant or signal parameters of an access
   or file type (or containing one) are `E1223` (#198; constant parameters are legal in 2019; 2008 protected method profiles too, #212); protected ones `E1905`.
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms

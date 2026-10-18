@@ -665,7 +665,9 @@ Slice versus index is decided syntactically when the argument is a range or `'ra
 and by resolving a bare name argument: a type mark means slice. Association lists:
 - Positional then named; a formal named twice or missing without default: `E1310`, `E1311`.
 - Named association of a sub-element of a composite formal (`f(x.a => 1, x.b => 2)`) is
-  individual association (6.5.7.1); all sub-elements must be covered.
+  individual association (6.5.7.1); all sub-elements must be covered. Port and generic maps
+  and subprogram calls (`assoc_map` gives `Slot::Parts`) build `Actual::Individual`; coverage
+  is not checked yet.
 - Formal/actual conversion functions and type conversions in port and generic maps
   (`to_int(f) => sig`) are recognized when the formal part is a call whose single argument is a
   formal name.

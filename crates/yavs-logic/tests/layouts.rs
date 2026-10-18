@@ -60,15 +60,9 @@ fn ref_cmp(a: &V, b: &V, signed: bool) -> Option<Ordering> {
     Some(bits(a).cmp(&bits(b)))
 }
 fn ref_match(a: &V, b: &V) -> StdULogic {
-    let mut r = One;
-    for (&x, &y) in a.iter().zip(b) {
-        match x.match_eq(y) {
-            U => return U,
-            X => r = X,
-            m => r = r.and(m),
-        }
-    }
-    r
+    a.iter()
+        .zip(b)
+        .fold(One, |r, (&x, &y)| r.and(x.match_eq(y)))
 }
 fn ref_val(a: &V, signed: bool) -> Option<i128> {
     if a.iter().any(|x| x.is_x()) {
@@ -313,4 +307,39 @@ fn scalar_helpers() {
         (Z.to_x01z(), Z.to_x01(), U.to_ux01(), H.to_x01()),
         (Z, X, U, One)
     );
+}
+
+/// LRM 9.2.3 vector `?=` is the AND of the element matches (#162): a '0' mismatch anywhere wins
+/// over U and X, in every position, for all 9x9 first-element pairs.
+#[test]
+fn vector_match_is_and_of_elements() {
+    let v = |s: &str| s.parse::<yavs_logic::LogicVec>().unwrap();
+    for (a, b, want) in [
+        ("0U00", "1U00", Zero),
+        ("X100", "X000", Zero),
+        ("U100", "U100", U),
+        ("X100", "X100", X),
+        ("UX00", "UX00", U),
+        ("-1H0", "01LL", Zero),
+        ("-1H0", "011L", One),
+        ("", "", One),
+    ] {
+        assert_eq!(v(a).match_eq(&v(b)), want, "{a} ?= {b}");
+        assert_eq!(v(a).match_ne(&v(b)), want.not(), "{a} ?/= {b}");
+    }
+    for &x in &ALL {
+        for &y in &ALL {
+            let m = x.match_eq(y);
+            for (tail_a, tail_b, want) in [("1", "0", Zero), ("1", "H", m), ("0", "L", m)] {
+                for front in [true, false] {
+                    let (a, b) = if front {
+                        (format!("{x}{tail_a}"), format!("{y}{tail_b}"))
+                    } else {
+                        (format!("{tail_a}{x}"), format!("{tail_b}{y}"))
+                    };
+                    assert_eq!(v(&a).match_eq(&v(&b)), want, "{a} ?= {b}");
+                }
+            }
+        }
+    }
 }

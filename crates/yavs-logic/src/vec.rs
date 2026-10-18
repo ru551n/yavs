@@ -117,15 +117,10 @@ impl<R: Repr> Logic<R> {
     /// Vector `?=`: `1` if all elements match, `0` on a definite mismatch, `X`/`U` as in the LRM.
     pub fn match_eq(&self, o: &Self) -> StdULogic {
         assert_eq!(self.len(), o.len(), "length mismatch");
-        let mut r = One;
-        for (a, b) in self.iter().zip(o.iter()) {
-            match a.match_eq(b) {
-                U => return U,
-                X => r = X,
-                m => r = r.and(m),
-            }
-        }
-        r
+        // LRM 9.2.3: the AND of the element matches, so a later '0' wins over U and X.
+        self.iter()
+            .zip(o.iter())
+            .fold(One, |r, (a, b)| r.and(a.match_eq(b)))
     }
     pub fn match_ne(&self, o: &Self) -> StdULogic {
         self.match_eq(o).not()

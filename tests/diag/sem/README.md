@@ -1,6 +1,6 @@
 # Negative semantic-analysis suite (`tests/diag/sem`)
 
-Small, focused VHDL inputs that `yavs-sem` must reject (or warn about), plus some legal "near-miss" files that must stay silent. Written for milestone M1 from `docs/design/sem.md` (section 8 codes, cascade suppression, help patterns, `--relaxed`) and checked against NVC and GHDL (`NVC.md`). Nothing in here is copied from NVC or GHDL.
+Small, focused VHDL inputs that `yavs-sem` must reject (or warn about), plus some legal "near-miss" files that must stay silent. Written for milestone M1 from `docs/design/sem.md` (section 8 codes, cascade suppression, help patterns, `--relaxed`) and checked against the reference simulators (`NVC.md`). Nothing in here is copied from the reference simulators.
 
 Layout: `<area>/<name>.vhd`. Areas follow sem.md:
 
@@ -58,8 +58,8 @@ Cases that depend on a second unit (E1007 and W1008, with `--design-std=2019`) p
 
 ## Reference check (`check_ref.py`)
 
-`python3 check_ref.py [-j N] [files]` runs NVC and GHDL on each file (a fresh work dir under `~/.cache/rsim-negtests/work`, `timeout 60 systemd-run --user --scope -p MemoryMax=1G`, at most 8 in parallel) and prints one TSV row: path, expected codes with lines, NVC verdict and error lines, GHDL verdict and error lines. `NVC.md` is the recorded result, with a justification for every file NVC does not agree with.
+`python3 check_ref.py [-j N] [files]` runs the reference simulators on each file (a fresh work dir under `~/.cache/rsim-negtests/work`, `timeout 60 systemd-run --user --scope -p MemoryMax=1G`, at most 8 in parallel) and prints one TSV row: path, expected codes with lines, the reference simulator verdict and error lines, the second reference simulator verdict and error lines. `NVC.md` is the recorded result, with a justification for every file the reference simulator does not agree with.
 
 ## Adding a test
 
-One illegal thing per file, no unrelated errors, a short name that says what is wrong. Put `-- LRM <clause>`. Run `check_ref.py`; NVC must reject at the same line (or the file goes into the disagreement table with a reason). Do not rely on NVC-only behaviour.
+One illegal thing per file, no unrelated errors, a short name that says what is wrong. Put `-- LRM <clause>`. Run `check_ref.py`; the reference simulator must reject at the same line (or the file goes into the disagreement table with a reason). Do not rely on behaviour of only one reference simulator.

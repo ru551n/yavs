@@ -8,7 +8,7 @@ by several crates; the test code lives in the crates. Each subdirectory has its 
 | `diag/*.vhd`, `*.stderr` | Parse-diagnostic snapshots | `crates/yavs/tests/diag.rs` | `tests/diag/AGENTS.md` |
 | `diag/sem/<area>/*.vhd` | Negative semantic suite with `-- expect:` headers | `crates/yavs-sem/tests/diag_sem.rs` | `tests/diag/AGENTS.md` |
 | `cli/` | `yavs analyze/elab/run` sources and expected stderr (`$TMP` placeholder) | `crates/yavs/tests/cli.rs` (cases listed in the test) | `crates/yavs/AGENTS.md` |
-| `corpus/<group>/*.vhd`, `*.expected` | Differential testbenches with NVC references, `RESULTS.md` | `tools/difftest`, `crates/yavs-lower/tests/corpus.rs` | `tests/corpus/AGENTS.md` |
+| `corpus/<group>/*.vhd`, `*.expected` | Differential testbenches with reference simulator outputs, `RESULTS.md` | `tools/difftest`, `crates/yavs-lower/tests/corpus.rs` | `tests/corpus/AGENTS.md` |
 | `parse-corpus/*.txt` | Expected parse results for external corpora | `crates/yavs/tests/corpus.rs` (`--features corpus`) | `tests/parse-corpus/AGENTS.md` |
 
 ## Rules that bind every test input here
@@ -16,7 +16,7 @@ by several crates; the test code lives in the crates. Each subdirectory has its 
 - Every behaviour gets a test; every error a negative test with its code and position (root
   rule 14). Expected outputs change only by blessing (`YAVS_BLESS=1`, `--bless`,
   `YAVS_SEM_XFAIL_WRITE=1`) followed by reading the diff; explain list changes in the commit.
-- Written fresh: never copy NVC, GHDL or rust_hdl tests (root rule 6). External corpora are never
+- Written fresh: never copy the reference simulators or rust_hdl tests (root rule 6). External corpora are never
   committed (rule 7); only result lists are.
 - No testbench longer than 5 minutes (rule 16); reference runs per rule 15.
 - Test scratch files go to pid-suffixed or `tempfile` directories, never fixed names under `/tmp`

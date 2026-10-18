@@ -31,7 +31,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 
 | Code | Why |
 |---|---|
-| E1003 dependency cycle | needs a manifest with two files; NVC/GHDL cannot be run on it as a single file. Add to the harness-level tests with `yavs-lib` |
+| E1003 dependency cycle | needs a manifest with two files; the reference simulators cannot be run on it as a single file. Add to the harness-level tests with `yavs-lib` |
 | E1631 several signature matches | a full signature (parameters and result) is unique among homographs; no legal input produces it. Candidate for removal |
 | E1910 | see E0004 above |
 | E1106 | see E0003 above |

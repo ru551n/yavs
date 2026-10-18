@@ -4,7 +4,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to run or chang
 
 ## 1. Purpose and boundaries
 
-- Front-end fuzzing from M0 (`docs/plan.md` rule 15: a week of AFL found 32 crashes in NVC).
+- Front-end fuzzing from M0 (`docs/plan.md` rule 15: a week of fuzzing found 32 crashes in another simulator's front end).
   Own crate `yavs-fuzz` in its **own workspace** (cargo-fuzz needs nightly), depending on
   `yavs-diag`, `yavs-syntax`, `yavs-sem`. Not built by `cargo test --workspace`.
 - `fuzz_targets/parse.rs`: lexer, conditional analysis, parser and rendering in both standards

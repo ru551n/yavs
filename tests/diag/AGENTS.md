@@ -6,7 +6,7 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first. Contracts: `crates/yavs/t
 ## 1. Purpose and boundaries
 
 - `tests/diag/NAME.vhd` plus `NAME.stderr`: rendered output of `yavs parse` (colour off) must
-  equal the snapshot, in the style of rustc UI tests. An optional first line `-- yavs: ARGS` adds
+  equal the snapshot, in the style of compiler UI tests. An optional first line `-- yavs: ARGS` adds
   command line arguments (e.g. `--std 2019`, `--message-format json`). Owned by `yavs-syntax` and
   `yavs-diag`.
 - `tests/diag/sem/<area>/NAME.vhd`: inputs `yavs-sem` must reject, warn about, or accept silently
@@ -22,7 +22,7 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first. Contracts: `crates/yavs/t
 |---|---|---|
 | Snapshots of rendered text are part of review | Diagnostics are a user interface | `docs/plan.md` "Verification", root rule 14 |
 | Exact `(code, line, col)` sets, warnings included, positions at the start of the primary span | Checks cascade suppression | `tests/diag/sem/README.md`, sem.md 8.2 |
-| Every negative file is checked against NVC and GHDL (`check_ref.py`); disagreements are justified in `NVC.md` | LRM policy (match existing simulators) | `tests/diag/sem/README.md` |
+| Every negative file is checked against the reference simulators (`check_ref.py`); disagreements are justified in `NVC.md` | LRM policy (match existing simulators) | `tests/diag/sem/README.md` |
 | One illegal thing per file, `-- LRM <clause>` named | Focused failures | same, "Adding a test" |
 | Files that cannot pass yet are listed in `crates/yavs-sem/tests/diag_sem_xfail.txt`; any ICE fails regardless | Visible progress, no hidden crashes | `crates/yavs-sem/CONTRIBUTING.md` "Testing" |
 | `fuzz/` holds minimised fuzzer finds as regression tests | Rule 15 | `STATUS.md` "sem robustness" |
@@ -35,7 +35,7 @@ YAVS_BLESS=1 cargo test -p yavs --test diag                 # rewrite them, then
 cargo test -p yavs-sem --test diag_sem                      # negative suite
 YAVS_SEM_XFAIL_WRITE=1 cargo test -p yavs-sem --test diag_sem   # regenerate the xfail list (diff must only remove lines)
 YAVS_BLESS=1 cargo test -p yavs-sem --test diag_sem         # fill existing (possibly empty) .stderr snapshots
-python3 tests/diag/sem/check_ref.py -j 8 FILE...            # NVC/GHDL agreement (scratch ~/.cache/rsim-negtests)
+python3 tests/diag/sem/check_ref.py -j 8 FILE...            # reference simulator agreement (scratch ~/.cache/rsim-negtests)
 ```
 
 - Codes: from the owning crate's registry (`crates/yavs-diag/src/lib.rs`, sem.md 8.1);

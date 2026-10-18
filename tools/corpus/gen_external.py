@@ -380,6 +380,13 @@ SPECS["vunit-tests"] = dict(
                 passes="every test case reports pass: VUnit test_runner_cleanup with no failed check. tb_*_failed style benches are written to expect failures via mock/unmock and pass overall"))
 
 
+def neutral(s):
+    """Documents name no other projects: tool names in generated prose become sim1/sim2/sim3."""
+    for a, b in (("NVC", "sim1"), ("nvc", "sim1"), ("GHDL", "sim2"), ("ghdl", "sim2"), ("Questa", "sim3"), ("questa", "sim3")):
+        s = re.sub(rf"(?<![\w/.-]){a}(?![\w/-])", b, s)
+    return re.sub(r"\s*\(Using LLVM [\d.]+\)", "", re.sub(r"^sim1 ", "Reference simulator sim1 ", s))
+
+
 def notes(name, std, nfiles, nprefix):
     """Write <name>.nvc.md from the manifest numbers and the recorded rejects."""
     import collections, subprocess as sp
@@ -389,14 +396,15 @@ def notes(name, std, nfiles, nprefix):
     rej = d["rejects"]
     ne = HERE / f"{name}.nvc.expected"
     nacc = sum(1 for x in ne.read_text().splitlines() if x.startswith("PASS")) if ne.exists() else nfiles
-    L = [f"# {name}: NVC validation", "", ver, "",
+    L = [f"# {name}: reference simulator validation", "", neutral(ver), "",
+         "sim1 is the primary reference simulator, sim2 the second and sim3 the third; the roles are fixed by the corpus tooling.", "",
          f"Every manifest entry analyzed in order into `~/.cache/rsim-corpora/nvc-{name}` with `tools/corpus/run.py {name} --tool nvc --bless` "
          f"(one file per call, `--std={std}`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).", "",
-         f"- Files: {nfiles}; accepted by NVC: {nacc}; rejected by NVC: {nfiles - nacc}. The manifest lists only files the reference tools accept "
-         f"({'NVC and GHDL, Questa as tiebreaker' if std == '2008' else 'NVC, Questa as second witness'}); the rest are under Excluded.",
+         f"- Files: {nfiles}; accepted by sim1: {nacc}; rejected by sim1: {nfiles - nacc}. The manifest lists only files the reference tools accept "
+         f"({'sim1 and sim2, sim3 as tiebreaker' if std == '2008' else 'sim1, sim3 as second witness'}); the rest are under Excluded.",
          f"- Flags needed: {', '.join(spec.get('flags', {}).get('nvc', [])) or 'none'}."]
     if nprefix:
-        L.append(f"- The first {nprefix} entries are the {' + '.join(spec['prefix'])}-{std} library files the test benches need (vunit_lib, OSVVM); the project's own files follow.")
+        L.append(f"- The first {nprefix} entries are the {' + '.join(spec['prefix'])}-{std} library files the test benches need (the test runner library and a verification library); the project's own files follow.")
     src = spec["sources"]
     L.append("- Licenses: " + "; ".join(f"{k}: {v[2]}" for k, v in src.items()) + ".")
     if rej:
@@ -411,10 +419,10 @@ def notes(name, std, nfiles, nprefix):
                 key = "uses a design unit or library that is missing: its own file is excluded or it is a vendor library (cascade)"
             groups[key].append(k)
         for key, ks in sorted(groups.items(), key=lambda kv: -len(kv[1])):
-            L.append(f"- {len(ks)} x {key.strip()} (e.g. `{ks[0]}`)")
+            L.append(f"- {len(ks)} x {neutral(key.strip())} (e.g. `{ks[0]}`)")
     if ne.exists() and nacc < nfiles:
-        L += ["", "## Kept although NVC rejects them (GHDL and Questa accept)", ""] + \
+        L += ["", "## Kept although sim1 rejects them (sim2 and sim3 accept)", ""] + \
              [f"- `{x.split(None, 2)[2]}`" for x in ne.read_text().splitlines() if x.startswith("FAIL")]
     if d["log"]:
-        L += ["", "## Tool disagreements", ""] + [f"- {x}" for x in d["log"][:40]] + ([f"- ... {len(d['log']) - 40} more in rejects/{name}.json"] if len(d["log"]) > 40 else [])
+        L += ["", "## Tool disagreements", ""] + [f"- {neutral(x)}" for x in d["log"][:40]] + ([f"- ... {len(d['log']) - 40} more in rejects/{name}.json"] if len(d["log"]) > 40 else [])
     (HERE / f"{name}.nvc.md").write_text("\n".join(L) + "\n")

@@ -1,7 +1,7 @@
 # AGENTS.md: lib/ (std and ieee sources)
 
 Read the root `AGENTS.md` first. This file is for an agent about to change anything under `lib/`.
-`lib/README.md` (layout, licensing, tools, NVC result), `lib/SOURCES.md` (origin, pinned commit,
+`lib/README.md` (layout, licensing, tools, the reference simulator result), `lib/SOURCES.md` (origin, pinned commit,
 every edit) and `lib/NATIVE.md` (native symbols) are the binding documents.
 
 ## 1. Purpose and boundaries
@@ -14,7 +14,7 @@ every edit) and `lib/NATIVE.md` (native symbols) are the binding documents.
 - `ORDER.md`: analysis order per revision (machine readable).
 - `synopsys/test/`: black-box testbenches and runner for the deferred Synopsys packages (M4b);
   no Synopsys package sources exist here.
-- Not here: VUnit, OSVVM, UVVM or vendor libraries (external corpora, fetched, never committed).
+- Not here: external test runner, verification or vendor libraries (external corpora, fetched, never committed).
 
 ## 2. Map
 
@@ -36,9 +36,9 @@ every edit) and `lib/NATIVE.md` (native symbols) are the binding documents.
 | `std` bodies are native (`yavs-std`, `yavs-interp`), named by `NATIVE.md` symbols | IEEE `std` has declarations only | `docs/plan.md` "Library sources", `docs/design/sem.md` 2.10 |
 | Files are Latin-1; the 8-bit bytes in STANDARD and NUMERIC_* must survive | LRM 15.2 | `tools/derive_libs.py` |
 | Old `rsim` comments in vendored files are kept | `SHA256SUMS` stays valid after the rename | `docs/decisions.md` "Project name" |
-| One `std`/`ieee` revision per design; mapping `std`/`ieee` as user libraries is an error | Same `INTEGER` everywhere (user, 2026-10-18) | `docs/plan.md` "VUnit integration", `docs/cli-contract.md` 3 |
+| One `std`/`ieee` revision per design; mapping `std`/`ieee` as user libraries is an error | Same `INTEGER` everywhere (user, 2026-10-18) | `docs/plan.md` "Test-runner integration", `docs/cli-contract.md` 3 |
 | Synopsys packages deferred to M4b, clean room only; do not reproduce them from memory | User, 2026-10-18; root `AGENTS.md` rule 8 | `docs/plan.md` "Vendor libraries" |
-| Licence: Apache-2.0 (IEEE P1076 WG), redistributable with yavs; nothing from NVC/GHDL | Licensing | `lib/README.md` "Licensing" |
+| Licence: Apache-2.0 (IEEE P1076 WG), redistributable with yavs; nothing from the reference simulators | Licensing | `lib/README.md` "Licensing" |
 
 Decisions about these sources go in `SOURCES.md` (edits) or this section, in the same commit
 (root `AGENTS.md` rule 24).
@@ -54,7 +54,7 @@ Decisions about these sources go in `SOURCES.md` (edits) or this section, in the
   archives ship it as `lib/` next to the binary.
 - `cargo test --workspace` parses every file here (`crates/yavs/tests/lib_parse.rs`) and analyzes
   std/ieee in both revisions (`crates/yavs-sem/tests/stdlib.rs`).
-- NVC reference runs (`tools/check-nvc.sh`) follow root `AGENTS.md` rule 15.
+- Reference simulator runs (`tools/check-nvc.sh`) follow root `AGENTS.md` rule 15.
 
 ## 5. How to work here
 
@@ -62,7 +62,7 @@ Decisions about these sources go in `SOURCES.md` (edits) or this section, in the
 tools/update-ieee-libs.sh            # check: vendored tree equals the derivation of the pinned commit
 tools/update-ieee-libs.sh --write    # rewrite lib/std and lib/ieee after changing derive_libs.py
 python3 -I tools/gen_native_md.py > lib/NATIVE.md
-tools/check-nvc.sh 2008              # NVC analysis of the tree (scratch under ~/.cache/rsim-libs)
+tools/check-nvc.sh 2008              # reference simulator analysis of the tree (scratch under ~/.cache/rsim-libs)
 cargo test -p yavs --test lib_parse && cargo test -p yavs-sem --test stdlib --test native_symbols
 ```
 

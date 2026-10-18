@@ -21,33 +21,33 @@ All files come from the IEEE VASG repository (<https://opensource.ieee.org/vasg/
 Apache-2.0 ("Copyright 2019 IEEE P1076 WG Authors"), except two small context files written for yavs
 (also Apache-2.0). Edited files keep the upstream header; the edits are listed in `SOURCES.md`.
 yavs itself is MIT/Apache, so these files can be redistributed with it. Nothing here is taken from
-NVC or GHDL (GPL).
+the reference simulators (GPL).
 
 ## Tools
 
 - `tools/update-ieee-libs.sh [--check|--write]`: re-fetch at the pinned commit, verify hashes, compare or rewrite.
-- `tools/check-nvc.sh [2008|2019]`: analyze the tree with NVC in `ORDER.md` order (scratch libraries under
+- `tools/check-nvc.sh [2008|2019]`: analyze the tree with the reference simulator in `ORDER.md` order (scratch libraries under
   `~/.cache/rsim-libs/work`, each run under `timeout 300 systemd-run --user --scope -p MemoryMax=2G`).
 
-## NVC analysis result (NVC 1.23-devel)
+## The reference simulator analysis result (the reference simulator 1.23-devel)
 
 53 of 55 files analyze cleanly (27 for 2008, 26 of 28 for 2019), no warnings.
 
-- `std/2019/standard.vhdl` is analyzed from a copy: NVC hardcodes its own bootstrap and wants the
-  type named `RANGE_DIRECTION` declared after `BOOLEAN` (a NVC limitation, the vendored LRM text is
+- `std/2019/standard.vhdl` is analyzed from a copy: the reference simulator hardcodes its own bootstrap and wants the
+  type named `RANGE_DIRECTION` declared after `BOOLEAN` (the reference simulator limitation, the vendored LRM text is
   valid). `tools/check-nvc.sh` renames and moves it. `--bootstrap` is needed for `standard.vhdl`.
 - `std/2019/env.vhdl` is **rejected**: `DIR_CLOSE (Dir : in DIRECTORY)` and the three
-  `TO_STRING (call_path : ...)` functions have `in` parameters of types containing access types; NVC
+  `TO_STRING (call_path : ...)` functions have `in` parameters of types containing access types; the reference simulator
   requires class `variable` for those (LRM 4.2.2). This is an upstream defect in the IEEE file, kept
   verbatim.
 - `std/2019/reflection.vhdl` is **rejected**: the `*_MIRROR_PT` protected types return the
-  incomplete types (`VALUE_MIRROR`, `SUBTYPE_MIRROR`, ...) from their methods. NVC does not support
+  incomplete types (`VALUE_MIRROR`, `SUBTYPE_MIRROR`, ...) from their methods. The reference simulator does not support
   this; the LRM allows it (the incomplete types are completed by access types to the protected
   types). yavs has to accept it.
-- All of `ieee/` analyzes in both modes against NVC's own `std` (the `ieee` check does not use the
+- All of `ieee/` analyzes in both modes against the reference simulator's own `std` (the `ieee` check does not use the
   scratch `std`).
 
-## Cross-check against rust_hdl `vhdl_libraries` (reference only, MPL; not used)
+## Cross-check against another VHDL front end's library sources (reference only, MPL; not used)
 
 - `ieee2008/`: all files except the four below are byte-identical to ours (`float_generic_pkg` differs
   only in CRLF line endings). Differences: `numeric_std` has `subtype U_UNSIGNED/U_SIGNED` instead of `alias`, and the

@@ -7,10 +7,9 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 ## 1. Purpose and boundaries
 
 - Measures `yavs analyze` on real libraries (M1 check: zero diagnostics on the library corpora):
-  one TOML manifest per corpus and standard (VUnit, VUnit tests, OSVVM, UVVM, hdl-modules,
-  open-logic, en_cl_fix, neorv32, satcat5, surf, vhlib, json-for-vhdl, fletcher, VHDL compliance,
-  tool checks, ideas, interfaces, extras, and `yavs-lib` = our own `lib/`), each with expected
-  PASS/FAIL lists for yavs and for NVC.
+  one TOML manifest per corpus and standard (external test runner and its tests, verification libraries, and third-party
+  libraries and cores, named as in the `<name>-<std>.toml` files, plus `yavs-lib` = our own `lib/`), each with expected
+  PASS/FAIL lists for yavs and for the reference simulator.
 - Not here: parse-only corpora (`tests/parse-corpus/`, run by `cargo test -p yavs --features
   corpus`) and simulation (`tools/difftest`). Sources come from the corpus cache, never copied.
 
@@ -19,12 +18,12 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 | File | What |
 |---|---|
 | `<name>.toml` | Generated compile manifest: `name`, `std`, ordered files with library, `exclude` with reasons, `[flags]` per tool. Do not edit by hand |
-| `<name>.expected` | yavs expected list, one `PASS|FAIL <lib> <source>/<path>` per entry in order (initially derived from NVC's) |
-| `<name>.nvc.expected`, `<name>.nvc.md` | NVC results and the validation note (tool version, accepted/rejected, flags) |
-| `rejects/<name>.json` | Files NVC/GHDL/Questa rejected during validation, with the first error line |
+| `<name>.expected` | yavs expected list, one `PASS|FAIL <lib> <source>/<path>` per entry in order (initially derived from the reference simulator's) |
+| `<name>.nvc.expected`, `<name>.nvc.md` | The reference simulator results and the validation note (tool version, accepted/rejected, flags) |
+| `rejects/<name>.json` | Files the reference simulators rejected during validation, with the first error line |
 | `run.py MANIFEST [--tool yavs|nvc] [--cmd T] [--keep-going] [--bless] [--expected none] [--log F]` | Analyze one file per call in manifest order and compare with the expected list; exit 0 as expected, 1 differences, 2 usage |
-| `gen_manifests.py [--root DIR] [NAME...]`, `--validate NAME...` | Generate manifests from each project's own build description (VUnit `builtins.py`, OSVVM `.pro`, UVVM compile orders, `lib/ORDER.md`) |
-| `gen_external.py` | Specs for the external library corpora and their validation with NVC plus GHDL (2008) or Questa (2019) |
+| `gen_manifests.py [--root DIR] [NAME...]`, `--validate NAME...` | Generate manifests from each project's own build description (its compile-order scripts and project files, and `lib/ORDER.md`) |
+| `gen_external.py` | Specs for the external library corpora and their validation with the reference simulator plus the second reference simulator (2008) or the third reference simulator (2019) |
 | `report.sh [YAVS_BINARY]` | Run every manifest (4 in parallel, no comparison) and regenerate `RESULTS.md`, grouping failures by first diagnostic |
 | `RESULTS.md` | Generated; do not edit by hand |
 
@@ -32,9 +31,9 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 
 | Decision | Why | Source |
 |---|---|---|
-| Manifests are generated from the projects' own build descriptions and validated against reference tools; files the references reject are excluded with the reason | yavs must analyze what NVC/GHDL/Questa accept (LRM policy) | `gen_external.py` docstring, `docs/plan.md` "LRM interpretation policy" |
-| Where NVC and GHDL disagree, Questa decides | Tie-breaker | `gen_external.py` |
-| One file per `yavs analyze` call, in manifest order | Matches how VUnit compiles; per-file failures are exact | `run.py`, `docs/decisions.md` "Semantic analysis" (failed file hides its units) |
+| Manifests are generated from the projects' own build descriptions and validated against reference tools; files the references reject are excluded with the reason | yavs must analyze what the reference simulators accept (LRM policy) | `gen_external.py` docstring, `docs/plan.md` "LRM interpretation policy" |
+| Where the reference simulators disagree, the third reference simulator decides | Tie-breaker | `gen_external.py` |
+| One file per `yavs analyze` call, in manifest order | Matches how test runners compile; per-file failures are exact | `run.py`, `docs/decisions.md` "Semantic analysis" (failed file hides its units) |
 | Each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` | Root rule 15 | `run.py` |
 | Expected lists change only with `--bless` and a reviewed diff explained in the commit | No silent regressions | `run.py` |
 
@@ -56,7 +55,7 @@ Decisions about the corpora go in this section in the same commit (root `AGENTS.
 tools/fetch-corpus.sh                                         # sources into ~/.cache/rsim-corpus
 python3 tools/corpus/run.py vunit-2008 --keep-going           # compare with vunit-2008.expected
 python3 tools/corpus/run.py vunit-2008 --bless                # accept, then review git diff
-python3 tools/corpus/run.py osvvm-2019 --tool nvc             # NVC reference
+python3 tools/corpus/run.py osvvm-2019 --tool nvc             # reference simulator
 python3 tools/corpus/gen_manifests.py vunit-2008              # regenerate a manifest
 tools/corpus/report.sh                                        # RESULTS.md
 ```
@@ -64,4 +63,4 @@ tools/corpus/report.sh                                        # RESULTS.md
 ## 6. Coordination
 
 - Open issues (snapshot 2026-10-18): #62 refresh `RESULTS.md`; #63 gate in CI; corpus false
-  positives and bugs #59, #61, #157 (#55 to #58, #60 closed as stale 2026-10-18); #115 OSVVM and UVVM own suites; #112 VUnit test suites.
+  positives and bugs #59, #61, #157 (#55 to #58, #60 closed as stale 2026-10-18); #115 external verification library suites; #112 external test runner suites.

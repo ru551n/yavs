@@ -25,7 +25,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | `src/lib.rs` | Re-exports (the public API is exactly this list) |
 | `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`), `PortMode` |
 | `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
-| `src/process.rs` | `Process` trait, `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `stop`/`finish`, `force`/`release`, streams), `ProcId`, `Severity`, `StreamId` |
+| `src/process.rs` | `Process` trait (`run`, `serial`), `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`), `ProcId`, `Severity` |
 | `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
 | `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
 | `src/time.rs` | `Time` (checked fs arithmetic), `Unit`, `TimeError` |
@@ -38,8 +38,9 @@ the IR plugs in, error handling, open questions); read it before editing.
 | Decision | Why | Source |
 |---|---|---|
 | Ready processes run in parallel (rayon); they read only current-cycle values and write their own driver queue and effect buffer | No data races without `unsafe` | `docs/plan.md` "Parallel kernel design", DESIGN.md "Parallel evaluation" |
-| Effects (report, assert, files, `stop`/`finish`, force) are committed in elaboration (`ProcId`) order | `--threads 1` and `N` byte-identical | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3 |
-| Processes touching non-protected shared variables or protected types are `serial` through M3 (user decision) | No locks needed yet | `docs/decisions.md` "Kernel round 2" (Protected types), DESIGN.md |
+| Effects (report, assert, textio `OUTPUT`, `stop`/`finish`, force) are committed in elaboration (`ProcId`) order | `--threads 1` and `N` byte-identical | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3 |
+| Processes touching non-protected shared variables, protected types or disk files are `serial` through M3 (user decision; files: #82); serial is `ProcFlags::serial` or `Process::serial` | No locks needed yet; the process knows what it touches | `docs/decisions.md` "Kernel round 2" (Protected types), "Kernel round 3", DESIGN.md |
+| No kernel user-file streams (K6 dropped): the interpreter reads and writes disk files directly | Write, close, reopen-for-read in one delta; serial callers keep it deterministic | `docs/decisions.md` "Kernel round 3" |
 | `--shuffle` permutes execution order with a seeded splitmix64, commit order fixed | Expose order-dependent testbenches (NVC #614) | `docs/plan.md`, DESIGN.md |
 | `SimControl` is the only way to drive simulation (CLI, DAP, VHPI) | GUI-ready design | `docs/plan.md` "Designed for the GUI" |
 | Per-element flat event arrays over whole signals, no per-scalar objects | Rule 2 | `docs/plan.md` rule 2, `docs/decisions.md` "Kernel crate and process interface" |
@@ -63,9 +64,10 @@ rule 24).
 - `#![forbid(unsafe_code)]` via workspace lints: keep it that way.
 - Bad ids or ranges are `ErrorKind::BadRef`, never an index panic; a panic is still caught and
   becomes `Internal` (exit 101, the CLI maps it to 3).
-- User files: the kernel's K6 streams exist, but the interpreter writes disk files directly so
-  write/close/reopen in one delta works (`docs/decisions.md` "IR and interpreter"); `STD_OUTPUT`
-  still goes through `StreamId::OUTPUT` to stay ordered with `report` (#82 records the K6 gap).
+- User files are not kernel state: the interpreter writes disk files directly and their users
+  are serial (`Process::serial`); only textio `OUTPUT` goes through `Ctx::output`, ordered with
+  `report`. A process that is serial in the IR but built without the flag runs in parallel and
+  breaks determinism silently, so `Builder::process` ORs in `Process::serial` (#107).
 - Records resolved as a whole composite are one byte leaf: logic fields inside are bytes (#83).
 - A new `ErrorKind` needs its own code in `ErrorKind::code` (registry range `E3000`-`E3099`) and
   an entry in the yavs-diag registry table if it opens a new sub-range.
@@ -89,8 +91,7 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 
 - Kernel API changes ripple into `yavs-interp` (process), `yavs-elab` (builder) and the CLI;
   `docs/design/ir.md` sections 3.2 and 6 describe the seam.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #82
-  write-then-read of a user file inside one delta (K6); #83 records resolved as a whole store
-  logic fields as bytes; #103 update/commit phases are
-  single-threaded; #107 `--threads N` determinism across the difftest and shared variables.
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #83
+  records resolved as a whole store logic fields as bytes; #103 update/commit phases are
+  single-threaded.
   Questions on report order vs NVC: #11, #12.

@@ -1,7 +1,5 @@
 //! The process interface the interpreter and the LLVM tier implement.
 
-use std::io::Write;
-
 use crate::error::{ErrorKind, SimError};
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Txn, Waveform,
@@ -12,16 +10,6 @@ use crate::value::{Buf, LogicVec, Value, ValueRef};
 /// Stable id of a process: its index in elaboration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProcId(pub u32);
-
-/// An output stream: [`StreamId::OUTPUT`] (textio `output`, delivered to observers) or a user
-/// file opened with [`Ctx::open_stream`]. Ids are `(process + 1) << 32 | n`, so they do not
-/// depend on thread scheduling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StreamId(pub u64);
-
-impl StreamId {
-    pub const OUTPUT: StreamId = StreamId(0);
-}
 
 /// `severity_level`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,6 +36,12 @@ pub enum Severity {
 /// variables and, through M3, every caller of a protected type).
 pub trait Process: Send {
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError>;
+
+    /// The process touches state shared with other processes (shared variables, protected
+    /// objects, disk files): the kernel runs it as if built with `ProcFlags::serial`.
+    fn serial(&self) -> bool {
+        false
+    }
 }
 
 impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {
@@ -59,9 +53,7 @@ impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {
 /// A buffered side effect, committed after the delta in elaboration order.
 pub(crate) enum Effect {
     Report(Severity, String),
-    Output(StreamId, Vec<u8>),
-    Open(StreamId, Box<dyn Write + Send>),
-    Close(StreamId),
+    Output(Vec<u8>),
     Stop(i32),
     Finish(i32),
     Op(SignalOp),
@@ -93,7 +85,6 @@ pub(crate) struct ProcState {
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
     pub scheduled: Vec<(Time, DriverId)>,
-    pub next_stream: u32,
 }
 
 pub(crate) struct DriverInfo {
@@ -411,26 +402,10 @@ impl Ctx<'_> {
         self.st.effects.push(Effect::Report(severity, msg.into()));
     }
 
-    /// Register an opened user file. The kernel owns the writer from the commit of this run
-    /// on; writes to it are buffered and committed in elaboration order.
-    pub fn open_stream(&mut self, w: Box<dyn Write + Send>) -> Result<StreamId, SimError> {
-        let n = self.st.next_stream;
-        self.st.next_stream = n
-            .checked_add(1)
-            .ok_or_else(|| self.error(ErrorKind::Runtime("too many open files".into())))?;
-        let id = StreamId((u64::from(self.pid.0) + 1) << 32 | u64::from(n));
-        self.st.effects.push(Effect::Open(id, w));
-        Ok(id)
-    }
-
-    /// Buffered output: `StreamId::OUTPUT` goes to observers, a user stream to its writer.
-    pub fn output(&mut self, stream: StreamId, bytes: &[u8]) {
-        self.st.effects.push(Effect::Output(stream, bytes.to_vec()));
-    }
-
-    /// `file_close`: flush and drop the writer at commit.
-    pub fn close_stream(&mut self, stream: StreamId) {
-        self.st.effects.push(Effect::Close(stream));
+    /// Buffered textio `OUTPUT` text, delivered to observers at commit in elaboration order
+    /// (ordered with `report`). Disk files are not kernel state: their users are serial.
+    pub fn output(&mut self, bytes: &[u8]) {
+        self.st.effects.push(Effect::Output(bytes.to_vec()));
     }
 
     /// `std.env.stop`.

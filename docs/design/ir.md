@@ -221,8 +221,9 @@ Lowering of the main statement forms:
 - **Protected:** an instance is a heap object holding its private variables; methods are `Func`s
   with `self` as the first parameter. `CallProt` takes the instance's lock (3.5).
 - **Files:** `FileId` indexes the owner's file table (process or shared). Reads are immediate;
-  writes to `OUTPUT` go through `Ctx::output` (buffered, committed in elaboration order); writes
-  to user files are buffered the same way under a per-file stream id (kernel ask K6).
+  writes to `OUTPUT` go through `Ctx::output` (buffered, committed in elaboration order); user
+  files are read and written directly, and every caller of a file operation is serial (3.5;
+  kernel ask K6 was dropped, #82).
 
 ### 1.7 Foreign subprograms (VHPIDIRECT), no libffi
 
@@ -414,14 +415,15 @@ SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Obs
 |---|---|---|
 | `Program` (code, types, consts, stmt table) | `Arc`, built before the run | shared read-only |
 | `InstData` of instances and packages (non-shared parts) | `Arc`, frozen after elab | shared read-only |
-| frames, private heap, temps, files of process-local file objects | the `InterpProcess` | `&mut` in `run` only |
+| frames, private heap, temps | the `InterpProcess` | `&mut` in `run` only |
 | driver queues, effects, sensitivity | kernel `Ctx` | per process (kernel design) |
-| shared variables, protected instances, shared heap, files declared outside processes | `SharedState` | only from processes marked serial (below) |
+| shared variables, protected instances, shared heap, files (any file object: two can name the same external file) | `SharedState` / the file system | only from processes marked serial (below) |
 | coverage counters | `Arc<[AtomicU64]>` indexed `inst.cov_base + item` | relaxed `fetch_add`; sums are order independent |
 
 - **Serial marking:** at elaboration a process is `ProcFlags { serial: true }` when its body or any
-  reachable subprogram has `TOUCHES_SHARED` (shared variable, protected call, shared file, or a
-  package variable). Computed once per `Func` by the linear propagation in 1.2, looked up per
+  reachable subprogram has `TOUCHES_SHARED` (shared variable, protected call, a disk-file or
+  directory native, or a package variable; textio `OUTPUT` users included, a ponytail).
+  The interpreter reports it through `Process::serial`, which the kernel ORs into the flags. Computed once per `Func` by the linear propagation in 1.2, looked up per
   instance.
 - **Protected locking (M2/M3):** every protected caller is serial, so the kernel already runs it
   alone and `CallProt` takes no lock. `// ponytail: protected calls serialised via serial
@@ -571,7 +573,7 @@ translation table is needed between elab ids and kernel ids.
 | K3 | `Ctx::driving_value(DriverId)` | `'driving_value`, reading `out` ports |
 | K4 | `Ctx::driving(DriverId)` and null transactions (`disconnect`) | guarded signals, M3 |
 | K5 | Null-range signals (`len == 0`) accepted as empty | null arrays as signals, M3 |
-| K6 | Buffered writes to user files (stream ids beyond `OUTPUT`) | textio, M3 |
+| K6 | Buffered writes to user files (stream ids beyond `OUTPUT`): dropped (#82), disk files are direct and their callers serial | textio, M3 |
 | K7 | Logic leaves stored as yavs-logic planes (`SignalType` variant), element `Range` copies, resolution and events on planes | slice 2 (in progress, kernel agent) |
 
 ## 7. M2 implementation order
@@ -630,10 +632,10 @@ What the implementation does differently from sections 1 to 3, and what producer
 | foreign | `ForeignRef {name, symbol, args: Vec<ForeignArg>, ret}` with `ForeignArg::{Value(CType), ScalarRef(CType, Width), Array {ty, lengths, copy_back}, Record {ty, copy_back}, Access}`. Arrays: the register is a fat-pair address (constrained arrays too); C gets a C-layout copy left to right (logic elements as one code byte, BIT/BOOLEAN as 0/1) and `lengths` `int64_t` lengths. Records of scalars: a naturally aligned C struct. Access: a pointer to the object's data in VHDL layout (after the descriptor of an array object), NULL for null. Copy-back range-checks what C wrote. The elaborator binds pointers through `Bindings.foreign`; `Runtime::new` fails on unbound or mismatched signatures |
 | heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation; a deallocated slot is quarantined until a suspension finds no address to it in the owner's frames and temporaries, so a stale address always meets the freed slot (runtime error, #81). Handles are found through each object's descriptor (#80). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated; objects that addresses in the frames reach are kept; an object whose handles cannot be located from its type skips the collection (never unsound). `// ponytail:` the shared heap is never collected; add a commit-phase collection when long OSVVM runs show growth |
 | verifier | the "no register live across a suspension" check is intra-block only; cross-block liveness needs dataflow and comes with the LLVM tier |
-| serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}`; `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |
+| serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}` and `CallNative` of a file or directory native (#82); `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |
 | elaboration | `Elab` instructions are a runtime "needs yavs-elab" error; `InstData {data, sigs, cov_base}` has no child or package links yet. `call_shared` runs elaboration code with the `SharedState` (shared variables, shared protected objects) |
 | native arguments | `in` scalars by value; `out`/`inout` scalars and access variables by cell address; unconstrained arrays as a fat-pair address; files as the address of their 4-byte cell; records by address. Results: scalars by value, strings as a fat-pair address, `line` as a handle |
-| files | a file cell holds index + 1 into the runtime's file table (0: never opened); `FILE_INPUT` = 1 and `FILE_OUTPUT` = 2 are textio's `INPUT`/`OUTPUT`. Disk files are read and written directly (not via K6 streams), so a process that writes, closes and reopens a file in one delta reads what it wrote; a file object is used by one process or by serial ones, so the bytes do not depend on `--threads`. `STD_OUTPUT` goes through the kernel's OUTPUT stream, ordered with `report`. Implicit file ops are implemented for TEXT; binary `read`/`write` are not yet |
+| files | a file cell holds index + 1 into the runtime's file table (0: never opened); `FILE_INPUT` = 1 and `FILE_OUTPUT` = 2 are textio's `INPUT`/`OUTPUT`. Disk files are read and written directly (not via K6 streams), so a process that writes, closes and reopens a file in one delta reads what it wrote; every caller of a file native is serial, so the bytes do not depend on `--threads`. `STD_OUTPUT` goes through the kernel's OUTPUT stream, ordered with `report`. Implicit file ops are implemented for TEXT; binary `read`/`write` are not yet |
 | lines | `line` objects are `[1 to len][bytes]`; natives replace and deallocate them. A line cell in shared memory gets a shared-heap object |
 | logic BIT | BIT and BOOLEAN elements of logic arrays: the interpreter writes the codes of '0' and '1' (so the std_ulogic plane ops give correct BIT results) and reads either those or the positions 0/1 that yavs-elab uses for BIT leaves. **Open: one encoding must be chosen** (element 0 is the rightmost) |
 | protected | the object is a handle to its state record (`New {shared}`), methods get `self` first (`CallProt`); a shared object is created at elaboration through `call_shared` |

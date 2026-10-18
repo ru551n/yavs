@@ -17,7 +17,7 @@ pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
     Config, EndReason, Hook, Interrupt, Observer, Phase, Report, RunStatus, SimControl, Stats,
 };
-pub use process::{Ctx, ProcId, Process, Severity, StreamId};
+pub use process::{Ctx, ProcId, Process, Severity};
 pub use signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Range, Resolution, Resolver, SigRef, SignalId,
 };

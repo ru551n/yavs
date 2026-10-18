@@ -276,6 +276,10 @@ impl InterpProcess {
 }
 
 impl Process for InterpProcess {
+    fn serial(&self) -> bool {
+        self.m.rt.prog.is_serial(self.m.entry)
+    }
+
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         if self.done {
             let e = Fault::Internal("a terminated process was resumed".into());

@@ -175,8 +175,10 @@ evaluation with ordered commit (threads and shuffle invariance tested on 1000+ p
 Kernel asks of docs/design/ir.md, all done: K1 uncollapsed ports with conversions in the update
 phase (no extra delta), K2 kernel-maintained `'stable`/`'quiet`/`'delayed`/`'transaction`, K3
 `'driving_value`, K4 `'driving`, null transactions and guarded `bus`/`register` signals with
-disconnection time, K5 null-range signals, K6 buffered user-file streams, K7 bit-plane storage
-for logic signals (bytes for everything else).
+disconnection time, K5 null-range signals, K7 bit-plane storage for logic signals (bytes for
+everything else). K6 (buffered user-file streams) was dropped: disk files are the interpreter's
+own and their callers serial (#82). Serial marking reaches the kernel through `Process::serial`,
+so shared-variable, protected-type and file users run in order at any `--threads` (#107).
 
 Benchmark (`cargo run --release -p yavs-kernel --example bench -- 10000 <work>`), 24-core host
 under load from other agents (runs vary by about 15%), 8 worker threads. "Before" is the byte-only

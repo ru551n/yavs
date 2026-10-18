@@ -586,7 +586,7 @@ fn phases_steps_and_end() {
                     c.wait_for(ns(10))
                 }
                 _ => {
-                    c.output(StreamId::OUTPUT, b"bye");
+                    c.output(b"bye");
                     c.finish(3);
                     Ok(())
                 }

@@ -15,8 +15,8 @@ use yavs_ir::{
     PhysOp, Program, Reg, StmtId, Ty, Width,
 };
 use yavs_kernel::{
-    Ctx, DelayMode, Elem, ErrorKind, ForceMode, LogicVec, Severity, SigRef, SimError, StreamId,
-    Time, Value, ValueRef,
+    Ctx, DelayMode, Elem, ErrorKind, ForceMode, LogicVec, Severity, SigRef, SimError, Time, Value,
+    ValueRef,
 };
 use yavs_logic::Planes;
 use yavs_std::arith;
@@ -1883,7 +1883,7 @@ impl Machine {
             }
             Inst::Output { addr, len } => {
                 let b = self.rd(self.r(addr), self.r(len))?.to_vec();
-                kc!().output(StreamId::OUTPUT, &b);
+                kc!().output(&b);
             }
             Inst::Cover { item } => {
                 let i = self.inst.cov_base as usize + item.0 as usize;

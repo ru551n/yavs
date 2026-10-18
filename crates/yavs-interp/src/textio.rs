@@ -13,14 +13,15 @@
 //!
 //! Disk files are read and written directly through `yavs_std::file::TextFile`, not through
 //! kernel streams, so that a process that closes a file and opens it again for reading in
-//! the same delta sees what it wrote. A file object is used by one process, or by serial
-//! processes in elaboration order, so the bytes written do not depend on `--threads`.
+//! the same delta sees what it wrote. Every caller of a file native is serial (yavs-ir
+//! `TOUCHES_SHARED`), so the bytes on disk do not depend on `--threads` even when file objects
+//! of different processes name the same external file.
 //! `STD_OUTPUT` goes through the kernel's OUTPUT stream, ordered with `report`.
 
 use std::io::Write;
 
 use yavs_ir::{TyId, Width};
-use yavs_kernel::{Ctx, StreamId};
+use yavs_kernel::Ctx;
 use yavs_std::file::{
     FileError, FileOpenKind, FileOpenState, FileOpenStatus, FileOrigin, STD_OUTPUT, TextFile,
 };
@@ -119,7 +120,7 @@ fn origin(v: u64) -> R<FileOrigin> {
 /// elaboration (before any simulation output).
 fn emit(ctx: &mut Option<&mut Ctx<'_>>, bytes: &[u8]) -> R<()> {
     match ctx.as_deref_mut() {
-        Some(c) => c.output(StreamId::OUTPUT, bytes),
+        Some(c) => c.output(bytes),
         None => std::io::stdout()
             .write_all(bytes)
             .map_err(|e| Fault::Runtime(format!("write to STD_OUTPUT: {e}")))?,

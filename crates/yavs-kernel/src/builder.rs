@@ -245,6 +245,10 @@ impl Builder {
                 Some(owner) => *owner = Some(pid),
             }
         }
+        let flags = ProcFlags {
+            serial: flags.serial || process.serial(),
+            ..flags
+        };
         self.procs.push(ProcDecl {
             name: name.to_string(),
             flags,

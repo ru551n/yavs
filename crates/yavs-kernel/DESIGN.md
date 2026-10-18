@@ -100,14 +100,16 @@ Within a delta the kernel has two phases that never overlap:
   `unsafe`.
 - **Commit phase** (one thread). Processes are visited in elaboration order (`ProcId` order):
   their new transactions and timeouts go into the queue, their sensitivity into waiter lists, and
-  their buffered effects are committed: `report`, `OUTPUT` text, `stop`/`finish`, force/release,
-  and user-file streams (K6: `open_stream` hands the kernel a writer, `output` and
-  `close_stream` are applied in order; ids are `(process + 1) << 32 | n`, independent of
-  scheduling; streams are flushed at end of simulation; an I/O error stops the simulation with
-  the process attached).
-- **Serial processes** (`ProcFlags::serial`) run one at a time, in order, after the parallel
-  batch. Through M3 every process that touches a non-protected shared variable or calls a
-  protected type is serial (user decision); the kernel needs nothing else for that.
+  their buffered effects are committed: `report`, textio `OUTPUT` text, `stop`/`finish`,
+  force/release. User files are not kernel state (K6 was dropped, #82): the interpreter reads
+  and writes disk files directly, so a process that writes, closes and reopens a file in one
+  delta reads what it wrote, and every caller of a file operation is serial.
+- **Serial processes** (`ProcFlags::serial`, or `Process::serial` returning true) run one at a
+  time, in order, after the parallel batch. Through M3 every process that touches a
+  non-protected shared variable, calls a protected type or touches a disk file is serial (user
+  decision; files #82); the kernel needs nothing else for that. `Process::serial` lets the
+  process implementation (the interpreter, from the IR's `TOUCHES_SHARED`) say so itself, so
+  no builder in between can drop it (#107).
 - **Shuffle** (`Config::shuffle`) permutes the execution order with a seeded splitmix64. Commit
   order stays fixed, so only designs whose processes share state change their output. Tests
   check that a design of 1000+ processes, with ports, implicit signals and a logic bus, gives
@@ -141,8 +143,8 @@ pub trait Process: Send {
   resumption evaluate `C`; if false and not `timed_out()`, `wait_on` again and
   `wait_at(original deadline)`.
 - `report`/`assert` to `Ctx::report`, `std.env.stop/finish` to `Ctx::stop/finish`, VHDL-2008
-  `force`/`release` to `Ctx::force/release`, textio to `Ctx::output(StreamId::OUTPUT, ..)` and
-  user files to `open_stream`/`output`/`close_stream`.
+  `force`/`release` to `Ctx::force/release`, textio `OUTPUT` to `Ctx::output`; disk files are
+  the interpreter's own (its callers are serial).
 - Runtime errors as `Err(ctx.error(ErrorKind::Runtime(..)))` with the VHDL call stack in `trace`.
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
@@ -165,7 +167,5 @@ process code, and a panic anywhere in the kernel (a broken invariant), is caught
   enum and the port/implicit machinery. Parallel per-signal update and allocation-free
   transactions are the next steps if real designs show it.
 - Preemption is O(elements times pending transactions) per assignment.
-- A process that writes a user file and reads it back before the end of the delta does not see
-  its own buffered writes (M3: the interpreter can flush its stream through a serial path).
 - Records resolved as a whole composite are one byte-kind leaf whose element is the whole record;
   a logic field inside such a leaf is bytes, not planes.

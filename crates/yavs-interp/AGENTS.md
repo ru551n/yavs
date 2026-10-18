@@ -43,7 +43,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | Natives by NATIVE.md symbol; undefined symbol fails `Runtime::new`, defined but unimplemented is a runtime error naming it | Fail early | same; `lib/NATIVE.md` |
 | Heap: generational handles, precise roots (`Func::roots`), mark and sweep at suspensions; skip collection rather than be unsound | Rule 6 | `docs/plan.md` rule 6, ir.md 1.6 |
 | Deallocated heap slots are quarantined until a suspension finds no address to them in the frames and temporaries; such addresses also keep objects alive in a collection | Addresses have no generation (#81) | `docs/decisions.md` "IR and interpreter" |
-| Disk files written directly by the owning process; `STD_OUTPUT` through the kernel stream | Write/close/reopen in one delta; ordered with `report` (orchestrator, 2026-10-18) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes" |
+| Disk files written directly by the owning process, every caller of a file native serial; `STD_OUTPUT` through `Ctx::output` | Write/close/reopen in one delta; `--threads` independent; ordered with `report` (orchestrator, 2026-10-18; serial: #82) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes", "Kernel round 3" |
 | BIT/BOOLEAN elements of logic arrays use std_ulogic codes '0'/'1' (2/3); scalar BIT/BOOLEAN are positions 0/1 | Shared plane ops | same; `src/implicit.rs` docs |
 | Foreign arrays as C-layout copies left to right, logic elements one code byte, records as aligned structs, access as pointer; copy-back range-checked | NVC convention plus yavs additions | `docs/decisions.md` "IR and interpreter" |
 | Debugging like Riviera-PRO/Questa: conditional line breakpoints with hit counts, step in/over/out, global step, signal breakpoints, process table; stops inside a process need `--threads 1` | User requirement | `docs/decisions.md` "IR and interpreter", ir.md 3.4 |
@@ -57,7 +57,8 @@ Module-local decisions go in this section and ir.md section 9 in the same commit
 ## 4. Invariants and pitfalls
 
 - **Determinism:** nothing may depend on thread scheduling; shared heap and shared variables are
-  only touched by serial processes (kernel `ProcFlags::serial`, `proc_flags`).
+  only touched by serial processes (kernel `ProcFlags::serial`, `proc_flags`, and
+  `InterpProcess`'s `Process::serial`, which the kernel ORs in so no builder can drop it).
 - **Checked i64 everywhere** through `yavs_std::arith`; never wrap, clamp or saturate.
 - **Generational handles:** a stale access value is a clean runtime error. Heap *addresses*
   carry no generation: deallocated slots wait in quarantine until a suspension finds no address

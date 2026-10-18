@@ -2,7 +2,6 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
-use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -13,7 +12,7 @@ use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
-    StreamId, check_ref, make_op,
+    check_ref, make_op,
 };
 use crate::signal::{ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn};
 use crate::time::{Time, Unit};
@@ -172,7 +171,7 @@ pub trait Observer: Send {
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
     fn report(&mut self, _hook: &mut Hook<'_>, _report: &Report) {}
-    /// Output to `StreamId::OUTPUT`.
+    /// textio `OUTPUT` text.
     fn output(&mut self, _hook: &mut Hook<'_>, _process: ProcId, _bytes: &[u8]) {}
 }
 
@@ -266,7 +265,6 @@ pub struct SimControl {
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
-    streams: BTreeMap<StreamId, Box<dyn Write + Send>>,
     ready: Vec<u32>,
     postponed: Vec<u32>,
     last_ran: Vec<u32>,
@@ -351,7 +349,6 @@ impl SimControl {
             queue: BinaryHeap::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
-            streams: BTreeMap::new(),
             ready: Vec::new(),
             postponed: Vec::new(),
             last_ran: Vec::new(),
@@ -659,7 +656,7 @@ impl SimControl {
         r
     }
 
-    /// Ended (flushing streams and firing `EndOfSim` once) or a pause request.
+    /// Ended (firing `EndOfSim` once) or a pause request.
     fn poll_end(&mut self) -> Result<Option<RunStatus>, SimError> {
         let flags = self.interrupt.0.swap(0, Ordering::Relaxed);
         if flags & Interrupt::STOP != 0 {
@@ -668,11 +665,6 @@ impl SimControl {
         if let Some(reason) = self.end {
             if !self.end_fired {
                 self.end_fired = true;
-                for (id, mut w) in std::mem::take(&mut self.streams) {
-                    w.flush().map_err(|e| {
-                        self.err(ErrorKind::Runtime(format!("flushing stream {}: {e}", id.0)))
-                    })?;
-                }
                 self.phase(Phase::EndOfSim);
             }
             return Ok(Some(RunStatus::Ended(reason)));
@@ -1059,9 +1051,7 @@ impl SimControl {
             }
             let result = std::mem::replace(&mut slot.result, Ok(()));
             drop(slot);
-            if let Err(e) = self.commit(ProcId(p), effects) {
-                first_err.get_or_insert(e);
-            }
+            self.commit(ProcId(p), effects);
             if let Err(e) = result {
                 first_err.get_or_insert(e);
             }
@@ -1073,12 +1063,7 @@ impl SimControl {
         first_err.map_or(Ok(()), Err)
     }
 
-    fn commit(&mut self, process: ProcId, effects: Vec<Effect>) -> Result<(), SimError> {
-        let fail = |sim: &Self, k| {
-            let mut e = sim.err(k);
-            e.process = Some((process, sim.names[process.0 as usize].clone()));
-            e
-        };
+    fn commit(&mut self, process: ProcId, effects: Vec<Effect>) {
         for e in effects {
             match e {
                 Effect::Report(severity, message) => {
@@ -1092,41 +1077,12 @@ impl SimControl {
                         self.end.get_or_insert(EndReason::Severity(severity));
                     }
                 }
-                Effect::Output(StreamId::OUTPUT, bytes) => {
-                    self.notify(|o, h| o.output(h, process, &bytes));
-                }
-                Effect::Output(id, bytes) => match self.streams.get_mut(&id) {
-                    Some(w) => {
-                        if let Err(err) = w.write_all(&bytes) {
-                            return Err(fail(
-                                self,
-                                ErrorKind::Runtime(format!("file write: {err}")),
-                            ));
-                        }
-                    }
-                    None => {
-                        let msg = format!("stream {} is not open", id.0);
-                        return Err(fail(self, ErrorKind::BadRef(msg)));
-                    }
-                },
-                Effect::Open(id, w) => _ = self.streams.insert(id, w),
-                Effect::Close(id) => {
-                    let mut w = self.streams.remove(&id).ok_or_else(|| {
-                        fail(
-                            self,
-                            ErrorKind::BadRef(format!("stream {} is not open", id.0)),
-                        )
-                    })?;
-                    if let Err(err) = w.flush() {
-                        return Err(fail(self, ErrorKind::Runtime(format!("file close: {err}"))));
-                    }
-                }
+                Effect::Output(bytes) => self.notify(|o, h| o.output(h, process, &bytes)),
                 Effect::Stop(code) => _ = self.end.get_or_insert(EndReason::Stop(code)),
                 Effect::Finish(code) => _ = self.end.get_or_insert(EndReason::Finish(code)),
                 Effect::Op(op) => self.ops.push(op),
             }
         }
-        Ok(())
     }
 
     fn phase(&mut self, phase: Phase) {

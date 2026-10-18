@@ -261,11 +261,24 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Null transactions (K4):** disconnection is per element. A `bus` with no connected source
   resolves the empty set (`std_logic`: `Z`), a `register` keeps its value; `'driving_value` of a
   disconnected driver is a runtime error.
-- **User files (K6):** the interpreter opens the file and hands the kernel a writer; writes and
-  close are buffered effects committed in elaboration order, flushed at end of simulation.
+- **User files (K6):** dropped in kernel round 3 (#82), see there.
 - **Protected types:** callers are `serial` through M3; the kernel needs no further support.
 - **`SimError` is boxed** (`Deref` to `ErrorInfo`) to keep hot-path `Result`s one word; a panic
   in kernel code becomes an internal error like a panic in process code.
+
+## Kernel round 3: files, serial marking (yavs-kernel, yavs-ir, 2026-10-18)
+
+- **K6 dropped (#82):** the kernel has no user-file streams; `Ctx::output` is textio `OUTPUT`
+  only. The interpreter reads and writes disk files directly (write, close, reopen-for-read in
+  one delta works, `textio/file_roundtrip`). Why: K6 had no user, and buffering breaks that idiom.
+- **File users are serial (#82, #107):** a `CallNative` of a file or directory native (implicit
+  file operations, `readline`/`writeline`/`tee`, `env.dir_*`) sets `TOUCHES_SHARED`. Why: file
+  objects of different processes can name one external file, and their bytes on disk depended
+  on `--threads`. Ponytail: processes that only write to `OUTPUT` become serial too.
+- **`Process::serial` (#107):** a process reports its own serial need; `Builder::process` ORs it
+  into `ProcFlags`. Why: yavs-elab built every process with `serial: false`, so shared-variable
+  and protected-type callers ran in parallel in arbitrary order (outputs differed run to run at
+  `--threads 8`).
 
 ## Semantic analysis (yavs-sem, M1)
 
@@ -332,7 +345,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   buffering a process that writes a file, closes it and reopens it for reading in the same
   delta (a common testbench idiom) would read nothing. Determinism holds because a file object
   belongs to one process or to serial processes. `STD_OUTPUT` still goes through the kernel's
-  OUTPUT stream so it stays ordered with `report`. K6 remains available for a future need.
+  OUTPUT stream so it stays ordered with `report`. K6 was removed in kernel round 3 (#82).
 - **Open, needs a decision: BIT/BOOLEAN in bit-planes.** yavs-elab stores BIT leaves as their
   positions (0/1, codes of 'U'/'X'); the interpreter's natives write the codes of '0'/'1'
   (2/3), with which `LogicOp`/`LNum` (std_ulogic tables) compute BIT results correctly. The
@@ -439,7 +452,7 @@ which tools/difftest parses.
   yavs-elab follows; VHPI, waves and foreign calls translate at the boundary.
 - Disk files are written directly by the owning process, not through the kernel's buffered
   streams, so write, close and reopen-for-read in one delta works. Output stays independent of
-  `--threads` because a file object belongs to one process or to serial processes. STD_OUTPUT
+  `--threads` because every caller of a file native is serial (kernel round 3). STD_OUTPUT
   still goes through the kernel output stream, ordered with `report`.
 - **Globally static calls and port attributes (9.4.3):** a call of a pure function whose actuals
   are globally static is globally static (sem never folds it; only implicit operations become

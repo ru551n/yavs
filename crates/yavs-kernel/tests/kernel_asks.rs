@@ -1,9 +1,8 @@
-//! Kernel asks K1 to K7 of docs/design/ir.md.
+//! Kernel asks K1 to K7 of docs/design/ir.md (K6, buffered user files, was dropped: #82).
 
 mod common;
 
-use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use common::*;
 use yavs_kernel::*;
@@ -504,125 +503,6 @@ fn zero_length_signals_and_null_slices() {
     // The process ran once: nothing it waits on can have an event.
     assert_eq!(t.take(), ["0 fs +1 s[0..1]=[1]"]);
     assert!(sim.value(s.slice(2, 0)).is_err());
-}
-
-// ---- K6: buffered user files ------------------------------------------------
-
-#[derive(Clone, Default)]
-struct Mem(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Mem {
-    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(b);
-        Ok(b.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-struct Broken;
-
-impl Write for Broken {
-    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-        Err(io::Error::other("disk full"))
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn file_design(threads: usize) -> Vec<u8> {
-    let mut b = Builder::new();
-    let clk = b.signal("clk", BYTE, &[0]);
-    let dclk = b.driver(clk);
-    b.process(
-        "clk",
-        NONE,
-        &[dclk],
-        p(move |c| {
-            let v = c.value(clk)?[0] ^ 1;
-            c.assign(dclk, None, &[(ns(1), &[v])], DelayMode::INERTIAL)?;
-            c.wait_for(ns(1))
-        }),
-    );
-    let mem = Mem::default();
-    // 50 writers share one file object through the process that opened it: each writes its
-    // own stream; the order inside one delta is elaboration order.
-    for k in 0..50 {
-        let mem = mem.clone();
-        let mut stream = None;
-        b.process(
-            &format!("w{k}"),
-            NONE,
-            &[],
-            p(move |c| {
-                let s = match stream {
-                    Some(s) => s,
-                    None => *stream.insert(c.open_stream(Box::new(mem.clone()))?),
-                };
-                c.output(s, format!("{} w{k}\n", c.now()).as_bytes());
-                if c.now() == ns(5) {
-                    c.close_stream(s);
-                    return Ok(());
-                }
-                c.wait_on(clk)
-            }),
-        );
-    }
-    let (mut sim, _) = build(
-        b,
-        Config {
-            threads,
-            ..Config::default()
-        },
-    );
-    sim.run_until(ns(10)).unwrap();
-    mem.0.lock().unwrap().clone()
-}
-
-#[test]
-fn buffered_file_writes_commit_in_elaboration_order() {
-    let one = file_design(1);
-    assert_eq!(one, file_design(8));
-    let text = String::from_utf8(one).unwrap();
-    assert!(text.starts_with("0 fs w0\n0 fs w1\n"), "{text}");
-    assert_eq!(text.lines().count(), 50 * 6);
-}
-
-#[test]
-fn file_write_errors_stop_the_simulation() {
-    let mut b = Builder::new();
-    b.process(
-        "w",
-        NONE,
-        &[],
-        p(|c| {
-            let s = c.open_stream(Box::new(Broken))?;
-            c.output(s, b"x");
-            Ok(())
-        }),
-    );
-    let (mut sim, _) = build(b, Config::default());
-    let err = sim.run_until(ns(1)).unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Runtime("file write: disk full".into()));
-    assert_eq!(err.process.clone().map(|p| p.1), Some("w".into()));
-
-    let mut b = Builder::new();
-    b.process(
-        "w",
-        NONE,
-        &[],
-        p(|c| {
-            c.output(StreamId(77), b"x");
-            Ok(())
-        }),
-    );
-    let (mut sim, _) = build(b, Config::default());
-    assert!(matches!(
-        sim.run_until(ns(1)).unwrap_err().kind,
-        ErrorKind::BadRef(_)
-    ));
 }
 
 // ---- K7: bit-plane logic signals -------------------------------------------

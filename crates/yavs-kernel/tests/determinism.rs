@@ -125,26 +125,38 @@ fn design(with_serial: bool) -> Builder {
         }),
     );
     if with_serial {
+        // Serial by flag (k < 3) or by `Process::serial` (the interpreter's way).
         let shared = Arc::new(Mutex::new(0u64));
-        for k in 0..5 {
+        for k in 0..6 {
             let shared = shared.clone();
             b.process(
                 &format!("top.serial{k}"),
                 ProcFlags {
                     postponed: false,
-                    serial: true,
+                    serial: k < 3,
                 },
                 &[],
-                p(move |c| {
+                Serial(p(move |c| {
                     let mut v = shared.lock().unwrap();
                     *v = v.wrapping_mul(7).wrapping_add(k);
                     c.report(Severity::Note, format!("shared={v}"));
                     c.wait_on(clk)
-                }),
+                })),
             );
         }
     }
     b
+}
+
+struct Serial<P>(P);
+
+impl<P: Process> Process for Serial<P> {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        self.0.run(ctx)
+    }
+    fn serial(&self) -> bool {
+        true
+    }
 }
 
 fn trace(with_serial: bool, threads: usize, shuffle: Option<u64>) -> Vec<String> {

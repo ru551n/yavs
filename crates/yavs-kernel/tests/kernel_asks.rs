@@ -257,7 +257,7 @@ fn stable_quiet_and_delayed() {
         NONE,
         &[],
         p(move |c| {
-            seen.push((c.now(), c.delta(), c.value(st0)?[0]));
+            seen.push((c.now(), c.delta(), c.logic(st0)?.get(0) as u8 - 2));
             if c.now() == ns(10) && c.delta() == 1 {
                 assert_eq!(seen[seen.len() - 2..], [(ns(10), 0, 0), (ns(10), 1, 1)]);
             }
@@ -276,19 +276,19 @@ fn stable_quiet_and_delayed() {
     assert_eq!(
         of("'stable(5 ns)"),
         [
-            "10 ns +0 s'stable(5 ns)[0..1]=[0]",
-            "15 ns +0 s'stable(5 ns)[0..1]=[1]",
-            "25 ns +0 s'stable(5 ns)[0..1]=[0]",
-            "30 ns +0 s'stable(5 ns)[0..1]=[1]",
+            "10 ns +0 s'stable(5 ns)[0..1]=\"0\"",
+            "15 ns +0 s'stable(5 ns)[0..1]=\"1\"",
+            "25 ns +0 s'stable(5 ns)[0..1]=\"0\"",
+            "30 ns +0 s'stable(5 ns)[0..1]=\"1\"",
         ]
     );
     assert_eq!(
         of("'quiet"),
         [
-            "10 ns +0 s'quiet(5 ns)[0..1]=[0]",
-            "15 ns +0 s'quiet(5 ns)[0..1]=[1]",
-            "20 ns +0 s'quiet(5 ns)[0..1]=[0]",
-            "30 ns +0 s'quiet(5 ns)[0..1]=[1]",
+            "10 ns +0 s'quiet(5 ns)[0..1]=\"0\"",
+            "15 ns +0 s'quiet(5 ns)[0..1]=\"1\"",
+            "20 ns +0 s'quiet(5 ns)[0..1]=\"0\"",
+            "30 ns +0 s'quiet(5 ns)[0..1]=\"1\"",
         ]
     );
     assert_eq!(

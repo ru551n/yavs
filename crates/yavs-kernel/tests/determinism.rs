@@ -118,7 +118,7 @@ fn design(with_serial: bool) -> Builder {
         ProcFlags::default(),
         &[],
         p(move |c| {
-            if c.event(mon)? && c.value(stable)? == [0] {
+            if c.event(mon)? && c.logic(stable)?.get(0) == StdULogic::Zero {
                 c.report(Severity::Note, format!("mon={}", c.logic(mon)?));
             }
             c.wait_on(mon)

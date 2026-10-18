@@ -562,8 +562,8 @@ fn transaction_signal_toggles_without_events() {
     assert_eq!(
         trace.take(),
         [
-            "1 ns +0 s'transaction[0..1]=[1]",
-            "2 ns +0 s'transaction[0..1]=[0]"
+            "1 ns +0 s'transaction[0..1]=\"1\"",
+            "2 ns +0 s'transaction[0..1]=\"0\""
         ]
     );
 }

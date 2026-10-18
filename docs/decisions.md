@@ -279,6 +279,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   into `ProcFlags`. Why: yavs-elab built every process with `serial: false`, so shared-variable
   and protected-type callers ran in parallel in arbitrary order (outputs differed run to run at
   `--threads 8`).
+- **Implicit BIT/BOOLEAN signals on planes (#185):** `'transaction`, `'stable` and `'quiet` are
+  one logic element with the codes of '0'/'1', as for every BIT and BOOLEAN signal (the 1-byte
+  0/1 form reached the interpreter as BOOLEAN position -2). yavs-elab mirrors the type.
 
 ## Semantic analysis (yavs-sem, M1)
 

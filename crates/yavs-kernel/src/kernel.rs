@@ -16,7 +16,8 @@ use crate::process::{
 };
 use crate::signal::{ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn};
 use crate::time::{Time, Unit};
-use crate::value::{Buf, SignalType, Value, ValueRef, fill_bits};
+use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
+use yavs_logic::StdULogic;
 
 /// Kernel settings.
 #[derive(Clone, Debug)]
@@ -897,7 +898,8 @@ impl SimControl {
             let mut new: Option<Buf> = None;
             match im.kind {
                 ImplicitKind::Transaction if act => {
-                    let was = self.signals[im.sig.0 as usize].cur.bytes(0, 1) == Some(&[1]);
+                    let was =
+                        self.signals[im.sig.0 as usize].cur.codes(0, 1) == [bit_code(true) as u8];
                     new = Some(bool_buf(!was));
                 }
                 ImplicitKind::Transaction => {}
@@ -1105,11 +1107,15 @@ impl SimControl {
     }
 }
 
+/// The std_ulogic code of BIT/BOOLEAN `b` in logic storage.
+pub(crate) fn bit_code(b: bool) -> StdULogic {
+    if b { StdULogic::One } else { StdULogic::Zero }
+}
+
 fn bool_buf(b: bool) -> Buf {
-    Buf::Bytes {
-        es: 1,
-        data: vec![u8::from(b)],
-    }
+    let mut v = Buf::zeroed(Elem::Logic, 1);
+    v.set_codes(0, &[bit_code(b) as u8]);
+    v
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {

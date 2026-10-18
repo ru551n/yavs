@@ -159,22 +159,15 @@ impl Builder {
         if range != s.full() {
             name += &format!("[{}+{}]", range.offset, range.len);
         }
+        // BIT and BOOLEAN are logic with the codes of '0'/'1' (decisions.md "Interpreter:
+        // BIT/BOOLEAN codes"); 'transaction starts at '0', 'stable/'quiet at TRUE.
+        let bit = |b| Value::Logic(crate::value::LogicVec::new(1, crate::kernel::bit_code(b)));
         let (attr, ty, init) = match kind {
-            ImplicitKind::Transaction => (
-                "transaction".to_string(),
-                SignalType::bytes(1, 1),
-                Value::Bytes(vec![0]),
-            ),
-            ImplicitKind::Stable(t) => (
-                format!("stable({t})"),
-                SignalType::bytes(1, 1),
-                Value::Bytes(vec![1]),
-            ),
-            ImplicitKind::Quiet(t) => (
-                format!("quiet({t})"),
-                SignalType::bytes(1, 1),
-                Value::Bytes(vec![1]),
-            ),
+            ImplicitKind::Transaction => {
+                ("transaction".to_string(), SignalType::logic(1), bit(false))
+            }
+            ImplicitKind::Stable(t) => (format!("stable({t})"), SignalType::logic(1), bit(true)),
+            ImplicitKind::Quiet(t) => (format!("quiet({t})"), SignalType::logic(1), bit(true)),
             ImplicitKind::Delayed(t) => (
                 format!("delayed({t})"),
                 SignalType {
@@ -198,12 +191,14 @@ impl Builder {
         sig
     }
 
-    /// `s'transaction`: one byte toggling 0/1 in every cycle in which `s` is active.
+    /// `s'transaction`: a BIT (one logic element, '0'/'1') toggling in every cycle in which `s`
+    /// is active.
     pub fn transaction_signal(&mut self, s: impl Into<SigRef>) -> SignalId {
         self.implicit(s.into(), ImplicitKind::Transaction)
     }
 
-    /// `s'stable(t)`: a boolean (one byte), FALSE from an event on `s` until `t` after it.
+    /// `s'stable(t)`: a BOOLEAN (one logic element, '1' is TRUE), FALSE from an event on `s`
+    /// until `t` after it.
     pub fn stable_signal(&mut self, s: impl Into<SigRef>, t: Time) -> SignalId {
         self.implicit(s.into(), ImplicitKind::Stable(t))
     }

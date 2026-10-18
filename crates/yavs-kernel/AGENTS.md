@@ -44,7 +44,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | `--shuffle` permutes execution order with a seeded splitmix64, commit order fixed | Expose order-dependent testbenches (NVC #614) | `docs/plan.md`, DESIGN.md |
 | `SimControl` is the only way to drive simulation (CLI, DAP, VHPI) | GUI-ready design | `docs/plan.md` "Designed for the GUI" |
 | Per-element flat event arrays over whole signals, no per-scalar objects | Rule 2 | `docs/plan.md` rule 2, `docs/decisions.md` "Kernel crate and process interface" |
-| Logic signals stored as bit-planes, everything else as bytes (K7) | User, 2026-10-18 | `docs/decisions.md` "Kernel round 2", "Packed logic vectors" |
+| Logic signals stored as bit-planes, everything else as bytes (K7); BIT/BOOLEAN implicit signals too ('0'/'1' codes, #185) | User, 2026-10-18 | `docs/decisions.md` "Kernel round 2", "Packed logic vectors", "Kernel round 3" |
 | Uncollapsed ports, conversions in the update phase without an extra delta (K1) | Rule 3 | `docs/plan.md` rule 3, `docs/decisions.md` "Kernel round 2" |
 | Forces and deposits queued and applied next cycle | VHDL-2008 force semantics | `docs/decisions.md` "Kernel crate and process interface" |
 | Delta numbering: init is delta 0 at 0 fs; default delta limit 10000; delays truncated to the resolution | Clear, NVC-compatible report times | same |

@@ -122,6 +122,7 @@ const PASS: &[&str] = &[
     "ieee/std_logic_1164_ops_2019",
     "postponed/postponed_basic",
     "postponed/postponed_wait",
+    "process/call_conversions",
     "process/case_if",
     "process/conditional_expr_2019",
     "process/individual_assoc",

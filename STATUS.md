@@ -64,6 +64,10 @@ An installed binary finds `lib/` next to itself (#43).
   typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210); the elements of an unconstrained formal must form a
   contiguous range, each once: a gap is `E1311`, a repeat `E1310` (#224).
   Lowering runs them (#71), except signal formals with more than one part.
+- Conversions in subprogram call associations (`seti(to_r(x) => r)`, `inc(real(x) =>
+  integer(r))`, #229) resolve to `Actual::Converted`, per overload candidate; conversions the
+  formal's class or mode does not allow are `E1313` (6.5.7.1, 4.2.2.3). Lowering copies in
+  through the actual part and back through the formal part (scalars, arrays, records).
 - Mixed 2008/2019 designs (#50, sem.md 0.1, `src/rev.rs`): under a 2019 design revision a 2008
   file that names a std/ieee declaration the 2008 copy lacks (`std.env.tool_name`,
   `std.reflection`) gets `E1007` and does not see such declarations through use clauses;
@@ -184,7 +188,7 @@ expressions with runtime descriptors (bit-planes for logic arrays), aggregates, 
 attributes including 'path_name/'instance_name, 'driving/'driving_value and signal attributes
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
-(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); nested names of signals of arrays of arrays
+(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); parameters associated through conversions (copy-in through the actual part, copy-out through the formal part, #229); nested names of signals of arrays of arrays
 (`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`, below a slice `m(0 to 1)(0)`, through subtype
 aliases) as targets, actuals and sensitivity (#89, #230); 2008 array-valued pieces of
 positional aggregates as values and targets, and of named aggregates and arrays with open

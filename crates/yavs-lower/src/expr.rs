@@ -638,8 +638,8 @@ impl<'a> Fx<'a, '_> {
     /// Write `out`/`inout` temporaries back to their actuals after a procedure call. The
     /// actual's place is computed again: no register lives across a call that may suspend.
     pub fn copy_out(&mut self, span: Span) -> R<()> {
-        for (slot, f, parts) in std::mem::take(&mut self.writeback_parts) {
-            self.through_formal(f, slot, &parts, false, span)?;
+        for (obj, f, parts) in std::mem::take(&mut self.writeback_parts) {
+            self.through_formal(f, obj, &parts, false, span)?;
         }
         for (off, e, st) in std::mem::take(&mut self.writeback) {
             let Some(e) = e else { continue };
@@ -2078,6 +2078,16 @@ impl<'a> Fx<'a, '_> {
             };
             if let Actual::Individual(parts) = &a.actual {
                 self.individual_cells(p, parts, native, span, &mut cells)?;
+                continue;
+            }
+            if let Actual::Converted {
+                actual,
+                copy_in,
+                copy_out: Some(out),
+                ..
+            } = &a.actual
+            {
+                self.converted_cells(p, *actual, *copy_in, *out, native, span, &mut cells)?;
                 continue;
             }
             let e = self.actual(a, p, span)?;

@@ -13,7 +13,7 @@ yavs-ir verifier on every function it emits.
 | `func.rs` | `Fx`, frames, parameters, declarations, subprograms, processes, architectures | lower |
 | `expr.rs` | scalar expressions, calls, implicit operations, attributes, names, 1-D arrays, aggregates of scalars | lower |
 | `stmt.rs` | sequential statements, waits, signal assignments | lower |
-| `assoc.rs` | individual association of subprogram parameters | lower |
+| `assoc.rs` | individual association and conversions of subprogram parameters | lower |
 | `ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` (core); record/access/file/protected `Ty` arms | lower (core), lower2 (composite arms) |
 | `composite.rs`, `access.rs`, `protected.rs`, `file.rs`, ... | records, nested arrays, access types, protected types, textio/files, resolution, force/release | lower2 |
 
@@ -81,7 +81,10 @@ a call into your module in a small commit.
   the formal's subtype: each part is copied in through its formal part (a name of the formal,
   bound to the temporary while it is lowered) and, for `out`/`inout`, copied back after the
   call; a signal formal takes one part as its reference. An unconstrained formal's bounds run
-  from the lowest to the highest index named, in the index subtype's direction. A function's array result is the address of a
+  from the lowest to the highest index named, in the index subtype's direction. A converted
+  parameter (`Actual::Converted` with `copy_out`, an `out`/`inout` variable, #229) is a
+  temporary of the formal's subtype holding `copy_in` (or the default for `out`); after the
+  call `copy_out`, the formal part with the formal bound to the temporary, goes to the actual. A function's array result is the address of a
   fat pair `[data, dope]` in temporary memory (the dope copied out of the callee's frame).
   A function with a 2019 named return value (`return r of t`, `Db::ret_names`) takes one
   more parameter after the others, an array parameter whose descriptor is the call's result

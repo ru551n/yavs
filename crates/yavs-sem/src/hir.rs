@@ -143,10 +143,18 @@ pub enum Actual {
     /// Sub-element association: one entry per sub-element path, with its actual and the
     /// formal part as a name of the formal (`x(0)` in `x(0) => tl`).
     Individual(Box<[IndividualPart]>),
+    /// A conversion in an association (6.5.7.1): `formal_conv(f) => actual_conv(actual)`,
+    /// with the function or type declaration of each conversion.
     Converted {
         formal_conv: Option<DeclId>,
         actual_conv: Option<DeclId>,
         actual: ExprId,
+        /// Subprogram calls (`None` in maps): the actual part as an expression of the
+        /// formal's type, copied in for `inout`.
+        copy_in: Option<ExprId>,
+        /// Subprogram calls (`None` in maps): the formal part as an expression of the
+        /// actual's type naming the formal, copied back for `out` and `inout`.
+        copy_out: Option<ExprId>,
     },
     /// The actual of a generic type in an instance's generic map (6.5.7.2).
     Subtype(SubtypeId),

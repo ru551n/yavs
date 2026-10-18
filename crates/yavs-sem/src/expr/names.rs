@@ -861,6 +861,10 @@ impl Db {
                     convs += self.parts_cost(scope, d, i, args, parts)?;
                     continue;
                 }
+                Slot::Conv(a) => {
+                    convs += self.conv_cost(scope, d, i, args, *a)?;
+                    continue;
+                }
             };
             match whole {
                 Some(ast::Actual::Expr(x)) => {
@@ -923,6 +927,81 @@ impl Db {
             convs += self.best_cost(&c, Expected::Type(t?))?;
         }
         Some(convs)
+    }
+
+    /// Run `g` in a region inside `scope` that holds only formal `p` (L42), with fresh
+    /// memos: a formal part names one candidate's formal, and another candidate's formal of
+    /// the same name has another type.
+    fn in_formal_region<T>(
+        &mut self,
+        scope: ScopeId,
+        p: DeclId,
+        g: impl FnOnce(&mut Db, ScopeId) -> T,
+    ) -> T {
+        let fscope = self.add_scope(crate::scope::ScopeKind::Block, Some(scope), None);
+        let key = self.decls[p].name.key();
+        self.scopes[fscope].names.insert(key, vec![p]);
+        let saved = (
+            std::mem::take(&mut self.memo),
+            std::mem::take(&mut self.name_memo),
+        );
+        let r = g(self, fscope);
+        (self.memo, self.name_memo) = saved;
+        r
+    }
+
+    /// The types the formal part `conv(f)` of association `a` can have, for formal `k` of
+    /// subprogram `d` (6.5.7.1).
+    fn conv_types(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        k: usize,
+        a: &ast::AssocElem,
+    ) -> Vec<TypeId> {
+        let p = self.decls[self.entity(d)]
+            .kind
+            .subprogram()
+            .and_then(|s| s.params.get(k)?.decl);
+        let (Some(p), Some(f)) = (p, a.formal.as_ref()) else {
+            return Vec::new();
+        };
+        self.in_formal_region(scope, p, |db, fs| match db.name_cands_uncached(fs, f) {
+            CandSet::Types(is) => is.iter().map(|i| i.ty).collect(),
+            _ => Vec::new(),
+        })
+    }
+
+    /// The conversion cost of `conv(f) => actual` (association `a`) for formal `k` of
+    /// subprogram `d`. The actual part has the formal's type when it converts on the way
+    /// in, else the formal conversion's type; either fits here and `conv_actual` checks
+    /// that they agree with the mode (E1313), so the error is precise. `None` if neither
+    /// fits.
+    pub(crate) fn conv_cost(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        k: usize,
+        args: &[ast::AssocElem],
+        a: usize,
+    ) -> Option<u32> {
+        let ft = self.base(
+            self.decls[self.entity(d)]
+                .kind
+                .subprogram()?
+                .params
+                .get(k)?
+                .subtype,
+        );
+        let ast::Actual::Expr(x) = &args[a].actual else {
+            return Some(0);
+        };
+        let types = self.conv_types(scope, d, k, &args[a]);
+        let c = self.cands(scope, x);
+        std::iter::once(ft)
+            .chain(types)
+            .filter_map(|t| self.best_cost(&c, Expected::Type(t)))
+            .min()
     }
 
     // -- top-down ---------------------------------------------------------------
@@ -1384,11 +1463,21 @@ impl Db {
                     stat = Staticness::None;
                     actual
                 }
+                Slot::Conv(a) => {
+                    stat = Staticness::None;
+                    self.conv_actual(scope, e, k, &args[*a])?
+                }
                 Slot::Whole(a) => match &args[*a].actual {
                     ast::Actual::Expr(x) => {
                         let id = self.resolve_in(scope, x, *ft);
                         stat = stat.min(self.exprs[id].stat);
                         let (class, mode, name) = &classes[k];
+                        if matches!(x.kind, ast::ExprKind::Name(_))
+                            && self.actual_conversion(id).is_some()
+                            && !self.actual_conv_allowed(*class, mode, *name, x.span)
+                        {
+                            return None;
+                        }
                         if !self.check_actual_class(*class, mode, *name, id) {
                             return None;
                         }
@@ -1412,6 +1501,270 @@ impl Db {
         Some((e, hargs.into(), stat))
     }
 
+    /// `id` as an actual conversion `conv(name)` (6.5.7.1): the conversion's declaration
+    /// (a function, or a type for a type conversion) and the object name it converts.
+    pub(crate) fn actual_conversion(&self, id: ExprId) -> Option<(DeclId, ExprId)> {
+        let (c, x) = match &self.exprs[id].kind {
+            ExprKind::Conv { to, operand } => (self.types[self.base(*to)].decl, *operand),
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } if args.len() == 1 => match args[0].actual {
+                Actual::Expr(x) => (*callee, x),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        self.name_root(x).is_some().then_some((c, x))
+    }
+
+    /// An actual conversion (written `conv(name)`) for parameter `formal` without a formal
+    /// conversion (6.5.7.1, 4.2.2.3, E1313): legal for `in` variables only, since data
+    /// flowing back to the actual needs a formal conversion. `false` when reported.
+    fn actual_conv_allowed(
+        &mut self,
+        class: crate::decl::ObjClass,
+        mode: &crate::hir::Mode,
+        formal: Ident,
+        span: Span,
+    ) -> bool {
+        use crate::decl::ObjClass as C;
+        use crate::hir::Mode as M;
+        let (why, help) = match (class, mode) {
+            (C::Signal, _) => (
+                "a signal parameter takes no conversion (4.2.2.3)",
+                "pass the signal itself and convert inside the subprogram",
+            ),
+            (C::Variable, M::Out) => (
+                "an `out` parameter is not read, so its actual takes no conversion",
+                "convert the formal instead: `conv(formal) => actual`",
+            ),
+            (C::Variable, M::Inout) => (
+                "the value of an `inout` parameter also flows back, which needs a formal conversion",
+                "add the conversion for the way back: `conv(formal) => conv(actual)`",
+            ),
+            _ => return true,
+        };
+        self.report(
+            Diagnostic::error(
+                diag::CONV_MISUSE,
+                format!(
+                    "the actual of parameter `{}` cannot be a conversion: {why}",
+                    formal.text
+                ),
+            )
+            .with_primary(span, "conversion of the actual")
+            .with_help(help),
+        );
+        false
+    }
+
+    /// `conv(f) => actual` (association `a`) for formal `k` of subprogram `e` (6.5.7.1): an
+    /// `out` or `inout` variable parameter. The formal part converts the formal to the
+    /// actual's type on the way out; for `inout` the actual part converts the actual to the
+    /// formal's type on the way in. `None` when reported.
+    fn conv_actual(
+        &mut self,
+        scope: ScopeId,
+        e: DeclId,
+        k: usize,
+        a: &ast::AssocElem,
+    ) -> Option<Actual> {
+        use crate::decl::ObjClass as C;
+        use crate::hir::Mode as M;
+        let s = self.decls[e].kind.subprogram()?;
+        let prm = s.params.get(k)?;
+        let (class, mode, name, st) = (prm.class, prm.mode, prm.name, prm.subtype);
+        let Some(p) = prm.decl else {
+            self.ice(a.span, "conversion of a formal without a declaration");
+            return None;
+        };
+        let fname = a.formal.as_ref()?;
+        let fail = |db: &mut Db, span: Span, msg: String, help: &str| {
+            db.report(
+                Diagnostic::error(diag::CONV_MISUSE, msg)
+                    .with_primary(span, "conversion of the formal")
+                    .with_help(help.to_string()),
+            );
+            None
+        };
+        let why = match (class, &mode) {
+            (C::Variable, M::Out | M::Inout) => None,
+            (C::Signal, _) => Some("a signal parameter takes no conversion (4.2.2.3)"),
+            (C::Variable | C::Constant, M::In) => {
+                Some("data never flows back from an `in` parameter")
+            }
+            _ => Some("only `out` and `inout` variable parameters take one"),
+        };
+        if let Some(why) = why {
+            return fail(
+                self,
+                fname.span,
+                format!("formal `{}` cannot be converted: {why}", name.text),
+                "associate the formal directly",
+            );
+        }
+        let x = match &a.actual {
+            ast::Actual::Expr(x) => x,
+            ast::Actual::Open(sp) => {
+                return fail(
+                    self,
+                    *sp,
+                    format!("a conversion of formal `{}` needs an actual", name.text),
+                    "associate a variable, not `open`",
+                );
+            }
+            other => {
+                let sp = actual_span(other).unwrap_or(a.span);
+                self.unsupported(sp, "this kind of actual", "S2");
+                return None;
+            }
+        };
+        // No bounds flow back through a conversion (F8, as in port maps).
+        if self.constrainedness(st) != crate::types::Constrainedness::Full {
+            self.report(
+                Diagnostic::error(
+                    diag::FORMAL_CONV_UNCONSTRAINED,
+                    format!(
+                        "a conversion of formal `{}` needs a fully constrained formal",
+                        name.text
+                    ),
+                )
+                .with_primary(
+                    fname.span,
+                    format!(
+                        "`{}` is of the unconstrained subtype `{}`",
+                        name.text,
+                        self.subtype_name(st)
+                    ),
+                )
+                .with_help("associate the formal directly and convert after the call"),
+            );
+            return None;
+        }
+        let named = matches!(x.kind, ast::ExprKind::Name(_));
+        let (obj, copy_in, actual_conv) = if mode == M::Inout {
+            // The way in: the actual part converts the actual to the formal's type.
+            let call = matches!(&x.kind, ast::ExprKind::Name(n)
+                if matches!(n.kind, ast::NameKind::Apply { .. }));
+            let fits = call && {
+                let c = self.cands(scope, x);
+                self.best_cost(&c, Expected::Type(self.base(st))).is_some()
+            };
+            let id = fits.then(|| self.resolve_in(scope, x, st));
+            if id.is_some_and(|id| self.is_poison_expr(id)) {
+                return None;
+            }
+            match id.and_then(|id| Some((id, self.actual_conversion(id)?))) {
+                Some((id, (c, o))) => (o, Some(id), Some(c)),
+                None => {
+                    self.report(
+                        Diagnostic::error(
+                            diag::CONV_MISUSE,
+                            format!(
+                                "`inout` parameter `{}` with a formal conversion needs an actual conversion too",
+                                name.text
+                            ),
+                        )
+                        .with_primary(x.span, "not a conversion of a variable")
+                        .with_help("add the conversion for the way in: `conv(formal) => conv(actual)`"),
+                    );
+                    return None;
+                }
+            }
+        } else {
+            // `out`: the actual has the type the formal part converts to.
+            let types = self.conv_types(scope, e, k, a);
+            let c = self.cands(scope, x);
+            let t = types
+                .iter()
+                .filter_map(|&t| self.best_cost(&c, Expected::Type(t)).map(|n| (n, t)))
+                .min_by_key(|x| x.0)
+                .map(|x| x.1)
+                .or_else(|| match &c {
+                    CandSet::Types(is) if is.len() == 1 => Some(is[0].ty),
+                    _ => None,
+                })
+                .unwrap_or(self.base(st));
+            let id = self.resolve_in(scope, x, self.types[t].first_subtype);
+            if self.is_poison_expr(id) {
+                return None;
+            }
+            if named
+                && self.actual_conversion(id).is_some()
+                && !self.actual_conv_allowed(class, &mode, name, x.span)
+            {
+                return None;
+            }
+            (id, None, None)
+        };
+        if !self.check_actual_class(class, &mode, name, obj) {
+            return None;
+        }
+        // The way out: the formal part, naming the formal, of the actual's type.
+        let want = self.base(self.exprs[obj].subtype);
+        let poison = self.poison.ty;
+        let fe = self.in_formal_region(scope, p, |db, fs| {
+            let CandSet::Types(is) = db.name_cands_uncached(fs, fname) else {
+                return Err(false);
+            };
+            if is.iter().any(|i| i.ty == poison) {
+                return Err(true);
+            }
+            let mut fit: Vec<Interp> = Vec::new();
+            for i in is {
+                if i.ty == want && !fit.iter().any(|f| f.via == i.via) {
+                    fit.push(i);
+                }
+            }
+            match fit[..] {
+                [i] => Ok(db.build_name(fs, fname, i, fname.span)),
+                _ => Err(false),
+            }
+        });
+        let fe = match fe {
+            Ok(fe) if self.is_poison_expr(fe) => return None,
+            Ok(fe) => fe,
+            Err(true) => return None,
+            Err(false) => {
+                let tn = self.type_name(want);
+                self.report(
+                    Diagnostic::error(
+                        diag::NO_OVERLOAD,
+                        format!(
+                            "no conversion of formal `{}` gives the actual's type `{tn}`",
+                            name.text
+                        ),
+                    )
+                    .with_primary(fname.span, format!("expected a conversion to `{tn}`"))
+                    .with_help("use a function of one parameter of the formal's type, or a type conversion"),
+                );
+                return None;
+            }
+        };
+        let Some((formal_conv, _)) = self.actual_conversion(fe) else {
+            return fail(
+                self,
+                fname.span,
+                format!(
+                    "`{}` is not a conversion of formal `{}`",
+                    self.source_text(fname.span),
+                    name.text
+                ),
+                "write a conversion function call or a type conversion of the formal",
+            );
+        };
+        Some(Actual::Converted {
+            formal_conv: Some(formal_conv),
+            actual_conv,
+            actual: obj,
+            copy_in,
+            copy_out: Some(fe),
+        })
+    }
+
     /// 4.2.2.1 (E1360): the actual of a variable, signal or file parameter is a name of an
     /// object of that class; a constant parameter takes any expression. `false` when reported.
     fn check_actual_class(
@@ -1427,9 +1780,9 @@ impl Db {
         if class == C::Constant || self.is_poison_expr(id) {
             return true;
         }
-        // A type conversion of an object name is still that object (6.5.7.1).
+        // An actual conversion of an object name is still that object (6.5.7.1).
         let mut e = id;
-        while let ExprKind::Conv { operand, .. } = self.exprs[e].kind {
+        while let Some((_, operand)) = self.actual_conversion(e) {
             e = operand;
         }
         let (actual, name) = match self.name_root(e) {
@@ -2139,6 +2492,32 @@ pub(crate) enum Slot {
     Whole(usize),
     /// Associated individually by these associations: `f(0) => a, f(1) => b`.
     Parts(Vec<usize>),
+    /// Associated as a whole by this association, through a formal conversion: `conv(f) => a`.
+    Conv(usize),
+}
+
+/// The formal a formal conversion `conv(f)` converts, if `n` has that form (6.5.7.1).
+pub(crate) fn conv_formal(n: &ast::Name) -> Option<Ident> {
+    let ast::NameKind::Apply { args, .. } = &n.kind else {
+        return None;
+    };
+    let [
+        ast::AssocElem {
+            formal: None,
+            actual: ast::Actual::Expr(e),
+            ..
+        },
+    ] = &args[..]
+    else {
+        return None;
+    };
+    match &e.kind {
+        ast::ExprKind::Name(ast::Name {
+            kind: ast::NameKind::Simple(i),
+            ..
+        }) => Some(*i),
+        _ => None,
+    }
 }
 
 /// The formal a formal designator names: `f` in `f`, `f(0)`, `f.e`, `f(1 to 3)`.
@@ -2153,9 +2532,9 @@ pub(crate) fn formal_root(n: &ast::Name) -> Option<Ident> {
 }
 
 /// Map formals (by key) to their associations: positional first, then named, a formal
-/// either whole or by sub-elements (6.5.7.1). `Err` if the association does not fit
-/// (too many, unknown or repeated name).
-// ponytail: no conversion formals (`conv(f) => a`) in calls; they are `AssocErr::Other`.
+/// either whole, by sub-elements or through a conversion (6.5.7.1). `Err` if the
+/// association does not fit (too many, unknown or repeated name). A designator rooted in a
+/// formal is a sub-element (`f(g)` with formals `f` and `g`), as in port maps.
 pub(crate) fn assoc_map(
     formals: &[Symbol],
     args: &[ast::AssocElem],
@@ -2177,12 +2556,18 @@ pub(crate) fn assoc_map(
                 named = true;
                 let whole = matches!(f.kind, ast::NameKind::Simple(_));
                 let i = formal_root(f).ok_or(AssocErr::Other)?;
-                let pos = match formals.iter().position(|&x| x == i.key) {
-                    Some(p) => p,
+                let find = |key| formals.iter().position(|&x| x == key);
+                let (pos, conv) = match find(i.key) {
+                    Some(p) => (p, false),
                     None if whole => return Err(AssocErr::Unknown(k)),
-                    None => return Err(AssocErr::Other),
+                    None => match conv_formal(f).and_then(|c| find(c.key)) {
+                        Some(p) => (p, true),
+                        None => return Err(AssocErr::Other),
+                    },
                 };
                 match (&mut map[pos], whole) {
+                    (s @ Slot::None, _) if conv => *s = Slot::Conv(k),
+                    _ if conv => return Err(AssocErr::Twice(k)),
                     (s @ Slot::None, true) => *s = Slot::Whole(k),
                     (s @ Slot::None, false) => *s = Slot::Parts(vec![k]),
                     (Slot::Parts(v), false) => v.push(k),

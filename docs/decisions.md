@@ -751,6 +751,13 @@ which tools/difftest parses.
   several parts are `E2001` (one reference simulator rejects them too). An unconstrained
   formal's bounds run from the lowest to the highest index named, in the index subtype's
   direction, as yavs-elab does for ports.
+- **Conversions in call associations** (#229, LRM 6.5.7.1, lrm-checks L66): sem gives
+  `Actual::Converted` with the actual part (`copy_in`, `inout` only) and the formal part naming
+  the formal (`copy_out`) as expressions, so lowering needs no conversion logic of its own: the
+  formal is a temporary of its (fully constrained) subtype holding `copy_in`, or the subtype's
+  default for `out`, and `copy_out` is stored to the actual after the call with the formal bound
+  to the temporary, as for individual association. The copy is taken even when a type
+  conversion could share the actual's data, so the actual does not change during the call.
 - **Matching case** (`case?`, `select?`) compares with `?=` on BIT and STD_ULOGIC elements:
   '-' matches anything, metavalues match nothing, L/H match 0/1 (LRM 9.2.3).
 - **`'path_name`/`'instance_name`** are strings in instance data (`UnitIr::names`), written by

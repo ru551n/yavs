@@ -164,9 +164,10 @@ pub(crate) struct Fx<'a, 'b> {
     /// Copy-out after the call being lowered: (frame slot of the temporary, actual,
     /// subtype of the formal) for `out`/`inout` actuals passed through a temporary.
     pub writeback: Vec<(u32, Option<yavs_sem::ExprId>, SubtypeId)>,
-    /// Copy-out of individually associated `out`/`inout` formals: (frame slot of the
-    /// temporary formal's fat pair, the formal, its parts).
-    pub writeback_parts: Vec<(u32, DeclId, Box<[yavs_sem::hir::IndividualPart]>)>,
+    /// Copy-out of individually associated or converted `out`/`inout` formals: (the
+    /// temporary formal, the formal, its parts; a converted formal is one part whose
+    /// formal part is the conversion).
+    pub writeback_parts: Vec<(crate::Obj, DeclId, Box<[yavs_sem::hir::IndividualPart]>)>,
     /// Allocators allocate in the shared heap: the initialisers of a shared protected
     /// object and of package objects, whose values outlive the code creating them (#184).
     pub alloc_shared: bool,

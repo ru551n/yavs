@@ -1314,6 +1314,10 @@ impl Db {
                             Some(c) => convs += c,
                             None => ok = false,
                         },
+                        Slot::Conv(a) => match self.conv_cost(scope, d, k, args, *a) {
+                            Some(c) => convs += c,
+                            None => ok = false,
+                        },
                         Slot::Whole(a) => match &args[*a].actual {
                             ast::Actual::Expr(x) => {
                                 let c = self.cands(scope, x);
@@ -1558,7 +1562,12 @@ impl Db {
         let name = self.decls[e].name;
         let formal = |k: usize| {
             let f = args[k].formal.as_ref()?;
-            Some((super::names::formal_root(f)?, f.span))
+            let root = super::names::formal_root(f)?;
+            let i = match super::names::conv_formal(f) {
+                Some(c) if !keys.contains(&root.key) => c,
+                _ => root,
+            };
+            Some((i, f.span))
         };
         let d = match assoc_map(&keys, args) {
             Ok(map) => {
@@ -1568,7 +1577,7 @@ impl Db {
                         && match m {
                             Slot::None => true,
                             Slot::Whole(a) => matches!(args[*a].actual, ast::Actual::Open(_)),
-                            Slot::Parts(_) => false,
+                            Slot::Parts(_) | Slot::Conv(_) => false,
                         }
                 });
                 let Some((p, m)) = missing else {
@@ -1673,7 +1682,7 @@ impl Db {
             for (k, m) in map.iter().enumerate() {
                 let at: &[usize] = match m {
                     Slot::None => &[],
-                    Slot::Whole(a) => std::slice::from_ref(a),
+                    Slot::Whole(a) | Slot::Conv(a) => std::slice::from_ref(a),
                     Slot::Parts(v) => v,
                 };
                 for &a in at {

@@ -24,7 +24,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | `src/func.rs` | `Fx`: frames, parameters, declarations, subprograms, processes, architectures |
 | `src/expr.rs` | Scalar expressions, calls, implicit operations, attributes, names, 1-D arrays |
 | `src/stmt.rs` | Sequential statements, waits, signal assignments, case |
-| `src/assoc.rs` | Individual association of subprogram parameters: temporary formal, copy-in, copy-out (`writeback_parts`), formal bounds from the parts |
+| `src/assoc.rs` | Individual association and conversions of subprogram parameters: temporary formal, copy-in, copy-out (`writeback_parts`), formal bounds from the parts |
 | `src/ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` |
 | `src/composite.rs`, `access.rs`, `protected.rs`, `file.rs`, `force.rs` | Records and composite arrays, access types, protected types, files/textio, force/release (lower2) |
 | `src/reflect.rs` | `'reflect` and mirror lowering |
@@ -61,6 +61,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | An alias of a whole external signal name is an instance signal of its region (no initial value, descriptor slot for arrays), bound by the elaborator; LSPs rooted at the external name map to it (`Cx::root_decl`) | LRM 8.7, #19 | `docs/decisions.md` "Elaboration" |
 | Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |
 | Foreign calls: symbol is the last word after `VHPIDIRECT` (else the name), C types from the formal's own subtype, result range-checked; signal and file parameters, composite results are `E2001` | Reference simulator conventions, fail early | `docs/decisions.md` "Foreign subprograms and `--load`" |
+| Converted parameters (`Actual::Converted` of a call): a temporary formal holding sem's `copy_in` (or the subtype's default for `out`), `copy_out` stored to the actual after the call with the formal bound to the temporary | LRM 6.5.7.1; sem builds the conversions as HIR expressions (#229) | DESIGN.md "Contract with yavs-interp and yavs-elab", `docs/decisions.md` "Lowering" |
 | Individually associated parameters: a temporary formal of variable or constant class, parts copied in for every mode and back for `out`/`inout`; a signal formal takes one part only (`E2001` otherwise); unconstrained bounds lowest to highest index named, index subtype direction | LRM 6.5.7.1; a signal reference spans one kernel range; same bounds rule as elab's ports | DESIGN.md "Contract with yavs-interp and yavs-elab", #71 |
 | Protected state initial values run on the new object (`self` and the state bound), except those giving a variable its constraint, which run before it exists | LRM 5.6.2: methods called from initial values act on the object being elaborated (#204) | DESIGN.md "Composites" |
 | A subprogram nested in a protected method takes the method's `self` through the static link and binds the state in its own frame | LRM 5.6.2: calls and names in it act on the enclosing method's object (#221) | DESIGN.md "Composites" |
@@ -104,6 +105,6 @@ tools/difftest/report.sh                                        # rewrite tests/
   lowering into `yavs run`; #67 array signals, sub-elements, aggregate targets, signal out
   parameters; #68 guarded assignments, null waveforms, force/release, implicit signal
   attributes; #69 matching case, case over arrays, non-static choices; #70 expression gaps; #71
-  generic and instantiated subprograms, conversions in calls, signal formals with several parts (foreign, open actuals, individual association: done); #72 remaining attributes; #89 composite arrays and aggregates; #93 external names;
+  generic and instantiated subprograms, signal formals with several parts (foreign, open actuals, individual association, conversions in calls #229: done); #72 remaining attributes; #89 composite arrays and aggregates; #93 external names;
   #101 package generics; #160 fixed scratch dir in `tests/corpus.rs`. Older unlabeled: #5, #8,
   #9, #13 to #17.

@@ -18,6 +18,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | File | The reference simulator | The second reference simulator | Justification |
 |---|---|---|---|
 | `unit/block_config_of_default_bound_instance_ok` | rejects @15 | rejects @15 | LRM 3.4.3 is silent on whether a default binding counts for a block configuration; the third reference simulator accepts, so permissive (`docs/decisions.md`). |
+| `ovl/call_conversions_ok` | rejects @23 to 28 | accepts | LRM 6.5.7.1 allows conversions in subprogram call associations; the reference simulator reports them as not supported yet (an actual conversion of an `in` variable as "not a name"), the second reference simulator accepts. |
 | `agg/others_with_other_choice_same_assoc` | accepts | rejects @5 | The reference simulator bug/leniency: accepts `others` combined with another choice in one association (LRM 9.3.3.3 forbids); the second reference simulator rejects. |
 | `attr/attribute_spec_overloaded_ok` | rejects @8 | accepts | LRM 7.2 is clear: an overloaded entity tag without a signature decorates every matching declaration. The reference simulators accept; the reference simulator is stricter than the LRM. |
 | `gen/formal_package_map_mismatch` | accepts | rejects @14 | LRM 6.5.7.2 is clear: the actual instance must match the formal package's generic map. The third reference simulator rejects ("Actual values for generic 'n' don't match"); the reference simulator does not check; the second reference simulator rejects as unsupported. |

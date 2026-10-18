@@ -942,6 +942,8 @@ impl Db {
                 formal_conv,
                 actual_conv: conv,
                 actual: x,
+                copy_in: None,
+                copy_out: None,
             });
         }
         if mode != Some(Mode::In) && matches!(a, ast::Actual::Inertial(_)) {
@@ -980,6 +982,8 @@ impl Db {
                 formal_conv,
                 actual_conv: None,
                 actual: id,
+                copy_in: None,
+                copy_out: None,
             },
             None => Actual::Expr(id),
         })

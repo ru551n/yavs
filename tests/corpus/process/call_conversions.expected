@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:call_conversions:_p0	seti 3
+diag	note	0	0	:call_conversions:_p0	inc 4
+diag	note	0	0	:call_conversions:_p0	rgb blue
+diag	note	0	0	:call_conversions:_p0	dbl 8
+diag	note	0	0	:call_conversions:_p0	shl 11000000
+diag	note	0	0	:call_conversions:_p0	fill 11110000
+diag	note	0	0	:call_conversions:_p0	swap 2 11
+diag	note	0	0	:call_conversions:_p0	show 8
+diag	note	0	0	:call_conversions:_p0	show 2

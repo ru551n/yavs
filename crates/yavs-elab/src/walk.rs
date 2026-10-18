@@ -74,6 +74,7 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
                 formal_conv,
                 actual_conv,
                 actual,
+                ..
             } => A::Conv {
                 formal_conv: *formal_conv,
                 actual_conv: *actual_conv,

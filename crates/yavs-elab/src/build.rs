@@ -80,12 +80,16 @@ impl Elaborated {
             let id = match (&leaf.resolution, leaf.implicit) {
                 (_, Some((k, src, r))) => {
                     let src = yavs_kernel::SignalId(src.0).slice(r.offset, r.len);
-                    match k {
+                    let id = match k {
                         ImplicitKind::Stable(t) => b.stable_signal(src, t),
                         ImplicitKind::Quiet(t) => b.quiet_signal(src, t),
                         ImplicitKind::Delayed(t) => b.delayed_signal(src, t),
                         ImplicitKind::Transaction => b.transaction_signal(src),
+                    };
+                    for &(l, r) in &leaf.implicit_more {
+                        b.implicit_source(id, yavs_kernel::SignalId(l.0).slice(r.offset, r.len));
                     }
+                    id
                 }
                 (None, None) => b.signal(&name, leaf.ty, &leaf.init),
                 (Some(LeafRes::StdLogic), None) => {

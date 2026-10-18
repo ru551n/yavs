@@ -210,6 +210,7 @@ impl Builder {
             sig,
             src,
             range,
+            more: Vec::new(),
             kind,
             rise_at: None,
             delayed: VecDeque::new(),
@@ -237,6 +238,22 @@ impl Builder {
     /// `s'delayed(t)`: the value of `s`, transport-delayed by `t`.
     pub fn delayed_signal(&mut self, s: impl Into<SigRef>, t: Time) -> SignalId {
         self.implicit(s.into(), ImplicitKind::Delayed(t))
+    }
+
+    /// Another source of implicit signal `sig` (`'stable`, `'quiet` or `'transaction` of a
+    /// composite whose scalars are in several signals): an event or activity on `src` counts
+    /// like one on the first source.
+    pub fn implicit_source(&mut self, sig: SignalId, src: impl Into<SigRef>) {
+        let Some(r) = self.chk(src.into()) else {
+            return;
+        };
+        match self.implicits.iter_mut().find(|im| im.sig == sig) {
+            Some(im) if !matches!(im.kind, ImplicitKind::Delayed(_)) => im.more.push(r),
+            _ => self.usage(format!(
+                "signal {} is not a 'stable, 'quiet or 'transaction signal",
+                sig.0
+            )),
+        }
     }
 
     /// A driver for `target`, to be owned by the next process that lists it.

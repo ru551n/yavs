@@ -350,7 +350,7 @@ impl<'a> Fx<'a, '_> {
         let decl = &db.decls[d];
         let obj = self.cx.objs.get(&d).copied();
         match obj {
-            Some(Obj::RecSignal) => {
+            Some(Obj::RecSignal(_)) => {
                 // ponytail: any name below a composite signal reads all of it, then selects;
                 // read only the selected part (`comp_select`) if large memories need it.
                 let p = self.comp_select(d, &[], span)?;
@@ -610,6 +610,12 @@ impl<'a> Fx<'a, '_> {
     /// The driver slot for actual `e` of an `out` signal parameter, whose signal is `d`:
     /// the driven signal, through any alias (LRM 6.6.2).
     pub(crate) fn out_driver_slot(&mut self, d: DeclId, e: ExprId) -> R<Reg> {
+        // A part of a composite signal: the driver slot of its first leaf.
+        if let Some((cd, steps)) = self.comp_steps(e) {
+            let span = self.db.exprs[e].span;
+            let part = self.comp_select(cd, &steps, span)?;
+            return self.leaf_slot(cd, e, &part, span);
+        }
         let lsp = self.db.lsp(e);
         let d = match lsp.as_ref().map(|l| l.root) {
             Some(yavs_sem::hir::ObjRoot::Decl(r)) => r,
@@ -655,6 +661,38 @@ impl<'a> Fx<'a, '_> {
             self.store_place(p, V::S(v), st, &what, span)?;
         }
         Ok(())
+    }
+
+    /// The driver slot through which this process drives the first leaf of `part`, the part
+    /// of composite signal `d` that actual `e` of an `out` signal parameter names: the slot of
+    /// the actual's longest static prefix plus the leaf's position below it, or the slot a
+    /// signal parameter was given plus the leaf's index.
+    fn leaf_slot(&mut self, d: DeclId, e: ExprId, part: &SigPart, span: Span) -> R<Reg> {
+        let Some((first, _, _)) = part.leaves.first() else {
+            return Err(self.cx.ice(span, "composite signal part without leaves"));
+        };
+        if let Some(Obj::RecSignal(Some(p))) = self.cx.objs.get(&d).copied() {
+            if !p.out {
+                return Err(self
+                    .cx
+                    .ice(span, "`in` signal parameter as an `out` actual"));
+            }
+            let a = self.addr(p.space, p.slot_off());
+            let base = self.load(a, Width::B8, RegTy::I64);
+            let k = self.int(i64::from(first.sig));
+            return Ok(self.bin(IntOp::Add, base, k));
+        }
+        let Some(lsp) = self.db.lsp(e) else {
+            return Err(self
+                .cx
+                .ice(span, "signal actual without a longest static prefix"));
+        };
+        let base = self.driver_of(&lsp)?;
+        let covered = self.leaves_under(d, &crate::func::lsp_fields(&lsp));
+        let Some(k) = covered.iter().position(|l| l.path == first.path) else {
+            return Err(self.cx.ice(span, "signal actual outside its driver"));
+        };
+        Ok(self.int(i64::from(base + k as u32)))
     }
 
     /// The signal an expression names.
@@ -875,7 +913,7 @@ impl<'a> Fx<'a, '_> {
                     steps.push(Step::Slice(range));
                     e = *prefix;
                 }
-                ExprKind::Obj(d) if matches!(self.cx.objs.get(d), Some(Obj::RecSignal)) => {
+                ExprKind::Obj(d) if matches!(self.cx.objs.get(d), Some(Obj::RecSignal(_))) => {
                     steps.reverse();
                     return Some((*d, steps));
                 }
@@ -955,10 +993,23 @@ impl<'a> Fx<'a, '_> {
         let db = self.db;
         let st = ty::obj_subtype(db, d).ok_or(Failed)?;
         let root_t = db.base(st);
-        // The descriptor the elaborator wrote (bounds from the initial value or the actual).
-        let root = match self.cx.sig_dopes.get(&d).copied() {
-            Some((space, off)) => self.addr(space, off),
-            None => match self.desc_of(st, None, span)? {
+        let param = match self.cx.objs.get(&d).copied() {
+            Some(Obj::RecSignal(p)) => p,
+            _ => {
+                return Err(self
+                    .cx
+                    .ice(span, "composite selection of a non-composite signal"));
+            }
+        };
+        // The descriptor the elaborator wrote (bounds from the initial value or the actual),
+        // or the actual's of a signal parameter.
+        let root = match (self.cx.sig_dopes.get(&d).copied(), param) {
+            (_, Some(p)) if p.desc => {
+                let a = self.addr(p.space, p.desc_off());
+                self.load(a, Width::B8, RegTy::Ptr)
+            }
+            (Some((space, off)), _) => self.addr(space, off),
+            (None, _) => match self.desc_of(st, None, span)? {
                 Some(r) => r,
                 None => return Err(self.cx.ice(span, "composite signal without a descriptor")),
             },
@@ -980,7 +1031,15 @@ impl<'a> Fx<'a, '_> {
             } else {
                 a
             };
-            let r = self.sigval_at(l.sig, a, len);
+            let r = match param {
+                // The leaf's reference covers the actual's elements, in kernel order.
+                Some(p) => {
+                    let at = self.addr(p.space, p.off + 16 * l.sig);
+                    let base = self.load(at, Width::Sig, RegTy::Sig);
+                    self.sub_sig(Err(base), a, len)
+                }
+                None => self.sigval_at(l.sig, a, len),
+            };
             leaves.push((l, r, len));
         }
         let tid = self.ty(t, span)?;
@@ -1188,17 +1247,67 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
+    /// `'event`, `'active` (any scalar), `'last_event`, `'last_active` (the most recent of
+    /// its scalars) and `'last_value` (each scalar's) of part `p` of a composite signal.
+    fn comp_attr(&mut self, attr: PredefAttr, p: &SigPart, span: Span) -> R<V> {
+        use PredefAttr::*;
+        let (kind, any) = match attr {
+            Event => (AttrKind::Event, true),
+            Active => (AttrKind::Active, true),
+            LastEvent => (AttrKind::LastEvent, false),
+            LastActive => (AttrKind::LastActive, false),
+            _ => return self.read_leaves(p, true, span),
+        };
+        let mut acc: Option<Reg> = None;
+        for &(_, sig, _) in &p.leaves {
+            let dst = self.reg(RegTy::I64);
+            self.emit(Inst::SigAttr { dst, kind, sig });
+            acc = Some(match acc {
+                None => dst,
+                Some(a) if any => {
+                    let r = self.reg(RegTy::I64);
+                    self.emit(Inst::Bool {
+                        op: BoolOp::Or,
+                        dst: r,
+                        a,
+                        b: dst,
+                    });
+                    r
+                }
+                Some(a) => {
+                    let lt = self.cmp(CmpOp::Lt, dst, a);
+                    self.select(lt, dst, a, RegTy::I64)
+                }
+            });
+        }
+        acc.map(V::S)
+            .ok_or_else(|| self.cx.ice(span, "composite signal part without leaves"))
+    }
+
     /// Read part `p` of a composite signal into a new value, leaf by leaf.
     pub fn read_comp(&mut self, p: &SigPart, span: Span) -> R<V> {
+        self.read_leaves(p, false, span)
+    }
+
+    /// Read the current values, or with `last` the `'last_value`s, of part `p` of a composite
+    /// signal into a new value, leaf by leaf.
+    fn read_leaves(&mut self, p: &SigPart, last: bool, span: Span) -> R<V> {
         let size = self.size_of(p.tid, p.desc);
         let val = self.alloc(size);
         for (l, sref, len) in &p.leaves {
             let facts = self.leaf_facts(l, span)?;
             let size = self.leaf_size(l, *len, span)?;
             let buf = self.alloc(size);
-            self.emit(Inst::SigRead {
-                dst: buf,
-                sig: *sref,
+            self.emit(if last {
+                Inst::SigLastValue {
+                    dst: buf,
+                    sig: *sref,
+                }
+            } else {
+                Inst::SigRead {
+                    dst: buf,
+                    sig: *sref,
+                }
             });
             let k = self.int(0);
             let rel = &l.path[p.path.len()..];
@@ -2042,6 +2151,38 @@ impl<'a> Fx<'a, '_> {
                     let slot = self.out_driver_slot(d, e)?;
                     cells.extend([sref, slot]);
                     cells.extend(dope);
+                }
+                Shape::RecSig(out) => {
+                    let Some((d, steps)) = self.comp_steps(e) else {
+                        return Err(self.cx.ice(es, "record signal actual is not a signal name"));
+                    };
+                    let part = self.comp_select(d, &steps, es)?;
+                    if part.leaves.len() != ty::leaves(db, p.subtype).len() {
+                        return Err(self.cx.ice(es, "record signal actual of another type"));
+                    }
+                    cells.extend(part.leaves.iter().map(|(_, r, _)| *r));
+                    if out {
+                        let slot = self.leaf_slot(d, e, &part, es)?;
+                        cells.push(slot);
+                    }
+                    let t = self.ty(db.base(p.subtype), es)?;
+                    if Ty::needs_desc(self.fb.program().types(), t) {
+                        let mut desc = part.desc;
+                        // A constrained array formal takes its own bounds (LRM 4.2.2.3).
+                        if let Some((_, dims)) = ty::array_of(db, db.base(p.subtype))
+                            && let Some(want) = self.subtype_dope(p.subtype, es)?
+                        {
+                            let what = self.msg(&p.name.text.to_string(), Dir::To);
+                            self.emit(Inst::SubtypeCheck {
+                                dope: desc,
+                                want,
+                                dims,
+                                what,
+                            });
+                            desc = want;
+                        }
+                        cells.push(desc);
+                    }
                 }
                 Shape::Arr => {
                     let (data, mut dope) = match p.mode {
@@ -3034,6 +3175,14 @@ impl<'a> Fx<'a, '_> {
             AttrPrefix::Expr(e)
                 if matches!(attr, Event | Active | LastEvent | LastActive | LastValue) =>
             {
+                // A part of a composite signal over several leaves: the attribute of the
+                // composite from those of its scalars (LRM 16.2.4).
+                if let Some((d, steps)) = self.comp_steps(e) {
+                    let p = self.comp_select(d, &steps, span)?;
+                    if !matches!(p.leaves.as_slice(), [(l, _, _)] if l.path == p.path) {
+                        return self.comp_attr(attr, &p, span);
+                    }
+                }
                 // A signal, signal element or slice, or signal parameter (LRM 16.2.4).
                 let (_, s, dope) = self.sig_name(e)?;
                 let st = db.exprs[e].subtype;

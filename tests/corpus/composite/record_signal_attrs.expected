@@ -1,0 +1,20 @@
+exit	0
+diag	note	0	0	:record_signal_attrs:mon	st false qu false rst false
+diag	note	0	1	:record_signal_attrs:mon	st true qu true rst true
+diag	note	1000000	1	:record_signal_attrs:drv	s(1)'event true s(0)'event false s(1 to 2)'event true s'active true s(1)'last_value (true,1)
+diag	note	1000000	2	:record_signal_attrs:mon	st false qu false rst true
+diag	note	1000000	2	:record_signal_attrs:mon	transaction 1
+diag	note	3000000	1	:record_signal_attrs:mon	st true qu true rst true
+diag	note	4000000	1	:record_signal_attrs:delayed	dl (false,5) dv (false,5)(false,2)
+diag	note	5000000	2	:record_signal_attrs:mon	st false qu false rst true
+diag	note	5000000	2	:record_signal_attrs:mon	transaction 2
+diag	note	6000000	1	:record_signal_attrs:delayed	dl (false,5) dv (true,5)(false,3)
+diag	note	7000000	0	:record_signal_attrs:drv	s(1)'last_event 2000000 fs s(0)'last_event 9223372036854775807 fs s(1)'last_active 2000000 fs s(1 to 2)'last_value(1) (false,1)
+diag	note	7000000	1	:record_signal_attrs:mon	st true qu true rst true
+diag	note	7000000	2	:record_signal_attrs:mon	st false qu false rst false
+diag	note	7000000	2	:record_signal_attrs:mon	transaction 3
+diag	note	7000000	3	:record_signal_attrs:mon	st false qu false rst true
+diag	note	8000000	1	:record_signal_attrs:delayed	dl (true,5) dv (false,6)(false,3)
+diag	note	9000000	1	:record_signal_attrs:drv	s(2)'active true s(2)'event false r'last_event 2000000 fs r'last_value (true,9)
+diag	note	9000000	1	:record_signal_attrs:mon	st true qu true rst true
+diag	note	10000000	1	:record_signal_attrs:delayed	dl (false,6) dv (false,6)(false,3)

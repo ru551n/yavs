@@ -348,6 +348,9 @@ pub struct Leaf {
     pub guard: Option<yavs_kernel::GuardKind>,
     /// An implicit signal: its kind and the source elements.
     pub implicit: Option<(ImplicitKind, LeafId, Range)>,
+    /// The other sources of `'stable`, `'quiet` or `'transaction` of a prefix over several
+    /// leaves (a record).
+    pub implicit_more: Vec<(LeafId, Range)>,
     pub init: Value,
 }
 

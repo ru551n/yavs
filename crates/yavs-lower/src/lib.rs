@@ -265,8 +265,9 @@ pub(crate) enum Obj {
     Array { space: Space, off: u32 },
     /// Instance signal `sig`.
     Signal { sig: u32 },
-    /// A record signal: one instance signal per leaf (`Cx::rec_leaves`).
-    RecSignal,
+    /// A record signal: one instance signal per leaf (`Cx::rec_leaves`), or a signal
+    /// parameter with records in its type (`RecParam`).
+    RecSignal(Option<RecParam>),
     /// A composite of static layout stored in place: `size` bytes of elements at `off`, then
     /// its descriptor.
     Fixed { space: Space, off: u32, size: u32 },
@@ -338,7 +339,33 @@ pub(crate) struct Cx {
 pub(crate) struct RecLeaf {
     pub path: Vec<u32>,
     pub st: yavs_sem::SubtypeId,
+    /// The instance signal; for a signal parameter, the leaf's index (`RecParam`).
     pub sig: u32,
+}
+
+/// A signal parameter with records in its type (DESIGN.md "Contract with yavs-interp and
+/// yavs-elab"): from `off` in `space`, one signal reference (two cells) per leaf of the
+/// formal, in leaf order; then, with `out`, the caller's driver slot of the first leaf (leaf
+/// `k` is that slot plus `k`); then, with `desc`, the address of the actual's descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecParam {
+    pub space: Space,
+    pub off: u32,
+    pub leaves: u32,
+    pub out: bool,
+    pub desc: bool,
+}
+
+impl RecParam {
+    /// The offset of the driver slot cell (`out`).
+    pub fn slot_off(&self) -> u32 {
+        self.off + 16 * self.leaves
+    }
+
+    /// The offset of the descriptor address cell (`desc`).
+    pub fn desc_off(&self) -> u32 {
+        self.slot_off() + if self.out { 8 } else { 0 }
+    }
 }
 
 impl Cx {

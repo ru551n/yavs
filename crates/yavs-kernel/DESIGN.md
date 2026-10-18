@@ -75,6 +75,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    - **implicit signals** (K2) in creation order: `'transaction` toggles on activity,
      `'stable(T)`/`'quiet(T)` drop to FALSE on an event/activity and rise again at `now + T`
      (queue entry; `T = 0` means the next delta), `'delayed(T)` is a transport-delayed copy.
+     `'transaction`, `'stable` and `'quiet` of a composite whose scalars are in several
+     signals have one source per signal (`Builder::implicit_source`), any of them counting.
      They are kernel state, so none of them costs an extra delta or a process. `'transaction`
      (BIT) and `'stable`/`'quiet` (BOOLEAN) are one logic element with the codes of '0'/'1',
      like every BIT and BOOLEAN signal (#185).

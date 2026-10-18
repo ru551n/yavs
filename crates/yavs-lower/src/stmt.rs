@@ -931,7 +931,7 @@ impl Fx<'_, '_> {
         &mut self,
         d: yavs_sem::DeclId,
         steps: &[crate::expr::Step<'_>],
-        base: u32,
+        base: Result<u32, Reg>,
         covered: &[crate::RecLeaf],
         target: &Target,
         delay: &Delay,
@@ -978,11 +978,7 @@ impl Fx<'_, '_> {
             }
         };
         for (leaf, sref, len) in &p.leaves {
-            let slot = base
-                + covered
-                    .iter()
-                    .position(|l| l.path == leaf.path)
-                    .unwrap_or(0) as u32;
+            let pos = covered.iter().position(|l| l.path == leaf.path);
             let rel = &leaf.path[p.path.len()..];
             // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
             let size = self.leaf_size(leaf, *len, span)?;
@@ -1009,14 +1005,34 @@ impl Fx<'_, '_> {
                 let va = self.offset(e, 8);
                 self.leaf_of_value(leaf, rel, p.t, v, (va, *len), span)?;
             }
-            self.emit(Inst::Drive {
-                driver: slot,
-                target: Some(*sref),
-                wave,
-                n,
-                mode,
-                reject,
-            });
+            match base {
+                Ok(b) => {
+                    let Some(k) = pos else {
+                        return Err(self.cx.ice(span, "signal target outside its driver"));
+                    };
+                    self.emit(Inst::Drive {
+                        driver: b + k as u32,
+                        target: Some(*sref),
+                        wave,
+                        n,
+                        mode,
+                        reject,
+                    });
+                }
+                // A signal parameter: the caller's slot of its first leaf plus the leaf's index.
+                Err(b) => {
+                    let k = self.int(i64::from(leaf.sig));
+                    let slot = self.bin(IntOp::Add, b, k);
+                    self.emit(Inst::DriveSlot {
+                        slot,
+                        target: *sref,
+                        wave,
+                        n,
+                        mode,
+                        reject,
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -1279,10 +1295,19 @@ impl Fx<'_, '_> {
                 Some(Obj::SignalRef { out: false, .. }) => {
                     return Err(self.cx.ice(span, "assignment to an `in` signal parameter"));
                 }
+                // The caller's driver slot of the formal's first leaf.
+                Some(Obj::RecSignal(Some(p))) if p.out => {
+                    let a = self.addr(p.space, p.slot_off());
+                    Some(self.load(a, Width::B8, RegTy::I64))
+                }
+                Some(Obj::RecSignal(Some(_))) => {
+                    return Err(self.cx.ice(span, "assignment to an `in` signal parameter"));
+                }
                 _ => None,
             },
             _ => None,
         };
+        let mut param_slot = param_slot;
         let mut slot = match param_slot {
             Some(_) => 0,
             None => self.driver_of(lsp)?,
@@ -1297,10 +1322,18 @@ impl Fx<'_, '_> {
                 .collect();
             let leaves = self.leaves_under(d, &path);
             let covered = self.leaves_under(d, &crate::func::lsp_fields(lsp));
+            let base = param_slot.map_or(Ok(slot), Err);
             if !matches!(leaves.as_slice(), [l] if l.path == path) {
-                return self.drive_record(d, &steps, slot, &covered, target, delay, elems, span);
+                return self.drive_record(d, &steps, base, &covered, target, delay, elems, span);
             }
-            slot += covered.iter().position(|l| l.path == path).unwrap_or(0) as u32;
+            match param_slot {
+                // A parameter's leaf `k` is driven through the caller's slot plus `k`.
+                Some(b) => {
+                    let k = self.int(i64::from(leaves[0].sig));
+                    param_slot = Some(self.bin(IntOp::Add, b, k));
+                }
+                None => slot += covered.iter().position(|l| l.path == path).unwrap_or(0) as u32,
+            }
         }
         let (_, sref, tdope) = self.sig_name(target.expr)?;
         let st = db.exprs[target.expr].subtype;
@@ -1435,7 +1468,7 @@ impl Fx<'_, '_> {
             }) else {
                 return Err(self.cx.unsupported(l.span, "sensitivity to external names"));
             };
-            if matches!(self.cx.objs.get(&d), Some(Obj::RecSignal)) {
+            if matches!(self.cx.objs.get(&d), Some(Obj::RecSignal(_))) {
                 // A composite signal: the selected elements of every leaf below the prefix.
                 let mut steps = Vec::new();
                 for s in l.path.iter() {
@@ -1531,7 +1564,7 @@ impl Fx<'_, '_> {
             ExprKind::Obj(d) => {
                 if matches!(
                     self.cx.objs.get(d),
-                    Some(Obj::Signal { .. } | Obj::RecSignal)
+                    Some(Obj::Signal { .. } | Obj::RecSignal(_))
                 ) && !out.iter().any(|l| l.root == ObjRoot::Decl(*d))
                 {
                     out.push(Lsp {

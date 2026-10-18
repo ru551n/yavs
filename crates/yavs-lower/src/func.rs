@@ -26,15 +26,23 @@ pub(crate) enum Shape {
     Sig,
     /// Scalar `out`/`inout` signal: a signal reference and the caller's driver slot.
     SigOut,
+    /// Signal with records in its type: a reference per leaf (`RecParam`); `true` for
+    /// `out`/`inout`.
+    RecSig(bool),
 }
 
 pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
     match p.class {
+        ObjClass::Signal if ty::has_record(db, db.base(p.subtype)) => match p.mode {
+            HMode::In => return Ok(Shape::RecSig(false)),
+            HMode::Out | HMode::Inout => return Ok(Shape::RecSig(true)),
+            _ => return Err(cx.unsupported(span, "buffer, linkage and view signal parameters")),
+        },
         ObjClass::Signal
             if !ty::is_array(db, db.base(p.subtype))
                 && !db.types[db.base(p.subtype)].kind_is_scalar() =>
         {
-            return Err(cx.unsupported(span, "record signal parameters"));
+            return Err(cx.unsupported(span, "signal parameters of this type"));
         }
         ObjClass::Signal if p.mode == HMode::In => return Ok(Shape::Sig),
         ObjClass::Signal if matches!(p.mode, HMode::Out | HMode::Inout) => {
@@ -769,6 +777,59 @@ pub(crate) fn subprogram(
                     out: true,
                 }
             }
+            Shape::RecSig(out) => {
+                let leaves = ty::leaves(db, p.subtype);
+                let mut at = Vec::new();
+                for k in 0..leaves.len() {
+                    let n = format!("{name}'{k}");
+                    at.push(fx.fb.param(&n, Width::Sig, ParamClass::Signal, mode, None));
+                }
+                if out {
+                    let n = format!("{name}'driver");
+                    at.push(
+                        fx.fb
+                            .param(&n, Width::B8, ParamClass::Value, Mode::In, None),
+                    );
+                }
+                let t = fx.ty(db.base(p.subtype), decl.span)?;
+                let desc = yavs_ir::Ty::needs_desc(fx.fb.program().types(), t);
+                if desc {
+                    let n = format!("{name}'dope");
+                    at.push(
+                        fx.fb
+                            .param(&n, Width::B8, ParamClass::Value, Mode::In, None),
+                    );
+                }
+                let Some(&off) = at.first() else {
+                    return Err(fx
+                        .cx
+                        .ice(decl.span, "record signal parameter without leaves"));
+                };
+                let want = (0..leaves.len() as u32).map(|k| off + 16 * k);
+                let tail =
+                    (0..(out as u32 + desc as u32)).map(|k| off + 16 * leaves.len() as u32 + 8 * k);
+                if !at.iter().copied().eq(want.chain(tail)) {
+                    return Err(fx.cx.ice(decl.span, "signal parameter slots not adjacent"));
+                }
+                let rec = leaves
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, (path, st))| crate::RecLeaf {
+                        path,
+                        st,
+                        sig: k as u32,
+                    })
+                    .collect::<Vec<_>>();
+                let param = crate::RecParam {
+                    space: Space::Frame(depth),
+                    off,
+                    leaves: rec.len() as u32,
+                    out,
+                    desc,
+                };
+                fx.cx.rec_leaves.insert(pd, rec);
+                Obj::RecSignal(Some(param))
+            }
             Shape::Arr => {
                 let off = fx.fb.param(&name, Width::B8, ParamClass::Value, mode, None);
                 let dope = fx.fb.param(
@@ -1085,7 +1146,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 out.push(crate::RecLeaf { path, st, sig });
             }
             cx.rec_leaves.insert(d, out);
-            cx.objs.insert(d, Obj::RecSignal);
+            cx.objs.insert(d, Obj::RecSignal(None));
             Ok(())
         }
         ObjClass::Signal => {
@@ -1291,7 +1352,7 @@ fn process(
         bases.push(sigs.len() as u32);
         match cx.objs.get(&d) {
             Some(&Obj::Signal { sig }) => sigs.push(sig),
-            Some(Obj::RecSignal) => {
+            Some(Obj::RecSignal(_)) => {
                 let path = lsp_fields(l);
                 let leaves = cx.rec_leaves.get(&d).cloned().unwrap_or_default();
                 sigs.extend(
@@ -1575,6 +1636,43 @@ impl Fx<'_, '_> {
             off
         };
         match o.class {
+            ObjClass::Signal if ty::has_record(db, t) => {
+                // One kernel signal per leaf, as in an architecture (`inst_object`); the whole
+                // signal's descriptor in package data on the first leaf entry.
+                let whole = self.ty(t, span)?;
+                let types = self.fb.program().types();
+                let mut dope = if yavs_ir::Ty::needs_desc(types, whole) {
+                    let n = yavs_ir::Ty::desc_size(types, whole)
+                        .ok_or_else(|| self.cx.ice(span, "composite without a descriptor"))?;
+                    let off = alloc(n as u32);
+                    self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
+                    Some((off, whole))
+                } else {
+                    None
+                };
+                let mut out = Vec::new();
+                for (path, st) in ty::leaves(db, o.subtype) {
+                    let ty = self.ty(db.base(st), span)?;
+                    let sig = self.cx.pkg_sigs.len() as u32;
+                    let s = SignalIr {
+                        decl: d,
+                        name: decl.name.to_string(),
+                        ty,
+                        init: None,
+                        path: path.clone(),
+                        dope: None,
+                    };
+                    self.cx.pkg_sigs.push(s.clone());
+                    signals.push(SignalIr {
+                        dope: dope.take(),
+                        ..s
+                    });
+                    out.push(crate::RecLeaf { path, st, sig });
+                }
+                self.cx.rec_leaves.insert(d, out);
+                self.cx.objs.insert(d, Obj::RecSignal(None));
+                Ok(())
+            }
             ObjClass::Signal => {
                 let ty = self.ty(t, span)?;
                 let sig = self.cx.pkg_sigs.len() as u32;

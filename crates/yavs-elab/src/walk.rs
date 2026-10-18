@@ -745,12 +745,11 @@ impl Elab<'_> {
             return Err(unsupported(span, "implicit signals of this prefix", "M3"));
         };
         let (rs, pshape) = self.m.select(po, &sels, span)?;
-        let [(leaf, range)] = rs.as_slice() else {
-            return Err(unsupported(
+        let Some(&(leaf, range)) = rs.first() else {
+            return Err(Box::new(ice(
                 span,
-                "implicit signals of a record (several kernel signals)",
-                "M3",
-            ));
+                "implicit signal of a prefix without leaves",
+            )));
         };
         let t = match arg {
             Some(a) => {
@@ -781,43 +780,50 @@ impl Elab<'_> {
             PredefAttr::Transaction => ImplicitKind::Transaction,
             _ => return Err(Box::new(ice(span, "not an implicit signal attribute"))),
         };
-        let src = (*leaf, *range);
+        let src = (leaf, range);
         let db: &Db = self.db;
-        let (shape, init) = match kind {
-            ImplicitKind::Delayed(_) => {
-                let init = self.m.nets.leaf(src.0).init.clone();
-                (pshape, Some(init))
-            }
+        let shape = match kind {
+            ImplicitKind::Delayed(_) => pshape,
             _ => {
                 let st = o.subtype;
                 let Some(sh) = self.m.shape(db, st, Some(s), span)? else {
                     return Err(Box::new(ice(span, "implicit signal subtype")));
                 };
-                (sh, None)
+                sh
             }
         };
         let obj = self
             .m
             .add_obj(self.db, s, d, ObjKind::Implicit, shape, None, span)?;
         let (a, b) = self.m.nets.obj(obj).leaves;
+        if let ImplicitKind::Delayed(_) = kind {
+            // A record prefix: one delayed leaf per leaf of the prefix, in leaf order.
+            if (b.0 - a.0) as usize != rs.len() {
+                return Err(Box::new(ice(
+                    span,
+                    "'delayed of another shape than its prefix",
+                )));
+            }
+            for (k, &(sl, sr)) in rs.iter().enumerate() {
+                let elem = self.m.nets.leaves[sl.index()].ty.elem;
+                let init = self.m.nets.leaf(sl).init.clone();
+                let l = &mut self.m.nets.leaves[a.index() + k];
+                // The kernel decides the representation (K2): the prefix's for 'delayed.
+                l.ty = yavs_kernel::SignalType { elem, len: sr.len };
+                l.init = init;
+                l.implicit = Some((kind, sl, sr));
+            }
+            return Ok(());
+        }
         if b.0 != a.0 + 1 {
             return Err(Box::new(ice(span, "implicit signal of several leaves")));
         }
-        let src_elem = self.m.nets.leaves[src.0.index()].ty.elem;
         let l = &mut self.m.nets.leaves[a.index()];
-        // The kernel decides the representation of these signals (K2): one logic element
-        // ('0'/'1' codes) for 'stable, 'quiet and 'transaction; the prefix's for 'delayed.
-        l.ty = match kind {
-            ImplicitKind::Delayed(_) => yavs_kernel::SignalType {
-                elem: src_elem,
-                len: src.1.len,
-            },
-            _ => yavs_kernel::SignalType::logic(1),
-        };
-        if let Some(init) = init {
-            l.init = init;
-        }
+        // One logic element ('0'/'1' codes) for 'stable, 'quiet and 'transaction (K2), over
+        // every leaf of the prefix.
+        l.ty = yavs_kernel::SignalType::logic(1);
         l.implicit = Some((kind, src.0, src.1));
+        l.implicit_more = rs[1..].to_vec();
         Ok(())
     }
 
@@ -2276,6 +2282,7 @@ impl Model {
                 resolution,
                 guard: None,
                 implicit: None,
+                implicit_more: Vec::new(),
                 init,
             });
         }

@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:package_record_signals:main	g (false,3) gv (true,1)(false,2)
+diag	note	0	0	:package_record_signals:watch	gv changed: (true,1)(false,2) gv(1)'event false
+diag	note	0	1	:package_record_signals:main	g (true,5) event true last (false,3)
+diag	note	0	2	:package_record_signals:main	g (true,8) g.n'event true g.ok'event false
+diag	note	1000000	1	:package_record_signals:watch	gv changed: (true,10)(false,2) gv(1)'event false
+diag	note	2000000	1	:package_record_signals:watch	gv changed: (true,10)(false,20) gv(1)'event true
+diag	note	5000000	0	:package_record_signals:main	gv (true,10)(false,20)

@@ -301,6 +301,65 @@ fn stable_quiet_and_delayed() {
     assert_eq!(of("'stable(0 fs)").len(), 4);
 }
 
+#[test]
+fn implicit_signals_over_several_sources() {
+    // A record of two fields: 'stable and 'quiet see events and activity on either.
+    let mut b = Builder::new();
+    let x = b.signal("x", BYTE, &[0]);
+    let y = b.signal("y", BYTE, &[0]);
+    let st = b.stable_signal(x, ns(5));
+    b.implicit_source(st, y);
+    let q = b.quiet_signal(x, ns(5));
+    b.implicit_source(q, y);
+    let d = b.delayed_signal(x, ns(1));
+    b.implicit_source(d, y);
+    stim(&mut b, "sx", x, &[(10, 1)]);
+    stim(&mut b, "sy", y, &[(20, 1), (40, 1)]);
+    assert!(
+        b.build(Config::default()).is_err(),
+        "'delayed has one source"
+    );
+
+    let mut b = Builder::new();
+    let x = b.signal("x", BYTE, &[0]);
+    let y = b.signal("y", BYTE, &[0]);
+    let st = b.stable_signal(x, ns(5));
+    b.implicit_source(st, y);
+    let q = b.quiet_signal(x, ns(5));
+    b.implicit_source(q, y);
+    stim(&mut b, "sx", x, &[(10, 1)]);
+    stim(&mut b, "sy", y, &[(20, 1), (40, 1)]);
+    let (mut sim, t) = build(b, Config::default());
+    sim.run_until(ns(60)).unwrap();
+    let all = t.take();
+    let of = |attr: &str| {
+        all.iter()
+            .filter(|l| l.contains(attr))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        of("'stable"),
+        [
+            "10 ns +0 x'stable(5 ns)[0..1]=\"0\"",
+            "15 ns +0 x'stable(5 ns)[0..1]=\"1\"",
+            "20 ns +0 x'stable(5 ns)[0..1]=\"0\"",
+            "25 ns +0 x'stable(5 ns)[0..1]=\"1\"",
+        ]
+    );
+    assert_eq!(
+        of("'quiet"),
+        [
+            "10 ns +0 x'quiet(5 ns)[0..1]=\"0\"",
+            "15 ns +0 x'quiet(5 ns)[0..1]=\"1\"",
+            "20 ns +0 x'quiet(5 ns)[0..1]=\"0\"",
+            "25 ns +0 x'quiet(5 ns)[0..1]=\"1\"",
+            "40 ns +0 x'quiet(5 ns)[0..1]=\"0\"",
+            "45 ns +0 x'quiet(5 ns)[0..1]=\"1\"",
+        ]
+    );
+}
+
 // ---- K3, K4: driving value, guarded signals, null transactions -----------
 
 fn or_bytes() -> Resolution {

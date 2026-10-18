@@ -72,7 +72,10 @@ a call into your module in a small commit.
   `out`/`inout` variable (a frame temporary written back after the call for logic elements and
   slices); two cells (data, dope) per array parameter. Signal parameters: the signal reference
   (two cells), then the caller's driver slot for `out`/`inout`, then the actual's descriptor for
-  arrays; assignments to an `out` signal parameter use `DriveSlot`. A constrained formal gets
+  arrays; assignments to an `out` signal parameter use `DriveSlot`. A signal parameter with
+  records in its type (`RecParam`) is one reference per leaf of the formal, then the driver
+  slot of the first leaf (`out`/`inout`; leaf `k` uses that slot plus `k`), then the actual's
+  descriptor when the type needs one (#215). A constrained formal gets
   the formal's descriptor after a length check. An individually associated parameter
   (`Actual::Individual`, 6.5.7.1, `assoc.rs`) of variable or constant class is a temporary of
   the formal's subtype: each part is copied in through its formal part (a name of the formal,

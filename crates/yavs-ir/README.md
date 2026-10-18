@@ -17,7 +17,8 @@ textual dump.
   ones are pool constants), `Ty::layout` / `desc_size`, the descriptor format (`[left, right,
   dir]` i64 per dimension), bit-plane logic arrays, `ConstData` compact constants.
 - Calling convention: arguments are register cells stored into the callee's parameter slots
-  (a signal parameter is two cells); composites are passed by address; a function result is
+  (a signal parameter is two cells; one with records in its type is one such parameter per
+  leaf, see yavs-lower DESIGN.md); composites are passed by address; a function result is
   one cell, a string/unconstrained array result is the address of a fat pair `[data, dope]`.
 - Native argument convention (ir.md 9): `in` scalars by value; `out`/`inout` scalars and
   access variables (`line`) by the address of the cell; an unconstrained array (`string`,

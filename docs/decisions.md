@@ -826,6 +826,24 @@ which tools/difftest parses.
   elements as its own target has, from the left, and the pieces must cover the value exactly
   (checked before anything is assigned). Named pieces, multi-dimensional ones and element
   subtypes not fixed by the type are E2001.
+- **Signal parameters with records in their type** (#215) pass one signal reference per leaf
+  of the formal (in leaf order, each two cells, so the interpreter's parameter copying is
+  unchanged), then for `out`/`inout` the caller's driver slot of the first leaf (leaf `k`
+  drives through that slot plus `k`: the leaves below a prefix are consecutive driver slots),
+  then the actual's descriptor when the type needs one (a constrained array formal: its own,
+  after a length check). Names below the formal select within those references by the same
+  walk as signals (`comp_select`), so actuals may be whole signals, elements, slices, fields
+  or other such parameters. A part of a composite signal as an `out` actual (of either
+  kind of formal) drives its first leaf through the slot of the actual's longest static
+  prefix plus the leaf's position below that prefix (`Fx::leaf_slot`).
+- **Package signals with records in their type** are one package signal per leaf, like
+  architecture signals; the whole type's descriptor is in package data (#215).
+- **Attributes of a part over several leaves** (#215, LRM 16.2.4): `'event` and `'active`
+  are true when they are for any leaf's selected elements, `'last_event` and `'last_active`
+  are the smallest of the leaves', `'last_value` is read leaf by leaf like the value.
+  `'stable(T)`, `'quiet(T)` and `'transaction` of such a part are one kernel implicit signal
+  with a source per leaf (`Builder::implicit_source`), `'delayed(T)` one delayed leaf per
+  leaf of the prefix.
 - **Arrays of arrays without records** (#89) stay one kernel signal of all their scalars, row
   major (logic mirrored). Every name of indices and slices below such a signal (`m(i)`,
   `m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`), as target, actual, alias or sensitivity, selects

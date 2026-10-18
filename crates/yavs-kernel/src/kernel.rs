@@ -234,6 +234,9 @@ pub(crate) struct Implicit {
     pub sig: SignalId,
     pub src: SignalId,
     pub range: Range,
+    /// Further sources of `'stable`, `'quiet` and `'transaction` of a composite whose
+    /// scalars are in several signals (records): an event or activity on any counts.
+    pub more: Vec<(SignalId, Range)>,
     pub kind: ImplicitKind,
     /// `'stable`/`'quiet`: when the value returns to TRUE.
     pub rise_at: Option<Time>,
@@ -1043,10 +1046,15 @@ impl SimControl {
         for i in 0..self.implicits.len() {
             let im = &self.implicits[i];
             let src = &self.signals[im.src.0 as usize];
-            let (ev, act) = (
+            let (mut ev, mut act) = (
                 src.event_in(im.range, cycle),
                 src.active_in(im.range, cycle),
             );
+            for &(s, r) in &im.more {
+                let s = &self.signals[s.0 as usize];
+                ev |= s.event_in(r, cycle);
+                act |= s.active_in(r, cycle);
+            }
             let after = |t: Time| {
                 now.checked_add(t).map_err(|_| ErrorKind::TimeOverflow {
                     base: now,

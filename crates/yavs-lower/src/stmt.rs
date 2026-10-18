@@ -746,11 +746,155 @@ impl Fx<'_, '_> {
         }
     }
 
+    /// `(a, b) <= v after t, ...` (LRM 10.5.2.1): each scalar element of the aggregate target is
+    /// driven with the matching element of every waveform value.
+    fn drive_aggregate(
+        &mut self,
+        target: &Target,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        delay: &Delay,
+        elems: &[yavs_sem::hir::WaveElem],
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        if assocs.len() != target.lsps.len() {
+            return Err(self
+                .cx
+                .unsupported(span, "aggregate targets with choice lists"));
+        }
+        let t = db.base(db.exprs[target.expr].subtype);
+        let Some((esub, 1)) = ty::array_of(db, t) else {
+            return Err(self
+                .cx
+                .unsupported(span, "aggregate signal targets of records and matrices"));
+        };
+        let vtid = self.ty(t, span)?;
+        let vlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), vtid).is_some();
+        let vbias = self.code_bias(vtid);
+        let (_, rt, vw) = self.scalar(esub, span)?;
+        let mut vals = Vec::new();
+        for el in elems {
+            let Some(v) = el.value else {
+                return Err(self
+                    .cx
+                    .unsupported(span, "null waveform elements in aggregate targets"));
+            };
+            let at = match el.after {
+                Some(a) => self.scalar_expr(a)?,
+                None => self.int(0),
+            };
+            let x = self.expr(v)?;
+            vals.push((at, self.arr(x, span)?));
+        }
+        let (mode, reject) = match delay {
+            Delay::Transport => (DriveMode::Transport, None),
+            Delay::Default => (DriveMode::Inertial, None),
+            Delay::Inertial { reject } => {
+                let r = match reject {
+                    Some(e) => Some(self.scalar_expr(*e)?),
+                    None => None,
+                };
+                (DriveMode::Inertial, r)
+            }
+        };
+        let m = self.msg("aggregate target", Dir::To);
+        for (k, (a, lsp)) in assocs.iter().zip(target.lsps.iter()).enumerate() {
+            if a.slice_piece {
+                return Err(self
+                    .cx
+                    .unsupported(span, "slices in aggregate signal targets"));
+            }
+            let slot = self.driver_of(lsp)?;
+            let (_, sref, tdope) = self.sig_name(a.value)?;
+            if tdope.is_some() {
+                return Err(self
+                    .cx
+                    .unsupported(span, "array elements of aggregate signal targets"));
+            }
+            let st = db.exprs[a.value].subtype;
+            let ttid = self.ty(db.base(st), span)?;
+            let tlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), ttid).is_some();
+            let tbias = self.code_bias(ttid);
+            let (_, _, tw) = self.scalar(st, span)?;
+            let stride = if tlogic { 8 + 32 } else { 16 };
+            let wave = self.alloc_n(stride * vals.len() as u32);
+            for (j, &(at, (data, dope))) in vals.iter().enumerate() {
+                let pos = match a.choices.first() {
+                    None => self.int(k as i64),
+                    Some(Choice::Expr(c)) if a.choices.len() == 1 => {
+                        let i = self.scalar_expr(*c)?;
+                        let p = self.reg(RegTy::I64);
+                        self.emit(Inst::Pos {
+                            dst: p,
+                            dope,
+                            dim: 0,
+                            idx: i,
+                            what: m,
+                        });
+                        p
+                    }
+                    _ => return Err(self.cx.unsupported(span, "this aggregate target choice")),
+                };
+                let x = if vlogic {
+                    let count = self.dope_len(dope);
+                    let one = self.int(1);
+                    let last = self.bin(IntOp::Sub, count, one);
+                    let idx = self.bin(IntOp::Sub, last, pos);
+                    let c = self.reg(RegTy::I64);
+                    self.emit(Inst::LGet {
+                        dst: c,
+                        base: data,
+                        idx,
+                    });
+                    self.dec(c, vbias)
+                } else {
+                    let p = self.reg(RegTy::Ptr);
+                    self.emit(Inst::Index {
+                        dst: p,
+                        base: data,
+                        pos,
+                        stride: vw.bytes(),
+                    });
+                    self.load(p, vw, rt)
+                };
+                let what = self.target_name(a.value);
+                self.check_scalar(x, Some(esub), st, &what, span)?;
+                let e = self.offset(wave, stride * j as u32);
+                self.store(e, at, Width::B8);
+                let va = self.offset(e, 8);
+                if tlogic {
+                    let z = self.int(0);
+                    let c = self.enc(x, tbias);
+                    self.emit(Inst::LSet {
+                        base: va,
+                        idx: z,
+                        v: c,
+                    });
+                } else {
+                    self.store(va, x, tw);
+                }
+            }
+            let n = self.int(vals.len() as i64);
+            self.emit(Inst::Drive {
+                driver: slot,
+                target: Some(sref),
+                wave,
+                n,
+                mode,
+                reject,
+            });
+        }
+        Ok(())
+    }
+
     fn drive(&mut self, target: &Target, delay: &Delay, w: &Waveform, span: Span) -> R<()> {
         let db = self.db;
         let Waveform::Elements(elems) = w else {
             return Ok(()); // `unaffected`
         };
+        if let ExprKind::Aggregate { assocs, .. } = &db.exprs[target.expr].kind {
+            return self.drive_aggregate(target, assocs, delay, elems, span);
+        }
         let [lsp] = &target.lsps[..] else {
             return Err(self.cx.unsupported(span, "aggregate signal targets"));
         };

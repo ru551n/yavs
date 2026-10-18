@@ -76,6 +76,7 @@ const PASS: &[&str] = &[
     "resolution/resolved_record_port",
     "resolution/std_logic_drivers",
     "resolution/std_logic_table",
+    "run/agg_targets",
     "run/case_forms",
     "run/cond_2019",
     "run/expr_forms",

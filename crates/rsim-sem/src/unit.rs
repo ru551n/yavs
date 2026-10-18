@@ -555,9 +555,55 @@ fn kind_str(k: UnitKind) -> &'static str {
 }
 
 impl Db {
-    /// Start of `std.standard`.
+    /// Start of `std.standard`: the universal types (5.2.3.1, 5.2.5.1). They have
+    /// no name a design can write; their implicit operations are declared in
+    /// `std.standard` like any type's.
     pub(crate) fn begin_standard(&mut self, scope: ScopeId) {
+        use crate::types::{Constraint, RangeC, TypeKind};
         self.well_known.standard = Some(scope);
+        for (name, kind) in [
+            ("universal_integer", TypeKind::UniversalInteger),
+            ("universal_real", TypeKind::UniversalReal),
+        ] {
+            let id = ident(name, Span::default());
+            let is_int = matches!(kind, TypeKind::UniversalInteger);
+            let decl = self.decls.push(Decl {
+                name: Designator::Ident(id),
+                kind: DeclKind::Error,
+                scope,
+                span: Span::default(),
+                implicit: true,
+                since: LangRev::Vhdl2008,
+            });
+            let ty = self.new_type(decl, id, false, kind, Constraint::None, Span::default());
+            self.decls[decl].kind = DeclKind::Type(ty);
+            let st = self.types[ty].first_subtype;
+            let (lo, hi) = if is_int {
+                (
+                    crate::stat::ConstValue::Int(i64::MIN),
+                    crate::stat::ConstValue::Int(i64::MAX),
+                )
+            } else {
+                (
+                    crate::stat::ConstValue::Real(f64::MIN),
+                    crate::stat::ConstValue::Real(f64::MAX),
+                )
+            };
+            let left = self.const_expr(lo, st, Span::default());
+            let right = self.const_expr(hi, st, Span::default());
+            self.subtypes[st].constraint = Constraint::Range(RangeC::Explicit {
+                left,
+                dir: crate::types::Direction::To,
+                right,
+            });
+            if is_int {
+                self.well_known.universal_integer = Some(ty);
+            } else {
+                self.well_known.universal_real = Some(ty);
+            }
+            self.scopes[scope].order.push(decl);
+            self.declare_implicit_ops(ty, scope);
+        }
     }
 
     /// End of `std.standard`: every queued implicit operation must be created by now.

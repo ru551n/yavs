@@ -99,8 +99,9 @@ pub struct Db {
     /// Undeclared names already reported, per (unit, key) (8.2).
     pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
-    #[allow(dead_code)]
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
+    /// Folds that overflowed in the complete context being resolved (Q5).
+    pub(crate) overflow: Vec<ExprId>,
     /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
     pub(crate) pending_implicit: Vec<(TypeId, ScopeId)>,
     /// How much of the arenas `validate` already checked.
@@ -188,6 +189,7 @@ impl Db {
             memo: HashMap::new(),
             pending_implicit: Vec::new(),
             validated: Default::default(),
+            overflow: Vec::new(),
             diags: Vec::new(),
             errors: 0,
         }

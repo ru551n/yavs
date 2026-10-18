@@ -143,3 +143,29 @@ impl Family {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Hooks called by `types.rs` (M1 lead); the bodies are this module's owner's.
+
+use crate::db::Db;
+use crate::ids::ScopeId;
+
+impl Db {
+    /// Create the implicitly declared operations of `ty` in `scope`, right after its
+    /// declaration (2.10). Operations whose parameter or result types are not
+    /// declared yet (inside `std.standard`: BOOLEAN, INTEGER, STRING, ...) are
+    /// queued in `pending_implicit` and created by [`Db::flush_pending_implicit`].
+    pub(crate) fn declare_implicit_ops(&mut self, ty: TypeId, scope: ScopeId) {
+        self.pending_implicit.push((ty, scope));
+        self.flush_pending_implicit();
+    }
+
+    /// Retry queued implicit operations; called after each `std.standard` type or subtype.
+    // ponytail: stub until the implicit-ops owner lands the families; until then the
+    // queue only drains outside std.standard (where no op is created at all).
+    pub(crate) fn flush_pending_implicit(&mut self) {
+        if self.well_known.standard.is_none() || self.well_known.string.is_some() {
+            self.pending_implicit.clear();
+        }
+    }
+}

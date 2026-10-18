@@ -1,1 +1,558 @@
 //! Top-down selection and HIR construction (sem.md 3.2, 3.6, 3.7).
+
+use rsim_diag::{Diagnostic, Span};
+use rsim_syntax::ast;
+
+use super::{CandSet, Expected, Interp, Via};
+use crate::db::Db;
+use crate::decl::operator_key;
+use crate::diag;
+use crate::hir::{Actual, Arg, Expr, ExprKind};
+use crate::ids::{ExprId, ScopeId, TypeId};
+use crate::scope::Visible;
+use crate::stat::Staticness;
+use crate::types::TypeKind;
+
+use super::cands::{binary_symbol, unary_symbol};
+use super::names::NameRes;
+
+/// Most candidate labels on one "no matching overload" diagnostic (8.3).
+const MAX_CANDIDATE_LABELS: usize = 8;
+
+impl Db {
+    /// Resolve one complete context (LRM 12.5) where the value is not required
+    /// at analysis time: static overflow is warning `W1401` (Q5).
+    pub(crate) fn expr(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected) -> ExprId {
+        self.complete_context(scope, e, exp, false)
+    }
+
+    /// Resolve a complete context whose value is required at analysis time
+    /// (type bounds, unit scales, choices): static overflow is error `E1401`.
+    pub(crate) fn static_expr(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected) -> ExprId {
+        self.complete_context(scope, e, exp, true)
+    }
+
+    fn complete_context(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        exp: Expected,
+        required: bool,
+    ) -> ExprId {
+        let saved = std::mem::take(&mut self.memo);
+        let saved_overflow = std::mem::take(&mut self.overflow);
+        let id = self.resolve(scope, e, exp);
+        for o in std::mem::replace(&mut self.overflow, saved_overflow) {
+            let span = self.exprs[o].span;
+            let d = if required {
+                Diagnostic::error(diag::OVERFLOW, "static arithmetic overflows 64 bits")
+                    .with_primary(span, "this value overflows")
+            } else {
+                Diagnostic::warning(diag::W_OVERFLOW, "static arithmetic overflows 64 bits")
+                    .with_primary(span, "this value overflows")
+                    .with_note("the value is not needed during analysis; the run-time check stays")
+            };
+            self.report(d);
+        }
+        self.memo = saved;
+        id
+    }
+
+    /// Select the interpretation of `e` that fits `exp` and build its HIR.
+    pub(crate) fn resolve(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected) -> ExprId {
+        if let ast::ExprKind::Paren(inner) = &e.kind {
+            return self.resolve(scope, inner, exp);
+        }
+        let cs = self.cands(scope, e);
+        match cs {
+            CandSet::Class(m) => match exp {
+                Expected::Type(t) if self.class_admits(m, t) => self.build_class(scope, e, t),
+                Expected::Type(t) => {
+                    let what = class_name(e);
+                    let tn = self.type_name(t);
+                    self.report(
+                        Diagnostic::error(
+                            diag::TYPE_MISMATCH,
+                            format!("expected `{tn}`, found {what}"),
+                        )
+                        .with_primary(e.span, format!("{what} cannot be of type `{tn}`")),
+                    );
+                    self.poison_expr()
+                }
+                _ => {
+                    let (code, msg) = match &e.kind {
+                        ast::ExprKind::Aggregate(_) => (
+                            diag::AGG_NO_TYPE,
+                            "the type of this aggregate cannot be determined from its context",
+                        ),
+                        _ => (
+                            diag::AMBIGUOUS,
+                            "the type of this literal cannot be determined from its context",
+                        ),
+                    };
+                    self.report(
+                        Diagnostic::error(code, msg)
+                            .with_primary(e.span, "type not determined")
+                            .with_help("qualify it with a type mark, as in `t'(...)`"),
+                    );
+                    self.poison_expr()
+                }
+            },
+            CandSet::Types(is) => {
+                if is.iter().any(|i| i.ty == self.poison.ty) {
+                    return self.build_any(scope, e, is[0], exp);
+                }
+                let mut best: Vec<(Interp, u32)> = Vec::new();
+                for i in &is {
+                    if let Some(c) = self.cost(i, exp) {
+                        if best.iter().any(|(b, _)| b.ty == i.ty && b.via == i.via) {
+                            continue;
+                        }
+                        best.push((*i, c));
+                    }
+                }
+                if exp == Expected::Condition && best.is_empty() {
+                    return self.implicit_condition(scope, e, &is);
+                }
+                let Some(min) = best.iter().map(|(_, c)| *c).min() else {
+                    self.no_interp(scope, e, exp, &is);
+                    return self.poison_expr();
+                };
+                best.retain(|(_, c)| *c == min);
+                if best.len() > 1 {
+                    self.ambiguous(e, &best.iter().map(|b| b.0).collect::<Vec<_>>());
+                    return self.poison_expr();
+                }
+                self.build_any(scope, e, best[0].0, exp)
+            }
+        }
+    }
+
+    /// Build the chosen interpretation and insert the implicit conversion (2.8).
+    fn build_any(&mut self, scope: ScopeId, e: &ast::Expr, i: Interp, exp: Expected) -> ExprId {
+        let id = self.build(scope, e, i);
+        let target = match exp {
+            Expected::Type(t) => t,
+            _ => return id,
+        };
+        if i.ty == target
+            || i.ty == self.poison.ty
+            || target == self.poison.ty
+            || self.is_poison(id)
+        {
+            return id;
+        }
+        let ui = self.well_known.universal_integer;
+        let ur = self.well_known.universal_real;
+        if Some(i.ty) != ui && Some(i.ty) != ur {
+            return id;
+        }
+        let subtype = self.types[target].first_subtype;
+        let (stat, value, span) = (
+            self.exprs[id].stat,
+            self.exprs[id].value,
+            self.exprs[id].span,
+        );
+        self.add_expr(Expr {
+            kind: ExprKind::ImplicitConv { operand: id },
+            subtype,
+            span,
+            stat,
+            value,
+        })
+    }
+
+    fn build(&mut self, scope: ScopeId, e: &ast::Expr, i: Interp) -> ExprId {
+        use ast::ExprKind as K;
+        match &e.kind {
+            K::Literal(l) => match crate::expr::literal::literal_expr(self, l, i.ty) {
+                Ok(id) => id,
+                Err(_) => self.poison_expr(),
+            },
+            K::Paren(inner) => self.build(scope, inner, i),
+            K::Name(n) => self.build_name(scope, n, i, e.span),
+            K::Unary { operand, .. } => self.build_operator(scope, i, &[operand], e.span),
+            K::Binary { left, right, .. } => self.build_operator(scope, i, &[left, right], e.span),
+            K::Qualified { type_mark, operand } => {
+                let Ok(st) = self.type_mark(scope, type_mark) else {
+                    return self.poison_expr();
+                };
+                let t = self.base(st);
+                let op = self.resolve(scope, operand, Expected::Type(t));
+                let (stat, value) = (
+                    self.exprs[op].stat.min(self.subtype_staticness(st)),
+                    self.exprs[op].value,
+                );
+                self.add_expr(Expr {
+                    kind: ExprKind::Qualified {
+                        to: st,
+                        operand: op,
+                    },
+                    subtype: st,
+                    span: e.span,
+                    stat,
+                    value,
+                })
+            }
+            K::Aggregate(_) => {
+                self.unsupported(e.span, "aggregates", "S3");
+                self.poison_expr()
+            }
+            K::New(_) => {
+                self.unsupported(e.span, "allocators", "S6");
+                self.poison_expr()
+            }
+            K::Conditional(_) => {
+                self.unsupported(e.span, "conditional expressions", "S7");
+                self.poison_expr()
+            }
+            K::Unaffected | K::Error => self.poison_expr(),
+        }
+    }
+
+    fn build_operator(
+        &mut self,
+        scope: ScopeId,
+        i: Interp,
+        operands: &[&Box<ast::Expr>],
+        span: Span,
+    ) -> ExprId {
+        let Via::Call(d) = i.via else {
+            return self.poison_expr();
+        };
+        let callee = self.entity(d);
+        let Some(s) = self.decls[callee].kind.subprogram() else {
+            return self.poison_expr();
+        };
+        let formals: Vec<TypeId> = s.params.iter().map(|p| self.base(p.subtype)).collect();
+        let ret = s.ret.unwrap_or(self.poison.subtype);
+        let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
+        let mut stat = if implicit {
+            Staticness::Locally
+        } else {
+            Staticness::None
+        };
+        let mut hargs = Vec::new();
+        for (k, (o, f)) in operands.iter().zip(formals).enumerate() {
+            let id = self.resolve(scope, o, Expected::Type(f));
+            stat = stat.min(self.exprs[id].stat);
+            hargs.push(Arg {
+                formal: k as u16,
+                actual: Actual::Expr(id),
+            });
+        }
+        let id = self.add_expr(Expr {
+            kind: ExprKind::Call {
+                callee,
+                args: hargs.into(),
+                method_of: None,
+                implicit_cond: false,
+            },
+            subtype: ret,
+            span,
+            stat,
+            value: None,
+        });
+        if implicit && stat == Staticness::Locally {
+            self.fold_into(id);
+        }
+        id
+    }
+
+    /// String and bit string literals, `null`, aggregates, allocators: typed by context.
+    fn build_class(&mut self, _scope: ScopeId, e: &ast::Expr, t: TypeId) -> ExprId {
+        match &e.kind {
+            ast::ExprKind::Literal(l) => {
+                crate::expr::literal::literal_expr(self, l, t).unwrap_or(self.poison.expr)
+            }
+            ast::ExprKind::Aggregate(_) => {
+                self.unsupported(e.span, "aggregates", "S3");
+                self.poison_expr()
+            }
+            _ => {
+                self.unsupported(e.span, "allocators", "S6");
+                self.poison_expr()
+            }
+        }
+    }
+
+    /// 9.2.9: a condition of a type other than BOOLEAN goes through a visible `??`.
+    fn implicit_condition(&mut self, scope: ScopeId, e: &ast::Expr, is: &[Interp]) -> ExprId {
+        let boolean = self.well_known.boolean;
+        let mut found = Vec::new();
+        if let Visible::Overloads(ds) = self.lookup(scope, operator_key("??")) {
+            for d in ds {
+                let Some(s) = self.decls[self.entity(d)].kind.subprogram() else {
+                    continue;
+                };
+                if s.params.len() != 1 || s.ret.map(|r| self.base(r)) != boolean {
+                    continue;
+                }
+                let pt = self.base(s.params[0].subtype);
+                if is
+                    .iter()
+                    .any(|i| self.cost(i, Expected::Type(pt)).is_some())
+                    && !found.iter().any(|(_, t)| *t == pt)
+                {
+                    found.push((d, pt));
+                }
+            }
+        }
+        match found.as_slice() {
+            [(d, pt)] => {
+                let callee = self.entity(*d);
+                let op = self.resolve(scope, e, Expected::Type(*pt));
+                let ret = self
+                    .well_known
+                    .boolean
+                    .map_or(self.poison.subtype, |b| self.types[b].first_subtype);
+                let stat = self.exprs[op].stat.min(Staticness::Globally);
+                self.add_expr(Expr {
+                    kind: ExprKind::Call {
+                        callee,
+                        args: Box::new([Arg {
+                            formal: 0,
+                            actual: Actual::Expr(op),
+                        }]),
+                        method_of: None,
+                        implicit_cond: true,
+                    },
+                    subtype: ret,
+                    span: e.span,
+                    stat,
+                    value: None,
+                })
+            }
+            [] => {
+                let found = is.first().map(|i| self.type_name(i.ty));
+                let mut d = Diagnostic::error(diag::NOT_BOOLEAN, "condition is not BOOLEAN")
+                    .with_primary(
+                        e.span,
+                        match &found {
+                            Some(t) => format!("this is of type `{t}`"),
+                            None => "not a BOOLEAN expression".into(),
+                        },
+                    );
+                if let Some(t) = found {
+                    d = d.with_help(format!(
+                        "no `??` is visible for `{t}`; is `ieee.std_logic_1164` used?"
+                    ));
+                }
+                self.report(d);
+                self.poison_expr()
+            }
+            _ => {
+                let mut d = Diagnostic::error(
+                    diag::AMBIGUOUS_CONDITION,
+                    "several `??` operators apply to this condition",
+                )
+                .with_primary(e.span, "ambiguous condition");
+                for (op, _) in &found {
+                    let sig = self.signature(*op);
+                    d = d.with_secondary(self.decls[*op].span, sig);
+                }
+                self.report(d);
+                self.poison_expr()
+            }
+        }
+    }
+
+    /// Report why `e` has no interpretation that fits `exp`.
+    fn no_interp(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected, is: &[Interp]) {
+        use ast::ExprKind as K;
+        // Names: missing declarations and unsupported forms first.
+        if let K::Name(n) = &e.kind {
+            let base = match &n.kind {
+                ast::NameKind::Apply { prefix, .. } => prefix.as_ref(),
+                _ => n,
+            };
+            let base = match &base.kind {
+                ast::NameKind::Attribute { prefix, .. } => prefix.as_ref(),
+                _ => base,
+            };
+            match self.classify(scope, base) {
+                r @ (NameRes::Missing(_)
+                | NameRes::Conflict(..)
+                | NameRes::Unsupported(..)
+                | NameRes::Error) => {
+                    self.report_name(scope, r);
+                    return;
+                }
+                _ => {}
+            }
+            let attr = match &n.kind {
+                ast::NameKind::Attribute { attr, .. } => Some(*attr),
+                ast::NameKind::Apply { prefix, .. } => match &prefix.kind {
+                    ast::NameKind::Attribute { attr, .. } => Some(*attr),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(attr) = attr {
+                if crate::attr::PredefAttr::from_key(attr.key).is_none() {
+                    self.report(
+                        Diagnostic::error(
+                            diag::UNKNOWN_ATTRIBUTE,
+                            format!("unknown attribute `{}`", attr.text),
+                        )
+                        .with_primary(attr.span, "not a predefined attribute"),
+                    );
+                } else {
+                    self.unsupported(n.span, "this use of a predefined attribute", "S3");
+                }
+                return;
+            }
+        }
+        if is.is_empty() {
+            let (what, sym) = match &e.kind {
+                K::Unary { op, .. } => ("operator", Some(unary_symbol(*op))),
+                K::Binary { op, .. } => ("operator", Some(binary_symbol(*op))),
+                _ => ("name", None),
+            };
+            if let Some(sym) = sym {
+                let mut d = Diagnostic::error(
+                    diag::NO_OVERLOAD,
+                    format!("no visible `\"{sym}\"` accepts these operands"),
+                )
+                .with_primary(e.span, format!("no matching {what}"));
+                if let Visible::Overloads(ds) = self.lookup(scope, operator_key(sym)) {
+                    let n = ds.len();
+                    for &c in ds.iter().take(MAX_CANDIDATE_LABELS) {
+                        let sig = self.signature(c);
+                        let sp = self.decls[c].span;
+                        if sp != Span::default() {
+                            d = d.with_secondary(sp, sig);
+                        } else {
+                            d = d.with_note(format!("candidate: {sig}"));
+                        }
+                    }
+                    if n > MAX_CANDIDATE_LABELS {
+                        d = d.with_note(format!("and {} more", n - MAX_CANDIDATE_LABELS));
+                    }
+                }
+                self.report(d);
+                return;
+            }
+            if let K::Name(ast::Name {
+                kind: ast::NameKind::Apply { prefix, .. },
+                ..
+            }) = &e.kind
+            {
+                self.report(
+                    Diagnostic::error(
+                        diag::NO_OVERLOAD,
+                        "no visible subprogram accepts these arguments",
+                    )
+                    .with_primary(prefix.span, "no matching subprogram"),
+                );
+                return;
+            }
+            self.report(
+                Diagnostic::error(diag::NOT_AN_OBJECT, "this name does not denote a value")
+                    .with_primary(e.span, "not an object, literal or function"),
+            );
+            return;
+        }
+        let found: Vec<String> = is
+            .iter()
+            .map(|i| format!("`{}`", self.type_name(i.ty)))
+            .collect();
+        let want = match exp {
+            Expected::Type(t) => format!("`{}`", self.type_name(t)),
+            Expected::Condition => "BOOLEAN".into(),
+            Expected::Discrete => "a discrete type".into(),
+            Expected::Any => "a value".into(),
+        };
+        self.report(
+            Diagnostic::error(
+                diag::TYPE_MISMATCH,
+                format!("expected {want}, found {}", found.join(" or ")),
+            )
+            .with_primary(e.span, format!("expected {want}")),
+        );
+    }
+
+    fn ambiguous(&mut self, e: &ast::Expr, best: &[Interp]) {
+        let mut d = Diagnostic::error(diag::AMBIGUOUS, "this expression is ambiguous")
+            .with_primary(e.span, "several interpretations fit");
+        for i in best {
+            match i.via {
+                Via::Call(c) | Via::EnumLit(c) => {
+                    let sig = self.signature(c);
+                    let sp = self.decls[c].span;
+                    d = if sp != Span::default() {
+                        d.with_secondary(sp, sig)
+                    } else {
+                        d.with_note(format!("candidate: {sig}"))
+                    };
+                }
+                _ => d = d.with_note(format!("could be of type `{}`", self.type_name(i.ty))),
+            }
+        }
+        self.report(
+            d.with_help("qualify an operand (`t'(x)`) or use a selected name (`pkg.\"+\"`)"),
+        );
+    }
+
+    /// The name of a type for messages (8.3): anonymous base types say so.
+    pub fn type_name(&self, t: TypeId) -> String {
+        let td = &self.types[t];
+        match &td.kind {
+            TypeKind::UniversalInteger => "universal_integer".into(),
+            TypeKind::UniversalReal => "universal_real".into(),
+            _ => td.name.text.to_string(),
+        }
+    }
+
+    /// `function "+" (l: unsigned; r: natural) return unsigned` (8.3), original spelling.
+    pub fn signature(&self, d: crate::ids::DeclId) -> String {
+        let e = self.entity(d);
+        let decl = &self.decls[e];
+        match decl.kind.subprogram() {
+            Some(s) => {
+                let params: Vec<String> = s
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name.text, self.subtype_name(p.subtype)))
+                    .collect();
+                let head = match s.kind {
+                    crate::decl::SubprogramKind::Procedure => "procedure",
+                    crate::decl::SubprogramKind::Function { .. } => "function",
+                };
+                let mut out = format!("{head} {}", decl.name);
+                if !params.is_empty() {
+                    out += &format!(" ({})", params.join("; "));
+                }
+                if let Some(r) = s.ret {
+                    out += &format!(" return {}", self.subtype_name(r));
+                }
+                out
+            }
+            None => match decl.kind {
+                crate::decl::DeclKind::EnumLit { ty, .. } => {
+                    format!("literal {} of `{}`", decl.name, self.type_name(ty))
+                }
+                _ => decl.name.to_string(),
+            },
+        }
+    }
+
+    pub fn subtype_name(&self, st: crate::ids::SubtypeId) -> String {
+        match self.subtypes[st].name {
+            Some(n) => n.text.to_string(),
+            None => self.type_name(self.base(st)),
+        }
+    }
+}
+
+fn class_name(e: &ast::Expr) -> &'static str {
+    match &e.kind {
+        ast::ExprKind::Aggregate(_) => "an aggregate",
+        ast::ExprKind::New(_) => "an allocator",
+        ast::ExprKind::Literal(ast::Literal {
+            kind: ast::LiteralKind::Null,
+            ..
+        }) => "`null`",
+        _ => "a string literal",
+    }
+}

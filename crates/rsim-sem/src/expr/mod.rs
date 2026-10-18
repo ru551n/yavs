@@ -61,6 +61,23 @@ pub enum Via {
 pub struct Interp {
     pub ty: TypeId,
     pub via: Via,
+    /// A convertible universal operand (9.3.6): a numeric literal, an attribute
+    /// of universal type, or the division of two values of one physical type.
+    pub convertible: bool,
+    /// Implicit conversions this interpretation needs in its subtree (Q1:
+    /// interpretations without conversions win).
+    pub convs: u32,
+}
+
+impl Interp {
+    pub fn new(ty: TypeId, via: Via) -> Self {
+        Interp {
+            ty,
+            via,
+            convertible: false,
+            convs: 0,
+        }
+    }
 }
 
 /// The bottom-up result of `cands` (3.1).

@@ -211,3 +211,1000 @@ impl TypeKind {
         matches!(self.class(), TypeClass::Enum | TypeClass::Integer)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Analysis of type and subtype declarations and subtype indications.
+
+use rsim_diag::Diagnostic;
+use rsim_syntax::Symbol;
+use rsim_syntax::ast;
+
+use crate::LangRev;
+use crate::db::{Db, Reported};
+use crate::decl::{Decl, DeclKind, Designator};
+use crate::diag;
+use crate::expr::Expected;
+use crate::hir::{Expr, ExprKind};
+use crate::stat::{ConstValue, Staticness};
+
+impl Db {
+    pub(crate) fn new_decl(
+        &mut self,
+        scope: ScopeId,
+        name: Designator,
+        kind: DeclKind,
+        span: Span,
+    ) -> DeclId {
+        self.decls.push(Decl {
+            name,
+            kind,
+            scope,
+            span,
+            implicit: false,
+            since: LangRev::Vhdl2008,
+        })
+    }
+
+    /// A constant expression of subtype `st` (for implementation-defined bounds).
+    pub(crate) fn const_expr(&mut self, v: ConstValue, st: SubtypeId, span: Span) -> ExprId {
+        let c = self.add_const(v);
+        self.add_expr(Expr {
+            kind: ExprKind::Const(c),
+            subtype: st,
+            span,
+            stat: Staticness::Locally,
+            value: Some(c),
+        })
+    }
+
+    /// A new type with a first subtype; `base_subtype` is the first subtype too.
+    pub(crate) fn new_type(
+        &mut self,
+        decl: DeclId,
+        name: Ident,
+        anonymous: bool,
+        kind: TypeKind,
+        constraint: Constraint,
+        span: Span,
+    ) -> TypeId {
+        let ty = self.types.next_id();
+        let st = self.subtypes.push(SubtypeDef {
+            base: ty,
+            name: Some(name),
+            parent: None,
+            constraint,
+            resolution: None,
+            span,
+        });
+        self.types.push(TypeDef {
+            decl,
+            name,
+            anonymous,
+            kind,
+            first_subtype: st,
+            base_subtype: st,
+        })
+    }
+
+    /// `type T is ...;` (5.x).
+    pub(crate) fn type_decl(&mut self, scope: ScopeId, td: &ast::TypeDecl) -> Result<(), Reported> {
+        let name = td.name;
+        // Completion of an incomplete type in the same region reuses its entity.
+        let incomplete = self.scopes[scope].names.get(&name.key).and_then(|ds| {
+            ds.iter().copied().find(|&d| {
+                matches!(self.decls[d].kind, DeclKind::Type(t) if matches!(self.types[t].kind, TypeKind::Incomplete { completion: None }))
+            })
+        });
+        let Some(def) = &td.def else {
+            let decl = self.new_decl(scope, Designator::Ident(name), DeclKind::Error, td.span);
+            let ty = self.new_type(
+                decl,
+                name,
+                false,
+                TypeKind::Incomplete { completion: None },
+                Constraint::None,
+                td.span,
+            );
+            self.decls[decl].kind = DeclKind::Type(ty);
+            self.declare(scope, decl);
+            return Ok(());
+        };
+        let decl = match incomplete {
+            Some(d) => d,
+            None => self.new_decl(scope, Designator::Ident(name), DeclKind::Error, td.span),
+        };
+        let ty = match def {
+            ast::TypeDef::Enum(lits) => self.enum_type(scope, decl, name, lits, td.span),
+            ast::TypeDef::Range(r) => self.range_type(scope, decl, name, r, None, td.span)?,
+            ast::TypeDef::Physical(p) => {
+                self.range_type(scope, decl, name, &p.range, Some(p), td.span)?
+            }
+            ast::TypeDef::Array { indexes, element } => {
+                self.array_type(scope, decl, name, indexes, element, td.span)?
+            }
+            ast::TypeDef::Access(si) => {
+                let designated = self.subtype_indication(scope, si)?;
+                self.new_type(
+                    decl,
+                    name,
+                    false,
+                    TypeKind::Access { designated },
+                    Constraint::None,
+                    td.span,
+                )
+            }
+            ast::TypeDef::File(n) => {
+                let elem = self.type_mark(scope, n)?;
+                self.new_type(
+                    decl,
+                    name,
+                    false,
+                    TypeKind::File { elem },
+                    Constraint::None,
+                    td.span,
+                )
+            }
+            ast::TypeDef::Record { .. } => {
+                return Err(self.unsupported(td.span, "record types", "S3"));
+            }
+            ast::TypeDef::Protected(_) | ast::TypeDef::ProtectedBody(_) => {
+                return Err(self.unsupported(td.span, "protected types", "S6"));
+            }
+        };
+        if let Some(d) = incomplete {
+            // Move the full definition into the incomplete type's id, so earlier references stay valid.
+            let DeclKind::Type(old) = self.decls[d].kind else {
+                unreachable!("checked above")
+            };
+            let full = std::mem::replace(
+                &mut self.types[ty].kind,
+                TypeKind::Incomplete {
+                    completion: Some(old),
+                },
+            );
+            self.types[old].kind = full;
+            self.types[old].first_subtype = self.types[ty].first_subtype;
+            self.types[old].base_subtype = self.types[ty].base_subtype;
+            self.types[old].anonymous = self.types[ty].anonymous;
+            let (fs, bs) = (self.types[old].first_subtype, self.types[old].base_subtype);
+            self.subtypes[fs].base = old;
+            self.subtypes[bs].base = old;
+            self.declare_implicit_ops(old, scope);
+            self.register_well_known_type(scope, name, old);
+            return Ok(());
+        }
+        self.decls[decl].kind = DeclKind::Type(ty);
+        self.declare(scope, decl);
+        if let TypeKind::Physical { units } = &self.types[ty].kind {
+            for u in units.clone().iter() {
+                self.declare(scope, u.decl);
+            }
+        }
+        if let TypeKind::Enum { lits } = &self.types[ty].kind {
+            for &l in lits.clone().iter() {
+                self.declare(scope, l);
+            }
+        }
+        self.declare_implicit_ops(ty, scope);
+        self.register_well_known_type(scope, name, ty);
+        Ok(())
+    }
+
+    fn enum_type(
+        &mut self,
+        scope: ScopeId,
+        decl: DeclId,
+        name: Ident,
+        lits: &[ast::EnumLit],
+        span: Span,
+    ) -> TypeId {
+        let ty = self.types.next_id();
+        let mut ids = Vec::with_capacity(lits.len());
+        for (pos, l) in lits.iter().enumerate() {
+            let (n, sp) = match l {
+                ast::EnumLit::Ident(i) => (Designator::Ident(*i), i.span),
+                ast::EnumLit::Char(c) => (Designator::Char(c.value), c.span),
+            };
+            if ids
+                .iter()
+                .any(|&d: &DeclId| self.decls[d].name.key() == n.key())
+            {
+                self.report(
+                    Diagnostic::error(
+                        diag::REDECLARED,
+                        format!("enumeration literal {n} appears twice"),
+                    )
+                    .with_primary(sp, "repeated here"),
+                );
+            }
+            ids.push(self.new_decl(
+                scope,
+                n,
+                DeclKind::EnumLit {
+                    ty,
+                    pos: pos as u32,
+                },
+                sp,
+            ));
+        }
+        self.new_type(
+            decl,
+            name,
+            false,
+            TypeKind::Enum { lits: ids.into() },
+            Constraint::None,
+            span,
+        )
+    }
+
+    /// Integer, floating point and physical type definitions (5.2.3, 5.2.4, 5.2.5).
+    fn range_type(
+        &mut self,
+        scope: ScopeId,
+        decl: DeclId,
+        name: Ident,
+        r: &ast::Range,
+        phys: Option<&ast::PhysicalTypeDef>,
+        span: Span,
+    ) -> Result<TypeId, Reported> {
+        let ast::Range::Simple { left, dir, right } = r else {
+            return Err(self.unsupported(span, "a range attribute as a type definition", "S3"));
+        };
+        let l = self.static_expr(scope, left, Expected::Any);
+        let rr = self.static_expr(scope, right, Expected::Any);
+        let (lv, rv) = match (self.value(l).cloned(), self.value(rr).cloned()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                for (e, ast) in [(l, left), (rr, right)] {
+                    if self.value(e).is_none() && !self.is_poison(e) {
+                        self.report(
+                            Diagnostic::error(
+                                diag::NOT_STATIC,
+                                "the bound of a type definition must be locally static",
+                            )
+                            .with_primary(ast.span, "not locally static"),
+                        );
+                    }
+                }
+                return Err(Reported);
+            }
+        };
+        let kind = match (&lv, &rv, phys) {
+            (ConstValue::Int(_), ConstValue::Int(_), None) => TypeKind::Integer,
+            (ConstValue::Int(_), ConstValue::Int(_), Some(_)) => TypeKind::Physical {
+                units: Box::new([]),
+            },
+            (ConstValue::Real(_), ConstValue::Real(_), None) => TypeKind::Floating,
+            _ => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::BAD_TYPE_DECL,
+                        "the bounds must both be integer or both be floating point",
+                    )
+                    .with_primary(
+                        left.span.to(right.span),
+                        "bounds of different or unsuitable types",
+                    )
+                    .with_help(if phys.is_some() {
+                        "physical type bounds are integers"
+                    } else {
+                        "write both bounds as integer literals or both as real literals"
+                    }),
+                ));
+            }
+        };
+        // Anonymous base type (Q2: its range is the declared range) and the named first subtype.
+        let ty = self.types.next_id();
+        let base_st = self.subtypes.next_id();
+        let conv = |db: &mut Db, e: ExprId, v: ConstValue| {
+            let c = db.add_const(v);
+            let sp = db.exprs[e].span;
+            db.add_expr(Expr {
+                kind: ExprKind::ImplicitConv { operand: e },
+                subtype: base_st,
+                span: sp,
+                stat: Staticness::Locally,
+                value: Some(c),
+            })
+        };
+        let lc = conv(self, l, lv.clone());
+        let rc = conv(self, rr, rv.clone());
+        let range = Constraint::Range(RangeC::Explicit {
+            left: lc,
+            dir: *dir,
+            right: rc,
+        });
+        self.subtypes.push(SubtypeDef {
+            base: ty,
+            name: Some(name),
+            parent: None,
+            constraint: range.clone(),
+            resolution: None,
+            span,
+        });
+        let first = self.subtypes.push(SubtypeDef {
+            base: ty,
+            name: Some(name),
+            parent: Some(base_st),
+            constraint: range,
+            resolution: None,
+            span,
+        });
+        self.types.push(TypeDef {
+            decl,
+            name,
+            anonymous: true,
+            kind,
+            first_subtype: first,
+            base_subtype: base_st,
+        });
+        if let Some(p) = phys {
+            let units = self.physical_units(scope, ty, p)?;
+            self.types[ty].kind = TypeKind::Physical {
+                units: units.into(),
+            };
+        }
+        Ok(ty)
+    }
+
+    fn physical_units(
+        &mut self,
+        scope: ScopeId,
+        ty: TypeId,
+        p: &ast::PhysicalTypeDef,
+    ) -> Result<Vec<PhysUnit>, Reported> {
+        let mut units = vec![PhysUnit {
+            decl: self.new_decl(
+                scope,
+                Designator::Ident(p.primary),
+                DeclKind::PhysUnit { ty, index: 0 },
+                p.primary.span,
+            ),
+            scale: 1,
+        }];
+        for (i, (name, e)) in p.secondary.iter().enumerate() {
+            let find = |db: &Db, units: &[PhysUnit], u: &Ident| {
+                units
+                    .iter()
+                    .find(|x| db.decls[x.decl].name.key() == u.key)
+                    .map(|x| x.scale)
+            };
+            let (value, unit) = match &e.kind {
+                ast::ExprKind::Literal(ast::Literal {
+                    kind: ast::LiteralKind::Physical { value, unit },
+                    ..
+                }) => (Some(*value), *unit),
+                ast::ExprKind::Name(ast::Name {
+                    kind: ast::NameKind::Simple(u),
+                    ..
+                }) => (None, *u),
+                _ => {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_TYPE_DECL,
+                            "a secondary unit must be defined by a physical literal",
+                        )
+                        .with_primary(e.span, "expected `<integer> <unit>`"),
+                    ));
+                }
+            };
+            let Some(scale) = find(self, &units, &unit) else {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_DECLARED,
+                        format!("`{}` is not a unit of this type", unit.text),
+                    )
+                    .with_primary(unit.span, "not declared before this unit"),
+                ));
+            };
+            let scale = match value {
+                None => scale,
+                Some(v) => match crate::expr::literal::abstract_value(self, v, e.span)? {
+                    crate::expr::literal::Abs::Int(n) => n.checked_mul(scale).ok_or_else(|| {
+                        self.error(
+                            Diagnostic::error(diag::OVERFLOW, "the unit's scale overflows 64 bits")
+                                .with_primary(e.span, "too large in base units"),
+                        )
+                    })?,
+                    crate::expr::literal::Abs::Real(_) => {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::BAD_TYPE_DECL,
+                                "a secondary unit must be an integer multiple of another unit",
+                            )
+                            .with_primary(e.span, "real value"),
+                        ));
+                    }
+                },
+            };
+            let decl = self.new_decl(
+                scope,
+                Designator::Ident(*name),
+                DeclKind::PhysUnit {
+                    ty,
+                    index: i as u32 + 1,
+                },
+                name.span,
+            );
+            units.push(PhysUnit { decl, scale });
+        }
+        Ok(units)
+    }
+
+    fn array_type(
+        &mut self,
+        scope: ScopeId,
+        decl: DeclId,
+        name: Ident,
+        indexes: &ast::ArrayIndexes,
+        element: &ast::SubtypeIndication,
+        span: Span,
+    ) -> Result<TypeId, Reported> {
+        match indexes {
+            ast::ArrayIndexes::Unconstrained(marks) => {
+                let mut idx = Vec::new();
+                for m in marks {
+                    idx.push(self.discrete_type_mark(scope, m)?);
+                }
+                let elem = self.subtype_indication(scope, element)?;
+                let n = idx.len();
+                let _ = n;
+                Ok(self.new_type(
+                    decl,
+                    name,
+                    false,
+                    TypeKind::Array {
+                        indexes: idx.into(),
+                        elem,
+                    },
+                    Constraint::Array {
+                        dims: None,
+                        elem: Box::new(Constraint::None),
+                    },
+                    span,
+                ))
+            }
+            ast::ArrayIndexes::Constrained(ranges) => {
+                let mut dims = Vec::new();
+                let mut idx = Vec::new();
+                for r in ranges {
+                    let (rc, t) = self.discrete_range(scope, r, None)?;
+                    dims.push(rc);
+                    idx.push(self.types[t].first_subtype);
+                }
+                let elem = self.subtype_indication(scope, element)?;
+                let ty = self.types.next_id();
+                let base_st = self.subtypes.push(SubtypeDef {
+                    base: ty,
+                    name: Some(name),
+                    parent: None,
+                    constraint: Constraint::Array {
+                        dims: None,
+                        elem: Box::new(Constraint::None),
+                    },
+                    resolution: None,
+                    span,
+                });
+                let first = self.subtypes.push(SubtypeDef {
+                    base: ty,
+                    name: Some(name),
+                    parent: Some(base_st),
+                    constraint: Constraint::Array {
+                        dims: Some(dims.into()),
+                        elem: Box::new(Constraint::None),
+                    },
+                    resolution: None,
+                    span,
+                });
+                Ok(self.types.push(TypeDef {
+                    decl,
+                    name,
+                    anonymous: true,
+                    kind: TypeKind::Array {
+                        indexes: idx.into(),
+                        elem,
+                    },
+                    first_subtype: first,
+                    base_subtype: base_st,
+                }))
+            }
+            ast::ArrayIndexes::Anonymous(_) => {
+                Err(self.unsupported(span, "anonymous generic index types", "S7"))
+            }
+        }
+    }
+
+    /// A type mark that must be discrete (array index subtypes).
+    fn discrete_type_mark(&mut self, scope: ScopeId, n: &ast::Name) -> Result<SubtypeId, Reported> {
+        let st = self.type_mark(scope, n)?;
+        let k = &self.types[self.base(st)].kind;
+        if !k.is_discrete() && !matches!(k, TypeKind::Error | TypeKind::Generic { .. }) {
+            return Err(self.error(
+                Diagnostic::error(diag::BAD_CONSTRAINT, "an index subtype must be discrete")
+                    .with_primary(n.span, "not an integer or enumeration type"),
+            ));
+        }
+        Ok(st)
+    }
+
+    /// A discrete range: `l to r`, a type mark, `t range l to r`. Returns the range and its type.
+    /// `want` is the index type when known (index constraints); otherwise bounds are resolved
+    /// together and two universal integers give INTEGER (5.3.2.2).
+    pub(crate) fn discrete_range(
+        &mut self,
+        scope: ScopeId,
+        r: &ast::DiscreteRange,
+        want: Option<TypeId>,
+    ) -> Result<(RangeC, TypeId), Reported> {
+        match r {
+            ast::DiscreteRange::Range(ast::Range::Simple { left, dir, right }) => {
+                let t = match want {
+                    Some(t) => t,
+                    None => self.range_type_of(scope, left, right)?,
+                };
+                let l = self.expr(scope, left, Expected::Type(t));
+                let rr = self.expr(scope, right, Expected::Type(t));
+                Ok((
+                    RangeC::Explicit {
+                        left: l,
+                        dir: *dir,
+                        right: rr,
+                    },
+                    t,
+                ))
+            }
+            ast::DiscreteRange::Range(ast::Range::Name(n)) => {
+                if let ast::NameKind::Attribute { .. } = &n.kind {
+                    return Err(self.unsupported(n.span, "range attributes", "S3"));
+                }
+                let st = self.discrete_type_mark(scope, n)?;
+                let t = self.base(st);
+                Ok((
+                    RangeC::Attr {
+                        prefix: AttrPrefix::Subtype(st),
+                        reverse: false,
+                        dim: 1,
+                    },
+                    t,
+                ))
+            }
+            ast::DiscreteRange::Subtype(si) => {
+                let st = self.subtype_indication(scope, si)?;
+                let t = self.base(st);
+                Ok((
+                    RangeC::Attr {
+                        prefix: AttrPrefix::Subtype(st),
+                        reverse: false,
+                        dim: 1,
+                    },
+                    t,
+                ))
+            }
+        }
+    }
+
+    /// The type of `l to r` without a type mark.
+    fn range_type_of(
+        &mut self,
+        scope: ScopeId,
+        l: &ast::Expr,
+        r: &ast::Expr,
+    ) -> Result<TypeId, Reported> {
+        let a = self.discrete_cands(scope, l);
+        let b = self.discrete_cands(scope, r);
+        let ui = self.well_known.universal_integer;
+        let both: Vec<TypeId> = a.iter().copied().filter(|t| b.contains(t)).collect();
+        let pick = match both.as_slice() {
+            [t] if Some(*t) == ui => self.well_known.integer,
+            [t] => Some(*t),
+            _ => {
+                // A universal bound adapts to the other bound's specific type.
+                let a_s: Vec<TypeId> = a.iter().copied().filter(|t| Some(*t) != ui).collect();
+                let b_s: Vec<TypeId> = b.iter().copied().filter(|t| Some(*t) != ui).collect();
+                match (
+                    a_s.as_slice(),
+                    b_s.as_slice(),
+                    a.contains(&ui.unwrap_or(self.poison.ty)),
+                    b.contains(&ui.unwrap_or(self.poison.ty)),
+                ) {
+                    ([t], [u], _, _) if t == u => Some(*t),
+                    ([t], [], _, true) => Some(*t),
+                    ([], [t], true, _) => Some(*t),
+                    _ if both.len() > 1 => None,
+                    _ => None,
+                }
+            }
+        };
+        match pick {
+            Some(t) => Ok(t),
+            None if a.contains(&self.poison.ty) || b.contains(&self.poison.ty) => Err(Reported),
+            None => Err(self.error(
+                Diagnostic::error(
+                    diag::TYPE_MISMATCH,
+                    "the type of this range cannot be determined",
+                )
+                .with_primary(l.span.to(r.span), "bounds of no single discrete type")
+                .with_help("use a type mark: `t range l to r`"),
+            )),
+        }
+    }
+
+    /// `subtype S is ...;`
+    pub(crate) fn subtype_decl(
+        &mut self,
+        scope: ScopeId,
+        sd: &ast::SubtypeDecl,
+    ) -> Result<(), Reported> {
+        let st = self.subtype_indication(scope, &sd.subtype)?;
+        // A subtype declaration always names a new subtype entity, even without a constraint.
+        let d = self.subtypes[st].clone_def(st, sd.name, sd.span);
+        let st = self.subtypes.push(d);
+        let decl = self.new_decl(
+            scope,
+            Designator::Ident(sd.name),
+            DeclKind::Subtype(st),
+            sd.span,
+        );
+        self.declare(scope, decl);
+        self.register_well_known_subtype(scope, sd.name, st);
+        Ok(())
+    }
+
+    /// A subtype indication (6.3): resolution, type mark and constraint.
+    pub(crate) fn subtype_indication(
+        &mut self,
+        scope: ScopeId,
+        si: &ast::SubtypeIndication,
+    ) -> Result<SubtypeId, Reported> {
+        let mark = self.type_mark(scope, &si.type_mark)?;
+        if si.resolution.is_none() && si.constraint.is_none() {
+            return Ok(mark);
+        }
+        let base = self.base(mark);
+        let resolution = match &si.resolution {
+            None => self.subtypes[mark].resolution.clone(),
+            Some(r) => Some(self.resolution(scope, r, base)?),
+        };
+        let constraint = match &si.constraint {
+            None => self.subtypes[mark].constraint.clone(),
+            Some(c) => self.constraint(scope, c, mark)?,
+        };
+        Ok(self.subtypes.push(SubtypeDef {
+            base,
+            name: None,
+            parent: Some(mark),
+            constraint,
+            resolution,
+            span: si.span,
+        }))
+    }
+
+    fn resolution(
+        &mut self,
+        scope: ScopeId,
+        r: &ast::Resolution,
+        _base: TypeId,
+    ) -> Result<Resolution, Reported> {
+        match r {
+            ast::Resolution::Function(n) => {
+                let ast::NameKind::Simple(i) = &n.kind else {
+                    return Err(self.unsupported(
+                        n.span,
+                        "a selected resolution function name",
+                        "S2",
+                    ));
+                };
+                match self.lookup(scope, i.key) {
+                    crate::scope::Visible::Overloads(ds) => {
+                        let fs: Vec<DeclId> = ds.into_iter().filter(|&d| matches!(self.decls[self.entity(d)].kind.subprogram(), Some(s) if s.ret.is_some() && s.params.len() == 1)).collect();
+                        match fs.as_slice() {
+                            [f] => Ok(Resolution::Function(self.entity(*f))),
+                            _ => Err(self.error(
+                                Diagnostic::error(
+                                    diag::BAD_RESOLUTION,
+                                    format!(
+                                        "`{}` does not name exactly one resolution function",
+                                        i.text
+                                    ),
+                                )
+                                .with_primary(i.span, "expected a function with one parameter"),
+                            )),
+                        }
+                    }
+                    crate::scope::Visible::None => Err(self.undeclared(scope, *i)),
+                    _ => Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_RESOLUTION,
+                            format!("`{}` is not a function", i.text),
+                        )
+                        .with_primary(i.span, "expected a resolution function"),
+                    )),
+                }
+            }
+            ast::Resolution::Element(_) | ast::Resolution::Record(_) => {
+                Err(self.unsupported(resolution_span(r), "element and record resolution", "S3"))
+            }
+        }
+    }
+
+    fn constraint(
+        &mut self,
+        scope: ScopeId,
+        c: &ast::Constraint,
+        mark: SubtypeId,
+    ) -> Result<Constraint, Reported> {
+        let base = self.base(mark);
+        match c {
+            ast::Constraint::Range(r) => {
+                if !self.types[base].kind.is_scalar()
+                    && !matches!(self.types[base].kind, TypeKind::Error)
+                {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_CONSTRAINT,
+                            "a range constraint needs a scalar type",
+                        )
+                        .with_primary(range_span(r), "range constraint on a composite type"),
+                    ));
+                }
+                Ok(Constraint::Range(self.range(scope, r, base)?))
+            }
+            ast::Constraint::Array {
+                indexes,
+                element,
+                span,
+            } => {
+                let TypeKind::Array { indexes: idx, .. } = &self.types[base].kind else {
+                    if matches!(self.types[base].kind, TypeKind::Error) {
+                        return Err(Reported);
+                    }
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_CONSTRAINT,
+                            "an index constraint needs an array type",
+                        )
+                        .with_primary(*span, "index constraint on a non-array type"),
+                    ));
+                };
+                let idx = idx.clone();
+                if element.is_some() {
+                    return Err(self.unsupported(*span, "element constraints", "S3"));
+                }
+                if let Constraint::Array { dims: Some(_), .. } = self.subtypes[mark].constraint {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::CONSTRAINED_TWICE,
+                            "the array subtype is already constrained",
+                        )
+                        .with_primary(*span, "second index constraint"),
+                    ));
+                }
+                let dims = match indexes {
+                    None => None,
+                    Some(rs) => {
+                        if rs.len() != idx.len() {
+                            return Err(self.error(
+                                Diagnostic::error(
+                                    diag::INDEX_ARITY,
+                                    format!(
+                                        "the array has {} dimension(s), the constraint {}",
+                                        idx.len(),
+                                        rs.len()
+                                    ),
+                                )
+                                .with_primary(*span, "wrong number of index ranges"),
+                            ));
+                        }
+                        let mut dims = Vec::new();
+                        for (r, &i) in rs.iter().zip(idx.iter()) {
+                            let t = self.base(i);
+                            dims.push(self.discrete_range(scope, r, Some(t))?.0);
+                        }
+                        Some(dims.into_boxed_slice())
+                    }
+                };
+                Ok(Constraint::Array {
+                    dims,
+                    elem: Box::new(Constraint::None),
+                })
+            }
+            ast::Constraint::Record(_, span) => {
+                Err(self.unsupported(*span, "record constraints", "S3"))
+            }
+        }
+    }
+
+    /// A range constraint of type `base`.
+    pub(crate) fn range(
+        &mut self,
+        scope: ScopeId,
+        r: &ast::Range,
+        base: TypeId,
+    ) -> Result<RangeC, Reported> {
+        match r {
+            ast::Range::Simple { left, dir, right } => {
+                let l = self.expr(scope, left, Expected::Type(base));
+                let rr = self.expr(scope, right, Expected::Type(base));
+                Ok(RangeC::Explicit {
+                    left: l,
+                    dir: *dir,
+                    right: rr,
+                })
+            }
+            ast::Range::Name(n) => Err(self.unsupported(n.span, "range attributes", "S3")),
+        }
+    }
+
+    /// A name that must denote a type or subtype.
+    pub(crate) fn type_mark(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Result<SubtypeId, Reported> {
+        if let ast::NameKind::Attribute { attr, .. } = &n.kind {
+            return Err(self.unsupported(attr.span, "attributes as type marks", "S3"));
+        }
+        let d = self.expanded_name_decl(scope, n)?;
+        match self.decls[self.entity(d)].kind {
+            DeclKind::Type(t) => {
+                if let TypeKind::Incomplete {
+                    completion: Some(c),
+                } = self.types[t].kind
+                {
+                    return Ok(self.types[c].first_subtype);
+                }
+                Ok(self.types[t].first_subtype)
+            }
+            DeclKind::Subtype(s) => Ok(s),
+            DeclKind::GenericType(t) => Ok(self.types[t].first_subtype),
+            DeclKind::Error => Err(Reported),
+            _ => Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_A_TYPE,
+                    format!("`{}` is not a type or subtype", self.decls[d].name),
+                )
+                .with_primary(n.span, "expected a type mark")
+                .with_secondary(self.decls[d].span, "declared here"),
+            )),
+        }
+    }
+
+    // -- queries ------------------------------------------------------------
+
+    /// The scalar range of a subtype: its own constraint, else the type's base range.
+    pub fn scalar_range(&self, st: SubtypeId) -> Option<RangeC> {
+        match &self.subtypes[st].constraint {
+            Constraint::Range(r) => Some(r.clone()),
+            Constraint::None => {
+                let t = self.base(st);
+                let b = self.types[t].base_subtype;
+                match &self.subtypes[b].constraint {
+                    Constraint::Range(r) if b != st => Some(r.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Folded `(left, dir, right)` of a scalar subtype, when static. Enumeration
+    /// types without a constraint span all their literals.
+    pub fn static_bounds(&self, st: SubtypeId) -> Option<(ConstValue, Direction, ConstValue)> {
+        match self.scalar_range(st) {
+            Some(RangeC::Explicit { left, dir, right }) => {
+                Some((self.value(left)?.clone(), dir, self.value(right)?.clone()))
+            }
+            Some(RangeC::Attr { .. }) => None,
+            None => match &self.types[self.base(st)].kind {
+                TypeKind::Enum { lits } => Some((
+                    ConstValue::Enum(0),
+                    Direction::To,
+                    ConstValue::Enum(lits.len().checked_sub(1)? as u32),
+                )),
+                _ => None,
+            },
+        }
+    }
+
+    /// 5.1: computed, never stored.
+    pub fn constrainedness(&self, st: SubtypeId) -> Constrainedness {
+        match (
+            &self.types[self.base(st)].kind,
+            &self.subtypes[st].constraint,
+        ) {
+            (TypeKind::Array { elem, .. }, Constraint::Array { dims, .. }) => {
+                match (dims.is_some(), self.constrainedness(*elem)) {
+                    (true, Constrainedness::Full) => Constrainedness::Full,
+                    (false, Constrainedness::Unconstrained) => Constrainedness::Unconstrained,
+                    _ => Constrainedness::Partial,
+                }
+            }
+            (TypeKind::Array { .. }, Constraint::FromObject { .. }) => Constrainedness::Full,
+            (TypeKind::Array { .. }, _) => Constrainedness::Unconstrained,
+            (TypeKind::Record { elems }, _) => {
+                let all: Vec<Constrainedness> = elems
+                    .iter()
+                    .map(|e| self.constrainedness(e.subtype))
+                    .collect();
+                if all.iter().all(|c| *c == Constrainedness::Full) {
+                    Constrainedness::Full
+                } else {
+                    Constrainedness::Partial
+                }
+            }
+            _ => Constrainedness::Full,
+        }
+    }
+
+    pub fn is_poison(&self, e: ExprId) -> bool {
+        matches!(self.exprs[e].kind, ExprKind::Error)
+    }
+
+    fn register_well_known_type(&mut self, scope: ScopeId, name: Ident, ty: TypeId) {
+        if self.well_known.standard != Some(scope) {
+            return;
+        }
+        let w = &mut self.well_known;
+        match name.key.as_str() {
+            "boolean" => w.boolean = Some(ty),
+            "bit" => w.bit = Some(ty),
+            "character" => w.character = Some(ty),
+            "severity_level" => w.severity_level = Some(ty),
+            "integer" => w.integer = Some(ty),
+            "real" => w.real = Some(ty),
+            "time" => w.time = Some(ty),
+            "string" => w.string = Some(ty),
+            "file_open_kind" => w.file_open_kind = Some(ty),
+            "file_open_status" => w.file_open_status = Some(ty),
+            "direction" => w.direction = Some(ty),
+            _ => {}
+        }
+        self.flush_pending_implicit();
+    }
+
+    fn register_well_known_subtype(&mut self, scope: ScopeId, name: Ident, st: SubtypeId) {
+        if self.well_known.standard != Some(scope) {
+            return;
+        }
+        let w = &mut self.well_known;
+        match name.key.as_str() {
+            "natural" => w.natural = Some(st),
+            "positive" => w.positive = Some(st),
+            "delay_length" => w.delay_length = Some(st),
+            _ => {}
+        }
+        self.flush_pending_implicit();
+    }
+}
+
+impl SubtypeDef {
+    /// A named copy (a subtype declaration names a new subtype of the same constraint).
+    fn clone_def(&self, of: SubtypeId, name: Ident, span: Span) -> SubtypeDef {
+        SubtypeDef {
+            base: self.base,
+            name: Some(name),
+            parent: Some(of),
+            constraint: self.constraint.clone(),
+            resolution: self.resolution.clone(),
+            span,
+        }
+    }
+}
+
+fn range_span(r: &ast::Range) -> Span {
+    match r {
+        ast::Range::Simple { left, right, .. } => left.span.to(right.span),
+        ast::Range::Name(n) => n.span,
+    }
+}
+
+fn resolution_span(r: &ast::Resolution) -> Span {
+    match r {
+        ast::Resolution::Function(n) => n.span,
+        ast::Resolution::Element(e) => resolution_span(e),
+        ast::Resolution::Record(v) => v.first().map_or(Span::default(), |(i, _)| i.span),
+    }
+}
+
+#[allow(dead_code)]
+fn _symbol(_: Symbol) {}

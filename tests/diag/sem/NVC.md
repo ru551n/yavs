@@ -166,10 +166,10 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 |---|---|---|---|
 | `attribute_of_others_ok` | none | accepts | accepts |
 | `attribute_spec_overloaded_ok` | none | rejects @8 | accepts |
-| `dimension_arg_on_scalar_type` | E1621 @5 | rejects @5 | rejects @5 |
+| `dimension_arg_on_scalar_type` | E1007 @5 | rejects @5 | rejects @5 |
 | `event_on_constant` | E1621 @6 | rejects @6 | rejects @6 |
 | `high_on_function` | E1621 @14 | rejects @14 | rejects @14 |
-| `image_on_array_2008` | E1621 @5 | rejects @5 | rejects @5 |
+| `image_on_array_2008` | E1007 @5 | rejects @5 | rejects @5 |
 | `length_on_scalar` | E1621 @6 | rejects @6 | rejects @6 |
 | `pos_on_array_type` | E1621 @5 | rejects @5 | rejects @5 |
 | `range_on_scalar_object` | E1621 @8 | rejects @8 | rejects @8 |
@@ -179,7 +179,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `unknown_help_typo` | E1621 @7 | rejects @7 | rejects @7 |
 | `user_attribute_class_mismatch` | E1622 @7 | rejects @7 | rejects @7 |
 | `user_attribute_ok` | none | accepts | accepts |
-| `user_attribute_spec_twice` | E1101 @8 | rejects @8 | rejects @8 |
+| `user_attribute_spec_twice` | E1626 @8 | rejects @8 | rejects @8 |
 | `user_attribute_undeclared` | E1100 @6 | rejects @6 | rejects @6 |
 | `user_attribute_unknown_entity` | E1100 @6 | rejects @6 | rejects @6 |
 | `user_attribute_unknown_use` | E1621 @7 | rejects @7 | rejects @7 |

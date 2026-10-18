@@ -1,5 +1,5 @@
 -- rsim-test: std=2008
--- expect: E1101 8:20 attribute `tag` is already specified for `s`
+-- expect: E1626 8:20 attribute `tag` is given to `s` twice
 -- LRM 7.2
 package p is
   signal s : bit;

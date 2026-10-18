@@ -784,9 +784,7 @@ fn form_holds(form: Form, prefix: PrefixForm) -> bool {
 }
 
 fn describe(db: &Db, prefix: &Prefix) -> String {
-    let ty = prefix
-        .subtype
-        .map(|st| crate::expr::aggregate::type_name(db, db.base(st)));
+    let ty = prefix.subtype.map(|st| format!("`{}`", db.subtype_name(st)));
     let form = match prefix.form {
         PrefixForm::TypeMark => "a type mark",
         PrefixForm::Object { signal: true } => "a signal",

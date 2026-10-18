@@ -696,6 +696,13 @@ impl Db {
         };
         self.decls_in(pscope, &b.decls);
         let stmts = self.seq_stmts(pscope, &b.stmts);
+        if let Some(g) = self.decls[target]
+            .kind
+            .subprogram()
+            .and_then(|s| s.generics.clone())
+        {
+            self.report_unused_generics(&g);
+        }
         // The body's own declaration (not declared when it completes a spec) gets the
         // body too, so no subprogram is left pending (validate, 7.3).
         for d in [target, new] {

@@ -5,5 +5,5 @@
 package g is
   generic (type t);
   constant k : integer := 1;
-end package;
+subtype s is t; end package;
 package i is new work.g generic map (n => 1);

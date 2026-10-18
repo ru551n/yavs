@@ -3,5 +3,5 @@
 -- LRM 6.5.7.2
 package g is
   generic (n : integer := 1);
-end package;
+constant c : integer := n; end package;
 package i is new work.g generic map (zz => 1);

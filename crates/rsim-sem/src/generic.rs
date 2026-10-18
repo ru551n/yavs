@@ -119,6 +119,9 @@ pub struct GenericState {
     pub(crate) maps: HashMap<InstId, Remap>,
     /// The generic spec the subprogram body being analyzed completes (`prepare_generic_body`).
     pub(crate) reuse: Option<DeclId>,
+    /// Generic constants, types and packages of packages and subprograms not yet
+    /// looked up (`W1501`; `Db::lookup` removes them).
+    pub(crate) unused: HashSet<DeclId>,
 }
 
 /// Original to clone ids of one instance (5.1).
@@ -260,6 +263,24 @@ impl Db {
         (!ds.is_empty() && ds.iter().all(generic)).then(|| self.entity(ds[0]))
     }
 
+    /// `W1501` for the generics of `list` that nothing referred to. Called once
+    /// the whole unit is seen: the package body (or the package declaration
+    /// when it has none) or the subprogram body.
+    pub(crate) fn report_unused_generics(&mut self, list: &[DeclId]) {
+        for &d in list {
+            if self.generic.unused.remove(&d) {
+                let name = self.decls[d].name;
+                self.report(
+                    Diagnostic::warning(
+                        diag::W_UNUSED_GENERIC,
+                        format!("generic `{name}` is never used"),
+                    )
+                    .with_primary(self.decls[d].span, "declared here, never referred to"),
+                );
+            }
+        }
+    }
+
     // -- generic lists ------------------------------------------------------------
 
     /// Analyze a generic clause into `scope` (6.5.6): constants, types (with
@@ -276,7 +297,20 @@ impl Db {
         let mut failed = false;
         for g in list {
             match self.generic_item(scope, g) {
-                Ok(ds) => out.extend(ds),
+                Ok(ds) => {
+                    // Before the next item: a later generic may refer to this one.
+                    for &d in &ds {
+                        if matches!(
+                            self.decls[d].kind,
+                            DeclKind::Object(_)
+                                | DeclKind::GenericType(_)
+                                | DeclKind::GenericPackage(_)
+                        ) {
+                            self.generic.unused.insert(d);
+                        }
+                    }
+                    out.extend(ds);
+                }
                 Err(_) => failed = true,
             }
         }

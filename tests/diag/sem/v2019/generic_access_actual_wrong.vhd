@@ -3,7 +3,7 @@
 -- LRM 2019 6.5.3
 package g is
   generic (type t is access integer);
-end package;
+subtype s is t; end package;
 package s is
   type pb is access bit;
 end package;

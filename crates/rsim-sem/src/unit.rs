@@ -186,15 +186,26 @@ impl Db {
                 if is_standard {
                     self.end_standard(scope, p.span);
                 }
-                UnitHir::Package {
-                    generics: generics.transpose()?,
+                let generics = generics.transpose()?;
+                let lib = self.units[unit].lib;
+                let body = UnitKey::body(name.key);
+                if let Some(g) = &generics
+                    && self.locate(lib, body).is_none()
+                    && !self.libs[lib].units.contains_key(&body)
+                {
+                    self.report_unused_generics(g);
                 }
+                UnitHir::Package { generics }
             }
             L::PackageBody(b) => {
                 let package = self.units[unit].deps[0];
                 self.decls_in(scope, &b.decls);
                 let pscope = self.units[package].scope;
                 let _ = self.check_protected_bodies(pscope, b.span);
+                if let UnitHir::Package { generics: Some(g) } = &self.units[package].hir {
+                    let g = g.clone();
+                    self.report_unused_generics(&g);
+                }
                 UnitHir::PackageBody { package }
             }
             L::Context(c) => {

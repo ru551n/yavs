@@ -195,7 +195,7 @@ package i is new work.g generic map (t => unsigned);
     // Without numeric_std's "=" in sight there is nothing to warn about.
     let db = analyze(
         LangRev::Vhdl2008,
-        "package g is generic (type t); end package;
+        "package g is generic (type t); subtype s is t; end package;
          library ieee;
          package i is new work.g generic map (t => ieee.numeric_std.unsigned);",
     );
@@ -313,7 +313,7 @@ fn errors_have_their_codes() {
     );
     // E1502: a formal type without an actual.
     assert_eq!(
-        e("package g is generic (type t); end package;
+        e("package g is generic (type t); subtype s is t; end package;
            package i is new work.g;"),
         ["E1502"]
     );
@@ -328,9 +328,9 @@ fn errors_have_their_codes() {
     );
     // E1503: a formal package actual of the wrong generic.
     assert_eq!(
-        e("package a is generic (n : integer := 1); end package;
-           package a2 is generic (n : integer := 1); end package;
-           package b is generic (package p is new work.a generic map (<>)); end package;
+        e("package a is generic (n : integer := 1); constant c : integer := n; end package;
+           package a2 is generic (n : integer := 1); constant c : integer := n; end package;
+           package b is generic (package p is new work.a generic map (<>)); constant c : integer := p.c; end package;
            package x is new work.a2;
            package y is new work.b generic map (p => work.x);"),
         ["E1503"]
@@ -362,4 +362,29 @@ fn e1505_call_of_an_uninstantiated_subprogram() {
          end package;",
     );
     assert_eq!(codes(&db), ["E1505"]);
+}
+
+#[test]
+fn w1501_unused_generic_after_the_body() {
+    let e = |src: &str| codes(&analyze(LangRev::Vhdl2008, src));
+    assert_eq!(
+        e("package g is generic (n : integer := 1); end package;"),
+        ["W1501"]
+    );
+    // Used only in the body: no warning.
+    assert!(
+        e("package g is generic (n : integer := 1); function f return integer; end package;
+           package body g is function f return integer is begin return n; end function; end package body;")
+        .is_empty()
+    );
+    assert_eq!(
+        e("package p is
+             function f generic (n : integer := 1) parameter (x : integer) return integer;
+           end package;
+           package body p is
+             function f generic (n : integer := 1) parameter (x : integer) return integer is
+             begin return x; end function;
+           end package body;"),
+        ["W1501"]
+    );
 }

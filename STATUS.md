@@ -52,6 +52,17 @@ thread, Intel Core Ultra 9 275HX, warm cache): about 5,600 files/s and 60 MB/s (
 Fuzzing: `cargo +nightly fuzz run parse` (lexer, directives, parser and rendering in both
 standards); two 5-minute runs with 8 workers (210k executions in total) found no crashes or hangs.
 
+## sem design units (`crates/rsim-sem`, M1 slice S5)
+
+Entities, architectures (`of e` and `of lib.e`), components, instances (component, entity,
+configuration; `l : c;`), generic and port maps (positional, named, sub-element, conversions,
+`open`), configuration specifications and declarations (block, generate index, range and
+alternative, component configurations with incremental binding), default binding
+(`Db::default_binding`, `W1703`), manifest dependencies on named architectures and default-bound
+entities. Negative tests in `tests/diag/sem/unit/`; unit tests in `src/unit/tests.rs`. Open:
+generic types, subprograms and packages on entities, components and blocks (S4), mode views (S7),
+subtype indications as generate specifications.
+
 ## logic (`crates/rsim-logic`)
 
 Done ahead of M3: `StdULogic` with the IEEE 1164 tables (checked against the vendored package

@@ -32,16 +32,15 @@ WRAP = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "Memor
 
 
 def nvc_fixup(f, path, out):
-    """NVC bootstraps STD.STANDARD itself: --bootstrap, and for 2019 a copy with DIRECTION renamed
-    RANGE_DIRECTION and moved behind BOOLEAN (as tools/check-nvc.sh does). Returns (extra args, path)."""
+    """NVC bootstraps STD.STANDARD itself: --bootstrap, and for 2019 a copy with RANGE_DIRECTION
+    moved behind BOOLEAN (as tools/check-nvc.sh does). Returns (extra args, path)."""
     if f["path"].rsplit("/", 1)[-1] != "standard.vhdl":
         return [], path
     if f["std"] == "2019":
-        import re
         s = path.read_text(encoding="latin-1").split("\n")
-        i = next(k for k, l in enumerate(s) if l.startswith("  type DIRECTION is ("))
+        i = next(k for k, l in enumerate(s) if l.startswith("  type RANGE_DIRECTION is ("))
         j = next(k for k, l in enumerate(s) if l.startswith("  type BOOLEAN is"))
-        t = re.sub(r"\bDIRECTION\b", "RANGE_DIRECTION", "\n".join(s[:i] + s[j:j + 1] + s[i:j] + s[j + 1:]))
+        t = "\n".join(s[:i] + s[j:j + 1] + s[i:j] + s[j + 1:])
         path = out / "standard-nvc.vhdl"
         path.write_text(t, encoding="latin-1")
     return ["--bootstrap"], path

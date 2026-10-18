@@ -6,7 +6,7 @@ Every manifest entry analyzed in order into `~/.cache/rsim-corpora/nvc-rsim-lib-
 
 - Files: 28; accepted: 26; rejected: 2.
 - Flags needed: none.
-- `standard.vhdl` is analyzed with `--bootstrap` (2019: from a copy with `DIRECTION` renamed `RANGE_DIRECTION` and moved behind `BOOLEAN`, as `tools/check-nvc.sh` does).
+- `standard.vhdl` is analyzed with `--bootstrap` (2019: from a copy with `RANGE_DIRECTION` moved behind `BOOLEAN`, as `tools/check-nvc.sh` does).
 
 ## Rejected files
 

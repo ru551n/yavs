@@ -16,17 +16,17 @@ for std in "${@:-2008 2019}"; do
       if [ "$file" = "std/$std/standard.vhdl" ]; then
         extra="--bootstrap"
         if [ "$std" = 2019 ]; then
-          # NVC hardcodes its own bootstrap: it wants the type named RANGE_DIRECTION and
-          # declared behind BOOLEAN (NVC limitation, the LRM text is valid). Analyze a copy
-          # with the type renamed and moved behind BOOLEAN instead.
+          # NVC hardcodes its own bootstrap: it wants RANGE_DIRECTION declared behind
+          # BOOLEAN (NVC limitation, the LRM text is valid). Analyze a copy with the type
+          # moved behind BOOLEAN instead.
           path="$w/standard-nvc.vhdl"
           python3 -I - "$here/lib/$file" "$path" <<'PY'
-import re, sys
+import sys
 s = open(sys.argv[1], encoding="latin-1", newline="").read().split("\n")
-i = next(k for k, l in enumerate(s) if l.startswith("  type DIRECTION is ("))
+i = next(k for k, l in enumerate(s) if l.startswith("  type RANGE_DIRECTION is ("))
 j = next(k for k, l in enumerate(s) if l.startswith("  type BOOLEAN is"))
 out = "\n".join(s[:i] + s[j:j + 1] + s[i:j] + s[j + 1:])
-open(sys.argv[2], "w", encoding="latin-1", newline="").write(re.sub(r"\bDIRECTION\b", "RANGE_DIRECTION", out))
+open(sys.argv[2], "w", encoding="latin-1", newline="").write(out)
 PY
         fi
       fi

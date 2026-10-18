@@ -1,6 +1,8 @@
 //! Tests of design units, associations, binding and configurations
 //! (binding.rs). Each test analyzes real files, written to
-//! `~/.cache/rsim-sem/unit-tests` (never into the repo).
+//! `~/.cache/rsim-sem/unit-tests/<pid>-<thread>` (never into the repo): one
+//! directory per test thread, so parallel tests and other worktrees' runs never
+//! overwrite each other's files.
 
 use std::path::PathBuf;
 
@@ -14,7 +16,13 @@ use crate::{Db, LangRev, Options};
 
 fn dir() -> PathBuf {
     let home = std::env::var_os("HOME").expect("HOME");
-    let d = PathBuf::from(home).join(".cache/rsim-sem/unit-tests");
+    let d = PathBuf::from(home)
+        .join(".cache/rsim-sem/unit-tests")
+        .join(format!(
+            "{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
     std::fs::create_dir_all(&d).expect("scratch dir");
     d
 }

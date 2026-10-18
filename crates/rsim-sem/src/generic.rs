@@ -495,7 +495,7 @@ impl Db {
                         diag::NOT_GENERIC,
                         format!("`{name}` is not a generic package"),
                     )
-                    .with_primary(n.span, "expected an uninstantiated generic package")
+                    .with_primary(last_span(n), "expected an uninstantiated generic package")
                     .with_secondary(self.decls[d].span, "declared here"),
                 ))
             }

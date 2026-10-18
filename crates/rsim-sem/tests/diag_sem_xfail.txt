@@ -40,10 +40,7 @@ ext/external_signal_read_ok.vhd
 ext/external_subtype_unknown.vhd
 ext/external_type_mismatch.vhd
 ext/external_variable_assign_signal_target.vhd
-gen/generic_discrete_has_pos_ok.vhd
-gen/instantiate_non_package.vhd
 gen/missing_generic_actual.vhd
-gen/not_a_generic_unit.vhd
 gen/type_actual_missing.vhd
 gen/unused_generic_warning.vhd
 lit/char_literal_wrong_type.vhd

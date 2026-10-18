@@ -18,7 +18,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding`; `parse` subcommand; `@file` expansion before clap |
-| `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `stdlib()` (finds `lib/`), `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
+| `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
 | `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
@@ -60,9 +60,9 @@ into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
   (`yavs_sem::diag::EXPLAIN`). A test scans all `crates/*/src` for code literals, so a new code
   fails `cargo test -p yavs` until it has a text (#136).
 - `--ieee-warnings` is accepted and ignored on purpose (`ponytail:` comment in `elab.rs`).
-- `stdlib()` order: `$YAVS_STDLIB`, then `lib/` next to the executable or up to three parents,
-  then the checkout path compiled into `yavs-sem` (#43). A stale binary from a shared
-  `CARGO_TARGET_DIR` uses another worktree's `lib/` and crates (#7): keep your own target dir.
+- std/ieee come from `yavs_sem::default_stdlib()`: `$YAVS_STDLIB`, else `lib/` next to the
+  executable or up to three parents, else (debug builds only) the checkout path (#43, test
+  `installed_tree` in `tests/cli.rs`). A stale binary from a shared `CARGO_TARGET_DIR` uses another worktree's `lib/` and crates (#7): keep your own target dir.
 - Tests run the built binary (`env!("CARGO_BIN_EXE_yavs")`); scratch dirs carry the pid
   (`yavs-cli-<pid>-<name>`). Keep that pattern, never a fixed name in `/tmp`.
 

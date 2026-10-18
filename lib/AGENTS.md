@@ -49,8 +49,9 @@ Decisions about these sources go in `SOURCES.md` (edits) or this section, in the
   (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`); `crates/yavs-sem/tests/native_symbols.rs`
   checks section 1 against `mangle::native_symbol`, and `yavs-interp` checks its reflection rows.
   `yavs-interp` rejects any native symbol NATIVE.md does not define.
-- `yavs-sem` finds this tree at a compile-time path unless `YAVS_STDLIB` is set (#43); the CLI
-  looks next to the executable first.
+- `yavs_sem::default_stdlib()` finds this tree: `$YAVS_STDLIB`, else `lib/` next to the
+  executable or up to three parents, else (debug builds only) the checkout path (#43). Release
+  archives ship it as `lib/` next to the binary.
 - `cargo test --workspace` parses every file here (`crates/yavs/tests/lib_parse.rs`) and analyzes
   std/ieee in both revisions (`crates/yavs-sem/tests/stdlib.rs`).
 - NVC reference runs (`tools/check-nvc.sh`) follow root `AGENTS.md` rule 15.
@@ -69,6 +70,5 @@ cargo test -p yavs --test lib_parse && cargo test -p yavs-sem --test stdlib --te
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18): #37 fixed/float generic package bodies; #43 compile-time
-  std/ieee path; #94 numeric_std, fixed and float run correctly from source; #117 clean-room
+- Open issues (snapshot 2026-10-18): #37 fixed/float generic package bodies; #94 numeric_std, fixed and float run correctly from source; #117 clean-room
   Synopsys packages (M4b).

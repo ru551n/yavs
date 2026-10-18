@@ -73,7 +73,6 @@ YAVS_LOG=debug cargo run -p yavs -- elab ...     # show lock-free reads
 - The manifest format is read by every `yavs` binary in parallel worktrees; bump `FORMAT` and
   fail clearly on the old one rather than reading both.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:lib`): #21 a
-  `--map`ped library without a manifest must be empty, not L0001; #43 std/ieee path is a
-  compile-time checkout path; #60 E1004 for OSVVM AXI4; #61 UNISIM/vendor libraries missing; #37
+  `--map`ped library without a manifest must be empty, not L0001; #60 E1004 for OSVVM AXI4; #61 UNISIM/vendor libraries missing; #37
   fixed/float generic package bodies; #94 numeric_std, fixed and float from source; #117 to #119
   Synopsys, VITAL, vendor primitives (M4b).

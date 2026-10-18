@@ -86,14 +86,31 @@ impl Options {
     }
 }
 
-/// The `lib/` tree: `$YAVS_STDLIB` if set, else the source checkout's `lib/`.
-// ponytail: compile-time checkout path; an installed yavs needs a path next to the binary.
+/// The `lib/` tree, the one place that decides it (#43): `$YAVS_STDLIB` if set, else `lib/` in
+/// the executable's directory or up to three parents (an installed `yavs` next to `lib/`,
+/// `bin/../lib`, `target/debug/../../lib` in a checkout). Debug builds then fall back to the
+/// source checkout they were built from; a release build never does, and returns `lib/` next
+/// to the executable so the "not found" diagnostic names the place it looked.
 pub fn default_stdlib() -> PathBuf {
-    match std::env::var_os("YAVS_STDLIB") {
-        Some(p) => PathBuf::from(p),
-        None => {
-            let p = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
-            p.canonicalize().unwrap_or(p)
-        }
+    if let Some(p) = std::env::var_os("YAVS_STDLIB") {
+        return PathBuf::from(p);
     }
+    let exe = std::env::current_exe().ok();
+    if let Some(p) = exe
+        .iter()
+        .flat_map(|e| e.ancestors().skip(1).take(4))
+        .map(|d| d.join("lib"))
+        .find(|d| d.join("std").is_dir() && d.join("ieee").is_dir())
+    {
+        return p;
+    }
+    #[cfg(debug_assertions)]
+    {
+        let p = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+        p.canonicalize().unwrap_or(p)
+    }
+    #[cfg(not(debug_assertions))]
+    exe.as_deref()
+        .and_then(std::path::Path::parent)
+        .map_or_else(|| PathBuf::from("lib"), |d| d.join("lib"))
 }

@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use yavs_kernel::{EndReason, RunStatus};
 
 use crate::StdArg;
-use crate::analyze::{Out, stdlib};
+use crate::analyze::Out;
 
 #[derive(ClapArgs)]
 pub struct Common {
@@ -163,7 +163,7 @@ fn elaborate(
         None if files.iter().any(|f| f.std == "2019") => LangRev::Vhdl2019,
         None => LangRev::Vhdl2008,
     };
-    let mut opts = Options::new(rev, stdlib());
+    let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     opts.libraries = libs;
     opts.relaxed = c.relaxed;
     let mut db = Db::new(opts);

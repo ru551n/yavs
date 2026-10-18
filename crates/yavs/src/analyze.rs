@@ -72,24 +72,6 @@ pub fn expand_response_files(
     Ok(out)
 }
 
-/// The `lib/` tree: `$YAVS_STDLIB`, else `lib/` in the executable's directory or
-/// up to three parents (installed `bin/../lib`, `target/debug/../../lib`), else
-/// the source checkout it was built from.
-pub(crate) fn stdlib() -> PathBuf {
-    if std::env::var_os("YAVS_STDLIB").is_none()
-        && let Ok(exe) = std::env::current_exe()
-        && let Some(p) = exe
-            .ancestors()
-            .skip(1)
-            .take(4)
-            .map(|d| d.join("lib"))
-            .find(|d| d.join("std").is_dir() && d.join("ieee").is_dir())
-    {
-        return p;
-    }
-    yavs_sem::default_stdlib()
-}
-
 pub(crate) struct Out {
     format: MessageFormat,
     color: bool,
@@ -218,7 +200,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     } else {
         "2019"
     };
-    let mut opts = Options::new(rev, stdlib());
+    let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
     opts.defines = a.defines;

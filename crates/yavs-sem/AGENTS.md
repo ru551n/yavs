@@ -27,7 +27,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Item | File |
 |---|---|
 | `Db` (arenas, `WellKnown`, `Poison`, `report`/`error`/`ice`/`unsupported`, `diagnostics`, `take_diagnostics`) | `src/db.rs` |
-| `Options` (`rev`, `stdlib`, `libraries`, `relaxed`, `defines`), `LangRev = yavs_syntax::Std`, `default_stdlib()` (`$YAVS_STDLIB` else compile-time `lib/`) | `src/lib.rs` |
+| `Options` (`rev`, `stdlib`, `libraries`, `relaxed`, `defines`), `LangRev = yavs_syntax::Std`, `default_stdlib()` (`$YAVS_STDLIB`, else `lib/` next to the executable or up to three parents, else (debug builds only) the checkout path) | `src/lib.rs` |
 | `Db::analyze_file` (one `yavs analyze` file, returns `UnitRecord`s), `analyze_closure`, `load_primary`, `load_body`; HIR validation in debug builds | `src/loader.rs` |
 | Typed ids and `Arena` (`DeclId`, `ScopeId`, `ExprId`, `SubtypeId`, `TypeId`, `UnitId`, ...) | `src/ids.rs` |
 | HIR shapes consumed by M2 (`Expr`/`ExprKind`, `Stmt`/`StmtKind`, `Call`, `Lsp`, `UnitHir`, `Binding`, `GenSelect`) | `src/hir.rs` |
@@ -87,8 +87,9 @@ Module-local decisions go in this section and in the matching sem.md section, LR
   suite, xfail or not.
 - **`hir.rs` shapes are an M2 contract:** a change needs a note in sem.md section 7 and a check of
   `yavs-lower`/`yavs-elab` (`cargo test --workspace`).
-- **std/ieee path** is compile-time (`CARGO_MANIFEST_DIR/../../lib`) unless `YAVS_STDLIB` is set
-  (#43); with a shared `CARGO_TARGET_DIR` a test binary can use another worktree's `lib/` (#7).
+- **std/ieee path**: `default_stdlib()` is the only lookup, used by the CLI too (#43). Only debug
+  builds fall back to `CARGO_MANIFEST_DIR/../../lib`; with a shared `CARGO_TARGET_DIR` a test
+  binary can use another worktree's `lib/` (#7).
 - **Revisions:** `db.rev` is the design revision, `db.file_rev()` the file's; declarations
   carry `since`.
 - Scratch output under `~/.cache/rsim-sem`, never in the repo or a fixed `/tmp` name.
@@ -119,6 +120,6 @@ cd fuzz && cargo +nightly fuzz run sem                            # see fuzz/AGE
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:sem`):
   false positives #23, #38, #157; bugs #18, #25, #27, #36, #41, #154,
   #155; features #19, #22, #24, #28, #29, #30, #31, #32, #33, #34, #35, #37; negative-suite xfail
-  groups #45 to #54; driver-analysis perf #42; std/ieee path #43; names/units leftovers #44;
+  groups #45 to #54; driver-analysis perf #42; names/units leftovers #44;
   OSVVM/UVVM suites #115. Older unlabeled ones: #1, #2, #3 (sem false positives found by the
   difftest), #20 (`--encoding` in analyze), #21 (empty mapped library).

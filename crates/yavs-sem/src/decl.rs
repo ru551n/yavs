@@ -516,6 +516,30 @@ impl Db {
         // 2019 signals and variables, like constants, take missing bounds from their
         // initial value (6.4.2.3, 6.4.2.4; LCS-2016-019).
         let from_init = default.is_some() && self.file_rev() >= LangRev::Vhdl2019;
+        // 6.4.2.2: a constant without a value is deferred, and only a package declaration
+        // may hold one; without a value an unconstrained one has no bounds either.
+        if !full
+            && class == ObjClass::Constant
+            && default.is_none()
+            && self.scopes[scope].kind != crate::scope::ScopeKind::Package
+        {
+            let name = o.names.first().map_or(o.subtype.span, |n| n.span);
+            self.report(
+                yavs_diag::Diagnostic::error(
+                    crate::diag::NOT_FULLY_CONSTRAINED,
+                    match o.names.first() {
+                        Some(n) => format!(
+                            "constant `{}` of an unconstrained type needs an initial value",
+                            n.text
+                        ),
+                        None => "a constant of an unconstrained type needs an initial value".into(),
+                    },
+                )
+                .with_primary(name, "declared here")
+                .with_secondary(o.subtype.span, "not fully constrained")
+                .with_note("only a package declaration may hold a deferred constant (LRM 6.4.2.2)"),
+            );
+        }
         if !full && class != ObjClass::Constant && !from_init {
             let what = if class == ObjClass::Signal {
                 "signal"

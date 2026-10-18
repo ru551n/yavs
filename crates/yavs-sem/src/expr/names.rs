@@ -1068,6 +1068,20 @@ impl Db {
         }
         // The element subtype of the prefix's own subtype (2008 element constraints).
         let pst = self.exprs[p].subtype;
+        for (dim, &id) in ids.iter().enumerate() {
+            if let Some(v) = self.value(id).and_then(|v| v.as_int())
+                && let Some(r) = crate::expr::aggregate::subtype_range(self, pst, dim)
+                && !r.contains(v)
+            {
+                let ix = self.base(indexes[dim]);
+                let msg = format!(
+                    "index {} is outside range {}",
+                    self.index_image(ix, v),
+                    self.range_image(ix, r)
+                );
+                self.warn_static_index(span, msg);
+            }
+        }
         let subtype = self.element_subtype(pst).unwrap_or(elem);
         self.add_expr(Expr {
             kind: ExprKind::Index {
@@ -1114,6 +1128,19 @@ impl Db {
             return self.poison_expr();
         };
         let pst = self.exprs[p].subtype;
+        // A null slice may have any bounds (8.5).
+        if let Some(s) = crate::expr::aggregate::range_value(self, &range)
+            && !s.is_null()
+            && let Some(r) = crate::expr::aggregate::subtype_range(self, pst, 0)
+            && !(r.contains(s.left) && r.contains(s.right))
+        {
+            let msg = format!(
+                "slice {} is outside range {}",
+                self.range_image(index, s),
+                self.range_image(index, r)
+            );
+            self.warn_static_index(span, msg);
+        }
         let elem_c = match &self.subtypes[pst].constraint {
             crate::types::Constraint::Array { elem, .. } => elem.clone(),
             _ => Box::new(crate::types::Constraint::None),
@@ -1496,6 +1523,13 @@ impl Db {
             stat = stat.min(self.exprs[id].stat);
             hargs.push(id);
         }
+        if is_array
+            && matches!(a.info().param, attr::Param::Dim)
+            && let Some(&x) = hargs.first()
+            && self.check_dimension(x, t).is_err()
+        {
+            return self.poison_expr();
+        }
         let subtype = self.types[i.ty].first_subtype;
         // `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` declare an implicit
         // signal (16.2.4, sem.md 6.3); the name reads it.
@@ -1632,6 +1666,78 @@ impl Db {
             stat,
             value: folded,
         })
+    }
+
+    /// `W1404` (sem.md 4.3): a static index or slice outside a static index range. Only a
+    /// warning, the code may be dead; the run-time check stays.
+    fn warn_static_index(&mut self, span: Span, msg: String) {
+        self.report(
+            Diagnostic::warning(diag::W_STATIC_INDEX, msg)
+                .with_primary(span, "outside the index range")
+                .with_note(
+                    "the code may never run, so this is checked again at run time (LRM 8.4, 8.5)",
+                ),
+        );
+    }
+
+    /// Value `v` of discrete type `t` as VHDL source: a literal name or a number.
+    fn index_image(&self, t: TypeId, v: i64) -> String {
+        match &self.types[t].kind {
+            TypeKind::Enum { lits } => match usize::try_from(v).ok().and_then(|i| lits.get(i)) {
+                Some(&d) => self.decls[d].name.to_string(),
+                None => v.to_string(),
+            },
+            _ => v.to_string(),
+        }
+    }
+
+    fn range_image(&self, t: TypeId, r: crate::expr::aggregate::StaticRange) -> String {
+        let dir = match r.dir {
+            ast::Direction::To => "to",
+            ast::Direction::Downto => "downto",
+        };
+        format!(
+            "{} {dir} {}",
+            self.index_image(t, r.left),
+            self.index_image(t, r.right)
+        )
+    }
+
+    /// The dimension argument `x` of an array attribute of array type `t` (16.2.3):
+    /// a locally static positive integer, at most the number of dimensions.
+    fn check_dimension(&mut self, x: ExprId, t: TypeId) -> Result<(), Reported> {
+        if self.is_poison_expr(x) {
+            return Err(Reported);
+        }
+        let span = self.exprs[x].span;
+        let v = if self.exprs[x].stat == Staticness::Locally {
+            self.value(x).and_then(|v| v.as_int())
+        } else {
+            None
+        };
+        let Some(d) = v else {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_STATIC,
+                    "the dimension of an array attribute must be a locally static expression",
+                )
+                .with_primary(span, "not locally static"),
+            ));
+        };
+        let n = match &self.types[t].kind {
+            TypeKind::Array { indexes, .. } => indexes.len(),
+            _ => return Ok(()),
+        };
+        if d < 1 || d as u64 > n as u64 {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::ATTR_DIMENSION,
+                    format!("dimension {d} does not exist for a {n}-dimensional array"),
+                )
+                .with_primary(span, "no such dimension"),
+            ));
+        }
+        Ok(())
     }
 
     /// `'left`, `'length`, ... of a static array subtype: folded even when the

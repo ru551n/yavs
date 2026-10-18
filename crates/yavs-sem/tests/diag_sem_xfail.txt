@@ -33,11 +33,6 @@ prot/signal_of_protected_type.vhd
 relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd
 relax/shared_variable_unprotected_relaxed.vhd
-stat/attribute_dimension_not_static.vhd
-stat/attribute_dimension_out_of_range.vhd
-stat/static_index_out_of_range_process.vhd
-stat/static_slice_out_of_range.vhd
-typ/constant_unconstrained_needs_value.vhd
 v2019/conditional_expression_branch_mismatch.vhd
 v2019/conditional_expression_not_boolean.vhd
 v2019/conditional_expression_ok.vhd

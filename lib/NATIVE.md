@@ -21,7 +21,7 @@ The ieee packages are ordinary VHDL with bodies and need no natives.
 - Default values (`:= X`) are omitted from the Signature column; see the source.
 - The symbol is stable: it depends only on the declaration text in the vendored IEEE source.
 
-## 1. Explicitly declared, no body (234 rows)
+## 1. Explicitly declared, no body (235 rows)
 
 Revision is the standard revision whose vendored source declares the subprogram.
 `std.standard` appears with one row (`now`); the rest is in `textio`, `env` and `reflection`.
@@ -75,10 +75,11 @@ name the subprograms in this table. The `std_logic_textio` package is aliases on
 | `rsim.textio.owrite.line_bit_vector_side_width` | `procedure owrite (L: inout line; VALUE: in bit_vector; JUSTIFIED: in side; FIELD: in width)` | 2008, 2019 |
 | `rsim.textio.hwrite.line_bit_vector_side_width` | `procedure hwrite (L: inout line; VALUE: in bit_vector; JUSTIFIED: in side; FIELD: in width)` | 2008, 2019 |
 
-### std.env (74)
+### std.env (75)
 
 | Native symbol | Signature | Revision |
 |---|---|---|
+| `rsim.env.stop.integer` | `procedure stop (STATUS: in integer)` | 2008, 2019 |
 | `rsim.env.stop.void` | `procedure stop` | 2008, 2019 |
 | `rsim.env.finish.integer` | `procedure finish (STATUS: in integer)` | 2008, 2019 |
 | `rsim.env.finish.void` | `procedure finish` | 2008, 2019 |
@@ -320,4 +321,4 @@ The 2019 `standard.vhdl` lists 350 such commented declarations (counted as lines
 | `attribute FOREIGN` | `standard` | recognized by the analyzer |
 | `FILE_OPEN_KIND` etc. | `standard` | enumeration types, no native code |
 
-<!-- total explicit rows: 234 -->
+<!-- total explicit rows: 235 -->

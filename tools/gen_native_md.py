@@ -48,7 +48,8 @@ DECL = re.compile(
 def subprograms(src):
     """Yield (kind, name, params[(names, class, mode, type)], ret, impure) for each declaration."""
     for stmt in split_top(strip(src), ";"):
-        stmt = stmt.strip()
+        # The first declaration of a package shares its statement with `package X is`.
+        stmt = re.sub(r"^.*\bpackage \w+ is ", "", stmt.strip(), flags=re.I)
         m = DECL.match(stmt)
         if not m:
             continue

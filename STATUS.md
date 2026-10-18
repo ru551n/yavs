@@ -10,6 +10,27 @@
 | M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites next (#112) |
 | M3 to M10 | not started (crate spikes below) |
 
+### External test runner: its own VHDL suites (#112)
+
+`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at b358882; pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
+
+| Suite | Pass | Fail | Skip | Root causes (issues) |
+|---|---|---|---|---|
+| check | 7 | 127 | 123 | signal aliases #203 |
+| com | 0 | 135 | 10 | protected body initialiser #204 |
+| data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208, binary files #79 |
+| dictionary | 0 | 8 | 0 | #203 |
+| logging | 112 | 1 | 0 | #207 |
+| path | 0 | 2 | 0 | #203 |
+| random | 0 | 4 | 0 | #204 |
+| record_dict (2019) | 6 | 0 | 0 | none |
+| run | 0 | 5 | 0 | #203, #206 |
+| string_ops | 3 | 1 | 11 | #209 |
+| verification_components | 0 | 523 | 4 | #77 (impure calls at elaboration), #204; `tb_axi_stream_protocol_checker` does not analyze (#210) and is left out |
+
+With the signal-alias fix of #203 tried locally, `check` passed 156 of 156 runnable tests.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

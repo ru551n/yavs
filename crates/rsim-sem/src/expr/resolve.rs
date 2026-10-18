@@ -436,8 +436,12 @@ impl Db {
                 crate::expr::aggregate::resolve_aggregate(self, &mut r, assocs, ctx, e.span)
                     .unwrap_or(self.poison.expr)
             }
+            ast::ExprKind::New(a) => self.allocator(scope, a, t, e.span),
             _ => {
-                self.unsupported(e.span, "allocators", "S6");
+                self.ice(
+                    e.span,
+                    "a class-typed expression that is not a literal, aggregate or allocator",
+                );
                 self.poison_expr()
             }
         }

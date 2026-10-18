@@ -1,5 +1,40 @@
 # Status
 
+## Milestones
+
+| Milestone | State |
+|---|---|
+| M0: workspace, lexer and parser | done: `rsim parse`, corpora below |
+| M1: semantic analysis | design in `docs/design/sem.md` |
+| M2 to M10 | not started (crate spikes below) |
+
+## syntax (`crates/rsim-syntax`, M0)
+
+Hand-written lexer, conditional analysis on the token stream and recursive-descent parser for
+VHDL-2008 and VHDL-2019 into an owned AST (`rsim parse [--std 2008|2019] files...`). Diagnostics
+go through `rsim-diag` (human, short and JSON formats; snapshots in `tests/diag/`).
+
+Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
+`RSIM_CORPUS=~/.cache/rsim-corpus cargo test -p rsim --features corpus` compares them with the
+expected lists in `tests/parse-corpus/` and fails if `RSIM_CORPUS` is unset (`RSIM_BLESS=1`
+updates the lists). Plain `cargo test --workspace` still parses `lib/` and runs the snapshots.
+
+| Corpus | Files | Pass | Expected failures |
+|---|---:|---:|---|
+| `lib/` std and ieee, 2008 and 2019 (in repo) | 55 | 55 | none |
+| VUnit `vunit/vhdl` | 194 | 194 | none |
+| OSVVM | 36 | 36 | none |
+| rust_hdl `vhdl_libraries` (std, ieee2008, synopsys, vital2000) | 37 | 37 | none |
+| NVC `test/regress` + `test/parse` | 1401 | 1360 | 41: tests of invalid syntax (most of them), PSL, VHDL-87 syntax, `abs x ** 2`, one `` `if `` that needs `--define` |
+| VESTs `vhdl-93` | 3782 | 3244 | 538: 533 in `non_compliant/analyzer_failure`, 2 other non-compliant, 2 broken book excerpts, 1 VHDL-93 file using `default` |
+| GHDL `testsuite/gna` | 3216 | 2973 | 243: `analyze_failure` tests and fuzz crashers, PSL, 93 code using 2008 reserved words |
+
+Throughput on the VUnit corpus (read, decode, lex, preprocess and parse; release build, one
+thread, Intel Core Ultra 9 275HX, warm cache): about 5,600 files/s and 60 MB/s (best of three: 5,769 files/s, 62.4 MB/s).
+
+Fuzzing: `cargo +nightly fuzz run parse` (lexer, directives, parser and rendering in both
+standards); two 5-minute runs with 8 workers (210k executions in total) found no crashes or hangs.
+
 ## logic (`crates/rsim-logic`)
 
 Done ahead of M3: `StdULogic` with the IEEE 1164 tables (checked against the vendored package

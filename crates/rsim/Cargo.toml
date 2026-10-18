@@ -13,3 +13,11 @@ rsim-syntax.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Builds the external parse corpus test (needs RSIM_CORPUS, see tools/fetch-corpus.sh).
+corpus = []
+
+[[test]]
+name = "corpus"
+required-features = ["corpus"]

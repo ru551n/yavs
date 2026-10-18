@@ -1,9 +1,9 @@
 //! Parse corpus tests.
 //!
-//! `lib` parses the VHDL sources vendored under `lib/` and needs nothing else.
-//! `external` parses the corpora fetched by `tools/fetch-corpus.sh` into the
-//! directory named by `RSIM_CORPUS`, and compares every file with the
-//! checked-in list `tests/parse-corpus/<corpus>.txt`:
+//! Built only with `--features corpus`: `cargo test -p rsim --features corpus`.
+//! It parses the corpora fetched by `tools/fetch-corpus.sh` into the
+//! directory named by `RSIM_CORPUS` (and fails if that is unset), and compares
+//! every file with the checked-in list `tests/parse-corpus/<corpus>.txt`:
 //!
 //! ```text
 //! PASS 2008 nvc/test/regress/wait1.vhd
@@ -359,41 +359,4 @@ fn report_throughput(name: &str, results: &[(Outcome, (String, Std))], elapsed: 
         results.len() as f64 / secs,
         bytes as f64 / 1e6 / secs
     );
-}
-
-/// The standard libraries vendored under `lib/` parse without any diagnostic.
-#[test]
-fn lib() {
-    let lib = repo_root().join("lib");
-    let mut checked = 0;
-    let mut problems = String::new();
-    for (dir, std) in [
-        ("std/2008", Std::Vhdl2008),
-        ("ieee/2008", Std::Vhdl2008),
-        ("std/2019", Std::Vhdl2019),
-        ("ieee/2019", Std::Vhdl2019),
-    ] {
-        let mut files = Vec::new();
-        vhdl_files(&lib.join(dir), true, &mut files);
-        assert!(!files.is_empty(), "no VHDL files in lib/{dir}");
-        for f in files {
-            let text = decode_source(std::fs::read(&f).expect("read"));
-            let parsed = with_stack(|| {
-                parse_file(
-                    FileId(0),
-                    &text,
-                    &Options {
-                        std,
-                        defines: Vec::new(),
-                    },
-                )
-            });
-            for d in &parsed.diags {
-                writeln!(problems, "{}: {} {}", f.display(), d.code, d.message).expect("write");
-            }
-            checked += 1;
-        }
-    }
-    assert!(problems.is_empty(), "{problems}");
-    println!("lib: {checked} files parse cleanly");
 }

@@ -1,0 +1,33 @@
+{
+ "log": [
+  "kept vhdl_2008/tb_generic_packages_on_entity.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_generic_packages_on_entity.vhd(20): (vcom-1022) Formal part (generic \"MUX_DATA_SIZE\") does not depict an interface object.)",
+  "kept vhdl_2008/tb_psl.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_psl.vhd(14): near \"default\": (vcom-1576) expecting BEGIN.)",
+  "kept vhdl_2019/tb_001.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_001.vhd(19): (vcom-1046) Formal \"long_port\" must not be associated with OPEN when subelements are associated individually.)",
+  "kept vhdl_2019/tb_002.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_002.vhd(10): (vcom-1440) Language feature Class VARIABLE parameter \"x\" of mode OUT or INOUT for FUNCTION is not supported yet.)",
+  "kept vhdl_2019/tb_004.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_004.vhd(8): Method cannot have a class FILE formal parameter.)",
+  "kept vhdl_2019/tb_006a.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_006a.vhd(24): (vcom-1136) Unknown identifier \"READ_WRITE_MODE\".)",
+  "kept vhdl_2019/tb_012.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_012.vhd(21): Attribute \"image\" requires a parameter.)",
+  "kept vhdl_2019/tb_018.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_018.vhd(9): Expecting a type name, found attribute name \"base\" instead.)",
+  "kept vhdl_2019/tb_018a.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_018a.vhd(7): (vcom-1440) Language feature index attribute is not supported yet.)",
+  "kept vhdl_2019/tb_018d.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_018d.vhd(5): (vcom-1440) Language feature designated_subtype attribute is not supported yet.)",
+  "kept vhdl_2019/tb_019.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_019.vhd(18): (vcom-1360) Array type of \"prod\" does not have an index constraint.)",
+  "kept vhdl_2019/tb_026c.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_026c.vhd(6): near \"89345897098345\": (vcom-119) Integer value exceeds INTEGER'high.)",
+  "kept vhdl_2019/tb_033.vhd: nvc=ok questa=FAIL (questa: ** Error (suppressible): tb_033.vhd(10): (vcom-1257) Variable \"name\" of protected type \"sometype_t\" cannot be declared before the protected type body.)",
+  "kept vhdl_2019/tb_041.vhd: nvc=ok questa=FAIL (questa: ** Error: (vcom-11) Could not find std.reflection. Make sure the top design unit is compiled into the correct library or that the correct library is being referenced.)",
+  "kept vhdl_2019/tb_047.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_047.vhd(26): Port \"x\" must be of class SIGNAL.)",
+  "kept vhdl_2019/tb_072b.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_072b.vhd(8): (vcom-1136) Unknown identifier \"rv_t\".)",
+  "kept vhdl_2019/tb_075.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_075.vhd(44): (vcom-1583) Illegal type conversion from 'b_t' to 'a_t' (not closely related).)",
+  "kept vhdl_2019/tb_086.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_086.vhd(6): (vcom-1396) Object \"P1\" cannot appear within the same interface list in which it is declared.)",
+  "kept vhdl_2019/tb_094a.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_094a.vhd(13): (vcom-1440) Language feature conditional return statement is not supported yet.)",
+  "kept vhdl_2019/tb_reading_function_return_value.vhd: nvc=ok questa=FAIL (questa: ** Error: tb_reading_function_return_value.vhd(14): (vcom-1136) Unknown identifier \"return_value\".)"
+ ],
+ "rejects": {
+  "vhdl_2019/tb_007.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: cannot reference variable RESULT in pure function TO_STRING; questa: ** Error: tb_007.vhd(24): (vcom-1440) Language feature sequential block statement is not supported yet.",
+  "vhdl_2019/tb_016.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: missing actual for generic type anonymous; questa: ** Error: tb_016.vhd(7): near \"type\": (vcom-1576) expecting STRING or IDENTIFIER or << or '('.",
+  "vhdl_2019/tb_034.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: unexpected generic while parsing protected type declarative item, expecting one of attribute, use, function, procedure, impure, pure, private or alias; questa: ** Error: tb_034.vhd(11): (vcom-1440) Language feature Generic Clause in protected type is not supported yet.",
+  "vhdl_2019/tb_043.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: unexpected identifier while parsing concurrent procedure call statement, expecting one of ( or ;; questa: ** Error: tb_043.vhd(21): near \"default\": (vcom-1576) expecting BEGIN.",
+  "vhdl_2019/tb_049.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: no visible declaration for A; questa: ** Error: tb_049.vhd(10): (vcom-1396) Object \"a\" cannot appear within the same interface list in which it is declared.",
+  "vhdl_2019/tb_059.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: no visible subprogram \"=\" matches signature [FILE_TYPE, FILE_TYPE return BOOLEAN]; questa: ** Error: tb_059.vhd(5): near \"is\": (vcom-1576) expecting ';' or ')'.",
+  "vhdl_2019/tb_099.vhd": "round 1: rejected by NVC and Questa: NVC: ** Error: name R in discrete range does not refer to a type; questa: ** Error: tb_099.vhd(8): Prefix of attribute \"range\" must be appropriate for an array object or must denote an array subtype."
+ }
+}

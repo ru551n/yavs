@@ -1,0 +1,6 @@
+{
+ "log": [],
+ "rejects": {
+  "test/fix/olo_fix_pkg_writer/olo_fix_pkg_writer_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: design unit PKG_WRITER_TEST_PKG not found in library OLO_TB; ghdl: olo_fix_pkg_writer_tb.vhd:22:16:error: unit \"pkg_writer_test_pkg\" not found in library \"olo_tb\""
+ }
+}

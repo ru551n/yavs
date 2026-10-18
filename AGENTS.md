@@ -45,7 +45,7 @@ to, and those documents win over your memory.
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |
 | `tests/corpus/` | Differential testbenches with NVC reference outputs (`tools/difftest`) |
 | `tests/parse-corpus/` | Expected parse results for external corpora |
-| `tools/corpus/` | Analysis corpus manifests (VUnit, OSVVM, UVVM, hdl-modules, lib), `run.py`, `RESULTS.md` |
+| `tools/corpus/` | Analysis corpus manifests (VUnit, OSVVM, UVVM, hdl-modules, lib, external libraries), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |
 
 ## 3. Rules (mandatory)

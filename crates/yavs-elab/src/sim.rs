@@ -230,15 +230,9 @@ impl Elaborated {
             inst.data[c.off as usize..c.off as usize + n].copy_from_slice(&v.to_le_bytes()[..n]);
         }
         for s in &u.signals {
-            let Some(o) = self.signal(i, s.decl) else {
-                // A signal of a nested region (block, generate): processes of this region never
-                // name it, so its slot holds no kernel signal (any use is a BadRef error).
-                inst.sigs.push(InstSig {
-                    signal: yavs_kernel::SignalId(u32::MAX),
-                    ty: yavs_kernel::SignalType::bytes(1, 0),
-                });
-                continue;
-            };
+            let o = self
+                .signal(i, s.decl)
+                .ok_or_else(|| sim_err(format!("signal `{}` was not elaborated", s.name)))?;
             let (a, b) = self.nets.obj(o).leaves;
             if b.0 != a.0 + 1 {
                 return Err(sim_err(format!(

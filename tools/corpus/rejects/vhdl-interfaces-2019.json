@@ -1,0 +1,6 @@
+{
+ "log": [
+  "kept PoC/CSE.vhdl: nvc=ok questa=FAIL (questa: ** Error: CSE.vhdl(30): near \"is\": (vcom-1576) expecting ';' or ')'.)"
+ ],
+ "rejects": {}
+}

@@ -42,7 +42,7 @@ fetch_with_submodules() {
     git -C "$dir/$1" submodule update -q --init --depth 1
 }
 
-fetch vunit https://github.com/VUnit/vunit d627259f9795f28f3d1f57a3a3de9f9978bd49b8 '/vunit/vhdl/'
+fetch vunit https://github.com/VUnit/vunit d627259f9795f28f3d1f57a3a3de9f9978bd49b8 '/vunit/vhdl/' '/examples/vhdl/'
 fetch osvvm https://github.com/OSVVM/OSVVM 2104430dbbd2c7c1fff2ee02e1996944c59b62c2
 fetch rust_hdl https://github.com/VHDL-LS/rust_hdl a0fc2019d95e371d4ff3199a36aaaf0ba32c7145 '/vhdl_libraries/'
 fetch nvc https://github.com/nickg/nvc ef5084a94be11c7edab41340518e4903f1f6eeb4 '/test/regress/' '/test/parse/' '/test/test_parse.c'
@@ -53,3 +53,21 @@ fetch_with_submodules osvvm-libraries https://github.com/OSVVM/OsvvmLibraries ab
 fetch uvvm https://github.com/UVVM/UVVM 90d56e93c542bf0d5e2ab9f791cc7395bd1aa896
 # hdl-modules release v6.2.1 (src/ and rtl/ of each module are the analysis corpus).
 fetch hdl-modules https://github.com/hdl-modules/hdl-modules c4f01c4bb69aab66c879f545e80abb477f1ebf35
+
+# External library corpora (tools/corpus/gen_external.py): shallow, one pinned commit each.
+fetch open-logic https://github.com/open-logic/open-logic d9f123aae1c6022288782668067311f9794da0a2
+fetch en_cl_fix https://github.com/open-logic/en_cl_fix ecd7dd026837997f2cd8bc4861769abc6cbbc73c
+fetch poc https://github.com/VLSI-EDA/PoC 8c39b2407a97ec81b8601c4b64e4d2e2141ab9cf
+fetch json-for-vhdl https://github.com/Paebbels/JSON-for-VHDL 2ab1ebc2c788ececce152a49ffda706f84570e95
+fetch vhdl-extras https://github.com/kevinpt/vhdl-extras b8916c4942e99d02fac04e25799cb2c996eb5870
+fetch satcat5 https://github.com/the-aerospace-corporation/satcat5 58402dcbe64adc9c30d00c08edc20e3aef314ac6
+fetch vhdl-compliance https://github.com/VHDL/Compliance-Tests 7c4449ee5027d933ee3d7c0465bd0a5d06f9c05e
+fetch vhdl-interfaces https://github.com/VHDL/Interfaces d2fd277fdf3b4606b9bc335751077b6303ad683f
+fetch vhdl-tool-checks https://github.com/Paebbels/VHDL-Tool-Checks 08cf0cc8238da587502fd96d525b4c992867ae76
+fetch fletcher https://github.com/abs-tudelft/fletcher 45be6d6cb2c9546cee151c657dc675e03b11e302
+fetch vhlib https://github.com/abs-tudelft/vhlib b69bbdaf7dacc06c861dd0982bb6653482912a76
+fetch hvhdl-float https://github.com/hVHDL/hVHDL_floating_point 345b06cec458b3ad42ee2563deab817d52d8fdee
+fetch neotrng https://github.com/stnolting/neoTRNG c688149f70fbd582eac1029cbfec4fcf97b719b2
+fetch vhdl-ideas https://github.com/bpadalino/vhdl-ideas f5970bd9f66bf12179f651ab43bfa0db946a7035
+fetch neorv32 https://github.com/stnolting/neorv32 b2620454ebb2407e81a6a1965ef52e2a860b0432 '/rtl/' '/sim/' '/LICENSE'
+fetch surf https://github.com/slaclab/surf f0b5e3a7b5ab191be1cb5f4453e418299181c9d8 '*.vhd' '*.vhdl' '/LICENSE*'

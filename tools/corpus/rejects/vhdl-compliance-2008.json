@@ -1,0 +1,6 @@
+{
+ "log": [],
+ "rejects": {
+  "vhdl_2008/tb_generic_packages_on_entity.vhd": "round 1: NVC and GHDL disagree (nvc=ok, ghdl=FAIL), Questa rejects: ghdl: tb_generic_packages_on_entity.vhd:55:26:error: matching a formal generic package with an explicit generic map aspect is not supported"
+ }
+}

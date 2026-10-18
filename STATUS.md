@@ -99,6 +99,12 @@ any diagnostic carrying "this is a bug in yavs". The negative suite fails on any
 `yavs analyze` over all ten `tools/corpus` manifests (debug build, so the HIR validator runs; `timeout 60`
 per file) shows no panic and no timeout.
 
+External library corpora (`tools/corpus/gen_external.py`, validated per file with NVC and GHDL, 2019 with NVC and
+Questa; rejects and reasons in `tools/corpus/rejects/`): en_cl_fix, open-logic, PoC, JSON-for-VHDL, vhdl-extras,
+vhlib, fletcher, satcat5, SURF, neorv32, neoTRNG, VHDL/Compliance-Tests, VHDL/Interfaces, VHDL-Tool-Checks,
+vhdl-ideas and VUnit's own tests and examples. Several carry a `[testbenches]` section (top units, runner, pass
+condition) for the M2/M4 simulation tests. Results: `tools/corpus/RESULTS.md`.
+
 | Run | Fuzz time | Executions | Crashes found | Fixed | Open |
 |---|---:|---:|---:|---:|---|
 | 4 workers, ~1.1 h CPU in total | ~27 min wall | ~280,000 | 3 distinct ICEs (procedure call left `ExprKind::Error`; physical-literal unit undeclared; alias of a selected object name) | 3 | none |

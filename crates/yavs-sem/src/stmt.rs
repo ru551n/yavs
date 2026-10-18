@@ -1545,7 +1545,7 @@ impl Db {
             Some(g) => {
                 let cond = errs.keep(self.st_expr(bscope, g, Expected::Condition));
                 match cond {
-                    Some(c) => errs.keep(self.declare_guard(bscope, g.span, c)),
+                    Some(_) => errs.keep(self.declare_guard(bscope, g.span)),
                     None => None,
                 }
             }
@@ -1587,14 +1587,8 @@ impl Db {
         })
     }
 
-    /// The implicit `GUARD` signal of a guarded block (11.2); its default is the guard
-    /// condition, which the block's guard process assigns to it.
-    fn declare_guard(
-        &mut self,
-        scope: ScopeId,
-        span: Span,
-        cond: ExprId,
-    ) -> Result<DeclId, Reported> {
+    /// The implicit `GUARD` signal of a guarded block (11.2).
+    fn declare_guard(&mut self, scope: ScopeId, span: Span) -> Result<DeclId, Reported> {
         let boolean = self.well_known_type(self.well_known.boolean, span, "boolean")?;
         let subtype = self.types[boolean].first_subtype;
         let name = Ident {
@@ -1611,7 +1605,7 @@ impl Db {
                     role: ObjRole::Guard,
                     mode: None,
                     subtype,
-                    default: Some(cond),
+                    default: None,
                     bounds: BoundsFrom::Subtype,
                     signal_kind: None,
                     file_open: None,

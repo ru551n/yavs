@@ -143,8 +143,6 @@ pub(crate) struct Fx<'a, 'b> {
     pub cur: Option<yavs_ir::StmtId>,
     /// In a protected type method: the frame depth and slot of `self`.
     pub prot_self: Option<(u8, u32)>,
-    /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
-    pub guard: Option<DeclId>,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -169,7 +167,6 @@ impl<'a, 'b> Fx<'a, 'b> {
             drivers: Vec::new(),
             cur: None,
             prot_self: None,
-            guard: None,
         }
     }
 
@@ -772,7 +769,7 @@ pub(crate) fn architecture(
     for &d in decls {
         ok &= inst_object(db, pb, cx, &mut ir, d).is_ok();
     }
-    ok &= region(db, pb, cx, &mut ir, stmts, None).is_ok();
+    ok &= region(db, pb, cx, &mut ir, stmts).is_ok();
     if ok { Ok(ir) } else { Err(Failed) }
 }
 
@@ -786,7 +783,6 @@ fn region(
     cx: &mut Cx,
     ir: &mut UnitIr,
     stmts: &[StmtId],
-    outer: Option<DeclId>,
 ) -> R<()> {
     let mut ok = true;
     let decls =
@@ -809,36 +805,34 @@ fn region(
                 body,
                 ..
             } => {
-                // Block generics and ports are values and signals of the block's region.
-                for &d in generics.iter().chain(ports.iter()) {
-                    ok &= inst_object(db, pb, cx, ir, d).is_ok();
+                if guard.is_some() || !generics.is_empty() || !ports.is_empty() {
+                    ok = false;
+                    cx.unsupported(st.span, "guarded blocks and blocks with generics or ports");
+                    continue;
                 }
                 ok &= decls(cx, pb, ir, *scope);
-                if let Some(g) = guard {
-                    ok &= guard_process(db, pb, cx, ir, s, *g).is_ok();
-                }
-                ok &= region(db, pb, cx, ir, body, (*guard).or(outer)).is_ok();
+                ok &= region(db, pb, cx, ir, body).is_ok();
             }
             HStmt::ForGenerate {
                 param, scope, body, ..
             } => {
                 ok &= inst_object(db, pb, cx, ir, *param).is_ok();
                 ok &= decls(cx, pb, ir, *scope);
-                ok &= region(db, pb, cx, ir, body, outer).is_ok();
+                ok &= region(db, pb, cx, ir, body).is_ok();
             }
             HStmt::IfGenerate { alts } => {
                 for a in alts.iter() {
                     ok &= decls(cx, pb, ir, a.scope);
-                    ok &= region(db, pb, cx, ir, &a.body, outer).is_ok();
+                    ok &= region(db, pb, cx, ir, &a.body).is_ok();
                 }
             }
             HStmt::CaseGenerate { alts, .. } => {
                 for (_, a) in alts.iter() {
                     ok &= decls(cx, pb, ir, a.scope);
-                    ok &= region(db, pb, cx, ir, &a.body, outer).is_ok();
+                    ok &= region(db, pb, cx, ir, &a.body).is_ok();
                 }
             }
-            _ => ok &= process(db, pb, cx, ir, s, outer).is_ok(),
+            _ => ok &= process(db, pb, cx, ir, s).is_ok(),
         }
     }
     if ok { Ok(()) } else { Err(Failed) }
@@ -902,7 +896,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 return Err(cx.unsupported(decl.span, "unconstrained array ports"));
             }
             let (st, def) = (o.subtype, o.default);
-            let init = if array || matches!(o.role, ObjRole::Port | ObjRole::Guard) {
+            let init = if array || o.role == ObjRole::Port {
                 None
             } else {
                 Some(thunk(
@@ -992,14 +986,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
 }
 
 /// A process, or the equivalent process of a concurrent statement (LRM 11.3 to 11.6).
-fn process(
-    db: &Db,
-    pb: &mut ProgramBuilder,
-    cx: &mut Cx,
-    ir: &mut UnitIr,
-    s: StmtId,
-    guard: Option<DeclId>,
-) -> R<()> {
+fn process(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, s: StmtId) -> R<()> {
     let st = &db.stmts[s];
     let (postponed, info, scope, implicit) = match &st.kind {
         HStmt::Process {
@@ -1014,8 +1001,8 @@ fn process(
             info,
             ..
         } => {
-            if *guarded && guard.is_none() {
-                return Err(cx.ice(st.span, "guarded assignment outside a guarded block"));
+            if *guarded {
+                return Err(cx.unsupported(st.span, "guarded signal assignments"));
             }
             (*postponed, info, None, true)
         }
@@ -1057,7 +1044,6 @@ fn process(
         fx.fb.flag(FuncFlags::IMPLICIT);
     }
     fx.drivers = drivers;
-    fx.guard = guard;
     fx.stmt_start(StmtKind::Process, st.span);
     let mut r = Ok(());
     if let Some(sc) = scope {
@@ -1101,61 +1087,6 @@ fn process(
         label,
         postponed,
         drivers: sigs,
-    });
-    Ok(())
-}
-
-/// The guard process of a guarded block, `GUARD <= guard_condition` sensitive to the
-/// condition's signals (LRM 11.2); yavs-elab names it `_guard` and gives it GUARD's driver.
-fn guard_process(
-    db: &Db,
-    pb: &mut ProgramBuilder,
-    cx: &mut Cx,
-    ir: &mut UnitIr,
-    s: StmtId,
-    g: DeclId,
-) -> R<()> {
-    let st = &db.stmts[s];
-    let DeclKind::Object(o) = &db.decls[g].kind else {
-        return Err(cx.ice(st.span, "GUARD is not an object"));
-    };
-    let Some(cond) = o.default else {
-        return Err(cx.ice(st.span, "GUARD without its condition"));
-    };
-    let Some(&Obj::Signal { sig }) = cx.objs.get(&g) else {
-        return Err(cx.ice(st.span, "GUARD was not lowered as a signal"));
-    };
-    let f = pb.declare("_guard", FuncKind::Process, None);
-    let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, "_guard".into());
-    fx.fb.flag(FuncFlags::IMPLICIT);
-    let lsp = hir::Lsp {
-        root: hir::ObjRoot::Decl(g),
-        path: Box::new([]),
-        stat: yavs_sem::stat::Staticness::Locally,
-        span: st.span,
-    };
-    fx.drivers = vec![lsp];
-    fx.stmt_start(StmtKind::Process, st.span);
-    let top = fx.block();
-    fx.jump(top);
-    fx.at(top);
-    fx.stmt_start(StmtKind::SigAssign, db.exprs[cond].span);
-    let r = fx.drive_guard(g, cond, st.span);
-    fx.stmt_start(StmtKind::Implicit, st.span);
-    let mut sens = Vec::new();
-    fx.signals_in(cond, &mut sens);
-    let w = fx
-        .wait_on(&sens)
-        .map(|()| fx.emit(Inst::Suspend { resume: 0 }));
-    fx.jump(top);
-    fx.end(st.span);
-    r.and(w)?;
-    ir.processes.push(ProcessIr {
-        stmt: s,
-        func: f,
-        label: Some("_guard".into()),
-        postponed: false,
-        drivers: vec![sig],
     });
     Ok(())
 }

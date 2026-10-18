@@ -29,10 +29,10 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | free |
 | `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | free |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | free |
-| `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | free |
-| `external.rs` | external names (6.1) | S6 | free |
-| `protected.rs` | protected types and bodies (6.6) | S6 | free |
-| `view.rs` | mode views, `'converse` (6.7) | S7 | free |
+| `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6 |
+| `external.rs` | external names (6.1) | S6 | owner: s6 |
+| `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6 |
+| `view.rs` | mode views, `'converse` (6.7) | S7 | owner: s6 |
 | `hir.rs` | HIR node shapes M2 consumes (section 7) | all | shapes fixed; changes need a note in sem.md |
 | `validate.rs` | HIR invariants (7.3) | S2 onward | owner: literal |
 | `diag.rs` | codes (8.1) and `--explain` texts | all | add codes additively |

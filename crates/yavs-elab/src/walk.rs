@@ -248,6 +248,7 @@ fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
 fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
     use yavs_sem::decl::Body;
     use yavs_sem::loader::{UnitKey, UnitSlot};
+    let n_units = db.units.len();
     let pkgs: Vec<UnitId> = db
         .units
         .iter()
@@ -311,6 +312,11 @@ fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
         if db.instance_body(i).is_err() {
             return Err(db.take_diagnostics());
         }
+    }
+    // A body can load more packages (fixed_generic_pkg's body uses math_real): visit them too.
+    // Loads are memoized, so a second pass only does the new ones.
+    if db.units.len() > n_units {
+        return load_bodies(db);
     }
     Ok(())
 }

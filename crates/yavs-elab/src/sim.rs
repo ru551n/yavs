@@ -312,6 +312,28 @@ impl Elaborated {
                 });
                 continue;
             };
+            if let Some(off) = s.dope {
+                // The array's descriptor in this instance (ports: the actual's bounds).
+                let mut desc = Vec::new();
+                let mut shape = &self.nets.obj(o).shape;
+                while let crate::hier::Shape::Array { dims, elem, .. } = shape {
+                    for b in dims {
+                        let dir = i64::from(b.dir == yavs_sem::hir::Direction::Downto);
+                        for x in [b.left, b.right, dir] {
+                            desc.extend_from_slice(&x.to_le_bytes());
+                        }
+                    }
+                    shape = elem;
+                }
+                let n = yavs_ir::Ty::desc_size(&rt.prog.types, s.ty)
+                    .ok_or_else(|| sim_err(format!("no descriptor size for `{}`", s.name)))?
+                    as usize;
+                let at = off as usize;
+                if desc.len() < n || inst.data.len() < at + n {
+                    return Err(sim_err(format!("descriptor of signal `{}`", s.name)));
+                }
+                inst.data[at..at + n].copy_from_slice(&desc[..n]);
+            }
             let (a, b) = self.nets.obj(o).leaves;
             if b.0 != a.0 + 1 {
                 return Err(sim_err(format!(

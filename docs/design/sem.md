@@ -1,0 +1,1187 @@
+# M1 design: semantic analysis (`rsim-sem`)
+
+Status: design, binding for M1 once the user has answered the open questions in section 11.
+Inputs: `docs/plan.md` (rules 1, 2, 4, 7, 8, 12, 13, the error-handling motto, 2008+2019
+together, on-demand analysis), `docs/decisions.md`, `lib/README.md`, `lib/NATIVE.md`,
+`crates/rsim-diag`, and the M0 AST (`rsim-syntax`, `ast.rs` on the M0 branch).
+
+LRM references are to IEEE 1076-2008 clause numbers, which 1076-2019 mostly keeps. Claims marked
+**(unsure)** are from memory of the LRM text and must be checked against the LRM before the slice
+that implements them is closed. Nothing here is taken from NVC, GHDL or rust_hdl code.
+
+## 0. Scope and shape
+
+`rsim-sem` turns M0 ASTs into a **typed HIR**: every name is resolved to a declaration id, every
+expression carries a subtype and a staticness, every call names its overload, every statement has
+an id. It runs single-threaded. It owns no files on disk: `rsim-lib` gives it a `LibrarySet`
+(library name to manifest), and it asks `rsim-syntax` to parse files on demand.
+
+| In scope for M1 | Not in M1 |
+|---|---|
+| libraries, units, context clauses, visibility, overloading | elaboration, generic folding through the interpreter (M2) |
+| the full type and constraint model (rule 1) | building driver/source nets (M2/M3, from the LSPs sem computes) |
+| expression typing, aggregates, literals, attributes | default binding of component instances (sem provides the rule, elab calls it) |
+| static classification and folding of locally static expressions | external name binding (elab, rule 4) |
+| generic packages, types, subprograms, instantiation by HIR cloning | code generation, mangled symbol emission (M2 uses sem's names) |
+| configurations (checked), protected types, views, reflection types | |
+| diagnostics with stable codes, `--relaxed` | |
+
+Language revision: one `LangRev { V2008, V2019 }` per session. The analyzer is one code path
+with revision gates (`self.rev >= V2019`). std and ieee are taken from `lib/{std,ieee}/<rev>`.
+A session never mixes revisions (INTEGER is 32-bit in 2008 and 64-bit in 2019, so units cannot be
+mixed); see Q10.
+
+Crate layout (files, not crates):
+
+| Module | Content |
+|---|---|
+| `db.rs` | `Db`: arenas, libraries, the on-demand unit loader |
+| `ids.rs` | typed ids (one macro) |
+| `scope.rs` | declarative regions, visibility, lookup |
+| `types.rs` | types, subtypes, constraints, resolution, implicit operations |
+| `expr/` | `cands.rs` (bottom-up candidate sets), `resolve.rs` (top-down selection), `names.rs` (Apply/Selected interpretation), `aggregate.rs`, `literal.rs` |
+| `stat.rs` | staticness and the folder, `ConstValue` |
+| `generic.rs` | instantiation and HIR cloning |
+| `decl.rs`, `stmt.rs`, `unit.rs` | declarations, statements, design units, configurations |
+| `lsp.rs` | longest static prefixes, drivers, `all` sensitivity |
+| `hir.rs` | HIR node definitions plus `validate()` |
+| `diag.rs` | code constants, suggestion helpers |
+
+## 1. Data model
+
+### 1.1 Ids and arenas
+
+All ids are 32-bit indexes into arenas owned by one `Db` per session. `Option<Id>` is free
+(`NonZeroU32` inside).
+
+```rust
+id!(LibId, UnitId, DeclId, ScopeId, TypeId, SubtypeId, ExprId, StmtId, ConstId, InstId, ViewId);
+
+pub struct Db {
+    pub rev: LangRev,
+    pub libs: Arena<LibId, Library>,
+    pub units: Arena<UnitId, Unit>,
+    pub decls: Arena<DeclId, Decl>,
+    pub scopes: Arena<ScopeId, Scope>,
+    pub types: Arena<TypeId, TypeDef>,
+    pub subtypes: Arena<SubtypeId, SubtypeDef>,
+    pub exprs: Arena<ExprId, Expr>,
+    pub stmts: Arena<StmtId, Stmt>,
+    pub consts: Arena<ConstId, ConstValue>,
+    pub insts: Arena<InstId, Instance>,
+    pub well_known: WellKnown,      // BOOLEAN, BIT, CHARACTER, STRING, INTEGER, NATURAL, REAL, TIME,
+                                    // SEVERITY_LEVEL, FILE_OPEN_KIND, ..., universal_integer/real
+    diags: Vec<Diagnostic>,
+}
+```
+
+Ids are deterministic for a given input (same manifest, same top, same files), because analysis
+order is deterministic. They are **not** stable across different inputs; anything that must
+survive across runs (coverage, rule 10) uses hierarchical path plus span hash, never an id.
+
+The AST of a unit is dropped after the unit is analyzed; the HIR keeps spans and `Ident`s
+(`text` for original spelling, `key` for lookup, rule 8).
+
+### 1.2 Libraries and the unit graph
+
+```rust
+pub struct Library { name: Ident, manifest: Manifest, units: HashMap<UnitKey, UnitSlot> }
+pub enum UnitKey { Primary(Symbol), Secondary(Symbol /*primary*/, Symbol /*arch or "body"*/) }
+pub enum UnitSlot { NotLoaded { file: FileRef }, InProgress, Done(UnitId), Failed }
+
+pub struct Unit {
+    lib: LibId, key: UnitKey, kind: UnitKind, decl: DeclId, scope: ScopeId,
+    context: ScopeId,                 // the context clause region (library/use/context items)
+    deps: Vec<UnitId>,                // units named by its context clause or by selected names
+    file: FileId, span: Span,
+}
+pub enum UnitKind { Entity, Architecture, Package, PackageBody, PackageInst, Context,
+                    Configuration, SubprogramUnit /*2008 subprogram as primary*/, SubprogramInst }
+```
+
+On-demand loading (plan: no cache, analyze only what is reached):
+- `Db::unit(lib, key)` returns `Done` at once, otherwise looks the key up in the manifest, parses
+  the whole file (all units, cheap) and analyzes **only** the requested unit. Other units of the
+  same file stay `NotLoaded` and keep their parsed AST in a per-file cache until the session ends
+  or they are analyzed.
+- `InProgress` on entry means a dependency cycle: `E1003` with the chain as secondary labels.
+- `Failed` units poison: a reference to one gives no further diagnostic (the unit's own errors
+  were already reported).
+- `rsim analyze --work L f.vhd` calls `analyze_file`, which analyzes every unit in the file in
+  textual order; a later unit in the same file sees earlier ones through `work`.
+- A secondary unit loads its primary first. A package body is loaded only when someone asks for
+  it (elab). Deferred constant completion is checked when the body is analyzed.
+- std and ieee come from the `lib/` tree; `lib/ORDER.md` is not needed for on-demand loading,
+  only for the corpus test that analyzes in order.
+
+### 1.3 Declarative regions and declarations
+
+```rust
+pub struct Scope {
+    kind: ScopeKind,                 // Unit, Package, Body, Subprogram, Process, Block, Generate,
+                                     // Loop, Record, Protected, ProtectedBody, Instance, Context
+    parent: Option<ScopeId>,         // lexical parent; a package body's parent is its package
+    owner: DeclId,                   // for expanded names (`proc_label.v`, `pkg.x`)
+    names: HashMap<Symbol /*key*/, SmallVec<[DeclId; 2]>>,
+    order: Vec<DeclId>,              // declaration order, for cloning and for HIR consumers
+    uses: Vec<UseItem>,              // use clauses in this region, in order
+    private_from: Option<usize>,     // 2019: index into `order` where `private variable`s start (5.6.2)
+}
+pub enum UseItem { All(ScopeId), One(SmallVec<[DeclId; 2]>), Library(LibId) }
+
+pub struct Decl {
+    pub name: Designator,            // Ident | Operator(Symbol) | Char(char), original spelling kept
+    pub kind: DeclKind,
+    pub scope: ScopeId,
+    pub span: Span,
+    pub implicit: bool,              // implicitly declared (predefined ops, range records, ...)
+}
+pub enum DeclKind {
+    Library(LibId), Unit(UnitId),
+    Type(TypeId), Subtype(SubtypeId),
+    Object(Object),                  // constant, signal, variable, shared variable, file, interface objects
+    Subprogram(Subprogram),
+    EnumLit { ty: TypeId, pos: u32 },
+    PhysUnit { ty: TypeId, index: u32 },
+    Alias(Alias),
+    Attribute { ty: SubtypeId },     // attribute declaration
+    Component(Component),
+    View(ViewId),
+    PackageInst(InstId),
+    GenericType(TypeId), GenericSubprogram(Subprogram), GenericPackage(InstId),
+    Group { template: DeclId }, GroupTemplate,
+    Label(StmtId),                   // statement labels are declarations (implicitly declared, 11.x)
+    Element { record: TypeId, index: u32 }, // only reachable through selection, never in `names`
+    Error,                           // poison, see 8.2
+}
+```
+
+Analysis is sequential in textual order, so inserting declarations as they are analyzed gives the
+LRM scope rule (12.2: scope starts at the declaration) without position bookkeeping. Completions
+(subprogram body for a spec, deferred constant full declaration, incomplete type completion,
+protected body) **reuse** the earlier `DeclId` and fill in the body; they never add a second entry.
+
+### 1.4 Lookup and visibility (LRM 12.3, 12.4)
+
+`lookup(scope, key) -> Visible` where
+
+```rust
+pub enum Visible { None, One(DeclId), Overloads(SmallVec<[DeclId; 4]>), Hidden(Conflict) }
+```
+
+Algorithm:
+1. **Direct visibility.** Walk `scope` to the root. In each region take `names[key]`.
+   - A non-overloadable hit (anything but subprograms and enumeration literals, and aliases of
+     those) stops the walk if nothing overloadable was collected yet; if overloadables were
+     collected it is hidden by them (12.3).
+   - Overloadable hits accumulate; an outer one is dropped if an inner one is its **homograph**
+     (same designator, and for overloadables the same parameter and result type profile, 4.5.3).
+   - Inside one region, an explicit declaration hides an implicit homograph (12.3, 2008), so a
+     user `"="` on a type hides the predefined one declared with the type.
+2. **Potential visibility (use clauses).** Collect from `uses` of every enclosing region (and the
+   unit's context region). `All(s)` contributes `s.names[key]`, `One` contributes its decls.
+   Then filter (12.4):
+   - (a) drop a potentially visible decl if a directly visible homograph exists;
+   - (b) of two potentially visible homographs, if one is explicit and the other implicit, drop
+     the implicit one (2008);
+   - (c) two potentially visible non-overloadable decls with the same key, or a non-overloadable
+     and an overloadable one, make **all** of them invisible unless they denote the same entity
+     (the same `DeclId`, possibly through aliases). **(unsure: the "same entity through an alias"
+     exception wording)**. Report only at the use: `E1102` with both use clauses as labels.
+   - Overloadable potentially visible decls from different packages that are not homographs, or
+     are explicit homographs, stay visible; ambiguity is an overload resolution error at the call
+     (the classic `numeric_std` + `std_logic_arith` clash).
+3. Direct and potential results are merged: potential overloadables join direct overloadables.
+
+Implicit context (13.2): every unit's context region starts with `library std, work;` and
+`use std.standard.all;`. 2019 `std.reflection` is not used implicitly; the `'reflect` attribute
+loads it on demand (6.3).
+
+Context clauses and declarations (13.3, 13.4):
+- `library l;` adds `Decl::Library` to the context region. Unknown library: `E1001`, help lists
+  the libraries in the `LibrarySet` and the closest one.
+- `use l.p.all`, `use l.p.x`, `use p.x` (p visible), `use inst.all` for a package instance
+  (top-level `PackageInst` unit or a local one), and `use g.all` where `g` is an interface package
+  (2008). The prefix of a use clause is resolved as an expanded name (1.5); the suffix must
+  denote a package or an instance, or a declaration in one.
+- `context l.c;` splices the items of context declaration `c` into the current context region,
+  in order. Inside a context declaration, a library clause naming `work` and names starting with
+  `work.` are errors (13.4) **(unsure: exact rule for `work` in context declarations)**.
+- `use` of a whole library (`use l.all`) makes its primary units potentially visible; entity
+  names visible this way matter for default binding (7.3).
+
+### 1.5 Selected and expanded names
+
+`Selected { prefix, suffix }` is classified by what the prefix denotes:
+
+| Prefix denotes | Meaning | Suffix |
+|---|---|---|
+| library | primary unit | identifier; loads the unit on demand |
+| package, package instance, interface package | declaration in its visible part | identifier, operator, character, `all` (use clauses only) |
+| an enclosing construct (process/block/generate label, subprogram, entity, architecture, loop label) | expanded name (8.3) of a declaration in that region | as above |
+| object of record type | element | element name |
+| object of protected type | method call (prefix becomes `self`) | method name |
+| object of access type | implicit dereference then element/method, or `.all` | as above |
+| function name callable without arguments | call, then select on the result (8.3) | as above |
+
+Expanded names into a package see only its visible part; 2019 private variables of a protected
+type are not selectable from outside the protected body (`E1105`).
+
+### 1.6 Overloading
+
+Overloadable entities: subprograms (explicit, implicit, instantiated, interface subprograms),
+enumeration literals (identifier and character), and aliases of those. A name in an expression
+context therefore yields a set (`Overloads`) that the expression resolver (section 3) reduces.
+Non-overloadable names yield exactly one decl or a conflict.
+
+Profile (4.5.3): the base types of the parameters in order, plus the base type of the result.
+Parameter names, modes, classes and defaults are not part of it. Two subprograms in one region
+with the same designator and profile are `E1101` (redeclaration), except explicit-hides-implicit.
+
+## 2. Type system (rule 1)
+
+### 2.1 Principle
+
+**There is exactly one subtype representation, and every constraint in it is data**: ranges are
+HIR expressions, not numbers. An expression that happens to be static also has a folded `ConstId`,
+which is a cache on the expression, not another representation. M2 materializes a subtype
+descriptor for every subtype it needs at runtime; a static subtype just gets a constant descriptor.
+No code in sem or M2 may branch on "is this subtype static" to choose a layout or a code path;
+staticness decides only *when* a value is known (analysis, elaboration, runtime) and which
+diagnostics are possible early.
+
+### 2.2 Types and subtypes
+
+```rust
+pub struct TypeDef {
+    pub decl: DeclId,
+    pub name: Ident,              // for an anonymous base type: the declared name, `anonymous = true`
+    pub anonymous: bool,          // diagnostics print "the base type of T"
+    pub kind: TypeKind,
+    pub first_subtype: SubtypeId, // T in `type T is ...`
+}
+pub enum TypeKind {
+    UniversalInteger, UniversalReal,
+    Enum { lits: Box<[DeclId]> },                     // EnumLit decls, pos order
+    Integer, Floating,                                // ranges live in subtypes
+    Physical { units: Box<[PhysUnit]> },              // PhysUnit { decl, scale: i64 in base units }
+    Array { indexes: Box<[SubtypeId]>, elem: SubtypeId }, // index subtypes (`natural range <>`)
+    Record { elems: Box<[RecordElem]> },              // RecordElem { name: Ident, subtype: SubtypeId }
+    Access { designated: SubtypeId },
+    File { elem: SubtypeId },
+    Protected { decl_scope: ScopeId, body: Option<DeclId>, generics: Option<GenericList> },
+    Incomplete { completion: Option<TypeId> },
+    Generic { class: GenericClass },                  // opaque inside a generic unit, 2.9
+    Error,
+}
+
+pub struct SubtypeDef {
+    pub base: TypeId,
+    pub name: Option<Ident>,          // None: anonymous subtype indication
+    pub parent: Option<SubtypeId>,    // the type mark it was derived from (diagnostics, 'base)
+    pub constraint: Constraint,       // the EFFECTIVE constraint, parent's merged in
+    pub resolution: Option<Resolution>,
+    pub span: Span,
+}
+
+pub enum Constraint {
+    None,                             // scalars: base range; composites: nothing added at this level
+    Range(RangeC),
+    Array { dims: Option<Box<[RangeC]>> /* None = `open` or `<>` */, elem: Box<Constraint> },
+    Record { elems: Box<[(u32, Constraint)]> },       // only the constrained elements
+    FromObject { expr: ExprId, elem_depth: u8 },      // `x'subtype`, `x'element`: taken at runtime
+}
+
+pub enum RangeC {
+    Explicit { left: ExprId, dir: Direction, right: ExprId },
+    Attr { prefix: AttrPrefix, reverse: bool, dim: u32 },   // `a'range`, `t'reverse_range(2)`
+}
+```
+
+Notes:
+- **Constraint merging** (2008 5.3.2.2, 6.3): `subtype a is t(open)(7 downto 0)` then
+  `subtype b is a(0 to 3)` gives `b.constraint = Array{dims: [0 to 3], elem: Range(7 downto 0)}`.
+  Constraining an already constrained dimension is `E1210`. Merging is done once, at the subtype
+  declaration; consumers never walk `parent` to find constraints.
+- **Constrainedness** is computed, never stored: `fn constrainedness(st) -> Full | Partial | Unconstrained`
+  (5.1: fully constrained means every index range and every element, recursively, is constrained).
+- **Where an object's bounds come from**, stored on the object, so M2 never guesses:
+
+```rust
+pub enum BoundsFrom {
+    Subtype,              // fully constrained subtype indication
+    Initializer,          // constants (6.4.2.2) and allocators `new T'(x)`
+    Actual,               // interface objects with not fully constrained subtypes
+    Aliased,              // object alias without subtype indication
+}
+```
+  Signals and variables need a fully constrained subtype (`E1212`); a constant may take missing
+  bounds from its initializer (6.4.2.2). Partially constrained interface objects take the missing
+  parts from the actual.
+
+### 2.3 Scalar types
+
+| Declaration | Entities created |
+|---|---|
+| `type E is (a, 'b')` | `TypeDef{Enum}`, first subtype `E` (Range over all literals), one `EnumLit` decl per literal |
+| `type I is range L to R` | anonymous base `TypeDef{Integer}`, named first subtype `I` with `Range(L to R)` (5.2.3.1) |
+| `type F is range L to R` (real bounds) | same with `Floating` |
+| `type P is range L to R units u; v = n u; end units` | anonymous base `Physical{units}`, first subtype `P`, one `PhysUnit` decl per unit; scales folded to i64 base units (checked, `E1401` on overflow) |
+| `subtype S is T range L to R` | `SubtypeDef{base, Range}` |
+
+Bounds of an integer or physical type declaration must be locally static (5.2.3.1) and are folded.
+The base range of an anonymous integer base type: see Q2.
+
+### 2.4 Array types (5.3.2)
+
+| Declaration | Entities |
+|---|---|
+| `type A is array (natural range <>) of T` | `TypeDef{Array}`, first subtype unconstrained |
+| `type A is array (0 to 7) of T` | anonymous unconstrained base `Array` with index subtype = the base type of the range (`integer`), named first subtype `A` constrained `0 to 7` (5.3.2.1) |
+| `type M is array (natural range <>) of std_logic_vector` (2008) | element subtype unconstrained; `M(0 to 3)(7 downto 0)` constrains both |
+| `subtype S is A(open)(3 downto 0)` | partially constrained |
+
+Index subtype of an index constraint given as a range with universal bounds: INTEGER (5.3.2.2
+implicit conversion rule), otherwise the type of the bounds.
+
+### 2.5 Record types (5.3.3)
+
+Element subtypes may be unconstrained or partially constrained (2008). Record constraints name
+elements: `subtype s is r_t(data(7 downto 0), keep(open))`. `Constraint::Record` stores only the
+constrained elements; the rest inherit the element's declared subtype. Duplicate or unknown
+element names in a record constraint: `E1213`.
+
+### 2.6 Access, file, protected, incomplete
+
+- Access (5.4): `designated` may be any subtype, including unconstrained (`type line is access string`).
+  Allocators: `new S` needs `S` fully constrained (or a protected type), `new T'(x)` takes bounds
+  from the qualified expression.
+- Incomplete type `type T;` must be completed by a full declaration of `T` in the same region
+  (`E1220` otherwise). Before completion it may be used only as the designated type of an access
+  type, and, per `lib/README.md`, as a return type of methods in a protected type declaration
+  whose completion appears later in the region (std 2019 `reflection` needs this). **(unsure:
+  the LRM clause allowing incomplete types in protected method profiles; rsim accepts it, since
+  `reflection.vhdl` is IEEE text and must analyze)**.
+- File types (5.5): element type cannot be access, protected, file, or contain those (`E1222`);
+  2008 also bans multi-dimensional arrays as file element **(unsure)**.
+- Protected types (5.6): see 6.6.
+
+### 2.7 Resolution indications (6.3)
+
+```rust
+pub enum Resolution {
+    Function(DeclId),                                 // `resolved std_ulogic`
+    Element(Box<Resolution>),                         // `(resolved) std_ulogic_vector` (2008)
+    Record(Box<[(u32, Resolution)]>),                 // `(a resolved_a, b resolved_b) rec_t`
+}
+```
+
+A resolution function must be a pure function with one parameter of class constant whose type
+is a one-dimensional unconstrained array of the resolved subtype's type, returning that type
+(4.6). `Element` applies to the element subtype of an array; `Record` per element. The resolved
+subtype keeps the resolution; `std_logic` is `SubtypeDef{base: std_ulogic, resolution: Function(resolved)}`.
+
+### 2.8 Universal types and implicit conversion (5.2, 9.3.6)
+
+- Literals: abstract integer literal is `universal_integer`, real literal `universal_real`.
+  Named numbers (`constant N := 8;`) are universal too.
+- Predefined universal operators exist (`*` of universal_integer and universal_real, `/` real by
+  int, `**`, arithmetic, relational), declared implicitly in `std.standard` like any type's ops.
+- Implicit conversion of a universal operand to an integer or floating type happens only where
+  the context requires a specific type. The resolver inserts an explicit HIR node
+  `ExprKind::ImplicitConv` there, so M2 never infers conversions. The preference rule between an
+  interpretation that converts at the leaves and one that uses universal operators is Q1.
+- Discrete ranges whose bounds are both universal_integer (`for i in 0 to 7`, `array (0 to 7)`)
+  are of type INTEGER (5.3.2.2 / 10.10).
+
+### 2.9 Generic types (6.5.3, 2019 classes)
+
+`generic (type T ...)` declares `TypeDef{Generic{class}}` plus a first subtype. Inside the generic
+unit `T` is opaque: only the operations of its class are available, declared implicitly like for
+any type, plus whatever interface subprograms are declared.
+
+```rust
+pub enum GenericClass {           // M0 `GenericTypeDef`
+    Private,                       // `type T` (2008) and `type T is private` (2019)
+    Scalar,                        // `is <>`
+    Discrete,                      // `is (<>)`
+    Integer,                       // `is range <>`
+    Physical,                      // `is units <>`
+    Floating,                      // `is range <> . <>`
+    Array { indexes: Box<[IndexClass]>, elem: SubtypeId },  // elem may itself be an anonymous generic
+    Access { designated: SubtypeId },
+    File { elem: SubtypeId },
+}
+```
+
+| Class | Implicit operations inside the generic **(unsure: exact lists in 2019 6.5.3)** |
+|---|---|
+| Private | `=`, `/=` (2008 interface type: the LRM is silent; treat as none and require formal `"="` in 2008, see Q9) |
+| Scalar | relational, `minimum`, `maximum`, `'image`/`'value` and scalar attributes |
+| Discrete | Scalar plus `'pos`, `'val`, `'succ`, `'pred`, `'leftof`, `'rightof` |
+| Integer, Floating | Scalar plus arithmetic of that class |
+| Physical | Scalar plus physical arithmetic |
+| Array | `=`, `/=`, `&`, relational if the element class is discrete, array attributes |
+| Access | `=`, `/=`, `deallocate`, `.all` |
+| File | the file operations |
+
+An actual must belong to the class (`E1503`). Anonymous generic types (`type is private` in an
+interface object, M0 `IncompleteSubtype::Anonymous`) become a fresh generic type per interface
+object.
+
+### 2.10 Implicitly declared operations (5.x, `lib/NATIVE.md` section 2)
+
+**Rule: every predefined operation is a real `Decl::Subprogram` entity**, created in the same
+region right after the type declaration, `implicit = true`, so visibility, hiding, aliases,
+`use p."+"` and overload resolution need no special cases.
+
+```rust
+pub struct Subprogram {
+    pub kind: SubprogramKind,             // Function | Procedure
+    pub purity: Purity,
+    pub params: Box<[Param]>,             // Param { name, class, mode, subtype, default: Option<ExprId> }
+    pub ret: Option<SubtypeId>,
+    pub generics: Option<GenericList>,    // uninstantiated subprogram (2008)
+    pub body: Body,
+    pub mangled: Symbol,                  // 5.3
+}
+pub enum Body {
+    Pending,                              // spec analyzed, body not yet seen
+    Hir(ScopeId, StmtId),                 // VHDL body
+    Implicit(ImplicitOp),                 // predefined
+    Native(Symbol),                       // explicit declaration without body in std (NATIVE.md s.1)
+    Foreign(ExprId),                      // 'FOREIGN attribute (VHPIDIRECT, M3)
+    Instance(InstId),                     // instantiated subprogram
+    Interface,                            // formal generic subprogram
+}
+pub struct ImplicitOp { pub family: Family, pub ty: TypeId }   // native `rsim.implicit.<family>.<type>`
+```
+
+Which families each type gets (from NATIVE.md section 2, with the LRM type-class rules):
+
+| Type class | Families |
+|---|---|
+| every type except file, protected | `eq`, `neq` |
+| scalar | `lt le gt ge minimum maximum`, `to_string` |
+| integer, floating | `add sub mul div neg pos abs exp`; integer also `rem mod`; `**` with INTEGER right operand |
+| physical | `add sub neg pos abs`, `mul`/`div` by INTEGER and REAL, `div` P/P to universal_integer, `mod rem` (2008) |
+| BOOLEAN, BIT | `and or nand nor xor xnor not`, BIT: `meq mneq mlt mle mgt mge cond` |
+| 1-D array of discrete element | `lt le gt ge`, `minimum maximum` (array form 2008), `cat` (4 forms) |
+| 1-D array of BOOLEAN/BIT | logical ops (array-array, array-scalar, scalar-array, unary reduction, 2008), `sll srl sla sra rol ror`, BIT arrays: matching ops |
+| 1-D array of a character-literal enum | `to_string`; BIT_VECTOR also `to_ostring`, `to_hstring` (aliases `to_bstring` etc. are declared in std) |
+| other 1-D arrays | `cat` |
+| access | `deallocate` (procedure) |
+| file | `file_open` (2 forms), `file_close`, `read`, `write`, `endfile`, `flush`; 2019 `file_state file_mode file_position file_size file_seek file_truncate file_rewind` |
+| BOOLEAN, BIT signals | `rising_edge`, `falling_edge` (2008, `std.standard` lists them) |
+| scalar types (2019) | the implicit record type `<T>_RANGE_RECORD` and its `range_record` support, as `standard.vhdl` lists **(unsure: whether every scalar type gets one or only on use of `'RANGE_RECORD`; create eagerly, it is cheap)** |
+
+The native symbol for an implicit op is `rsim.implicit.<family>.<type mangled>`. For explicit
+bodiless std subprograms sem computes the NATIVE.md symbol (`rsim.<package>.[<pt>.]<name>.<param
+types>[.r_<ret>]`) by the same rule as `tools/gen_native_md.py`; a test asserts that analyzing
+std in both revisions yields exactly the 234 symbols of NATIVE.md section 1, and that every
+bodiless subprogram outside std is an error (`E1230`, missing body) unless it has `'FOREIGN`.
+
+Cost: about 30 decls per array type and 20 per scalar type; fine. Instances (5.2) clone them.
+
+### 2.11 Attributes yielding subtypes and reflection
+
+- `x'subtype` (2008): subtype of object `x`. Static if `x`'s subtype is fully constrained by a
+  static subtype indication; otherwise `Constraint::FromObject{expr: x, elem_depth: 0}`.
+- `x'element` / `A'element`: element subtype; `FromObject{elem_depth: 1}` when it must come from
+  the object.
+- `T'base`: only as prefix of another attribute (16.2).
+- 2019 `'reflect` (16.2.?): `obj'reflect` has type `std.reflection.VALUE_MIRROR`,
+  `T'reflect` has `SUBTYPE_MIRROR`. Sem loads `std.reflection` on demand, needs no use clause.
+  The mirror methods are natives (NATIVE.md, reflection rows). `'reflect` is not static.
+
+### 2.12 Anonymous types summary
+
+Anonymous types arise from: integer/floating/physical type declarations (base type), constrained
+array type declarations (base type), universal types, and 2019 anonymous generic types. Every
+anonymous type has a `TypeDef` with `anonymous = true` and the declared name, so messages say
+`` the base type of `byte` `` instead of `<anonymous>`.
+
+## 3. Overload resolution and expression typing
+
+### 3.1 Two passes
+
+Resolution follows the classic two-pass scheme over each **complete context** (LRM 12.5: a
+declaration, a statement, or a specification).
+
+1. **Bottom-up `cands(e) -> CandSet`**: the set of possible result types of AST expression `e`,
+   memoized per AST node address during the complete context, so each node is visited once.
+2. **Top-down `resolve(e, exp: Expected) -> ExprId`**: picks exactly one interpretation that
+   fits `exp`, recurses into children with the formal types of the chosen interpretation, and
+   builds HIR.
+
+```rust
+pub enum CandSet {
+    Types(SmallVec<[Interp; 2]>),       // concrete interpretations
+    Class(ClassMask),                   // literal forms typed only by context
+}
+pub struct Interp { pub ty: TypeId, pub via: Via }  // Via: Object | Call(DeclId) | EnumLit(DeclId) | Attr | ...
+bitflags! ClassMask { ANY_INTEGER, ANY_REAL, ANY_ACCESS /*null, allocator*/, ANY_COMPOSITE /*aggregate*/,
+                      STRING_LIKE /*1-D array of char-literal enum*/, ANY_ARRAY, ANY_RECORD }
+
+pub enum Expected {
+    Type(TypeId),                       // assignment target, formal, index type, ...
+    Condition,                          // BOOLEAN, else implicit `??` (3.6)
+    Any,                                // case expression, qualified operand already typed, ...
+    Discrete,                           // range bounds without a type mark
+}
+fn compatible(c: &CandSet, t: TypeId) -> bool  // exact base type match, universal -> numeric class,
+                                               // Class(mask) admits t, Error admits everything
+```
+
+To keep `a & b & c & ...` linear, an operator node's `cands` keeps only operator decls whose
+every operand's `CandSet` is `compatible` with the formal; the top-down pass then filters by the
+expected type and re-checks. No interpretation is enumerated twice.
+
+### 3.2 Selection at a node
+
+```
+resolve(e, exp):
+  ints = cands(e) filtered by compatible-with(exp)
+  0  -> E1301 "no interpretation of <e> matches <exp>": per candidate, one secondary label at its
+        declaration with its signature and the first failing argument (3.9)
+  1  -> build HIR, recurse into children with the formals of that interpretation
+  >1 -> apply preference (Q1), then if still >1: E1302 ambiguous, every candidate as a label
+```
+
+Contexts and their `Expected`:
+
+| Context | Expected |
+|---|---|
+| `target := e`, `target <= e` | `Type(base(target))`; the target is resolved first, standalone; an aggregate target takes its type from the right side (10.6.2) |
+| actual of formal | `Type(formal)` (per candidate subprogram, inside 3.3) |
+| `if`/`while`/`when`/`assert`/`exit when`/`next when`/conditional assignment conditions, `wait until` | `Condition` |
+| `case e is` | `Any`; must resolve alone, without the choices (10.9) |
+| index expression | `Type(index type)` |
+| range `l to r` without type mark | `Discrete`: bounds resolved together, both universal gives INTEGER |
+| `report s severity l` | `Type(STRING)`, `Type(SEVERITY_LEVEL)` |
+| `after t`, `wait for t` | `Type(TIME)` |
+| generic/port actual | `Type(formal)` with formal generic types substituted |
+
+### 3.3 Name interpretation (the parser leaves names ambiguous)
+
+M0 produces `Apply { prefix, args }` for calls, indexing, slicing and conversions, and
+`Selected`/`Attribute`/`Signature` names. Sem first resolves the prefix chain to a `NameRes`:
+
+```rust
+enum NameRes {
+    Overloads(SmallVec<[DeclId; 4]>),   // functions, procedures, enum literals
+    Object(ExprId),                     // already a typed prefix
+    TypeMark(SubtypeId),
+    Unit(UnitId), Library(LibId), Scope(ScopeId),
+    AttrFunc(PredefAttr, AttrPrefix),   // `T'image`, `a'length`, `s'delayed`
+    Error,
+}
+```
+
+then classifies `Apply`:
+
+| Prefix | Args shape | Interpretations offered |
+|---|---|---|
+| `TypeMark` | one positional expression | type conversion (9.3.6); `cands` = `{T}` |
+| `TypeMark` | a discrete range / `open` | subtype indication with index constraint (only in subtype contexts) |
+| `Overloads` | any | function calls whose formals accept the association list (named, positional, defaults); **plus**, for each candidate callable with no arguments whose result is an array, indexing or slicing of the result (8.3, `f(i)` where `f` is parameterless) |
+| `Object` of array type | args are expressions, one per dimension | indexed name |
+| `Object` of array type | one discrete range, a subtype name, or a range attribute | slice |
+| `Object` of access-to-array | as above | implicit dereference then index/slice |
+| `AttrFunc` | per attribute table | attribute function call (`T'image(x)`, `a'length(2)`) |
+| `Overloads` of procedures | statement context only | procedure call |
+
+Slice versus index is decided syntactically when the argument is a range or `'range` attribute,
+and by resolving a bare name argument: a type mark means slice. Association lists:
+- Positional then named; a formal named twice or missing without default: `E1310`, `E1311`.
+- Named association of a sub-element of a composite formal (`f(x.a => 1, x.b => 2)`) is
+  individual association (6.5.7.1); all sub-elements must be covered.
+- Formal/actual conversion functions and type conversions in port and generic maps
+  (`to_int(f) => sig`) are recognized when the formal part is a call whose single argument is a
+  formal name.
+- Defaults are filled in the HIR as `Actual::Default` (the formal's default expression id), so
+  M2 sees a full argument list in formal order.
+
+A procedure call statement with `l: p;` concurrent form (M0 `ConcStmtKind::ProcedureCall`) is
+re-interpreted as a component instantiation if `p` resolves to a component, entity
+(`entity` keyword absent is then an error), or configuration.
+
+### 3.4 Aggregates (9.3.3)
+
+The type of an aggregate comes **only** from context (`Class(ANY_COMPOSITE)` bottom-up). With
+`Expected::Any`, an aggregate is `E1320`. Given the type:
+
+**Record aggregate**: choices are element simple names or `others`; each element exactly once
+(`E1321` missing, `E1322` duplicate); `others` must cover at least one element and all elements
+it covers must have the same type (9.3.3.2).
+
+**Array aggregate**: for an n-dimensional array, each element is an (n-1)-dimensional
+aggregate or, for 1-D (2008), an expression of either the element type **or the aggregate's own
+type** (a slice-like positional piece). For each element, intersect `cands(expr)` with
+`{elem type, aggregate type}`; exactly one must remain, else `E1323`. **(unsure: the LRM tie-break
+when both fit, e.g. array of `string` elements; rsim reports ambiguity)**.
+
+Choices: index expressions, discrete ranges, subtype names, `others`. Rules (9.3.3.3):
+- `others` last and alone in its association; needs a constrained context subtype (`E1325`).
+- Named and positional associations do not mix (except a trailing `others`).
+- A non-locally-static choice is allowed only as the single choice of a single association;
+  otherwise `E1326`.
+- Static choices: duplicate/overlap `E1327`, uncovered index values when no `others` and the
+  context subtype is constrained `E1328`. Choice sets are folded to sorted `(lo, hi)` intervals
+  of positions (enums by pos); the same code checks case statements.
+
+Bounds of the result (stored, not recomputed by M2):
+
+```rust
+pub enum AggBounds {
+    Context,                                   // fully constrained context subtype gives them
+    Positional { count: ExprId },              // left = index subtype 'left, direction of index subtype
+    Named { low: ExprId, high: ExprId },       // from the choices; direction of the index subtype
+    Concat,                                    // 2008 slice-valued elements: runtime sum of lengths
+}
+```
+
+### 3.5 Literals
+
+| Literal | Bottom-up | Resolved with type T |
+|---|---|---|
+| abstract integer | `{universal_integer}` | value i64 checked (`E1402` overflow) |
+| abstract real | `{universal_real}` | f64, nearest, ties-to-even |
+| based literal `16#FF#`, `2#1.0#E3` | as above | exact integer arithmetic, then f64 for reals |
+| character `'a'` | every visible enum type that has `'a'` as a literal | `EnumLit` |
+| string `"abc"` | `Class(STRING_LIKE)` | each char must be a literal of T's element enum (`E1330` naming the bad char); 1-D only |
+| bit string `8x"FF"`, `b"1_0"`, `ux"F"`, `sx"F"`, `d"12"` | `Class(STRING_LIKE)` | expanded to characters by `literal::expand_bitstring` (15.8: base digits to `0/1`, other graphic characters replicated per digit, length adjust with zero/sign extension, `E1331` on dropping non-zero digits); then as a string literal |
+| physical `10 ns` | `{type of unit}` | value * unit scale in base units, checked i64 |
+| `null` | `Class(ANY_ACCESS)` | |
+
+Bit-string expansion is type independent in 2008 (15.8), so it is folded once to a `Symbol`.
+
+### 3.6 Conditions and the implicit `??` (9.2.9)
+
+`resolve(e, Condition)`: if some interpretation of `e` has type BOOLEAN, resolve as
+`Type(BOOLEAN)`. Otherwise take the candidate types `T` of `e` for which a visible
+`"??"(T) return BOOLEAN` exists; exactly one must remain, and the HIR is
+`Call("??", [resolve(e, Type(T))])` with `implicit_cond = true` (for diagnostics and VHPI). None:
+`E1340` "condition is not BOOLEAN" with help "no `??` is visible for `std_ulogic`; is
+`ieee.std_logic_1164` used?". More than one: `E1341`.
+
+### 3.7 Qualified expressions, conversions, allocators
+
+- `T'(e)`: `e` resolved with `Type(base(T))`; the result subtype is `T` (2008: the value must
+  belong to `T`, a runtime check that M2 inserts because the HIR node is `Qualified`).
+- Type conversion `T(e)` (9.3.6): `e` resolved with `Any` (its type must be determined without
+  context); legal between closely related types: numeric to numeric, same base type, arrays with
+  the same dimensionality, closely related index types and element types (2008 relaxation: element
+  types closely related, not identical). Otherwise `E1350`.
+- `new S` / `new T'(e)`: `cands = Class(ANY_ACCESS)`; on resolution, the designated type of the
+  expected access type must match.
+
+### 3.8 2008 rule changes to implement (not relaxations)
+
+| Feature | Clause |
+|---|---|
+| reading `out` ports | 6.5.2 |
+| expressions as port actuals (implicit signal, M2 makes a process) | 6.5.6.3 |
+| `process (all)` | 11.3, sem computes the set (6.9) |
+| conditional and selected signal/variable assignments in sequential code | 10.5, 10.6 |
+| `case?`, `select?`, matching relational operators | 10.9, 9.2.3 |
+| unary reduction operators, array-scalar logical operators | 9.2.2 |
+| non-static case choices of a non-locally-static subtype of 1-D char arrays when all choices have the same length | 10.9 **(unsure)** |
+| `if`/`case` generate with alternatives and labels | 11.8 |
+| generics referring to earlier generics, generic types/subprograms/packages | 6.5.6 |
+| `force`/`release` | 10.5.2 |
+| `'subtype`, `'element`, `'simple_name`, `'instance_name` on more prefixes | 16.2 |
+| context declarations | 13.4 |
+
+### 3.9 Ids of resolved references
+
+Every resolved reference in the HIR is an id: objects and subprograms by `DeclId`, types by
+`TypeId`/`SubtypeId`, enumeration literals by `DeclId` plus position, record elements by
+`(TypeId, u32)`, statements by `StmtId`. No HIR node keeps a name to be looked up again.
+
+## 4. Static evaluation
+
+### 4.1 Classification (9.4)
+
+```rust
+#[derive(PartialOrd, Ord)]
+pub enum Staticness { None, Globally, Locally }
+```
+
+Computed for every `Expr` bottom-up while building HIR:
+- **Locally static**: literals; constants with locally static subtype and value declared in this
+  unit or a package; locally static subtype attributes; implicit operations on locally static
+  operands; qualified expressions and conversions to locally static subtypes; aggregates whose
+  choices and elements are locally static. 2008 adds calls to functions of `std_logic_1164`,
+  `numeric_std`, `numeric_bit`, `numeric_std_unsigned`, `numeric_bit_unsigned` with locally static
+  actuals **(unsure: exact list in 9.4.2)**.
+- **Globally static**: generics, generic-dependent constants, deferred constants, pure function
+  calls with globally static actuals, `'path_name`/`'instance_name`, everything in a generate
+  parameter's scope that depends on it.
+- **None**: everything else.
+
+### 4.2 Folding
+
+`stat::fold(ExprId) -> Result<Option<ConstId>, Diagnostic>`:
+
+```rust
+pub enum ConstValue {
+    Int(i64), Real(f64), Enum(u32), Phys(i64),
+    Array(ArrayConst), Record(Box<[ConstValue]>), Null,
+}
+pub struct ArrayConst {
+    pub bounds: Box<[(i64, Direction, i64)]>,       // one per dimension
+    pub elems: Elems,
+}
+pub enum Elems {
+    Bytes(Box<[u8]>),            // 1-D arrays of enums with <= 256 literals: strings, bit/std_ulogic vectors
+    Runs(Box<[(u64, ConstValue)]>), // run-length, rule 12: `(others => (others => '0'))` of 64K entries is one run
+}
+```
+
+- Integer and physical arithmetic is **checked i64** (rule 7); overflow is an error (`E1401`,
+  see Q5 for non-required contexts). The result is also checked against the result subtype when
+  that subtype is static (`E1403`).
+- Reals: f64 arithmetic, no fast-math; `**` with integer exponent by repeated multiplication in
+  the same order the runtime uses (M2 must match, rule 5).
+- What sem folds itself: scalar implicit operations, relational and logical ops on enums and
+  static arrays, `&` of static 1-D arrays, scalar and array attributes of static subtypes,
+  qualified expressions, numeric conversions (real to integer rounds half away from zero, 9.3.6),
+  aggregates, string and bit-string literals.
+- What sem does **not** fold: user subprogram calls, including the 2008 locally static ieee
+  calls (Q3: deferred to M2's interpreter hook).
+- Required folding (an error if not possible): integer/floating/physical type ranges and unit
+  scales, case and aggregate choices for duplicate/coverage checks, attribute dimension
+  arguments, the static index checks of 4.3.
+- Folded values are a cache on the `Expr`; the HIR expression stays, so M2 can always emit code
+  from the tree (rule 1).
+
+### 4.3 What is checked where
+
+| Check | Analysis (sem) | Elaboration | Runtime |
+|---|---|---|---|
+| scalar range of a locally static value into a static subtype | error `E1403` | | |
+| index/slice out of a static array's static range | warning `W1404` (code may be dead) | | error |
+| globally static values (generics) | classified | folded by the interpreter (M2) | |
+| array length mismatch in assignment, both static | error `E1405` | | |
+| everything else | | | checked, rule 7 |
+
+## 5. Generics
+
+### 5.1 Model
+
+A generic unit (package, subprogram, 2019 protected type with generics) is analyzed **once**
+with opaque generics (2.9). An instance is a substitution plus a clone:
+
+```rust
+pub struct Instance {
+    pub generic: DeclId,                     // uninstantiated package/subprogram
+    pub site: DeclId,                        // the instantiation declaration
+    pub map: GenericMap,
+    pub scope: ScopeId,                      // cloned visible part (eager)
+    pub body: OnceCell<ScopeId>,             // cloned body (lazy, when M2 asks)
+    pub mangled: Symbol,
+}
+pub struct GenericMap {
+    pub types: HashMap<TypeId, SubtypeId>,       // formal generic type -> actual subtype
+    pub consts: HashMap<DeclId, ExprId>,         // formal constant -> actual expression
+    pub subprograms: HashMap<DeclId, DeclId>,    // formal subprogram -> actual subprogram
+    pub packages: HashMap<DeclId, InstId>,       // formal package -> actual instance
+}
+```
+
+**Instantiation clones the analyzed HIR, it does not re-analyze the AST.** Re-analysis would
+re-run overload resolution with the actual types and can pick different overloads than the
+generic body did (inside the generic, `a = b` on a formal type resolves to the formal `"="`;
+with `T => integer` re-analysis would also see the predefined integer `"="` and become
+ambiguous). Cloning keeps every resolved reference and only remaps ids:
+- every declaration in the cloned region gets a fresh id (types declared in an instance are
+  distinct per instance: two `fixed_generic_pkg` instances have different `ufixed` types);
+- references to formals are replaced by the actuals (`types`, `consts`, `subprograms`, `packages`);
+- calls to an implicit op of a formal generic type are remapped to the same family's implicit op
+  of the actual type (Q9 for the private-type `=` question);
+- folded constants that depended on generics are dropped and re-folded if the actual is locally
+  static.
+
+The visible part is cloned eagerly (clients need its types), the body lazily.
+
+### 5.2 Generic maps and defaults
+
+| Formal | Actual | Default |
+|---|---|---|
+| constant | expression, `Type(formal subtype after substitution)` | the formal's default expression |
+| `type T` (any class) | a subtype indication; checked against the class (`E1503`) | none (2008), `E1502` if missing |
+| subprogram | a subprogram name, with optional signature, whose profile conforms after substitution | `is <>`: the unique subprogram with the formal's designator visible **at the instantiation** whose profile conforms; `is name`: `name` resolved at the formal's declaration, then checked at the instantiation **(unsure: where `is name` is resolved)**; none or several: `E1504` listing the candidates |
+| package `package P is new G generic map (<>)` | an instance of `G` | `generic map (default)`: actual instance must use the defaults; explicit partial maps must match the actual's generics |
+
+Generic maps resolve in order, so a later formal's subtype can use an earlier formal type (2008).
+
+### 5.3 Identity and mangling (rule 4)
+
+Every instance is a distinct entity, even with identical actuals (NVC #1492/#1408). Mangled names
+are stable text built from declaration paths:
+
+| Entity | Mangled name |
+|---|---|
+| unit | `<lib>.<unit>` (`ieee.numeric_std`, `work.tb.arch` for an architecture) |
+| declaration in a region | `<region>.<name>` (`work.tb.arch.p1.counter`, unlabelled process: `_p<n>` by statement order) |
+| overloaded subprogram | `<region>.<name>(<param type>,...)[<ret type>]` with each type by its mangled base type name (`ieee.numeric_std."+"(ieee.numeric_std.unsigned,ieee.numeric_std.unsigned)ieee.numeric_std.unsigned`) |
+| package instance unit | `<lib>.<inst>` (`ieee.fixed_pkg`) |
+| local package/subprogram instance | `<region>.<inst>` |
+| a declaration inside an instance | `<instance mangled>.<name>` |
+| implicit op | `<region of type>.<op>(<types>)`, native link `rsim.implicit.<family>.<type>` |
+
+Per elaborated instance storage (one local package instance in an architecture instantiated 8
+times) is elab's concern; the code identity is the site's mangled name.
+
+### 5.4 2019 additions
+
+| Feature | Sem work |
+|---|---|
+| generic type classes (2.9) | class check on actuals, class ops inside |
+| anonymous generic types in interface lists | fresh generic type per object |
+| generic lists on protected types (M0 `ProtectedDecl.generics`, `generic_map`) | the protected type is a generic unit; a declaration with `generic_map` is an instance |
+| array generic with generic element (`type A is array (natural range <>) of type is private`) | two formals, element formal mapped from the actual's element subtype |
+
+## 6. External names, aliases, attributes, signatures, configurations, protected types, views
+
+### 6.1 External names (8.7)
+
+`<<signal .tb.dut.s : std_logic>>`, `<<constant ^.^.c : integer>>`, `<<variable @lib.pkg.v : t>>`.
+Sem resolves the subtype indication and the class; the path is kept as data and bound by elab
+(rule 4, GHDL #548). HIR: `ExprKind::External(ExternalId)` with `class`, `path`, `subtype`.
+Usage checks by class at sem (a constant external name is not a target, `E1601`). Package paths
+(`@lib.pkg.obj`) could be checked at analysis; for one code path they are also bound at elab.
+
+### 6.2 Aliases (6.6)
+
+```rust
+pub enum Alias {
+    Object { target: ExprId /* a static name */, subtype: Option<SubtypeId> },
+    NonObject { target: DeclId },        // type, subtype, subprogram (with signature), enum literal, unit, ...
+}
+```
+
+- Object alias: the target must be a static name (`E1610`); with a subtype indication, the
+  subtype must match the target's base type, and an unconstrained alias subtype takes the target's
+  bounds (`BoundsFrom::Aliased`).
+- Subprogram and enum literal aliases need a signature when the name is overloaded (`E1611`).
+- Alias of a type implicitly declares aliases for its predefined operations and literals (6.6.3);
+  sem creates `Alias::NonObject` decls for them in the alias's region.
+- Lookup is transparent: `Alias::NonObject` resolves to the target entity, but diagnostics name
+  the alias spelling the user wrote (`` `str_write` (alias of `std.textio.write`) ``).
+- 2019: aliases in a protected type declaration may name methods of a private variable (method
+  forwarding); see 6.6.
+
+### 6.3 Attributes (16, 6.7)
+
+Predefined attributes are a table keyed by `(name, prefix kind)`:
+
+| Prefix kind | Attributes |
+|---|---|
+| scalar type/subtype | `left right high low ascending image value pos val succ pred leftof rightof base`, 2008 `subtype`, 2019 `range_record` **(unsure: spelling of the 2019 range record attribute)** |
+| array object/type | `left right high low range reverse_range length ascending element` (with dimension argument), 2008 `subtype` |
+| signal | `event active last_event last_active last_value driving driving_value`; implicit signals `delayed(t) stable(t) quiet(t) transaction` |
+| named entity | `simple_name instance_name path_name` |
+| object (2019) | `image` **(unsure)**, `reflect` |
+| type (2019) | `reflect`, `designated_subtype` (access/file), `index` **(unsure)** |
+| mode view (2019) | `converse` |
+
+- `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` create **implicit signal**
+  entities (`DeclKind::Object` with `ImplicitSignal{attr, prefix_lsp, param}`) in the enclosing
+  region, one per distinct (prefix LSP, attribute, static parameter) occurrence, so M2 creates
+  their processes. They are illegal in subprograms (`E1620`).
+- User-defined attributes: `attribute a : T;` declares; `attribute a of x, y : signal is e;`
+  (and `others`, `all`) attaches value `e` (resolved with `Type(T)`) to each named entity. The
+  HIR stores `AttrValue { attr: DeclId, entity: DeclId, value: ExprId }` per entity; `x'a` is an
+  `ExprKind::AttrValue` reading it. Entity class must match the named entity (`E1622`); a
+  subprogram or literal needs a signature when overloaded. The value of an attribute of a signal
+  is a constant, not a signal. `'FOREIGN` on a subprogram sets `Body::Foreign`.
+
+### 6.4 Signatures (4.5.3)
+
+`[t1, t2 return r]`: each type mark resolved to a subtype; matching compares base types of the
+profile. Used by aliases, attribute specifications, generic subprogram actuals and `use` of a
+single overload. No match `E1630`, several `E1631`.
+
+### 6.5 Configurations and binding (3.4, 7.3)
+
+- Configuration declarations: the entity must exist; the block configuration names an
+  architecture of it; nested `for label` / `for label(i)` / `for label(1 to 3)` select generate
+  blocks (index or range must be within the generate's static range when static); component
+  configurations name instance labels (`all`, `others`, list) that are instances of the named
+  component. Binding indications: `use entity l.e(a)`, `use configuration l.c`, `use open`,
+  with generic and port maps checked against the entity. Incremental binding (7.3.2.? 2008): a
+  configuration declaration may add maps to an instance already bound by a configuration
+  specification, but may not rebind it (`E1702`).
+- Configuration specifications in architecture declarative parts are checked the same way.
+- **Default binding** (7.3.3) is computed by elab through `sem::default_binding(instance)`:
+  1. an entity with the component's simple name that is **directly visible** at the instance
+     (through `use l.e` or `use l.all`);
+  2. else the entity of that name in the library that contains the instantiating design unit
+     (`work`);
+  3. architecture: the most recently analyzed one (7.3.3); with no cache, "most recently
+     analyzed" is defined by manifest order (Q4);
+  4. generics and ports associated by name; a component port with no entity port of the same
+     name is an error, an entity port with no component port is `open` if it has a default or is
+     an `out` (7.3.3).
+  GHDL #66 is the ambiguity between rules 1 and 2 (directly visible vs the work library) when both
+  exist with different targets: rsim takes the directly visible one and emits `W1703` naming both.
+- M1 checks every configuration that is analyzed; elab applies them.
+
+### 6.6 Protected types (5.6)
+
+- Declaration region: subprogram declarations, use clauses, attribute specs, aliases; 2019 adds
+  `private variable v : other_pt;` (M0 `ObjectDecl.private`), visible only in the protected body,
+  and aliases that forward methods of a private variable as methods of this type
+  **(unsure: the exact 2019 rule set for private variables and method aliases)**.
+- Body: bodies for every declared method (`E1230` for missing), plus any declarations.
+- Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
+  convention); calls are `Call{callee, method_of: Some(obj)}`.
+- Restrictions: no signals, ports, files of protected type; no `=`; function methods are impure
+  unless declared pure; shared variables must be of a protected type (6.4.2.4, `E1904`,
+  `--relaxed` makes it `W1904`, R1 in 8.4). Parameters of protected type are class variable.
+- Incomplete types as method return types, 2.6.
+
+### 6.7 Mode views and `'converse` (2019 6.5.2)
+
+```rust
+pub struct ViewDef { pub decl: DeclId, pub record: SubtypeId, pub elems: Box<[ElemMode]> }
+pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bool } }
+```
+
+- `view v of r_t is a, b : in; c : out; d : view w; end view;` every element of `r_t` exactly once
+  (`E1660` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
+- `v'converse` is a view with `in`/`out` swapped, `inout`/`buffer` unchanged **(unsure: `buffer`
+  under converse)**, nested views conversed recursively. Sem materializes it as a `ViewDef`
+  on first use.
+- Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
+  per element the effective mode. Port association checks per element (an `in` element is not
+  driven inside, etc.) use the same mode tree.
+- **Driver overlay** (rule 2, NVC #856): sem does not build drivers but gives M2 everything to
+  build the one longest-static-prefix map (6.9): each port's mode tree and each assignment's LSP.
+
+### 6.8 Shared variables, files, access deallocate
+
+Trivial mappings; listed for completeness: file declarations with `open kind is name` resolve
+both expressions (`FILE_OPEN_KIND`, `STRING`); `deallocate` is an implicit procedure per access
+type.
+
+### 6.9 Longest static prefixes, drivers and `all` (8.1, 11.3, 14.7.2)
+
+```rust
+pub struct Lsp { pub root: ObjRoot, pub path: Box<[LspStep]>, pub stat: Staticness }
+pub enum ObjRoot { Decl(DeclId), External(ExternalId), ImplicitSignal(DeclId) }
+pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC) }
+```
+
+- The LSP of a name is its longest prefix whose every index/slice expression is static
+  (globally static counts, 8.1; elab evaluates the globally static ones, NVC #856 was this).
+- Each process gets `ProcessInfo { drivers: Vec<Lsp>, reads_all: Option<Vec<Lsp>> }`: the LSPs of
+  all signal targets in the process (including targets in procedures declared inside the process,
+  14.7.2), and for `process (all)` the LSPs of signals read in the process (11.3: names read in
+  the statement part, actuals of mode `in`/`inout` in procedure calls; not signals read inside
+  subprograms declared outside the process).
+- Concurrent statements get the same information for their equivalent processes. Sem does not
+  build the equivalent processes; M2 does (rule 3).
+- A signal driven from a subprogram outside any process must be a parameter (`E1810`).
+
+## 7. Typed HIR (what M2 consumes)
+
+### 7.1 Expressions
+
+```rust
+pub struct Expr {
+    pub kind: ExprKind,
+    pub subtype: SubtypeId,          // the result subtype; type is `subtype.base`
+    pub span: Span,
+    pub stat: Staticness,
+    pub value: Option<ConstId>,      // folded value, a cache
+}
+pub enum ExprKind {
+    Const(ConstId),                              // literals and folded enum literals
+    Obj(DeclId),                                 // object, interface object, generic constant
+    External(ExternalId),
+    Call { callee: DeclId, args: Box<[Arg]>, method_of: Option<ExprId>, implicit_cond: bool },
+    Index { prefix: ExprId, indices: Box<[ExprId]> },
+    Slice { prefix: ExprId, range: RangeC },
+    Field { prefix: ExprId, elem: u32 },
+    Deref { prefix: ExprId },                    // `.all` and implicit dereference
+    Attr { attr: PredefAttr, prefix: AttrPrefix, args: Box<[ExprId]> },
+    AttrValue { spec: AttrValueId },             // user-defined attribute
+    Aggregate { assocs: Box<[AggAssoc]>, bounds: AggBounds },
+    Qualified { to: SubtypeId, operand: ExprId },
+    Conv { to: SubtypeId, operand: ExprId },     // explicit type conversion
+    ImplicitConv { operand: ExprId },            // universal -> `subtype`
+    New { init: NewInit },                       // Subtype(SubtypeId) | Value(ExprId)
+    Null,
+    Open,                                        // port/generic map `open`
+    Error,                                       // never reaches M2: errors stop the pipeline
+}
+pub struct Arg { pub formal: u16, pub actual: Actual }
+pub enum Actual {
+    Expr(ExprId),
+    Default,                                     // the formal's default
+    Open,
+    Individual(Box<[(Box<[LspStep]>, ExprId)]>), // sub-element association
+    Converted { formal_conv: Option<DeclId>, actual_conv: Option<DeclId>, actual: ExprId },
+}
+```
+
+### 7.2 Statements and units
+
+```rust
+pub struct Stmt { pub id: StmtId, pub label: Option<Ident>, pub span: Span, pub kind: StmtKind }
+```
+
+`StmtKind` mirrors the M0 statement set after resolution: sequential (`Assign{target: Target,
+value, delay: Waveform/Option<ExprId>}`, `If`, `Case{matching: bool, choices: ChoiceSet}`, loops
+with `LoopParam(DeclId)`, `Next/Exit{loop: StmtId}`, `Wait{sensitivity: Vec<Lsp>, until, for}`,
+`Return`, `ProcCall(Call)`, `Assert`, `Report`, `Force/Release`, `Null`, 2019 `SequentialBlock`)
+and concurrent (`Process{info: ProcessInfo, decls: ScopeId, body}`, `Block{guard, ports, generics}`,
+`ConcAssign`, `ConcProcCall`, `ConcAssert`, `Instance{target: InstTarget, generic_map, port_map}`,
+`ForGenerate{param, range}`, `IfGenerate`, `CaseGenerate`). Targets keep their `Lsp` next to the
+`ExprId`. Every statement has a `StmtId`; M2 tags IR instructions with it (plan: statement-location
+tags) and coverage combines it with path and span hash (rule 10).
+
+Units: `Unit` (1.2) plus kind-specific HIR (entity ports/generics/statements, architecture decls
+and statements, package scope, configuration tree). Spans everywhere; identifiers as `Ident`
+(spelling plus key, rule 8), so VHPI `CaseName`, waves and diagnostics get the user's spelling.
+
+### 7.3 Invariants (`hir::validate`, run in debug builds and in every corpus test)
+
+- No `ExprKind::Error`, `DeclKind::Error`, `TypeKind::Error` or `Body::Pending` (outside std
+  natives) in a unit that analyzed without errors.
+- Every `Call` argument list is complete and in formal order.
+- Every expression's subtype base equals the type its parent expects, except under `Conv`,
+  `ImplicitConv`, `Qualified`.
+- Every universal-typed expression whose parent expects a specific type is wrapped in `ImplicitConv`.
+- Every signal target has an `Lsp`.
+
+## 8. Diagnostics
+
+### 8.1 Code ranges
+
+Existing: `E00xx` syntax (M0), `E01xx` driver/CLI, `E9999` internal error, `W00xx` syntax.
+Sem takes `E1xxx` / `W1xxx`:
+
+| Range | Area | Examples |
+|---|---|---|
+| E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1006 unit analyzed with another `--std` |
+| E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1105 private/not in visible part, E1106 end label mismatch |
+| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed, E1222 illegal file element, E1225 bad resolution function, E1230 missing body |
+| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1310 formal associated twice, E1311 missing actual, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
+| E14xx | static evaluation | E1401 overflow, E1402 literal out of range, E1403 static value outside subtype, E1405 static length mismatch, E1410 choice/range not locally static where required |
+| E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |
+| E16xx | names, aliases, attributes, signatures | E1601 external name class misuse, E1610 alias of a non-static name, E1611 alias needs a signature, E1620 implicit signal attribute in subprogram, E1621 unknown attribute, E1622 entity class mismatch, E1630/E1631 signature |
+| E17xx | configurations, binding, components | E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity |
+| E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1820 case coverage/duplicates, E1830 pure function side effect |
+| E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
+| W1xxx | warnings | W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1990 relaxed rule applied (one code per relaxation, 8.4) |
+
+Codes are `pub const` in `rsim-sem::diag` with an `--explain` text each (one paragraph plus a
+minimal example), checked by a test that every constant has an explain entry.
+
+### 8.2 Cascade suppression
+
+- Poison values: `DeclKind::Error`, `TypeKind::Error`, `ExprKind::Error`. `compatible()` with an
+  Error type is true; every check with an Error operand is silent.
+- An undeclared name is reported once per (design unit, key); later uses get no new error.
+- A failed unit (`UnitSlot::Failed`) is silent to its dependents.
+- An overload error inside an argument marks the call `Error` without a second "no matching
+  overload" at the call.
+- Motto: any error in any reachable unit means no elaboration; sem returns `Err` and the driver
+  prints "aborting due to N previous errors" (`E0101`).
+
+### 8.3 Help and suggestion patterns
+
+| Situation | Rendering |
+|---|---|
+| undeclared name | "did you mean `x`": Damerau-Levenshtein over keys visible from the scope (direct and potential), distance <= max(1, len/3), best 1-3; plus "`unsigned` is declared in `ieee.numeric_std`; add `use ieee.numeric_std.all;`" from a search over loaded packages and a static table of std/ieee exports |
+| no matching overload | primary at the call; one secondary label per candidate (max 8, then "and N more") at its declaration, message = its signature (`function "+" (l: unsigned; r: natural) return unsigned`), plus a note per candidate with the first failing argument ("argument 2: expected `natural`, found `std_logic_vector`") |
+| ambiguous overload | primary at the call, each remaining candidate as a labelled secondary span with its signature and the package that declares it; help: "qualify the operand (`unsigned'(x)`) or use a selected name (`ieee.numeric_std."+"`)" |
+| type mismatch | "expected `T`, found `U`"; secondary label at what made `T` expected (the target declaration, the formal); help for known conversions (`std_logic_vector` to `unsigned`: "use `unsigned(x)`"; integer to vector: "`to_unsigned(x, n)`") |
+| use clause conflict | both use clauses as secondary labels, "both make `x` potentially visible" |
+| condition not BOOLEAN | 3.6 |
+| missing generic `is <>` default | candidates listed as for overloads |
+
+Signatures are rendered by one function `sem::display::signature(DeclId)` with original spelling.
+
+### 8.4 `--relaxed` (rule 13)
+
+Each relaxation turns an error into its own warning code; nothing else differs.
+
+| Id | Relaxation | Why |
+|---|---|---|
+| R1 | shared variable of non-protected type (6.4.2.4) | UVVM and VHDL-93-style code; the kernel already marks such processes serial |
+| R2 | pure function reading or calling something impure (4.?/9.4.?) | common in vendor libraries |
+| R3 | globally static (not locally static) case choices | NVC accepts this relaxed **(unsure: what NVC relaxed covers exactly; check `nvc --help`)** |
+| R4 | default binding to an entity in `work` when it is not visible (implementation choice) | none needed if Q4 picks the rule above |
+
+Q6 asks the user to confirm the list.
+
+## 9. Testing plan
+
+### 9.1 Positive corpora (zero diagnostics, both revisions where the source allows)
+
+| Corpus | Where | How |
+|---|---|---|
+| std, ieee 2008 and 2019 | `lib/` | `lib/ORDER.md` blocks, analyzed in order; plus on-demand (analyze `ieee.float_pkg` alone and let it pull its deps) |
+| NATIVE.md cross-check | `lib/NATIVE.md` | 2.10 |
+| VUnit (incl. its OSVVM copy) | `~/git/vunit/vunit/vhdl` | compile order from VUnit's own dependency scan (run `run.py --compile` style ordering offline once and check the order list into `tests/corpus/vunit.order`) |
+| OSVVM | `~/git/vunit/vunit/vhdl/osvvm` | its `.pro` order, checked in as `tests/corpus/osvvm.order` |
+| UVVM | `~/.cache/rsim-corpora/uvvm` (shallow clone, read-only, commit `90d56e9`) | each component's `script/compile_order.txt`; needs `--relaxed` (R1) |
+| NVC `test/regress` | `~/git/nvc/test/regress` | pass/fail list checked into the repo (expected-fail entries included) |
+| NVC `test/sem`, `test/parse` | `~/git/nvc/test/sem` (184 files) | files NVC expects to fail: list with "must produce >= 1 error"; others must analyze clean |
+| GHDL `testsuite/gna` | fetched in CI, not local now | pass/fail list |
+| VESTs | fetched in CI | pass/fail list |
+
+All corpus tests are cargo tests that skip with a printed reason when a local checkout is
+missing; CI fetches them (plan). Every corpus test also runs `hir::validate`.
+
+### 9.2 Negative tests
+
+`tests/diag/sem/<area>/<name>.vhd` with the expected rendered output in `<name>.stderr` (plain
+format, no colour), blessed with `RSIM_BLESS=1`. At least one test per error code; for codes with
+help text, one test per help pattern. Each file starts with a comment naming the LRM clause.
+Revision is chosen by a `-- rsim: --std=2019` first line.
+
+### 9.3 Fuzzing (rule 15)
+
+- `cargo fuzz` target `sem` taking bytes, parsing, and analyzing in a fresh `Db` with std/ieee
+  loaded once per process (cloned `Db` snapshot). Invariant: no panic; ICEs only through the
+  `E9999` path; on success `hir::validate` passes.
+- Seed corpus: all positive corpora files plus the negative tests.
+- A structure-aware mutator on the AST is out of scope for M1 (add when byte fuzzing plateaus).
+
+## 10. Implementation order (each slice ends green: `cargo test`, `clippy -D warnings`)
+
+| Slice | Content | Green when |
+|---|---|---|
+| S1 | `Db`, ids, arenas, libraries, on-demand loader, context clauses, scopes, lookup, enum/integer/floating/physical types, objects, subprogram specs | `std.standard` analyzes in both revisions |
+| S2 | implicit operations, natives, universal types, literals, overload resolution core (3.1-3.3, 3.5, 3.6), subprogram bodies, sequential statements | `std.textio`, `std.env` (2008, 2019), `std_logic_1164` + body; NATIVE.md cross-check passes |
+| S3 | arrays, records, the full constraint model (2.2-2.7), aggregates and choices, attributes, static folding (section 4) | numeric_std/bit (+unsigned), math_real, math_complex, std_logic_textio; **rule 1 review checkpoint with the user** |
+| S4 | generics: generic packages/types/subprograms, instantiation by cloning, mangling | fixed/float generic packages and `fixed_pkg`/`float_pkg` instances, both revisions; all of `lib/` green |
+| S5 | design units: entity, architecture, concurrent statements, processes, LSPs, drivers, `all`, components, instances, configurations | VUnit corpus green |
+| S6 | protected types, access, files, shared variables, aliases complete, user attributes, external names | OSVVM green |
+| S7 | 2019: views/`'converse`, private variables, reflection, range records, generic classes complete | `std/2019/reflection.vhdl`, `env.vhdl` (2019) and the 2019 corpus subsets green |
+| S8 | negative suite to full code coverage, help patterns, `--relaxed`, fuzz target, NVC/GHDL/VESTs lists, UVVM | M1 exit criteria in the plan met |
+
+The plan's gate "the type and constraint model (rule 1) is reviewed before M2" happens at the
+end of S3 on real code (numeric_std), so a rework does not cost the later slices.
+
+## 11. Open questions (for the user, each with a recommendation)
+
+| # | Question | Recommendation |
+|---|---|---|
+| Q1 | Universal preference: in `x := 2 ** 3` both the universal `**` (result converted) and INTEGER `**` (literal converted) fit. The LRM 9.3.6 text ("implicit conversion only if there is no legal interpretation without it") is subtle **(unsure of exact wording)**. | Prefer interpretations that convert only at leaves (literals, named numbers) over ones that use universal operators; use universal operators only when the complete context is universal (named number declarations). Matches NVC/GHDL behaviour in practice. |
+| Q2 | Base range of an anonymous integer base type (`type t is range 0 to 9`: what is `t'base'high`?). | The smallest of 32-bit or 64-bit that holds the declared range, as NVC/GHDL do, so differential tests agree; arithmetic is still checked i64 (rule 7) and checked against the base range. |
+| Q3 | 2008 makes some ieee calls locally static (case choices like `to_unsigned(3, 4)`), but M1 has no interpreter. | M1 classifies them; their duplicate/coverage checks are deferred to elab through a `ConstEval` hook that M2's interpreter implements; no Rust reimplementation of ieee functions in sem. |
+| Q4 | Default binding: "most recently analyzed architecture" without a cache. | Last architecture of the entity in manifest order (the manifest is in compile order), with a note when there are several; GHDL #66: prefer the directly visible entity over `work`, warn with W1703. |
+| Q5 | Overflow in folding a locally static expression in a context that does not require the value (dead branch, constant never read). | Error in required contexts (4.2); warning `W1401` elsewhere, and the runtime check stays. |
+| Q6 | Contents of `--relaxed` (8.4). | R1 and R2 now, R3 only after checking NVC's list; nothing else. |
+| Q7 | Generic instances: clone the HIR (5.1) or keep one HIR and lower with an environment in M2. | Clone (visible part eager, body lazy): per-instance types are distinct entities as the LRM requires, and M2 stays simpler. |
+| Q8 | Mangled name format (5.3) is long and quoted (`"+"`, parentheses). | Keep it: readable in stacktraces and LLVM accepts any bytes in symbol names; NATIVE.md symbols stay as they are for natives only. |
+| Q9 | Equality on a generic type: does the generic's `=` call the actual's predefined `=` or a user-defined one, and does a 2008 `type T` have `=` at all? | Predefined `=` of the actual type for class-implicit operations; 2008 `type T` has no implicit operations, require an interface `"="` (VUnit/OSVVM generics declare one); confirm against the LRM. |
+| Q10 | One revision per session: a manifest that records units analyzed with a different `--std` than the run. | Error `E1006` naming the unit and both revisions; no mixing. |
+| Q11 | Bit-string expansion lives in sem (3.5) while M0 keeps the text. | Keep it in sem: one place, typed diagnostics (`E1331`) with the literal's span. |

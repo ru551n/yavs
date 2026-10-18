@@ -145,6 +145,8 @@ pub(crate) struct Machine {
     pub heap: Heap,
     pub temp: Vec<u8>,
     pub sh: Option<SharedState>,
+    /// The package being initialised (`init_package`): its index and writable data.
+    pub pkg_init: Option<(u32, Vec<u8>)>,
     pub entry: FuncId,
     dbg: Option<Dbg>,
     waits: Waits,
@@ -312,6 +314,7 @@ impl Machine {
             heap: Heap::new(heap::PRIVATE),
             temp: Vec::new(),
             sh: None,
+            pkg_init: None,
             entry,
             dbg: None,
             waits: Waits::default(),
@@ -544,14 +547,17 @@ impl Machine {
                     .slots
             }
             INST => &self.inst.data,
-            PKG => {
-                &self
-                    .rt
-                    .pkgs
-                    .get(idx as usize)
-                    .ok_or_else(|| ice(format!("no package instance {idx}")))?
-                    .data
-            }
+            PKG => match &self.pkg_init {
+                Some((p, data)) if *p == idx => data,
+                _ => {
+                    &self
+                        .rt
+                        .pkgs
+                        .get(idx as usize)
+                        .ok_or_else(|| ice(format!("no package instance {idx}")))?
+                        .data
+                }
+            },
             CONST => match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
                 Some(ConstData::Bytes(b)) => b,
                 Some(c) => {
@@ -605,6 +611,14 @@ impl Machine {
                 .data_mut(idx)
                 .ok_or_else(|| Fault::Runtime("access to a deallocated object".into()))?,
             TEMP => &mut self.temp,
+            PKG => match &mut self.pkg_init {
+                Some((p, data)) if *p == idx => data,
+                _ => {
+                    return Err(ice(format!(
+                        "write to package {idx} outside its initialisation"
+                    )));
+                }
+            },
             SHARED => &mut self.shared_mut()?.vars,
             SHARED_HEAP => self
                 .shared_mut()?

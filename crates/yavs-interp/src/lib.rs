@@ -364,6 +364,46 @@ pub fn call_shared(
     }
 }
 
+/// Initialise package instance `pkg` (`AddrSpace::Pkg(pkg)`, `size` bytes, zeroed): run its
+/// initialisation function `func` (a thunk without parameters, yavs-lower's
+/// `PackageIr::init`) with that package's data writable, and return the data. Packages it
+/// reads must already be in the runtime's [`Bindings::packages`]; shared variables and the
+/// shared heap (protected objects) are reachable through `shared`.
+pub fn init_package(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    pkg: u32,
+    size: usize,
+    shared: Option<&Arc<Mutex<SharedState>>>,
+) -> Result<InstData, SimError> {
+    let mut m = Machine::new(rt, Arc::new(InstData::default()), Vec::new(), func);
+    m.pkg_init = Some((pkg, vec![0; size]));
+    let mut guard = match shared {
+        Some(s) => Some(s.lock().map_err(|_| {
+            SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
+        })?),
+        None => None,
+    };
+    if let Some(g) = guard.as_mut() {
+        m.sh = Some(std::mem::take(&mut **g));
+    }
+    let r = m.enter(func, &[]).and_then(|()| m.run(None, 0));
+    if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
+        **g = st;
+    }
+    match r {
+        Ok(Outcome::Returned(_)) => Ok(InstData {
+            data: m.pkg_init.take().map(|p| p.1).unwrap_or_default(),
+            ..Default::default()
+        }),
+        Ok(Outcome::Suspended) => Err(m.error(
+            Fault::Runtime("wait statement executed during elaboration".into()),
+            None,
+        )),
+        Err(e) => Err(m.error(e, None)),
+    }
+}
+
 /// Run the resolution function `func` (one parameter: an unconstrained array of the element
 /// type) over the driving values `vals` (each in the kernel's byte representation, which is
 /// the element's memory layout) and write the resolved scalar into `out`. The array passed

@@ -14,21 +14,21 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `ids.rs` | typed ids, `Arena` | S1 | done |
 | `db.rs` | `Db`, arenas, `WellKnown`, `Poison`, diagnostics helpers (`error`, `ice`, `unsupported`) | S1 | done; add fields additively |
 | `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead |
-| `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done) |
+| `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170 |
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead |
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead |
 | `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1) |
 | `implicit.rs` | implicitly declared operations per type (2.10) | S2 | owner: implicit |
 | `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead |
-| `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | owner: names (core by M1 lead: classify, name_cands, build_name, calls, index/slice/field, attributes) |
+| `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | owner: names (core by M1 lead: classify, name_cands, build_name, calls, index/slice/field, attributes); sem08: corpus false positives #167-#170 |
 | `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | owner: literal |
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
-| `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate; sem19 (2019 corpus #172-#180: `'index`, `'record` type marks) |
+| `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate; sem19 (2019 corpus #172-#180: `'index`, `'record` type marks); sem08: corpus false positives #167-#170 (user attribute specifications) |
 | `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic; sem19 (2019 corpus #173: generic packages on entities) |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
-| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt |
-| `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt |
+| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170 |
+| `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt; sem08: corpus false positives #167-#170 |
 | `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6 |
 | `external.rs` | external names (6.1) | S6 | owner: s6 |
 | `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6 |

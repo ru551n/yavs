@@ -308,7 +308,7 @@ impl B {
 /// The commented `-- function ...` declarations of `standard.vhdl`, in `B::sig` form.
 fn listing(rev: LangRev) -> Vec<String> {
     let path = crate::default_stdlib().join(format!("std/{}/standard.vhdl", rev.as_str()));
-    let bytes = std::fs::read(&path).expect("standard.vhdl");
+    let bytes = crate::stdlib::read(&path).expect("standard.vhdl");
     let text: String = bytes.iter().map(|&b| b as char).collect();
     let mut v = Vec::new();
     for line in text.lines() {

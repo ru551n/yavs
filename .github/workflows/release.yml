@@ -1,6 +1,7 @@
 # Release on a `v*` tag (#165, docs/decisions.md "Release trigger and first release"): the CI
-# checks on the tagged commit, a release build of `yavs` per platform, archives with `lib/`,
-# SHA256SUMS and a GitHub pre-release with notes from docs/release-notes/<tag>.md.
+# checks on the tagged commit, a release build of `yavs` per platform (std/ieee built in),
+# SHA256SUMS and a GitHub pre-release with notes from the version's CHANGELOG.md section
+# (towncrier, run before tagging).
 # workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
 # and publishes nothing.
 name: Release
@@ -53,21 +54,20 @@ jobs:
       - name: Package
         run: |
           name="yavs-$VERSION-${{ matrix.target }}"
-          mkdir -p "dist/$name/lib"
-          cp -r lib/std lib/ieee lib/LICENSE lib/AUTHORS.md lib/SOURCES.md lib/README.md \
-            lib/ORDER.md lib/NATIVE.md lib/SHA256SUMS "dist/$name/lib/"
+          mkdir -p "dist/$name"
+          # The built-in std/ieee sources are Apache-2.0 (lib/LICENSE, lib/SOURCES.md).
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
+          cp lib/LICENSE "dist/$name/LICENSE-IEEE"
           cd dist
           if [[ "$RUNNER_OS" == Windows ]]; then
             cp ../target/release/yavs.exe "$name/"
-            # yavs.lib (VHPI import library, #124) is only built with yavs-vhpi, which the
-            # yavs binary does not link yet.
+            # No VHPI import library: plugins bring their own (user, 2026-10-18, #124).
             7z a -tzip "$name.zip" "$name" > /dev/null
           else
             cp ../target/release/yavs "$name/"
             tar czf "$name.tar.gz" "$name"
           fi
-          # Smoke test: the unpacked tree finds its lib/ (#43).
+          # Smoke test: the binary alone runs a design (std/ieee built in).
           printf 'entity t is end;\narchitecture a of t is begin\nprocess begin report "ok"; wait; end process;\nend;\n' > t.vhd
           env -u YAVS_STDLIB "$name/yavs" analyze --work=work:w t.vhd
           env -u YAVS_STDLIB "$name/yavs" run --work=work:w t | grep -q ': ok'
@@ -93,16 +93,20 @@ jobs:
       - name: SHA256SUMS and notes
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
-          test -s "docs/release-notes/v$version.md"
+          awk -v h="## yavs $version " 'index($0, h) == 1 { on = 1; next } on && /^## yavs / { exit } on' \
+            CHANGELOG.md > notes.md
+          grep -q . notes.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
           cd dist && sha256sum yavs-* > SHA256SUMS && cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: SHA256SUMS
-          path: dist/SHA256SUMS
+          name: SHA256SUMS-and-notes
+          path: |
+            dist/SHA256SUMS
+            notes.md
       - name: GitHub release
         if: github.event_name == 'push' || !inputs.dry_run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --prerelease --verify-tag \
-            --title "yavs ${GITHUB_REF_NAME#v}" --notes-file "docs/release-notes/$GITHUB_REF_NAME.md"
+            --title "yavs ${GITHUB_REF_NAME#v}" --notes-file notes.md

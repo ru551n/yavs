@@ -14,7 +14,7 @@ Decisions made with the user:
 - **GUI:** egui with an embedded **libsurfer**, as a separate process. It is built last, but everything before it is designed for it.
 - **Platforms (all tier 1, in CI from M0):** Linux x86_64, Linux aarch64 and Windows x86_64.
   - Windows includes LLVM and cocotb.
-  - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols and ships an import library (`yavs.lib`) for external plugins, the way Riviera does.
+  - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols. **No import library is built or shipped** (user, 2026-10-18: "vhpi shall not be compiled, that is handled by the python bridge"): a plugin brings its own, as cocotb does with its `.def` files.
   - LLVM on Windows needs a pinned prebuilt LLVM 21 package with static libs; the prebuilt packages lack `llvm-config`.
 - **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. For **any** dependency that has to be installed by hand, **ask the user first**. Approved so far: LLVM 21 (optional, behind the `llvm` feature) and a C compiler at build time (the VHPI variadic shim). NVC and GHDL are dev-only references.
 - **Performance:** correctness first, no speed target yet. Benchmarks are tracked, not gated.

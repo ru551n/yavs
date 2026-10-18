@@ -224,7 +224,7 @@ impl Db {
                     UnitKey::Primary(k) => dir.join(format!("{k}.vhdl")),
                     UnitKey::Secondary(p, _) => dir.join(format!("{p}-body.vhdl")),
                 };
-                file.is_file().then_some((file, self.rev))
+                crate::stdlib::is_file(&file).then_some((file, self.rev))
             }
             LibSource::Manifest(m) => {
                 let rec = match key {
@@ -261,7 +261,7 @@ impl Db {
                 Err(Reported)
             };
         }
-        let bytes = match std::fs::read(path) {
+        let bytes = match crate::stdlib::read(path) {
             Ok(b) => b,
             Err(e) => {
                 let mut d = Diagnostic::error(

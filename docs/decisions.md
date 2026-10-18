@@ -20,16 +20,26 @@ minimal VUnit testbench on the real binary), CI is added (#134) together with a 
 milestone users care about works.
 
 - Release workflow: triggered by a `v*` tag; builds `yavs` for Linux x86_64, Linux aarch64 and
-  Windows x86_64 (with `yavs.lib` for VHPI plugins and `lib/` std/ieee sources), runs the CI
+  Windows x86_64, runs the CI
   checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
-- Packaging (agent, 2026-10-18, #165): `yavs-<version>-<target>.tar.gz` (Linux) or `.zip`
-  (Windows) holding `yavs`, `lib/` (`std`, `ieee`, `LICENSE`, `AUTHORS.md`, `SOURCES.md`,
-  `README.md`, `ORDER.md`, `NATIVE.md`, `SHA256SUMS`; not the Synopsys testbenches or agent
-  files), `LICENSE-MIT`, `LICENSE-APACHE` and `README.md`. The binary finds `lib/` next to itself
-  (#43); a release build never falls back to the build machine's checkout. `yavs.lib` is not
-  shipped while the `yavs` binary does not link `yavs-vhpi` (#124). The tag must equal
-  `v<workspace version>`; notes come from `docs/release-notes/<tag>.md`. `workflow_dispatch`
-  with `dry_run` builds the archives as workflow artifacts and publishes nothing.
+- Packaging (agent, 2026-10-18, #165; revised by the user the same day):
+  `yavs-<version>-<target>.tar.gz` (Linux) or `.zip` (Windows) holding the `yavs` executable,
+  `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSE-IEEE` (the Apache-2.0 licence of the built-in IEEE
+  sources) and `README.md`. The tag must equal `v<workspace version>`. `workflow_dispatch` with
+  `dry_run` builds the archives as workflow artifacts and publishes nothing.
+- **std/ieee are built into the binary** (user, 2026-10-18: "how can we avoid packaging all the
+  stdlibs?"). `yavs-sem/build.rs` embeds `lib/std` and `lib/ieee` (2.9 MB of source) under the
+  virtual root `<yavs>/lib`; `$YAVS_STDLIB` replaces it with a tree on disk. This supersedes
+  the `lib/`-next-to-the-executable lookup of #43. Nothing is precompiled: analysis stays on
+  demand from source, so there is still no cache.
+- **No VHPI import library** (user, 2026-10-18: "vhpi shall not be compiled, that is handled by
+  the python bridge"). The release builds and ships no `yavs.lib`; a VHPI plugin brings its own
+  import library for `yavs.exe`'s exports (cocotb ships `.def` files per simulator). #124 is
+  reduced to checking that the exports are there.
+- **Changelog with towncrier** (user, 2026-10-18, "for easier parallel work"): fragments in
+  `changes/` (AGENTS.md rule 25), built into `CHANGELOG.md` before tagging with
+  `uvx towncrier build --version X.Y.Z --yes`. The release notes are that version's section;
+  `docs/release-notes/` is gone. Fragments describe features, not numbers.
 - CI (agent, 2026-10-18, #134): fmt, clippy and tests with default features on ubuntu-24.04,
   ubuntu-24.04-arm and windows-latest (MSVC). No LLVM, no external corpora (#63), no qemu/Wine
   runs (the aarch64 and Windows runners are native). The release workflow calls the same

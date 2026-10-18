@@ -27,7 +27,8 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Item | File |
 |---|---|
 | `Db` (arenas, `WellKnown`, `Poison`, `report`/`error`/`ice`/`unsupported`, `diagnostics`, `take_diagnostics`) | `src/db.rs` |
-| `Options` (`rev`, `stdlib`, `libraries`, `relaxed`, `defines`), `LangRev = yavs_syntax::Std`, `default_stdlib()` (`$YAVS_STDLIB`, else `lib/` next to the executable or up to three parents, else (debug builds only) the checkout path) | `src/lib.rs` |
+| `Options` (`rev`, `stdlib`, `libraries`, `relaxed`, `defines`), `LangRev = yavs_syntax::Std`, `default_stdlib()` (`$YAVS_STDLIB`, else the built-in copy under `stdlib::EMBEDDED`) | `src/lib.rs` |
+| Built-in std/ieee: `build.rs` embeds `lib/std` and `lib/ieee` (`*.vhdl`); `stdlib::read`/`is_file` serve paths under `<yavs>/lib`, everything else from disk | `build.rs`, `src/stdlib.rs` |
 | `Db::analyze_file` (one `yavs analyze` file, returns `UnitRecord`s), `analyze_closure`, `load_primary`, `load_body`; HIR validation in debug builds | `src/loader.rs` |
 | Typed ids and `Arena` (`DeclId`, `ScopeId`, `ExprId`, `SubtypeId`, `TypeId`, `UnitId`, ...) | `src/ids.rs` |
 | HIR shapes consumed by M2 (`Expr`/`ExprKind`, `Stmt`/`StmtKind`, `Call`, `Lsp`, `UnitHir`, `Binding`, `GenSelect`) | `src/hir.rs` |
@@ -87,9 +88,10 @@ Module-local decisions go in this section and in the matching sem.md section, LR
   suite, xfail or not.
 - **`hir.rs` shapes are an M2 contract:** a change needs a note in sem.md section 7 and a check of
   `yavs-lower`/`yavs-elab` (`cargo test --workspace`).
-- **std/ieee path**: `default_stdlib()` is the only lookup, used by the CLI too (#43). Only debug
-  builds fall back to `CARGO_MANIFEST_DIR/../../lib`; with a shared `CARGO_TARGET_DIR` a test
-  binary can use another worktree's `lib/` (#7).
+- **std/ieee path**: `default_stdlib()` is the only lookup, used by the CLI too: `$YAVS_STDLIB`,
+  else the copy built into the binary (user, 2026-10-18), so a release is one executable. Read
+  std/ieee files only through `stdlib::read`/`stdlib::is_file`, never `std::fs` directly. A
+  change in `lib/` rebuilds yavs-sem (`rerun-if-changed`).
 - **Revisions:** `db.rev` is the design revision, `db.file_rev()` the file's; declarations
   carry `since`.
 - Scratch output under `~/.cache/rsim-sem`, never in the repo or a fixed `/tmp` name.

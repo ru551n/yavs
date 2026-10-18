@@ -1,0 +1,22 @@
+# Changelog
+
+Release notes for yavs, built by towncrier from the fragments in `changes/`. A GitHub release
+uses its version's section.
+
+<!-- towncrier release notes start -->
+
+## yavs 0.1.0 (2026-10-18)
+
+First release, a pre-release for trying a new VHDL-2008 and VHDL-2019 simulator early.
+
+### Added
+
+- `yavs analyze`, `yavs elab` and `yavs run` for VHDL-2008 and 2019, mixed in one project, with
+  rustc-style diagnostics (codes, source snippets, VHDL call stacks for runtime errors) and NVC's
+  report format on stdout. The command line is specified in `docs/cli-contract.md`.
+- The IEEE packages (`std_logic_1164`, `numeric_std`, `numeric_bit`, `math_real`,
+  `math_complex`, `fixed_pkg`, `float_pkg` and their textio) analyzed and run from source.
+- Parallel process evaluation (`--threads N`) with output identical to a single-threaded run.
+- VUnit's `examples/vhdl/user_guide` runs with `run.py` on yavs through the yavs simulator
+  interface, which is not in a VUnit release yet.
+- Builds for Linux x86_64, Linux aarch64 and Windows x86_64.

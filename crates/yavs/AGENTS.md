@@ -60,9 +60,8 @@ into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
   (`yavs_sem::diag::EXPLAIN`). A test scans all `crates/*/src` for code literals, so a new code
   fails `cargo test -p yavs` until it has a text (#136).
 - `--ieee-warnings` is accepted and ignored on purpose (`ponytail:` comment in `elab.rs`).
-- std/ieee come from `yavs_sem::default_stdlib()`: `$YAVS_STDLIB`, else `lib/` next to the
-  executable or up to three parents, else (debug builds only) the checkout path (#43, test
-  `installed_tree` in `tests/cli.rs`). A stale binary from a shared `CARGO_TARGET_DIR` uses another worktree's `lib/` and crates (#7): keep your own target dir.
+- std/ieee come from `yavs_sem::default_stdlib()`: `$YAVS_STDLIB`, else the copy built into the
+  binary (test `standalone_binary` in `tests/cli.rs` runs a lone copy of the executable).
 - Tests run the built binary (`env!("CARGO_BIN_EXE_yavs")`); scratch dirs carry the pid
   (`yavs-cli-<pid>-<name>`). Keep that pattern, never a fixed name in `/tmp`.
 

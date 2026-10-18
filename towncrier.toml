@@ -1,0 +1,32 @@
+# Changelog fragments (user, 2026-10-18): each change adds `changes/<issue>.<type>.md` (or
+# `changes/+<name>.<type>.md` without an issue), so parallel work never edits one shared file.
+# A release runs `uvx towncrier build --version X.Y.Z --yes`, which moves them into CHANGELOG.md.
+[tool.towncrier]
+name = "yavs"
+directory = "changes"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## yavs {version} ({project_date})"
+issue_format = "[#{issue}](https://github.com/ru551n/yavs/issues/{issue})"
+underlines = ["", "", ""]
+ignore = ["README.md"]
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true

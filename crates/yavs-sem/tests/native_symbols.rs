@@ -10,8 +10,9 @@ use yavs_sem::mangle::native_symbol;
 use yavs_syntax::ast::{Decl, LibraryUnit, TypeDef};
 use yavs_syntax::{Options, Std};
 
+/// The checkout's `lib/` (the source of the built-in copy, and the home of `NATIVE.md`).
 fn lib() -> PathBuf {
-    yavs_sem::default_stdlib()
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"))
 }
 
 fn symbols_of(rev: Std, pkg: &str, out: &mut BTreeSet<String>) {

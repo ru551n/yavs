@@ -111,10 +111,9 @@ raises an error itself for a project containing VHDL-93/2002 files.
   directory (and its parents) on first use. VUnit does not run an init command;
   it only creates the parent of the library directory.
 - `std` and `ieee` (and any other library yavs ships) are resolved by yavs
-  itself, on demand from yavs's `lib/` tree (nothing is cached). That tree is
-  `$YAVS_STDLIB` if set, else `lib/` in the executable's directory or up to three
-  parents (the release archives put it next to `yavs`), else, in debug builds only,
-  the source checkout yavs was built from (#43). A user `--map` or
+  itself, on demand from the std/ieee sources built into the `yavs` executable
+  (nothing is cached, nothing is installed next to it). `$YAVS_STDLIB`, if set,
+  names a tree on disk (`<dir>/{std,ieee}/<rev>/*.vhdl`) used instead. A user `--map` or
   `--work` of `std` or `ieee` is an error (`E0102`), except under
   `yavs analyze --bootstrap`, which is how yavs's own `lib/std` and `lib/ieee` are
   analyzed (tools/corpus `yavs-lib-*`): the mapped `std`/`ieee` directories then

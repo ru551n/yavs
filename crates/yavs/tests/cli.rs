@@ -580,39 +580,13 @@ fn explain() {
     assert_eq!(yavs("E0000").status.code(), Some(2));
 }
 
-/// An installed yavs finds `lib/` next to its executable (#43): the binary and `lib/` are copied
-/// into an install tree, and a design analyzes and runs from there. A second tree whose `lib/`
-/// has empty `std` and `ieee` directories must fail and name that tree, which shows the copy is
-/// what was used and not the checkout.
+/// A copy of the binary alone in a directory analyzes and runs a design (std/ieee are built
+/// in). `$YAVS_STDLIB` naming a tree with empty `std` and `ieee` must fail and name that tree,
+/// which shows the variable replaces the built-in copy.
 #[test]
-fn installed_tree() {
-    fn copy_dir(from: &Path, to: &Path) {
-        std::fs::create_dir_all(to).expect("mkdir");
-        for e in std::fs::read_dir(from).expect("read_dir") {
-            let e = e.expect("entry");
-            let dest = to.join(e.file_name());
-            if e.file_type().expect("type").is_dir() {
-                copy_dir(&e.path(), &dest);
-            } else {
-                std::fs::copy(e.path(), &dest).expect("copy");
-            }
-        }
-    }
+fn standalone_binary() {
+    // std/ieee are built into the binary: a copy alone in a directory runs a design.
     let exe = Path::new(env!("CARGO_BIN_EXE_yavs"));
-    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lib");
-    let install = |tmp: &Path, full: bool| {
-        let bin = tmp.join(exe.file_name().expect("exe name"));
-        std::fs::create_dir_all(tmp).expect("mkdir");
-        std::fs::copy(exe, &bin).expect("copy yavs");
-        for d in ["std", "ieee"] {
-            if full {
-                copy_dir(&lib.join(d), &tmp.join("lib").join(d));
-            } else {
-                std::fs::create_dir_all(tmp.join("lib").join(d)).expect("mkdir");
-            }
-        }
-        bin
-    };
     let tmp = tempdir("installed");
     let src = tmp.join("t.vhd");
     std::fs::write(
@@ -624,9 +598,13 @@ fn installed_tree() {
     )
     .expect("write");
     let work = format!("--work=work:{}", tmp.join("work").display());
-    let yavs = |bin: &Path, args: &[&str]| {
-        let o = Command::new(bin)
-            .env_remove("YAVS_STDLIB")
+    let yavs = |bin: &Path, stdlib: Option<&Path>, args: &[&str]| {
+        let mut c = Command::new(bin);
+        match stdlib {
+            Some(d) => c.env("YAVS_STDLIB", d),
+            None => c.env_remove("YAVS_STDLIB"),
+        };
+        let o = c
             .args(["--color", "never"])
             .args(args)
             .output()
@@ -637,21 +615,26 @@ fn installed_tree() {
             String::from_utf8_lossy(&o.stdout).into_owned(),
         )
     };
-    let bin = install(&tmp.join("inst"), true);
+    let bin = tmp.join("inst").join(exe.file_name().expect("exe name"));
+    std::fs::create_dir_all(tmp.join("inst")).expect("mkdir");
+    std::fs::copy(exe, &bin).expect("copy yavs");
     let s = src.display().to_string();
-    let (code, err, _) = yavs(&bin, &["analyze", &work, &s]);
+    let (code, err, _) = yavs(&bin, None, &["analyze", &work, &s]);
     assert_eq!(code, 0, "{err}");
-    let (code, err, out) = yavs(&bin, &["run", &work, "t"]);
+    let (code, err, out) = yavs(&bin, None, &["run", &work, "t"]);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("s='1'"), "{out}");
 
+    // `$YAVS_STDLIB` replaces the built-in tree, and a missing unit names where yavs looked.
     let empty = tmp.join("empty");
-    let bin = install(&empty, false);
+    for d in ["std", "ieee"] {
+        std::fs::create_dir_all(empty.join(d)).expect("mkdir");
+    }
     let work = format!("--work=work:{}", tmp.join("work2").display());
-    let (code, err, _) = yavs(&bin, &["analyze", &work, &s]);
+    let (code, err, _) = yavs(&bin, Some(&empty), &["analyze", &work, &s]);
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("error[E1002]"), "{err}");
-    let looked = empty.join("lib").join("std");
+    let looked = empty.join("std");
     assert!(err.contains(&looked.display().to_string()), "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
 }

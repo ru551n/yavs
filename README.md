@@ -12,14 +12,13 @@ yavs is early. What works today, with numbers, is in [`STATUS.md`](STATUS.md); t
 
 Download the archive for your platform from the
 [releases](https://github.com/ru551n/yavs/releases) page (Linux x86_64, Linux aarch64, Windows
-x86_64), check it against `SHA256SUMS`, unpack it and put the directory on `PATH`. Keep `lib/`
-next to the `yavs` executable: it holds the `std` and `ieee` sources. `YAVS_STDLIB` points yavs
-at another copy.
+x86_64), check it against `SHA256SUMS`, unpack it and put the directory on `PATH`. The `std` and `ieee`
+sources are built into the `yavs` executable; `YAVS_STDLIB` points yavs at another copy.
 
 From source (Rust stable and a C compiler):
 
 ```sh
-cargo build --release -p yavs   # target/release/yavs, finds lib/ in the checkout
+cargo build --release -p yavs   # target/release/yavs, std/ieee built in
 ```
 
 ## Use

@@ -1498,6 +1498,13 @@ impl Db {
                 self.base(st)
             }),
         };
+        // A failed generic type actual (already reported, or a cascade) leaves the profile
+        // unknowable: no second error for the subprogram (8.2).
+        if want.params.iter().chain(want.ret.iter()).any(|&t| {
+            t == self.poison.ty || matches!(self.types[t].kind, crate::types::TypeKind::Error)
+        }) {
+            return Err(Reported);
+        }
         let fits = |db: &Db, d: DeclId| {
             let e = db.entity(d);
             let kind_ok = match db.decls[e].kind.subprogram() {
@@ -1557,6 +1564,10 @@ impl Db {
                     .collect();
                 match ok.as_slice() {
                     [d] => self.entity(*d),
+                    // A missing unit made a type actual fail silently: a cascade (8.2).
+                    [] if self.cur().is_some_and(|c| self.tainted.contains(&c.unit)) => {
+                        return Err(Reported);
+                    }
                     [] => {
                         let mut d = Diagnostic::error(
                             diag::TYPE_MISMATCH,

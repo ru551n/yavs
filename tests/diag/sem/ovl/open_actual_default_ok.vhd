@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 6.5.6.2, 6.5.7.1 (open for a formal with a default; NVC accepts)
+-- LRM 6.5.6.2, 6.5.7.1 (open for a formal with a default; the reference simulator accepts)
 package p is
   function f (a : integer := 5; b : integer := 7) return integer;
   procedure q (a : integer := 5; b : integer := 7);

@@ -330,7 +330,7 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
     drop(o);
     // A report of severity error or failure fails the run even below `--exit-severity`, unless
     // ClearVhdlAssert cleared the counts since: the status follows the VHDL assert counts of
-    // std.env (NVC does the same; VUnit only looks at zero or non-zero).
+    // std.env (as the reference simulator; test runners only look at zero or non-zero).
     let failed = rt.is_some_and(|rt| {
         rt.assert_count(yavs_kernel::Severity::Error)
             + rt.assert_count(yavs_kernel::Severity::Failure)

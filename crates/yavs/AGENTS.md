@@ -32,7 +32,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|---|
 | Stop at the first failed stage; never exit 0 after an error | Error motto | `docs/plan.md` "Error-handling motto", `docs/cli-contract.md` 0 |
 | Exit codes: analyze 0/1 (file error)/2 (usage)/3 (ICE); run 0, 1 (failure, report at/above `--exit-severity`, error reported), 2 (usage, analysis or elab error), 3 (internal) | VUnit reads only zero/non-zero, humans need the class | `docs/cli-contract.md` 4, 5 |
-| `--exit-severity` default `failure`; an `error` report still makes the run exit 1 at the end, unless `ClearVhdlAssert` cleared the std.env assert counts (#191) | Like NVC, GHDL, Questa (user, 2026-10-18) | `docs/decisions.md` "Runtime: default exit severity" |
+| `--exit-severity` default `failure`; an `error` report still makes the run exit 1 at the end, unless `ClearVhdlAssert` cleared the std.env assert counts (#191) | Like the reference simulators (user, 2026-10-18) | `docs/decisions.md` "Runtime: default exit severity" |
 | `std`/`ieee` are provided by yavs; mapping them is `E0102` (except `analyze --bootstrap`) | One std/ieee per design | `docs/cli-contract.md` 3 |
 | Design revision = newest standard in the closure unless `--std` is given | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "VUnit integration", `docs/design/sem.md` 0.1 |
 | `--threads` defaults to 1 | Each yavs under VUnit `-p N` | `docs/plan.md` "VUnit integration" |

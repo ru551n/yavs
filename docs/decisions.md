@@ -400,7 +400,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   - As NVC: report statements count too; a disabled severity is neither shown nor counted; the
     no-argument `GetVhdlAssertCount`/`IsVhdlAssertFailed` cover warning, error and failure;
     the read severity starts at ERROR. The exit status follows the error and failure counts
-    at the end of the run, so `ClearVhdlAssert` clears a pending exit 1, as NVC (#191).
+    at the end of the run, so `ClearVhdlAssert` clears a pending exit 1, as the reference simulator (#191).
   - `SetVhdlAssertFormat` with a non-empty format is a "not implemented" runtime error; the
     format stays the default and `GetVhdlAssertFormat` returns "".
   - Call path elements are innermost first, names upper case, the line of the calling

@@ -17,12 +17,15 @@ to, and those documents win over your memory.
 
 | When you touch | Also read |
 |---|---|
-| parser (`yavs-syntax`) | `docs/decisions.md` "Parser", `docs/design/lrm-checks.md` P1/P2 |
-| semantic analysis (`yavs-sem`) | `docs/design/sem.md`, `docs/design/lrm-checks.md`, `crates/yavs-sem/CONTRIBUTING.md` |
-| IR, interpreter, lowering, elaboration | `docs/design/ir.md`, `crates/yavs-kernel/DESIGN.md` |
-| kernel (`yavs-kernel`) | `crates/yavs-kernel/DESIGN.md` |
-| CLI, libraries, VUnit integration | `docs/cli-contract.md` (VUnit depends on it: change it deliberately) |
-| `lib/` (std/ieee sources) | `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
+| parser (`yavs-syntax`) | `crates/yavs-syntax/AGENTS.md`, `docs/decisions.md` "Parser", `docs/design/lrm-checks.md` P1/P2 |
+| semantic analysis (`yavs-sem`) | `crates/yavs-sem/AGENTS.md`, `docs/design/sem.md`, `docs/design/lrm-checks.md`, `crates/yavs-sem/CONTRIBUTING.md` |
+| IR, interpreter, lowering, elaboration | `crates/yavs-{ir,interp,lower,elab}/AGENTS.md`, `docs/design/ir.md`, `crates/yavs-ir/README.md`, `crates/yavs-lower/DESIGN.md`, `crates/yavs-kernel/DESIGN.md` |
+| kernel (`yavs-kernel`) | `crates/yavs-kernel/AGENTS.md`, `crates/yavs-kernel/DESIGN.md` |
+| CLI, libraries, VUnit integration | `crates/yavs/AGENTS.md`, `crates/yavs-lib/AGENTS.md`, `docs/cli-contract.md` (VUnit depends on it: change it deliberately) |
+| diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
+| FFI, VHPI, waves, LLVM | `crates/yavs-{ffi,vhpi,wave,llvm}/AGENTS.md` |
+| `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
+| tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest}/AGENTS.md`), `fuzz/AGENTS.md` |
 
 ## 2. Repository map
 

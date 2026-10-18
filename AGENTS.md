@@ -120,6 +120,14 @@ to, and those documents win over your memory.
 21. **Ask before anything irreversible or outward-facing**: deleting data you did not create,
     force-pushing, publishing, contacting external services beyond read-only fetches.
 
+### Issues
+22. **Work is tracked as GitHub issues** on `ru551n/rsim` (private). Before starting, find the
+    issue for your task (`gh issue list -R ru551n/rsim --search ...`); if none exists, create one
+    with the labels described in its template (milestone `M<n>`, crate `crate:<name>`, kind).
+    Reference it in your commits, and close it with `Fixes #N` in the commit that completes it
+    (or `gh issue close N --comment "<commit>: <what was done>"` if work was spread over several
+    commits). Things you find but don't fix become new issues, not just notes in a report.
+
 ## 4. Common commands
 
 ```sh

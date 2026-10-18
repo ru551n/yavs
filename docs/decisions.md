@@ -374,3 +374,13 @@ severity ERROR is printed and the simulation continues; the run exits 1 at the e
 higher was reported. FAILURE stops the simulation at once. rsim's own runtime errors (bound,
 overflow, null access, delta limit, internal) still stop immediately, per the error motto.
 `--exit-severity=error|warning|note` lowers the threshold. VUnit passes its own setting.
+
+## Interpreter: BIT/BOOLEAN codes and file writes (orchestrator, 2026-10-18)
+
+- BIT and BOOLEAN elements of bit-plane arrays use the std_ulogic codes for '0'/'1' (2/3), not
+  their enum positions 0/1, so the shared plane operations are correct for `bit_vector`.
+  rsim-elab follows; VHPI, waves and foreign calls translate at the boundary.
+- Disk files are written directly by the owning process, not through the kernel's buffered
+  streams, so write, close and reopen-for-read in one delta works. Output stays independent of
+  `--threads` because a file object belongs to one process or to serial processes. STD_OUTPUT
+  still goes through the kernel output stream, ordered with `report`.

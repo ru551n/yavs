@@ -18,12 +18,7 @@ alias/for_label_ok.vhd
 alias/object_alias_non_static.vhd
 alias/subprogram_needs_signature.vhd
 alias/subtype_mismatch.vhd
-attr/dimension_arg_on_scalar_type.vhd
-attr/image_on_array_2008.vhd
 attr/range_on_scalar_object.vhd
-attr/user_attribute_class_mismatch.vhd
-attr/user_attribute_spec_twice.vhd
-attr/user_attribute_unknown_entity.vhd
 drv/delayed_attr_in_subprogram.vhd
 drv/event_attr_on_variable.vhd
 drv/signal_assign_in_procedure_param_ok.vhd
@@ -71,7 +66,6 @@ hom/alias_vs_constant.vhd
 hom/function_same_profile.vhd
 hom/incomplete_type_twice.vhd
 hom/procedure_differs_only_in_mode.vhd
-hom/shadow_in_subprogram_ok.vhd
 hom/subprogram_body_twice.vhd
 lit/char_literal_wrong_type.vhd
 lit/physical_unit_unknown.vhd
@@ -121,7 +115,6 @@ prot/shared_variable_array_not_protected.vhd
 prot/shared_variable_not_protected.vhd
 prot/shared_variable_protected_ok.vhd
 prot/signal_of_protected_type.vhd
-relax/pure_function_calls_impure_relaxed.vhd
 relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd
 relax/shared_variable_unprotected_relaxed.vhd

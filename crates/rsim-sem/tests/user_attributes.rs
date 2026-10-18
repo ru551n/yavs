@@ -154,27 +154,29 @@ fn local_attribute_hides_a_use_visible_one() {
     );
 }
 
-/// `sine_lookup'latency` in its own unit and `work.sine_lookup'latency` from another unit,
-/// where `latency` is not visible, in constant declarations and ranges. A package stands in
-/// for the entity until entity declarations are analyzed (S5); `tests/hdl_modules.rs` has
-/// the real files.
+/// `sine_lookup'latency` in its own architecture and `work.sine_lookup'latency` from another
+/// unit, where `latency` is not visible, in constant declarations and ranges.
 #[test]
 fn design_unit_attribute_from_another_unit() {
     let db = analyze(
         "latency",
         &[(
             "work",
-            "package sine_lookup is
+            "entity sine_lookup is
                attribute latency : positive;
-               attribute latency of sine_lookup : package is 3;
+               attribute latency of sine_lookup : entity is 3;
+             end entity;
+
+             architecture a of sine_lookup is
                constant our_latency : positive := sine_lookup'latency;
-               subtype pipe_t is bit_vector(1 to our_latency);
-             end package;
+               signal valid_pipe : bit_vector(1 to our_latency);
+             begin
+             end architecture;
 
              package sine_calculator is
                constant lookup_latency : positive := work.sine_lookup'latency;
-               signal valid_pipe : bit_vector(1 to work.sine_lookup'latency - 1);
-               constant pipe_length : natural := valid_pipe'length;
+               signal pipe : bit_vector(1 to work.sine_lookup'latency - 1);
+               constant pipe_length : natural := pipe'length;
              end package;",
         )],
     );

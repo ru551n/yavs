@@ -166,7 +166,11 @@ From names (attr):
 - **types.rs** (lead): `'range` of a scalar object (`bit_vector(a'range)`, `a : integer`)
   reports E1361 from the discrete-range path; `tests/diag/sem/attr/range_on_scalar_object.vhd`
   wants E1621 at the attribute (`attr::select` gives it). Route range attributes through
-  `attr::select` there.
+  `attr::select` there. The same path rejects legal `'range` of indexed and selected object
+  names with E1361 (hdl-modules: `input_ports_m2s(0).w.data'range` in
+  axi_lite_simple_write_crossbar.vhd:66, `addrs(0)'range` in addr_pkg.vhd:101,
+  `base_addresses'range` of a generic in axi_lite_mux.vhd:57); names.rs `attr_prefixes` describes
+  such prefixes already.
 
 ### stmt -> lead (expr, decl, unit)
 

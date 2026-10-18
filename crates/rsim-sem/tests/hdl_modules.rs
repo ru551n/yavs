@@ -3,8 +3,7 @@
 //! Built only with `--features corpus`: `cargo test -p rsim-sem --features corpus`.
 //! `tests/user_attributes.rs` covers the same patterns with sources written for rsim.
 //!
-//! Tests marked `ignore` are blocked by entity and architecture analysis (S5, owner: units);
-//! drop the `ignore` when it lands.
+//! A test marked `ignore` is blocked by something other than attributes; the reason says what.
 
 use std::path::PathBuf;
 
@@ -48,14 +47,12 @@ fn attribute_pkg() {
 
 /// `use common.attribute_pkg.all` + `attribute dont_touch of data_in_int : signal is "true";`.
 #[test]
-#[ignore = "S5: entity declarations"]
 fn resync_level_dont_touch() {
     analyze(&[ATTRIBUTE_PKG, ("resync", "resync/src/resync_level.vhd")]);
 }
 
 /// `attribute iob of x : signal is if_then_else(enable_iob, "true", "false");`.
 #[test]
-#[ignore = "S5: entity declarations"]
 fn debounce_iob_async_reg() {
     analyze(&[
         ATTRIBUTE_PKG,
@@ -67,7 +64,6 @@ fn debounce_iob_async_reg() {
 
 /// `attribute ram_style of mem : signal is to_attribute(ram_type);`.
 #[test]
-#[ignore = "S5: entity declarations"]
 fn fifo_ram_style() {
     analyze(&[
         ATTRIBUTE_PKG,
@@ -78,12 +74,22 @@ fn fifo_ram_style() {
     ]);
 }
 
-/// `attribute latency of sine_lookup : entity is 3;`, `sine_lookup'latency` in its own
-/// architecture, `work.sine_lookup'latency` and `work.taylor_expansion_core'latency` in
-/// sine_calculator (constants, `1 to lookup_latency - 1`), `use_dsp` from attribute_pkg.
+/// `attribute latency of sine_lookup : entity is 3;` and `sine_lookup'latency` in its own
+/// architecture (a constant, then `1 to our_latency - 1` ranges).
 #[test]
-#[ignore = "S5: entity declarations"]
-fn sine_generator_latency() {
+fn sine_lookup_latency() {
+    analyze(&[
+        TYPES_PKG,
+        ("sine_generator", "sine_generator/src/sine_lookup.vhd"),
+    ]);
+}
+
+/// `work.sine_lookup'latency` and `work.taylor_expansion_core'latency` read in
+/// sine_calculator, where `latency` is not visible (constants, `1 to lookup_latency - 1`),
+/// and `use_dsp` from attribute_pkg.
+#[test]
+#[ignore = "math/saturate_signed.vhd:104: E1325 for `result <= (others => ..)` (stmt, not attributes)"]
+fn sine_calculator_latency() {
     analyze(&[
         ATTRIBUTE_PKG,
         TYPES_PKG,

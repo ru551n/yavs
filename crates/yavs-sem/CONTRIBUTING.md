@@ -19,8 +19,8 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead |
 | `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1) |
 | `implicit.rs` | implicitly declared operations per type (2.10) | S2 | owner: implicit |
-| `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead |
-| `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | owner: names (core by M1 lead: classify, name_cands, build_name, calls, index/slice/field, attributes); sem08: corpus false positives #167-#170; semuse: expanded names into constructs #54 |
+| `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead; semtyping: expression typing, conversions, conditions, parameter class checks #48 |
+| `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | owner: names (core by M1 lead: classify, name_cands, build_name, calls, index/slice/field, attributes); sem08: corpus false positives #167-#170; semuse: expanded names into constructs #54; semtyping: type conversions (9.3.6) #48 |
 | `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | owner: literal |
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate; semaggr: negative suite #45 |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |

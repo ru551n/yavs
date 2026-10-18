@@ -156,12 +156,17 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
   `Expected::Type`; pass the context *subtype* (an `others` needs the constrained one), and
   `aggregate::no_context` (E1320) for `Expected::Any`. Nested aggregates in elements are handled
   inside, with the element subtype as context.
-- **expr/names.rs**: describe the prefix as `attr::Prefix` and use `attr::select` (E1621, E1007
-  revision gates), `result_subtype`, `param_type`, `staticness` instead of the ad hoc table;
-  implicit signal attributes through `attr::implicit_signal`; user attributes `x'a` through
-  `attr::user_value`.
-- **decl.rs**: `attribute a : t;` through `attr::declare_attribute`; specifications through
-  `attr::specify` (value resolved with `attr::spec_subtype`, signature callback for overloads).
+- Done (names): `attr::Prefix`/`attr::applies`/`attr::select`/`result_subtype` in names.rs,
+  user attributes `x'a` through `attr::user_value`; decl.rs through `declare_attribute` and
+  `specify` (lead). Open: `attr::implicit_signal` is not called yet (`'delayed` and friends are
+  plain `ExprKind::Attr` nodes).
+
+From names (attr):
+
+- **types.rs** (lead): `'range` of a scalar object (`bit_vector(a'range)`, `a : integer`)
+  reports E1361 from the discrete-range path; `tests/diag/sem/attr/range_on_scalar_object.vhd`
+  wants E1621 at the attribute (`attr::select` gives it). Route range attributes through
+  `attr::select` there.
 
 ### stmt -> lead (expr, decl, unit)
 

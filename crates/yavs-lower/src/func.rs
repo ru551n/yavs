@@ -5,11 +5,12 @@ use yavs_ir::{
     AddrSpace, BlockId, FuncBuilder, FuncFlags, FuncId, FuncKind, Inst, Mode, ParamClass,
     ProgramBuilder, Reg, RegTy, RootKind, StmtKind, TyId, Width,
 };
-use yavs_sem::decl::{Body, DeclKind, ObjClass, ObjRole, Param, SubprogramKind};
+use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, SubprogramKind};
 use yavs_sem::hir::{self, Mode as HMode, Sensitivity, StmtKind as HStmt, UnitHir};
 use yavs_sem::scope::ScopeKind;
 use yavs_sem::{Db, DeclId, ScopeId, StmtId, SubtypeId, UnitId};
 
+use crate::expr::Place;
 use crate::{Cx, Failed, InstConst, InstValue, Obj, ProcessIr, R, SignalIr, Space, UnitIr, ty};
 
 /// How a parameter is passed (DESIGN.md "Subprograms").
@@ -325,6 +326,10 @@ impl<'a, 'b> Fx<'a, 'b> {
         let mut ok = true;
         for &d in &self.db.scopes[scope].order {
             let decl = &self.db.decls[d];
+            if let DeclKind::Alias(Alias::Object { target, subtype }) = &decl.kind {
+                ok &= self.alias(d, *target, *subtype).is_ok();
+                continue;
+            }
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };
@@ -345,6 +350,87 @@ impl<'a, 'b> Fx<'a, 'b> {
             ok &= r.is_ok();
         }
         if ok { Ok(()) } else { Err(Failed) }
+    }
+
+    /// An object alias (LRM 6.6.2): the target's storage seen under the alias's subtype.
+    fn alias(&mut self, d: DeclId, target: yavs_sem::ExprId, subtype: Option<SubtypeId>) -> R<()> {
+        let db = self.db;
+        let span = db.decls[d].span;
+        // An alias of a whole object without a new subtype is that object.
+        if let (yavs_sem::hir::ExprKind::Obj(t), None) = (&db.exprs[target].kind, subtype)
+            && let Some(o) = self.cx.objs.get(t).copied()
+        {
+            self.cx.objs.insert(d, o);
+            return Ok(());
+        }
+        self.stmt_start(StmtKind::Decl, span);
+        let name = db.decls[d].name.to_string();
+        match self.place(target)? {
+            Place::Scalar { addr, w, .. } => {
+                let off = self.fb.slot(8, 8);
+                let a = self.addr(Space::Frame(self.depth), off);
+                self.store(a, addr, Width::B8);
+                self.cx.objs.insert(
+                    d,
+                    Obj::ScalarRef {
+                        space: Space::Frame(self.depth),
+                        off,
+                        w,
+                    },
+                );
+            }
+            Place::Array {
+                data,
+                dope,
+                off: None,
+                tid,
+                dims,
+            } => {
+                let dope = match subtype
+                    .map(|st| self.subtype_dope(st, span))
+                    .transpose()?
+                    .flatten()
+                {
+                    Some(want) => {
+                        let what = self.msg(&ty::obj_desc(db, d), yavs_ir::Dir::To);
+                        self.emit(Inst::SubtypeCheck {
+                            dope,
+                            want,
+                            dims,
+                            what,
+                        });
+                        want
+                    }
+                    None => dope,
+                };
+                let bytes = 24 * u32::from(dims);
+                let off = self.fb.local(&name, tid, 24 + bytes, 8);
+                let slot = self.addr(Space::Frame(self.depth), off);
+                self.store(slot, data, Width::B8);
+                let dslot = self.offset(slot, 24);
+                let n = self.int(i64::from(bytes));
+                self.emit(Inst::Copy {
+                    dst: dslot,
+                    src: dope,
+                    bytes: n,
+                });
+                let dp = self.offset(slot, 8);
+                self.store(dp, dslot, Width::B8);
+                self.cx.objs.insert(
+                    d,
+                    Obj::Array {
+                        space: Space::Frame(self.depth),
+                        off,
+                    },
+                );
+            }
+            _ => {
+                return Err(self
+                    .cx
+                    .unsupported(span, "aliases of logic array elements and slices"));
+            }
+        }
+        Ok(())
     }
 
     fn local(&mut self, d: DeclId) -> R<()> {

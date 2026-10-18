@@ -65,6 +65,7 @@ const PASS: &[&str] = &[
     "resolution/resolved_record_port",
     "resolution/std_logic_drivers",
     "resolution/std_logic_table",
+    "run/case_forms",
     "run/sig_params",
     "scalar/array_attrs",
     "scalar/enum_attrs",
@@ -80,6 +81,8 @@ const PASS: &[&str] = &[
     "sigassign/pulse_swallow",
     "sigassign/waveforms",
     "textio/file_roundtrip",
+    "textio/std_logic_textio",
+    "textio/write_read_line",
 ];
 
 const GROUPS: &[&str] = &[
@@ -133,7 +136,7 @@ fn header(src: &str) -> (String, LangRev, Time) {
 /// (severity, time in fs, delta, process index, message).
 type Entry = (Severity, u64, u32, usize, String);
 
-struct Reports(Arc<Mutex<Vec<Entry>>>);
+struct Reports(Arc<Mutex<Vec<Entry>>>, Arc<Mutex<Vec<u8>>>);
 
 impl Observer for Reports {
     fn report(&mut self, hook: &mut Hook<'_>, r: &Report) {
@@ -144,6 +147,10 @@ impl Observer for Reports {
             r.process.0 as usize,
             r.message.clone(),
         ));
+    }
+
+    fn output(&mut self, _hook: &mut Hook<'_>, _p: yavs_kernel::ProcId, bytes: &[u8]) {
+        self.1.lock().unwrap().extend_from_slice(bytes);
     }
 }
 
@@ -189,7 +196,8 @@ fn simulate(file: &Path) -> Result<String, String> {
         .collect();
     let mut sim = e.build(Config::default()).map_err(|e| e.to_string())?;
     let reps = Arc::new(Mutex::new(Vec::new()));
-    sim.subscribe(Box::new(Reports(reps.clone())));
+    let output = Arc::new(Mutex::new(Vec::new()));
+    sim.subscribe(Box::new(Reports(reps.clone(), output.clone())));
     let status = sim.run_until(stop);
     let mut out = String::new();
     let mut code = 0;
@@ -232,6 +240,10 @@ fn simulate(file: &Path) -> Result<String, String> {
             )
             .unwrap();
         }
+    }
+    let text = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+    for line in text.lines() {
+        writeln!(out, "out\t{line}").unwrap();
     }
     Ok(format!("exit\t{code}\n{out}"))
 }

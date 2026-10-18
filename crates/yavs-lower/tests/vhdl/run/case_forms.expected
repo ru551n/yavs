@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:case_forms:_p1	120
+diag	note	0	0	:case_forms:_p1	42120
+diag	note	1000000	0	:case_forms:_p1	y=10
+diag	note	2000000	0	:case_forms:_p1	y=11
+diag	note	3000000	0	:case_forms:_p1	y=12
+diag	note	4000000	0	:case_forms:_p1	y=13

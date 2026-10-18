@@ -383,9 +383,9 @@ impl Fx<'_, '_> {
     }
 
     fn obj_rt(&self, d: DeclId) -> RegTy {
-        match &self.db.decls[d].kind {
-            DeclKind::Object(o) => self.rt_of(self.db.base(o.subtype)),
-            _ => RegTy::I64,
+        match ty::obj_subtype(self.db, d) {
+            Some(st) => self.rt_of(self.db.base(st)),
+            None => RegTy::I64,
         }
     }
 
@@ -434,9 +434,9 @@ impl Fx<'_, '_> {
 
     /// The IR type of object `d`.
     pub fn decl_ty(&mut self, d: DeclId, span: Span) -> R<TyId> {
-        match &self.db.decls[d].kind {
-            DeclKind::Object(o) => self.ty(self.db.base(o.subtype), span),
-            _ => Err(self.cx.ice(span, "not an object")),
+        match ty::obj_subtype(self.db, d) {
+            Some(st) => self.ty(self.db.base(st), span),
+            None => Err(self.cx.ice(span, "not an object")),
         }
     }
 
@@ -2291,9 +2291,8 @@ impl Fx<'_, '_> {
         let span = x.span;
         match &x.kind {
             ExprKind::Obj(d) => {
-                let st = match &db.decls[*d].kind {
-                    DeclKind::Object(o) => o.subtype,
-                    _ => return Err(self.cx.ice(span, "assignment to a non-object")),
+                let Some(st) = ty::obj_subtype(db, *d) else {
+                    return Err(self.cx.ice(span, "assignment to a non-object"));
                 };
                 match self.cx.objs.get(d).copied() {
                     Some(Obj::Scalar { space, off, w }) => {

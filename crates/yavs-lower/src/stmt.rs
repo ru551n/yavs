@@ -3,7 +3,9 @@
 
 use yavs_diag::Span;
 use yavs_ir::CheckKind;
-use yavs_ir::{BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, RegTy, StmtKind, Width};
+use yavs_ir::{
+    BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, Reg, RegTy, StmtKind, Width,
+};
 use yavs_sem::hir::{
     Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs, StmtKind as H,
     Target, Waveform,
@@ -177,15 +179,14 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<Vec<BlockId>> {
         let db = self.db;
-        if matching {
-            return Err(self
-                .cx
-                .unsupported(span, "matching case and selected statements"));
-        }
-        if ty::is_array(db, db.base(db.exprs[expr].subtype)) {
-            return Err(self
-                .cx
-                .unsupported(span, "case and selected statements over arrays"));
+        let array = ty::is_array(db, db.base(db.exprs[expr].subtype));
+        if matching
+            || array
+            || sets.iter().any(|s| {
+                s.intervals.is_none() && !s.choices.iter().all(|c| matches!(c, Choice::Others))
+            })
+        {
+            return self.case_chain(expr, matching, sets, span);
         }
         let v = self.scalar_expr(expr)?;
         let mut arms = Vec::new();
@@ -219,6 +220,199 @@ impl Fx<'_, '_> {
             self.term(Inst::Unreachable { what });
         }
         Ok(blocks)
+    }
+
+    /// `case` by comparing with each choice in order: arrays (LRM 10.9, choices of the
+    /// expression's length), matching `case?` (`?=` on BIT and STD_ULOGIC elements) and
+    /// choices that are not locally static.
+    fn case_chain(
+        &mut self,
+        expr: ExprId,
+        matching: bool,
+        sets: &[&ChoiceSet],
+        span: Span,
+    ) -> R<Vec<BlockId>> {
+        let db = self.db;
+        let t = db.base(db.exprs[expr].subtype);
+        let array = ty::is_array(db, t);
+        let v = self.expr(expr)?;
+        let blocks: Vec<BlockId> = sets.iter().map(|_| self.block()).collect();
+        let mut default = None;
+        for (set, &b) in sets.iter().zip(&blocks) {
+            for c in set.choices.iter() {
+                let hit = match c {
+                    Choice::Others => {
+                        default = Some(b);
+                        continue;
+                    }
+                    Choice::Expr(e) => {
+                        let cv = self.expr(*e)?;
+                        match (array, matching) {
+                            (true, false) => self.array_cmp(CmpOp::Eq, v, cv, t, span)?,
+                            (true, true) => self.array_match(v, cv, t, span)?,
+                            (false, m) => {
+                                let a = self.scal(v, span)?;
+                                let b = self.scal(cv, span)?;
+                                if m {
+                                    self.match_scalar(a, b, t, span)?
+                                } else {
+                                    self.cmp(CmpOp::Eq, a, b)
+                                }
+                            }
+                        }
+                    }
+                    Choice::Range(rc) if !array => {
+                        let a = self.scal(v, span)?;
+                        let r = self.range(rc, span)?;
+                        let (lo, hi) = self.low_high(r);
+                        let ge = self.cmp(CmpOp::Ge, a, lo);
+                        let le = self.cmp(CmpOp::Le, a, hi);
+                        let dst = self.reg(RegTy::I64);
+                        self.emit(Inst::Bool {
+                            op: yavs_ir::BoolOp::And,
+                            dst,
+                            a: ge,
+                            b: le,
+                        });
+                        dst
+                    }
+                    _ => return Err(self.cx.ice(span, "choice kind in a case statement")),
+                };
+                let next = self.block();
+                self.branch(hit, b, next);
+                self.at(next);
+            }
+        }
+        match default {
+            Some(b) => self.jump(b),
+            None => {
+                let what = self.msg("case expression value not covered by any choice", Dir::To);
+                self.term(Inst::Unreachable { what });
+            }
+        }
+        Ok(blocks)
+    }
+
+    /// The `?=` class of a plane code: 0 for '0'/'L', 1 for '1'/'H', 2 for '-', 3 otherwise.
+    fn match_class(&mut self, code: Reg) -> Reg {
+        let tab = self
+            .fb
+            .program()
+            .konst(yavs_ir::ConstData::Bytes(vec![3, 3, 0, 1, 3, 3, 0, 1, 2]));
+        let base = self.reg(RegTy::Ptr);
+        self.emit(Inst::AddrOf {
+            dst: base,
+            space: yavs_ir::AddrSpace::Const(tab),
+            off: 0,
+        });
+        let a = self.reg(RegTy::Ptr);
+        self.emit(Inst::Index {
+            dst: a,
+            base,
+            pos: code,
+            stride: 1,
+        });
+        self.load(a, Width::B1, RegTy::I64)
+    }
+
+    /// Whether two plane codes match under `?=` (a '-' matches anything, metavalues nothing).
+    fn match_codes(&mut self, a: Reg, b: Reg) -> Reg {
+        let ca = self.match_class(a);
+        let cb = self.match_class(b);
+        let two = self.int(2);
+        let wa = self.cmp(CmpOp::Eq, ca, two);
+        let wb = self.cmp(CmpOp::Eq, cb, two);
+        let eq = self.cmp(CmpOp::Eq, ca, cb);
+        let meta = self.cmp(CmpOp::Lt, ca, two);
+        let same = self.reg(RegTy::I64);
+        self.emit(Inst::Bool {
+            op: yavs_ir::BoolOp::And,
+            dst: same,
+            a: eq,
+            b: meta,
+        });
+        let w = self.reg(RegTy::I64);
+        self.emit(Inst::Bool {
+            op: yavs_ir::BoolOp::Or,
+            dst: w,
+            a: wa,
+            b: wb,
+        });
+        let dst = self.reg(RegTy::I64);
+        self.emit(Inst::Bool {
+            op: yavs_ir::BoolOp::Or,
+            dst,
+            a: w,
+            b: same,
+        });
+        dst
+    }
+
+    /// `?=` on scalars of type `t` (BIT, STD_ULOGIC; positions in, plane codes compared).
+    fn match_scalar(&mut self, a: Reg, b: Reg, t: yavs_sem::TypeId, span: Span) -> R<Reg> {
+        let tid = self.ty(t, span)?;
+        if yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_none() {
+            return Err(self.cx.unsupported(
+                span,
+                "matching case over types other than BIT and STD_ULOGIC",
+            ));
+        }
+        let bias = self.code_bias(tid);
+        let a = self.enc(a, bias);
+        let b = self.enc(b, bias);
+        Ok(self.match_codes(a, b))
+    }
+
+    /// `?=` on two arrays of BIT or STD_ULOGIC elements: equal lengths and every element matches.
+    fn array_match(
+        &mut self,
+        a: crate::expr::V,
+        b: crate::expr::V,
+        t: yavs_sem::TypeId,
+        span: Span,
+    ) -> R<Reg> {
+        let (ad, ap) = self.arr(a, span)?;
+        let (bd, bp) = self.arr(b, span)?;
+        let tid = self.ty(t, span)?;
+        if yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_none() {
+            return Err(self.cx.unsupported(
+                span,
+                "matching case over arrays other than BIT and STD_ULOGIC vectors",
+            ));
+        }
+        let la = self.dope_len(ap);
+        let lb = self.dope_len(bp);
+        let r = self.cmp(CmpOp::Eq, la, lb);
+        let (body, done) = (self.block(), self.block());
+        self.branch(r, body, done);
+        self.at(body);
+        self.for_n(la, |fx, i| {
+            let ea = fx.reg(RegTy::I64);
+            fx.emit(Inst::LGet {
+                dst: ea,
+                base: ad,
+                idx: i,
+            });
+            let eb = fx.reg(RegTy::I64);
+            fx.emit(Inst::LGet {
+                dst: eb,
+                base: bd,
+                idx: i,
+            });
+            let m = fx.match_codes(ea, eb);
+            let both = fx.reg(RegTy::I64);
+            fx.emit(Inst::Bool {
+                op: yavs_ir::BoolOp::And,
+                dst: both,
+                a: r,
+                b: m,
+            });
+            fx.emit(Inst::Move { dst: r, src: both });
+            Ok(())
+        })?;
+        self.jump(done);
+        self.at(done);
+        Ok(r)
     }
 
     fn report(

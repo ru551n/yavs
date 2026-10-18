@@ -231,3 +231,15 @@ pub(crate) fn encode_array(prog: &Program, ty: TyId, v: &ConstValue) -> Option<(
     };
     Some((elems, dope))
 }
+
+/// The subtype of an object or object alias (an alias without a subtype has its target's).
+pub(crate) fn obj_subtype(db: &Db, d: yavs_sem::DeclId) -> Option<SubtypeId> {
+    use yavs_sem::decl::{Alias, DeclKind};
+    match &db.decls[d].kind {
+        DeclKind::Object(o) => Some(o.subtype),
+        DeclKind::Alias(Alias::Object { target, subtype }) => {
+            Some(subtype.unwrap_or(db.exprs[*target].subtype))
+        }
+        _ => None,
+    }
+}

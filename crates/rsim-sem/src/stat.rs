@@ -97,16 +97,46 @@ impl Db {
         }
     }
 
-    fn arg_value(&self, a: &Actual, default: Option<ExprId>) -> Result<ConstValue, Fold> {
+    fn arg_value(
+        &self,
+        a: &Actual,
+        default: Option<ExprId>,
+        operand: &mut dyn FnMut(ExprId) -> Option<ConstValue>,
+    ) -> Result<ConstValue, Fold> {
         let e = match a {
             Actual::Expr(e) => Some(*e),
             Actual::Default => default,
             _ => None,
         };
-        e.and_then(|e| self.value(e).cloned()).ok_or(Fold::No)
+        e.and_then(operand).ok_or(Fold::No)
     }
 
     fn fold(&self, id: ExprId) -> Result<ConstValue, Fold> {
+        self.fold_operands(id, &mut |e| self.value(e).cloned())
+    }
+
+    /// Fold `id` with operand values from `operand` instead of the folded cache: elaboration
+    /// (rsim-elab) folds globally static expressions once generics have values.
+    /// `Ok(None)`: sem cannot fold it; `Err(why)`: the operation fails (overflow, division by
+    /// zero, ...).
+    pub fn fold_with(
+        &self,
+        id: ExprId,
+        operand: &mut dyn FnMut(ExprId) -> Option<ConstValue>,
+    ) -> Result<Option<ConstValue>, &'static str> {
+        match self.fold_operands(id, operand) {
+            Ok(v) => Ok(Some(v)),
+            Err(Fold::No) => Ok(None),
+            Err(Fold::Overflow) => Err("arithmetic overflow"),
+            Err(Fold::Fails(why)) => Err(why),
+        }
+    }
+
+    fn fold_operands(
+        &self,
+        id: ExprId,
+        operand: &mut dyn FnMut(ExprId) -> Option<ConstValue>,
+    ) -> Result<ConstValue, Fold> {
         let e = &self.exprs[id];
         let result_kind = &self.types[self.base(e.subtype)].kind;
         match &e.kind {
@@ -122,6 +152,7 @@ impl Db {
                     vals.push(self.arg_value(
                         &a.actual,
                         s.params.get(a.formal as usize).and_then(|p| p.default),
+                        operand,
                     )?);
                 }
                 fold_family(op.family, &vals, result_kind)
@@ -133,7 +164,7 @@ impl Db {
             } => {
                 let vals: Vec<ConstValue> = args
                     .iter()
-                    .map(|a| self.value(*a).cloned().ok_or(Fold::No))
+                    .map(|a| operand(*a).ok_or(Fold::No))
                     .collect::<Result<_, _>>()?;
                 match (attr, vals.as_slice()) {
                     (
@@ -186,10 +217,10 @@ impl Db {
                     _ => Err(Fold::No),
                 }
             }
-            ExprKind::Conv { operand, .. }
-            | ExprKind::ImplicitConv { operand }
-            | ExprKind::Qualified { operand, .. } => {
-                let v = self.value(*operand).cloned().ok_or(Fold::No)?;
+            ExprKind::Conv { operand: inner, .. }
+            | ExprKind::ImplicitConv { operand: inner }
+            | ExprKind::Qualified { operand: inner, .. } => {
+                let v = operand(*inner).ok_or(Fold::No)?;
                 match (v, result_kind) {
                     (ConstValue::Int(n), TypeKind::Floating | TypeKind::UniversalReal) => {
                         Ok(ConstValue::Real(n as f64))

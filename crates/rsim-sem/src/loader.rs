@@ -510,6 +510,43 @@ impl Db {
         )
     }
 
+    /// Load secondary unit `secondary` of primary `primary` in `lib`, e.g. an
+    /// architecture named by an instance or a configuration (rsim-elab).
+    pub fn load_secondary(
+        &mut self,
+        lib: LibId,
+        primary: Symbol,
+        secondary: Symbol,
+        at: Option<Span>,
+    ) -> Result<UnitId, Reported> {
+        self.load_unit(lib, UnitKey::Secondary(primary, secondary), at)
+    }
+
+    /// The most recently analyzed architecture of `entity` (LRM 7.3.3): the last
+    /// one in manifest order, or in analysis order for a library of this session.
+    pub fn last_architecture(&self, entity: UnitId) -> Option<Symbol> {
+        let (lib, key) = (self.units[entity].lib, self.units[entity].name.key);
+        match &self.libs[lib].source {
+            LibSource::Manifest(m) => m
+                .units()
+                .filter(|u| {
+                    u.kind == LibKind::Architecture && u.primary.as_deref() == Some(key.as_str())
+                })
+                .last()
+                .and_then(|u| u.key.split_once('/').map(|(_, a)| Symbol::intern(a))),
+            _ => self
+                .units
+                .iter()
+                .filter(|(_, u)| {
+                    u.lib == lib
+                        && u.kind == UnitKind::Architecture
+                        && matches!(u.key, UnitKey::Secondary(e, _) if e == key)
+                })
+                .last()
+                .map(|(_, u)| u.name.key),
+        }
+    }
+
     /// The manifest record of an analyzed unit. Dependencies on the vendored
     /// std/ieee tree are left out: they are not manifest libraries.
     pub fn unit_record(&self, u: UnitId) -> UnitRecord {

@@ -53,6 +53,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | textio READ/WRITE move the line's bytes to the new object (`Heap::take`, `alloc_from`) instead of copying; a READ drops the consumed prefix through the object's front offset, compacted once it is the larger half. The handle, deallocation and renumbering `1 to len` stay as before | N reads or writes on one line are O(N) (#196) | `src/textio.rs` `line_edit`, `src/heap.rs` |
 | Assert state: each process sees the state at the start of its cycle plus its own changes; changes merge in process order at the next cycle | Rule 3 with parallel processes (#99) | `docs/decisions.md` "IR and interpreter" |
 | Check and overflow texts match the reference simulator (`value 101 outside of PCT range 0 to 100 for variable P`, ...) | Strict difftest | `crates/yavs-ir/README.md` Requests answer 4 |
+| `now` without a kernel (elaboration-time calls, #77) returns 0 fs | LRM 14.7.5.2: simulation starts at 0; the external test runner's factories read it during elaboration | `docs/decisions.md` "Elaboration" |
 | Runtime errors stop at once (bound, overflow, null, delta limit); a report at the stop severity ends the process | Error motto; exit severity (user, 2026-10-18) | `docs/plan.md` "Error-handling motto", `docs/decisions.md` "Runtime: default exit severity" |
 
 Module-local decisions go in this section and ir.md section 9 in the same commit (root

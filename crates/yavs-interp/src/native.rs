@@ -149,7 +149,8 @@ fn now(
     _: Option<TyId>,
     _: &[u64],
 ) -> R<Option<u64>> {
-    Ok(Some(kctx(ctx)?.now().as_fs()))
+    // During elaboration the current time is 0 fs (LRM 14.7.5.2: time starts at 0).
+    Ok(Some(ctx.as_deref().map_or(0, |c| c.now().as_fs())))
 }
 
 fn stop0(

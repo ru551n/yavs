@@ -298,6 +298,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   delta (a common testbench idiom) would read nothing. Determinism holds because a file object
   belongs to one process or to serial processes. `STD_OUTPUT` still goes through the kernel's
   OUTPUT stream so it stays ordered with `report`. K6 remains available for a future need.
+- **Open, needs a decision: BIT/BOOLEAN in bit-planes.** rsim-elab stores BIT leaves as their
+  positions (0/1, codes of 'U'/'X'); the interpreter's natives write the codes of '0'/'1'
+  (2/3), with which `LogicOp`/`LNum` (std_ulogic tables) compute BIT results correctly. The
+  interpreter reads both for now. Proposal: '0'/'1' codes everywhere.
 - **Foreign arrays** are passed as C-layout copies left to right (NVC convention), logic
   elements one code byte each (BIT/BOOLEAN 0/1); records as naturally aligned structs;
   access values as a pointer into the object (rsim additions). Copy-back range-checks.

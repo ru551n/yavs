@@ -324,6 +324,15 @@ pub enum Inst {
         dst: Reg,
         src: Reg,
     },
+    /// `FToI` checked against the integer subtype `lo .. hi`; the message shows the real
+    /// (`value 3e10 outside of INTEGER range ...`).
+    FToIRange {
+        dst: Reg,
+        src: Reg,
+        lo: Reg,
+        hi: Reg,
+        what: CheckMsgId,
+    },
     // compare / logic
     Cmp {
         op: CmpOp,
@@ -386,6 +395,24 @@ pub enum Inst {
     Check {
         kind: CheckKind,
         v: Reg,
+        lo: Reg,
+        hi: Reg,
+        what: CheckMsgId,
+    },
+    /// `lo <= v <= hi` on reals (real subtype constraints).
+    FCheck {
+        v: Reg,
+        lo: Reg,
+        hi: Reg,
+        what: CheckMsgId,
+    },
+    /// Integer arithmetic whose result must lie in `lo .. hi` (the base type of the
+    /// operands): `result of 2147483647 + 1 cannot be represented as INTEGER`.
+    BinRange {
+        op: IntOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
         lo: Reg,
         hi: Reg,
         what: CheckMsgId,
@@ -717,6 +744,28 @@ impl Inst {
             Inst::FToI { dst, src } => {
                 d(dst, i);
                 f(src, Use, fl);
+            }
+            Inst::FToIRange {
+                dst, src, lo, hi, ..
+            } => {
+                d(dst, i);
+                f(src, Use, fl);
+                f(lo, Use, i);
+                f(hi, Use, i);
+            }
+            Inst::FCheck { v, lo, hi, .. } => {
+                f(v, Use, fl);
+                f(lo, Use, fl);
+                f(hi, Use, fl);
+            }
+            Inst::BinRange {
+                dst, a, b, lo, hi, ..
+            } => {
+                d(dst, i);
+                f(a, Use, i);
+                f(b, Use, i);
+                f(lo, Use, i);
+                f(hi, Use, i);
             }
             Inst::FCmp { dst, a, b, .. } => {
                 d(dst, i);

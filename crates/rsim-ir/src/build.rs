@@ -41,9 +41,16 @@ impl ProgramBuilder {
     }
 
     pub fn check_msg(&mut self, what: &str, dir: crate::Dir) -> CheckMsgId {
+        self.check_msg_for(what, dir, "")
+    }
+
+    /// A check message naming the subtype: `value 101 outside of PCT range 0 to 100 for
+    /// variable P` (`what` = "variable P", `subtype` = "PCT").
+    pub fn check_msg_for(&mut self, what: &str, dir: crate::Dir, subtype: &str) -> CheckMsgId {
         self.prog.checks.push(CheckMsg {
             what: what.to_string(),
             dir,
+            subtype: subtype.to_string(),
         })
     }
 

@@ -76,3 +76,21 @@ through lowering and the interpreter (`crates/rsim-lower/tests/corpus.rs`):
 6. **`to_ostring`/`to_hstring` symbols**: sem names them `rsim.implicit.to_hstring.<type>`,
    NATIVE.md lists them under the `to_string` family, so `Runtime::new` rejects the program
    (`scalar/string_attrs`). One of the two needs to change (sem's `mangle.rs` or NATIVE.md).
+
+Answers (rsim-ir/rsim-interp, 2026-10-18):
+
+1. Done: a `Thunk` may `Ret` with or without a value (and be called either way).
+2. Done: `rsim.attr.value` for integer, real, physical and enumeration types (fat-pair string,
+   `NativeRef::ty` the base type); a bad string is a runtime error `'value: ...`.
+3. Done: after a `Report` at `Ctx::stop_severity()` (new, rsim-kernel) the process stops
+   executing.
+4. Done: `ProgramBuilder::check_msg_for(what, dir, subtype)`; `Check`/`Pos` read `value 101
+   outside of PCT range 0 to 100 for variable P` (`index ...` for index checks); new
+   `Inst::BinRange {op, dst, a, b, lo, hi, what}` gives `result of 2147483647 + 1 cannot be
+   represented as INTEGER`; new `Inst::FToIRange {dst, src, lo, hi, what}` gives `value 3e10
+   outside of INTEGER range ...`; every integer division by zero reads `division by zero`.
+5. Done: `Inst::FCheck {v, lo, hi, what}` on F64 registers.
+6. Accepted on this side: `rsim.implicit.to_hstring.<type>` and `.to_ostring.<type>` are valid
+   and implemented for bit arrays (as is `to_string` of character and bit arrays). NATIVE.md
+   can stay as it is.
+

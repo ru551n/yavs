@@ -301,6 +301,8 @@ pub enum Dir {
 pub struct CheckMsg {
     pub what: String,
     pub dir: Dir,
+    /// The subtype checked against, as messages name it (`INTEGER`, `PCT`); may be empty.
+    pub subtype: String,
 }
 
 /// `Case` choices as sorted, non-overlapping inclusive ranges.

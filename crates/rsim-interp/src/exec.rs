@@ -165,8 +165,56 @@ fn to_time(v: i64) -> R<Time> {
 }
 
 fn arith_r(r: Result<i64, arith::ArithError>) -> R<u64> {
-    r.map(|v| v as u64)
-        .map_err(|e| Fault::Runtime(e.to_string()))
+    r.map(|v| v as u64).map_err(|e| match e {
+        arith::ArithError::DivisionByZero { .. } => Fault::Runtime("division by zero".into()),
+        e => Fault::Runtime(e.to_string()),
+    })
+}
+
+fn int_op(op: IntOp, x: i64, y: i64) -> Result<i64, arith::ArithError> {
+    match op {
+        IntOp::Add => arith::add(x, y),
+        IntOp::Sub => arith::sub(x, y),
+        IntOp::Mul => arith::mul(x, y),
+        IntOp::Div => arith::div(x, y),
+        IntOp::Rem => arith::rem(x, y),
+        IntOp::Mod => arith::modulo(x, y),
+        IntOp::Pow => arith::pow(x, y),
+    }
+}
+
+fn op_symbol(op: IntOp) -> &'static str {
+    match op {
+        IntOp::Add => "+",
+        IntOp::Sub => "-",
+        IntOp::Mul => "*",
+        IntOp::Div => "/",
+        IntOp::Rem => "rem",
+        IntOp::Mod => "mod",
+        IntOp::Pow => "**",
+    }
+}
+
+/// A real as check messages show it: the shorter of plain and exponent form (`3e10`).
+fn real_text(x: f64) -> String {
+    let (p, e) = (format!("{x}"), format!("{x:e}"));
+    if e.len() < p.len() { e } else { p }
+}
+
+/// `<kind> <v> outside of [<subtype> ]range <bounds>[ for <what>]` (NVC's wording).
+fn outside(kind: &str, v: &str, b: &str, m: &rsim_ir::CheckMsg) -> String {
+    let mut s = format!("{kind} {v} outside of ");
+    if !m.subtype.is_empty() {
+        s.push_str(&m.subtype);
+        s.push(' ');
+    }
+    s.push_str("range ");
+    s.push_str(b);
+    if !m.what.is_empty() {
+        s.push_str(" for ");
+        s.push_str(&m.what);
+    }
+    s
 }
 
 fn real_ok(x: f64, what: &str) -> R<u64> {
@@ -661,6 +709,19 @@ impl Machine {
         Ok((s.signal.slice(d.range.offset, d.range.len), s.ty.elem))
     }
 
+    fn msg(&self, m: rsim_ir::CheckMsgId) -> rsim_ir::CheckMsg {
+        self.rt
+            .prog
+            .checks
+            .get(m)
+            .cloned()
+            .unwrap_or(rsim_ir::CheckMsg {
+                what: "?".into(),
+                dir: Dir::To,
+                subtype: String::new(),
+            })
+    }
+
     fn check_msg(&self, m: rsim_ir::CheckMsgId) -> (String, Dir) {
         match self.rt.prog.checks.get(m) {
             Some(c) => (c.what.clone(), c.dir),
@@ -1008,13 +1069,12 @@ impl Machine {
                     0 if l <= i && i <= rr => i - l,
                     1 if rr <= i && i <= l => l - i,
                     0 | 1 => {
-                        let (w, _) = self.check_msg(what);
                         let b = if dir == 0 {
                             format!("{l} to {rr}")
                         } else {
                             format!("{l} downto {rr}")
                         };
-                        return rt_err(format!("index {i} out of range {b} for {w}"));
+                        return rt_err(outside("index", &i.to_string(), &b, &self.msg(what)));
                     }
                     _ => return Err(ice(format!("direction {dir} in a descriptor"))),
                 };
@@ -1045,15 +1105,7 @@ impl Machine {
             }
             Inst::Bin { op, dst, a, b } => {
                 let (x, y) = (self.ri(a), self.ri(b));
-                let v = arith_r(match op {
-                    IntOp::Add => arith::add(x, y),
-                    IntOp::Sub => arith::sub(x, y),
-                    IntOp::Mul => arith::mul(x, y),
-                    IntOp::Div => arith::div(x, y),
-                    IntOp::Rem => arith::rem(x, y),
-                    IntOp::Mod => arith::modulo(x, y),
-                    IntOp::Pow => arith::pow(x, y),
-                })?;
+                let v = arith_r(int_op(op, x, y))?;
                 self.set(dst, v);
             }
             Inst::Un { op, dst, a } => {
@@ -1109,6 +1161,66 @@ impl Machine {
             Inst::FToI { dst, src } => {
                 let v = arith_r(arith::real_to_int(arith::Op::Mul, self.rf(src)))?;
                 self.set(dst, v);
+            }
+            Inst::FToIRange {
+                dst,
+                src,
+                lo,
+                hi,
+                what,
+            } => {
+                let (x, l, h) = (self.rf(src), self.ri(lo), self.ri(hi));
+                match arith::real_to_int(arith::Op::Mul, x) {
+                    Ok(v) if l <= v && v <= h => self.set(dst, v as u64),
+                    _ => {
+                        let m = self.msg(what);
+                        return rt_err(outside("value", &real_text(x), &bounds(l, h, m.dir), &m));
+                    }
+                }
+            }
+            Inst::FCheck { v, lo, hi, what } => {
+                let (x, l, h) = (self.rf(v), self.rf(lo), self.rf(hi));
+                if !(l <= x && x <= h) {
+                    let m = self.msg(what);
+                    let b = match m.dir {
+                        Dir::To => format!("{} to {}", real_text(l), real_text(h)),
+                        Dir::Downto => format!("{} downto {}", real_text(h), real_text(l)),
+                    };
+                    return rt_err(outside("value", &real_text(x), &b, &m));
+                }
+            }
+            Inst::BinRange {
+                op,
+                dst,
+                a,
+                b,
+                lo,
+                hi,
+                what,
+            } => {
+                let (x, y) = (self.ri(a), self.ri(b));
+                let (l, h) = (self.ri(lo), self.ri(hi));
+                match int_op(op, x, y) {
+                    Ok(v) if l <= v && v <= h => self.set(dst, v as u64),
+                    Err(arith::ArithError::DivisionByZero { .. }) => {
+                        return rt_err("division by zero");
+                    }
+                    Err(e @ arith::ArithError::NegativeExponent { .. }) => {
+                        return rt_err(e.to_string());
+                    }
+                    _ => {
+                        let m = self.msg(what);
+                        let t = if m.subtype.is_empty() {
+                            "the result type"
+                        } else {
+                            &m.subtype
+                        };
+                        return rt_err(format!(
+                            "result of {x} {} {y} cannot be represented as {t}",
+                            op_symbol(op)
+                        ));
+                    }
+                }
             }
             Inst::Cmp { op, dst, a, b } => {
                 let v = cmp(op, self.ri(a).cmp(&self.ri(b)));
@@ -1235,10 +1347,8 @@ impl Machine {
                             } else {
                                 "value"
                             };
-                            return rt_err(format!(
-                                "{k} {x} out of range {} for {w}",
-                                bounds(l, h, dir)
-                            ));
+                            let m = self.msg(what);
+                            return rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m));
                         }
                     }
                     CheckKind::Length => {
@@ -1660,7 +1770,13 @@ impl Machine {
                     .map(|&b| b as char)
                     .collect();
                 match ctx.as_deref_mut() {
-                    Some(c) => c.report(s, text),
+                    Some(c) => {
+                        c.report(s, text);
+                        // The simulation ends after this cycle: execute no further.
+                        if s >= c.stop_severity() {
+                            return Ok(Flow::Suspend);
+                        }
+                    }
                     None => return rt_err(format!("report during elaboration: {text}")),
                 }
             }

@@ -238,7 +238,7 @@ fn check_inst(
                 c.params.len()
             ));
         }
-        if has_dst != (c.kind == FuncKind::Function) {
+        if c.kind != FuncKind::Thunk && has_dst != (c.kind == FuncKind::Function) {
             err(format!("result register does not match the kind of {func}"));
         }
         if is_fn && c.flags.contains(FuncFlags::MAY_SUSPEND) {
@@ -266,6 +266,9 @@ fn check_inst(
         }
         Inst::Pos { what, .. }
         | Inst::Check { what, .. }
+        | Inst::FCheck { what, .. }
+        | Inst::BinRange { what, .. }
+        | Inst::FToIRange { what, .. }
         | Inst::SubtypeCheck { what, .. }
         | Inst::Unreachable { what }
         | Inst::Deref { what, .. }
@@ -285,7 +288,8 @@ fn check_inst(
             }
         },
         Inst::Ret { v } => {
-            if v.is_some() != (f.kind == FuncKind::Function) {
+            // A thunk evaluates an expression or initialises an object: either form.
+            if f.kind != FuncKind::Thunk && v.is_some() != (f.kind == FuncKind::Function) {
                 err(format!("return value does not match {:?}", f.kind));
             }
         }

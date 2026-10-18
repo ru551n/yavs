@@ -635,8 +635,11 @@ What the implementation does differently from sections 1 to 3, and what producer
 | native arguments | `in` scalars by value; `out`/`inout` scalars and access variables by cell address; unconstrained arrays as a fat-pair address; files as the address of their 4-byte cell; records by address. Results: scalars by value, strings as a fat-pair address, `line` as a handle |
 | files | a file cell holds index + 1 into the runtime's file table (0: never opened); `FILE_INPUT` = 1 and `FILE_OUTPUT` = 2 are textio's `INPUT`/`OUTPUT`. Disk files are read and written directly (not via K6 streams), so a process that writes, closes and reopens a file in one delta reads what it wrote; a file object is used by one process or by serial ones, so the bytes do not depend on `--threads`. `STD_OUTPUT` goes through the kernel's OUTPUT stream, ordered with `report`. Implicit file ops are implemented for TEXT; binary `read`/`write` are not yet |
 | lines | `line` objects are `[1 to len][bytes]`; natives replace and deallocate them. A line cell in shared memory gets a shared-heap object |
-| logic BIT | BIT and BOOLEAN elements of logic arrays are stored as the codes of '0' and '1' in the bit-planes (element 0 is the rightmost) |
+| logic BIT | BIT and BOOLEAN elements of logic arrays: the interpreter writes the codes of '0' and '1' (so the std_ulogic plane ops give correct BIT results) and reads either those or the positions 0/1 that rsim-elab uses for BIT leaves. **Open: one encoding must be chosen** (element 0 is the rightmost) |
 | protected | the object is a handle to its state record (`New {shared}`), methods get `self` first (`CallProt`); a shared object is created at elaboration through `call_shared` |
+| checks | `CheckMsg {what, dir, subtype}`; messages follow NVC (`value 101 outside of PCT range 0 to 100 for variable P`). Added `BinRange` (integer op checked against the base type, `result of .. cannot be represented as T`), `FToIRange` (real to integer against the subtype, message shows the real), `FCheck` (real subtype constraints). Integer division by zero reads `division by zero` |
+| thunks | may return a value or not |
+| stop severity | after a `Report` at `Ctx::stop_severity()` the process executes no further |
 | constants | compact constants (`Repeat`, `Runs`, `Logic`) are expanded on first use by address (`AddrOf Const`) |
 | debug | section 3.4 (rewritten for the Riviera/Questa requirements) |
 

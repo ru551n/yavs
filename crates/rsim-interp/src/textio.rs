@@ -125,12 +125,14 @@ impl Machine {
     }
 
     /// A `bit_vector` (or boolean array) left to right.
-    fn bits_at(&self, data: u64, n: u64) -> R<Vec<bool>> {
+    pub(crate) fn bits_at(&self, data: u64, n: u64) -> R<Vec<bool>> {
         let v = self.planes(data, n)?;
+        // ponytail: also accepts positions 0/1 (rsim-elab's encoding of BIT leaves) until
+        // one encoding is decided; written values are always '0'/'1' codes.
         (0..n as usize)
             .map(|i| match v.get(n as usize - 1 - i) as u8 {
-                2 => Ok(false),
-                3 => Ok(true),
+                0 | 2 => Ok(false),
+                1 | 3 => Ok(true),
                 c => Err(ice(format!("bit array element with std_ulogic code {c}"))),
             })
             .collect()

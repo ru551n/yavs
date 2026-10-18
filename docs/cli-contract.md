@@ -108,7 +108,11 @@ raises an error itself for a project containing VHDL-93/2002 files.
   directory (and its parents) on first use. VUnit does not run an init command;
   it only creates the parent of the library directory.
 - `std` and `ieee` (and any other library rsim ships) are resolved by rsim
-  itself. A user `--map` of `std` or `ieee` is an error.
+  itself, on demand from rsim's `lib/` tree (nothing is cached). A user `--map` or
+  `--work` of `std` or `ieee` is an error (`E0102`), except under
+  `rsim analyze --bootstrap`, which is how rsim's own `lib/std` and `lib/ieee` are
+  analyzed (tools/corpus `rsim-lib-*`): the mapped `std`/`ieee` directories then
+  replace the vendored tree for that analysis.
 - Library names are case-insensitive VHDL identifiers; paths are used verbatim
   and may contain spaces and, on Windows, drive letters (`C:\x`): split
   `NAME:PATH` at the first colon only.
@@ -127,13 +131,25 @@ raises an error itself for a project containing VHDL-93/2002 files.
 
 ```
 rsim analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
-             [rsim.global_flags] [rsim.a_flags] FILE
+             [--bootstrap] [rsim.global_flags] [rsim.a_flags] FILE...
 ```
 
-- VUnit passes exactly one file per call, in dependency order.
-- Exit 0: the file was analyzed and recorded in the work library. Warnings go
+- One or more files per call, in dependency order (VUnit `--batch-compile` /
+  `--parallel-compile`: directly as several arguments, or as one `@filelist`
+  response file with a file per line, section 0). All files get the same options
+  and `--std`. They are analyzed in the given order by one analysis session: each
+  file is parsed once and sees the units of the files before it, even before the
+  manifest is read again. The work library's exclusive lock is held for the
+  whole call, and each successful file is recorded (atomic manifest rename) as
+  soon as it is done, so concurrent calls into the same library serialize per
+  call and never lose each other's files.
+- Exit 0: every file was analyzed and recorded in the work library. Warnings go
   to stderr/stdout and do not change the exit code (unless `-Werror`).
-- Exit 1: the file has errors; nothing is recorded for that file.
+- Exit 1: a file has errors. The call stops at the first failing file (fail
+  early); files before it stay recorded, the failing one and the rest are not
+  analyzed. With more than one file, stderr names the failing file and lists the
+  files analyzed and recorded before it.
+- `--bootstrap` allows `std`/`ieee` as `--work`/`--map` (section 3).
 - Exit 2: usage error (bad option, unknown standard, unmappable library).
 - Exit 3: internal compiler error.
 - VUnit shows the combined stdout/stderr to the user on failure, so the default

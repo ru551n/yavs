@@ -379,7 +379,7 @@ def write(name, std, srcs, files, excl, note, flags):
 
 
 GEN = {"hdl-modules": gen_hdl_modules, "vunit": gen_vunit, "osvvm": gen_osvvm, "uvvm": gen_uvvm, "rsim-lib": gen_rsim_lib}
-FLAGS = {"uvvm": {"nvc": ["--relaxed"], "rsim": ["--relaxed"]}}
+FLAGS = {"rsim-lib": {"nvc": [], "rsim": ["--bootstrap"]}, "uvvm": {"nvc": ["--relaxed"], "rsim": ["--relaxed"]}}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

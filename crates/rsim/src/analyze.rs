@@ -32,7 +32,12 @@ pub struct Args {
     /// `-Werror` makes warnings errors; other `-W` forms are not implemented yet.
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
-    file: PathBuf,
+    /// Allow `std`/`ieee` as `--work`/`--map` (analyzes rsim's own lib/ into a library).
+    #[arg(long)]
+    bootstrap: bool,
+    /// The files, analyzed in this order; the first failing file stops the batch.
+    #[arg(required = true, value_name = "FILE")]
+    files: Vec<PathBuf>,
 }
 
 /// Replace every `@FILE` argument (after the program name) by the lines of FILE.
@@ -137,7 +142,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let r = if name == "std" || name == "ieee" {
+        let r = if (name == "std" || name == "ieee") && !a.bootstrap {
             Err(Box::new(
                 Diagnostic::error("E0102", format!("library `{name}` is provided by rsim"))
                     .with_help("remove the `std`/`ieee` mapping; rsim resolves them itself"),
@@ -170,42 +175,63 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         "2019"
     };
     let mut opts = Options::new(rev, stdlib());
-    // A work library without a manifest is a valid empty library (contract section 3);
-    // the analyzer only learns about it once something was recorded.
-    if !work_lib.dir.join(rsim_lib::MANIFEST_FILE).exists() {
-        let mut l = Libraries::new();
-        for n in libs.names().filter(|n| *n != work_lib.name) {
-            l.add(n, libs.get(n).expect("listed").dir.clone());
-        }
-        libs = l;
-    }
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
     opts.defines = a.defines;
 
-    let bytes = std::fs::read(&a.file);
-    if encoding == Encoding::Utf8
-        && let Ok(b) = &bytes
-    {
-        let mut sm = SourceMap::default();
-        if let (_, Some(d)) =
-            rsim_syntax::load_source(&mut sm, a.file.display().to_string(), b.clone(), encoding)
-        {
-            out.emit(&sm, &d);
+    // One exclusive hold on the work library for the whole batch (contract section 3).
+    let session = match work_lib.session() {
+        Ok(s) => s,
+        Err(d) => {
+            out.emit(&none, &d);
             return out.finish(1);
         }
-    }
+    };
 
     std::panic::set_hook(Box::new(|_| {}));
+    let current = std::cell::Cell::new(0usize);
+    let done: std::cell::RefCell<Vec<String>> = Default::default();
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut db = Db::new(opts);
-        let r = db.analyze_file(work, &a.file, rev);
-        for d in db.diagnostics() {
-            out.emit(&db.sources, d);
+        let mut shown = 0;
+        for (i, file) in a.files.iter().enumerate() {
+            current.set(i);
+            let bytes = std::fs::read(file);
+            let before = out.errors;
+            if encoding == Encoding::Utf8
+                && let Ok(b) = &bytes
+            {
+                let mut sm = SourceMap::default();
+                if let (_, Some(d)) = rsim_syntax::load_source(
+                    &mut sm,
+                    file.display().to_string(),
+                    b.clone(),
+                    encoding,
+                ) {
+                    out.emit(&sm, &d);
+                    return Some(i);
+                }
+            }
+            let r = db.analyze_file(work, file, rev);
+            for d in &db.diagnostics()[shown..] {
+                out.emit(&db.sources, d);
+            }
+            shown = db.diagnostics().len();
+            let records = match r {
+                Ok(r) if out.errors == before => r,
+                _ => return Some(i),
+            };
+            // bytes was readable or analysis would have failed.
+            let hash = rsim_lib::hash_content(&bytes.unwrap_or_default());
+            if let Err(d) = session.record(std_name, Path::new(file), &hash, records) {
+                out.emit(&none, &d);
+                return Some(i);
+            }
+            done.borrow_mut().push(file.display().to_string());
         }
-        r
+        None
     }));
-    let records = match run {
+    let failed = match run {
         Err(p) => {
             let msg = p
                 .downcast_ref::<&str>()
@@ -215,24 +241,47 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             out.errors += 1;
             let d = Diagnostic::error("E9000", "internal compiler error: this is a bug in rsim")
                 .with_note(format!("panicked: {msg}"))
-                .with_note(format!("while analyzing `{}`", a.file.display()));
+                .with_note(format!(
+                    "while analyzing `{}`",
+                    a.files[current.get()].display()
+                ));
             let _ = std::io::stderr()
                 .lock()
                 .write_all(rsim_diag::render(&none, &d, format, color).as_bytes());
+            note_batch(&a.files, current.get(), &done.borrow());
             return out.finish(3);
         }
-        Ok(r) => r,
+        Ok(f) => f,
     };
-    let records = match records {
-        Ok(r) if out.errors == 0 => r,
-        _ => return out.finish(1),
-    };
-    // bytes was readable or analysis would have failed.
-    let bytes = bytes.unwrap_or_default();
-    let hash = rsim_lib::hash_content(&bytes);
-    if let Err(d) = work_lib.update_file(std_name, Path::new(&a.file), &hash, records) {
-        out.emit(&none, &d);
+    if let Some(i) = failed {
+        note_batch(&a.files, i, &done.borrow());
         return out.finish(1);
     }
     out.finish(0)
+}
+
+/// For a batch (more than one file) say where it stopped and what was recorded.
+fn note_batch(files: &[PathBuf], failed: usize, done: &[String]) {
+    if files.len() < 2 {
+        return;
+    }
+    let mut m = format!(
+        "analysis stopped at `{}` (file {} of {}); the remaining {} file(s) were not analyzed\n",
+        files[failed].display(),
+        failed + 1,
+        files.len(),
+        files.len() - failed - 1
+    );
+    if done.is_empty() {
+        m.push_str("no file of this call was analyzed successfully\n");
+    } else {
+        m.push_str(&format!(
+            "analyzed successfully and recorded before it ({}):\n",
+            done.len()
+        ));
+        for f in done {
+            m.push_str(&format!("  {f}\n"));
+        }
+    }
+    let _ = std::io::stderr().lock().write_all(m.as_bytes());
 }

@@ -146,15 +146,16 @@ impl Db {
             return id.ok_or(Reported);
         }
         let key = name.key.as_str();
-        let source = if key == "std" || key == "ieee" {
-            Some(Ok(LibSource::StdDir(
+        // A mapped `std`/`ieee` (only possible with `rsim analyze --bootstrap`) replaces
+        // the vendored tree; a library without a manifest is an empty library
+        // (cli-contract section 3).
+        let source = match self.opts.libraries.get(key) {
+            Some(l) if !l.dir.join(rsim_lib::MANIFEST_FILE).exists() => Some(Ok(LibSource::Files)),
+            Some(l) => Some(l.read().map(LibSource::Manifest)),
+            None if key == "std" || key == "ieee" => Some(Ok(LibSource::StdDir(
                 self.opts.stdlib.join(key).join(self.rev.as_str()),
-            )))
-        } else {
-            self.opts
-                .libraries
-                .get(key)
-                .map(|l| l.read().map(LibSource::Manifest))
+            ))),
+            None => None,
         };
         let r = match source {
             Some(Ok(source)) => Ok(self.add_library(name, source)),

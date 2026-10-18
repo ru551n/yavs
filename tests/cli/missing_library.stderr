@@ -4,7 +4,7 @@ error[E1001]: unknown library `nolib`
 1 | library nolib;
   |         ^^^^^ not a mapped library
   |
-  = note: mapped libraries: ieee, std
+  = note: mapped libraries: ieee, std, work
   = help: map it with `nolib:PATH`
 
 error[E1100]: `nolib` is not declared

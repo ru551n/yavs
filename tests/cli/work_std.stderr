@@ -1,0 +1,6 @@
+error[E0102]: library `std` is provided by rsim
+  |
+  = help: remove the `std`/`ieee` mapping; rsim resolves them itself
+
+error: aborting due to 1 previous error
+

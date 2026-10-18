@@ -9,7 +9,7 @@ call, in manifest order. The result of every file (PASS = exit 0) is compared wi
 difference fails, until the list is updated (--bless rewrites it from this run, which then covers every file).
 Without --keep-going the run stops at the first difference (without an expected list: the first FAIL).
 
-Command template words: {std} {lib} {dir} {file}; {map} (one --map=LIB:DIR/LIB per library but std/ieee) and
+Command template words: {std} {lib} {dir} {file}; {map} (one --map=LIB:DIR/LIB per library but std/ieee unless the flags have --bootstrap) and
 {flags} (the manifest's [flags] for --tool) expand to several arguments when they are a word of their own.
 Default templates:
   rsim: rsim analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
@@ -92,8 +92,8 @@ def main():
         print(f"note: {exp_path} missing; stopping at the first FAIL (create it with --bless)")
 
     tmpl = shlex.split(a.cmd or TEMPLATES[a.tool])
-    libs = sorted({f["lib"] for f in m["file"]} - {"std", "ieee"})
     flags = m.get("flags", {}).get(a.tool, [])
+    libs = sorted({f["lib"] for f in m["file"]} - (set() if "--bootstrap" in flags else {"std", "ieee"}))
     keep = a.keep_going or a.bless
     results, bad, stopped = [], 0, False
     log = open(a.log, "w") if a.log else None

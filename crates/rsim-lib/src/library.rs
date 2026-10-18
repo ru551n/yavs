@@ -57,11 +57,18 @@ impl Library {
     /// to the library directory, and works on read-only libraries.
     pub fn read(&self) -> Result<Manifest> {
         let lock_path = self.dir.join(LOCK_FILE);
-        let _guard = match File::open(&lock_path) {
-            Ok(f) => match self.acquire(&f, false) {
+        let held = std::path::absolute(&self.dir).is_ok_and(|k| HELD.lock().unwrap().contains(&k));
+        let opened = if held {
+            Ok(None)
+        } else {
+            File::open(&lock_path).map(Some)
+        };
+        let _guard = match opened {
+            Ok(Some(f)) => match self.acquire(&f, false) {
                 Ok(()) => Some(f),
                 Err(e) => return Err(io("L0011", "lock", &lock_path, &e)),
             },
+            Ok(None) => None, // this process holds the exclusive lock
             Err(e) => {
                 debug(format!(
                     "reading library `{}` without a lock: {}: {e}",
@@ -97,7 +104,12 @@ impl Library {
         hash: &str,
         units: Vec<UnitRecord>,
     ) -> Result<()> {
-        let path = std::path::absolute(path).map_err(|e| io("L0002", "resolve", path, &e))?;
+        self.session()?.record(standard, path, hash, units)
+    }
+
+    /// Lock the library exclusively (creating it if needed) until the session drops;
+    /// for a batch of `record`s. This process can still `read` the library meanwhile.
+    pub fn session(&self) -> Result<Session> {
         fs::create_dir_all(&self.dir)
             .map_err(|e| io("L0010", "create library directory", &self.dir, &e))?;
         let lock_path = self.dir.join(LOCK_FILE);
@@ -118,16 +130,55 @@ impl Library {
             })?;
         self.acquire(&lock, true)
             .map_err(|e| io("L0011", "lock", &lock_path, &e))?;
+        let key = std::path::absolute(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        HELD.lock().unwrap().push(key.clone());
+        Ok(Session {
+            lib: self.clone(),
+            _lock: lock,
+            key,
+        })
+    }
+}
 
-        let mp = self.manifest_path();
+/// Library directories exclusively locked by this process (see `Library::read`).
+static HELD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// An exclusive hold on a library; see `Library::session`.
+pub struct Session {
+    lib: Library,
+    _lock: File,
+    key: PathBuf,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let mut h = HELD.lock().unwrap();
+        if let Some(i) = h.iter().position(|k| *k == self.key) {
+            h.remove(i);
+        }
+    }
+}
+
+impl Session {
+    /// Record one file now (atomic manifest rename), so it survives a later failure.
+    pub fn record(
+        &self,
+        standard: &str,
+        path: &Path,
+        hash: &str,
+        units: Vec<UnitRecord>,
+    ) -> Result<()> {
+        let path = std::path::absolute(path).map_err(|e| io("L0002", "resolve", path, &e))?;
+        let mp = self.lib.manifest_path();
         let mut m = match fs::read_to_string(&mp) {
             Ok(t) => Manifest::parse(&t, &mp)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::new(&self.name),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::new(&self.lib.name),
             Err(e) => return Err(io("L0002", "read", &mp, &e)),
         };
         m.replace_file(path, hash.to_string(), standard.to_string(), units);
 
         let tmp = self
+            .lib
             .dir
             .join(format!("{MANIFEST_FILE}.{}.tmp", std::process::id()));
         let r = fs::write(&tmp, m.to_text())
@@ -138,6 +189,6 @@ impl Library {
             let _ = fs::remove_file(&tmp);
             return Err(io("L0002", "write", &mp, &e));
         }
-        Ok(()) // lock released when `lock` drops
+        Ok(())
     }
 }

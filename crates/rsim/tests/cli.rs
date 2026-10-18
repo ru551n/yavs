@@ -61,6 +61,47 @@ const CASES: &[Case] = &[
         code: 2,
     },
     Case {
+        name: "batch_ok",
+        args: &["analyze", "--work=work:$TMP/lib", "ok.vhd", "ok2.vhd"],
+        code: 0,
+    },
+    Case {
+        name: "batch_fail",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "ok.vhd",
+            "bad.vhd",
+            "ok2.vhd",
+        ],
+        code: 1,
+    },
+    Case {
+        name: "batch_first_fails",
+        args: &["analyze", "--work=work:$TMP/lib", "bad.vhd", "ok.vhd"],
+        code: 1,
+    },
+    Case {
+        name: "batch_filelist",
+        args: &["analyze", "--work=work:$TMP/lib", "@$TMP/files.lst"],
+        code: 0,
+    },
+    Case {
+        name: "empty_mapped_library",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "--map=other:$TMP/none",
+            "emptylib.vhd",
+        ],
+        code: 1,
+    },
+    Case {
+        name: "work_std",
+        args: &["analyze", "--work=std:$TMP/lib", "ok.vhd"],
+        code: 2,
+    },
+    Case {
         name: "json",
         args: &[
             "--message-format=json",
@@ -79,6 +120,7 @@ fn run(case: &Case, dir: &Path, tmp: &Path) -> (i32, String) {
         format!("--std=2008\r\n--work=work:{t}/lib\r\nok.vhd"),
     )
     .expect("rsp");
+    std::fs::write(tmp.join("files.lst"), "ok.vhd\nok2.vhd\n").expect("lst");
     let args: Vec<String> = case.args.iter().map(|a| a.replace("$TMP", t)).collect();
     let out = Command::new(env!("CARGO_BIN_EXE_rsim"))
         .args(["--color", "never"])
@@ -142,6 +184,19 @@ fn library_recorded_and_read_only() {
         "{m}"
     );
 
+    // A batch into an existing library reads its manifest while holding its lock.
+    let o = Command::new(env!("CARGO_BIN_EXE_rsim"))
+        .args(["--color", "never", "analyze", &lib, "ok.vhd", "ok2.vhd"])
+        .current_dir(&dir)
+        .output()
+        .expect("run");
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
     let mut perm = std::fs::metadata(tmp.join("lib"))
         .expect("meta")
         .permissions();
@@ -156,5 +211,59 @@ fn library_recorded_and_read_only() {
     #[allow(clippy::permissions_set_readonly_false)]
     perm.set_readonly(false);
     let _ = std::fs::set_permissions(tmp.join("lib"), perm);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Two processes analyzing batches into one library at the same time lose nothing
+/// (plan rule 14), and a batch records its files in order.
+#[test]
+fn concurrent_batches() {
+    let tmp = tempdir("conc");
+    let src = tmp.join("src");
+    std::fs::create_dir_all(&src).expect("src");
+    let n = 25;
+    let files = |p: &str| -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                let f = src.join(format!("{p}{i}.vhd"));
+                std::fs::write(
+                    &f,
+                    format!("package {p}{i} is\n  constant c : integer := {i};\nend package;\n"),
+                )
+                .expect("write");
+                f.display().to_string()
+            })
+            .collect()
+    };
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let spawn = |fs: Vec<String>| {
+        let lib = lib.clone();
+        std::thread::spawn(move || {
+            Command::new(env!("CARGO_BIN_EXE_rsim"))
+                .args(["--color", "never", "analyze", &lib])
+                .args(fs)
+                .output()
+                .expect("run")
+        })
+    };
+    let (ha, hb) = (spawn(files("pa")), spawn(files("pb")));
+    for h in [ha, hb] {
+        let o = h.join().expect("join");
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    let m = std::fs::read_to_string(tmp.join("lib/rsim-lib.toml")).expect("manifest");
+    for p in ["pa", "pb"] {
+        for i in 0..n {
+            assert!(
+                m.contains(&format!("name = \"{p}{i}\"")),
+                "{p}{i} missing\n{m}"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -733,10 +733,43 @@ impl Db {
             if let Some(sp) = self.decls[d].kind.subprogram()
                 && let crate::decl::Body::Hir { scope, stmts } = &sp.body
             {
-                self.collect_drivers(stmts, out);
+                let mut ls = Vec::new();
+                self.collect_drivers(stmts, &mut ls);
+                for l in ls {
+                    push_unique(self, out, self.cut_at_subprogram_values(l));
+                }
                 self.scope_subprogram_drivers(*scope, out);
             }
         }
+    }
+
+    /// A driver from a subprogram body ends before the first index or slice that reads an
+    /// object of a subprogram (a parameter, or a constant computed from one): its value
+    /// exists only when the call runs, so the driver is the prefix before it (14.7.2, #205).
+    fn cut_at_subprogram_values(&self, mut l: Lsp) -> Lsp {
+        let dynamic = |e: ExprId| {
+            let mut hit = false;
+            self.walk_expr(e, &mut |x| {
+                if let ExprKind::Obj(d) = self.exprs[x].kind
+                    && self.in_subprogram(self.decls[d].scope)
+                {
+                    hit = true;
+                }
+            });
+            hit
+        };
+        let k = l.path.iter().position(|st| match st {
+            LspStep::Field(_) => false,
+            LspStep::Index(ix) => ix.iter().any(|&e| dynamic(e)),
+            LspStep::Slice(RangeC::Explicit { left, right, .. }) => {
+                dynamic(*left) || dynamic(*right)
+            }
+            LspStep::Slice(RangeC::Attr { .. }) => false,
+        });
+        if let Some(k) = k {
+            l.path = l.path[..k].into();
+        }
+        l
     }
 
     /// Drivers and (for `process (all)`) the signals read of a process

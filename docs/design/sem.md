@@ -1089,7 +1089,8 @@ pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC), Rebase(Subty
   (globally static counts, 8.1; elab evaluates the globally static ones, one reported case was this).
 - Each process gets `ProcessInfo { drivers: Vec<Lsp>, reads_all: Option<Vec<Lsp>> }`: the LSPs of
   all signal targets in the process (including targets in procedures declared inside the process,
-  14.7.2), and for `process (all)` the LSPs of signals read in the process (11.3: names read in
+  14.7.2; such a driver ends before the first index or slice that reads an object of the
+  subprogram, whose value exists only when the call runs, #205), and for `process (all)` the LSPs of signals read in the process (11.3: names read in
   the statement part, actuals of mode `in`/`inout` in procedure calls; not signals read inside
   subprograms declared outside the process).
 - Concurrent statements get the same information for their equivalent processes. Sem does not

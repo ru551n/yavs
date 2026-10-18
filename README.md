@@ -11,9 +11,9 @@ Yet Another VHDL Simulator: VHDL-2008 and VHDL-2019 in Rust.
 ## Overview
 
 yavs has its own parser and semantic analysis, an IR interpreter, a parallel simulation kernel
-and rustc-style diagnostics. VHDL-2008 and 2019 files mix in one project, and the IEEE packages
-are built into the executable. VUnit support comes first; VHPI for cocotb, an LLVM tier,
-waveforms, a DAP debug server and a GUI are planned. yavs is early: expect gaps and please
+and diagnostics with source snippets and VHDL call stacks. VHDL-2008 and 2019 files mix in one
+project, and the IEEE packages are built into the executable. VHPI, a JIT-compiled tier,
+waveforms, a debug server and a GUI are planned. yavs is early: expect gaps and please
 [report](https://github.com/ru551n/yavs/issues) what breaks.
 
 ## Installation
@@ -33,8 +33,7 @@ yavs analyze --std=2008 --work=work:out/work tb.vhd
 yavs run --work=work:out/work tb
 ```
 
-See the [documentation](https://yavs.readthedocs.io) for the command line, VUnit and the release
-notes. Contributors start with [`AGENTS.md`](AGENTS.md) and [`STATUS.md`](STATUS.md).
+See the [documentation](https://yavs.readthedocs.io) for the command line and the release notes. Contributors start with [`AGENTS.md`](AGENTS.md) and [`STATUS.md`](STATUS.md).
 
 ## License
 

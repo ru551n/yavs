@@ -157,7 +157,9 @@ to, and those documents win over your memory.
 25. **Release notes: one towncrier fragment per user-visible change** (user, 2026-10-18), in the
     same commit: `release_notes/news.d/<issue>.<type>.md` (`+<name>.<type>.md` without an
     issue), type `breaking`, `feature`, `bugfix`, `doc` or `misc`, one or two sentences on what
-    a user can do now: features, not numbers. Never write `release_notes/<version>.md` by hand
+    a user can do now: features, not numbers. The user documentation (README, `docs/*.rst`,
+    release notes) describes yavs as a simulator on its own: never mention other projects there
+    (VUnit, NVC, GHDL, cocotb, rustc, ...), except in licence notes (user, 2026-10-18). Never write `release_notes/<version>.md` by hand
     outside a release. The user documentation (Sphinx, `docs/conf.py`, `docs/*.rst`, published
     on Read the Docs) shows the fragments under "Unreleased"; build it with
     `sphinx-build -W -b html docs docs/_build/html` after `pip install -r docs/requirements.txt`.

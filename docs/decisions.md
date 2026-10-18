@@ -39,6 +39,21 @@ milestone users care about works.
   `uvx towncrier build --version X.Y.Z --yes` into `release_notes/unreleased.md` and renames it
   `release_notes/X.Y.Z.md` in the version-bump commit. The GitHub release notes are that file.
   Fragments describe features, not numbers.
+- **User docs name no other projects** (user, 2026-10-18: "dont mention VUnit in the docs, it is
+  not related to this project. this is just a simulator"; "avoid mentioning other projects in
+  the docs, except in license notes"). Applies to README, `docs/*.rst` and the release notes;
+  the developer documents (plan, decisions, design, CLI contract, AGENTS.md) may still name the
+  reference simulators and integrations they are about.
+- **When to release** (delegated by the user, 2026-10-18: "decide when to cut new releases.
+  often is not bad"): the orchestrator cuts a release whenever main is green (CI and docs) and
+  `release_notes/news.d/` holds at least one `feature`, `bugfix` or `breaking` fragment,
+  checked each time a batch of agent work has landed. While the version is 0.x: a `breaking` or
+  `feature` fragment bumps the minor version, only fixes bump the patch; every 0.x release is a
+  GitHub pre-release. Steps: set `[workspace.package] version`, `cargo build` (Cargo.lock),
+  `uvx towncrier build --version X.Y.Z --yes`, rename `release_notes/unreleased.md` to
+  `release_notes/X.Y.Z.md` with a one-line summary on top, run the rule 13 checks, commit
+  "Release X.Y.Z", push, then an annotated tag `vX.Y.Z` on that commit. The tag triggers
+  release.yml and the Read the Docs version.
 - **User documentation** (user, 2026-10-18): Sphinx (sphinx_rtd_theme, MyST, sphinxcontrib-towncrier for the "Unreleased" section) in `docs/`,
   published on Read the Docs as project `yavs` (`.readthedocs.yaml`). `.github/workflows/docs.yml`
   builds with `-W` on every push and, through the Read the Docs API (secret

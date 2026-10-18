@@ -26,12 +26,11 @@ Key features
 ------------
 
 * VHDL-2008 and VHDL-2019, mixed in one project: each file is parsed with its own standard.
-* :doc:`Diagnostics <usage>` in the style of rustc: codes, source snippets, help, and VHDL call
-  stacks for runtime errors. Fail early, fail clearly: nothing runs after a failed step.
+* :doc:`Diagnostics <usage>` with stable codes, source snippets, help, and VHDL call stacks
+  for runtime errors. Fail early, fail clearly: nothing runs after a failed step.
 * The IEEE packages (``std_logic_1164``, ``numeric_std``, ``math_real``, ``fixed_pkg``,
   ``float_pkg`` and the rest) built into the executable and analyzed from source on demand.
 * Parallel process evaluation (``--threads N``) with output identical to a single-threaded run.
-* :doc:`VUnit <vunit>` runs testbenches on yavs.
 * One executable for Linux x86_64, Linux aarch64 and Windows x86_64, see :doc:`install`.
 
 Getting started
@@ -48,7 +47,6 @@ Getting started
 
    install
    usage
-   vunit
 
 .. toctree::
    :caption: About

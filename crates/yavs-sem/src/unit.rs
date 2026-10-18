@@ -83,9 +83,10 @@ impl Db {
         let memos = (
             std::mem::take(&mut self.memo),
             std::mem::take(&mut self.name_memo),
+            std::mem::take(&mut self.ext_memo),
         );
         let r = self.unit_body(unit, &ast);
-        (self.memo, self.name_memo) = memos;
+        (self.memo, self.name_memo, self.ext_memo) = memos;
         self.stack.pop();
         let ok = r.is_ok() && self.error_count() == before;
         self.libs[lib].units.insert(

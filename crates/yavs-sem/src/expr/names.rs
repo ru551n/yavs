@@ -193,6 +193,13 @@ impl Db {
 
     fn name_cands_uncached(&mut self, scope: ScopeId, n: &ast::Name) -> CandSet {
         match &n.kind {
+            ast::NameKind::External(x) => match self.external_expr(scope, x, n) {
+                Some(e) => CandSet::Types(vec![Interp::new(
+                    self.base(self.exprs[e].subtype),
+                    Via::Object,
+                )]),
+                None => self.poison_cands(),
+            },
             ast::NameKind::Attribute { prefix, attr } => self.attr_cands(scope, prefix, *attr, &[]),
             ast::NameKind::Apply { prefix, args } => self.apply_cands(scope, prefix, args),
             ast::NameKind::Selected { prefix, suffix } => match self.classify(scope, n) {
@@ -224,6 +231,57 @@ impl Db {
             NameRes::Error => self.poison_cands(),
             _ => CandSet::Types(Vec::new()),
         }
+    }
+
+    /// The HIR of external name `x` (8.7), built once per AST node; `None` when reported.
+    fn external_expr(
+        &mut self,
+        scope: ScopeId,
+        x: &ast::ExternalName,
+        n: &ast::Name,
+    ) -> Option<ExprId> {
+        let key = n as *const ast::Name as usize;
+        if let Some(&e) = self.ext_memo.get(&key) {
+            return (!self.is_poison_expr(e)).then_some(e);
+        }
+        let built = (|| {
+            let st = self.subtype_indication(scope, &x.subtype)?;
+            let mut indexes = Vec::with_capacity(x.path.elements.len());
+            for el in &x.path.elements {
+                indexes.push(
+                    el.index
+                        .as_ref()
+                        .map(|i| self.static_expr(scope, i, Expected::Any)),
+                );
+            }
+            let mut cx = crate::external::ExternalCx::default();
+            let mut cur = Some(scope);
+            while let Some(s) = cur {
+                use crate::scope::ScopeKind as K;
+                match self.scopes[s].kind {
+                    K::Entity | K::Architecture | K::Block | K::Generate => {
+                        cx.in_concurrent_region = true
+                    }
+                    K::Subprogram if !cx.in_concurrent_region => {
+                        if let Some(o) = self.scopes[s].owner
+                            && let Some(sp) = self.decls[o].kind.subprogram()
+                            && matches!(
+                                sp.kind,
+                                crate::decl::SubprogramKind::Function { pure: true }
+                            )
+                        {
+                            cx.in_pure_function = true;
+                        }
+                    }
+                    _ => {}
+                }
+                cur = self.scopes[s].parent;
+            }
+            self.external_name(x, n.span, st, &indexes, cx)
+        })();
+        let e = built.unwrap_or(self.poison.expr);
+        self.ext_memo.insert(key, e);
+        (!self.is_poison_expr(e)).then_some(e)
     }
 
     /// The types a name used as a prefix can have (objects and function results).
@@ -772,6 +830,9 @@ impl Db {
         span: Span,
     ) -> ExprId {
         match (&n.kind, i.via) {
+            (ast::NameKind::External(x), _) => {
+                self.external_expr(scope, x, n).unwrap_or(self.poison.expr)
+            }
             (ast::NameKind::Attribute { prefix, attr }, _) => {
                 self.build_attr(scope, prefix, *attr, &[], i, span)
             }

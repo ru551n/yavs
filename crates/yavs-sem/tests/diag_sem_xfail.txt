@@ -29,11 +29,7 @@ expr/mismatch_in_subprogram_arg_label.vhd
 expr/out_parameter_actual_constant.vhd
 expr/signal_param_actual_variable.vhd
 expr/type_mismatch_in_range.vhd
-ext/external_signal_assign_variable_name.vhd
-ext/external_signal_read_ok.vhd
-ext/external_subtype_unknown.vhd
 ext/external_type_mismatch.vhd
-ext/external_variable_assign_signal_target.vhd
 lit/char_literal_wrong_type.vhd
 lit/string_char_not_in_element_type_std_logic.vhd
 lit/string_char_not_in_type.vhd

@@ -99,3 +99,14 @@ From rsim-elab (2026-10-18):
 1. **`std.env.finish`/`stop` end the process at once.** Like 3: after
    `finish(3)` the process runs on to its next `wait`, so `env/finish_status` and
    `env/finish_in_function_call_order` print a report NVC never reaches.
+
+More requests from `rsim-lower` (2026-10-18):
+
+7. **`out` signal parameters**: `Drive`/`Disconnect` name a static driver slot, but a procedure
+   with `signal s : out T` drives the caller's slot. A driver slot passed in a register (one
+   more cell next to the signal reference) would do (`process/subprograms`).
+8. **Composite instance data**: constants and signal initial values of array type are computed
+   by parameterless functions returning a fat pair; the elaborator needs the bytes behind it
+   (`rsim_interp::call` returns only the cell). A `call` variant returning the data and dope
+   bytes of an array result would let `rsim-lower` place array signals and constants in
+   instance data (`scalar/array_attrs`, `delta/delta_chain`).

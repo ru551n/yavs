@@ -20,8 +20,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rsim_diag::{FileId, Severity};
-use rsim_syntax::{Options, Std, decode_source, parse_file};
+use rsim_diag::Severity;
+use rsim_diag::SourceMap;
+use rsim_syntax::{Encoding, Options, Std, load_source, parse_file};
 
 struct Corpus {
     name: &'static str,
@@ -100,15 +101,14 @@ fn parse(path: &Path, std: Std) -> Outcome {
     let bytes =
         std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     let len = bytes.len();
-    let text = decode_source(bytes);
-    let parsed = parse_file(
-        FileId(0),
-        &text,
-        &Options {
-            std,
-            defines: Vec::new(),
-        },
-    );
+    let mut sources = SourceMap::default();
+    let (file, bad) = load_source(&mut sources, "", bytes, Encoding::Auto);
+    assert!(bad.is_none());
+    let opts = Options {
+        std,
+        defines: Vec::new(),
+    };
+    let parsed = parse_file(file, sources.get(file), &opts);
     let error = parsed
         .diags
         .iter()

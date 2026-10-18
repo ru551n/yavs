@@ -3,17 +3,20 @@
 
 use libfuzzer_sys::fuzz_target;
 use rsim_diag::{MessageFormat, SourceMap};
-use rsim_syntax::{Options, Std, decode_source, parse_file};
+use rsim_syntax::{Encoding, Options, Std, load_source, parse_file};
 
 fuzz_target!(|data: &[u8]| {
-    let text = decode_source(data.to_vec());
     let mut sources = SourceMap::default();
-    let file = sources.add("fuzz.vhd", text.clone());
-    for std in [Std::Vhdl2008, Std::Vhdl2019] {
-        let parsed = parse_file(file, &text, &Options { std, defines: Vec::new() });
-        // Rendering exercises every span the parser produced.
-        for d in &parsed.diags {
-            rsim_diag::render(&sources, d, MessageFormat::Human, false);
+    // Both readings of the same bytes.
+    for encoding in [Encoding::Auto, Encoding::Latin1] {
+        let (file, _) = load_source(&mut sources, "fuzz.vhd", data.to_vec(), encoding);
+        for std in [Std::Vhdl2008, Std::Vhdl2019] {
+            let opts = Options { std, defines: Vec::new() };
+            let parsed = parse_file(file, sources.get(file), &opts);
+            // Rendering exercises every span the parser produced.
+            for d in &parsed.diags {
+                rsim_diag::render(&sources, d, MessageFormat::Human, false);
+            }
         }
     }
 });

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rsim_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
-use rsim_syntax::{Options, Std};
+use rsim_syntax::{Encoding, Options, Std};
 
 #[derive(Parser)]
 #[command(name = "rsim", version, about = "A VHDL simulator")]
@@ -17,6 +17,10 @@ struct Cli {
     /// How to print diagnostics.
     #[arg(long, global = true, value_enum, default_value = "human")]
     message_format: Format,
+    /// How to read source files: UTF-8 when valid and ISO-8859-1 otherwise
+    /// (auto), always ISO-8859-1 bytes (latin1), or UTF-8 only (utf8).
+    #[arg(long, global = true, value_enum, default_value = "auto")]
+    encoding: EncodingArg,
     #[command(subcommand)]
     command: Command,
 }
@@ -45,6 +49,13 @@ enum StdArg {
     V2008,
     #[value(name = "2019")]
     V2019,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum EncodingArg {
+    Auto,
+    Latin1,
+    Utf8,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -84,6 +95,11 @@ fn main() -> ExitCode {
         Format::Short => MessageFormat::Short,
         Format::Json => MessageFormat::Json,
     };
+    let encoding = match cli.encoding {
+        EncodingArg::Auto => Encoding::Auto,
+        EncodingArg::Latin1 => Encoding::Latin1,
+        EncodingArg::Utf8 => Encoding::Utf8,
+    };
     let Command::Parse {
         std,
         defines,
@@ -119,9 +135,13 @@ fn main() -> ExitCode {
                 continue;
             }
         };
-        let text = rsim_syntax::decode_source(bytes);
-        let file = sources.add(path.display().to_string(), text);
-        let parsed = rsim_syntax::parse_file(file, &sources.get(file).text, &opts);
+        let (file, bad) =
+            rsim_syntax::load_source(&mut sources, path.display().to_string(), bytes, encoding);
+        if let Some(d) = bad {
+            emit(&sources, &d);
+            continue;
+        }
+        let parsed = rsim_syntax::parse_file(file, sources.get(file), &opts);
         for d in &parsed.diags {
             emit(&sources, d);
         }

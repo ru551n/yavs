@@ -292,7 +292,7 @@ impl Parser<'_> {
         match self.peek() {
             Tok::Abstract => {
                 let t = self.bump();
-                let value = Symbol::intern(self.text(t));
+                let value = Symbol::intern(&self.text(t));
                 if self.at_ident() {
                     let u = self.bump();
                     let unit = self.make_ident(u);
@@ -308,12 +308,12 @@ impl Parser<'_> {
             }
             Tok::BitStr => {
                 let t = self.bump();
-                let s = Symbol::intern(self.text(t));
+                let s = Symbol::intern(&self.text(t));
                 Ok(self.literal(LiteralKind::BitString(s), start))
             }
             Tok::Str if !matches!(self.nth(1), Tok::LParen | Tok::Dot) => {
                 let t = self.bump();
-                let s = Symbol::intern(&unquote(self.text(t)));
+                let s = Symbol::intern(&unquote(&self.text(t)));
                 Ok(self.literal(LiteralKind::String(s), start))
             }
             Tok::Kw(Kw::Null) => {
@@ -571,7 +571,7 @@ impl Parser<'_> {
             }
             Tok::Str => {
                 let t = self.bump();
-                NameKind::Operator(Symbol::intern(&unquote(self.text(t))))
+                NameKind::Operator(Symbol::intern(&unquote(&self.text(t))))
             }
             Tok::Char => {
                 self.bump();
@@ -601,7 +601,7 @@ impl Parser<'_> {
             }
             Tok::Str => {
                 let t = self.bump();
-                Suffix::Operator(Symbol::intern(&unquote(self.text(t))), span)
+                Suffix::Operator(Symbol::intern(&unquote(&self.text(t))), span)
             }
             Tok::Kw(Kw::All) => {
                 self.bump();

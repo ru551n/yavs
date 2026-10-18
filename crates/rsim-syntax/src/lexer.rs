@@ -4,17 +4,18 @@ use rsim_diag::{Diagnostic, FileId, Span};
 
 use crate::Std;
 use crate::codes;
+use crate::source::Src;
 use crate::token::{Kw, Tok, Token};
 
-pub fn lex(file: FileId, src: &str, std: Std, diags: &mut Vec<Diagnostic>) -> Vec<Token> {
+pub(crate) fn lex(file: FileId, src: Src, std: Std, diags: &mut Vec<Diagnostic>) -> Vec<Token> {
     let mut lx = Lexer {
         file,
         src,
-        b: src.as_bytes(),
+        b: src.bytes,
         pos: 0,
         std,
         diags,
-        toks: Vec::with_capacity(src.len() / 4),
+        toks: Vec::with_capacity(src.bytes.len() / 4),
     };
     lx.run();
     lx.toks
@@ -22,7 +23,7 @@ pub fn lex(file: FileId, src: &str, std: Std, diags: &mut Vec<Diagnostic>) -> Ve
 
 struct Lexer<'a> {
     file: FileId,
-    src: &'a str,
+    src: Src<'a>,
     b: &'a [u8],
     pos: usize,
     std: Std,
@@ -43,7 +44,47 @@ impl Lexer<'_> {
     }
 
     fn char_at(&self, pos: usize) -> Option<char> {
-        self.src.get(pos..).and_then(|s| s.chars().next())
+        self.src.char_at(pos)
+    }
+
+    /// Report a character VHDL does not allow outside comments, and skip it.
+    fn unexpected(&mut self, start: usize) {
+        let ch = self.char_at(start).unwrap_or(char::REPLACEMENT_CHARACTER);
+        self.pos = start + self.src.char_len(ch).max(1);
+        self.error(
+            start,
+            self.pos,
+            &format!("unexpected character `{ch}` (U+{:04X})", ch as u32),
+            "not valid in VHDL",
+        );
+    }
+
+    /// In a UTF-8 file, every character of a literal or identifier must be
+    /// in ISO-8859-1, since VHDL values are Latin-1 characters.
+    fn check_latin1(&mut self, start: usize, end: usize, what: &str) {
+        if self.src.latin1 {
+            return;
+        }
+        let mut p = start;
+        while p < end {
+            let ch = self.char_at(p).unwrap_or(char::REPLACEMENT_CHARACTER);
+            let len = self.src.char_len(ch).max(1);
+            if ch as u32 > 0xff {
+                self.diags.push(
+                    Diagnostic::error(
+                        codes::NOT_LATIN1,
+                        format!("character `{ch}` (U+{:04X}) is not in ISO-8859-1", ch as u32),
+                    )
+                    .with_primary(Span::new(self.file, p as u32, (p + len) as u32), format!("in this {what}"))
+                    .with_help(
+                        "VHDL characters are ISO-8859-1 and have no escapes: use only Latin-1 characters \
+                         here, or pass `--encoding=latin1` to read each byte as one character",
+                    ),
+                );
+                return;
+            }
+            p += len;
+        }
     }
 
     fn error(&mut self, start: usize, end: usize, msg: &str, label: &str) {
@@ -73,25 +114,26 @@ impl Lexer<'_> {
                 b'"' => {
                     self.string(b'"');
                     self.push(Tok::Str, start);
+                    self.check_latin1(start, self.pos, "string literal");
                 }
                 b'%' => {
                     // Replacement character for `"` (LRM 15.10).
                     self.string(b'%');
                     self.push(Tok::Str, start);
+                    self.check_latin1(start, self.pos, "string literal");
                 }
                 b'\\' => self.extended_ident(),
                 b'\'' => self.tick(),
                 b'`' => self.directive(),
                 _ if c.is_ascii_alphabetic() => self.ident(),
                 _ if c >= 0x80 => {
-                    let ch = self.char_at(start).unwrap_or('\u{fffd}');
+                    let ch = self.char_at(start).unwrap_or(char::REPLACEMENT_CHARACTER);
                     if is_letter(ch) {
                         self.ident();
                     } else if ch == '\u{a0}' {
-                        self.pos += ch.len_utf8();
+                        self.pos += self.src.char_len(ch);
                     } else {
-                        self.pos += ch.len_utf8();
-                        self.error(start, self.pos, "unexpected character", "not valid in VHDL");
+                        self.unexpected(start);
                     }
                 }
                 _ => self.delimiter(),
@@ -172,8 +214,7 @@ impl Lexer<'_> {
             (b'}', ..) => (Tok::RBrace, 1),
             (b'^', ..) => (Tok::Caret, 1),
             _ => {
-                self.pos += 1;
-                self.error(start, self.pos, "unexpected character", "not valid in VHDL");
+                self.unexpected(start);
                 return;
             }
         };
@@ -232,6 +273,7 @@ impl Lexer<'_> {
             }
         }
         self.push(Tok::ExtIdent, start);
+        self.check_latin1(start, self.pos, "extended identifier");
     }
 
     fn tick(&mut self) {
@@ -241,10 +283,11 @@ impl Lexer<'_> {
             Some(Tok::Ident | Tok::ExtIdent | Tok::RParen | Tok::RBracket | Tok::Kw(Kw::All))
         );
         if !after_name && let Some(ch) = self.char_at(start + 1) {
-            let close = start + 1 + ch.len_utf8();
+            let close = start + 1 + self.src.char_len(ch);
             if ch != '\n' && self.b.get(close) == Some(&b'\'') {
                 self.pos = close + 1;
                 self.push(Tok::Char, start);
+                self.check_latin1(start, self.pos, "character literal");
                 return;
             }
         }
@@ -255,7 +298,7 @@ impl Lexer<'_> {
     fn word_end(&self, mut p: usize) -> usize {
         while let Some(ch) = self.char_at(p) {
             if ch == '_' || ch.is_ascii_alphanumeric() || (!ch.is_ascii() && is_letter(ch)) {
-                p += ch.len_utf8();
+                p += self.src.char_len(ch);
             } else {
                 break;
             }
@@ -266,14 +309,18 @@ impl Lexer<'_> {
     fn ident(&mut self) {
         let start = self.pos;
         self.pos = self.word_end(start);
-        let text = &self.src[start..self.pos];
-        let lower = text.to_ascii_lowercase();
+        let lower = self
+            .src
+            .text(start as u32, self.pos as u32)
+            .to_ascii_lowercase();
         let q = self.peek(0);
         if matches!(q, b'"' | b'%') && BASES.contains(&lower.as_str()) {
             self.string(q);
             self.push(Tok::BitStr, start);
+            self.check_latin1(start, self.pos, "bit string literal");
             return;
         }
+        self.check_latin1(start, self.pos, "identifier");
         let kind = match Kw::lookup(&lower, self.std) {
             Some(kw) => Tok::Kw(kw),
             None => Tok::Ident,
@@ -304,12 +351,16 @@ impl Lexer<'_> {
         // Sized bit string such as 8x"FF".
         let word = self.word_end(self.pos);
         if word > self.pos && matches!(self.b.get(word), Some(b'"' | b'%')) {
-            let base = self.src[self.pos..word].to_ascii_lowercase();
+            let base = self
+                .src
+                .text(self.pos as u32, word as u32)
+                .to_ascii_lowercase();
             if BASES.contains(&base.as_str()) {
                 let q = self.b[word];
                 self.pos = word;
                 self.string(q);
                 self.push(Tok::BitStr, start);
+                self.check_latin1(start, self.pos, "bit string literal");
                 return;
             }
         }
@@ -390,9 +441,16 @@ impl Lexer<'_> {
 mod tests {
     use super::*;
 
+    fn utf8(s: &str) -> Src<'_> {
+        Src {
+            bytes: s.as_bytes(),
+            latin1: false,
+        }
+    }
+
     fn kinds(src: &str) -> Vec<Tok> {
         let mut d = Vec::new();
-        let t = lex(FileId(0), src, Std::Vhdl2008, &mut d);
+        let t = lex(FileId(0), utf8(src), Std::Vhdl2008, &mut d);
         assert!(d.is_empty(), "{d:?}");
         t.into_iter().map(|t| t.kind).collect()
     }
@@ -435,7 +493,7 @@ mod tests {
     #[test]
     fn keywords_by_std() {
         let mut d = Vec::new();
-        let t = lex(FileId(0), "VIEW Private", Std::Vhdl2019, &mut d);
+        let t = lex(FileId(0), utf8("VIEW Private"), Std::Vhdl2019, &mut d);
         assert_eq!(t[0].kind, Tok::Kw(Kw::View));
         assert_eq!(t[1].kind, Tok::Kw(Kw::Private));
         assert_eq!(kinds("view")[0], Tok::Ident);
@@ -444,14 +502,19 @@ mod tests {
     #[test]
     fn errors() {
         let mut d = Vec::new();
-        lex(FileId(0), "\"abc\n 16#ab $ /* x", Std::Vhdl2008, &mut d);
+        lex(
+            FileId(0),
+            utf8("\"abc\n 16#ab $ /* x"),
+            Std::Vhdl2008,
+            &mut d,
+        );
         let msgs: Vec<_> = d.iter().map(|d| d.message.as_str()).collect();
         assert_eq!(
             msgs,
             [
                 "unterminated string literal",
                 "malformed numeric literal",
-                "unexpected character",
+                "unexpected character `$` (U+0024)",
                 "unterminated block comment"
             ]
         );

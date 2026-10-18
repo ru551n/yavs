@@ -62,15 +62,45 @@ impl std::fmt::Debug for Span {
 }
 
 /// One loaded source file.
+///
+/// Spans are byte offsets into the file as it is on disk. For a UTF-8 file
+/// that is the same as an offset into `text`; for a file read as ISO-8859-1
+/// the original bytes are kept and offsets are mapped when rendering.
 pub struct SourceFile {
     pub path: String,
+    /// The decoded text, for display.
     pub text: String,
     line_starts: Vec<u32>,
+    /// The bytes on disk, kept only for a Latin-1 file.
+    raw: Option<Vec<u8>>,
+    /// File offsets of the bytes of a Latin-1 file that are two bytes in `text`.
+    high: Vec<u32>,
 }
 
 impl SourceFile {
-    /// 1-based line and column (in characters) of a byte offset.
+    /// The file as it is on disk.
+    pub fn bytes(&self) -> &[u8] {
+        self.raw.as_deref().unwrap_or(self.text.as_bytes())
+    }
+
+    /// The file was read as ISO-8859-1 bytes rather than UTF-8.
+    pub fn is_latin1(&self) -> bool {
+        self.raw.is_some()
+    }
+
+    /// The offset in `text` of a file byte offset, on a character boundary.
+    pub fn text_offset(&self, offset: u32) -> usize {
+        let mut t =
+            (offset as usize + self.high.partition_point(|&h| h < offset)).min(self.text.len());
+        while !self.text.is_char_boundary(t) {
+            t -= 1;
+        }
+        t
+    }
+
+    /// 1-based line and column (in characters) of a file byte offset.
     pub fn line_col(&self, offset: u32) -> (usize, usize) {
+        let offset = self.text_offset(offset) as u32;
         let line = self.line_starts.partition_point(|&s| s <= offset) - 1;
         let start = self.line_starts[line] as usize;
         let end = (offset as usize).min(self.text.len());
@@ -89,15 +119,34 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
+    /// Add a UTF-8 file.
     pub fn add(&mut self, path: impl Into<String>, text: impl Into<String>) -> FileId {
-        let text = text.into();
+        self.push(path.into(), text.into(), None)
+    }
+
+    /// Add a file whose bytes are ISO-8859-1 characters.
+    pub fn add_latin1(&mut self, path: impl Into<String>, bytes: Vec<u8>) -> FileId {
+        let text = bytes.iter().map(|&b| b as char).collect();
+        self.push(path.into(), text, Some(bytes))
+    }
+
+    fn push(&mut self, path: String, text: String, raw: Option<Vec<u8>>) -> FileId {
         let line_starts = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(i, _)| i as u32 + 1))
             .collect();
+        let high = raw
+            .iter()
+            .flatten()
+            .enumerate()
+            .filter(|&(_, &b)| b >= 0x80)
+            .map(|(i, _)| i as u32)
+            .collect();
         self.files.push(SourceFile {
-            path: path.into(),
+            path,
             text,
             line_starts,
+            raw,
+            high,
         });
         FileId(self.files.len() as u32 - 1)
     }
@@ -268,23 +317,23 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
         };
         let len = src.text.len();
         let lo = labels()
-            .map(|l| l.span.start as usize)
+            .map(|l| src.text_offset(l.span.start))
             .min()
-            .unwrap_or(0)
-            .min(len);
+            .unwrap_or(0);
         let hi = labels()
-            .map(|l| l.span.end as usize)
+            .map(|l| src.text_offset(l.span.end))
             .max()
             .unwrap_or(0)
-            .clamp(lo, len);
+            .max(lo);
         let lo = src.text[..lo].rfind('\n').map_or(0, |i| i + 1);
         let hi = src.text[hi..].find('\n').map_or(len, |i| hi + i);
-        let (first_line, _) = src.line_col(lo as u32);
+        let first_line = src.line_starts.partition_point(|&s| s as usize <= lo);
         let mut snippet = Snippet::source(&src.text[lo..hi])
             .line_start(first_line)
             .path(src.path.as_str());
-        let clamp =
-            |s: Span| (s.start as usize).clamp(lo, hi) - lo..(s.end as usize).clamp(lo, hi) - lo;
+        let clamp = |s: Span| {
+            src.text_offset(s.start).clamp(lo, hi) - lo..src.text_offset(s.end).clamp(lo, hi) - lo
+        };
         for l in diag.primary.iter().filter(|l| l.span.file == file) {
             snippet = snippet.annotation(
                 AnnotationKind::Primary
@@ -429,6 +478,23 @@ mod tests {
         assert_eq!(f.line_col(0), (1, 1));
         assert_eq!(f.line_col(12), (2, 1));
         assert_eq!(f.line_col(23), (2, 12));
+    }
+
+    #[test]
+    fn latin1_offsets_are_file_bytes() {
+        let mut sm = SourceMap::default();
+        let f = sm.add_latin1("l.vhd", b"a\xe9b\nx\xe9 y\n".to_vec());
+        assert_eq!(sm.get(f).text, "a\u{e9}b\nx\u{e9} y\n");
+        assert_eq!(sm.get(f).bytes()[7], b'y');
+        assert_eq!(sm.get(f).line_col(7), (2, 4));
+        let d = Diagnostic::error("E0001", "m").with_primary(Span::new(f, 7, 8), "here");
+        let out = render(&sm, &d, MessageFormat::Human, false);
+        assert!(out.contains("2 | x\u{e9} y\n  |    ^ here"), "{out}");
+        let j = render(&sm, &d, MessageFormat::Json, false);
+        assert!(
+            j.contains("\"byte_start\":7,\"byte_end\":8,\"line_start\":2,\"column_start\":4"),
+            "{j}"
+        );
     }
 
     #[test]

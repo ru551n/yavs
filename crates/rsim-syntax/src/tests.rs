@@ -3,10 +3,10 @@
 use rsim_diag::{FileId, Severity};
 
 use crate::ast::*;
-use crate::{Options, Std, parse_file};
+use crate::{Encoding, Options, Std, load_source, parse_file, parse_str};
 
 fn parse_std(src: &str, std: Std) -> crate::Parsed {
-    parse_file(
+    parse_str(
         FileId(0),
         src,
         &Options {
@@ -808,4 +808,135 @@ fn garbage_does_not_panic() {
     ] {
         let _ = parse_std(src, Std::Vhdl2019);
     }
+}
+
+// Source encoding.
+
+/// Load `bytes` with `encoding` and parse them as a package of declarations.
+fn parse_bytes(bytes: &[u8], encoding: Encoding) -> (rsim_diag::SourceMap, crate::Parsed) {
+    let mut sources = rsim_diag::SourceMap::default();
+    let (file, d) = load_source(&mut sources, "t.vhd", bytes.to_vec(), encoding);
+    assert!(d.is_none(), "{d:?}");
+    let parsed = parse_file(file, sources.get(file), &Options::default());
+    (sources, parsed)
+}
+
+/// The value of the first string constant in `bytes`.
+fn string_value(bytes: &[u8], encoding: Encoding) -> String {
+    let (_, p) = parse_bytes(bytes, encoding);
+    assert!(p.diags.is_empty(), "{:?}", p.diags);
+    let d = p.design.expect("design");
+    let LibraryUnit::Package(pk) = &d.units[0].unit else {
+        panic!()
+    };
+    let Decl::Object(o) = &pk.decls[0] else {
+        panic!()
+    };
+    let Some(Expr {
+        kind:
+            ExprKind::Literal(Literal {
+                kind: LiteralKind::String(s),
+                ..
+            }),
+        ..
+    }) = &o.default
+    else {
+        panic!("{:?}", o.default)
+    };
+    s.as_str().to_string()
+}
+
+const E_ACUTE_PKG: &str = "package p is constant c : string := \"\u{e9}\"; end;";
+
+#[test]
+fn utf8_latin1_character_is_one_character() {
+    let v = string_value(E_ACUTE_PKG.as_bytes(), Encoding::Auto);
+    assert_eq!(v.chars().count(), 1);
+    assert_eq!(v, "\u{e9}");
+}
+
+#[test]
+fn non_latin1_in_string_is_an_error() {
+    let src = "package p is constant c : string := \"a \u{2192} b\"; end;";
+    let (sources, p) = parse_bytes(src.as_bytes(), Encoding::Auto);
+    assert!(p.design.is_none());
+    assert_eq!(p.diags.len(), 1);
+    let d = &p.diags[0];
+    assert_eq!(d.code, crate::codes::NOT_LATIN1);
+    assert_eq!(
+        d.message,
+        "character `\u{2192}` (U+2192) is not in ISO-8859-1"
+    );
+    let span = d.primary.as_ref().expect("span").span;
+    assert_eq!(
+        &sources.get(span.file).bytes()[span.start as usize..span.end as usize],
+        "\u{2192}".as_bytes()
+    );
+    assert!(d.help[0].contains("--encoding=latin1"));
+    // The same in a character literal, an extended identifier and an identifier.
+    for src in [
+        "constant c : character := '\u{2192}';",
+        "signal \\a\u{2192}\\ : bit;",
+        "signal \u{3b1} : bit;",
+    ] {
+        let (_, p) = parse_bytes(pkg(src).as_bytes(), Encoding::Auto);
+        assert_eq!(
+            p.diags[0].code,
+            crate::codes::NOT_LATIN1,
+            "{src}: {:?}",
+            p.diags
+        );
+    }
+}
+
+#[test]
+fn anything_goes_in_comments() {
+    let src = "-- \u{2192} \u{1f600}\npackage p is /* \u{2192} */ end;";
+    let (_, p) = parse_bytes(src.as_bytes(), Encoding::Auto);
+    assert!(p.diags.is_empty(), "{:?}", p.diags);
+}
+
+#[test]
+fn invalid_utf8_is_read_as_latin1() {
+    // 0xE9 alone is not UTF-8: the file is Latin-1 and the string is `é`.
+    let bytes = b"package p is constant c : string := \"\xe9\"; end;";
+    assert_eq!(string_value(bytes, Encoding::Auto), "\u{e9}");
+    // Spans stay byte offsets into the file: the error after the Latin-1
+    // character points at the right byte.
+    let bad = b"package p is constant c : string := \"\xe9\" & ; end;";
+    let (sources, p) = parse_bytes(bad, Encoding::Auto);
+    let span = p.diags[0].primary.as_ref().expect("span").span;
+    assert_eq!(bad[span.start as usize], b';');
+    assert!(sources.get(span.file).is_latin1());
+}
+
+#[test]
+fn encoding_latin1_reads_bytes() {
+    // UTF-8 `é` is two bytes, so two Latin-1 characters.
+    assert_eq!(
+        string_value(E_ACUTE_PKG.as_bytes(), Encoding::Latin1),
+        "\u{c3}\u{a9}"
+    );
+    // A character beyond Latin-1 is just bytes, so no error.
+    let src = "package p is constant c : string := \"\u{2192}\"; end;";
+    assert_eq!(
+        string_value(src.as_bytes(), Encoding::Latin1)
+            .chars()
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn encoding_utf8_rejects_invalid_utf8() {
+    let mut sources = rsim_diag::SourceMap::default();
+    let (_, d) = load_source(
+        &mut sources,
+        "t.vhd",
+        b"-- ok\n\xe9".to_vec(),
+        Encoding::Utf8,
+    );
+    let d = d.expect("diagnostic");
+    assert_eq!(d.code, crate::codes::INVALID_UTF8);
+    assert_eq!(d.primary.expect("span").span.start, 6);
 }

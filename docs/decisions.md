@@ -199,10 +199,14 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Ambiguity left to sem:** `label: p;` in a concurrent region is a `ProcedureCall`; sem turns it
   into a component instantiation when `p` is a component. Choices and generic actuals that look
   like expressions may be subtype names.
-- **Source decoding:** valid UTF-8 is taken as UTF-8, anything else as ISO-8859-1 (the LRM
-  encoding), so the vendored IEEE sources with Latin-1 bytes and UTF-8 comments both work.
-  Open question for M1: whether a string literal in a UTF-8 file should be re-encoded to Latin-1
-  (it matters for `'length` of non-ASCII strings).
+- **Source encoding (user decision):** `--encoding=auto` (default) reads a file as UTF-8 when it
+  is valid UTF-8 and as ISO-8859-1 bytes otherwise; `latin1` always takes each byte as one
+  character; `utf8` makes invalid UTF-8 an error (E0010). Characters are ISO-8859-1 values either
+  way, so `"é"'length` is 1 in a UTF-8 file as in a Latin-1 one. In a UTF-8 file, a character
+  outside ISO-8859-1 in a string, bit string or character literal, or in an identifier, is error
+  E0009 naming it (U+XXXX) with a help line pointing at `--encoding=latin1`; comments may contain
+  anything. Spans are always byte offsets into the file on disk; `SourceMap` keeps the bytes of a
+  Latin-1 file and maps offsets when rendering.
 - **PSL** is out of scope: PSL declarations, directives and verification units get E0005 and are
   skipped (to `;`, or to the closing `}` of a `vunit`).
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential

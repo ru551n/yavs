@@ -9,6 +9,7 @@ use rsim_diag::{Diagnostic, FileId, Span};
 
 use crate::Std;
 use crate::codes;
+use crate::source::Src;
 use crate::token::{Kw, Tok, Token};
 
 /// Values of the standard conditional analysis identifiers, plus user
@@ -40,9 +41,9 @@ struct Frame {
     seen_else: bool,
 }
 
-pub fn preprocess(
+pub(crate) fn preprocess(
     file: FileId,
-    src: &str,
+    src: Src,
     toks: Vec<Token>,
     std: Std,
     defines: &[(String, String)],
@@ -84,7 +85,7 @@ pub fn preprocess(
             continue;
         }
         let span = Span::new(file, t.start, t.end);
-        let name = src[t.start as usize + 1..t.end as usize].to_ascii_lowercase();
+        let name = src.text(t.start + 1, t.end).to_ascii_lowercase();
         p.i += 1;
         match name.as_str() {
             "if" => {
@@ -122,7 +123,7 @@ pub fn preprocess(
                 let msg = if p.same_line() && toks[p.i].kind == Tok::Str {
                     let s = toks[p.i];
                     p.i += 1;
-                    unquote(&src[s.start as usize..s.end as usize])
+                    unquote(&src.text(s.start, s.end))
                 } else {
                     String::new()
                 };
@@ -167,7 +168,7 @@ enum Val {
 
 struct Pre<'a> {
     file: FileId,
-    src: &'a str,
+    src: Src<'a>,
     toks: &'a [Token],
     std: Std,
     defines: &'a [(String, String)],
@@ -190,7 +191,7 @@ impl Pre<'_> {
     fn same_line(&self) -> bool {
         let t = self.toks[self.i];
         let prev = self.toks[self.i - 1];
-        t.kind != Tok::Eof && !self.src[prev.end as usize..t.start as usize].contains('\n')
+        t.kind != Tok::Eof && !self.src.has_newline(prev.end, t.start)
     }
 
     /// Parse `expr then`, returning its value; on error report (when `report`)
@@ -288,7 +289,7 @@ impl Pre<'_> {
     fn primary(&mut self, msgs: &mut Vec<(Span, String)>) -> Option<Val> {
         let t = self.toks[self.i];
         let span = self.span();
-        let text = &self.src[t.start as usize..t.end as usize];
+        let text = &*self.src.text(t.start, t.end);
         self.i += 1;
         match t.kind {
             Tok::Kw(Kw::Not) => match self.primary(msgs)? {
@@ -337,9 +338,13 @@ mod tests {
 
     fn run(src: &str, std: Std) -> (String, Vec<Diagnostic>) {
         let mut d = Vec::new();
-        let toks = lex(FileId(0), src, std, &mut d);
+        let s = Src {
+            bytes: src.as_bytes(),
+            latin1: false,
+        };
+        let toks = lex(FileId(0), s, std, &mut d);
         let defs = vec![("USER".to_string(), "on".to_string())];
-        let toks = preprocess(FileId(0), src, toks, std, &defs, &mut d);
+        let toks = preprocess(FileId(0), s, toks, std, &defs, &mut d);
         let text = toks
             .iter()
             .filter(|t| t.kind != Tok::Eof)

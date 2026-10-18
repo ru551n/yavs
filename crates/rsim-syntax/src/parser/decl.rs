@@ -492,7 +492,7 @@ impl Parser<'_> {
                 let t = self.bump();
                 let span = self.tok_span(t);
                 Ok(Designator::Operator(
-                    Symbol::intern(&unquote(self.text(t))),
+                    Symbol::intern(&unquote(&self.text(t))),
                     span,
                 ))
             }

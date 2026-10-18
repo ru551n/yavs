@@ -3,8 +3,8 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use rsim_diag::FileId;
-use rsim_syntax::{Options, Std, decode_source, parse_file};
+use rsim_diag::SourceMap;
+use rsim_syntax::{Encoding, Options, Std, load_source, parse_file};
 
 fn vhdl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
@@ -32,15 +32,15 @@ fn lib() {
         vhdl_files(&lib.join(dir), &mut files);
         assert!(!files.is_empty(), "no VHDL files in lib/{dir}");
         for f in files {
-            let text = decode_source(std::fs::read(&f).expect("read"));
-            let parsed = parse_file(
-                FileId(0),
-                &text,
-                &Options {
-                    std,
-                    defines: Vec::new(),
-                },
-            );
+            let mut sources = SourceMap::default();
+            let bytes = std::fs::read(&f).expect("read");
+            let (file, bad) = load_source(&mut sources, "", bytes, Encoding::Auto);
+            assert!(bad.is_none());
+            let opts = Options {
+                std,
+                defines: Vec::new(),
+            };
+            let parsed = parse_file(file, sources.get(file), &opts);
             for d in &parsed.diags {
                 writeln!(problems, "{}: {} {}", f.display(), d.code, d.message).expect("write");
             }

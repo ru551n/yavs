@@ -11,9 +11,12 @@ mod expr;
 mod stmt;
 mod unit;
 
+use std::borrow::Cow;
+
 use rsim_diag::{Diagnostic, FileId, Span};
 
 use crate::ast::*;
+use crate::source::Src;
 use crate::token::{Kw, Tok, Token};
 use crate::{Std, Symbol, codes};
 
@@ -27,7 +30,7 @@ const MAX_DEPTH: u32 = 64;
 
 pub(crate) struct Parser<'a> {
     file: FileId,
-    src: &'a str,
+    src: Src<'a>,
     toks: Vec<Token>,
     pos: usize,
     std: Std,
@@ -42,7 +45,7 @@ pub(crate) struct Parser<'a> {
 
 pub(crate) fn parse(
     file: FileId,
-    src: &str,
+    src: Src,
     toks: Vec<Token>,
     std: Std,
     diags: &mut Vec<Diagnostic>,
@@ -147,8 +150,8 @@ impl<'a> Parser<'a> {
         Span::new(self.file, start.start, end)
     }
 
-    fn text(&self, t: Token) -> &'a str {
-        &self.src[t.start as usize..t.end as usize]
+    fn text(&self, t: Token) -> Cow<'a, str> {
+        self.src.text(t.start, t.end)
     }
 
     // Diagnostics.
@@ -199,7 +202,7 @@ impl<'a> Parser<'a> {
         }
         let prev = self.toks[self.pos.saturating_sub(1)];
         let cur = self.toks[self.pos];
-        if self.src[prev.end as usize..cur.start as usize].contains('\n') {
+        if self.src.has_newline(prev.end, cur.start) {
             let found = self.peek().describe();
             let span = self.tok_span(prev);
             self.report(
@@ -240,10 +243,7 @@ impl<'a> Parser<'a> {
 
     /// The character of a character literal token at `span`.
     fn char_value(&mut self, span: Span) -> PResult<char> {
-        match self.src[span.start as usize..span.end as usize]
-            .chars()
-            .nth(1)
-        {
+        match self.src.text(span.start, span.end).chars().nth(1) {
             Some(c) => Ok(c),
             None => {
                 self.ice(span, "character literal without a character");
@@ -330,7 +330,7 @@ impl<'a> Parser<'a> {
 
     fn make_ident(&self, t: Token) -> Ident {
         let s = self.text(t);
-        let text = Symbol::intern(s);
+        let text = Symbol::intern(&s);
         let key = if t.kind == Tok::ExtIdent {
             text
         } else if s.is_ascii() {

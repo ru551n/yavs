@@ -1,6 +1,7 @@
 //! VHDL-2008 and VHDL-2019 lexer and parser.
 //!
-//! [`parse_file`] lexes a file, evaluates conditional analysis directives
+//! [`load_source`] reads a file's bytes per [`Encoding`] into a `SourceMap`;
+//! [`parse_file`] lexes it, evaluates conditional analysis directives
 //! (`` `if ``, see [`directive`]), and parses the tokens into an owned
 //! [`ast::DesignFile`]. The parser recovers from errors so that one run
 //! reports every independent syntax error of a file, but it only hands out
@@ -28,12 +29,13 @@ pub mod ast;
 pub mod directive;
 mod lexer;
 mod parser;
+mod source;
 mod symbol;
 pub mod token;
 
 pub use symbol::Symbol;
 
-use rsim_diag::{Diagnostic, FileId, Severity};
+use rsim_diag::{Diagnostic, FileId, Severity, SourceFile, SourceMap, Span};
 
 /// The language standard a file is analyzed under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -71,6 +73,10 @@ pub mod codes {
     pub const DIRECTIVE: &str = "E0007";
     /// A `` `error `` directive.
     pub const USER_ERROR: &str = "E0008";
+    /// A character outside ISO-8859-1 in a literal or identifier of a UTF-8 file.
+    pub const NOT_LATIN1: &str = "E0009";
+    /// A file that is not valid UTF-8 under `--encoding=utf8`.
+    pub const INVALID_UTF8: &str = "E0010";
     /// Internal compiler error.
     pub const INTERNAL: &str = "E9999";
     /// A `` `warning `` directive.
@@ -94,8 +100,58 @@ pub struct Parsed {
     pub diags: Vec<Diagnostic>,
 }
 
-/// Lex, preprocess and parse one source file.
-pub fn parse_file(file: FileId, src: &str, opts: &Options) -> Parsed {
+/// How to read the bytes of a source file.
+///
+/// VHDL source is ISO-8859-1 (LRM 15.2), but files are often saved as UTF-8.
+/// Either way every character must be in ISO-8859-1, so `"é"'length` is 1
+/// whether `é` is one byte or two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Encoding {
+    /// UTF-8 if the file is valid UTF-8, otherwise ISO-8859-1 bytes.
+    #[default]
+    Auto,
+    /// Each byte is one ISO-8859-1 character.
+    Latin1,
+    /// UTF-8; invalid UTF-8 is an error.
+    Utf8,
+}
+
+/// Add a file's bytes to `sources`, decoded per `encoding`. Spans into the
+/// file are byte offsets into `bytes`. The diagnostic is an error for invalid
+/// UTF-8 under [`Encoding::Utf8`]; the file is then loaded as Latin-1 so the
+/// diagnostic can show it, and must not be parsed.
+pub fn load_source(
+    sources: &mut SourceMap,
+    path: impl Into<String>,
+    bytes: Vec<u8>,
+    encoding: Encoding,
+) -> (FileId, Option<Diagnostic>) {
+    let path = path.into();
+    if encoding == Encoding::Latin1 {
+        return (sources.add_latin1(path, bytes), None);
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => (sources.add(path, text), None),
+        Err(e) if encoding == Encoding::Auto => (sources.add_latin1(path, e.into_bytes()), None),
+        Err(e) => {
+            let at = e.utf8_error().valid_up_to() as u32;
+            let file = sources.add_latin1(path, e.into_bytes());
+            let d = Diagnostic::error(codes::INVALID_UTF8, "file is not valid UTF-8")
+                .with_primary(Span::new(file, at, at + 1), "invalid byte")
+                .with_help(
+                    "VHDL source is ISO-8859-1: use `--encoding=latin1` or `--encoding=auto`",
+                );
+            (file, Some(d))
+        }
+    }
+}
+
+/// Lex, preprocess and parse a file loaded with [`load_source`].
+pub fn parse_file(file: FileId, source: &SourceFile, opts: &Options) -> Parsed {
+    let src = source::Src {
+        bytes: source.bytes(),
+        latin1: source.is_latin1(),
+    };
     let mut diags = Vec::new();
     let toks = lexer::lex(file, src, opts.std, &mut diags);
     let toks = directive::preprocess(file, src, toks, opts.std, &opts.defines, &mut diags);
@@ -107,14 +163,11 @@ pub fn parse_file(file: FileId, src: &str, opts: &Options) -> Parsed {
     }
 }
 
-/// Decode a source file. VHDL source is ISO-8859-1, but UTF-8 is common in
-/// comments and strings, so valid UTF-8 is taken as such and anything else is
-/// decoded as Latin-1, which never fails.
-pub fn decode_source(bytes: Vec<u8>) -> String {
-    match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
-    }
+/// Parse UTF-8 text that is not in a [`SourceMap`] (tests and tools).
+pub fn parse_str(file: FileId, text: &str, opts: &Options) -> Parsed {
+    let mut sources = SourceMap::default();
+    let id = sources.add(String::new(), text);
+    parse_file(file, sources.get(id), opts)
 }
 
 #[cfg(test)]

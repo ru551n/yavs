@@ -1,0 +1,10 @@
+error[E0009]: character `→` (U+2192) is not in ISO-8859-1
+ --> not_latin1.vhd:4:31
+  |
+4 |   constant bad : string := "a → b";
+  |                               ^ in this string literal
+  |
+  = help: VHDL characters are ISO-8859-1 and have no escapes: use only Latin-1 characters here, or pass `--encoding=latin1` to read each byte as one character
+
+error: aborting due to 1 previous error
+

@@ -18,7 +18,7 @@ warning[W0003]: missing space between a number and an identifier
   |
   = help: write a space before the unit, as in `10 ns`
 
-error[E0001]: unexpected character
+error[E0001]: unexpected character `$` (U+0024)
  --> lexical.vhd:5:10
   |
 5 |   signal $bad : bit;

@@ -272,13 +272,18 @@ impl Db {
                 return Err(self.error(d));
             }
         };
-        let text = rsim_syntax::decode_source(bytes);
-        let file = self.sources.add(path.display().to_string(), text);
+        // Auto never reports a diagnostic; `--encoding` reaches here with the CLI.
+        let (file, _) = rsim_syntax::load_source(
+            &mut self.sources,
+            path.display().to_string(),
+            bytes,
+            rsim_syntax::Encoding::Auto,
+        );
         let opts = rsim_syntax::Options {
             std: rev,
             defines: self.opts.defines.clone(),
         };
-        let parsed = rsim_syntax::parse_file(file, &self.sources.get(file).text, &opts);
+        let parsed = rsim_syntax::parse_file(file, self.sources.get(file), &opts);
         for d in parsed.diags {
             self.report(d);
         }

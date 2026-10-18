@@ -289,13 +289,10 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
     };
     let mut sim = match e.build(cfg) {
         Ok(s) => s,
+        // Package and instance initialisation runs VHDL code: report it with its VHDL stack.
         Err(err) => {
-            out.emit(
-                &none,
-                &Diagnostic::error("E9999", format!("cannot build the simulation: {err}"))
-                    .with_note("this is a limitation or a bug of yavs, not an error in the design"),
-            );
-            return out.finish(3);
+            out.emit(&db.sources, &e.runtime_diagnostic(&err));
+            return out.finish(if err.exit_status() == 101 { 3 } else { 2 });
         }
     };
     let names: Vec<String> = e

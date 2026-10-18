@@ -1,0 +1,13 @@
+error[E3009]: division by zero
+  --> $DIR/init_error.vhd:8:5
+   |
+ 8 |     return (x => 10 / x);
+   |     ^^^^^^^^^^^^^^^^^^^^^
+ 9 |   end;
+10 |   constant c : rec_t := g(0);
+   |            - called from here
+   |
+   = note: at 0 fs, delta 0
+
+error: aborting due to 1 previous error
+

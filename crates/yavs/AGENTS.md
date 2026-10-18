@@ -40,6 +40,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `--encoding=auto` default | User decision | `docs/decisions.md` "Parser", source encoding |
 | Reports on stdout as `** Note: <fs>fs+<delta>: msg` then `    Process <path>` | tools/difftest parses NVC's format | `docs/decisions.md` "Runtime: default exit severity", `docs/cli-contract.md` 5 |
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
+| A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and VUnit users need the VHDL location | `docs/cli-contract.md` 5 |
 | Unimplemented flags (`--wave`, `--load`, `--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 

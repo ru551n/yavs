@@ -223,8 +223,21 @@ fn snapshots() {
 /// statement, one label per calling frame, and the time, delta and process.
 #[test]
 fn runtime_error() {
+    run_snapshot("runtime_error", 1);
+}
+
+/// A runtime error while packages are initialised is an elaboration error (exit 2) with the
+/// same diagnostic, not an internal error (#110).
+#[test]
+fn init_error() {
+    run_snapshot("init_error", 2);
+}
+
+/// Analyze `tests/cli/NAME.vhd`, run its entity `NAME`, check the exit code and compare stderr
+/// with `NAME.stderr`.
+fn run_snapshot(name: &str, code: i32) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
-    let tmp = tempdir("runtime_error");
+    let tmp = tempdir(name);
     let lib = format!("--work=work:{}/lib", tmp.display());
     let yavs = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_yavs"))
@@ -234,19 +247,16 @@ fn runtime_error() {
             .output()
             .expect("run")
     };
-    assert!(
-        yavs(&["analyze", &lib, "runtime_error.vhd"])
-            .status
-            .success()
-    );
-    let o = yavs(&["run", &lib, "runtime_error"]);
+    let file = format!("{name}.vhd");
+    assert!(yavs(&["analyze", &lib, &file]).status.success());
+    let o = yavs(&["run", &lib, name]);
     let _ = std::fs::remove_dir_all(&tmp);
-    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(o.status.code(), Some(code));
     let canon = dir.canonicalize().expect("dir");
     let err = String::from_utf8(o.stderr)
         .expect("utf-8")
         .replace(canon.to_str().expect("utf-8 dir"), "$DIR");
-    let path = dir.join("runtime_error.stderr");
+    let path = dir.join(format!("{name}.stderr"));
     if std::env::var_os("YAVS_BLESS").is_some_and(|v| v == "1") {
         std::fs::write(&path, &err).expect("write");
     } else {

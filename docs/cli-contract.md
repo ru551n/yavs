@@ -224,7 +224,9 @@ VUnit passes everything after `run`/`elab` in a response file (Conventions).
     `std.env.stop(N)`/`finish(N)` with N /= 0 (the status itself may be
     returned if it fits in 1..125; VUnit only tests zero/non-zero), a runtime
     error (bound check, null access, delta-cycle limit).
-  - 2: usage, analysis-on-demand or elaboration error.
+  - 2: usage, analysis-on-demand or elaboration error. A runtime error while package or
+    instance data is initialised (before time 0) is an elaboration error: exit 2, reported
+    like any runtime error below.
   - 3: internal error.
 - The VUnit runner itself writes the `vunit_results` file (`test_start:NAME`
   lines, then `test_suite_done`) into the `output path` from `runner_cfg`, via

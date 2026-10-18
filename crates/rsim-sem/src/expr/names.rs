@@ -914,11 +914,8 @@ impl Db {
         let Some(s) = self.decls[e].kind.subprogram() else {
             return self.poison_expr();
         };
-        let formals: Vec<(Symbol, TypeId)> = s
-            .params
-            .iter()
-            .map(|p| (p.name.key, self.base(p.subtype)))
-            .collect();
+        let formals: Vec<(Symbol, SubtypeId)> =
+            s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
         let ret = s.ret.unwrap_or(self.poison.subtype);
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         let Some(map) = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args) else {
@@ -934,7 +931,7 @@ impl Db {
             let actual = match map[k] {
                 Some(a) => match &args[a].actual {
                     ast::Actual::Expr(x) => {
-                        let id = self.resolve(scope, x, Expected::Type(*ft));
+                        let id = self.resolve_in(scope, x, *ft);
                         stat = stat.min(self.exprs[id].stat);
                         Actual::Expr(id)
                     }

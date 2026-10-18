@@ -88,8 +88,6 @@ prot/signal_of_protected_type.vhd
 relax/relaxed_does_not_hide_E1007.vhd
 relax/shared_variable_unprotected.vhd
 relax/shared_variable_unprotected_relaxed.vhd
-stat/array_length_mismatch_signal_assign.vhd
-stat/array_length_mismatch_variable.vhd
 stat/attribute_dimension_not_static.vhd
 stat/attribute_dimension_out_of_range.vhd
 stat/static_index_out_of_range_process.vhd

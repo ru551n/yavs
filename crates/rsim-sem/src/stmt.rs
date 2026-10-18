@@ -600,8 +600,11 @@ impl Db {
                 let Some(ret) = self.decls[decl].kind.subprogram().and_then(|s| s.ret) else {
                     return Err(self.ice(span, "function without a return subtype"));
                 };
-                let ty = self.base(ret);
-                Ok(Some(self.st_expr(cx.scope, e, Expected::Type(ty))?))
+                let id = self.expr_in_subtype(cx.scope, e, ret);
+                if self.is_poison_expr(id) {
+                    return Err(Reported);
+                }
+                Ok(Some(id))
             }
         }
     }

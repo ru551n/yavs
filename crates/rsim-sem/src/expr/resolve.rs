@@ -91,6 +91,28 @@ impl Db {
         }
     }
 
+    /// Resolve `e` inside a complete context for a value of subtype `st` (a qualified
+    /// expression's type mark, a formal): an aggregate with `others` at its top takes its
+    /// bounds from `st` (9.3.3.3).
+    pub(crate) fn resolve_in(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        st: crate::ids::SubtypeId,
+    ) -> ExprId {
+        let mut top = e;
+        while let ast::ExprKind::Paren(inner) = &top.kind {
+            top = inner;
+        }
+        let saved = self
+            .top_context
+            .replace((top as *const ast::Expr as usize, st));
+        let t = self.base(st);
+        let id = self.resolve(scope, e, Expected::Type(t));
+        self.top_context = saved;
+        id
+    }
+
     /// Resolve a complete context whose value is required at analysis time
     /// (type bounds, unit scales, choices): static overflow is error `E1401`.
     pub(crate) fn static_expr(&mut self, scope: ScopeId, e: &ast::Expr, exp: Expected) -> ExprId {
@@ -262,8 +284,7 @@ impl Db {
                 let Ok(st) = self.type_mark(scope, type_mark) else {
                     return self.poison_expr();
                 };
-                let t = self.base(st);
-                let op = self.resolve(scope, operand, Expected::Type(t));
+                let op = self.resolve_in(scope, operand, st);
                 let (stat, value) = (
                     self.exprs[op].stat.min(self.subtype_staticness(st)),
                     self.exprs[op].value,

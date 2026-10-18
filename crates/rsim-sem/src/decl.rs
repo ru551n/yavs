@@ -1035,11 +1035,10 @@ impl Db {
             Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(pscope, si)?,
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
-        let base = self.base(subtype);
         let default = o
             .default
             .as_ref()
-            .map(|e| self.expr(pscope, e, crate::expr::Expected::Type(base)));
+            .map(|e| self.expr_in_subtype(pscope, e, subtype));
         let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
             BoundsFrom::Subtype
         } else {

@@ -112,7 +112,6 @@ gen/unknown_generic_name.vhd
 gen/unused_generic_warning.vhd
 hom/alias_vs_constant.vhd
 hom/arch_signal_vs_port.vhd
-hom/component_twice.vhd
 hom/function_same_profile.vhd
 hom/incomplete_type_twice.vhd
 hom/port_vs_generic.vhd

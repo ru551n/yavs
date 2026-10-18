@@ -351,7 +351,7 @@ impl Db {
             }
             D::SubprogramBody(b) => self.subprogram_body(scope, b),
             D::Alias(a) => self.alias_decl(scope, a),
-            D::Component(c) => Err(self.unsupported(c.span, "component declarations", "S5")),
+            D::Component(c) => self.component_decl(scope, c),
             D::SubprogramInstance(x) => {
                 Err(self.unsupported(x.span, "subprogram instantiation", "S4"))
             }
@@ -710,6 +710,152 @@ impl Db {
             mangled,
         });
         Ok(decl)
+    }
+
+    /// `component c is generic (...); port (...); end component;` (6.8): generics
+    /// and ports in the component's own region.
+    fn component_decl(
+        &mut self,
+        scope: ScopeId,
+        c: &ast::ComponentDecl,
+    ) -> Result<(), crate::Reported> {
+        let decl = self.new_decl(
+            scope,
+            Designator::Ident(c.name),
+            DeclKind::Error,
+            c.name.span,
+        );
+        let cscope = self.add_scope(crate::scope::ScopeKind::Component, Some(scope), Some(decl));
+        let generics = self.interface_list(
+            cscope,
+            c.generics.as_deref().unwrap_or_default(),
+            ObjRole::Generic,
+        );
+        let ports = self.interface_list(
+            cscope,
+            c.ports.as_deref().unwrap_or_default(),
+            ObjRole::Port,
+        );
+        // Declared even when an interface failed, so instances do not cascade into `E1100`.
+        self.decls[decl].kind = DeclKind::Component(Component {
+            scope: cscope,
+            generics: generics.clone().unwrap_or_default(),
+            ports: ports.clone().unwrap_or_default(),
+        });
+        self.declare(scope, decl);
+        generics?;
+        ports?;
+        Ok(())
+    }
+
+    /// A generic or port clause (6.5.6.2, 6.5.6.3) declared into `scope`, in order.
+    /// Generics are constants of mode `in`; ports are signals, default mode `in`.
+    pub(crate) fn interface_list(
+        &mut self,
+        scope: ScopeId,
+        list: &[ast::InterfaceDecl],
+        role: ObjRole,
+    ) -> Result<Box<[DeclId]>, crate::Reported> {
+        let mut out = Vec::new();
+        let mut failed = None;
+        for i in list {
+            let ast::InterfaceDecl::Object(o) = i else {
+                let sp = match i {
+                    ast::InterfaceDecl::Type(t) => t.span,
+                    ast::InterfaceDecl::Subprogram(s) => s.spec.span,
+                    ast::InterfaceDecl::Package(p) => p.span,
+                    ast::InterfaceDecl::Object(o) => o.span,
+                };
+                failed = Some(self.unsupported(
+                    sp,
+                    "generic types, subprograms and packages of components and blocks",
+                    "S4",
+                ));
+                continue;
+            };
+            match self.interface_object(scope, o, role.clone()) {
+                Ok(ds) => out.extend(ds),
+                Err(r) => failed = Some(r),
+            }
+        }
+        match failed {
+            Some(r) => Err(r),
+            None => Ok(out.into()),
+        }
+    }
+
+    fn interface_object(
+        &mut self,
+        scope: ScopeId,
+        o: &ast::InterfaceObject,
+        role: ObjRole,
+    ) -> Result<Vec<DeclId>, crate::Reported> {
+        let mode = match &o.mode {
+            None | Some(ast::Mode::In) => Mode::In,
+            Some(ast::Mode::Out) => Mode::Out,
+            Some(ast::Mode::Inout) => Mode::Inout,
+            Some(ast::Mode::Buffer) => Mode::Buffer,
+            Some(ast::Mode::Linkage) => Mode::Linkage,
+            Some(ast::Mode::View { .. }) => {
+                return Err(self.unsupported(o.span, "mode views", "S7"));
+            }
+        };
+        let (class, want) = match role {
+            ObjRole::Generic => (ObjClass::Constant, Some(ast::InterfaceClass::Constant)),
+            _ => (ObjClass::Signal, Some(ast::InterfaceClass::Signal)),
+        };
+        let what = if role == ObjRole::Generic {
+            "generic"
+        } else {
+            "port"
+        };
+        if o.class.is_some() && o.class != want || (role == ObjRole::Generic && mode != Mode::In) {
+            return Err(self.error(
+                rsim_diag::Diagnostic::error(
+                    crate::diag::CLASS_MISUSE,
+                    if role == ObjRole::Generic {
+                        "a generic is a constant of mode `in`"
+                    } else {
+                        "a port is a signal"
+                    },
+                )
+                .with_primary(o.span, format!("not allowed for a {what}")),
+            ));
+        }
+        let subtype = match &o.subtype {
+            Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(scope, si)?,
+            _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
+        };
+        let default = o
+            .default
+            .as_ref()
+            .map(|e| self.expr_in_subtype(scope, e, subtype));
+        let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
+            BoundsFrom::Subtype
+        } else {
+            BoundsFrom::Actual
+        };
+        let mut out = Vec::new();
+        for &name in &o.names {
+            let decl = self.new_decl(
+                scope,
+                Designator::Ident(name),
+                DeclKind::Object(Object {
+                    class,
+                    role: role.clone(),
+                    mode: Some(mode),
+                    subtype,
+                    default,
+                    bounds,
+                    signal_kind: None,
+                    file_open: None,
+                }),
+                name.span,
+            );
+            self.declare(scope, decl);
+            out.push(decl);
+        }
+        Ok(out)
     }
 
     /// Interface objects of a parameter list (6.5.2): default class constant for `in`, else variable.

@@ -1769,15 +1769,12 @@ impl Db {
     /// decl (lead): an interface list (block generics and ports).
     fn st_interfaces(
         &mut self,
-        _scope: ScopeId,
+        scope: ScopeId,
         list: &[ast::InterfaceDecl],
-        _role: ObjRole,
-        span: Span,
+        role: ObjRole,
+        _span: Span,
     ) -> Result<Box<[DeclId]>, Reported> {
-        if list.is_empty() {
-            return Ok(Box::default());
-        }
-        Err(self.unsupported(span, "block generics and ports", "S5"))
+        self.interface_list(scope, list, role)
     }
 
     /// expr (lead): an association list against `formals` (generic and port

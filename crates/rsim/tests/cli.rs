@@ -329,3 +329,99 @@ fn elab_and_run() {
     assert!(err.contains("error[E9999]"), "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// One `rsim analyze` process per file, as VUnit runs it (`tools/corpus/run.py`): units of
+/// earlier calls load from the manifests of every mapped library, including the work library,
+/// whatever the case of their names; a failed file is not recorded, so its dependents fail
+/// with E1002 in a later process.
+#[test]
+fn per_file_processes_across_libraries() {
+    let tmp = tempdir("perfile");
+    let src = |name: &str, text: &str| {
+        let f = tmp.join(name);
+        std::fs::write(&f, text).expect("write");
+        f.display().to_string()
+    };
+    let files = [
+        (
+            "Lib_A",
+            src(
+                "a_pkg.vhd",
+                "package A_Pkg is\n  function f(x : integer) return integer;\nend package;\n",
+            ),
+        ),
+        (
+            "lib_a",
+            src(
+                "a_body.vhd",
+                "package body a_pkg is\n  function f(x : integer) return integer is\n  begin\n    return x + 1;\n  end function;\nend package body;\n",
+            ),
+        ),
+        (
+            "LIB_A",
+            src(
+                "a_ent.vhd",
+                "library ieee;\nuse ieee.std_logic_1164.all;\nentity Ent is\n  port (o : out std_logic);\nend entity;\narchitecture Rtl of ent is\nbegin\n  o <= '1';\nend architecture;\n",
+            ),
+        ),
+        (
+            "lib_b",
+            src(
+                "b_ctx.vhd",
+                "context B_Ctx is\n  library lib_a;\n  use lib_a.a_pkg.all;\nend context;\n",
+            ),
+        ),
+        (
+            "lib_b",
+            src(
+                "b_bad.vhd",
+                "package bad_pkg is\n  constant c : integer := undeclared;\nend package;\n",
+            ),
+        ),
+    ];
+    let maps: Vec<String> = ["lib_a", "lib_b"]
+        .iter()
+        .map(|l| format!("--map={l}:{}/{l}", tmp.display()))
+        .collect();
+    let rsim = |lib: &str, file: &str| {
+        let o = Command::new(env!("CARGO_BIN_EXE_rsim"))
+            .args(["--color", "never", "analyze"])
+            .arg(format!(
+                "--work={lib}:{}/{}",
+                tmp.display(),
+                lib.to_lowercase()
+            ))
+            .args(&maps)
+            .arg(file)
+            .output()
+            .expect("run");
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    for (lib, f) in &files[..4] {
+        let (code, err) = rsim(lib, f);
+        assert_eq!(code, Some(0), "{f}: {err}");
+    }
+    let (code, err) = rsim("lib_b", &files[4].1);
+    assert_eq!(code, Some(1), "{err}");
+
+    // A dependent in a new process: a context, a package and its body, an entity and its
+    // architecture, all from manifests.
+    let top = src(
+        "top.vhd",
+        "library lib_b;\ncontext lib_b.b_ctx;\nlibrary ieee;\nuse ieee.std_logic_1164.all;\nentity top is\nend entity;\narchitecture sim of top is\n  signal s : std_logic;\n  constant k : integer := f(1);\nbegin\n  u : entity lib_a.ent(rtl) port map (o => s);\nend architecture;\n",
+    );
+    let (code, err) = rsim("work", &top);
+    assert_eq!(code, Some(0), "{err}");
+
+    let uses_bad = src(
+        "uses_bad.vhd",
+        "library lib_b;\nuse lib_b.bad_pkg.all;\nentity uses_bad is\nend entity;\n",
+    );
+    let (code, err) = rsim("work", &uses_bad);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("error[E1002]"), "{err}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

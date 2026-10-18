@@ -462,6 +462,20 @@ impl Db {
         self.decls[decl].kind = DeclKind::Type(ty);
         self.declare(scope, decl);
         self.check_protected_decl_items(pt)?;
+        if let Some(g) = &pt.generics {
+            // 2019 5.6.2: the generics are opaque here; a variable instantiates them.
+            if let Some(m) = pt.generic_map.as_ref().and_then(|m| m.first()) {
+                return Err(self.unsupported(
+                    m.span,
+                    "a generic map in a protected type header",
+                    "S7",
+                ));
+            }
+            let list = self.generic_list(pscope, g)?;
+            if let TypeKind::Protected { generics, .. } = &mut self.types[ty].kind {
+                *generics = Some(list);
+            }
+        }
         self.decls_in(pscope, &pt.decls);
         let aliases: Vec<DeclId> = self.scopes[pscope]
             .order
@@ -502,6 +516,7 @@ impl Db {
             Some(ty_decl),
         );
         let t = self.pair_protected_body(scope, ty_decl, name, bscope)?;
+        self.protected_body_generics(t, bscope);
         self.check_protected_body_items(b)?;
         self.decls_in(bscope, &b.decls);
         self.check_protected_complete(t, span)

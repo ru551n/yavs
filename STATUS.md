@@ -22,6 +22,13 @@
 - Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
   indications, file element checks; the rule 1 representation is pinned on numeric_std
   (`numeric_std_subtypes_rule_1`), review with the user pending.
+- Generics (S4, `generic.rs`): generic packages, subprograms and (2019) protected types; 2008
+  `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
+  (`(<>)`, `(default)`, generic map, checked against the actual instance); package and subprogram
+  instances, also inside generic units, by HIR cloning (visible part eager, bodies lazy via
+  `Db::instance_body`); `W1501`, `W1506`. The fixed/float packages' declarations and instances
+  analyze clean; their bodies wait for `E1325` and `.all`/allocators. Open: anonymous generic
+  types, mode views in generic units, instantiating a generic protected type (parser request).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 
@@ -59,8 +66,9 @@ configuration; `l : c;`), generic and port maps (positional, named, sub-element,
 `open`), configuration specifications and declarations (block, generate index, range and
 alternative, component configurations with incremental binding), default binding
 (`Db::default_binding`, `W1703`), manifest dependencies on named architectures and default-bound
-entities. Negative tests in `tests/diag/sem/unit/`; unit tests in `src/unit/tests.rs`. Open:
-generic types, subprograms and packages on entities, components and blocks (S4), mode views (S7),
+entities. Negative tests in `tests/diag/sem/unit/`; unit tests in `src/unit/tests.rs`. Generic
+types, subprograms and packages on components and blocks go through `generic.rs`. Open: mode
+views (S7),
 subtype indications as generate specifications.
 
 ## logic (`crates/rsim-logic`)

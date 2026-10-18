@@ -289,6 +289,21 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Verifier** is one linear walk; register liveness across suspension is checked within a
   block only (cross-block needs dataflow, LLVM tier).
 
+## Generics (rsim-sem, S4)
+
+- **Formal packages with a generic map** (6.5.6.3, 6.5.7.2): the actual instance must have been
+  instantiated with the same actuals (static values, base types, subprograms); a mismatch is
+  `E1503`. The LRM is clear and Questa rejects; NVC does not check. Non-static values are not
+  compared. Inside the generic the formal package stays opaque.
+- **W1501 (unused generic)** applies to the generics of packages and subprograms, reported once
+  the unit is complete: after the package body, after the package declaration when the library
+  holds no body for it, after a generic subprogram body. Entity, component and block generics are
+  not checked (they are used across units).
+- **Generic protected types (2019):** analyzed with opaque generics; an object of one is `E1505`
+  until the parser accepts the generic map on variable declarations.
+- **An unknown generic in a generic map does not hide a missing actual:** both `E1100` and
+  `E1502` are reported, as NVC does.
+
 ## Design units and binding (rsim-sem, S5)
 
 - **Default binding (Q4, 7.3.3):** an entity made directly visible by a use clause wins over the

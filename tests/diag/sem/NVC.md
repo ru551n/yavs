@@ -586,6 +586,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `generic_access_actual_wrong` | E1503 @10 | rejects @10 | rejects @5,6 |
 | `generic_class_array_elem_mismatch` | E1503 @7 | accepts | rejects @5,6 |
 | `generic_class_array_ok` | none | accepts | rejects @5,6 |
+| `generic_protected_uninstantiated` | E1505 @15 | rejects @6,10,15 | rejects @6 |
 | `generic_class_discrete_arith` | E1301 @11 | rejects @11 | rejects @5,6,7 |
 | `generic_class_floating_actual_integer` | E1503 @7 | rejects @7 | rejects @5,6 |
 | `generic_class_physical_actual_integer` | E1503 @7 | rejects @7 | rejects @5,6 |

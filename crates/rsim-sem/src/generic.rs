@@ -291,6 +291,61 @@ impl Db {
         }
     }
 
+    /// The body of a generic protected type sees the generics of its declaration.
+    pub(crate) fn protected_body_generics(&mut self, t: TypeId, bscope: ScopeId) {
+        let TypeKind::Protected {
+            generics: Some(g), ..
+        } = &self.types[t].kind
+        else {
+            return;
+        };
+        let pscope = self.decls[g[0]].scope;
+        let decls: Vec<DeclId> = self.scopes[pscope]
+            .order
+            .iter()
+            .copied()
+            .take_while(|d| {
+                // The generics and their class operations come before the methods.
+                g.contains(d) || self.decls[*d].implicit
+            })
+            .collect();
+        for d in decls {
+            let k = self.decls[d].name.key();
+            self.scopes[bscope].names.entry(k).or_default().push(d);
+            self.scopes[bscope].order.push(d);
+        }
+    }
+
+    /// `E1505` for an object of a generic protected type: 2019 instantiates it
+    /// with a generic map on the variable declaration, which rsim does not parse yet.
+    pub(crate) fn check_generic_protected(
+        &mut self,
+        st: SubtypeId,
+        span: Span,
+    ) -> Result<(), Reported> {
+        let t = self.base(st);
+        if !matches!(
+            self.types[t].kind,
+            TypeKind::Protected {
+                generics: Some(_),
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        let d = self.types[t].decl;
+        let name = self.decls[d].name;
+        Err(self.error(
+            Diagnostic::error(
+                diag::UNINSTANTIATED_CALL,
+                format!("`{name}` is a generic protected type and must be instantiated before use"),
+            )
+            .with_primary(span, "uninstantiated generic protected type")
+            .with_secondary(self.decls[d].span, "declared here")
+            .with_note("VHDL-2019 instantiates it with a generic map on the variable declaration, which rsim does not accept yet"),
+        ))
+    }
+
     // -- generic lists ------------------------------------------------------------
 
     /// Analyze a generic clause into `scope` (6.5.6): constants, types (with

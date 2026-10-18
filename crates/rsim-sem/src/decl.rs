@@ -427,6 +427,7 @@ impl Db {
             return Err(self.unsupported(o.span, "private variables", "S7"));
         }
         let subtype = self.subtype_indication(scope, &o.subtype)?;
+        self.check_generic_protected(subtype, o.subtype.span)?;
         let class = match o.class {
             ast::ObjectClass::Constant => ObjClass::Constant,
             ast::ObjectClass::Signal => ObjClass::Signal,

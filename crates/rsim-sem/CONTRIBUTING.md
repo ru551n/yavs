@@ -268,16 +268,24 @@ From cli (`rsim analyze`):
 generic.rs (S4) is in. What other modules can use, and what is still open:
 
 - `Db::generic_list(scope, &[InterfaceDecl])` analyzes a generic clause (constants, types with
-  their class operations, subprograms with `is <>`/`is name` defaults, formal packages). Entity
-  and block generics (`st_interfaces`, S5) can call it for the generic part.
+  their class operations, subprograms with `is <>`/`is name` defaults, formal packages with
+  `(<>)`, `(default)` or a generic map). `interface_list` routes non-object generics of components
+  and blocks through `generic_item`.
 - `Db::package_region(decl)` is the one place that maps a package, package instance or formal
   package decl to its region (`E1505` for an uninstantiated generic package); unit.rs `region_of`
   and names.rs `classify` call it. `NameRes::Uninstantiated` reports through `report_name`.
 - `Db::instance_body(inst)` clones a package instance's body (or an instantiated subprogram's)
-  on demand and gives the instance's subprograms their `Body::Hir`; M2 calls it.
-- Open: anonymous generic types (`type is private` in an interface object, S7), formal packages
-  with a partial generic map, package instances and mode views inside generic units, generic
-  protected types (protected.rs keeps its `E9999`), `W1501` (unused generic).
+  on demand and gives the instance's subprograms their `Body::Hir`; M2 calls it. Package and
+  subprogram instances inside generic units are cloned with them.
+- `W1501`: `Db::lookup` marks generics used; reported after the package body (or the package
+  declaration when there is none) and after a generic subprogram body.
+- Generic protected types (2019): generics analyzed opaquely, visible in the body; an object of
+  one is `E1505`. Request (parser): `generic_map_aspect` on variable declarations (2019 6.4.2.4),
+  then generic.rs instantiates the type by cloning; a generic map in the protected type header is
+  `E9999` until then.
+- Open: anonymous generic types (`type is private` in an interface object, S7), mode views inside
+  generic units (views are not analyzed yet), formal packages with a map stay opaque inside the
+  generic (their generics do not take the map's values).
 - Blocked in lib: the bodies of `fixed_generic_pkg` and `float_generic_pkg` (so the instance
   bodies of `fixed_pkg`/`float_pkg`) need aggregates with `others` from a return or parameter
   context (`E1325`), `.all` and allocators; the declarations and instances analyze clean.

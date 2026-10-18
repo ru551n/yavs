@@ -113,15 +113,6 @@ impl Db {
     /// declarations and instances, use clauses, attribute specifications; 2019
     /// adds private variables and aliases.
     pub fn check_protected_decl_items(&mut self, pt: &ast::ProtectedDecl) -> Result<(), Reported> {
-        if let Some(g) = pt.generics.as_ref().and_then(|g| g.first()) {
-            let span = match g {
-                ast::InterfaceDecl::Object(o) => o.span,
-                ast::InterfaceDecl::Type(t) => t.span,
-                ast::InterfaceDecl::Subprogram(s) => s.spec.span,
-                ast::InterfaceDecl::Package(p) => p.span,
-            };
-            return Err(self.unsupported(span, "a protected type with generics", "S7"));
-        }
         let v2019 = self.file_rev() >= LangRev::Vhdl2019;
         let mut res = Ok(());
         for item in &pt.decls {

@@ -508,3 +508,29 @@ end package;
         ["E1503"]
     );
 }
+
+#[test]
+fn generic_protected_type() {
+    let pkg = "
+package p is
+  type pt is protected
+    generic (type t; n : integer := 1);
+    procedure set (x : t);
+  end protected;
+end package;
+package body p is
+  type pt is protected body
+    variable v : t;
+    variable k : integer := n;
+    procedure set (x : t) is begin v := x; end procedure;
+  end protected body;
+end package body;
+";
+    let db = analyze(LangRev::Vhdl2019, pkg);
+    assert!(codes(&db).is_empty(), "{:?}", codes(&db));
+    let db = analyze(
+        LangRev::Vhdl2019,
+        &format!("{pkg}package q is shared variable sv : work.p.pt; end package;"),
+    );
+    assert_eq!(codes(&db), ["E1505"]);
+}

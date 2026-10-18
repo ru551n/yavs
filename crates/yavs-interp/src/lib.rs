@@ -360,3 +360,47 @@ pub fn call_shared(
         Err(e) => Err(m.error(e, None)),
     }
 }
+
+/// Run the resolution function `func` (one parameter: an unconstrained array of the element
+/// type) over the driving values `vals` (each in the kernel's byte representation, which is
+/// the element's memory layout) and write the resolved scalar into `out`. The array passed
+/// is indexed `0 to n - 1`.
+pub fn resolve(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    vals: &[&[u8]],
+    out: &mut [u8],
+) -> Result<(), SimError> {
+    let mut m = Machine::new(rt, inst, Vec::new(), func);
+    let stride = out.len() as u64;
+    let r = (|| {
+        let data = m.temp_alloc(stride * vals.len() as u64)?;
+        for (k, v) in vals.iter().enumerate() {
+            if v.len() as u64 != stride {
+                return Err(exec::ice("driving value of the wrong size for resolution"));
+            }
+            m.put(data + k as u64 * stride, v)?;
+        }
+        let dope = m.temp_alloc(24)?;
+        let d: Vec<u8> = [0i64, vals.len() as i64 - 1, 0]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        m.put(dope, &d)?;
+        m.enter(func, &[data, dope])?;
+        m.run(None, 0)
+    })();
+    match r {
+        Ok(Outcome::Returned(Some(v))) => {
+            let n = out.len().min(8);
+            out[..n].copy_from_slice(&v.to_le_bytes()[..n]);
+            Ok(())
+        }
+        Ok(_) => Err(m.error(
+            Fault::Runtime("resolution function returned no value".into()),
+            None,
+        )),
+        Err(e) => Err(m.error(e, None)),
+    }
+}

@@ -54,7 +54,22 @@ impl Elaborated {
     pub fn build_with(
         &self,
         cfg: Config,
+        make: impl FnMut(&ProcInst, &[DriverId]) -> Result<Box<dyn Process>, SimError>,
+    ) -> Result<SimControl, SimError> {
+        self.build_res(cfg, make, |_| {
+            Err(usage(
+                "user resolution functions need the lowered program (Elaborated::build)".into(),
+            ))
+        })
+    }
+
+    /// [`Elaborated::build_with`], with `res` giving the kernel resolver of a user
+    /// resolution function.
+    pub(crate) fn build_res(
+        &self,
+        cfg: Config,
         mut make: impl FnMut(&ProcInst, &[DriverId]) -> Result<Box<dyn Process>, SimError>,
+        res: impl Fn(yavs_sem::DeclId) -> Result<yavs_kernel::Resolver, SimError>,
     ) -> Result<SimControl, SimError> {
         let mut b = Builder::new();
         for (i, leaf) in self.nets.leaves.iter().enumerate() {
@@ -73,10 +88,16 @@ impl Elaborated {
                 (Some(LeafRes::StdLogic), None) => {
                     b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::StdLogic)
                 }
-                (Some(LeafRes::Func(_)), None) => {
+                (Some(LeafRes::Func(_)), None)
+                    if matches!(leaf.ty.elem, yavs_kernel::Elem::Logic) =>
+                {
                     return Err(usage(format!(
-                        "signal {name}: user resolution functions need yavs-interp (M3)"
+                        "signal {name}: user resolution of std_ulogic, bit and boolean leaves \
+                         is not implemented yet (M3)"
                     )));
+                }
+                (Some(LeafRes::Func(d)), None) => {
+                    b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::Func(res(*d)?))
                 }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");

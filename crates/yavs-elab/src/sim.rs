@@ -17,6 +17,8 @@ use crate::hier::{ScopeId, ScopeKind};
 pub struct Ir {
     pub program: Arc<yavs_ir::Program>,
     pub units: HashMap<UnitId, UnitIr>,
+    /// The function of each user resolution function of a signal.
+    pub resolvers: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -55,6 +57,14 @@ impl Elaborated {
         for &a in &archs {
             idx.push(l.architecture(a)?);
         }
+        let mut resolvers = HashMap::new();
+        for leaf in &self.nets.leaves {
+            if let Some(crate::hier::LeafRes::Func(d)) = leaf.resolution
+                && !resolvers.contains_key(&d)
+            {
+                resolvers.insert(d, l.subprogram(d)?);
+            }
+        }
         let lowered = l.finish()?;
         let mut units = HashMap::new();
         for (a, i) in archs.into_iter().zip(idx) {
@@ -63,6 +73,7 @@ impl Elaborated {
         self.ir = Some(Ir {
             program: Arc::new(lowered.program),
             units,
+            resolvers,
         });
         Ok(())
     }
@@ -81,64 +92,80 @@ impl Elaborated {
         let rt = Runtime::new(ir.program.clone(), Bindings::default())?;
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         let shared = Arc::new(Mutex::new(SharedState::new(Vec::new())));
-        self.build_with(cfg, |p, ds| {
-            let i = self.instance_of(p.scope);
-            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
-                return Err(sim_err("process outside an instance".into()));
-            };
-            let u = ir
-                .units
-                .get(&arch)
-                .ok_or_else(|| sim_err("architecture not lowered".into()))?;
-            // One instance data per region (instance, block, generate iteration): values and
-            // signals are looked up from the process's enclosing region outwards.
-            let region = self.hier.scope(p.scope).parent.unwrap_or(i);
-            let inst = match insts.get(&region) {
-                Some(d) => d.clone(),
-                None => {
-                    let d = Arc::new(self.inst_data(&rt, u, region, &shared)?);
-                    insts.insert(region, d.clone());
-                    d
-                }
-            };
-            let pir = u
-                .processes
-                .iter()
-                .find(|x| x.stmt == p.stmt)
-                .ok_or_else(|| {
-                    sim_err(format!(
-                        "{}: processes inside generates and blocks are not lowered yet",
-                        self.hier.path_name(p.scope, crate::Case::Original)
-                    ))
-                })?;
-            let mut drivers = Vec::with_capacity(pir.drivers.len());
-            for (k, &sig) in pir.drivers.iter().enumerate() {
-                let [(d, _, range)] = p.lsps.get(k).map(|v| v.as_slice()).unwrap_or(&[]) else {
-                    return Err(sim_err(format!(
-                        "driver {k} of {} spans several kernel signals (records, M3)",
-                        self.hier.path_name(p.scope, crate::Case::Original)
-                    )));
+        let res = |d: yavs_sem::DeclId| -> Result<yavs_kernel::Resolver, SimError> {
+            let f = *ir
+                .resolvers
+                .get(&d)
+                .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
+            let rt = rt.clone();
+            Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
+                // ponytail: no instance data, so a resolution function declared in an
+                // architecture cannot read its constants; per-instance resolvers if needed.
+                yavs_interp::resolve(rt.clone(), f, Arc::new(InstData::default()), vals, out)
+                    .map_err(|e| e.to_string())
+            }))
+        };
+        self.build_res(
+            cfg,
+            |p, ds| {
+                let i = self.instance_of(p.scope);
+                let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+                    return Err(sim_err("process outside an instance".into()));
                 };
-                let pos =
-                    p.drivers.iter().position(|x| x == d).ok_or_else(|| {
+                let u = ir
+                    .units
+                    .get(&arch)
+                    .ok_or_else(|| sim_err("architecture not lowered".into()))?;
+                // One instance data per region (instance, block, generate iteration): values and
+                // signals are looked up from the process's enclosing region outwards.
+                let region = self.hier.scope(p.scope).parent.unwrap_or(i);
+                let inst = match insts.get(&region) {
+                    Some(d) => d.clone(),
+                    None => {
+                        let d = Arc::new(self.inst_data(&rt, u, region, &shared)?);
+                        insts.insert(region, d.clone());
+                        d
+                    }
+                };
+                let pir = u
+                    .processes
+                    .iter()
+                    .find(|x| x.stmt == p.stmt)
+                    .ok_or_else(|| {
+                        sim_err(format!(
+                            "{}: processes inside generates and blocks are not lowered yet",
+                            self.hier.path_name(p.scope, crate::Case::Original)
+                        ))
+                    })?;
+                let mut drivers = Vec::with_capacity(pir.drivers.len());
+                for (k, &sig) in pir.drivers.iter().enumerate() {
+                    let [(d, _, range)] = p.lsps.get(k).map(|v| v.as_slice()).unwrap_or(&[]) else {
+                        return Err(sim_err(format!(
+                            "driver {k} of {} spans several kernel signals (records, M3)",
+                            self.hier.path_name(p.scope, crate::Case::Original)
+                        )));
+                    };
+                    let pos = p.drivers.iter().position(|x| x == d).ok_or_else(|| {
                         SimError::new(ErrorKind::Internal("driver not owned".into()))
                     })?;
-                drivers.push(ProcDriver {
-                    id: ds[pos],
-                    sig,
-                    range: *range,
-                });
-            }
-            let serial = ir.program.is_serial(pir.func);
-            let proc = InterpProcess::new(
-                rt.clone(),
-                pir.func,
-                inst,
-                drivers,
-                serial.then(|| shared.clone()),
-            )?;
-            Ok(Box::new(proc))
-        })
+                    drivers.push(ProcDriver {
+                        id: ds[pos],
+                        sig,
+                        range: *range,
+                    });
+                }
+                let serial = ir.program.is_serial(pir.func);
+                let proc = InterpProcess::new(
+                    rt.clone(),
+                    pir.func,
+                    inst,
+                    drivers,
+                    serial.then(|| shared.clone()),
+                )?;
+                Ok(Box::new(proc))
+            },
+            res,
+        )
     }
 
     /// Instance data of instance `i`: constants from their thunks, the signal table.

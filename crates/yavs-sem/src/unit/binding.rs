@@ -777,7 +777,9 @@ impl Db {
             DeclKind::GenericType(_) => return self.type_actual(scope, a, fspan),
             DeclKind::GenericSubprogram(_) => return self.subprogram_actual(scope, f, a, fspan),
             DeclKind::GenericPackage(_) => {
-                return Ok(Actual::Package(self.entity_package_actual(scope, f, a, fspan)?));
+                return Ok(Actual::Package(
+                    self.entity_package_actual(scope, f, a, fspan)?,
+                ));
             }
             _ => {}
         }
@@ -1119,7 +1121,8 @@ impl Db {
                     continue;
                 };
                 errs.keep::<()>(Err(self.error(
-                    Diagnostic::error(diag::MISSING_ACTUAL, msg).with_primary(*sp, "left open here"),
+                    Diagnostic::error(diag::MISSING_ACTUAL, msg)
+                        .with_primary(*sp, "left open here"),
                 )));
                 continue;
             }

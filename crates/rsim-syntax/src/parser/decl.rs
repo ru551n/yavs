@@ -526,7 +526,12 @@ impl Parser<'_> {
         self.eat_kw(Kw::Is);
         let generics = self.opt_interface_clause(Kw::Generic)?;
         let ports = self.opt_interface_clause(Kw::Port)?;
-        let end_name = self.end(start, "component", &[Kw::Component], false, Some(&name))?;
+        // 2019 (LCS-2016-055a): `end component` may drop its keyword.
+        if self.at_kw(Kw::End) && self.nth(1) != Tok::Kw(Kw::Component) {
+            let span = self.span();
+            self.require_2019(span, "`end` without `component`");
+        }
+        let end_name = self.end(start, "component", &[Kw::Component], true, Some(&name))?;
         Ok(ComponentDecl {
             name,
             generics,

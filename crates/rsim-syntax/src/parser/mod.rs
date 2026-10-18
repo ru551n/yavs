@@ -383,8 +383,9 @@ impl<'a> Parser<'a> {
 
     /// Parse `end [kws] [name] ;` closing a construct opened at `open`.
     ///
-    /// The closing keywords are required unless `optional`; VHDL-2019 makes
-    /// them optional everywhere.
+    /// The closing keywords are required unless `optional`. VHDL-2019 makes
+    /// only `end component` optional (LCS-2016-055a, `lrm-checks.md` P1); every
+    /// other ending keeps its 2008 rule.
     fn end(
         &mut self,
         open: Span,
@@ -409,17 +410,23 @@ impl<'a> Parser<'a> {
         for &k in kws {
             if self.eat_kw(k) {
                 eaten += 1;
-            } else if eaten > 0 || !(optional || self.std >= Std::Vhdl2019) {
+            } else if eaten > 0 || !optional {
                 let found = self.peek().describe();
                 let span = self.span();
-                self.report(
-                    Diagnostic::error(
-                        codes::SYNTAX,
-                        format!("expected `{}`, found {found}", k.as_str()),
-                    )
-                    .with_primary(span, format!("expected `end {}`", kws_str(kws)))
-                    .with_secondary(open, format!("to close this {what}")),
-                );
+                let mut d = Diagnostic::error(
+                    codes::SYNTAX,
+                    format!("expected `{}`, found {found}", k.as_str()),
+                )
+                .with_primary(span, format!("expected `end {}`", kws_str(kws)))
+                .with_secondary(open, format!("to close this {what}"));
+                if eaten == 0 && self.std >= Std::Vhdl2019 {
+                    d = d.with_help(format!(
+                        "write `end {}`: VHDL-2019 makes only the `component` keyword \
+                         optional after `end` (LCS-2016-055a)",
+                        kws_str(kws)
+                    ));
+                }
+                self.report(d);
                 break;
             } else {
                 break;

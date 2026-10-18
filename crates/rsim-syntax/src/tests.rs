@@ -717,6 +717,27 @@ fn vhdl2019_relaxations() {
 }
 
 #[test]
+fn vhdl2019_only_end_component_optional() {
+    // LCS-2016-055a: only `end component` may drop its keyword (lrm-checks.md P1).
+    for src in [
+        pkg("type r is record a : bit; end;"),
+        pkg("type t is range 0 to 1 units u; end;"),
+        pkg("type pt is protected end;"),
+        seq("if true then null; end;"),
+        seq("l: loop exit; end;"),
+        seq("case 1 is when others => null; end;"),
+    ] {
+        let e = errors_std(&src, Std::Vhdl2019);
+        assert!(
+            e.iter().any(|m| m.starts_with("expected `")),
+            "{src}: {e:?}"
+        );
+    }
+    let p = parse_std(&pkg("type r is record a : bit; end;"), Std::Vhdl2019);
+    assert!(p.diags[0].help.iter().any(|h| h.contains("LCS-2016-055a")));
+}
+
+#[test]
 fn conditional_analysis() {
     let src = "`if VHDL_VERSION >= \"2019\" then
         constant v : integer := 2019;

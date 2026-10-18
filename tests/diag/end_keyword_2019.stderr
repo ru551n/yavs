@@ -1,0 +1,13 @@
+error[E0002]: expected `record`, found `;`
+ --> end_keyword_2019.vhd:9:6
+  |
+7 |   type r is record
+  |             ------ to close this record
+8 |     a : bit;
+9 |   end;
+  |      ^ expected `end record`
+  |
+  = help: write `end record`: VHDL-2019 makes only the `component` keyword optional after `end` (LCS-2016-055a)
+
+error: aborting due to 1 previous error
+

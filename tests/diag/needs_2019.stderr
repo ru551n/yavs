@@ -14,5 +14,13 @@ error[E0004]: a trailing `;` in an interface list requires VHDL-2019
   |
   = help: analyze with `--std 2019`
 
-error: aborting due to 2 previous errors
+error[E0004]: `end` without `component` requires VHDL-2019
+ --> needs_2019.vhd:9:3
+  |
+9 |   end;
+  |   ^^^
+  |
+  = help: analyze with `--std 2019`
+
+error: aborting due to 3 previous errors
 

@@ -186,9 +186,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   (`VHDL_VERSION` is `"2008"`), since 2008 already allows tool directives and the evaluation is
   harmless. Unknown directives (`` `protect ``) warn (W0002) and skip their line. `TOOL_VENDOR`
   and `TOOL_NAME` are `rsim`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
-- **2019 closing keywords:** in 2019 mode every `end <keyword>` keyword is optional
-  (LCS-2016-055a regularizes the endings; accepting the superset is simpler than listing which
-  constructs it covers). In 2008 mode the keywords the 2008 grammar requires are required.
+- **2019 closing keywords:** 2019 makes only `end component` optional (LCS-2016-055a); every
+  other ending keeps the 2008 rule. NVC, GHDL and Questa 2025.3 reject a bare `end;` for every
+  other construct (`docs/design/lrm-checks.md` P1); rsim gives E0002 with a help naming the rule.
 - **2019 conditional expressions** (`a when c else b`) are parsed in initial values, interface
   defaults, `return`, association actuals and variable assignments, the places the NVC 2019 tests
   use. `unaffected` is accepted as a 2019 variable assignment value. A `generic map` after a name

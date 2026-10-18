@@ -1792,9 +1792,13 @@ impl Db {
         alts: &[&[ast::Choice]],
         span: Span,
     ) -> Result<Vec<ChoiceSet>, Reported> {
-        use crate::expr::aggregate::{check_case, resolve_choices};
+        use crate::expr::aggregate::{
+            check_case, check_case_others, check_case_subject, resolve_choices,
+        };
         let st = self.exprs[subject].subtype;
         let ty = self.base(st);
+        check_case_subject(self, st, self.exprs[subject].span)?;
+        check_case_others(self, alts)?;
         let mut r = ChoiceResolver(scope);
         let mut errs = Errs::default();
         let mut resolved = Vec::with_capacity(alts.len());

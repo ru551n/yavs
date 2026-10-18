@@ -531,7 +531,7 @@ fn mixed_named_positional_is_e1324() {
     let mut m = Mock::new(&fx);
     let st = array_st(&mut fx.db, fx.bv, &[(0, To, 3)]);
     assert!(agg(&mut fx, &mut m, "('1', 2 => '0', 3 => '1', 1 => '0')", st).is_err());
-    assert_eq!(fx.codes(), [diag::AGG_MIXED]);
+    assert_eq!(fx.codes(), [diag::AGG_NONSTATIC_CHOICE]);
     // A trailing others after positional elements is fine.
     let e = agg(&mut fx, &mut m, "('1', '0', others => '1')", st).unwrap();
     assert_eq!(bits(&fx, e).1, "1011");
@@ -754,12 +754,9 @@ fn two_dimensional_with_string_rows_and_others() {
     assert_eq!(elem_runs(a), vec![(1 << 20, ConstValue::Enum(0))]);
     // Rows of different lengths.
     assert!(agg(&mut fx, &mut m, "(\"01\", \"101\")", mst).is_err());
-    // A non-aggregate row.
+    // A non-aggregate row, reported once.
     assert!(agg(&mut fx, &mut m, "('0', '1')", mst).is_err());
-    assert_eq!(
-        fx.codes(),
-        [diag::LENGTH_MISMATCH, diag::AGG_ELEMENT, diag::AGG_ELEMENT]
-    );
+    assert_eq!(fx.codes(), [diag::LENGTH_MISMATCH, diag::AGG_ELEMENT]);
 }
 
 #[test]
@@ -872,15 +869,15 @@ fn record_errors() {
     let cases: &[(&str, &str)] = &[
         ("(1, '0')", diag::AGG_MISSING),
         ("(a => 1, a => 2, b => '0', c => '0')", diag::AGG_DUPLICATE),
-        ("(a => 1, bb => '0', c => '0')", diag::AGG_RECORD_CHOICE),
-        ("(1, '0', '1', '1')", diag::AGG_RECORD_CHOICE),
-        ("(a => 1, '0', '1')", diag::AGG_RECORD_CHOICE),
+        ("(a => 1, bb => '0', c => '0')", diag::NOT_DECLARED),
+        ("(1, '0', '1', '1')", diag::AGG_DUPLICATE),
+        ("(a => 1, '0', '1')", diag::AGG_NONSTATIC_CHOICE),
         (
             "(a => 1, b => '0', c => '0', others => '1')",
             diag::AGG_OTHERS,
         ),
-        ("(others => '1')", diag::AGG_OTHERS),
-        ("(a | b => '1', c => '0')", diag::AGG_RECORD_CHOICE),
+        ("(others => '1')", diag::AGG_ELEMENT),
+        ("(a | b => '1', c => '0')", diag::AGG_ELEMENT),
     ];
     for (src, code) in cases {
         let before = fx.db.diagnostics().len();
@@ -1074,7 +1071,15 @@ fn case_on_arrays() {
         )
         .is_ok()
     );
-    assert_eq!(fx.codes(), [diag::CASE_COVERAGE; 4]);
+    assert_eq!(
+        fx.codes(),
+        [
+            diag::CASE_COVERAGE,
+            diag::CASE_COVERAGE,
+            diag::LENGTH_MISMATCH,
+            diag::LENGTH_MISMATCH
+        ]
+    );
 }
 
 #[test]

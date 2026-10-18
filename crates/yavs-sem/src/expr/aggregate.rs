@@ -920,17 +920,56 @@ fn case_core(
         array_case(db, eval, st, elem, matching, alts, has_others, span, defer)?;
         Ok(None)
     } else {
-        Err(db.error(
-            Diagnostic::error(
-                diag::CASE_COVERAGE,
-                format!(
-                    "case expression of type {} is neither discrete nor a one-dimensional array of a discrete type",
-                    type_name(db, ty)
-                ),
-            )
-            .with_primary(span, "in this case statement"),
+        check_case_subject(db, st, span)?;
+        Err(db.ice(
+            span,
+            "case subject passed its type check but is not discrete",
         ))
     }
+}
+
+/// The subject of a case is discrete or a one-dimensional array of a
+/// discrete type (10.9); `span` is the subject.
+pub fn check_case_subject(db: &mut Db, st: SubtypeId, span: Span) -> Result<(), Reported> {
+    let ty = db.base(st);
+    let ok = is_error(db, ty)
+        || db.types[ty].kind.is_discrete()
+        || matches!(&db.types[ty].kind, TypeKind::Array { indexes, elem }
+            if indexes.len() == 1 && db.types[db.base(*elem)].kind.is_discrete());
+    if ok {
+        return Ok(());
+    }
+    Err(db.error(
+        Diagnostic::error(
+            diag::TYPE_MISMATCH,
+            format!(
+                "case expression must be discrete or a one-dimensional array of a discrete type, found {}",
+                type_name(db, ty)
+            ),
+        )
+        .with_primary(span, "not discrete"),
+    ))
+}
+
+/// `others` is the last alternative of a case and its only choice (10.9);
+/// reported at the misplaced `others`.
+pub fn check_case_others(db: &mut Db, alts: &[&[ast::Choice]]) -> Result<(), Reported> {
+    for (i, choices) in alts.iter().enumerate() {
+        for c in choices.iter() {
+            if let ast::Choice::Others(sp) = c
+                && (i + 1 != alts.len() || choices.len() != 1)
+            {
+                return Err(db.error(
+                    Diagnostic::error(
+                        diag::CASE_COVERAGE,
+                        "`others` must be the last alternative and stand alone",
+                    )
+                    .with_primary(*sp, "misplaced `others`"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn bad_matching(db: &mut Db, ty: TypeId, span: Span) -> Reported {
@@ -1050,7 +1089,7 @@ fn array_case(
                 failed = Some(
                     db.error(
                         Diagnostic::error(
-                            diag::CASE_COVERAGE,
+                            diag::LENGTH_MISMATCH,
                             format!("case choice has {n} elements, the expression has {want}"),
                         )
                         .with_primary(sp, "wrong length"),
@@ -1063,7 +1102,7 @@ fn array_case(
                     failed = Some(
                         db.error(
                             Diagnostic::error(
-                                diag::CASE_COVERAGE,
+                                diag::LENGTH_MISMATCH,
                                 format!("case choice has {n} elements, an earlier one has {m}"),
                             )
                             .with_primary(sp, "different length")
@@ -1186,8 +1225,8 @@ pub fn resolve_aggregate(
         }
         _ => Err(db.error(
             Diagnostic::error(
-                diag::TYPE_MISMATCH,
-                format!("expected {}, found an aggregate", type_name(db, ty)),
+                diag::AGG_NO_TYPE,
+                format!("an aggregate cannot have type {}", type_name(db, ty)),
             )
             .with_primary(span, "aggregates are only of array and record types"),
         )),
@@ -1220,7 +1259,7 @@ fn record_agg(
                 failed = Some(
                     db.error(
                         Diagnostic::error(
-                            diag::AGG_RECORD_CHOICE,
+                            diag::AGG_NONSTATIC_CHOICE,
                             "positional element after a named one",
                         )
                         .with_primary(a.span, "positional")
@@ -1233,7 +1272,7 @@ fn record_agg(
                 failed = Some(
                     db.error(
                         Diagnostic::error(
-                            diag::AGG_RECORD_CHOICE,
+                            diag::AGG_DUPLICATE,
                             format!(
                                 "too many elements: {} has {} elements",
                                 type_name(db, ty),
@@ -1314,7 +1353,7 @@ fn record_agg(
                     }
                     None => {
                         let mut d = Diagnostic::error(
-                            diag::AGG_RECORD_CHOICE,
+                            diag::NOT_DECLARED,
                             format!("{} has no element `{}`", type_name(db, ty), id.text),
                         )
                         .with_primary(*sp, "unknown element");
@@ -1374,19 +1413,10 @@ fn record_agg(
         if let Some(&first) = cov.first() {
             let t0 = db.base(elems[first as usize].1);
             if let Some(&bad) = cov.iter().find(|&&i| db.base(elems[i as usize].1) != t0) {
-                let others = assocs[ai]
-                    .choices
-                    .iter()
-                    .any(|c| matches!(c, ast::Choice::Others(_)));
-                let code = if others {
-                    diag::AGG_OTHERS
-                } else {
-                    diag::AGG_RECORD_CHOICE
-                };
                 failed = Some(
                     db.error(
                         Diagnostic::error(
-                            code,
+                            diag::AGG_ELEMENT,
                             format!(
                                 "elements `{}` and `{}` share one value but have different types",
                                 elems[first as usize].0.text, elems[bad as usize].0.text
@@ -1555,6 +1585,14 @@ fn array_agg(
                 type_name(db, cx.ty)
             )),
         ));
+    }
+
+    // One misplaced scalar in an n-dimensional aggregate is usually all of
+    // them (`('0', '1')` for a 2-D type): report the first only.
+    if dim + 1 < ndims
+        && let Some(a) = assocs.iter().find(|a| !is_row(&a.value, dim + 2 == ndims))
+    {
+        return Err(not_a_row(db, cx, dim, a.value.span));
     }
 
     // Values and choices.
@@ -1907,7 +1945,7 @@ fn array_agg(
 fn mixed(db: &mut Db, span: Span) -> Reported {
     db.error(
         Diagnostic::error(
-            diag::AGG_MIXED,
+            diag::AGG_NONSTATIC_CHOICE,
             "named and positional associations are mixed in an array aggregate",
         )
         .with_primary(span, "this association")
@@ -1988,20 +2026,7 @@ fn resolve_value(
                 kind: ast::LiteralKind::String(s),
                 ..
             }) if dim + 2 == ndims => string_row(db, cx, s.as_str(), value.span).map(Val::Row),
-            _ => Err(db.error(
-                Diagnostic::error(
-                    diag::AGG_ELEMENT,
-                    format!(
-                        "expected an aggregate for dimension {} of {}",
-                        dim + 2,
-                        type_name(db, cx.ty)
-                    ),
-                )
-                .with_primary(value.span, "not an aggregate")
-                .with_note(
-                    "each element of an n-dimensional aggregate is an (n-1)-dimensional aggregate or, for the last dimension, a string literal (LRM 9.3.3.3)",
-                ),
-            )),
+            _ => Err(not_a_row(db, cx, dim, value.span)),
         };
     }
     let c = r.cands(db, value);
@@ -2039,6 +2064,36 @@ fn resolve_value(
             ))
         }
     }
+}
+
+/// Can `e` be an element of dimension `dim < n-1` of an n-dimensional
+/// aggregate: an aggregate, or a string literal for the last dimension?
+fn is_row(e: &ast::Expr, last: bool) -> bool {
+    match &e.kind {
+        ast::ExprKind::Aggregate(_) => true,
+        ast::ExprKind::Literal(ast::Literal {
+            kind: ast::LiteralKind::String(_),
+            ..
+        }) => last,
+        _ => false,
+    }
+}
+
+fn not_a_row(db: &mut Db, cx: &ArrCx, dim: usize, span: Span) -> Reported {
+    db.error(
+        Diagnostic::error(
+            diag::AGG_ELEMENT,
+            format!(
+                "expected an aggregate for dimension {} of {}",
+                dim + 2,
+                type_name(db, cx.ty)
+            ),
+        )
+        .with_primary(span, "not an aggregate")
+        .with_note(
+            "each element of an n-dimensional aggregate is an (n-1)-dimensional aggregate or, for the last dimension, a string literal (LRM 9.3.3.3)",
+        ),
+    )
 }
 
 /// An element value. A nested aggregate is analyzed here with the element

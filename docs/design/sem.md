@@ -680,8 +680,10 @@ The type of an aggregate comes **only** from context (`Class(ANY_COMPOSITE)` bot
 `Expected::Any`, an aggregate is `E1320`. Given the type:
 
 **Record aggregate**: choices are element simple names or `others`; each element exactly once
-(`E1321` missing, `E1322` duplicate); `others` must cover at least one element and all elements
-it covers must have the same type (9.3.3.2).
+(`E1321` missing, `E1322` duplicate or more positional elements than the record has, `E1100` no
+such element, `E1329` a choice that is not an element name, `E1326` positional after named);
+`others` must cover at least one element (`E1325`) and all elements one value covers must have
+the same type (`E1323`) (9.3.3.2).
 
 **Array aggregate**: for an n-dimensional array, each element is an (n-1)-dimensional
 aggregate or, for 1-D (2008), an expression of either the element type **or the aggregate's own
@@ -695,13 +697,21 @@ stays for an element that fits neither type.
 
 Choices: index expressions, discrete ranges, subtype names, `others`. Rules (9.3.3.3):
 - `others` last and alone in its association; needs a constrained context subtype (`E1325`).
-- Named and positional associations do not mix (except a trailing `others`).
+- Named and positional associations do not mix (except a trailing `others`): `E1326` (`E1324` is
+  retired).
+- An n-dimensional aggregate whose elements are not (n-1)-dimensional aggregates: one `E1323`, at
+  the first such element.
+- A named aggregate without `others` takes its bounds from its choices, also in a constrained
+  context: missing or extra indices at the ends are the target's length check (`E1405`), not
+  `E1328` (lrm-checks L45).
 - A non-locally-static choice is allowed only as the single choice of a single association;
   otherwise `E1326`.
 - Static choices: duplicate/overlap `E1327`, uncovered index values when no `others` and the
   context subtype is constrained `E1328`. Choice sets are folded to sorted `(lo, hi)` intervals
   of positions (enums by pos); the same folding checks case statements, which report `E1820`
-  instead (`E1327`/`E1328` are for aggregates only).
+  instead (`E1327`/`E1328` are for aggregates only). A case subject that is neither discrete nor
+  a one-dimensional array of a discrete type is `E1300` at the subject, a misplaced `when others`
+  `E1820` at the `others`, an array choice of the wrong length `E1405`.
 
 Bounds of the result (stored, not recomputed by M2):
 

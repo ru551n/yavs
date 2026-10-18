@@ -51,16 +51,16 @@ codes! {
     FORMAL_TWICE = "E1310", "A formal is associated more than once.";
     MISSING_ACTUAL = "E1311", "A formal without a default has no actual.";
     FORMAL_CONV_UNCONSTRAINED = "E1312", "A conversion on the formal side of an association needs a formal of a fully constrained subtype: its bounds would have to come back from the actual through the conversion (6.5.7.1; GHDL and Questa reject it too).";
-    AGG_NO_TYPE = "E1320", "The type of an aggregate comes only from its context, and this context does not give one.";
+    AGG_NO_TYPE = "E1320", "The type of an aggregate comes only from its context, and this context does not give one, or gives a type that is not an array or record type.";
     AGG_MISSING = "E1321", "A record aggregate does not give a value for every element.";
-    AGG_DUPLICATE = "E1322", "A record aggregate gives a value for an element twice.";
-    AGG_ELEMENT = "E1323", "An array aggregate element is neither of the element type nor of the aggregate type.";
-    AGG_MIXED = "E1324", "Named and positional associations are mixed in an array aggregate.";
+    AGG_DUPLICATE = "E1322", "A record aggregate gives a value for an element twice, or has more positional elements than the record has elements.";
+    AGG_ELEMENT = "E1323", "An array aggregate element is neither of the element type nor of the aggregate type, an element of a multidimensional aggregate is not an aggregate (or string literal) for the next dimension, or one value is given for record elements of different types.";
+    // E1324 is retired (mixed named and positional associations are E1326); never reuse it.
     AGG_OTHERS = "E1325", "`others` must be last and alone, and needs a constrained context subtype.";
-    AGG_NONSTATIC_CHOICE = "E1326", "A choice that is not locally static must be the only choice of the only association.";
+    AGG_NONSTATIC_CHOICE = "E1326", "A choice that is not locally static must be the only choice of the only association, and named and positional associations do not mix (only a final `others` may follow positional ones).";
     CHOICE_OVERLAP = "E1327", "Choices overlap or repeat a value.";
     CHOICE_UNCOVERED = "E1328", "Choices do not cover every value of the subtype and there is no `others`.";
-    AGG_RECORD_CHOICE = "E1329", "A record aggregate choice must name an element of the record, positional elements must come first and not outnumber the elements, and elements sharing one value must have the same type.";
+    AGG_RECORD_CHOICE = "E1329", "A record aggregate choice must be an element name, not an expression or a range.";
     CHAR_NOT_IN_TYPE = "E1330", "A character of a string literal is not a literal of the element type.";
     BITSTRING_DIGITS = "E1331", "Adjusting the length of a bit string literal would drop significant digits (non-zero for unsigned, differing from the sign for signed), or an empty signed bit string cannot be extended.";
     BAD_LITERAL = "E1332", "A literal is malformed in a way the lexer accepts: a digit outside its base, a base outside 2 to 16, a negative exponent in an integer literal, a non-digit in a decimal bit string, or a physical literal with a unit the type does not have.";

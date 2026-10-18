@@ -69,6 +69,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | 2019 files: signals and variables take missing bounds from the initial value (L20), ports of class variable of a protected type (L21), `open` sub-element actuals (L23); 2008 files keep the old errors | LCS-2016-019/047/001, NVC agrees | `docs/design/lrm-checks.md` L20, L21, L23 |
 | A subprogram declared in an entity gets its body in an architecture; `E1230` is checked at the end of the architecture | 12.1: one declarative region | `docs/decisions.md` "Missing subprogram bodies" |
 | `A'INDEX(n)` and `R'RECORD` are type marks (`attr.rs` `index_type_mark`, `range_record_type_mark`); one anonymous range record type per scalar base type, cached in `Db::range_records` | L12, L14 | `docs/design/lrm-checks.md` |
+| Aggregate and case codes follow `tests/diag/sem/CODES.md`: mixed named/positional `E1326` (`E1324` retired), surplus positional record elements `E1322`, unknown record element `E1100`, one value for elements of different types `E1323`, `E1329` only for a choice that is not an element name; a named aggregate in a constrained context takes its bounds from its choices (L45) | The suite is the contract; the reference simulators agree | sem.md 3.4, `docs/design/lrm-checks.md` L45 |
 | Unimplemented constructs report `Db::unsupported(span, what, "S<n>")` (`E9999`) | Fail early, no `todo!()` | CONTRIBUTING "Conventions" |
 
 Module-local decisions go in this section and in the matching sem.md section, LRM readings in

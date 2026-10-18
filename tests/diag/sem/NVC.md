@@ -131,8 +131,9 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `case_string_choice_length_mismatch` | E1405 @12 | rejects @12 | rejects @12 |
 | `choice_wrong_type` | E1300 @5 | rejects @5 | rejects @5 |
 | `duplicate_choice` | E1327 @5 | rejects @5 | rejects @5 |
-| `index_outside_context` | E1403 @5 | rejects @5 | rejects @5 |
+| `index_outside_context` | E1405 @5 | rejects @5 | rejects @5 |
 | `mix_named_positional` | E1326 @5 | rejects @5 | rejects @5 |
+| `named_choices_gap` | E1328 @5 | rejects @5 | rejects @5 |
 | `nonstatic_choice_single_ok` | none | accepts | accepts |
 | `nonstatic_choice_with_others` | E1326 @11 | rejects @11 | rejects @11 |
 | `others_not_last` | E1325 @5 | rejects @5 | rejects @5 |
@@ -148,7 +149,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `record_too_many_positional` | E1322 @6 | rejects @6 | rejects @6 |
 | `record_unknown_element` | E1100 @6 | rejects @6 | rejects @6 |
 | `type_not_determined_conversion` | E1320 @11 | rejects @5,11 | rejects @7,11 |
-| `uncovered_index` | E1328 @5 | rejects @5 | rejects @5 |
+| `uncovered_index` | E1405 @5 | rejects @5 | rejects @5 |
 
 ### alias (9)
 

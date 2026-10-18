@@ -180,7 +180,7 @@ impl Db {
                 return;
             }
             let name = self.decls[d].name;
-            let (span, old_span) = (self.decls[d].span, self.decls[old].span);
+            let (span, old_span) = (self.decls[d].name_span(), self.decls[old].name_span());
             self.report(
                 Diagnostic::error(
                     diag::REDECLARED,

@@ -28,7 +28,6 @@ expr/condition_std_logic_type_only_ok.vhd
 expr/conversion_array_different_elements.vhd
 expr/conversion_integer_to_array.vhd
 expr/conversion_unrelated.vhd
-expr/function_out_parameter.vhd
 expr/mismatch_help_integer_to_vector.vhd
 expr/mismatch_help_vector_to_unsigned.vhd
 expr/mismatch_in_subprogram_arg_label.vhd
@@ -62,11 +61,6 @@ gen/type_actual_not_in_class_discrete.vhd
 gen/type_actual_not_in_class_integer.vhd
 gen/unknown_generic_name.vhd
 gen/unused_generic_warning.vhd
-hom/alias_vs_constant.vhd
-hom/function_same_profile.vhd
-hom/incomplete_type_twice.vhd
-hom/procedure_differs_only_in_mode.vhd
-hom/subprogram_body_twice.vhd
 lit/char_literal_wrong_type.vhd
 lit/physical_unit_unknown.vhd
 lit/string_char_not_in_element_type_std_logic.vhd
@@ -97,12 +91,10 @@ ovl/missing_actual.vhd
 ovl/no_matching_candidates_listed.vhd
 ovl/no_matching_operator_vector_integer.vhd
 ovl/no_matching_return_type.vhd
-ovl/operator_wrong_arity.vhd
 ovl/positional_then_named_same_formal.vhd
 ovl/procedure_used_as_function.vhd
 ovl/too_many_indexes.vhd
 ovl/too_many_positional.vhd
-ovl/unary_only_operator_binary.vhd
 ovl/unknown_formal_name.vhd
 prot/assign_protected_variable.vhd
 prot/body_method_missing.vhd
@@ -127,10 +119,8 @@ stat/static_index_out_of_range_process.vhd
 stat/static_slice_out_of_range.vhd
 typ/access_to_unconstrained_new.vhd
 typ/constant_unconstrained_needs_value.vhd
-typ/incomplete_not_completed.vhd
 typ/incomplete_used_as_object.vhd
 typ/not_a_type_entity.vhd
-typ/subprogram_body_missing_in_unit.vhd
 unit/arch_in_other_library.vhd
 use/context_not_a_context.vhd
 use/instance_all_ok.vhd

@@ -2,7 +2,7 @@
 -- expect: E1320 11:21 the type of this aggregate cannot be determined
 -- LRM 9.3.3
 package p is
-  procedure pr (x : integer);
+  procedure q;
 end package;
 package body p is
   procedure q is

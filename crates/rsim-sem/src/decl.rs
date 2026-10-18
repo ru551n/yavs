@@ -76,6 +76,16 @@ pub struct Decl {
     pub since: LangRev,
 }
 
+impl Decl {
+    /// The identifier's span when the designator is one, else the whole declaration.
+    pub fn name_span(&self) -> Span {
+        match self.name {
+            Designator::Ident(i) => i.span,
+            _ => self.span,
+        }
+    }
+}
+
 pub enum DeclKind {
     Library(LibId),
     Unit(UnitId),
@@ -258,6 +268,26 @@ impl Db {
             }
         }
         self.check_incomplete_completed(scope);
+        let end = decls.last().map_or(Span::default(), decl_span);
+        use crate::scope::ScopeKind as K;
+        match self.scopes[scope].kind {
+            K::Package | K::Protected | K::ProtectedBody | K::Instance => {}
+            K::PackageBody => {
+                // A package's subprograms get their bodies in the package body (4.8).
+                // Its parent is the body's context region, whose parent is the package.
+                let mut up = self.scopes[scope].parent;
+                while let Some(u) = up
+                    && self.scopes[u].kind != K::Package
+                {
+                    up = self.scopes[u].parent;
+                }
+                if let Some(pkg) = up {
+                    self.check_subprogram_bodies(pkg, end);
+                }
+                self.check_subprogram_bodies(scope, end);
+            }
+            _ => self.check_subprogram_bodies(scope, end),
+        }
         // Protected types of a package get their bodies in the package body (unit.rs).
         if !matches!(
             self.scopes[scope].kind,
@@ -265,6 +295,33 @@ impl Db {
         ) {
             let end = decls.last().map_or(Span::default(), decl_span);
             let _ = self.check_protected_bodies(scope, end);
+        }
+    }
+
+    /// `E1230`: a subprogram declared in this region has no body in it (4.2, 4.3).
+    fn check_subprogram_bodies(&mut self, scope: ScopeId, end: Span) {
+        let missing: Vec<DeclId> = self.scopes[scope]
+            .order
+            .iter()
+            .copied()
+            .filter(|&d| !self.decls[d].implicit && matches!(&self.decls[d].kind, DeclKind::Subprogram(s) if matches!(s.body, Body::Pending)))
+            .collect();
+        for d in missing {
+            let what = match &self.decls[d].kind {
+                DeclKind::Subprogram(s) if matches!(s.kind, SubprogramKind::Procedure) => {
+                    "procedure"
+                }
+                _ => "function",
+            };
+            let name = self.decls[d].name;
+            self.report(
+                rsim_diag::Diagnostic::error(
+                    crate::diag::MISSING_BODY,
+                    format!("{what} `{name}` has no body"),
+                )
+                .with_primary(self.decls[d].name_span(), "declared here")
+                .with_secondary(end, "the region ends here without its body"),
+            );
         }
     }
 
@@ -284,7 +341,7 @@ impl Db {
                     format!("incomplete type `{name}` is never completed"),
                 )
                 .with_primary(
-                    self.decls[d].span,
+                    self.decls[d].name_span(),
                     "declared here without a full declaration",
                 )
                 .with_help("declare the full type later in the same declarative part"),
@@ -683,6 +740,27 @@ impl Db {
             };
             params.extend(self.param_decls(pscope, o, kind)?);
         }
+        let name_span = match &s.designator {
+            ast::Designator::Ident(i) => i.span,
+            ast::Designator::Operator(_, sp) => *sp,
+            ast::Designator::Char(c) => c.span,
+        };
+        if let SubprogramKind::Function { pure } = kind
+            && params.iter().any(|p| p.mode != Mode::In)
+            && (pure || self.file_rev() < LangRev::Vhdl2019)
+        {
+            // 4.2.2.1: `in` only; 2019 lets impure functions have `out` and `inout`.
+            return Err(self.error(
+                rsim_diag::Diagnostic::error(
+                    crate::diag::CLASS_MISUSE,
+                    format!("function `{name}` has a parameter that is not of mode `in`"),
+                )
+                .with_primary(name_span, "function parameters must have mode `in`"),
+            ));
+        }
+        if let Designator::Operator { key, .. } = name {
+            self.check_operator_arity(key, params.len(), name_span)?;
+        }
         let ret = match &s.return_type {
             Some(n) => Some(self.type_mark(scope, n)?),
             None => None,
@@ -865,6 +943,54 @@ impl Db {
             out.push(decl);
         }
         Ok(out)
+    }
+
+    /// `E1303`: an operator symbol that is not a VHDL operator, or the wrong number
+    /// of parameters for it (4.5.2, 9.2).
+    fn check_operator_arity(
+        &mut self,
+        key: rsim_syntax::Symbol,
+        n: usize,
+        span: Span,
+    ) -> Result<(), crate::Reported> {
+        let op = key.as_str();
+        let op = op.trim_matches('"');
+        let ok: &[usize] = match op {
+            "+" | "-" => &[1, 2],
+            // 2008 9.2.2: logical operators are also unary reductions.
+            "and" | "or" | "nand" | "nor" | "xor" | "xnor" => &[1, 2],
+            "not" | "abs" | "??" => &[1],
+            "=" | "/=" | "<" | "<=" | ">" | ">=" | "?=" | "?/=" | "?<" | "?<=" | "?>" | "?>="
+            | "*" | "/" | "mod" | "rem" | "**" | "&" | "sll" | "srl" | "sla" | "sra" | "rol"
+            | "ror" => &[2],
+            _ => {
+                return Err(self.error(
+                    rsim_diag::Diagnostic::error(
+                        crate::diag::BAD_OPERATOR_DECL,
+                        format!("`\"{op}\"` is not a VHDL operator"),
+                    )
+                    .with_primary(span, "not an operator symbol"),
+                ));
+            }
+        };
+        if ok.contains(&n) {
+            return Ok(());
+        }
+        let want = if ok.len() == 2 {
+            "1 or 2".to_string()
+        } else {
+            ok[0].to_string()
+        };
+        Err(self.error(
+            rsim_diag::Diagnostic::error(
+                crate::diag::BAD_OPERATOR_DECL,
+                format!(
+                    "operator `{op}` cannot take {n} parameter{}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            )
+            .with_primary(span, format!("takes {want}")),
+        ))
     }
 
     /// Interface objects of a parameter list (6.5.2): default class constant for `in`, else variable.

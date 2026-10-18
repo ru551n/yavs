@@ -34,6 +34,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6 |
 | `alloc.rs` | allocators, dereference (`.all`, implicit), incomplete type uses, `'designated_subtype` (2.6, 3.7) | S6 | owner: alloc |
 | `view.rs` | mode views, `'converse` (6.7) | S7 | owner: s6 |
+| `rev.rs` | mixed 2008/2019 designs: `since` of std/ieee declarations, `E1007`, `W1008` (0.1) | S7 | owner: semrev (#50) |
 | `reflect.rs` | 2019 `'reflect`, `std.reflection` mirrors (2.11) | S7 | owner: reflect |
 | `hir.rs` | HIR node shapes M2 consumes (section 7) | all | shapes fixed; changes need a note in sem.md |
 | `validate.rs` | HIR invariants (7.3) | S2 onward | owner: literal |

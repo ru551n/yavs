@@ -96,7 +96,7 @@ def norm_msg(m):
     return "Assertion violation" if m == "Assertion violation." else m  # NVC adds a full stop
 
 
-def normalise(rc, out, err):
+def normalise(rc, out, err, rsim=False):
     """Return canonical lines: exit, diag events, stdout lines.
     Event line: diag TAB sev TAB time_fs TAB delta TAB path TAB msg ('-' = absent)."""
     diags, outl = [], []
@@ -151,6 +151,16 @@ def normalise(rc, out, err):
                     diags.append("\t".join(["diag", "fatal", "-", "-", "-", esc(m.group(1))]))
                 continue
             if line.startswith("  instance: ") or line.startswith("  from: "):
+                continue
+            if cur and stream == "out" and rsim:
+                # rsim prints NVC's format on stdout (cli-contract), the process trace last.
+                t = NVC_TRACE.match(line)
+                if t:
+                    if t.group(1) == "Process" and cur[3] == "-":
+                        cur[3] = t.group(2)
+                    flush()
+                else:
+                    cur[4] += "\n" + line
                 continue
             if cur and stream == "err":
                 t = NVC_TRACE.match(line)
@@ -222,7 +232,7 @@ def one(vhd, args, template, ignore):
             if rc in (RC_ANALYSE, RC_ELAB) and hdr["exit"] != rc:
                 return {**res, "ok": False, "msg": f"{'analysis' if rc == RC_ANALYSE else 'elaboration'} failed:\n" + (err or out)[:1500],
                         "stage": "analysis" if rc == RC_ANALYSE else "elab", "raw": err or out}
-            outs.append(normalise(rc, out, err))
+            outs.append(normalise(rc, out, err, rsim="RSIM_BIN" in template))
         if args.bless:
             if hand:
                 return {**res, "msg": "skipped, hand-maintained .expected"}

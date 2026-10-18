@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6} DIFFTEST_CACHE=${DIFFTEST_CACHE:-$HOME/.cache/rsim-difftest2}
 cargo build -p rsim
-export RSIM_BIN=$PWD/target/debug/rsim
+export RSIM_BIN=${CARGO_TARGET_DIR:-$PWD/target}/debug/rsim
 mkdir -p "$HOME/.cache"
 tmp=$(mktemp -d "$HOME/.cache/rsim-report.XXXXXX")
 d="python3 tools/difftest/difftest.py --candidate rsim --jobs 8"

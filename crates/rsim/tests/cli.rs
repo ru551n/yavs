@@ -281,7 +281,7 @@ fn elab_and_run() {
          architecture t of top is begin u : entity work.leaf generic map (W => N); end;\n\
          entity busy is end;\n\
          architecture t of busy is begin process begin report \"hi\"; wait for 1 ns;\n\
-           report \"bad\" severity error; wait; end process; end;\n\
+           report \"bad\" severity error; wait for 1 ns; report \"after\"; wait; end process; end;\n\
          use std.env.all; entity fin is end;\n\
          architecture t of fin is begin process begin wait for 3 ns; finish(3); end process; end;\n",
     )
@@ -326,16 +326,19 @@ fn elab_and_run() {
     // A design without processes runs to event starvation.
     let (code, err, _) = rsim(&["run", &lib, "--exit-severity=error", "top"]);
     assert_eq!(code, 0, "{err}");
-    // Reports in NVC's format on stdout; an error report stops the run at `error`.
+    // Reports in NVC's format on stdout. By default an error report does not stop the run,
+    // which still exits 1 (user decision, cli-contract section 5).
     let (code, err, out) = rsim(&["run", &lib, "busy"]);
     assert_eq!(code, 1, "{err}");
     assert_eq!(
         out,
-        "** Note: 0fs+0: hi\n    Process :busy:_p0\n** Error: 1000000fs+0: bad\n    Process :busy:_p0\n"
+        "** Note: 0fs+0: hi\n    Process :busy:_p0\n** Error: 1000000fs+0: bad\n    Process :busy:_p0\n\
+         ** Note: 2000000fs+0: after\n    Process :busy:_p0\n"
     );
-    // Below `--exit-severity` it goes on, and still fails.
-    let (code, _, _) = rsim(&["run", &lib, "--exit-severity=failure", "busy"]);
+    // `--exit-severity=error` stops at the error.
+    let (code, _, out) = rsim(&["run", &lib, "--exit-severity=error", "busy"]);
     assert_eq!(code, 1);
+    assert!(!out.contains("after"), "{out}");
     let (code, _, out) = rsim(&["run", &lib, "fin", "--threads=4"]);
     assert_eq!(code, 3);
     assert!(out.contains("FINISH called with status 3"), "{out}");

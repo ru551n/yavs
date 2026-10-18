@@ -53,8 +53,9 @@ pub struct Common {
 pub struct RunArgs {
     #[command(flatten)]
     common: Common,
-    /// A report at or above this severity stops the simulation with exit 1.
-    #[arg(long, value_enum, default_value = "error")]
+    /// A report at or above this severity stops the simulation with exit 1; an `error`
+    /// report below it is printed, the run continues and exits 1 at the end.
+    #[arg(long, value_enum, default_value = "failure")]
     exit_severity: SeverityArg,
     /// Suppress warnings raised inside `ieee` packages.
     #[arg(long, value_name = "on|off")]
@@ -69,7 +70,7 @@ pub struct RunArgs {
     #[arg(long, default_value = "1")]
     threads: usize,
     /// Randomize process execution order, with an optional seed.
-    #[arg(long, value_name = "SEED", num_args = 0..=1, default_missing_value = "1")]
+    #[arg(long, value_name = "SEED", num_args = 0..=1, require_equals = true, default_missing_value = "1")]
     shuffle: Option<u64>,
     /// Load a shared library for foreign subprograms.
     #[arg(long, value_name = "LIB")]

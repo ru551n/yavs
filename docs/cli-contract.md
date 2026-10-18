@@ -188,8 +188,11 @@ VUnit passes everything after `run`/`elab` in a response file (Conventions).
   not an error. Also accept `-gNAME=VALUE` after `TOP` (VUnit puts them there).
 - `--exit-severity=LEVEL` (`note|warning|error|failure`): an assertion or
   report at or above LEVEL stops the simulation at the end of the current delta
-  and gives exit 1. Default `error`. VUnit passes its
-  `vhdl_assert_stop_level` sim option.
+  and gives exit 1. Default `failure` (user decision 2026-10-18, as NVC, GHDL and
+  Questa): an `error` report is printed and the simulation continues, and the run
+  still exits 1 at the end because an `error` (or higher) was reported. rsim's own
+  runtime errors (bound check, overflow, null access, delta limit, internal) stop
+  at once whatever the level. VUnit passes its `vhdl_assert_stop_level` sim option.
 - `--ieee-warnings=off`: suppress the warnings raised inside `ieee` packages
   (VUnit `disable_ieee_warnings`).
 - `--wave=FILE.fst`: write an FST of the whole design (M7). Flushed on normal
@@ -205,6 +208,7 @@ VUnit passes everything after `run`/`elab` in a response file (Conventions).
   - 0: simulation ended without failure: event starvation, `std.env.finish`
     or `std.env.stop` with no status or status 0, or `--stop-time` reached.
   - 1: simulation failure: an assertion/report at or above `--exit-severity`,
+    or of severity `error` or `failure` at any point,
     `std.env.stop(N)`/`finish(N)` with N /= 0 (the status itself may be
     returned if it fits in 1..125; VUnit only tests zero/non-zero), a runtime
     error (bound check, null access, delta-cycle limit).

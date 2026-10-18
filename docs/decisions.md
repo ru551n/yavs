@@ -374,6 +374,8 @@ severity ERROR is printed and the simulation continues; the run exits 1 at the e
 higher was reported. FAILURE stops the simulation at once. rsim's own runtime errors (bound,
 overflow, null access, delta limit, internal) still stop immediately, per the error motto.
 `--exit-severity=error|warning|note` lowers the threshold. VUnit passes its own setting.
+Reports go to stdout in NVC's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),
+which tools/difftest parses.
 
 ## Interpreter: BIT/BOOLEAN codes and file writes (orchestrator, 2026-10-18)
 

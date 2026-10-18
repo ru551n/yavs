@@ -70,46 +70,11 @@ fn lex(text: &str) -> Result<Abstract, AbsError> {
     }
 }
 
-/// The nearest f64 of a lexed literal. Base 10 is correctly rounded (ties to even). Other bases
-/// are exact when the mantissa fits `u128` and the base is a power of two, or both the scaled
-/// mantissa and the divisor are exact in f64; otherwise they fall back to `Abstract::to_f64`.
-fn real_of(a: &Abstract) -> f64 {
-    if a.base == 10 {
-        return a.to_f64();
-    }
-    let base = u128::from(a.base);
-    let e = a.exp.saturating_sub(a.frac_len as i64);
-    let mantissa = a.digits.iter().try_fold(0u128, |m, &d| {
-        m.checked_mul(base)?.checked_add(u128::from(d))
-    });
-    let Some(m) = mantissa else {
-        return a.to_f64();
-    };
-    if a.base.is_power_of_two() {
-        let shift = i64::from(a.base.trailing_zeros()).saturating_mul(e);
-        // Two steps keep each factor finite; both are exact powers of two.
-        let half = (shift / 2).clamp(-1100, 1100) as i32;
-        let rest = (shift - i64::from(half)).clamp(-1100, 1100) as i32;
-        return m as f64 * 2f64.powi(half) * 2f64.powi(rest);
-    }
-    let pow = |n: u64| -> Option<u128> { (0..n).try_fold(1u128, |p, _| p.checked_mul(base)) };
-    if e >= 0 {
-        if let Some(v) = pow(e.unsigned_abs()).and_then(|p| m.checked_mul(p)) {
-            return v as f64;
-        }
-    } else if m < (1 << 53)
-        && let Some(den) = pow(e.unsigned_abs()).filter(|&d| d < (1 << 53))
-    {
-        return m as f64 / den as f64;
-    }
-    a.to_f64()
-}
-
 /// Value of a decimal or based literal: integer (`i64`, checked) or real (nearest f64).
 pub fn abstract_literal(text: &str) -> Result<Abs, AbsError> {
     let a = lex(text)?;
     if a.real {
-        let v = real_of(&a);
+        let v = a.to_f64(); // correctly rounded in every base
         if v.is_finite() {
             return Ok(Abs::Real(v));
         }

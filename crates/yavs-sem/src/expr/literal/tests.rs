@@ -230,6 +230,20 @@ fn integer_errors() {
     }
 }
 
+/// Based reals are correctly rounded, also below the normal range (#105; NVC flushes this one).
+#[test]
+fn based_reals_are_correctly_rounded() {
+    assert_eq!(abstract_literal("3#0.1#"), Ok(Abs::Real(1.0 / 3.0)));
+    assert_eq!(
+        abstract_literal("2#1.1#E-1075"),
+        Ok(Abs::Real(f64::from_bits(1)))
+    );
+    assert_eq!(
+        abstract_literal("16#20000000000001.00000000001#"),
+        Ok(Abs::Real(9007199254740994.0))
+    );
+}
+
 #[test]
 fn reals() {
     let real = |t| abstract_literal(t);

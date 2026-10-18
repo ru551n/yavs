@@ -844,6 +844,15 @@ pub fn select(
     ))
 }
 
+/// Whether `info` applies to `prefix` in this file's revision, without
+/// reporting: the quiet form of [`select`] for the bottom-up pass.
+pub fn applies(db: &Db, info: &AttrInfo, prefix: &Prefix) -> bool {
+    let rev = db.file_rev();
+    info.prefixes.iter().any(|r| {
+        r.since <= rev && form_holds(r.form, prefix.form) && class_holds(db, r.class, prefix)
+    })
+}
+
 /// The subtype of a value-, function- or signal-kind attribute. `None` for
 /// ranges, subtypes, mirrors and views, which the caller builds itself, and
 /// when `std.standard` is not loaded yet.

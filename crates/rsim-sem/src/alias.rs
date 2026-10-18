@@ -105,12 +105,6 @@ impl Db {
         s
     }
 
-    /// The spelling of a type for messages; anonymous base types read as
-    /// "the base type of `t`" in prose, here just their declared name.
-    pub(crate) fn type_name(&self, t: TypeId) -> String {
-        self.types[t].name.text.to_string()
-    }
-
     /// Pick the one candidate matching `sig` (6.4): `E1630` for none, `E1631`
     /// for several. Candidates that are aliases of the same entity count once.
     pub fn match_signature(

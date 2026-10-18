@@ -185,7 +185,7 @@ impl Db {
                     (ConstValue::Real(r), TypeKind::Integer | TypeKind::UniversalInteger) => {
                         // 9.3.6: round to nearest, half away from zero.
                         let r = r.round();
-                        if r >= -9.223_372_036_854_775_808e18 && r < 9.223_372_036_854_775_808e18 {
+                        if fits_i64(r) {
                             Ok(ConstValue::Int(r as i64))
                         } else {
                             Err(Fold::Overflow)
@@ -328,9 +328,15 @@ fn fold_family(f: Family, v: &[ConstValue], result: &TypeKind) -> Result<ConstVa
 
 fn round_phys(v: f64) -> Result<ConstValue, Fold> {
     let r = v.round();
-    if r.is_finite() && r >= -9.223_372_036_854_775_808e18 && r < 9.223_372_036_854_775_808e18 {
+    if fits_i64(r) {
         Ok(ConstValue::Phys(r as i64))
     } else {
         Err(Fold::Overflow)
     }
+}
+
+/// Whether a rounded f64 is representable as i64 (`2**63` itself is not).
+fn fits_i64(r: f64) -> bool {
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    (-LIMIT..LIMIT).contains(&r)
 }

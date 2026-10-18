@@ -456,7 +456,7 @@ impl Db {
             (Some(a), Some(b)) => (a, b),
             _ => {
                 for (e, ast) in [(l, left), (rr, right)] {
-                    if self.value(e).is_none() && !self.is_poison(e) {
+                    if self.value(e).is_none() && !self.is_poison_expr(e) {
                         self.report(
                             Diagnostic::error(
                                 diag::NOT_STATIC,
@@ -1136,7 +1136,7 @@ impl Db {
         }
     }
 
-    pub fn is_poison(&self, e: ExprId) -> bool {
+    pub fn is_poison_expr(&self, e: ExprId) -> bool {
         matches!(self.exprs[e].kind, ExprKind::Error)
     }
 

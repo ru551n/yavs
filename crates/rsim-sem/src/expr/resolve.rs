@@ -138,7 +138,7 @@ impl Db {
         if i.ty == target
             || i.ty == self.poison.ty
             || target == self.poison.ty
-            || self.is_poison(id)
+            || self.is_poison_expr(id)
         {
             return id;
         }
@@ -171,8 +171,10 @@ impl Db {
             },
             K::Paren(inner) => self.build(scope, inner, i),
             K::Name(n) => self.build_name(scope, n, i, e.span),
-            K::Unary { operand, .. } => self.build_operator(scope, i, &[operand], e.span),
-            K::Binary { left, right, .. } => self.build_operator(scope, i, &[left, right], e.span),
+            K::Unary { operand, .. } => self.build_operator(scope, i, &[operand.as_ref()], e.span),
+            K::Binary { left, right, .. } => {
+                self.build_operator(scope, i, &[left.as_ref(), right.as_ref()], e.span)
+            }
             K::Qualified { type_mark, operand } => {
                 let Ok(st) = self.type_mark(scope, type_mark) else {
                     return self.poison_expr();
@@ -214,7 +216,7 @@ impl Db {
         &mut self,
         scope: ScopeId,
         i: Interp,
-        operands: &[&Box<ast::Expr>],
+        operands: &[&ast::Expr],
         span: Span,
     ) -> ExprId {
         let Via::Call(d) = i.via else {
@@ -370,15 +372,16 @@ impl Db {
                 ast::NameKind::Attribute { prefix, .. } => prefix.as_ref(),
                 _ => base,
             };
-            match self.classify(scope, base) {
-                r @ (NameRes::Missing(_)
-                | NameRes::Conflict(..)
-                | NameRes::Unsupported(..)
-                | NameRes::Error) => {
-                    self.report_name(scope, r);
-                    return;
-                }
-                _ => {}
+            let r = self.classify(scope, base);
+            if matches!(
+                r,
+                NameRes::Missing(_)
+                    | NameRes::Conflict(..)
+                    | NameRes::Unsupported(..)
+                    | NameRes::Error
+            ) {
+                self.report_name(scope, r);
+                return;
             }
             let attr = match &n.kind {
                 ast::NameKind::Attribute { attr, .. } => Some(*attr),

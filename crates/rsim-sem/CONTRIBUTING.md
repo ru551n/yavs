@@ -18,7 +18,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead |
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead |
 | `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1) |
-| `implicit.rs` | implicitly declared operations per type (2.10) | S2 | free |
+| `implicit.rs` | implicitly declared operations per type (2.10) | S2 | owner: implicit |
 | `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead |
 | `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | M1 lead |
 | `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | owner: literal |
@@ -26,7 +26,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | free |
 | `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5) | S4 | free |
-| `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | free |
+| `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
 | `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | free |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | free |
 | `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6 |

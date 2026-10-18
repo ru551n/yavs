@@ -351,6 +351,9 @@ pub struct PortEdge {
     pub formal: (LeafId, Range),
     pub actual: (LeafId, Range),
     pub mode: PortMode,
+    /// Conversions (indices into `Elaborated::convs`): actual to formal, formal to actual.
+    pub to_formal: Option<u32>,
+    pub to_actual: Option<u32>,
 }
 
 /// A driver of a process: the elements of one leaf it drives.

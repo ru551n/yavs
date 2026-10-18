@@ -910,3 +910,51 @@ fn incremental_binding() {
     // u1: W from the incremental map; u2 (bound by the specification): the default.
     assert_eq!(lens, [3, 1]);
 }
+
+/// Conversion functions and type conversions in port maps run in the update phase (#74).
+#[test]
+fn port_conversions() {
+    let src = "package conv is
+        function to_int(b : bit) return integer;
+        function to_bit(i : integer) return bit;
+      end;
+      package body conv is
+        function to_int(b : bit) return integer is
+        begin if b = '1' then return 10; else return 20; end if; end;
+        function to_bit(i : integer) return bit is
+        begin if i > 0 then return '1'; else return '0'; end if; end;
+      end;
+      entity c is port (i : in integer; o : out integer := 5; r : in real); end;
+      architecture a of c is begin end;
+      use work.conv.all;
+      entity t is end; architecture a of t is
+        signal s : bit := '1';
+        signal y : bit;
+        signal n : integer := 3;
+      begin
+        u : entity work.c port map (i => to_int(s), to_bit(o) => y, r => real(n));
+      end;";
+    let (_, e) = elab("convs", src, "t", &[]);
+    assert_eq!(e.convs.len(), 3);
+    let mut sim = e
+        .build_with(yavs_kernel::Config::default(), |_, _| Ok(Box::new(Idle)))
+        .expect("build");
+    sim.run_for(yavs_kernel::Time::ns(1)).expect("run");
+    let v = |sim: &yavs_kernel::SimControl, name: &str| {
+        let id = sim.signal_id(name).unwrap_or_else(|| panic!("{name}"));
+        sim.value(id).expect("value")
+    };
+    assert_eq!(
+        v(&sim, ":t:u:i"),
+        yavs_kernel::Value::Bytes(10i64.to_le_bytes().to_vec())
+    );
+    assert_eq!(
+        v(&sim, ":t:u:r"),
+        yavs_kernel::Value::Bytes(3f64.to_le_bytes().to_vec())
+    );
+    // o = 5 > 0, so y is '1' (code 3).
+    let yavs_kernel::Value::Logic(y) = v(&sim, ":t:y") else {
+        panic!("logic")
+    };
+    assert_eq!(y.get(0) as u8, 3);
+}

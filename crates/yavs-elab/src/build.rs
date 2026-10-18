@@ -109,7 +109,17 @@ impl Elaborated {
             let sig = |(l, r): (crate::LeafId, yavs_kernel::Range)| {
                 yavs_kernel::SignalId(l.0).slice(r.offset, r.len)
             };
-            b.port(sig(e.formal), sig(e.actual), e.mode, PortConv::default());
+            let conv = |i: Option<u32>| -> Option<yavs_kernel::Converter> {
+                let c = self.convs.get(i? as usize)?.clone();
+                Some(std::sync::Arc::new(move |v: yavs_kernel::Value| {
+                    c.apply(&v)
+                }))
+            };
+            let pc = PortConv {
+                to_formal: conv(e.to_formal),
+                to_actual: conv(e.to_actual),
+            };
+            b.port(sig(e.formal), sig(e.actual), e.mode, pc);
         }
         for p in &self.procs {
             let ds: Vec<DriverId> = p

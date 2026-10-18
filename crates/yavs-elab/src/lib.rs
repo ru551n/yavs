@@ -17,7 +17,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
-pub use eval::{Model, Val, elem_of};
+pub use eval::{Class, ConvFn, Enc, Model, Val, elem_of};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
     ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
@@ -115,6 +115,8 @@ pub struct Elaborated {
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
     /// Warnings of a successful elaboration.
     pub warnings: Vec<Diagnostic>,
+    /// Conversion functions of port associations (`PortEdge::to_formal`/`to_actual`).
+    pub convs: Vec<eval::ConvFn>,
     /// The IR of the processes, once [`Elaborated::lower`] ran.
     pub ir: Option<Ir>,
 }

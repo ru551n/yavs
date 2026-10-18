@@ -32,7 +32,11 @@ enum A {
     Open,
     Default,
     Parts(Vec<(Vec<LspStep>, ExprId)>),
-    Conv(ExprId),
+    Conv {
+        formal_conv: Option<DeclId>,
+        actual_conv: Option<DeclId>,
+        actual: ExprId,
+    },
 }
 
 /// The associations of a map as `(formal index, association)`.
@@ -59,7 +63,15 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
             Actual::Default => A::Default,
             Actual::Open => A::Open,
             Actual::Individual(p) => A::Parts(p.iter().map(|(s, e)| (s.to_vec(), *e)).collect()),
-            Actual::Converted { actual, .. } => A::Conv(*actual),
+            Actual::Converted {
+                formal_conv,
+                actual_conv,
+                actual,
+            } => A::Conv {
+                formal_conv: *formal_conv,
+                actual_conv: *actual_conv,
+                actual: *actual,
+            },
         };
         if let Some(slot) = v.get_mut(a.formal as usize) {
             *slot = x;
@@ -352,6 +364,7 @@ pub(crate) fn elaborate(
         hier: e.m.hier,
         nets: e.m.nets,
         procs: e.procs,
+        convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
         sigs: e.m.sigs,
         warnings: e.warnings,
@@ -559,7 +572,7 @@ impl Elab<'_> {
                     ));
                 }
             },
-            (_, A::Parts(_) | A::Conv(_)) => {
+            (_, A::Parts(_) | A::Conv { .. }) => {
                 return Err(unsupported(
                     decl.span,
                     "individual or converted generic associations",
@@ -829,12 +842,61 @@ impl Elab<'_> {
                 Some(o) => Some(((o, Vec::new()), at)),
                 None => return Err(Box::new(ice(at, "component port without object"))),
             },
-            (A::Conv(e), _) => {
-                return Err(unsupported(
-                    db.exprs[*e].span,
-                    "conversion functions in port maps",
-                    "slice 4 (with yavs-lower)",
-                ));
+            (
+                A::Conv {
+                    formal_conv,
+                    actual_conv,
+                    actual,
+                },
+                Some(sc),
+            ) => {
+                let aspan = db.exprs[*actual].span;
+                let Some((ao, asels)) = self.m.name_ref(self.db, *actual, sc)? else {
+                    return Err(unsupported(
+                        aspan,
+                        "converted expression actuals",
+                        "slice 4",
+                    ));
+                };
+                let (al, ashape) = self.m.select(ao, &asels, aspan)?;
+                let Some(shape) = own else {
+                    return Err(unsupported(
+                        span,
+                        "conversions of unconstrained ports",
+                        "M3",
+                    ));
+                };
+                let (fty, aty) = (shape.ty(), ashape.ty());
+                let fo = self
+                    .m
+                    .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
+                let fl = self.m.select(fo, &[], span)?.0;
+                let db: &Db = self.db;
+                // `actual_conv(actual)` feeds an `in`/`inout` formal, `formal_conv(formal)`
+                // its actual.
+                let idx = |m: &mut crate::Model, f: Option<DeclId>, from, to| -> R<Option<u32>> {
+                    match f {
+                        None => Ok(None),
+                        Some(f) => {
+                            let c = crate::eval::conv_fn(db, f, from, to, aspan)?;
+                            m.convs.push(c);
+                            Ok(Some(m.convs.len() as u32 - 1))
+                        }
+                    }
+                };
+                let to_formal = idx(&mut self.m, *actual_conv, aty, fty)?;
+                let to_actual = idx(&mut self.m, *formal_conv, fty, aty)?;
+                let ([f], [a]) = (fl.as_slice(), al.as_slice()) else {
+                    return Err(unsupported(aspan, "conversions of composite ports", "M3"));
+                };
+                self.m.nets.ports.push(PortEdge {
+                    formal: *f,
+                    actual: *a,
+                    mode,
+                    to_formal,
+                    to_actual,
+                });
+                return Ok(());
             }
             (A::Parts(parts), Some(sc)) => {
                 let Some(shape) = own else {
@@ -2117,6 +2179,8 @@ impl Model {
                 formal: *f,
                 actual: *a,
                 mode,
+                to_formal: None,
+                to_actual: None,
             });
         }
         Ok(())

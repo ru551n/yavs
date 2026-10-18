@@ -39,6 +39,128 @@ pub struct Model {
     /// Package scopes by package unit, library scopes by library.
     pub(crate) pkg_scopes: HashMap<yavs_sem::UnitId, ScopeId>,
     pub(crate) lib_scopes: HashMap<yavs_sem::LibId, ScopeId>,
+    /// Conversions of port associations, indexed by `PortEdge::to_formal`/`to_actual`.
+    pub convs: Vec<ConvFn>,
+}
+
+/// How a scalar crosses the kernel: its element and its class.
+#[derive(Clone, Copy, Debug)]
+pub struct Enc {
+    pub elem: Elem,
+    /// BIT/BOOLEAN stored as std_ulogic codes 2/3.
+    pub bit01: bool,
+    pub class: Class,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    Int,
+    Real,
+    Enum,
+}
+
+/// A conversion of a port association (LRM 6.5.7.1): a function of one scalar, run in
+/// yavs-interp, or a type conversion between scalar types.
+#[derive(Clone)]
+pub struct ConvFn {
+    pub(crate) func: Option<(std::sync::Arc<yavs_interp::Runtime>, yavs_ir::FuncId)>,
+    pub from: Enc,
+    pub to: Enc,
+}
+
+impl ConvFn {
+    /// Convert a one-element kernel value.
+    pub fn apply(&self, v: &Value) -> Result<Value, String> {
+        let c = decode(&self.from, v)?;
+        let r = match &self.func {
+            Some((rt, f)) => yavs_interp::call(rt.clone(), *f, Default::default(), &[c])
+                .map_err(|e| e.to_string())?
+                .ok_or("the conversion function returned no value")?,
+            None => match (self.from.class, self.to.class) {
+                (Class::Int, Class::Real) => (c as i64 as f64).to_bits(),
+                (Class::Real, Class::Int) => {
+                    let r = f64::from_bits(c).round();
+                    if !(-9.2e18..9.2e18).contains(&r) {
+                        return Err(format!("{r} is outside the integer range"));
+                    }
+                    r as i64 as u64
+                }
+                _ => c,
+            },
+        };
+        Ok(encode_cell(&self.to, r))
+    }
+}
+
+fn decode(e: &Enc, v: &Value) -> Result<u64, String> {
+    match (e.elem, v) {
+        (Elem::Logic, Value::Logic(l)) if l.len() == 1 => {
+            let code = l.get(0) as u64;
+            Ok(if e.bit01 {
+                code.saturating_sub(2)
+            } else {
+                code
+            })
+        }
+        (Elem::Bytes(n), Value::Bytes(b)) if b.len() == n as usize => {
+            let mut w = [0u8; 8];
+            w[..b.len()].copy_from_slice(b);
+            Ok(u64::from_le_bytes(w))
+        }
+        _ => Err("conversion of a composite value is not implemented yet".into()),
+    }
+}
+
+fn encode_cell(e: &Enc, c: u64) -> Value {
+    match e.elem {
+        Elem::Logic => {
+            let code = if e.bit01 { c as u8 + 2 } else { c as u8 };
+            Value::Logic(LogicVec::from_fn(1, |_| {
+                yavs_logic::StdULogic::from_code_pub(code)
+            }))
+        }
+        Elem::Bytes(n) => Value::Bytes(c.to_le_bytes()[..n as usize].to_vec()),
+    }
+}
+
+/// The kernel encoding of scalar type `t`.
+pub(crate) fn enc_of(db: &Db, t: TypeId) -> Option<Enc> {
+    let class = match &db.types[t].kind {
+        TypeKind::Enum { .. } => Class::Enum,
+        TypeKind::Floating | TypeKind::UniversalReal => Class::Real,
+        k if k.is_scalar() => Class::Int,
+        _ => return None,
+    };
+    let elem = elem_of(db, t);
+    Some(Enc {
+        elem,
+        bit01: elem == Elem::Logic && !is_std_ulogic(db, t),
+        class,
+    })
+}
+
+/// A conversion `f` (a function or a type) from scalar type `from` to `to`.
+pub(crate) fn conv_fn(db: &Db, f: DeclId, from: TypeId, to: TypeId, at: Span) -> R<ConvFn> {
+    let (Some(fe), Some(te)) = (enc_of(db, from), enc_of(db, to)) else {
+        return Err(err(
+            codes::NOT_IMPLEMENTED,
+            at,
+            "conversions of composite ports are not implemented yet",
+            "conversion",
+        ));
+    };
+    let func = match &db.decls[f].kind {
+        DeclKind::Subprogram(_) => {
+            let l = lower_one(db, f, at)?;
+            Some((l.rt, l.func))
+        }
+        _ => None,
+    };
+    Ok(ConvFn {
+        func,
+        from: fe,
+        to: te,
+    })
 }
 
 /// A function lowered on its own into a program, for `yavs_interp::call`.
@@ -536,15 +658,19 @@ impl Model {
         let ty = db.base(st);
         match &db.types[ty].kind {
             k if k.is_scalar() => {
-                let b = self.scalar_bounds(db, st, scope, span)?;
                 let left = match k {
-                    TypeKind::Enum { .. } => Val::Enum(b.left as u32),
-                    TypeKind::Physical { .. } => Val::Phys(b.left),
                     TypeKind::Floating | TypeKind::UniversalReal => match db.scalar_range(st) {
                         Some(RangeC::Explicit { left, .. }) => self.eval(db, left, scope)?,
                         _ => Val::Real(-f64::MAX),
                     },
-                    _ => Val::Int(b.left),
+                    _ => {
+                        let b = self.scalar_bounds(db, st, scope, span)?;
+                        match k {
+                            TypeKind::Enum { .. } => Val::Enum(b.left as u32),
+                            TypeKind::Physical { .. } => Val::Phys(b.left),
+                            _ => Val::Int(b.left),
+                        }
+                    }
                 };
                 let res = match &db.subtypes[st].resolution {
                     Some(Resolution::Function(f)) => Some(*f),

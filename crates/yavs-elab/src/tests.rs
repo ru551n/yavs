@@ -958,3 +958,28 @@ fn port_conversions() {
     };
     assert_eq!(y.get(0) as u8, 3);
 }
+
+/// Nested element and record element resolution indications (#76).
+#[test]
+fn nested_element_resolution() {
+    let src = "package r is
+        function rb(v : bit_vector) return bit;
+        type arr2 is array (0 to 1) of bit_vector(0 to 1);
+        subtype rarr2 is ((rb)) arr2;
+        type rec is record a : bit; b : integer; end record;
+      end;
+      package body r is
+        function rb(v : bit_vector) return bit is begin return v(v'left); end;
+      end;
+      use work.r.all;
+      entity t is end; architecture a of t is
+        signal s : rarr2;
+        signal u : bit_vector(0 to 1);
+      begin end;";
+    let (_, e) = elab("nestedres", src, "t", &[]);
+    assert!(matches!(
+        e.nets.leaves[0].resolution,
+        Some(crate::LeafRes::Func(_))
+    ));
+    assert!(e.nets.leaves[1].resolution.is_none());
+}

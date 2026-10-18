@@ -702,18 +702,15 @@ impl Model {
                     self.shape_c(db, elem, &ec, scope, span)?
                 };
                 let Some(mut es) = es else { return Ok(None) };
-                if let Some(Resolution::Element(r)) = &db.subtypes[st].resolution {
-                    match &**r {
-                        Resolution::Function(f) => set_res(&mut es, *f),
-                        _ => {
-                            return Err(err(
-                                codes::NOT_IMPLEMENTED,
-                                span,
-                                "nested element resolution is not implemented yet",
-                                "here",
-                            ));
-                        }
-                    }
+                if let Some(Resolution::Element(r)) = &db.subtypes[st].resolution
+                    && !apply_res(&mut es, r)
+                {
+                    return Err(err(
+                        codes::INTERNAL,
+                        span,
+                        "internal error: resolution indication does not fit the subtype",
+                        "this is a bug in yavs",
+                    ));
                 }
                 Ok(Some(Shape::Array {
                     ty,
@@ -738,7 +735,18 @@ impl Model {
                     let Some(s) = s else { return Ok(None) };
                     fields.push((f.name, s));
                 }
-                Ok(Some(Shape::Record { ty, fields }))
+                let mut sh = Shape::Record { ty, fields };
+                if let Some(r @ Resolution::Record(_)) = &db.subtypes[st].resolution
+                    && !apply_res(&mut sh, r)
+                {
+                    return Err(err(
+                        codes::INTERNAL,
+                        span,
+                        "internal error: resolution indication does not fit the subtype",
+                        "this is a bug in yavs",
+                    ));
+                }
+                Ok(Some(sh))
             }
             _ => Err(err(
                 codes::NOT_IMPLEMENTED,
@@ -783,6 +791,25 @@ fn cell(v: &Val) -> Option<u64> {
         Val::Enum(p) => Some(u64::from(*p)),
         Val::Real(r) => Some(r.to_bits()),
         _ => None,
+    }
+}
+
+/// Apply an element resolution indication (LRM 6.3) to the element shape `s`:
+/// `(resolved) t` resolves every scalar, `((resolved)) t` the elements of nested arrays,
+/// `(a f, b g) r` per record element. `false` when it does not fit.
+fn apply_res(s: &mut Shape, r: &Resolution) -> bool {
+    match (r, s) {
+        (Resolution::Function(f), s) => {
+            set_res(s, *f);
+            true
+        }
+        (Resolution::Element(inner), Shape::Array { elem, .. }) => apply_res(elem, inner),
+        (Resolution::Record(fs), Shape::Record { fields, .. }) => fs.iter().all(|(i, r)| {
+            fields
+                .get_mut(*i as usize)
+                .is_some_and(|(_, f)| apply_res(f, r))
+        }),
+        _ => false,
     }
 }
 

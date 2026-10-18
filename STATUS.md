@@ -72,3 +72,24 @@ on one clock, 10 us simulated (1000 rising edges), 24-core host, 8 worker thread
 | 1000 | 8 | 2.51 M | 5.0 M |
 
 With trivial processes the serial update and commit phases dominate, so threads gain little.
+
+## ffi (`crates/rsim-ffi`)
+
+Done: VHPIDIRECT call trampolines without libffi (SysV x86_64, Win64, AAPCS64), argument
+classification in Rust, naked asm stubs, up to 64 arguments, and the VHDL to C mapping in NVC's
+convention (`vhdl::lower`). Tests: unit tests, hand-written ABI tests and 431 generated callees
+compared against direct calls. All pass on Linux x86_64 natively, on aarch64 under qemu-user and
+on Windows under wine. The cross commands (configured through the environment, no cargo config):
+
+```sh
+# aarch64 Linux (qemu-user, aarch64-linux-gnu-gcc, rustup target aarch64-unknown-linux-gnu)
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
+  cargo test -p rsim-ffi --target aarch64-unknown-linux-gnu
+# Windows x86_64 (mingw-w64, wine, rustup target x86_64-pc-windows-gnu)
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine WINEDEBUG=-all \
+  cargo test -p rsim-ffi --target x86_64-pc-windows-gnu
+```
+
+Open: marshalling VHDL values (bit-planes to bytes, records, copy-back) belongs to the interpreter.

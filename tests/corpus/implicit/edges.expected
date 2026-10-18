@@ -1,0 +1,9 @@
+exit	0
+diag	note	5000000	0	:edges:_p2	rising
+diag	note	10000000	0	:edges:_p2	falling
+diag	note	12000000	0	:edges:_p3	en rises
+diag	note	15000000	0	:edges:_p2	rising
+diag	note	20000000	0	:edges:_p2	falling
+diag	note	22000000	0	:edges:_p3	en falls
+diag	note	25000000	0	:edges:_p2	rising
+diag	note	30000000	0	:edges:_p2	falling

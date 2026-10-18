@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:radix_strings:_p0	10100101 A5 245
+diag	note	0	0	:radix_strings:_p0	10011 13 23
+diag	note	0	0	:radix_strings:_p0	42 true x 10000000 fs
+diag	note	0	0	:radix_strings:_p0	abc 3

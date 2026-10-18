@@ -172,5 +172,9 @@ process code, and a panic anywhere in the kernel (a broken invariant), is caught
 - With trivial processes the serial update and commit phases dominate (see STATUS.md); the
   scalar byte path is 10 to 15% slower than the first byte-only kernel because of the storage
   enum and the port/implicit machinery. Parallel per-signal update and allocation-free
-  transactions are the next steps if real designs show it.
+  transactions are the next steps if real designs show it. Measured 2026-10-18 (#103, bench
+  10000 counters, 8 threads, work 1000: 4.3 s against 7.5 s at 1 thread): update 2.0 s, wake
+  0.3 s, run 1.4 s, commit 0.5 s; with work 0 update is half the wall time. A parallel update
+  must give each signal to one thread (transactions of one driver applied in queue order) and
+  keep ports, which cross signals, in level order.
 - Preemption is O(elements times pending transactions) per assignment.

@@ -232,7 +232,7 @@ fn wait_forms() {
     }
     {
         let mut fb = pb.define(tick);
-        let x = fb.param("x", Width::Sig, ParamClass::Signal, Mode::In);
+        let x = fb.param("x", Width::Sig, ParamClass::Signal, Mode::In, None);
         stmt(&mut fb, StmtKind::Wait);
         let a = fb.addr(AddrSpace::Frame, x);
         let s = fb.reg(RegTy::Sig);
@@ -345,7 +345,7 @@ fn checked_overflow_stack_trace() {
     let (s_sq, s_call);
     {
         let mut fb = pb.define(sq);
-        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
         s_sq = stmt(&mut fb, StmtKind::Return);
         let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
         let r = bin(&mut fb, IntOp::Mul, v, v);
@@ -950,4 +950,124 @@ fn foreign_call() {
 
 extern "C" fn mix2(a: i32) -> i32 {
     a
+}
+
+/// Elaboration-time evaluation without a kernel; signal operations are errors there.
+#[test]
+fn elaboration_call() {
+    let mut pb = ProgramBuilder::new();
+    let add = pb.declare("add3", FuncKind::Function, None);
+    let bad = pb.declare("reads_signal", FuncKind::Thunk, None);
+    {
+        let mut fb = pb.define(add);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        let three = fb.int(3);
+        let r = bin(&mut fb, IntOp::Add, v, three);
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(bad);
+        stmt(&mut fb, StmtKind::Return);
+        read_scalar(&mut fb, 0);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    let inst = std::sync::Arc::new(rsim_interp::InstData {
+        sigs: vec![rsim_interp::InstSig {
+            signal: SignalId(0),
+            ty: SignalType::bytes(1, 1),
+        }],
+        ..Default::default()
+    });
+    let v = rsim_interp::call(rt.clone(), add, inst.clone(), &[39]).unwrap();
+    assert_eq!(v, Some(42));
+    let e = rsim_interp::call(rt, bad, inst, &[]).unwrap_err();
+    assert_eq!(
+        e.kind,
+        ErrorKind::Runtime("signal or wait operation during elaboration".into())
+    );
+    assert_eq!(e.trace.len(), 1);
+}
+
+/// A process touching a shared variable is serial and needs the shared state.
+#[test]
+fn serial_marking() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let bump = pb.declare("bump", FuncKind::Procedure, None);
+    let p = pb.declare("p", FuncKind::Process, None);
+    let q = pb.declare("q", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(bump);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let v = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        let one = fb.int(1);
+        let v = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Shared, 0, v, Width::B8);
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    for f in [p, q] {
+        let mut fb = pb.define(f);
+        stmt(&mut fb, StmtKind::Call);
+        let args = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: bump,
+            args,
+            dst: None,
+        });
+        stmt(&mut fb, StmtKind::Report);
+        let v = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        report_image(&mut fb, "shared = ", int, v);
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    assert!(rsim_interp::proc_flags(&prog, p).serial);
+    let rt = Runtime::new(prog.clone(), Bindings::default()).unwrap();
+    let inst = std::sync::Arc::new(rsim_interp::InstData::default());
+    let e = rsim_interp::InterpProcess::new(rt.clone(), p, inst.clone(), vec![], None)
+        .err()
+        .unwrap();
+    assert!(e.to_string().contains("touches shared state"), "{e}");
+    let mut out = Vec::new();
+    for threads in [1, 4] {
+        let shared =
+            std::sync::Arc::new(std::sync::Mutex::new(rsim_interp::SharedState::new(vec![
+                0;
+                8
+            ])));
+        let mut b = Builder::new();
+        for (name, f) in [("p", p), ("q", q)] {
+            let ip = rsim_interp::InterpProcess::new(
+                rt.clone(),
+                f,
+                inst.clone(),
+                vec![],
+                Some(shared.clone()),
+            )
+            .unwrap();
+            b.process(name, rsim_interp::proc_flags(&prog, f), &[], ip);
+        }
+        let mut sim = b
+            .build(Config {
+                threads,
+                ..Config::default()
+            })
+            .unwrap();
+        let t = Trace::default();
+        sim.subscribe(Box::new(t.clone()));
+        sim.run_until(Time::ns(1)).unwrap();
+        out.push(t.0.lock().unwrap().clone());
+    }
+    assert_eq!(out[0], out[1]);
+    assert_eq!(
+        out[0],
+        ["0 fs +0 p0 Note: shared = 1", "0 fs +0 p1 Note: shared = 2"]
+    );
 }

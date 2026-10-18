@@ -109,7 +109,7 @@ fn calls_are_checked() {
     let w = pb.declare("waits", FuncKind::Procedure, None);
     let f = pb.declare("fun", FuncKind::Function, None);
     let mut fb = pb.define(w);
-    fb.param("x", Width::B8, ParamClass::Value, Mode::In);
+    fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
     fb.stmt(StmtKind::Wait, sp());
     fb.emit(Inst::Suspend { resume: 0 });
     fb.emit(Inst::Ret { v: None });
@@ -195,4 +195,9 @@ b0:
      6 s2    Br { to: b0 }
 "
     );
+}
+
+#[test]
+fn inst_stays_small() {
+    assert_eq!(std::mem::size_of::<Inst>(), 32);
 }

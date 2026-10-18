@@ -260,3 +260,31 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Type names in messages** are qualified by their region (`work.i1.rec`) only when two names in
   one message collide.
 
+## IR and interpreter (rsim-ir, rsim-interp, M2)
+
+- **Memory model:** registers are untyped u64 cells; addresses are `[space: 3 | index: 29 |
+  offset: 32]` over eight spaces (frame, instance, package, constant, heap, temp, shared,
+  shared heap). Every data-dependent access is bounds-checked; an out-of-object access is an
+  ICE (lowering must have emitted the VHDL check), a freed object is a runtime error.
+- **Temporaries** (`Alloc`) live until the next statement of the frame that made them, so a
+  function's unconstrained result survives the return without a copy.
+- **Natives** are looked up by `lib/NATIVE.md` symbol, parsed from the file at build time: a
+  symbol that NATIVE.md does not define fails `Runtime::new` (fail early), one that is defined
+  but not implemented is a runtime error naming it. `'image` is `rsim.attr.image` (NATIVE.md
+  has no attribute natives). Implemented now: `now`, `stop`, `finish`, `to_string` and `'image`
+  of scalars; the rest (textio, file, env extras) come with M3.
+- **Foreign calls from safe code:** `rsim_ffi::ForeignFn::from_fn` binds a typed Rust
+  `extern "C" fn` without `unsafe`; real symbols are bound by the elaborator (the one unsafe
+  step) and passed in `Bindings`. Scalars and scalar `out` parameters are marshalled; arrays,
+  records and access values are a "not implemented" runtime error until M3.
+- **Heap:** generational handles; mark and sweep of the private heap at suspensions with
+  precise roots from `Func::roots`; collection is skipped (never unsound) for objects whose
+  handles cannot be located. The shared heap is not collected yet.
+- **Debugging like Riviera-PRO and Questa** (user requirement): conditional line breakpoints
+  (the condition is an IR function nested in the stopped frame's function) with hit counts,
+  step in/over/out per process, a global step across processes, pause inside endless loops,
+  signal breakpoints as an event-bus observer that pauses `SimControl`, call stack and locals
+  through `FrameView`, a process table with what each process waits on. Stops inside a process
+  require `--threads 1`. API in docs/design/ir.md 3.4.
+- **Verifier** is one linear walk; register liveness across suspension is checked within a
+  block only (cross-block needs dataflow, LLVM tier).

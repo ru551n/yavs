@@ -1,6 +1,8 @@
 # M2 middle end: rsim-ir, rsim-interp, rsim-elab
 
-Status: design, not implemented. Binding inputs: `docs/plan.md` (architecture table, "Designed for
+Status: `rsim-ir` and `rsim-interp` implemented (M2, built against hand-written IR); lowering
+(`rsim-lower`) and `rsim-elab` in progress. Deviations from this design are listed in section 9.
+Binding inputs: `docs/plan.md` (architecture table, "Designed for
 the GUI", "Parallel kernel design", rules 1 to 12, the error-handling motto) and
 `docs/decisions.md`. Interfaces read from: the kernel worktree (`rsim-kernel`: `Process`, `Ctx`,
 `Builder`, `SimControl`, `Observer`, `SimError { trace: Vec<StmtId> }`), `rsim-logic`,
@@ -357,22 +359,54 @@ impl rsim_kernel::Process for InterpProcess {
 - A broken interpreter invariant returns `ErrorKind::Internal` at the current statement's span:
   "this is a bug in rsim" (exit 101), never a bare panic.
 
-### 3.4 Breakpoints and stepping
+### 3.4 Debug hooks (Riviera-PRO / Questa style)
+
+Implemented in `rsim-interp` (`debug.rs`); the DAP server (M8) and the GUI (M10) build on it
+without interpreter changes.
 
 ```rust
 pub trait Debugger: Send + Sync {
-    /// Called at each `Stmt` in the debug loop. Blocks while the user inspects.
-    fn on_stmt(&self, at: StmtId, view: &FrameView<'_>, ctx: &Ctx<'_>) -> Resume;
+    /// Called at a stop. Blocks while the user inspects.
+    fn on_stop(&self, stop: &Stop<'_>, session: &DebugSession) -> Resume;
 }
-pub enum Resume { Continue, StepIn, StepOver, StepOut }
+pub enum Resume { Continue, StepIn, StepOver, StepOut, GlobalStep }
+pub struct Stop<'a> {
+    pub reason: StopReason,      // Breakpoint { hits } | Step | GlobalStep | Pause | ConditionError(msg)
+    pub stmt: StmtId,
+    pub process: usize,          // index in the session's process table
+    pub now: Option<Time>, pub delta: Option<u32>,   // time and delta at every stop
+    pub frames: FrameView<'a>,   // call stack: func names, current StmtId, locals (name, TyId, bytes)
+    pub ctx: Option<&'a Ctx<'a>>,// current signal values
+}
+impl DebugSession {   // one per simulation, shared by all attached processes
+    fn new(prog, Box<dyn Debugger>) -> Arc<Self>;
+    fn set_breakpoint(&self, StmtId, LineBp) -> Option<Arc<LineBp>>;  // LineBp { cond: Option<FuncId>, hit: HitCond }
+    fn clear_breakpoint(&self, StmtId);
+    fn request_global_step(&self); fn request_pause(&self);
+    fn processes(&self) -> Vec<ProcStatus>;  // name, NotStarted|Running|Waiting|Terminated, wait stmt, sensitivity, absolute timeout
+}
+InterpProcess::with_debug(self, Arc<DebugSession>, name) -> InterpProcess
+SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Observer
 ```
 
-- Breakpoints are a bitset over `StmtId`, checked only in the debug loop. Step over/out compare
-  the frame depth. While a process is stopped inside `run`, the DAP reads its frames
-  (`FrameView`: slots decoded by `Layout`) and current signal values through `ctx`.
-- Pausing inside a process requires `--threads 1` (the kernel is mid-delta); the CLI forces it
-  when a debugger is attached with breakpoints. Pausing at a delta or time step goes through
-  `SimControl` as usual.
+| Feature | How |
+|---|---|
+| line breakpoint | bitset over `StmtId` (checked at each `Stmt` in the debug loop only), plus a `LineBp` per set bit |
+| condition | an IR `Function` without parameters whose `parent` is the function containing the statement; it reads the stopped frame through `AddrSpace::Up(1)`. Lowering produces it from the HIR expression typed in the debugger. An error in it is a stop with `ConditionError`, not a simulation error |
+| hit count | `HitCond::{Always, Eq(n), Ge(n), Multiple(n)}` over the hits where the condition held; `LineBp::hits()` |
+| step in / over / out | per process, by frame depth (`StepMode`) |
+| global step | a session flag: the next `Stmt` executed by any attached process stops (Questa `step`, Riviera trace) |
+| pause inside a process | session flag polled every 4096 instructions, stops at the next statement (endless loops) |
+| signal breakpoint | `SignalBreak` observer on the event bus: on a change of the signal (or to a value) it records the hit and calls `Interrupt::pause`; `SimControl::run_*` returns `Paused` after that cycle |
+| run for / next delta / next time step | `SimControl::run_for`, `run_until`, `step_delta`, `step_timestep` |
+| stack and locals | `FrameView`: per frame the function, current statement and `Func::locals` (variables and typed parameters); `format_scalar` gives `'image` text, composites are decoded with `Ty::layout` |
+| process list | `DebugSession::processes()`: each process publishes its state and what it waits on (sensitivity, absolute timeout, the wait statement whose span shows the condition) at every suspension |
+
+- Stops inside a process need `--threads 1` (the kernel is mid-delta); the CLI forces it when
+  a session is attached. Processes without a session run the fast loop (`exec::<false>`), which
+  has no hook checks; the debug loop is `exec::<true>`.
+- The debug loop never runs JIT code (5): attaching a session pins processes to the
+  interpreter.
 
 ### 3.5 Thread safety
 
@@ -572,3 +606,41 @@ range, division by zero and the delta limit.
 | Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `rsim-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
 | Q6 | Tier-up threshold | After 1000 resumptions/calls, `--jit-threshold`. |
 | Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |
+
+## 9. Implementation notes and deviations (rsim-ir, rsim-interp)
+
+What the implementation does differently from sections 1 to 3, and what producers must emit.
+
+| Area | Implemented as |
+|---|---|
+| bounds-checked `Index{..idx..}` | split: `Pos{dst, dope, dim, idx, what}` (checked position from the left, message from the dope's own direction) then `Index{dst, base, pos, stride}`; logic arrays index from the right, so lowering computes `len - 1 - pos` for `LGet`/`LSet` |
+| temporaries | `Alloc{dst, size}` (added) bumps the per-process temp area; `Stmt` resets it to the current frame's base. `Ret` does not reset, so a callee's result in temp memory lives until the caller's next statement |
+| `Stmt{id}` | `Stmt` has no operand: its statement is `Func::loc[pc]` |
+| address spaces | `Up(d)` is only an `AddrOf` operand (it yields a frame address). Added `Shared` (shared variables, serial processes only). Runtime addresses use 8 spaces: frame, instance, package, constant, heap, temp, shared, shared heap; the heap tag is the space |
+| `Ty` | `Enum` keeps literal names (for `'image`), `Physical {lo, hi, units}` is its own variant, `Array.elem_desc` / `Field.desc` hold static constraints as pool constants, `Protected {state: TyId}` names the record of its variables (units are elab's) |
+| frames | `Func.frame` (size), `Func.roots`, `Func.locals`; `Param {slot, width, class, mode, ty}`; a signal parameter is `Width::Sig` (16 bytes, two registers) |
+| operand lists | `Regs {start, len}` into `Func::operands`, so `Inst` is `Copy`; it is 32 bytes (the largest, `Drive`, has optional operands), not 8 to 16 |
+| attributes | `SigAttr {Event, Active, LastEvent, LastActive}`, `SigLastValue`, `Driving` and `DrivingValue` per driver slot |
+| logic ops | added `LEq` (element-wise `=`); `LNum::{Add, Sub, Cmp(op)}`; a compare with a metavalue is FALSE (numeric_std) |
+| real ops | `FBin {Add, Sub, Mul, Div, PowI, Pow}`, `Phys {MulReal, DivReal}`; a non-finite result or a division by zero is a runtime error |
+| natives | `NativeRef {symbol, ty}`: implicit families carry their type; `rsim.attr.image` (added, `'image`). Strings return the address of a fat pair `[data, dope]` (dope `1 to len`). An unknown symbol fails `Runtime::new`; a known but unimplemented one is a runtime error naming it |
+| foreign | `ForeignRef {name, symbol, args: Vec<ForeignArg>, ret}` with `ForeignArg::{Value(CType), ScalarRef(CType, Width)}`; arrays, records and access values are a "not implemented" runtime error for now. The elaborator binds pointers through `Bindings.foreign`; `Runtime::new` fails on unbound or mismatched signatures |
+| heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation, so an object freed and reused within one statement is not detected (freed and not reused is). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated; an object whose handles cannot be located from its type skips the collection (never unsound). `// ponytail:` the shared heap is never collected; add a commit-phase collection when long OSVVM runs show growth |
+| verifier | the "no register live across a suspension" check is intra-block only; cross-block liveness needs dataflow and comes with the LLVM tier |
+| serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}`; `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |
+| elaboration | `Elab` instructions are a runtime "needs rsim-elab" error; `InstData {data, sigs, cov_base}` has no child or package links yet |
+| debug | section 3.4 (rewritten for the Riviera/Questa requirements) |
+
+**What lowering and elaboration must produce for the interpreter:**
+
+- A `Program` through `ProgramBuilder::finish` (it propagates flags, numbers resume points and
+  verifies); every instruction inside a statement (`FuncBuilder::stmt`), spans on statements.
+- Per process instance: `InstData` (generic/constant bytes, the instance's kernel leaves as
+  `InstSig {signal, ty}`), one `ProcDriver {id, sig, range}` per `Drive` slot (kernel
+  `Builder::driver` per longest static prefix), `proc_flags` for the kernel, and a `SharedState`
+  for serial processes.
+- Waveforms in memory as `n` pairs `[time: i64][value]`, value padded to 8 bytes (bytes or
+  bit-planes per the leaf's `SignalType`).
+- `wait on .. until .. for` as in 1.5 with the deadline in a frame slot; `process (s)` ends with
+  `WaitOn; Suspend; Br`.
+- `Func::locals` for every named variable and typed parameters, so the debugger can show them.

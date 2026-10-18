@@ -6,7 +6,8 @@
 |---|---|
 | M0: workspace, lexer and parser | done: `rsim parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
-| M2 to M10 | not started (crate spikes below) |
+| M2: IR, interpreter, elaboration, kernel | `rsim-ir` and `rsim-interp` done against hand-written IR (below); lowering and elaboration in progress |
+| M3 to M10 | not started (crate spikes below) |
 
 ## sem (`crates/rsim-sem`, M1)
 
@@ -134,6 +135,28 @@ Before, the bus was 1 byte per element with a per-element resolution callback; a
 bit-planes with plane-wise resolution (3x faster). Scalar byte signals pay 10 to 15% for the
 storage enum and the port/implicit machinery. With trivial processes the serial update and
 commit phases dominate, so threads gain little.
+
+## ir and interp (`crates/rsim-ir`, `crates/rsim-interp`, M2)
+
+`rsim-ir`: Program/Func/Block/Inst with 32-bit ids and a `StmtId` per instruction, runtime type
+descriptions with descriptor-based layouts (bit-plane logic arrays, records, arrays with dope),
+compact constants, natives by NATIVE.md symbol, foreign references, flag propagation
+(`MAY_SUSPEND`, `TOUCHES_SHARED`), resume numbering, a linear verifier and a text dump
+(`crates/rsim-ir/README.md` says what is stable). `rsim-interp`: `InterpProcess` implements the
+kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
+rsim-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
+`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC,
+serial marking, kernel-free `call` for elaboration, runtime errors with the VHDL stack as
+`SimError::trace`, and Riviera/Questa-style debug hooks (docs/design/ir.md 3.4).
+
+Tests (`cargo test -p rsim-ir -p rsim-interp`): 11 end-to-end designs run through the kernel at
+1 and 4 threads with identical traces (clock and counter, delta ordering, wait forms with a
+wait inside a procedure, overflow with stack trace, bit-plane ops across blocks, access types
+and stale handle, GC roots, natives, foreign call, elaboration call, serial marking), 5 debug
+tests (conditional line breakpoint with hit count, step over, step in with frame and locals,
+global step across processes, signal breakpoint and process table), verifier and layout tests.
+Not done: `Elab*` instructions (rsim-elab), records with runtime layouts beyond `LayoutOf`,
+protected types beyond `CallProt` dispatch, files and textio natives, foreign arrays.
 
 ## ffi (`crates/rsim-ffi`)
 

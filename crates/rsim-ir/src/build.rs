@@ -278,7 +278,15 @@ impl FuncBuilder<'_> {
         self.roots.push((off, kind));
     }
 
-    pub fn param(&mut self, name: &str, width: Width, class: ParamClass, mode: Mode) -> u32 {
+    /// A parameter; with a type it is also visible to debuggers as a local.
+    pub fn param(
+        &mut self,
+        name: &str,
+        width: Width,
+        class: ParamClass,
+        mode: Mode,
+        ty: Option<TyId>,
+    ) -> u32 {
         let slot = self.slot(width.bytes(), 8);
         self.params.push(Param {
             name: name.to_string(),
@@ -286,8 +294,16 @@ impl FuncBuilder<'_> {
             width,
             class,
             mode,
-            ty: None,
+            ty,
         });
+        if let Some(ty) = ty {
+            self.locals.push(Local {
+                name: name.to_string(),
+                slot,
+                size: width.bytes(),
+                ty,
+            });
+        }
         slot
     }
 

@@ -1368,3 +1368,57 @@ fn protected_counter() {
     let e = yavs_interp::call(rt, make, inst, &[]).unwrap_err();
     assert!(matches!(e.kind, ErrorKind::Internal(_)), "{e}");
 }
+
+/// `call_values`: a composite argument in, the same array back as a fat-pair result (#77).
+#[test]
+fn elaboration_call_with_composites() {
+    let mut pb = ProgramBuilder::new();
+    let int = pb.ty(Ty::Int {
+        lo: i64::MIN,
+        hi: i64::MAX,
+    });
+    let arr = pb.ty(Ty::Array {
+        elem: int,
+        elem_desc: None,
+        dims: 1,
+    });
+    let id = pb.declare("id", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(id);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        fb.param("x'dope", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let src = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::AddrOf {
+            dst: src,
+            space: AddrSpace::Frame,
+            off: x,
+        });
+        let n = fb.int(16);
+        let fat = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: fat, size: n });
+        fb.emit(Inst::Copy {
+            dst: fat,
+            src,
+            bytes: n,
+        });
+        fb.emit(Inst::Ret { v: Some(fat) });
+        fb.finish();
+    }
+    let rt = Runtime::new(
+        std::sync::Arc::new(pb.finish().unwrap()),
+        Bindings::default(),
+    )
+    .unwrap();
+    let data: Vec<u8> = [7i64, 8, 9].iter().flat_map(|x| x.to_le_bytes()).collect();
+    let desc: Vec<u8> = [2i64, 0, 1].iter().flat_map(|x| x.to_le_bytes()).collect();
+    let v = yavs_interp::CallVal::Composite { data, desc };
+    let r = yavs_interp::call_values(
+        rt,
+        id,
+        Default::default(),
+        std::slice::from_ref(&v),
+        Some(arr),
+    );
+    assert_eq!(r.unwrap(), Some(v));
+}

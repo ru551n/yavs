@@ -408,6 +408,67 @@ pub fn init_package(
     }
 }
 
+/// An argument or result of [`call_values`]: a register cell, or a composite (array or
+/// record) as the bytes of its data (IR layout, bit-planes for logic arrays) and of its
+/// descriptor (ir.md 1.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallVal {
+    Cell(u64),
+    Composite { data: Vec<u8>, desc: Vec<u8> },
+}
+
+/// [`call`] with composite arguments and results, for elaboration-time evaluation (#77). A
+/// composite argument is copied into temporaries and passed as its two cells (data and
+/// descriptor addresses). `ret` is the IR type of a composite result (returned as the
+/// address of a fat pair `[data, desc]`), `None` for a scalar or no result.
+pub fn call_values(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[CallVal],
+    ret: Option<yavs_ir::TyId>,
+) -> Result<Option<CallVal>, SimError> {
+    let prog = rt.prog.clone();
+    let mut m = Machine::new(rt, inst, Vec::new(), func);
+    let r = (|| {
+        let mut cells = Vec::with_capacity(args.len() * 2);
+        for a in args {
+            match a {
+                CallVal::Cell(c) => cells.push(*c),
+                CallVal::Composite { data, desc } => {
+                    for b in [data, desc] {
+                        let at = m.temp_alloc(b.len() as u64)?;
+                        m.put(at, b)?;
+                        cells.push(at);
+                    }
+                }
+            }
+        }
+        m.enter(func, &cells)?;
+        let v = match m.run(None, 0)? {
+            Outcome::Returned(v) => v,
+            Outcome::Suspended => {
+                return Err(Fault::Runtime(
+                    "wait statement executed during elaboration".into(),
+                ));
+            }
+        };
+        let (Some(ty), Some(fat)) = (ret, v) else {
+            return Ok(v.map(CallVal::Cell));
+        };
+        let data = m.load(fat, yavs_ir::Width::B8)?;
+        let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
+        let n = yavs_ir::Ty::desc_size(&prog.types, ty)
+            .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
+        let desc = m.rd(d, n)?.to_vec();
+        let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, &desc)
+            .map_err(|e| exec::ice(format!("result layout: {e:?}")))?;
+        let data = m.rd(data, l.size)?.to_vec();
+        Ok(Some(CallVal::Composite { data, desc }))
+    })();
+    r.map_err(|e| m.error(e, None))
+}
+
 /// Run the resolution function `func` (one parameter: an unconstrained array of the element
 /// type) over the driving values `vals` (each in the kernel's byte representation, which is
 /// the element's memory layout) and write the resolved scalar into `out`. The array passed

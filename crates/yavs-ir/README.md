@@ -30,7 +30,7 @@ textual dump.
   binds the function pointer through `yavs_interp::Bindings`).
 - Interpreter API: `Runtime::new(Arc<Program>, Bindings)`, `InterpProcess::new(rt, func,
   Arc<InstData>, Vec<ProcDriver>, shared)`, `proc_flags`, `call` (elaboration-time
-  evaluation), `call_shared` (the same with the `SharedState`, to create shared protected
+  evaluation), `call_values` (the same with composite arguments and results, `CallVal`), `call_shared` (the same with the `SharedState`, to create shared protected
   objects), `DebugSession`.
 - Protected types: the object is a handle (`New { shared: true }` for a shared variable,
   `false` for a process-local one) to the state record; methods are subprograms whose first
@@ -117,3 +117,6 @@ More requests from `yavs-lower` (2026-10-18):
    (`yavs_interp::call` returns only the cell). A `call` variant returning the data and dope
    bytes of an array result would let `yavs-lower` place array signals and constants in
    instance data (`scalar/array_attrs`, `delta/delta_chain`).
+   Done (yavs-elab, 2026-10-18, #77): `yavs_interp::call_values(rt, func, inst, args, ret)`
+   takes and returns `CallVal::{Cell, Composite { data, desc }}`; a composite result (`ret`
+   = its IR type) is read through the fat pair with `Ty::desc_size` and `Ty::layout`.

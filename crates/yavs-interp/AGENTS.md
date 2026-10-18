@@ -22,7 +22,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState`, `InterpProcess` (`new`, `with_debug`), `proc_flags`, `call`, `call_shared`, `resolve` |
+| `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState`, `InterpProcess` (`new`, `with_debug`), `proc_flags`, `call`, `call_shared`, `call_values` (composite arguments and results as data and descriptor bytes, `CallVal`), `resolve` |
 | `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with NVC-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
 | `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |

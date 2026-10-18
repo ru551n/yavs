@@ -414,6 +414,14 @@ resolution both readings give the same number. Applies to the M3 runtime that bu
   permissive reading accepts both spellings).
 - Record element indices and `enumeration_literal(idx)` count from 0 (the element / literal
   position within the subtype), as NVC.
+- **Index bases checked (#156, yavs-interp, 2026-10-18):** the 2019 package declaration types
+  only `enumeration_literal(literal_idx : NATURAL_INDEX)`, consistent with `pos` from 0;
+  `element_name`, `element_index`, `unit_name`, `unit_index` and `scale` take plain `INDEX`, and
+  the LRM prose fixes no base for them (unclear, so rule 2: match the simulators). NVC 1.23
+  gives literal 0 = first literal, element 0 = first element, unit 1 = primary unit; yavs
+  keeps exactly these bases. They differ between classes, but changing either would break
+  designs written against NVC (VUnit's `record_dict_pkg` walks elements `0 .. length - 1`).
+  Pinned by `tests/corpus/reflect/index_bases`.
 - `array_value_mirror.get` takes LRM indices (`get(left - i)` on a `downto` array is element `i`
   from the left); NVC 1.23 normalises some indices differently (`tests/corpus/reflect/multidim`
   is `ref=hand`).

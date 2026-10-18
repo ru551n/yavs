@@ -68,6 +68,7 @@ const PASS: &[&str] = &[
     "protected/generic_package_prot",
     "protected/stack",
     "reflect/arrays",
+    "reflect/index_bases",
     "reflect/multidim",
     "reflect/scalars",
     "report/assert_user_message",

@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	0	:tb_local_procedure_drivers:main	setup ok
+diag	note	2000000	0	:tb_local_procedure_drivers:main	outer ok
+diag	note	4000000	0	:tb_local_procedure_drivers:main	resolved ok

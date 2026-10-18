@@ -47,6 +47,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | `force` default mode `out` for out/inout/buffer ports, `in` otherwise | LRM 10.5.2.1 | DESIGN.md "Composites" |
 | Instance data per region (instance, block, generate iteration); values written by the elaborator (`write_value`, `write_string`), thunks only for unfoldable scalar constants | Generate parameters, generics per instance, shared code | `docs/decisions.md` "Lowering" |
 | One driver slot per `ProcessInfo::drivers` entry, in order | yavs-elab maps slots to LSP ranges | `docs/decisions.md` "Lowering" |
+| A subprogram declared in a process drives through that process's driver slots | LRM 14.7.2: the process owns those drivers, #206 | DESIGN.md "Contract with yavs-interp and yavs-elab" |
 | Guarded blocks: GUARD's default is the condition; a `_guard` process drives GUARD | LRM 11.2, 11.6 | `docs/decisions.md` "Lowering" |
 | Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |
 | Foreign calls: symbol is the last word after `VHPIDIRECT` (else the name), C types from the formal's own subtype, result range-checked; signal and file parameters, composite results are `E2001` | Reference simulator conventions, fail early | `docs/decisions.md` "Foreign subprograms and `--load`" |

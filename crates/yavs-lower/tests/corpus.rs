@@ -87,6 +87,7 @@ const PASS: &[&str] = &[
     "postponed/postponed_basic",
     "postponed/postponed_wait",
     "process/case_if",
+    "process/local_procedure_drivers",
     "process/loops_exit_next",
     "process/sensitivity",
     "process/subprograms",

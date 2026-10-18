@@ -132,7 +132,7 @@ expressions with runtime descriptors (bit-planes for logic arrays), aggregates, 
 attributes including 'path_name/'instance_name, 'driving/'driving_value and signal attributes
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
-(arrays too, `DriveSlot` for out/inout), copy-out of logic elements and slices; package
+(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), copy-out of logic elements and slices; package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
 bounds too, shared protected variables, package signals and files); composite architecture
 constants evaluated once per region (#73). `tests/corpus.rs` runs every corpus group plus

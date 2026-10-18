@@ -665,7 +665,22 @@ pub(crate) fn subprogram(
     };
     cx.scope_func.insert(*scope, (f, depth));
     let kind = crate::func_kind(db, d);
+    // A subprogram declared in a process (at any depth) runs only in that process and drives
+    // through its driver slots (LRM 14.7.2).
+    let mut s = Some(decl.scope);
+    let mut drivers = None;
+    while let Some(sc) = s {
+        if let Some(d) = cx.proc_drivers.get(&sc) {
+            drivers = Some(d.clone());
+            break;
+        }
+        s = db.scopes[sc].parent;
+    }
     let mut fx = Fx::new(db, cx, pb.define(f), depth, kind, decl.name.to_string());
+    if let Some((d, b)) = drivers {
+        fx.drivers = d;
+        fx.driver_base = b;
+    }
     if let SubprogramKind::Function { pure: true } = sp.kind {
         fx.fb.flag(FuncFlags::PURE);
     }
@@ -1188,6 +1203,9 @@ fn process(
         }
     }
     let drivers = info.drivers.clone();
+    if let Some(sc) = scope {
+        cx.proc_drivers.insert(sc, (drivers.clone(), bases.clone()));
+    }
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name.clone());
     if implicit {
         fx.fb.flag(FuncFlags::IMPLICIT);

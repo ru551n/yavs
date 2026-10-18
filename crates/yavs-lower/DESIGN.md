@@ -89,7 +89,9 @@ a call into your module in a small commit.
   constants elaboration could not fold), signals (ports and declared signals, mapped by
   declaration; array signals read their bounds from their subtype in this instance),
   processes of the architecture, its blocks and generates, with one driver slot per
-  `ProcessInfo::drivers` entry. The elaborator builds one instance data per region (instance,
+  `ProcessInfo::drivers` entry. A subprogram declared in a process (at any depth) runs only
+  in that process, so its signal assignments use the process's driver slots (`Cx::proc_drivers`,
+  LRM 14.7.2, #206). The elaborator builds one instance data per region (instance,
   block, generate iteration), looking values and signals up from the process's region
   outwards. Locally static constants have no slot: their folded value is used directly.
 

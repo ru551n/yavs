@@ -454,7 +454,10 @@ impl Db {
                         continue;
                     };
                     match self.scopes[s].names.get(&key) {
-                        Some(ds) if !ds.is_empty() => UseItem::One(ds.clone()),
+                        Some(ds) if !ds.is_empty() => {
+                            let ds = ds.clone();
+                            UseItem::One(self.with_type_associates(s, ds))
+                        }
                         _ => {
                             self.not_in_region(s, suffix_span(suffix, n.span), key);
                             continue;
@@ -464,6 +467,38 @@ impl Db {
             };
             self.scopes[region].uses.push(item);
         }
+    }
+
+    /// 12.4: a use clause naming a type also makes its enumeration literals, its
+    /// units and its implicitly declared operations potentially visible.
+    fn with_type_associates(&self, region: ScopeId, mut ds: Vec<DeclId>) -> Vec<DeclId> {
+        let types: Vec<crate::ids::TypeId> = ds
+            .iter()
+            .filter_map(|&d| match self.decls[d].kind {
+                DeclKind::Type(t) => Some(t),
+                DeclKind::Subtype(st) => Some(self.base(st)),
+                _ => None,
+            })
+            .collect();
+        if types.is_empty() {
+            return ds;
+        }
+        for &d in &self.scopes[region].order {
+            let assoc = match &self.decls[d].kind {
+                DeclKind::EnumLit { ty, .. } | DeclKind::PhysUnit { ty, .. } => types.contains(ty),
+                DeclKind::Subprogram(sp) if self.decls[d].implicit => {
+                    sp.params
+                        .iter()
+                        .any(|p| types.contains(&self.base(p.subtype)))
+                        || sp.ret.is_some_and(|r| types.contains(&self.base(r)))
+                }
+                _ => false,
+            };
+            if assoc && !ds.contains(&d) {
+                ds.push(d);
+            }
+        }
+        ds
     }
 
     pub(crate) fn note_dep(&mut self, u: UnitId) {

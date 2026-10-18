@@ -33,6 +33,7 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 |---|---|---|
 | Manifests are generated from the projects' own build descriptions and validated against reference tools; files the references reject are excluded with the reason | yavs must analyze what the reference simulators accept (LRM policy) | `gen_external.py` docstring, `docs/plan.md` "LRM interpretation policy" |
 | Where the reference simulators disagree, the third reference simulator decides | Tie-breaker | `gen_external.py` |
+| A corpus the reference simulators analyze only with their relaxed flag runs yavs with `--relaxed` too (uvvm, open-logic: unprotected shared variables, #52) | Same input contract as the references | `[flags]` in the manifest, `gen_external.py`, `gen_manifests.py` |
 | One file per `yavs analyze` call, in manifest order | Matches how test runners compile; per-file failures are exact | `run.py`, `docs/decisions.md` "Semantic analysis" (failed file hides its units) |
 | Each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` | Root rule 15 | `run.py` |
 | Expected lists change only with `--bless` and a reviewed diff explained in the commit | No silent regressions | `run.py` |

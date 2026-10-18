@@ -398,6 +398,7 @@ impl Db {
                     TargetKind::Variable,
                     &mut |db, e, ty| db.var_value(scope, e, ty),
                 )?;
+                self.check_protected_assign(target.expr)?;
                 StmtKind::VarAssign { target, rhs }
             }
             K::ProcedureCall(n) => {

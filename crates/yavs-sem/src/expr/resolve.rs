@@ -666,7 +666,7 @@ impl Db {
                 K::Binary { left, right, .. } => vec![left, right],
                 _ => vec![],
             };
-            for o in operands {
+            for &o in &operands {
                 if matches!(self.cands(scope, o), CandSet::Types(v) if v.is_empty()) {
                     self.resolve(scope, o, Expected::Any);
                     return;
@@ -678,6 +678,28 @@ impl Db {
                 _ => ("name", None),
             };
             if let Some(sym) = sym {
+                // A protected type has no predefined operators (5.6.1): say so (E1905).
+                let prot = operands.iter().find_map(|&o| match self.cands(scope, o) {
+                    CandSet::Types(v) => v
+                        .iter()
+                        .find(|i| self.type_contains_protected(i.ty))
+                        .map(|i| i.ty),
+                    CandSet::Class(_) => None,
+                });
+                if let Some(t) = prot {
+                    self.report(
+                        Diagnostic::error(
+                            diag::PROTECTED_MISUSE,
+                            format!(
+                                "operator `{sym}` is not defined for protected type `{}`",
+                                self.type_name(t)
+                            ),
+                        )
+                        .with_primary(e.span, "operand of a protected type")
+                        .with_note("LRM 5.6.1: a protected type has no predefined operators"),
+                    );
+                    return;
+                }
                 let mut d = Diagnostic::error(
                     diag::NO_OVERLOAD,
                     format!("no visible `\"{sym}\"` accepts these operands"),

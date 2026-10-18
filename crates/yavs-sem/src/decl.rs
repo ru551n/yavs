@@ -503,6 +503,13 @@ impl Db {
             ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first)?,
             _ => {}
         }
+        // Reported, but the names are still declared so their uses do not cascade.
+        let _ = match class {
+            ObjClass::Constant => self.check_not_protected("constant", subtype, first),
+            ObjClass::Signal => self.check_not_protected("signal", subtype, first),
+            ObjClass::SharedVariable => self.check_shared_variable(subtype, first),
+            _ => Ok(()),
+        };
         let default = o
             .default
             .as_ref()

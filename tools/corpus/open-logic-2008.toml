@@ -401,7 +401,7 @@ file = [
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
 nvc = ["--relaxed"]
-yavs = []
+yavs = ["--relaxed"]
 ghdl = ["-frelaxed-rules"]
 
 [[source]]

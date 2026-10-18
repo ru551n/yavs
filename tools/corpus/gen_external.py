@@ -226,7 +226,7 @@ SPECS = {
 
     "open-logic": dict(
         stds=("2008",), prefix=["vunit"],
-        flags={"nvc": ["--relaxed"], "ghdl": ["-frelaxed-rules"], "yavs": []},
+        flags={"nvc": ["--relaxed"], "ghdl": ["-frelaxed-rules"], "yavs": ["--relaxed"]},
         note="order: regex dependency scan; libraries olo (src + en_cl_fix) and olo_tb as in sim/run.py; VHDL STD",
         sources={"open-logic": ("https://github.com/open-logic/open-logic", "d9f123aae1c6022288782668067311f9794da0a2",
                                 "LGPL-2.1 with the PSI HDL library FPGA exception", "main, 2026-10-13"),

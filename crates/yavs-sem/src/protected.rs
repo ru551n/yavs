@@ -21,7 +21,7 @@ use crate::LangRev;
 use crate::db::{Db, Reported};
 use crate::decl::{Alias, Body, DeclKind, ObjClass};
 use crate::diag;
-use crate::ids::{DeclId, ScopeId, SubtypeId, TypeId};
+use crate::ids::{DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 use crate::scope::ScopeKind;
 use crate::types::TypeKind;
 
@@ -79,6 +79,24 @@ impl Db {
         }
     }
 
+    /// A variable of a protected type cannot be the target of an assignment
+    /// (5.6.1: protected types have no predefined assignment): `E1905`.
+    pub fn check_protected_assign(&mut self, target: ExprId) -> Result<(), Reported> {
+        let t = self.base(self.exprs[target].subtype);
+        if !self.type_contains_protected(t) {
+            return Ok(());
+        }
+        Err(self.error(
+            Diagnostic::error(
+                diag::PROTECTED_MISUSE,
+                format!("protected type `{}` cannot be assigned", self.type_name(t)),
+            )
+            .with_primary(self.exprs[target].span, "target of a protected type")
+            .with_note("LRM 5.6.1: a protected type has no predefined assignment")
+            .with_help("change its state through one of its methods"),
+        ))
+    }
+
     /// A shared variable must be of a protected type (6.4.2.4): `E1904`, or
     /// warning `W1904` under `--relaxed` (R1, sem.md 8.4).
     pub fn check_shared_variable(&mut self, st: SubtypeId, span: Span) -> Result<(), Reported> {
@@ -97,7 +115,8 @@ impl Db {
             self.report(
                 Diagnostic::warning(diag::W_SHARED_NOT_PROTECTED, msg)
                     .with_primary(span, "accepted by `--relaxed`")
-                    .with_note("processes using it run serially"),
+                    .with_note("processes using it run serially")
+                    .with_help("--relaxed accepts a shared variable of a non-protected type (VHDL-93 style); a protected type is portable"),
             );
             return Ok(());
         }
@@ -361,7 +380,7 @@ impl Db {
                         self.type_name(t)
                     ),
                 )
-                .with_primary(self.decls[d].span, "declared here")
+                .with_primary(self.decls[d].name_span(), "declared here")
                 .with_secondary(end, "the protected body ends here"),
             ));
         }

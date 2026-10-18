@@ -1,13 +1,4 @@
 # Files of tests/diag/sem expected to fail until their slice lands (see diag_sem.rs).
-prot/assign_protected_variable.vhd
-prot/body_method_missing.vhd
-prot/equality_on_protected.vhd
-prot/protected_constant.vhd
-prot/shared_variable_array_not_protected.vhd
-prot/shared_variable_not_protected.vhd
-prot/signal_of_protected_type.vhd
-relax/shared_variable_unprotected.vhd
-relax/shared_variable_unprotected_relaxed.vhd
 v2019/conditional_expression_branch_mismatch.vhd
 v2019/conditional_expression_not_boolean.vhd
 v2019/conditional_expression_ok.vhd

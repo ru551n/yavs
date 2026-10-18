@@ -26,6 +26,8 @@ pub struct Ir {
     pub names: HashMap<(ScopeId, yavs_sem::DeclId, bool), String>,
     /// Packages with run-time objects, in initialisation order (#183).
     pub packages: Vec<yavs_lower::PackageIr>,
+    /// Source files of the program's statements, for `std.env` call paths.
+    pub sources: yavs_interp::Sources,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -141,7 +143,9 @@ impl Elaborated {
                 names.insert((region, n.decl, n.instance), text);
             }
         }
+        let sources = yavs_interp::Sources::of(&lowered.program, &db.sources);
         self.ir = Some(Ir {
+            sources,
             program: Arc::new(lowered.program),
             units,
             resolvers,
@@ -266,6 +270,7 @@ impl Elaborated {
         for p in &ir.packages {
             let b = Bindings {
                 packages: packages.clone(),
+                sources: ir.sources.clone(),
                 ..Default::default()
             };
             let rt = Runtime::new(ir.program.clone(), b)?;
@@ -276,6 +281,7 @@ impl Elaborated {
             ir.program.clone(),
             Bindings {
                 packages,
+                sources: ir.sources.clone(),
                 ..Default::default()
             },
         )?;

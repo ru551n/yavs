@@ -22,7 +22,6 @@ NVC (the primary reference). Every file NVC does not agree with is listed here.
 | `attr/attribute_spec_overloaded_ok` | rejects @8 | accepts | LRM 7.2 is clear: an overloaded entity tag without a signature decorates every matching declaration. GHDL and Questa accept; NVC is stricter than the LRM. |
 | `gen/formal_package_map_mismatch` | accepts | rejects @14 | LRM 6.5.7.2 is clear: the actual instance must match the formal package's generic map. Questa rejects ("Actual values for generic 'n' don't match"); NVC does not check; GHDL rejects as unsupported. |
 | `gen/unused_generic_warning` | accepts | accepts | rsim-only warning (W1501); NVC and GHDL do not warn. |
-| `prot/incomplete_in_method_profile_ok` | rejects @7 | rejects @7 | Ruling U-2 (sem.md 11, permissive, needed by 2019 `std.reflection`): incomplete types are accepted in protected method profiles. NVC, GHDL and Questa 2026.1 all reject it in user code. |
 | `hom/interface_param_twice` | accepts | rejects @5 | NVC bug: accepts two parameters with one name in a subprogram declaration; GHDL rejects. |
 | `mix/integer_high_in_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
 | `mix/integer_left_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
@@ -413,6 +412,8 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `equality_on_protected` | E1905 @22 | rejects @22 | rejects @22 |
 | `method_unknown` | E1100 @20 | rejects @20 | rejects @20 |
 | `method_wrong_args` | E1301 @20 | rejects @20 | rejects @6,20 |
+| `incomplete_in_method_profile_2008` | E1220 @7 | rejects @7 | rejects @7 (Questa 2026.1 also rejects; ruling U-2 allows it only in library `std`) |
+| `incomplete_in_method_profile_2019` | E1220 @7 | rejects @7 | rejects @7 (Questa 2026.1 also rejects; ruling U-2 allows it only in library `std`) |
 | `port_of_protected_type` | E1905 @11 | rejects @11 | rejects @11 |
 | `protected_body_state_from_outside` | E1105 @23 | rejects @23 | rejects @23 |
 | `protected_constant` | E1905 @16 | rejects @16 | rejects @16 |

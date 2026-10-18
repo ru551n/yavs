@@ -323,6 +323,12 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 `std.env.resolution_limit`, as Riviera-PRO does (NVC returns femtoseconds). The LRM is unclear,
 and VUnit's `record_dict_pkg` (PR #1239) relies on this reading. With the default femtosecond
 resolution both readings give the same number. Applies to the M3 runtime that builds mirrors.
+## Incomplete types in protected method profiles (user, 2026-10-18; amends U-2)
+
+Allowed only in units of library `std` (`std.reflection` needs it). In user code it is `E1220` with
+a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. Not extended to
+`ieee`: nothing there needs it.
+
 ## Elaboration (rsim-elab, M2)
 
 - **Element order inside a kernel leaf:** composites flatten row major, leftmost first; a logic

@@ -217,19 +217,28 @@ impl Db {
                 && sc
                     .parent
                     .is_some_and(|p| self.scopes[p].kind == ScopeKind::Protected));
-        if in_profile {
+        // Ruling U-2 (amended 2026-10-18): only units of library `std` may do this.
+        let in_std = self
+            .stack
+            .last()
+            .is_some_and(|cx| self.libs[cx.lib].name.key.as_str() == "std");
+        if in_profile && in_std {
             return Ok(());
         }
         let name = self.types[t].name.text;
-        Err(self.error(
-            Diagnostic::error(
+        let mut d = Diagnostic::error(
                 diag::INCOMPLETE,
                 format!("incomplete type `{name}` can only be used as an access designated type"),
             )
             .with_primary(span, "used before its full declaration")
             .with_secondary(self.decls[self.types[t].decl].span, "declared incomplete here")
-            .with_note("LRM 5.4.2: before the full type declaration, an incomplete type may only be named in an access type definition"),
-        ))
+            .with_note("LRM 5.4.2: before the full type declaration, an incomplete type may only be named in an access type definition");
+        if in_profile {
+            d = d
+                .with_note("only units of library `std` (e.g. `std.reflection`) may use an incomplete type in a protected method profile; NVC, GHDL and Questa reject it in user code")
+                .with_help(format!("declare an access type to `{name}` and use that in the profile"));
+        }
+        Err(self.error(d))
     }
 
     /// `T'designated_subtype` (2019 16.2.2): the designated subtype of an

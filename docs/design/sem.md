@@ -420,7 +420,7 @@ element names in a record constraint: `E1213`.
   type, and, per `lib/README.md`, as a return type of methods in a protected type declaration
   whose completion appears later in the region (std 2019 `reflection` needs this). No LRM text
   for it was found; rsim accepts it in subprogram profiles inside a protected type declaration,
-  in 2008 and 2019 (user decision U-2, permissive) [L4].
+  in 2008 and 2019, but only in library `std` (user decision U-2, amended 2026-10-18); user code gets `E1220` with a help suggesting an access type [L4].
 - File types (5.5): element type cannot be access, protected, file, or contain those (`E1222`);
   multi-dimensional arrays as file element are an error in 2008 and 2019 (`E1222`) [L5].
 - Protected types (5.6): see 6.6.
@@ -1299,7 +1299,7 @@ them.
 | Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007` error, `W1008` warning | decided |
 | Q11 | bit-string expansion | in sem, `E1331` at the literal | decided |
 | U-1 | base range of `type T is range L to R` | declared range; intermediate results checked (NVC) | decided |
-| U-2 | incomplete types in protected method profiles | allowed in subprogram profiles inside a protected type declaration, 2008 and 2019 (permissive) | decided |
+| U-2 | incomplete types in protected method profiles | allowed in subprogram profiles inside a protected type declaration, 2008 and 2019, **only in units of library `std`** (`std.reflection` needs it); an error `E1220` in user code, as NVC, GHDL and Questa (user, 2026-10-18) | decided |
 | U-3 | range record names | `<T>_RANGE_RECORD` only for `std.standard` types; the direction type is `RANGE_DIRECTION` (LRM 16.3, `lib` patched) | decided |
 | U-4 | `buffer` under `'converse` | stays `buffer`, so both reading and driving are allowed (permissive) | decided |
 | U-5 | conditional expressions as interface defaults | accepted bare and parenthesized (permissive) | decided |

@@ -41,7 +41,7 @@ LCS text was read.
 | L1 | 2019 reserved words | 15.10 | confirmed | 2019 adds exactly `private` and `view` |
 | L2 | same entity through an alias (12.4 c) | 12.3, 12.4 | **corrected** | no exception for object aliases; non-object aliases of the same entity do not conflict (both tools) |
 | L3 | `work` in context declarations | 13.3 (not 13.4) | confirmed, clause corrected | error for `library work`, and for `work.` prefixes in use clauses **and context references** |
-| L4 | incomplete types in protected method profiles | 5.4.2 | unclear, **permissive** | accept in subprogram profiles inside a protected type declaration, 2008 and 2019 (U-2, decided) |
+| L4 | incomplete types in protected method profiles | 5.4.2 | unclear, **std only** | accept in subprogram profiles inside a protected type declaration, 2008 and 2019, only in library `std` (U-2, amended 2026-10-18); user code: `E1220` |
 | L5 | multi-dimensional arrays as file element | 5.5 | confirmed | error in 2008 and 2019 |
 | L6 | implicit ops of 2019 generic type classes | 6.5.3 | confirmed in principle, list not verified | an interface type of class C gets exactly the predefined ops every type of class C has |
 | L7 | `<T>_RANGE_RECORD` per scalar type | 5.2.1, 16.2.6, 16.3 (2019) | **corrected** | every scalar type has an anonymous range record; the name `<T>_RANGE_RECORD` only for `std.standard` types; direction type `RANGE_DIRECTION` (U-3, decided) |
@@ -154,8 +154,9 @@ the same pattern in user code in 2019 ("invalid use of incomplete type", `u4.vhd
 return type of an ordinary function (`u4b.vhd`), so they special-case `std.reflection`. The 2008 rule
 (recalled): before the full declaration, the only allowed use is as the type mark of an access type
 definition. No 2019 text found that widens it, and the IEEE package itself relies on the wider use,
-so the LRM is unclear. Decided (U-2, permissive): accepted in subprogram profiles inside a protected
-type declaration, in 2008 and 2019; an incomplete type elsewhere (an object, an ordinary function
+so the LRM is unclear. Decided (U-2, amended 2026-10-18): accepted in subprogram profiles inside a protected
+type declaration, in 2008 and 2019, only in library `std` (NVC, GHDL and Questa reject it in user
+code); an incomplete type elsewhere (an object, an ordinary function
 profile) stays an error.
 
 ### L5: file element types (5.5)
@@ -399,8 +400,8 @@ Taken under the policy at the top. The options and evidence are in the items abo
 - **U-1 (Q2) base range of `type T is range L to R`:** the declared range; intermediate results are
   checked against it (NVC), with a help naming the type when an intermediate overflows.
 - **U-2 (L4) incomplete types in protected method profiles:** allowed in subprogram profiles inside a
-  protected type declaration, completed later in the same region, in **both** 2008 and 2019
-  (permissive; `std.reflection` needs it in 2019).
+  protected type declaration, completed later in the same region, in **both** 2008 and 2019,
+  **only in library `std`** (`std.reflection` needs it in 2019); user code gets `E1220`.
 - **U-3 (L7) range record names:** `<T>_RANGE_RECORD` only for the `std.standard` types; user scalar
   types get only the anonymous record through `'RECORD`. The direction type is `RANGE_DIRECTION`
   (LRM 16.3); `lib/std/2019/standard.vhdl` is patched to match.

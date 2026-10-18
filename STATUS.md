@@ -83,6 +83,21 @@ The rest wait on: `'value` native, NVC check texts, failure stopping the process
 order within a cycle (`multi_process_order`), sem `ExprKind::Error` in two files, array signals,
 non-static aggregates (math_real). Design and conventions: `crates/rsim-lower/DESIGN.md`.
 
+## sem robustness
+
+`cargo +nightly fuzz run sem` (in `fuzz/`, seeds `tests/diag/sem`, `lib/`) parses and analyzes each input
+in 2008 and 2019 against rsim's std/ieee and fails on a panic, a hang (`-timeout=20`), an RSS over 2 GB or
+any diagnostic carrying "this is a bug in rsim". The negative suite fails on any ICE too, xfail or not.
+`rsim analyze` over all ten `tools/corpus` manifests (debug build, so the HIR validator runs; `timeout 60`
+per file) shows no panic and no timeout.
+
+| Run | Fuzz time | Executions | Crashes found | Fixed | Open |
+|---|---:|---:|---:|---:|---|
+| 4 workers, ~1.1 h CPU in total | ~27 min wall | ~280,000 | 3 distinct ICEs (procedure call left `ExprKind::Error`; physical-literal unit undeclared; alias of a selected object name) | 3 | none |
+
+The procedure-call ICE was fixed on main in parallel; the other two are fixed here, all with
+regression tests in `tests/diag/sem/fuzz/`. The last 3 chunks (~190,000 executions) found nothing.
+
 ## logic (`crates/rsim-logic`)
 
 Done ahead of M3: `StdULogic` with the IEEE 1164 tables (checked against the vendored package

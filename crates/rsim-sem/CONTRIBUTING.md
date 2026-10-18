@@ -90,6 +90,17 @@ through the orchestrator.
 
 ## Requests
 
+From sem robustness (fuzzing, `fuzz/fuzz_targets/sem.rs`):
+
+- **names** (expr/names.rs): `report_name` returns `Reported` without reporting anything for
+  `NameRes::One`, `Overloads` and `Value`. A caller that reaches it with one of those has failed
+  silently, and the HIR validator then turns the poison it left into an ICE. Callers should handle
+  those three cases themselves (the alias declaration did not: fixed locally for `Value`), and
+  `report_name` should end in `Db::ice` for them with the span, so the next one is loud and has a
+  location.
+- **lead** (decl.rs): aliases of indexed and sliced object names (`alias a : t is v(3)`) are
+  `E9999` (S3), selected ones (`alias a : t is rec.f`) too; the corpus (OSVVM `TbUtilPkg`) needs both.
+
 From s6 (alias/external/protected/view). The S6/S7 checks exist as `Db` methods with unit tests;
 they need calls from the analyzers that own the constructs:
 

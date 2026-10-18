@@ -20,7 +20,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
 |---|---|---|---|---|
 | check | 242 | 1 | 14 | constant bounds #209 (after #203) |
 | com | 0 | 135 | 10 | protected body initialiser #204 (fixed, not re-measured) |
-| data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files of scalars and scalar arrays done (#79, not re-measured) |
+| data_types | 151 | 31 | 28 | #77 (`new_queue` at elaboration, behind #205), process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files of scalars and scalar arrays done (#79, not re-measured) |
 | dictionary | 8 | 0 | 0 | none (after #203) |
 | logging | 112 | 1 | 0 | #207 |
 | path | 2 | 0 | 0 | none (after #203) |

@@ -642,7 +642,12 @@ which tools/difftest parses.
   fold run a thunk once per region (a composite's returns its fat pair, appended to the
   instance data by yavs-elab, #73). Locally static constants have no slot.
 - **Driver slots** are one per `ProcessInfo::drivers` entry, in order; a target picks the entry
-  with the same root and path.
+  with the same root and path, else the entry with the same root whose path is a prefix of the
+  target's. A subprogram declared in a process drives through that process's slots (14.7.2,
+  #206). In a driver that sem collects from such a subprogram, the prefix ends before the first
+  index or slice that reads an object of a subprogram (a parameter, or a constant computed from
+  one): its value exists only when the call runs, so elaboration never folds it and the process
+  drives the shorter prefix (#205). Indices are evaluated at run time as everywhere else.
 - **GUARD:** sem keeps a guarded block's condition as the GUARD signal's default; lowering
   emits the guard process (`GUARD <= condition`, zero delay) and guarded assignments that
   disconnect `bus`/`register` targets when GUARD is false (disconnection after 0 fs until

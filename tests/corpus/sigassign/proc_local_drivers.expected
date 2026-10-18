@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:tb_proc_local_drivers:_p0	flags=0100 s=2
+diag	note	1000000	0	:tb_proc_local_drivers:_p0	ints=70,0,0,7
+diag	note	1000000	0	:tb_proc_local_drivers:_p0	vec=00111100 r=1,0100
+diag	note	6000000	0	:tb_proc_local_drivers:_p0	flags=1111 vec=11110000 ints(1)=5 ints(2)=50

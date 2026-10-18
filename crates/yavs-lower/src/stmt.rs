@@ -734,11 +734,20 @@ impl Fx<'_, '_> {
     /// with the same root and path (slots are 1:1 with those entries, as yavs-elab expects).
     fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
         let key = format!("{:?}{:?}", lsp.root, lsp.path);
-        match self
+        let exact = self
             .drivers
             .iter()
-            .position(|l| format!("{:?}{:?}", l.root, l.path) == key)
-        {
+            .position(|l| format!("{:?}{:?}", l.root, l.path) == key);
+        // A target in a subprogram declared in the process whose index reads a parameter is
+        // driven through the shorter prefix sem stored (lsp.rs, #205).
+        let prefix = || {
+            self.drivers.iter().position(|l| {
+                l.root == lsp.root
+                    && l.path.len() < lsp.path.len()
+                    && format!("{:?}", l.path) == format!("{:?}", &lsp.path[..l.path.len()])
+            })
+        };
+        match exact.or_else(prefix) {
             Some(k) => Ok(self.driver_base.get(k).copied().unwrap_or(k as u32)),
             None => Err(self
                 .cx

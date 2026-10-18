@@ -59,7 +59,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1220 | incomplete type not completed or misused | 8.1 |
 | E1221 | 2008 access to a file or protected type | 8.1 |
 | E1222 | illegal file element type | 8.1 |
-| E1223 | constant, signal, generic, port or constant/signal parameter of an access or file type | 8.1 |
+| E1223 | constant (2008), signal, generic, port or parameter of an access or file type, also in 2008 protected method profiles | 8.1 |
 | E1225 | bad resolution function | 8.1 |
 | E1230 | missing body | 8.1 |
 | E1300 | type mismatch | 8.1 |

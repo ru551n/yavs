@@ -53,7 +53,7 @@ An installed binary finds `lib/` next to itself (#43).
   (`E1302` with a qualification help in the declaration's spelling), candidate lists in help, and
   hints for calls from several packages and for vector/integer operators.
 - Object types: constants, signals, generics, ports and constant or signal parameters of an access
-  or file type (or containing one) are `E1223` (#198); protected ones `E1905`.
+  or file type (or containing one) are `E1223` (#198; constant parameters are legal in 2019; 2008 protected method profiles too, #212); protected ones `E1905`.
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms
   (8.3, `E1103` outside them), body declarations named from outside the package (`E1105`), use
   and context prefixes of the wrong kind (`E1104` at the suffix), and a missing-use-clause help

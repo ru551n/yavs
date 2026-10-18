@@ -1447,8 +1447,10 @@ impl Db {
         Err(self.error(
             Diagnostic::error(diag::BAD_OBJECT_TYPE, msg)
                 .with_primary(span, format!("{what} of {kind} type"))
-                .with_note("LRM 6.4.2.2, 6.4.2.3, 6.5.2: access values live only in variables, files only in file objects")
-                .with_help(if kind == "access" {
+                .with_note("LRM 6.4.2.2, 6.4.2.3, 6.5.2, 5.6.2: access values live only in variables, files only in file objects; 2008 methods of a protected type take and return neither")
+                .with_help(if what.starts_with("protected method") {
+                    "keep the access or file part inside the protected object, or analyze as VHDL-2019"
+                } else if kind == "access" {
                     "use a variable, or a variable parameter"
                 } else {
                     "declare a file object, or a file parameter"

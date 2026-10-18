@@ -905,12 +905,24 @@ impl Db {
             Some(g) => Some(self.generic_list(pscope, g)?),
             None => None,
         };
+        // 5.6.2 (2008): no access or file type in the profile of a method; 2019 drops it
+        // (both reference simulators accept access results in 2019).
+        let method_2008 = self.scopes[scope].kind == crate::scope::ScopeKind::Protected
+            && self.file_rev() < LangRev::Vhdl2019
+            && !self.in_std_library(scope);
         let mut params = Vec::new();
         for p in s.params.iter().flatten() {
             let ast::InterfaceDecl::Object(o) = p else {
                 return Err(self.unsupported(s.span, "non-object parameters", "S4"));
             };
+            let first = params.len();
             params.extend(self.param_decls(pscope, o, kind)?);
+            if method_2008 {
+                let at = o.names.first().map_or(o.span, |n| n.span);
+                for p in &params[first..] {
+                    self.check_not_access_or_file("protected method parameter", p.subtype, at)?;
+                }
+            }
         }
         let name_span = match &s.designator {
             ast::Designator::Ident(i) => i.span,
@@ -940,6 +952,9 @@ impl Db {
         };
         if let Some(n) = &s.return_type {
             self.written_marks.insert(decl, n.span);
+        }
+        if let (true, Some(r), Some(n)) = (method_2008, ret, &s.return_type) {
+            self.check_not_access_or_file("protected method result", r, n.span)?;
         }
         if s.return_ident.is_some() {
             return Err(self.unsupported(s.span, "named return values", "S7"));
@@ -1300,9 +1315,10 @@ impl Db {
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
         // The IEEE 2019 std.env source itself declares constant parameters of
-        // DIRECTORY and CALL_PATH_VECTOR_PTR (16.5), which the reference simulators reject in
-        // user code in 2008 and 2019: library `std` is exempt (#198).
-        let in_std = self.in_std_library(pscope);
+        // DIRECTORY and CALL_PATH_VECTOR_PTR (16.5): 2019 allows constant parameters of access
+        // type (the reference simulators still reject them); 2008 only in library `std` (#198).
+        let in_std = self.in_std_library(pscope)
+            || (class == ObjClass::Constant && self.file_rev() >= LangRev::Vhdl2019);
         let first = o.names.first().map_or(o.span, |n| n.span);
         match class {
             _ if in_std => {}

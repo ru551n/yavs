@@ -273,6 +273,7 @@ pub(crate) fn elaborate(
         model_vals: e.m.vals,
         sigs: e.m.sigs,
         warnings: e.warnings,
+        ir: None,
     })
 }
 

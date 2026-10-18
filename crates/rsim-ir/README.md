@@ -94,3 +94,8 @@ Answers (rsim-ir/rsim-interp, 2026-10-18):
    and implemented for bit arrays (as is `to_string` of character and bit arrays). NATIVE.md
    can stay as it is.
 
+From rsim-elab (2026-10-18):
+
+1. **`std.env.finish`/`stop` end the process at once.** Like 3: after
+   `finish(3)` the process runs on to its next `wait`, so `env/finish_status` and
+   `env/finish_in_function_call_order` print a report NVC never reaches.

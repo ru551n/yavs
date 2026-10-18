@@ -280,7 +280,10 @@ fn elab_and_run() {
          entity top is generic (N : positive := 2; MSG : string := \"x\"); end;\n\
          architecture t of top is begin u : entity work.leaf generic map (W => N); end;\n\
          entity busy is end;\n\
-         architecture t of busy is begin process begin wait; end process; end;\n",
+         architecture t of busy is begin process begin report \"hi\"; wait for 1 ns;\n\
+           report \"bad\" severity error; wait; end process; end;\n\
+         use std.env.all; entity fin is end;\n\
+         architecture t of fin is begin process begin wait for 3 ns; finish(3); end process; end;\n",
     )
     .expect("write");
     let lib = format!("--work=work:{}/lib", tmp.display());
@@ -323,10 +326,21 @@ fn elab_and_run() {
     // A design without processes runs to event starvation.
     let (code, err, _) = rsim(&["run", &lib, "--exit-severity=error", "top"]);
     assert_eq!(code, 0, "{err}");
-    // Processes need rsim-lower and rsim-interp: a clear not-implemented error.
-    let (code, err, _) = rsim(&["run", &lib, "busy"]);
-    assert_eq!(code, 2);
-    assert!(err.contains("error[E9999]"), "{err}");
+    // Reports in NVC's format on stdout; an error report stops the run at `error`.
+    let (code, err, out) = rsim(&["run", &lib, "busy"]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(
+        out,
+        "** Note: 0fs+0: hi\n    Process :busy:_p0\n** Error: 1000000fs+0: bad\n    Process :busy:_p0\n"
+    );
+    // Below `--exit-severity` it goes on, and still fails.
+    let (code, _, _) = rsim(&["run", &lib, "--exit-severity=failure", "busy"]);
+    assert_eq!(code, 1);
+    let (code, _, out) = rsim(&["run", &lib, "fin", "--threads=4"]);
+    assert_eq!(code, 3);
+    assert!(out.contains("FINISH called with status 3"), "{out}");
+    let (code, _, _) = rsim(&["run", &lib, "fin", "--stop-time=2ns"]);
+    assert_eq!(code, 0);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

@@ -12,6 +12,12 @@ use rsim_diag::{Diagnostic, MessageFormat, SourceMap};
 use rsim_lib::{Libraries, UnitKind, UnitRef};
 use rsim_sem::{Db, LangRev, Options};
 
+use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use rsim_kernel::{EndReason, RunStatus};
+
 use crate::StdArg;
 use crate::analyze::{Out, stdlib};
 
@@ -62,9 +68,9 @@ pub struct RunArgs {
     /// Worker threads for process evaluation.
     #[arg(long, default_value = "1")]
     threads: usize,
-    /// Randomize process execution order.
-    #[arg(long)]
-    shuffle: bool,
+    /// Randomize process execution order, with an optional seed.
+    #[arg(long, value_name = "SEED", num_args = 0..=1, default_missing_value = "1")]
+    shuffle: Option<u64>,
     /// Load a shared library for foreign subprograms.
     #[arg(long, value_name = "LIB")]
     load: Vec<String>,
@@ -175,9 +181,15 @@ fn elaborate(
         rsim_elab::elaborate(&mut db, t, &c.generics, &rsim_elab::ElabConfig::default())
     });
     match r {
-        Ok(e) => {
+        Ok(mut e) => {
             for d in &e.warnings {
                 out.emit(&db.sources, d);
+            }
+            if let Err(ds) = e.lower(&mut db) {
+                for d in &ds {
+                    out.emit(&db.sources, d);
+                }
+                return Err((out, 2));
             }
             if out.errors > 0 {
                 return Err((out, 2));
@@ -252,20 +264,9 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
             return out.finish(2);
         }
     }
-    if !e.procs.is_empty() {
-        let p = &e.procs[0];
-        let d = unsupported("running processes")
-            .with_primary(db.stmts[p.stmt].span, "this process needs the IR")
-            .with_note(
-                "processes are lowered by rsim-lower and run by rsim-interp, which are not \
-                 wired into `rsim run` yet (M2 slice 1)",
-            );
-        out.emit(&db.sources, &d);
-        return out.finish(2);
-    }
     let cfg = rsim_kernel::Config {
         threads: a.threads.max(1),
-        shuffle: a.shuffle.then_some(0x5eed),
+        shuffle: a.shuffle,
         stop_severity: match a.exit_severity {
             SeverityArg::Note => rsim_kernel::Severity::Note,
             SeverityArg::Warning => rsim_kernel::Severity::Warning,
@@ -288,28 +289,109 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
             }
         },
     };
-    let none_proc = |_: &rsim_elab::ProcInst, _: &[rsim_kernel::DriverId]| {
-        Err(rsim_kernel::SimError::new(
-            rsim_kernel::ErrorKind::Internal("process without IR".into()),
-        ))
-    };
-    let mut sim = match e.build_with(cfg, none_proc) {
+    let mut sim = match e.build(cfg) {
         Ok(s) => s,
         Err(err) => {
             out.emit(
                 &none,
-                &Diagnostic::error("E9999", format!("internal error: {err}"))
-                    .with_note("this is a bug in rsim"),
+                &Diagnostic::error("E9999", format!("cannot build the simulation: {err}"))
+                    .with_note("this is a limitation or a bug of rsim, not an error in the design"),
             );
             return out.finish(3);
         }
     };
-    match sim.run_until(stop) {
-        Ok(_) => out.finish(0),
-        Err(err) => {
-            out.emit(&none, &Diagnostic::error("E9999", err.to_string()));
-            out.finish(1)
+    let names: Vec<String> = e
+        .procs
+        .iter()
+        .map(|p| {
+            let n = e.hier.path_name(p.scope, rsim_elab::Case::Lrm);
+            n.strip_suffix(':').unwrap_or(&n).to_string()
+        })
+        .collect();
+    let errors = Arc::new(AtomicBool::new(false));
+    sim.subscribe(Box::new(Printer {
+        names,
+        errors: errors.clone(),
+    }));
+    let r = sim.run_until(stop);
+    let mut o = std::io::stdout().lock();
+    let code = match r {
+        Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {
+            let what = match r {
+                Ok(RunStatus::Ended(EndReason::Stop(_))) => "STOP",
+                _ => "FINISH",
+            };
+            let _ = writeln!(
+                o,
+                "** Note: {}fs+{}: {what} called with status {c}",
+                sim.now().as_fs(),
+                sim.delta()
+            );
+            if (0..=125).contains(&c) { c as u8 } else { 1 }
         }
+        Ok(RunStatus::Ended(EndReason::Severity(_))) => 1,
+        Ok(_) => 0,
+        Err(err) => {
+            let msg = match &err.kind {
+                rsim_kernel::ErrorKind::Runtime(m) => m.clone(),
+                k => k.to_string(),
+            };
+            let _ = writeln!(o, "** Fatal: {}fs+{}: {msg}", err.time.as_fs(), err.delta);
+            if err.exit_status() == 101 { 3 } else { 1 }
+        }
+    };
+    let _ = o.flush();
+    drop(o);
+    // A report of severity error or failure fails the run even below `--exit-severity`
+    // (NVC does the same; VUnit only looks at zero or non-zero).
+    let code = if code == 0 && errors.load(Ordering::Relaxed) {
+        1
+    } else {
+        code
+    };
+    out.finish(code)
+}
+
+/// Prints reports and `OUTPUT` text in NVC's format on stdout (cli-contract section 5;
+/// tools/difftest parses it).
+struct Printer {
+    names: Vec<String>,
+    errors: Arc<AtomicBool>,
+}
+
+impl rsim_kernel::Observer for Printer {
+    fn report(&mut self, hook: &mut rsim_kernel::Hook<'_>, r: &rsim_kernel::Report) {
+        let sev = match r.severity {
+            rsim_kernel::Severity::Note => "Note",
+            rsim_kernel::Severity::Warning => "Warning",
+            rsim_kernel::Severity::Error => "Error",
+            rsim_kernel::Severity::Failure => "Failure",
+        };
+        if matches!(
+            r.severity,
+            rsim_kernel::Severity::Error | rsim_kernel::Severity::Failure
+        ) {
+            self.errors.store(true, Ordering::Relaxed);
+        }
+        let name = self
+            .names
+            .get(r.process.0 as usize)
+            .map_or("?", |s| s.as_str());
+        let mut o = std::io::stdout().lock();
+        let _ = writeln!(
+            o,
+            "** {sev}: {}fs+{}: {}\n    Process {name}",
+            hook.now().as_fs(),
+            hook.delta(),
+            r.message
+        );
+        let _ = o.flush();
+    }
+
+    fn output(&mut self, _: &mut rsim_kernel::Hook<'_>, _: rsim_kernel::ProcId, bytes: &[u8]) {
+        let mut o = std::io::stdout().lock();
+        let _ = o.write_all(bytes);
+        let _ = o.flush();
     }
 }
 

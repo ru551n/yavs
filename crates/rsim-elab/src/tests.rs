@@ -530,3 +530,38 @@ fn restart_is_identical() {
         "{first:?}"
     );
 }
+
+struct Collect(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+impl rsim_kernel::Observer for Collect {
+    fn report(&mut self, hook: &mut rsim_kernel::Hook<'_>, r: &rsim_kernel::Report) {
+        self.0.lock().expect("lock").push(format!(
+            "{} {} {}",
+            hook.now().as_fs(),
+            r.process.0,
+            r.message
+        ));
+    }
+}
+
+/// Processes through rsim-lower and rsim-interp; building twice restarts the simulation.
+#[test]
+fn interpreted_processes_restart() {
+    let src = "entity t is end; architecture a of t is
+        signal s : integer := 3;
+      begin
+        s <= 5 after 2 ns;
+        mon : process (s) begin report \"s=\" & integer'image(s); end process;
+      end;";
+    let (mut db, mut e) = elab("interp", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated| {
+        let mut sim = e.build(rsim_kernel::Config::default()).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(rsim_kernel::Time::MAX).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let first = run(&e);
+    assert_eq!(first, ["0 1 s=3", "2000000 1 s=5"]);
+    assert_eq!(first, run(&e));
+}

@@ -162,3 +162,28 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - Corpus: every `tests/corpus/{scalar,arith,process,report}` file is analyzed against `lib/`,
   lowered, and verified. Once rsim-interp runs, the same files run through rsim-kernel and are
   compared with their `.expected` via `tools/difftest` (`--candidate rsim`).
+
+## Requests from rsim-elab
+
+rsim-elab (`Elaborated::lower`, `Elaborated::build`) lowers every architecture that owns a
+process and builds one `InstData` per entity instance: constants from `UnitIr::consts`, the
+signal table from `UnitIr::signals` mapped to the elaborated signal objects of that instance,
+and one `ProcDriver` per `ProcessIr::drivers` slot with the range of the matching
+`ProcessInfo::drivers` entry (`ProcInst::lsps`, in kernel offsets: row major, mirrored for logic
+leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difftest groups need:
+
+1. **Entity generics:** instance slots the elaborator fills from its values, e.g.
+   `UnitIr::generics: Vec<(DeclId, off, Width)>` (scalars; strings as a fat pair the
+   elaborator writes into instance data). Elab already has every generic value
+   (`Elaborated::value(scope, decl)`).
+2. **Ports and outer signals:** ports as `SignalIr` entries (elab maps them to the formal's
+   signal object, which is its own kernel signal, rule 3); signals of an enclosing region seen
+   from a generate or block the same way.
+3. **Processes in generates and blocks:** listed in `UnitIr::processes` too, with the generate
+   parameter as an instance slot. Elab can build one `InstData` per generate iteration if
+   `ProcessIr` says which region (sem `ScopeId`) it belongs to and where the parameter lives.
+4. **`'path_name`/`'instance_name`:** strings per process scope in instance data, filled by
+   elab from `Hierarchy::path_name`/`instance_name` (LRM spelling, `Case::Lrm`).
+5. **Array signals:** elab gives each array signal one kernel leaf (`Elem::Logic` for
+   std_ulogic/bit/boolean elements, else bytes), so `SigVal` offsets follow the element order
+   above.

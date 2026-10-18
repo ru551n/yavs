@@ -11,6 +11,7 @@
 mod build;
 mod eval;
 mod hier;
+mod sim;
 mod walk;
 
 #[cfg(test)]
@@ -21,6 +22,7 @@ pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, Leaf, LeafId, LeafRes, NetGraph, ObjId, ObjKind, PortEdge,
     ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
+pub use sim::Ir;
 
 use rsim_diag::Diagnostic;
 use rsim_sem::{Db, StmtId, UnitId};
@@ -109,6 +111,8 @@ pub struct Elaborated {
     pub sigs: std::collections::HashMap<(ScopeId, rsim_sem::DeclId), ObjId>,
     /// Warnings of a successful elaboration.
     pub warnings: Vec<Diagnostic>,
+    /// The IR of the processes, once [`Elaborated::lower`] ran.
+    pub ir: Option<Ir>,
 }
 
 impl Elaborated {

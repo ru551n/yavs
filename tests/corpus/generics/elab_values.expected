@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:elab_values:u:_p0	sub m 3x2 total 23 by_m 3
+diag	note	0	0	:elab_values:u:_p0	sub p ba -2 ps aAbBaA 10 w 0101 s 3000000 fs/1.50
+diag	note	0	0	:elab_values:_p0	m2 6 m3 14 by_m2 20
+diag	note	0	0	:elab_values:_p0	ids first 1 p1 ab 2 third 3 ps p0p1 4 5 last 6 count 6 by_p1 7
+diag	note	0	0	:elab_values:_p0	pv aAbBcC pw AabBzz -10 3 30 wx 1010 by_pv 11
+diag	note	0	0	:elab_values:_p0	shifts 10110000 00010010 01011000 11100101 10110100 11010010 by_shift 1
+diag	note	0	0	:elab_values:_p0	text 1.50 3.750 3000000 fs 3000 ns 30 mm by_text 19

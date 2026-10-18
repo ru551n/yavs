@@ -59,6 +59,7 @@ const PASS: &[&str] = &[
     "force/force_out_port",
     "generics/composite_eval",
     "generics/elab_calls",
+    "generics/elab_values",
     "generics/for_generate",
     "generics/generic_entities_2019",
     "generics/generic_entity_locals_2019",

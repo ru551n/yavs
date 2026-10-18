@@ -104,127 +104,266 @@ fn read(b: &[u8], at: usize, n: usize) -> Option<u64> {
     Some(u64::from_le_bytes(w))
 }
 
-/// `v` of IR type `ty` as a call argument: scalars as a cell, arrays of scalars and records
-/// of scalars as data and descriptor bytes. `None` for other values.
+/// `v` of IR type `ty` as a call argument: a scalar as a cell, a composite as data and
+/// descriptor bytes in the IR layout. `None` for a value that does not fit the type.
 pub(crate) fn encode(prog: &Program, ty: TyId, v: &Val) -> Option<CallVal> {
-    let t = prog.types.get(ty)?;
-    if t.scalar_size().is_some() {
+    if prog.types.get(ty)?.scalar_size().is_some() {
         return scalar_cell(v).map(CallVal::Cell);
     }
+    let (data, desc) = put(prog, ty, v)?;
+    Some(CallVal::Composite { data, desc })
+}
+
+/// The descriptor bytes of a static constraint in the pool.
+fn pool(prog: &Program, c: yavs_ir::ConstId) -> Option<&[u8]> {
+    match prog.consts.get(c)? {
+        yavs_ir::ConstData::Bytes(b) => Some(b),
+        _ => None,
+    }
+}
+
+fn dope(bounds: &[(i64, Direction, i64)]) -> Vec<u8> {
+    bounds
+        .iter()
+        .flat_map(|&(l, d, r)| [l, r, i64::from(d == Direction::Downto)])
+        .flat_map(i64::to_le_bytes)
+        .collect()
+}
+
+/// Value `v` of IR type `ty`: its data and descriptor (ir.md 1.3). Composite elements and
+/// fields are laid out as `Ty::layout` places them; the element descriptor of an array whose
+/// type gives none is the first element's (all elements of an array share one subtype).
+fn put(prog: &Program, ty: TyId, v: &Val) -> Option<(Vec<u8>, Vec<u8>)> {
+    let t = prog.types.get(ty)?;
+    if let Some(n) = t.scalar_size() {
+        let c = scalar_cell(v)?;
+        return Some((c.to_le_bytes()[..n as usize].to_vec(), Vec::new()));
+    }
     match (t, v) {
-        (Ty::Array { .. }, Val::Array(_)) => {
-            let (data, desc) = yavs_lower::encode_array(prog, ty, v)?;
-            Some(CallVal::Composite { data, desc })
+        (Ty::Array { .. }, Val::Array(_)) if Ty::logic_leaf(&prog.types, ty).is_some() => {
+            let k = Ty::logic_leaf(&prog.types, ty)?;
+            let bias = if k == LogicKind::StdULogic { 0 } else { 2 };
+            let mut codes = Vec::new();
+            let desc = logic_codes(prog, ty, v, &mut codes)?;
+            let n = codes.len();
+            let mut blocks = vec![[0u64; 4]; n.div_ceil(64)];
+            for (p, &c) in codes.iter().enumerate() {
+                let i = n - 1 - p; // element 0 is the rightmost
+                for (plane, w) in blocks[i / 64].iter_mut().enumerate() {
+                    *w |= ((c + bias) >> plane & 1) << (i % 64);
+                }
+            }
+            let data = blocks
+                .iter()
+                .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+                .collect();
+            Some((data, desc))
         }
-        (Ty::Record { .. }, Val::Record(_)) => {
-            let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
+        (
+            Ty::Array {
+                elem,
+                elem_desc,
+                dims,
+            },
+            Val::Array(a),
+        ) => {
+            if a.bounds.len() != *dims as usize {
+                return None;
+            }
+            let xs = elems(a);
+            let mut parts = Vec::with_capacity(xs.len());
+            for x in &xs {
+                parts.push(put(prog, *elem, x)?);
+            }
+            let mut desc = dope(&a.bounds);
+            if elem_desc.is_none() && Ty::needs_desc(&prog.types, *elem) {
+                // ponytail: a null array of unconstrained elements has no element to take
+                // the element bounds from; the subtype would have to give them.
+                desc.extend_from_slice(&parts.first()?.1);
+            }
+            let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &desc).ok()?;
             let mut data = vec![0u8; l.size as usize];
-            put_record(prog, ty, v, &mut data)?;
-            Some(CallVal::Composite {
-                data,
-                desc: Vec::new(),
-            })
+            for (k, (d, _)) in parts.iter().enumerate() {
+                let at = k * l.stride as usize;
+                data.get_mut(at..at + d.len())?.copy_from_slice(d);
+            }
+            Some((data, desc))
+        }
+        (Ty::Record { fields }, Val::Record(vs)) if vs.len() == fields.len() => {
+            let mut parts = Vec::with_capacity(vs.len());
+            let mut desc = Vec::new();
+            for (f, x) in fields.iter().zip(vs.iter()) {
+                let (d, fd) = put(prog, f.ty, x)?;
+                if f.desc.is_none() {
+                    desc.extend_from_slice(&fd);
+                }
+                parts.push(d);
+            }
+            let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &desc).ok()?;
+            let mut data = vec![0u8; l.size as usize];
+            for (d, &off) in parts.iter().zip(&l.offsets) {
+                let off = off as usize;
+                data.get_mut(off..off + d.len())?.copy_from_slice(d);
+            }
+            Some((data, desc))
         }
         _ => None,
     }
 }
 
-/// Write record value `v` of IR type `ty` (fields scalars or records) into `data`.
-fn put_record(prog: &Program, ty: TyId, v: &Val, data: &mut [u8]) -> Option<()> {
-    let (Ty::Record { fields }, Val::Record(vs)) = (prog.types.get(ty)?, v) else {
+/// The scalar leaves of logic array value `v` (nested arrays row major) into `out`, and the
+/// descriptor of `v`.
+fn logic_codes(prog: &Program, ty: TyId, v: &Val, out: &mut Vec<u64>) -> Option<Vec<u8>> {
+    let t = prog.types.get(ty)?;
+    if t.scalar_size().is_some() {
+        out.push(scalar_cell(v)?);
+        return Some(Vec::new());
+    }
+    let (
+        Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        },
+        Val::Array(a),
+    ) = (t, v)
+    else {
         return None;
     };
-    if vs.len() != fields.len() {
+    if a.bounds.len() != *dims as usize {
         return None;
     }
-    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
-    for ((f, x), off) in fields.iter().zip(vs.iter()).zip(&l.offsets) {
-        let off = *off as usize;
-        match prog.types.get(f.ty)?.scalar_size() {
-            Some(n) => {
-                let c = scalar_cell(x)?;
-                data.get_mut(off..off + n as usize)?
-                    .copy_from_slice(&c.to_le_bytes()[..n as usize]);
-            }
-            None => put_record(prog, f.ty, x, data.get_mut(off..)?)?,
-        }
+    let mut desc = dope(&a.bounds);
+    let mut first = None;
+    for x in elems(a) {
+        let d = logic_codes(prog, *elem, &x, out)?;
+        first.get_or_insert(d);
     }
-    Some(())
+    if elem_desc.is_none() && Ty::needs_desc(&prog.types, *elem) {
+        desc.extend_from_slice(&first?);
+    }
+    Some(desc)
 }
 
-/// The record value of IR type `ty` (fields scalars or records) in `data`.
-fn get_record(prog: &Program, ty: TyId, data: &[u8]) -> Option<Val> {
-    let Ty::Record { fields } = prog.types.get(ty)? else {
+/// The value of IR type `ty` in `data` with descriptor `desc`, and the descriptor bytes it
+/// used (the inverse of [`put`]).
+fn get(prog: &Program, ty: TyId, data: &[u8], desc: &[u8]) -> Option<(Val, usize)> {
+    let t = prog.types.get(ty)?;
+    if let Some(n) = t.scalar_size() {
+        return Some((scalar_val(t, read(data, 0, n as usize)?)?, 0));
+    }
+    let (l, used) = Ty::layout(&prog.types, &prog.consts, ty, desc).ok()?;
+    match t {
+        Ty::Array { .. } if Ty::logic_leaf(&prog.types, ty).is_some() => {
+            let k = Ty::logic_leaf(&prog.types, ty)?;
+            let bias = if k == LogicKind::StdULogic { 0 } else { 2 };
+            let n = l.count as usize;
+            let mut codes = Vec::with_capacity(n);
+            for p in 0..n {
+                let i = n - 1 - p;
+                let mut code = 0;
+                for plane in 0..4 {
+                    let word = read(data, (i / 64) * 32 + plane * 8, 8)?;
+                    code |= (word >> (i % 64) & 1) << plane;
+                }
+                codes.push(u32::try_from(code).ok()?.checked_sub(bias)?);
+            }
+            Some((logic_val(prog, ty, desc, &codes)?, used))
+        }
+        Ty::Array {
+            elem, elem_desc, ..
+        } => {
+            let (bounds, at) = dims_of(t, desc)?;
+            let ed = match elem_desc {
+                Some(c) => pool(prog, *c)?,
+                None => desc.get(at..)?,
+            };
+            let mut xs = Vec::with_capacity(l.count as usize);
+            for k in 0..l.count as usize {
+                xs.push(get(prog, *elem, data.get(k * l.stride as usize..)?, ed)?.0);
+            }
+            Some((make(&bounds, xs), used))
+        }
+        Ty::Record { fields } => {
+            let mut vs = Vec::with_capacity(fields.len());
+            let mut at = 0;
+            for (f, &off) in fields.iter().zip(&l.offsets) {
+                let fd = match f.desc {
+                    Some(c) => pool(prog, c)?,
+                    None => desc.get(at..)?,
+                };
+                let (x, n) = get(prog, f.ty, data.get(off as usize..)?, fd)?;
+                if f.desc.is_none() {
+                    at += n;
+                }
+                vs.push(x);
+            }
+            Some((Val::Record(vs.into()), used))
+        }
+        _ => None,
+    }
+}
+
+/// The bounds in the descriptor of array type `t`, and the offset after them.
+fn dims_of(t: &Ty, desc: &[u8]) -> Option<(Vec<Bounds>, usize)> {
+    let Ty::Array { dims, .. } = t else {
         return None;
     };
-    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
-    let mut vs = Vec::with_capacity(fields.len());
-    for (f, off) in fields.iter().zip(&l.offsets) {
-        let ft = prog.types.get(f.ty)?;
-        let off = *off as usize;
-        vs.push(match ft.scalar_size() {
-            Some(n) => scalar_val(ft, read(data, off, n as usize)?)?,
-            None => get_record(prog, f.ty, data.get(off..)?)?,
+    let mut bounds = Vec::new();
+    for d in 0..*dims as usize {
+        let at = d * DOPE_DIM_BYTES as usize;
+        let (l, r, dir) = (
+            read(desc, at, 8)?,
+            read(desc, at + 8, 8)?,
+            read(desc, at + 16, 8)?,
+        );
+        bounds.push(Bounds {
+            left: l as i64,
+            dir: if dir == 0 {
+                Direction::To
+            } else {
+                Direction::Downto
+            },
+            right: r as i64,
         });
     }
-    Some(Val::Record(vs.into()))
+    Some((bounds, *dims as usize * DOPE_DIM_BYTES as usize))
+}
+
+/// The value of logic array type `ty` with descriptor `desc` from its leaf codes.
+fn logic_val(prog: &Program, ty: TyId, desc: &[u8], codes: &[u32]) -> Option<Val> {
+    let t = prog.types.get(ty)?;
+    if t.scalar_size().is_some() {
+        return Some(Val::Enum(*codes.first()?));
+    }
+    let Ty::Array {
+        elem, elem_desc, ..
+    } = t
+    else {
+        return None;
+    };
+    let (bounds, at) = dims_of(t, desc)?;
+    let ed = match elem_desc {
+        Some(c) => pool(prog, *c)?,
+        None => desc.get(at..)?,
+    };
+    let w = Ty::layout(&prog.types, &prog.consts, *elem, ed)
+        .ok()?
+        .0
+        .count as usize;
+    let n = bounds.iter().map(|b| b.len()).product::<u64>() as usize;
+    let mut xs = Vec::with_capacity(n);
+    for k in 0..n {
+        xs.push(logic_val(prog, *elem, ed, codes.get(k * w..(k + 1) * w)?)?);
+    }
+    Some(make(&bounds, xs))
 }
 
 /// The value of a call result of IR type `ty` (the inverse of [`encode`]).
 pub(crate) fn decode(prog: &Program, ty: TyId, r: &CallVal) -> Option<Val> {
-    let t = prog.types.get(ty)?;
-    let (data, desc) = match r {
-        CallVal::Cell(c) => return scalar_val(t, *c),
-        CallVal::Composite { data, desc } => (data, desc),
-    };
-    match t {
-        Ty::Array { elem, dims, .. } => {
-            let et = prog.types.get(*elem)?;
-            let w = et.scalar_size()? as usize;
-            let mut bounds = Vec::new();
-            for d in 0..*dims as usize {
-                let at = d * DOPE_DIM_BYTES as usize;
-                let (l, r, dir) = (
-                    read(desc, at, 8)?,
-                    read(desc, at + 8, 8)?,
-                    read(desc, at + 16, 8)?,
-                );
-                let dir = if dir == 0 {
-                    Direction::To
-                } else {
-                    Direction::Downto
-                };
-                bounds.push(Bounds {
-                    left: l as i64,
-                    dir,
-                    right: r as i64,
-                });
-            }
-            let n = bounds.iter().map(|b| b.len()).product::<u64>() as usize;
-            let mut xs = Vec::with_capacity(n);
-            match Ty::logic_leaf(&prog.types, ty) {
-                Some(k) => {
-                    let bias = if k == LogicKind::StdULogic { 0 } else { 2 };
-                    for p in 0..n {
-                        let i = n - 1 - p; // element 0 is the rightmost
-                        let mut code = 0;
-                        for plane in 0..4 {
-                            let word = read(data, (i / 64) * 32 + plane * 8, 8)?;
-                            code |= (word >> (i % 64) & 1) << plane;
-                        }
-                        xs.push(Val::Enum((code as u32).checked_sub(bias)?));
-                    }
-                }
-                None => {
-                    for p in 0..n {
-                        xs.push(scalar_val(et, read(data, p * w, w)?)?);
-                    }
-                }
-            }
-            Some(make(&bounds, xs))
-        }
-        Ty::Record { .. } if desc.is_empty() => get_record(prog, ty, data),
-        _ => None,
+    match r {
+        CallVal::Cell(c) => scalar_val(prog.types.get(ty)?, *c),
+        CallVal::Composite { data, desc } => get(prog, ty, data, desc).map(|(v, _)| v),
     }
 }
 
@@ -249,7 +388,7 @@ fn not_yet(db: &Db, e: ExprId, what: &str) -> Box<Diagnostic> {
             format!("this expression cannot be evaluated during elaboration yet: {what}"),
         )
         .with_primary(db.exprs[e].span, "evaluated during elaboration")
-        .with_note("composite values are evaluated for one-dimensional aggregates, records, indexing, slices, concatenation and calls with arrays or records of scalars (#77)"),
+        .with_note("elaboration evaluates aggregates, indexing, slices, fields, conversions, predefined operations and calls of functions with constant `in` parameters"),
     )
 }
 
@@ -279,9 +418,7 @@ impl Model {
     ) -> R<Option<Val>> {
         let ex = &db.exprs[e];
         Ok(Some(match &ex.kind {
-            ExprKind::Aggregate { assocs, bounds } => {
-                self.aggregate(db, e, assocs, bounds, scope)?
-            }
+            ExprKind::Aggregate { assocs, .. } => self.aggregate(db, e, assocs, scope)?,
             ExprKind::Index { prefix, indices } if is_composite(db, *prefix) => {
                 let Val::Array(a) = self.eval(db, *prefix, scope)? else {
                     return Err(not_yet(db, e, "the prefix is not an array value"));
@@ -390,11 +527,31 @@ impl Model {
                     ) if is_composite(db, e) && xs.iter().all(|&x| is_composite(db, x)) => {
                         self.logical(db, e, f, xs, scope)?
                     }
-                    (Family::ToString, [x]) if !is_composite(db, *x) => {
-                        self.text_of(db, e, *x, scope)?
-                    }
-                    _ if is_composite(db, e) || xs.iter().any(|&x| is_composite(db, x)) => {
-                        return Err(not_yet(db, e, "a predefined operator on composite values"));
+                    (
+                        Family::Deallocate
+                        | Family::FileOpen
+                        | Family::FileClose
+                        | Family::Read
+                        | Family::Write
+                        | Family::Endfile
+                        | Family::Flush
+                        | Family::FileState
+                        | Family::FileMode
+                        | Family::FilePosition
+                        | Family::FileSize
+                        | Family::FileSeek
+                        | Family::FileTruncate
+                        | Family::FileRewind
+                        | Family::FileCanseek
+                        | Family::RisingEdge
+                        | Family::FallingEdge,
+                        _,
+                    ) => return Ok(None),
+                    _ if op.family == Family::ToString
+                        || is_composite(db, e)
+                        || xs.iter().any(|&x| is_composite(db, x)) =>
+                    {
+                        self.implicit_call(db, e, *callee, op, args, scope)?
                     }
                     _ => return Ok(None),
                 }
@@ -403,32 +560,83 @@ impl Model {
         }))
     }
 
-    /// `TO_STRING` of an integer or enumeration value (LRM 5.7): its image, a character
-    /// literal without the apostrophes, as a STRING `1 to n`.
-    fn text_of(&mut self, db: &Db, e: ExprId, x: ExprId, scope: Option<ScopeId>) -> R<Val> {
-        use yavs_sem::types::TypeKind;
-        let v = self.eval(db, x, scope)?;
-        let text = match (&db.types[db.base(db.exprs[x].subtype)].kind, &v) {
-            (TypeKind::Integer | TypeKind::UniversalInteger, Val::Int(i)) => {
-                yavs_std::image::integer_image(*i)
-            }
-            (TypeKind::Enum { lits }, Val::Enum(p)) => {
-                let Some(&l) = lits.get(*p as usize) else {
-                    return Err(fails(db, e, "enumeration position out of range".into()));
-                };
-                let name = db.decls[l].name.to_string();
-                match name.as_bytes() {
-                    [b'\'', c, b'\''] => vec![*c],
-                    n => yavs_std::image::identifier_image(n),
+    /// A predefined operation elaboration does not evaluate structurally (shifts, array
+    /// ordering, matching operators, `TO_STRING`, ...): its yavs-interp native runs on the
+    /// marshalled operands, as in the simulation (#220).
+    fn implicit_call(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        callee: yavs_sem::DeclId,
+        op: &yavs_sem::implicit::ImplicitOp,
+        args: &[yavs_sem::hir::Arg],
+        scope: Option<ScopeId>,
+    ) -> R<Val> {
+        let Some(sp) = db.decls[callee].kind.subprogram() else {
+            return Err(not_yet(db, e, "not a subprogram"));
+        };
+        let Some(ret) = sp.ret else {
+            return Err(not_yet(db, e, "a predefined procedure"));
+        };
+        let mut vals = Vec::with_capacity(sp.params.len());
+        for i in 0..sp.params.len() {
+            match args
+                .iter()
+                .find(|a| a.formal as usize == i)
+                .map(|a| &a.actual)
+            {
+                Some(Actual::Expr(x)) => vals.push(self.eval(db, *x, scope)?),
+                _ => {
+                    return Err(not_yet(
+                        db,
+                        e,
+                        "a predefined operation without all operands",
+                    ));
                 }
             }
-            _ => return Err(not_yet(db, e, "TO_STRING of this type")),
-        };
-        let n = text.len() as u64;
-        Ok(make(
-            &[span(1, Direction::To, n)],
-            text.into_iter().map(|b| Val::Enum(u32::from(b))).collect(),
-        ))
+        }
+        let lowered = (|| {
+            let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
+            let native = l.implicit_native(op)?;
+            let mut params = Vec::with_capacity(sp.params.len());
+            for p in sp.params.iter() {
+                params.push(l.ty(db.base(p.subtype))?);
+            }
+            let ret = l.ty(db.base(ret))?;
+            Ok::<_, Vec<Diagnostic>>((native, params, ret, l.finish()?.program))
+        })();
+        let (native, params, ret, prog) = lowered.map_err(|ds| {
+            let why = ds.into_iter().next().map(|d| d.message).unwrap_or_default();
+            fails(
+                db,
+                e,
+                format!("internal error: lowering the operation: {why}"),
+            )
+        })?;
+        let prog = std::sync::Arc::new(prog);
+        let mut cvs = Vec::with_capacity(vals.len());
+        for (v, &t) in vals.iter().zip(&params) {
+            cvs.push(encode(&prog, t, v).ok_or_else(|| not_yet(db, e, "an operand of this type"))?);
+        }
+        let composite = prog
+            .types
+            .get(ret)
+            .is_some_and(|t| t.scalar_size().is_none());
+        let rt = yavs_interp::Runtime::new(prog.clone(), Default::default())
+            .map_err(|x| fails(db, e, format!("internal error: {x}")))?;
+        let r = yavs_interp::call_native(rt, native, &cvs, composite.then_some(ret))
+            .map_err(|x| {
+                fails(
+                    db,
+                    e,
+                    match &x.kind {
+                        yavs_kernel::ErrorKind::Runtime(m) => m.clone(),
+                        k => k.to_string(),
+                    },
+                )
+            })?
+            .ok_or_else(|| fails(db, e, "the operation returned no value".into()))?;
+        decode(&prog, ret, &r).ok_or_else(|| not_yet(db, e, "a result of this type"))
     }
 
     /// Element-wise logical operators on BIT and BOOLEAN arrays (LRM 9.2.2): the result has
@@ -480,12 +688,21 @@ impl Model {
         Ok(make(&[b], out))
     }
 
-    /// The index subtype's `'left` and direction of 1-D array type of `e`.
-    fn index_start(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> R<(i64, Direction)> {
+    /// The `'left` and direction of index subtype `dim` of the array type of `e`.
+    fn index_start(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        dim: usize,
+        scope: Option<ScopeId>,
+    ) -> R<(i64, Direction)> {
         let TypeKind::Array { indexes, .. } = &db.types[db.base(db.exprs[e].subtype)].kind else {
             return Err(not_yet(db, e, "not an array"));
         };
-        let b = self.scalar_bounds(db, indexes[0], scope, db.exprs[e].span)?;
+        let Some(&ix) = indexes.get(dim) else {
+            return Err(not_yet(db, e, "an aggregate deeper than its type"));
+        };
+        let b = self.scalar_bounds(db, ix, scope, db.exprs[e].span)?;
         Ok((b.left, b.dir))
     }
 
@@ -515,7 +732,7 @@ impl Model {
             (Some(lb), Some(rb)) if lb.is_empty() => rb,
             (Some(lb), _) if !lb.is_empty() => span(lb.left, lb.dir, n),
             _ => {
-                let (left, dir) = self.index_start(db, e, scope)?;
+                let (left, dir) = self.index_start(db, e, 0, scope)?;
                 span(left, dir, n)
             }
         };
@@ -528,7 +745,6 @@ impl Model {
         db: &Db,
         e: ExprId,
         assocs: &[AggAssoc],
-        bounds: &AggBounds,
         scope: Option<ScopeId>,
     ) -> R<Val> {
         let ex = &db.exprs[e];
@@ -561,109 +777,165 @@ impl Model {
                         .into(),
                 ))
             }
-            TypeKind::Array { indexes, .. } if indexes.len() == 1 => {
-                // Positional values (slice pieces spliced in) and named ones.
-                let mut pos: Vec<Val> = Vec::new();
-                let mut named: Vec<(&Choice, Val)> = Vec::new();
-                for a in assocs {
-                    let v = self.eval(db, a.value, scope)?;
-                    if a.choices.is_empty() {
-                        match v {
-                            Val::Array(x) if a.slice_piece => pos.extend(elems(&x)),
-                            v => pos.push(v),
-                        }
-                    } else {
-                        if a.slice_piece {
+            TypeKind::Array { .. } => {
+                let (bs, xs) = self.array_agg(db, e, 0, scope)?;
+                Ok(make(&bs, xs))
+            }
+            _ => Err(not_yet(db, e, "an aggregate of this type")),
+        }
+    }
+
+    /// The (sub-)aggregate `e` for dimension `dim` of an array aggregate (LRM 9.3.3.3): the
+    /// bounds of this and the deeper dimensions and the elements in row-major order. A
+    /// sub-aggregate's subtype is the outermost aggregate's (yavs-sem); its dimension is its
+    /// nesting depth, and the last one may be a string literal.
+    fn array_agg(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        dim: usize,
+        scope: Option<ScopeId>,
+    ) -> R<(Vec<Bounds>, Vec<Val>)> {
+        let ex = &db.exprs[e];
+        let TypeKind::Array { indexes, .. } = &db.types[db.base(ex.subtype)].kind else {
+            return Err(not_yet(db, e, "not an array"));
+        };
+        let last = dim + 1 == indexes.len();
+        let (left, dir) = self.index_start(db, e, dim, scope)?;
+        let ExprKind::Aggregate { assocs, bounds } = &ex.kind else {
+            // A string literal (or another folded value) as the last dimension's row.
+            let Val::Array(a) = self.eval(db, e, scope)? else {
+                return Err(not_yet(db, e, "this row of a multi-dimensional aggregate"));
+            };
+            let xs = elems(&a);
+            return Ok((vec![span(left, dir, xs.len() as u64)], xs));
+        };
+        // Items: one element each for the last dimension (slice pieces spliced in), one row
+        // of the deeper dimensions each otherwise.
+        let mut deeper: Option<Vec<Bounds>> = None;
+        let mut pos: Vec<Vec<Val>> = Vec::new();
+        let mut named: Vec<(&Choice, Vec<Val>)> = Vec::new();
+        for a in assocs.iter() {
+            let item = if last {
+                match self.eval(db, a.value, scope)? {
+                    Val::Array(x) if a.slice_piece => {
+                        if !a.choices.is_empty() {
                             return Err(not_yet(db, e, "a named slice in an aggregate"));
                         }
-                        for c in a.choices.iter() {
-                            named.push((c, v.clone()));
-                        }
+                        pos.extend(elems(&x).into_iter().map(|v| vec![v]));
+                        continue;
                     }
+                    v => vec![v],
                 }
-                let (left, dir) = self.index_start(db, e, scope)?;
-                let b = match bounds {
-                    AggBounds::Context => match self.shape(db, ex.subtype, scope, ex.span)? {
-                        Some(Shape::Array { dims, .. }) => dims[0],
-                        _ => return Err(not_yet(db, e, "an aggregate without known bounds")),
-                    },
-                    AggBounds::Positional { .. } | AggBounds::Concat => {
-                        span(left, dir, pos.len() as u64)
+            } else {
+                let (bs, row) = self.array_agg(db, a.value, dim + 1, scope)?;
+                match &deeper {
+                    Some(d) if d.iter().zip(&bs).any(|(x, y)| x.len() != y.len()) => {
+                        return Err(fails(
+                            db,
+                            a.value,
+                            "the sub-aggregates of a multi-dimensional aggregate differ in length"
+                                .into(),
+                        ));
                     }
-                    AggBounds::Named { low, high } => {
-                        let lo = int(&self.eval(db, *low, scope)?, ex.span)?;
-                        let hi = int(&self.eval(db, *high, scope)?, ex.span)?;
-                        match dir {
-                            Direction::To => Bounds {
-                                left: lo,
-                                dir,
-                                right: hi,
-                            },
-                            Direction::Downto => Bounds {
-                                left: hi,
-                                dir,
-                                right: lo,
-                            },
-                        }
-                    }
-                    AggBounds::Record => {
-                        return Err(not_yet(db, e, "a record aggregate of an array"));
-                    }
-                };
-                let n = b.len() as usize;
-                let mut xs: Vec<Option<Val>> = vec![None; n];
-                if pos.len() > n {
-                    return Err(fails(
-                        db,
-                        e,
-                        format!("{} elements for {n} positions", pos.len()),
-                    ));
+                    Some(_) => {}
+                    None => deeper = Some(bs),
                 }
-                for (k, v) in pos.into_iter().enumerate() {
-                    xs[k] = Some(v);
+                row
+            };
+            if a.choices.is_empty() {
+                pos.push(item);
+            } else {
+                for c in a.choices.iter() {
+                    named.push((c, item.clone()));
                 }
-                for (c, v) in named {
-                    match c {
-                        Choice::Expr(x) => {
-                            let i = int(&self.eval(db, *x, scope)?, db.exprs[*x].span)?;
-                            let p = b.pos(i).ok_or_else(|| {
-                                fails(
-                                    db,
-                                    *x,
-                                    format!("choice {i} is outside the aggregate's bounds"),
-                                )
-                            })?;
-                            xs[p as usize] = Some(v);
-                        }
-                        Choice::Range(r) => {
-                            let r = self.range(db, r, scope, ex.span)?;
-                            let (lo, hi) = r.low_high();
-                            for i in lo..=hi {
-                                let p = b.pos(i).ok_or_else(|| {
-                                    fails(
-                                        db,
-                                        e,
-                                        format!("choice {i} is outside the aggregate's bounds"),
-                                    )
-                                })?;
-                                xs[p as usize] = Some(v.clone());
-                            }
-                        }
-                        Choice::Others => xs
-                            .iter_mut()
-                            .filter(|x| x.is_none())
-                            .for_each(|x| *x = Some(v.clone())),
-                        Choice::Element(_) => {
-                            return Err(not_yet(db, e, "an element choice in an array aggregate"));
-                        }
-                    }
-                }
-                let xs: Option<Vec<Val>> = xs.into_iter().collect();
-                let xs =
-                    xs.ok_or_else(|| fails(db, e, "an aggregate element has no value".into()))?;
-                Ok(make(&[b], xs))
             }
-            _ => Err(not_yet(db, e, "a multi-dimensional aggregate")),
         }
+        let b = match bounds {
+            AggBounds::Context => match self.shape(db, ex.subtype, scope, ex.span)? {
+                Some(Shape::Array { dims, .. }) if dim < dims.len() => dims[dim],
+                _ => return Err(not_yet(db, e, "an aggregate without known bounds")),
+            },
+            AggBounds::Positional { .. } | AggBounds::Concat => span(left, dir, pos.len() as u64),
+            AggBounds::Named { low, high } => {
+                let lo = int(&self.eval(db, *low, scope)?, ex.span)?;
+                let hi = int(&self.eval(db, *high, scope)?, ex.span)?;
+                match dir {
+                    Direction::To => Bounds {
+                        left: lo,
+                        dir,
+                        right: hi,
+                    },
+                    Direction::Downto => Bounds {
+                        left: hi,
+                        dir,
+                        right: lo,
+                    },
+                }
+            }
+            AggBounds::Record => {
+                return Err(not_yet(db, e, "a record aggregate of an array"));
+            }
+        };
+        let n = b.len() as usize;
+        let mut xs: Vec<Option<Vec<Val>>> = vec![None; n];
+        if pos.len() > n {
+            return Err(fails(
+                db,
+                e,
+                format!("{} elements for {n} positions", pos.len()),
+            ));
+        }
+        for (k, v) in pos.into_iter().enumerate() {
+            xs[k] = Some(v);
+        }
+        for (c, v) in named {
+            match c {
+                Choice::Expr(x) => {
+                    let i = int(&self.eval(db, *x, scope)?, db.exprs[*x].span)?;
+                    let p = b.pos(i).ok_or_else(|| {
+                        fails(
+                            db,
+                            *x,
+                            format!("choice {i} is outside the aggregate's bounds"),
+                        )
+                    })?;
+                    xs[p as usize] = Some(v);
+                }
+                Choice::Range(r) => {
+                    let r = self.range(db, r, scope, ex.span)?;
+                    let (lo, hi) = r.low_high();
+                    for i in lo..=hi {
+                        let p = b.pos(i).ok_or_else(|| {
+                            fails(
+                                db,
+                                e,
+                                format!("choice {i} is outside the aggregate's bounds"),
+                            )
+                        })?;
+                        xs[p as usize] = Some(v.clone());
+                    }
+                }
+                Choice::Others => xs
+                    .iter_mut()
+                    .filter(|x| x.is_none())
+                    .for_each(|x| *x = Some(v.clone())),
+                Choice::Element(_) => {
+                    return Err(not_yet(db, e, "an element choice in an array aggregate"));
+                }
+            }
+        }
+        let xs: Option<Vec<Vec<Val>>> = xs.into_iter().collect();
+        let xs = xs.ok_or_else(|| fails(db, e, "an aggregate element has no value".into()))?;
+        let mut bs = vec![b];
+        if !last {
+            match deeper {
+                Some(d) => bs.extend(d),
+                // ponytail: a null outer dimension has no row to take the deeper bounds
+                // from; a constrained context would give them.
+                None => return Err(not_yet(db, e, "a null multi-dimensional aggregate")),
+            }
+        }
+        Ok((bs, xs.into_iter().flatten().collect()))
     }
 }

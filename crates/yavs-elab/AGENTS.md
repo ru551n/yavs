@@ -24,7 +24,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `warnings`, `ir`; `signal`, `value`), `codes` |
 | `src/walk.rs` | The elaborator: instances, generics, generates, blocks, binding (configuration declaration, then specification, then default binding), ports, processes, depth-first in statement order |
 | `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls of user functions (`call_values`); `-g` overrides via the yavs-std `'value` parser |
-| `src/value.rs` | Composite values: aggregates, indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; `encode`/`decode` between `Val` and IR memory (arrays of scalars, records of scalars and records) |
+| `src/value.rs` | Composite values: aggregates (any number of dimensions), indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; other predefined operations and `TO_STRING` through their yavs-interp natives (`implicit_call`); `encode`/`decode` between `Val` and IR memory (any composite, `Ty::layout`) |
 | `src/pkgcall.rs` | Elaboration-time calls with package state (#77): `Session` (packages lowered and initialised, calls logged), `Call`, `replay` at build, `init_packages`, `run` |
 | `src/hier.rs` | `Hierarchy`/`Scope`/`ScopeKind` (path names in `Case::Lrm` and original spelling), `NetGraph` (`select`: the one sub-element map; `copies`: equivalent processes of external-name actuals), `Leaf`, `SigObj`, `PortEdge`, `DriverDecl`, `ImplicitKind` |
 | `src/sim.rs` | `Elaborated::lower` (yavs-lower), `Elaborated::build(Config) -> SimControl`, `runtime_diagnostic` (a kernel `SimError` as a coded diagnostic with the VHDL call stack as labels), `Ir`, `instance_of` |
@@ -56,7 +56,9 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | A signal whose subtype leaves bounds open takes them from its evaluated initial value (`Model::shape_init`, element and record element bounds included); a package array signal's descriptor is written into package data after the package's initialisation; a signal with records gets its whole type's descriptor (`write_desc`, #215) | #187, LRM 6.4.2.3 (2019) | `docs/decisions.md` "Elaboration" |
 | An entity with generic types, subprograms or packages: `Elab::instantiate` asks yavs-sem for the clone of entity and architecture for those actuals (`Db::instantiate_entity`, one per distinct map) and elaborates the clone, its generic constants as usual; a missing actual (top level) is E2103 | Shapes and code depend on the actual types; rule 4 identity by mangling (#75) | `docs/design/sem.md` 5.3 |
 | Linkage ports are kernel `in` port edges; mode-view ports take each leaf's mode from `Db::port_mode_tree` (`leaf_modes`) | #75; LRM 6.5.2 | `docs/decisions.md` "Elaboration" |
-| Not-yet-supported constructs are `E9999` naming the slice; composite values elab cannot evaluate yet (multi-dimensional aggregates, arrays of composites passed to functions, shifts) `E2106` (`ponytail:` in `eval.rs`) | Fail early | crate docs, #77 |
+| Not-yet-supported constructs are `E9999` naming the slice; expressions elab cannot evaluate yet `E2106` | Fail early | crate docs, #77 |
+| Predefined operations elab does not evaluate structurally (shifts, array ordering, matching operators, `TO_STRING`, ...) run their yavs-interp native (`yavs_interp::call_native`, `Lowerer::implicit_native`) on the marshalled operands | One implementation of each operation, the simulation's | #220 |
+| A constant with an impure initial value elab cannot evaluate yet keeps its run-time thunk with `W2118`; its calls run after the elaboration-time calls | Only for what elab cannot evaluate at all (`'PATH_NAME`, say); everything marshallable runs in declaration order | #220, `docs/decisions.md` "Elaboration" |
 | Composite elaboration-time values: structural operations on `Val` here, function calls in yavs-interp through `call_values` | One evaluator for subprogram bodies, no expression thunks needing instance data | `docs/decisions.md` "Elaboration", #77 |
 | Functions using package objects run in a session against the initialised packages; impure constants are evaluated in declaration order; package constants with impure initial values are read from package data; `build` replays the logged calls (`Elaborated::elab_calls`) before any instance data | LRM 14.4: side effects once and in order; rule 4 restart | `docs/decisions.md` "Elaboration", #77 |
 
@@ -87,7 +89,7 @@ python3 tools/difftest/difftest.py --candidate yavs
 - New behaviour: a unit test in `src/tests.rs` (inline VHDL), and a negative case for each new
   code. End-to-end cases go into `tests/corpus` with the reference simulator output (`tests/corpus/AGENTS.md`).
 - Codes owned: `E2100`-`E2199`, `W2100`-`W2199` (`yavs_elab::codes`: E2101 to E2117, W2105,
-  W2108), plus `E9999`.
+  W2108, W2118), plus `E9999`.
 
 ## 6. Coordination
 
@@ -97,6 +99,6 @@ python3 tools/difftest/difftest.py --candidate yavs
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:elab`): #41
   `GenSelect::Index` evaluated without the generate's scope; #64 wire into `yavs run`; #68
   guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
-  non-static actuals in port maps; #76 package signals, external names, user resolution, nested resolution; #77
-  composite values at elaboration (rest of E2106); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
+  non-static actuals in port maps; #76 package signals, external names, user resolution, nested resolution; #220
+  the rest of E2106 (null multi-dimensional aggregates, `'PATH_NAME` in impure constants); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
   unlabeled: #6 remaining elaboration features.

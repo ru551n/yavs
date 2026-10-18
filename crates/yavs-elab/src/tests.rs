@@ -632,12 +632,10 @@ fn elaboration_calls_with_package_state_restart() {
     assert_eq!(first, run(&e));
 }
 
-/// A constant whose impure initial value elaboration cannot hold (a record with an array
-/// element) is left to its run-time thunk: the call made during elaboration is undone, so it
-/// runs once and later elaboration-time calls see the state without it. The thunk runs after
-/// the replayed calls (the `ponytail:` in `walk.rs`), so `third` comes before `named`.
+/// A constant whose impure initial value is a record with an array element is evaluated
+/// during elaboration like the others (#220): its call runs once and in declaration order.
 #[test]
-fn unfoldable_impure_constant_runs_once() {
+fn impure_record_with_array_in_declaration_order() {
     let src = "package reg is
         type counter_t is protected
           impure function bump return natural;
@@ -679,8 +677,54 @@ fn unfoldable_impure_constant_runs_once() {
     sim.run_until(yavs_kernel::Time::MAX).expect("run");
     assert_eq!(
         *got.lock().expect("lock"),
-        ["0 0 first=1 named=3 third=2 ids=3"]
+        ["0 0 first=1 named=2 third=3 ids=3"]
     );
+}
+
+/// An impure initial value elaboration cannot evaluate yet (`'PATH_NAME`)
+/// is left to its run-time thunk with W2118: the call made while trying is undone, so it runs
+/// once, after the elaboration-time calls.
+#[test]
+fn impure_constant_at_run_time_warns() {
+    let src = "package reg is
+        type counter_t is protected
+          impure function bump return natural;
+        end protected;
+        impure function next_id return natural;
+        impure function probe(signal s : bit) return natural;
+      end;
+      package body reg is
+        type counter_t is protected body
+          variable n : natural := 0;
+          impure function bump return natural is begin n := n + 1; return n; end;
+        end protected body;
+        shared variable c : counter_t;
+        impure function next_id return natural is begin return c.bump; end;
+        impure function probe(signal s : bit) return natural is
+        begin return c.bump + bit'pos(s); end;
+      end;
+      use work.reg.all;
+      entity t is end; architecture a of t is
+        signal x : bit := '1';
+        constant first : natural := next_id;
+        constant late : natural := next_id + t'path_name'length;
+        constant third : natural := next_id;
+      begin
+        process begin
+          report \"first=\" & integer'image(first) & \" late=\" & integer'image(late)
+            & \" third=\" & integer'image(third);
+          wait;
+        end process;
+      end;";
+    let (mut db, mut e) = elab("impure_late", src, "t", &[]);
+    let w: Vec<&str> = e.warnings.iter().map(|d| d.code).collect();
+    assert_eq!(w, [codes::IMPURE_AT_RUN_TIME]);
+    e.lower(&mut db).expect("lower");
+    let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    sim.subscribe(Box::new(Collect(got.clone())));
+    sim.run_until(yavs_kernel::Time::MAX).expect("run");
+    assert_eq!(*got.lock().expect("lock"), ["0 0 first=1 late=6 third=2"]);
 }
 
 /// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).
@@ -1187,18 +1231,23 @@ fn composite_values_at_elaboration() {
         .expect("s");
     assert_eq!(o.shape.len(), 4);
 
-    let bad = "
+    // Shifts run the simulation's native (#220).
+    let sh = "
       entity t is end;
       architecture a of t is
         constant c : bit_vector := not (\"01\" and \"11\");
-        constant d : bit_vector := c sll 1;
-        signal s : bit_vector(d'length downto 0);
+        constant d : bit_vector := c srl 1;
+        signal s : bit_vector(d'length + 2 * bit'pos(d(1)) downto 0);
       begin
       end;";
-    assert_eq!(
-        err_codes("composite_op", bad, "t", &[]),
-        [codes::NOT_EVALUATED]
-    );
+    let (_, e) = elab("composite_op", sh, "t", &[]);
+    let o = e
+        .nets
+        .objs
+        .iter()
+        .find(|o| o.name.key.as_str() == "s")
+        .expect("s");
+    assert_eq!(o.shape.len(), 5);
 }
 
 /// 2019 mode views give each record element its own port mode; linkage ports read like `in`.

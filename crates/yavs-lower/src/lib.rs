@@ -485,6 +485,17 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// The native of implicit operation `op` (lib/NATIVE.md section 2), for callers running
+    /// it on marshalled values (elaboration-time evaluation, #220).
+    pub fn implicit_native(
+        &mut self,
+        op: &yavs_sem::implicit::ImplicitOp,
+    ) -> Result<yavs_ir::NativeId, Vec<Diagnostic>> {
+        let t = self.ty(op.ty)?;
+        let sym = yavs_sem::mangle::implicit_native(self.db, op);
+        Ok(self.pb.native(&sym, Some(t)))
+    }
+
     /// Every subprogram body declared in the units' regions (a package body, say).
     pub fn subprograms_of(&mut self, unit: UnitId) -> Result<Vec<FuncId>, Vec<Diagnostic>> {
         let u = &self.db.units[unit];

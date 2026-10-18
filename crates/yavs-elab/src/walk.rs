@@ -888,14 +888,31 @@ impl Elab<'_> {
                     let mark = self.m.session.mark();
                     match self.m.value_of(db, d, Some(s), decl.span) {
                         Ok(_) => {}
-                        // ponytail: a value elaboration cannot hold yet (an array of records,
-                        // say) is left to the constant's run-time thunk, which runs after the
-                        // elaboration-time calls of every region; the calls made before the
-                        // failure are undone so that none runs twice.
+                        // ponytail: a value elaboration cannot evaluate yet (a null
+                        // multi-dimensional aggregate, a call with a signal parameter, say) is
+                        // left to the constant's run-time thunk, which runs after the
+                        // elaboration-time calls of every region: W2118 says so. The calls
+                        // made before the failure are undone so that none runs twice.
                         Err(x) if x.code == crate::codes::NOT_EVALUATED => {
                             self.m.session.undo(db, mark).map_err(|m| {
                                 Box::new(ice(decl.span, &format!("undoing calls: {m}")))
                             })?;
+                            self.warnings.push(
+                                Diagnostic::warning(
+                                    codes::IMPURE_AT_RUN_TIME,
+                                    format!(
+                                        "constant `{}` calls an impure function but is \
+                                         evaluated when the simulation starts",
+                                        decl.name
+                                    ),
+                                )
+                                .with_primary(decl.span, "not evaluated during elaboration")
+                                .with_note(format!("during elaboration: {}", x.message))
+                                .with_note(
+                                    "its calls run after the elaboration-time calls of every \
+                                     region, not in declaration order (LRM 14.4.2)",
+                                ),
+                            );
                         }
                         Err(x) => return Err(x),
                     }

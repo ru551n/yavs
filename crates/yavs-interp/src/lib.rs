@@ -489,22 +489,76 @@ pub fn call_values_shared(
                 ));
             }
         };
-        let (Some(ty), Some(fat)) = (ret, v) else {
-            return Ok(v.map(CallVal::Cell));
-        };
-        let data = m.load(fat, yavs_ir::Width::B8)?;
-        let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
-        let n = yavs_ir::Ty::desc_size(&prog.types, ty)
-            .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
-        let desc = m.rd(d, n)?.to_vec();
-        let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, &desc)
-            .map_err(|e| exec::ice(format!("result layout: {e:?}")))?;
-        let data = m.rd(data, l.size)?.to_vec();
-        Ok(Some(CallVal::Composite { data, desc }))
+        result(&mut m, &prog, ret, v)
     })();
     if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
         **g = st;
     }
+    r.map_err(|e| m.error(e, None))
+}
+
+/// The result `v` of a call: a cell, or for a composite of IR type `ret` the fat pair `v`
+/// points to, read back.
+fn result(
+    m: &mut Machine,
+    prog: &Program,
+    ret: Option<yavs_ir::TyId>,
+    v: Option<u64>,
+) -> exec::R<Option<CallVal>> {
+    let (Some(ty), Some(fat)) = (ret, v) else {
+        return Ok(v.map(CallVal::Cell));
+    };
+    let data = m.load(fat, yavs_ir::Width::B8)?;
+    let d = m.load(exec::add_addr(fat, 8)?, yavs_ir::Width::B8)?;
+    let n = yavs_ir::Ty::desc_size(&prog.types, ty)
+        .ok_or_else(|| exec::ice("result type without a descriptor size"))?;
+    let desc = m.rd(d, n)?.to_vec();
+    let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, &desc)
+        .map_err(|e| exec::ice(format!("result layout: {e:?}")))?;
+    let data = m.rd(data, l.size)?.to_vec();
+    Ok(Some(CallVal::Composite { data, desc }))
+}
+
+/// Run native `native` of `rt`'s program (an implicit operation, say) on `args` without a
+/// kernel, for elaboration-time evaluation (#220): the natives' convention, composites as the
+/// address of a fat pair `[data, desc]`. `ret` as for [`call_values`].
+pub fn call_native(
+    rt: Arc<Runtime>,
+    native: yavs_ir::NativeId,
+    args: &[CallVal],
+    ret: Option<yavs_ir::TyId>,
+) -> Result<Option<CallVal>, SimError> {
+    let prog = rt.prog.clone();
+    let mut m = Machine::new(rt, Arc::default(), Vec::new(), FuncId(0));
+    let r = (|| {
+        let n = prog
+            .natives
+            .get(native)
+            .ok_or_else(|| exec::ice(format!("no native {native}")))?;
+        let Some(fun) = m.rt.natives.get(native.0 as usize).copied().flatten() else {
+            return Err(Fault::Runtime(format!(
+                "native subprogram `{}` is not implemented in yavs yet",
+                n.symbol
+            )));
+        };
+        let mut cells = Vec::with_capacity(args.len());
+        for a in args {
+            match a {
+                CallVal::Cell(c) => cells.push(*c),
+                CallVal::Composite { data, desc } => {
+                    let fat = m.temp_alloc(16)?;
+                    for (k, b) in [data, desc].into_iter().enumerate() {
+                        let at = m.temp_alloc(b.len() as u64)?;
+                        m.put(at, b)?;
+                        m.put(fat + 8 * k as u64, &at.to_le_bytes())?;
+                    }
+                    cells.push(fat);
+                }
+            }
+        }
+        let v = fun(&mut m, &mut None, n.ty, &cells)?;
+        result(&mut m, &prog, ret, v)
+    })();
     r.map_err(|e| m.error(e, None))
 }
 

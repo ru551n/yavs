@@ -1,14 +1,13 @@
 //! Elaboration-time values: the evaluator, subtype shapes, initial values and `-g` overrides.
 //!
 //! Globally static expressions are folded with sem's static folder (`Db::fold_with`) over
-//! generic and constant values; aggregates, indexing, slices, fields, concatenation,
-//! composite equality and logical operators on BIT and BOOLEAN arrays are evaluated in
-//! `crate::value`; calls of user functions run in yavs-interp after lowering the function
-//! alone (ir.md 3.6), with arrays of scalars and records of scalars and records marshalled
-//! through `yavs_interp::call_values` (#77); functions that use package objects run against the
-//! elaborated packages (`crate::pkgcall`).
-//! ponytail: multi-dimensional aggregates, arrays of composites passed to functions, shifts
-//! and other predefined operators on arrays are still E2106.
+//! generic and constant values; aggregates (any number of dimensions), indexing, slices,
+//! fields, concatenation, composite equality and logical operators on BIT and BOOLEAN arrays
+//! are evaluated in `crate::value`, the other predefined operations on composites and
+//! `TO_STRING` by their yavs-interp natives (`yavs_interp::call_native`, #220); calls of user
+//! functions run in yavs-interp after lowering the function alone (ir.md 3.6), with any
+//! composite marshalled in the IR layout through `yavs_interp::call_values` (#77, #220);
+//! functions that use package objects run against the elaborated packages (`crate::pkgcall`).
 
 use std::collections::HashMap;
 
@@ -417,10 +416,9 @@ impl Model {
                     )
                     .with_primary(ex.span, "needs the IR interpreter")
                     .with_note(
-                        "yavs folds globally static expressions over generics and constants and \
-                         runs scalar user function calls in yavs-interp; composite values \
-                         (aggregates, arrays passed to or returned by functions) are not \
-                         evaluated during elaboration yet",
+                        "yavs folds globally static expressions over generics and constants, \
+                         evaluates composite values and runs function calls in yavs-interp; \
+                         this kind of expression is not evaluated during elaboration yet",
                     ),
                 )
             })),
@@ -460,8 +458,8 @@ impl Model {
                 )
                 .with_primary(ex.span, "called during elaboration")
                 .with_note(
-                    "elaboration-time calls take and return scalars, arrays of scalars and \
-                     records of scalars and records",
+                    "elaboration-time calls take constant `in` parameters of any type but \
+                     access and file types",
                 ),
             )
         };

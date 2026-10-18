@@ -352,14 +352,16 @@ of arrays, `std_ulogic`/`bit`/`boolean` as bit-planes), the sub-element map
 static expression actuals, per-process merged drivers, multiple-source check across the
 hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
 Elaboration-time evaluation folds globally static expressions with `Db::fold_with`, evaluates
-aggregates, indexing, slices, fields, concatenation and composite equality itself, and runs user
-function calls in yavs-interp (the function lowered alone; arrays of scalars and records of
-scalars and records as arguments and results through `call_values`). A function that uses
+aggregates of any number of dimensions, indexing, slices, fields, concatenation and composite
+equality itself, runs the other predefined operations (shifts, `TO_STRING` of reals and
+physicals, ...) through their yavs-interp natives (#220), and runs user function calls in
+yavs-interp (the function lowered alone; any composite, arrays of records and records with
+array elements included, as arguments and results through `call_values`). A function that uses
 package objects (impure registries in shared variables) runs against the elaborated packages in
 elaboration order, constants with impure initial values are evaluated in declaration order,
 package constants with impure initial values are read from the package data, and building the
-simulation replays these calls (#77). Multi-dimensional aggregates and other array operators
-are still E2106. Also done: package bodies and generic instance bodies
+simulation replays these calls (#77); an impure constant elaboration cannot evaluate at all
+(`'PATH_NAME`) runs at simulation start with W2118 (#220). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
 and type conversions in port maps (kernel converters, scalars and arrays of scalars), individual
 association of unconstrained array ports, implicit signals (`'stable`,

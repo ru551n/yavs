@@ -272,6 +272,9 @@ and sensitivity with kernel offsets as below). Open: 4 (`'path_name`), 6 (guarde
 Added by yavs-elab (#77, 2026-10-18): `Lowerer::package_value(decl)`, a thunk returning a
 package constant's value (a cell, or a composite's fat pair), so elaboration reads a package
 constant with an impure initial value from the package data instead of evaluating it again.
+Added by yavs-elab (#220, 2026-10-18): `Lowerer::implicit_native(op)`, the native of an
+implicit operation, so elaboration runs predefined operations it does not evaluate itself
+(shifts, `TO_STRING` of reals, ...) through yavs-interp (`call_native`).
 
 yavs-elab (`Elaborated::lower`, `Elaborated::build`) lowers every architecture that owns a
 process and builds one `InstData` per entity instance: constants from `UnitIr::consts`, the

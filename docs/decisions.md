@@ -546,8 +546,13 @@ a note and a help suggesting an access type, as the reference simulators reject 
   `ConstValue`s in yavs-elab; everything else (ieee and user functions) runs in yavs-interp,
   with arrays of scalars and records of scalars marshalled by `yavs_interp::call_values` in the
   IR layout. Not chosen: lowering a thunk per expression, which would need instance data for
-  every scope's generics before elaboration has built it. Still E2106: multi-dimensional
-  aggregates, composite arguments with composite elements, shifts and other array operators.
+  every scope's generics before elaboration has built it. Since #220 (elab agent,
+  2026-10-18): aggregates of any number of dimensions, and any composite (arrays of records,
+  arrays of arrays, records with array elements) marshalled in the IR layout (`Ty::layout`);
+  the predefined operations not evaluated structurally (shifts, array ordering, matching
+  operators, `TO_STRING` of reals and physicals, ...) run their yavs-interp native on the
+  marshalled operands (`call_native`), so elaboration and simulation share one implementation.
+  Not chosen: more structural operations on `ConstValue`s, a second implementation of each.
 - **Elaboration-time calls with package state** (#77, elab agent, 2026-10-18; LRM 14.4): a
   function that cannot be lowered alone (it uses package objects, say a shared variable
   holding a registry) runs in a session program: every run-time package lowered and initialised
@@ -560,12 +565,12 @@ a note and a help suggesting an access type, as the reference simulators reject 
   the processes see the same state and `build` stays repeatable (rule 4); a replayed call
   returning another value is an internal error. Not chosen: handing the session's heap and
   package data to the simulation program, whose type, function and constant-pool ids differ.
-  `NOW` is 0 fs during elaboration (yavs-interp), and `TO_STRING` of integer and enumeration
-  values is evaluated on `ConstValue`s. ponytail: a new function relowers the session and
-  replays the log (O(functions x calls)); a constant with an impure initial value elaboration
-  cannot hold yet (E2106, say a record with an array element) is left to its run-time thunk,
-  the calls made for it are undone, and the thunk runs after all replays, so it sees the
-  elaboration-time calls of later declarations and regions first.
+  `NOW` is 0 fs during elaboration (yavs-interp). ponytail: a new function relowers the
+  session and replays the log (O(functions x calls)); a constant with an impure initial value
+  elaboration cannot evaluate at all (E2106: `'PATH_NAME`, a null multi-dimensional aggregate)
+  is left to its run-time thunk with warning W2118 (#220), the calls made for it are undone,
+  and the thunk runs after all replays, so it sees the elaboration-time calls of later
+  declarations and regions first.
 - **Package objects at run time** (#183, elab agent with the lowering agent, 2026-10-18):
   packages outside std with signals, shared variables, files or constants sem did not fold are
   lowered (`Lowerer::package`) before the architectures and initialised once at build time

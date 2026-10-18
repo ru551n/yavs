@@ -66,6 +66,9 @@ pub mod codes {
     pub const BODY_MISSING: &str = "E2116";
     /// An external name names no elaborated object (LRM 8.7, 14.4.1).
     pub const EXTERNAL_NOT_FOUND: &str = "E2117";
+    /// A constant with an impure initial value elaboration cannot evaluate yet runs its
+    /// initial value when the simulation starts, after the elaboration-time calls (#220).
+    pub const IMPURE_AT_RUN_TIME: &str = "W2118";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").

@@ -7,6 +7,7 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
+| M4: VUnit end to end | first VUnit testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and VUnit's `examples/vhdl/user_guide` give the right pass/fail per test with the VUnit `rsim-integration` branch; VUnit's own suites next (#112) |
 | M3 to M10 | not started (crate spikes below) |
 
 ## sem (`crates/yavs-sem`, M1)

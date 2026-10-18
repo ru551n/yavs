@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 REJECTS = HERE / "rejects"  # one json per manifest name
 WRAP = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 QUESTA = os.path.expanduser("~/altera_pro/26.1/questa_fse/bin")
+# Questa needs SALT_LICENSE_SERVER from the caller's environment; never hardcode it here.
 WORK = Path("~/.cache/rsim-corpus2").expanduser()
 GHDLSTD = {"2008": "08", "2019": "19"}
 
@@ -33,11 +34,11 @@ def run_tool(tool, std, lib, wd, path, flags=()):
     else:  # questa: libraries are directories next to each other, mapped by modelsim.ini in cwd
         d.mkdir(parents=True, exist_ok=True)
         if not (d / lib).exists():
-            env = dict(os.environ, SALT_LICENSE_SERVER="$SALT_LICENSE_SERVER", PATH=QUESTA + ":" + os.environ["PATH"])
+            env = dict(os.environ, PATH=QUESTA + ":" + os.environ["PATH"])
             subprocess.run(["vlib", lib], cwd=d, env=env, capture_output=True)
             subprocess.run(["vmap", lib, str(d / lib)], cwd=d, env=env, capture_output=True)
         argv = [f"{QUESTA}/vcom", f"-{std}", "-work", lib, "-quiet", str(path), *flags]
-        env = dict(os.environ, SALT_LICENSE_SERVER="$SALT_LICENSE_SERVER")
+        env = dict(os.environ)
         p = subprocess.run(WRAP + argv, capture_output=True, text=True, errors="replace", cwd=d, env=env)
         return p.returncode, p.stdout + p.stderr
     p = subprocess.run(WRAP + argv, capture_output=True, text=True, errors="replace")

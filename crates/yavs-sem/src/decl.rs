@@ -491,7 +491,10 @@ impl Db {
         } else {
             BoundsFrom::Initializer
         };
-        if !full && class != ObjClass::Constant {
+        // 2019 signals and variables, like constants, take missing bounds from their
+        // initial value (6.4.2.3, 6.4.2.4; LCS-2016-019).
+        let from_init = default.is_some() && self.file_rev() >= LangRev::Vhdl2019;
+        if !full && class != ObjClass::Constant && !from_init {
             let what = if class == ObjClass::Signal {
                 "signal"
             } else {

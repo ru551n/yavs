@@ -1,1 +1,0 @@
-The Linux release archives now run on glibc 2.17 or newer (RHEL/CentOS 7+, Debian 8+, Ubuntu 14.04+) instead of 2.34, on x86_64 and aarch64; on musl-based systems such as Alpine, install the `gcompat` package.

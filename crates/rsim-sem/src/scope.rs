@@ -191,9 +191,57 @@ impl Db {
             );
             return;
         }
+        if self.entity_homograph(scope, d) {
+            return;
+        }
         let s = &mut self.scopes[scope];
         s.names.entry(key).or_default().push(d);
         s.order.push(d);
+    }
+
+    /// An entity and its architecture are one declarative region (12.1):
+    /// a declaration in the architecture may not be a homograph of one in the
+    /// entity (`E1101`). Reports and returns whether it did.
+    fn entity_homograph(&mut self, scope: ScopeId, d: DeclId) -> bool {
+        if self.scopes[scope].kind != ScopeKind::Architecture || self.decls[d].implicit {
+            return false;
+        }
+        let Some(entity) = self.scopes[scope]
+            .parent
+            .and_then(|c| self.scopes[c].parent)
+            .filter(|&e| self.scopes[e].kind == ScopeKind::Entity)
+        else {
+            return false;
+        };
+        let key = self.decls[d].name.key();
+        let Some(old) = self.scopes[entity]
+            .names
+            .get(&key)
+            .and_then(|v| v.iter().copied().find(|&o| self.homographs(o, d)))
+        else {
+            return false;
+        };
+        let what = match &self.decls[old].kind {
+            DeclKind::Object(o) if o.role == crate::decl::ObjRole::Port => "a port",
+            DeclKind::Object(o) if o.role == crate::decl::ObjRole::Generic => "a generic",
+            _ => "a declaration",
+        };
+        let ename = self.scopes[entity]
+            .owner
+            .map(|o| self.decls[o].name.to_string())
+            .unwrap_or_default();
+        let name = self.decls[d].name;
+        let (span, old_span) = (self.decls[d].span, self.decls[old].span);
+        self.report(
+            Diagnostic::error(
+                diag::REDECLARED,
+                format!("`{name}` is already declared as {what} of `{ename}`"),
+            )
+            .with_primary(span, "redeclared here")
+            .with_secondary(old_span, "declared in the entity here")
+            .with_note("an entity and its architectures form one declarative region (LRM 12.1)"),
+        );
+        true
     }
 
     /// Visibility (sem.md 1.4, LRM 12.3 and 12.4).

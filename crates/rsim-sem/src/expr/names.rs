@@ -98,7 +98,7 @@ impl Db {
                             }
                         };
                         match region {
-                            Region::Library(l) => match self.load_unit(
+                            Region::Library(l) => match self.load_dep(
                                 l,
                                 crate::loader::UnitKey::Primary(key),
                                 Some(n.span),
@@ -144,7 +144,7 @@ impl Db {
     }
 
     /// The subtype a type mark name denotes, without reporting.
-    fn quiet_type_mark(&mut self, scope: ScopeId, n: &ast::Name) -> Option<SubtypeId> {
+    pub(crate) fn quiet_type_mark(&mut self, scope: ScopeId, n: &ast::Name) -> Option<SubtypeId> {
         match self.classify(scope, n) {
             NameRes::One(d) => match self.decls[self.entity(d)].kind {
                 DeclKind::Type(t) | DeclKind::GenericType(t) => Some(self.types[t].first_subtype),

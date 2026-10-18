@@ -386,10 +386,10 @@ impl Db {
             ast::ObjectClass::Variable => ObjClass::Variable,
             ast::ObjectClass::SharedVariable => ObjClass::SharedVariable,
         };
-        let default = o
-            .default
-            .as_ref()
-            .map(|e| self.expr(scope, e, crate::expr::Expected::Type(base)));
+        let default = o.default.as_ref().map(|e| {
+            self.context_subtype = Some(subtype);
+            self.expr(scope, e, crate::expr::Expected::Type(base))
+        });
         let full = self.constrainedness(subtype) == crate::types::Constrainedness::Full;
         let bounds = if full {
             BoundsFrom::Subtype

@@ -6,7 +6,20 @@ use rsim_sem::stat::ConstValue;
 use rsim_sem::{Db, LangRev, Options, default_stdlib};
 
 /// `(library, primary unit)` loaded on demand, per revision.
-const UNITS: &[(&str, &str)] = &[("std", "standard"), ("std", "textio"), ("std", "env")];
+const UNITS: &[(&str, &str)] = &[
+    ("std", "standard"),
+    ("std", "textio"),
+    ("std", "env"),
+    ("ieee", "std_logic_1164"),
+    ("ieee", "std_logic_textio"),
+    ("ieee", "numeric_std"),
+    ("ieee", "numeric_std_unsigned"),
+    ("ieee", "numeric_bit"),
+    ("ieee", "numeric_bit_unsigned"),
+    ("ieee", "math_real"),
+    ("ieee", "math_complex"),
+    ("ieee", "fixed_float_types"),
+];
 
 fn analyze(rev: LangRev, lib: &str, unit: &str) -> Db {
     let mut db = Db::new(Options::new(rev, default_stdlib()));

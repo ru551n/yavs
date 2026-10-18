@@ -1025,50 +1025,97 @@ impl Db {
         }))
     }
 
+    /// A resolution indication (6.3): a function name, `(f)` for array elements,
+    /// `(a f, b g)` per record element.
     fn resolution(
         &mut self,
         scope: ScopeId,
         r: &ast::Resolution,
-        _base: TypeId,
+        base: TypeId,
     ) -> Result<Resolution, Reported> {
         match r {
             ast::Resolution::Function(n) => {
-                let ast::NameKind::Simple(i) = &n.kind else {
-                    return Err(self.unsupported(
-                        n.span,
-                        "a selected resolution function name",
-                        "S2",
-                    ));
+                let cands = match self.classify(scope, n) {
+                    crate::expr::names::NameRes::Overloads(ds) => ds,
+                    crate::expr::names::NameRes::One(d) => vec![d],
+                    other => return Err(self.report_name(scope, other)),
                 };
-                match self.lookup(scope, i.key) {
-                    crate::scope::Visible::Overloads(ds) => {
-                        let fs: Vec<DeclId> = ds.into_iter().filter(|&d| matches!(self.decls[self.entity(d)].kind.subprogram(), Some(s) if s.ret.is_some() && s.params.len() == 1)).collect();
-                        match fs.as_slice() {
-                            [f] => Ok(Resolution::Function(self.entity(*f))),
-                            _ => Err(self.error(
-                                Diagnostic::error(
-                                    diag::BAD_RESOLUTION,
-                                    format!(
-                                        "`{}` does not name exactly one resolution function",
-                                        i.text
-                                    ),
-                                )
-                                .with_primary(i.span, "expected a function with one parameter"),
-                            )),
+                let fs: Vec<DeclId> = cands
+                    .into_iter()
+                    .map(|d| self.entity(d))
+                    .filter(|&d| match self.decls[d].kind.subprogram() {
+                        Some(s) => {
+                            s.params.len() == 1
+                                && s.ret.is_some_and(|r| {
+                                    self.base(r) == base
+                                        || matches!(self.types[base].kind, TypeKind::Error)
+                                })
                         }
-                    }
-                    crate::scope::Visible::None => Err(self.undeclared(scope, *i)),
+                        None => false,
+                    })
+                    .collect();
+                match fs.as_slice() {
+                    [f] => Ok(Resolution::Function(*f)),
+                    [] => Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_RESOLUTION,
+                            format!(
+                                "no resolution function for `{}` is named here",
+                                self.type_name(base)
+                            ),
+                        )
+                        .with_primary(
+                            n.span,
+                            "expected a function of one parameter returning the resolved type",
+                        ),
+                    )),
                     _ => Err(self.error(
                         Diagnostic::error(
                             diag::BAD_RESOLUTION,
-                            format!("`{}` is not a function", i.text),
+                            "the resolution function name is ambiguous",
                         )
-                        .with_primary(i.span, "expected a resolution function"),
+                        .with_primary(n.span, "several functions fit"),
                     )),
                 }
             }
-            ast::Resolution::Element(_) | ast::Resolution::Record(_) => {
-                Err(self.unsupported(resolution_span(r), "element and record resolution", "S3"))
+            ast::Resolution::Element(inner) => {
+                let TypeKind::Array { elem, .. } = &self.types[base].kind else {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_RESOLUTION,
+                            "an element resolution `(f)` needs an array type",
+                        )
+                        .with_primary(resolution_span(r), "the subtype is not an array"),
+                    ));
+                };
+                let eb = self.base(*elem);
+                Ok(Resolution::Element(Box::new(
+                    self.resolution(scope, inner, eb)?,
+                )))
+            }
+            ast::Resolution::Record(items) => {
+                let mut out = Vec::new();
+                for (name, res) in items {
+                    let Some(i) = self.record_elem(base, name.key) else {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::BAD_RECORD_CONSTRAINT,
+                                format!(
+                                    "`{}` is not an element of `{}`",
+                                    name.text,
+                                    self.type_name(base)
+                                ),
+                            )
+                            .with_primary(name.span, "no such element"),
+                        ));
+                    };
+                    let eb = match &self.types[base].kind {
+                        TypeKind::Record { elems } => self.base(elems[i as usize].subtype),
+                        _ => self.poison.ty,
+                    };
+                    out.push((i, self.resolution(scope, res, eb)?));
+                }
+                Ok(Resolution::Record(out.into()))
             }
         }
     }

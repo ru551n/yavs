@@ -1,9 +1,6 @@
 # Files of tests/diag/sem expected to fail until their slice lands (see diag_sem.rs).
-agg/2d_array_ok.vhd
-agg/2d_array_row_length_mismatch.vhd
 agg/2d_array_wrong_depth.vhd
 agg/aggregate_for_scalar.vhd
-agg/array_element_type_mismatch.vhd
 agg/case_duplicate_choice.vhd
 agg/case_expression_type_not_discrete.vhd
 agg/case_full_ok.vhd
@@ -11,22 +8,13 @@ agg/case_integer_missing_others.vhd
 agg/case_missing_choice.vhd
 agg/case_others_not_last.vhd
 agg/case_string_choice_length_mismatch.vhd
-agg/choice_wrong_type.vhd
-agg/duplicate_choice.vhd
 agg/index_outside_context.vhd
 agg/mix_named_positional.vhd
 agg/nonstatic_choice_single_ok.vhd
 agg/nonstatic_choice_with_others.vhd
 agg/others_not_last.vhd
 agg/others_unconstrained_context.vhd
-agg/others_with_other_choice_same_assoc.vhd
-agg/overlapping_range_choice.vhd
-agg/record_duplicate_element.vhd
-agg/record_missing_element.vhd
-agg/record_missing_element_positional.vhd
-agg/record_others_covers_nothing.vhd
 agg/record_others_mixed_types.vhd
-agg/record_positional_and_named_overlap.vhd
 agg/record_too_many_positional.vhd
 agg/record_unknown_element.vhd
 agg/type_not_determined_conversion.vhd
@@ -226,7 +214,6 @@ stat/static_value_outside_computed.vhd
 stat/static_value_outside_subtype.vhd
 typ/access_to_unconstrained_new.vhd
 typ/array_index_not_discrete.vhd
-typ/bad_resolution_function_result.vhd
 typ/constant_unconstrained_needs_value.vhd
 typ/dimension_constrained_twice.vhd
 typ/dimension_constrained_twice_subtype.vhd
@@ -289,7 +276,6 @@ v2019/generic_class_physical_actual_integer.vhd
 v2019/generic_class_private_no_ops.vhd
 v2019/generic_class_scalar_actual_record.vhd
 v2019/generic_class_scalar_ops_ok.vhd
-v2019/image_on_record_ok.vhd
 v2019/private_variable_not_protected.vhd
 v2019/private_variable_outside_body.vhd
 v2019/view_element_duplicate.vhd

@@ -342,6 +342,27 @@ impl Db {
         r
     }
 
+    /// `load_unit` from a reference in the unit being analyzed: a failed
+    /// dependency taints it, so its later undeclared-name errors are cascades
+    /// and stay silent (8.2).
+    pub(crate) fn load_dep(
+        &mut self,
+        lib: LibId,
+        key: UnitKey,
+        at: Option<Span>,
+    ) -> Result<UnitId, Reported> {
+        let r = self.load_unit(lib, key, at);
+        match r {
+            Ok(u) => self.note_dep(u),
+            Err(_) => {
+                if let Some(c) = self.cur() {
+                    self.tainted.insert(c.unit);
+                }
+            }
+        }
+        r
+    }
+
     fn not_found(&mut self, lib: LibId, key: UnitKey, at: Option<Span>) -> Reported {
         let l = &self.libs[lib];
         let looked = match &l.source {

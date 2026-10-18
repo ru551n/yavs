@@ -41,7 +41,17 @@ impl Db {
     ) -> ExprId {
         let saved = std::mem::take(&mut self.memo);
         let saved_overflow = std::mem::take(&mut self.overflow);
+        let saved_top = self.top_context.take();
+        let mut top = e;
+        while let ast::ExprKind::Paren(inner) = &top.kind {
+            top = inner;
+        }
+        self.top_context = self
+            .context_subtype
+            .take()
+            .map(|st| (top as *const ast::Expr as usize, st));
         let id = self.resolve(scope, e, exp);
+        self.top_context = saved_top;
         for o in std::mem::replace(&mut self.overflow, saved_overflow) {
             let span = self.exprs[o].span;
             let d = if required {
@@ -262,14 +272,24 @@ impl Db {
     }
 
     /// String and bit string literals, `null`, aggregates, allocators: typed by context.
-    fn build_class(&mut self, _scope: ScopeId, e: &ast::Expr, t: TypeId) -> ExprId {
+    fn build_class(&mut self, scope: ScopeId, e: &ast::Expr, t: TypeId) -> ExprId {
         match &e.kind {
             ast::ExprKind::Literal(l) => {
                 crate::expr::literal::literal_expr(self, l, t).unwrap_or(self.poison.expr)
             }
-            ast::ExprKind::Aggregate(_) => {
-                self.unsupported(e.span, "aggregates", "S3");
-                self.poison_expr()
+            ast::ExprKind::Aggregate(assocs) => {
+                // The context subtype, when the caller gave one (an object's declared subtype).
+                let ctx = match self.top_context {
+                    Some((node, st))
+                        if node == e as *const ast::Expr as usize && self.base(st) == t =>
+                    {
+                        st
+                    }
+                    _ => self.types[t].first_subtype,
+                };
+                let mut r = Resolver { scope };
+                crate::expr::aggregate::resolve_aggregate(self, &mut r, assocs, ctx, e.span)
+                    .unwrap_or(self.poison.expr)
             }
             _ => {
                 self.unsupported(e.span, "allocators", "S6");
@@ -544,6 +564,49 @@ impl Db {
         match self.subtypes[st].name {
             Some(n) => n.text.to_string(),
             None => self.type_name(self.base(st)),
+        }
+    }
+}
+
+/// `AggResolver` for aggregates inside a complete context: element values go
+/// through the same two passes and memo.
+struct Resolver {
+    scope: ScopeId,
+}
+
+impl crate::expr::aggregate::AggResolver for Resolver {
+    fn cands(&mut self, db: &mut Db, e: &ast::Expr) -> CandSet {
+        db.cands(self.scope, e)
+    }
+
+    fn resolve(
+        &mut self,
+        db: &mut Db,
+        e: &ast::Expr,
+        exp: Expected,
+    ) -> Result<ExprId, crate::Reported> {
+        let id = db.resolve(self.scope, e, exp);
+        if db.is_poison_expr(id) {
+            Err(crate::Reported)
+        } else {
+            Ok(id)
+        }
+    }
+
+    fn discrete_range(
+        &mut self,
+        db: &mut Db,
+        r: &ast::DiscreteRange,
+        index_ty: TypeId,
+    ) -> Result<crate::types::RangeC, crate::Reported> {
+        db.discrete_range(self.scope, r, Some(index_ty))
+            .map(|(r, _)| r)
+    }
+
+    fn type_mark(&mut self, db: &mut Db, e: &ast::Expr) -> Option<crate::ids::SubtypeId> {
+        match &e.kind {
+            ast::ExprKind::Name(n) => db.quiet_type_mark(self.scope, n),
+            _ => None,
         }
     }
 }

@@ -401,7 +401,7 @@ impl Db {
                     let Some(key) = suffix_key(suffix) else {
                         continue;
                     };
-                    let Ok(u) = self.load_unit(l, UnitKey::Primary(key), Some(n.span)) else {
+                    let Ok(u) = self.load_dep(l, UnitKey::Primary(key), Some(n.span)) else {
                         continue;
                     };
                     self.note_dep(u);
@@ -498,7 +498,7 @@ impl Db {
                 })?;
                 match r {
                     Region::Library(l) => {
-                        let u = self.load_unit(l, UnitKey::Primary(key), Some(n.span))?;
+                        let u = self.load_dep(l, UnitKey::Primary(key), Some(n.span))?;
                         self.note_dep(u);
                         Ok(self.units[u].decl)
                     }

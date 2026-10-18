@@ -302,7 +302,9 @@ impl Db {
     /// Report an undeclared name once per (unit, key), with suggestions (8.3).
     pub(crate) fn undeclared(&mut self, scope: ScopeId, name: Ident) -> crate::Reported {
         let unit = self.cur().map(|c| c.unit);
-        if !self.undeclared.insert((unit, name.key)) {
+        if unit.is_some_and(|u| self.tainted.contains(&u))
+            || !self.undeclared.insert((unit, name.key))
+        {
             return crate::Reported;
         }
         let mut d = Diagnostic::error(

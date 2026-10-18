@@ -59,6 +59,11 @@ std19, n = re.subn(r"^    ' ',  '\xa1',", "    '\xa0',  '\xa1',", std19, flags=r
 assert n == 1
 std19, n = re.subn(r"'\xac',  '-',  '\xae',", "'\xac',  '\xad',  '\xae',", std19)
 assert n == 1
+# LRM 1076-2019 16.3 names the direction type RANGE_DIRECTION; the package source
+# says DIRECTION (VI#97). Rename the type and its comment references, not the
+# record element `Direction`.
+std19, n = re.subn(r"\bDIRECTION(?=\b|_RANGE_RECORD)", "RANGE_DIRECTION", std19)
+assert n == 29, n
 wr("std/2019/standard.vhdl", std19)
 wr("std/2019/textio.vhdl", rd("std/textio.vhdl"))
 wr("std/2019/env.vhdl", rd("std/env.vhdl"))
@@ -66,7 +71,7 @@ wr("std/2019/reflection.vhdl", rd("std/reflection.vhdl"))
 
 # ---- std 2008: drop what 1076-2019 added ---------------------------------------
 s = std19
-s = drop_block(s, r"  type DIRECTION is \(", r"  type BOOLEAN is")
+s = drop_block(s, r"  type RANGE_DIRECTION is \(", r"  type BOOLEAN is")
 s = drop_line(s, r"    READ_WRITE_MODE,")
 s = drop_block(s, r"  type FILE_OPEN_STATE is \(", r"  -- The 'FOREIGN attribute")
 s = s.replace(  # 1076-2008 INTEGER is 32 bit

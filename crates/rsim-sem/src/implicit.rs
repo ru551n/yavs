@@ -8,7 +8,7 @@
 //! Entry point: [`Db::declare_implicit_ops`], called by type declaration
 //! analysis once the type's declaration is in its region. Inside
 //! `std.standard` an operation may name a type that is declared later
-//! (`DIRECTION`'s `"="` returns BOOLEAN, `TO_STRING` returns STRING): it waits
+//! (`RANGE_DIRECTION`'s `"="` returns BOOLEAN, `TO_STRING` returns STRING): it waits
 //! in `Db::pending_implicit` and is created as soon as every type it names
 //! exists. Outside `std.standard` everything it names exists, so nothing waits.
 //!

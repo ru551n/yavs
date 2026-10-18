@@ -34,7 +34,8 @@ a different, non-Apache licence, so they are not used. Therefore:
 |---|---|---|
 | `std/2019/standard.vhdl` | `type INTEGER/REAL/TIME is range implementation_defined` replaced by `-9223372036854775807 to 9223372036854775807` (INTEGER, TIME) and `-1.7976931348623157e308 to 1.7976931348623157e308` (REAL) | upstream is a template, not valid VHDL; plan.md: 64-bit integers in 2019 mode |
 | `std/2019/standard.vhdl` | CHARACTER position 160 `' '` became NBSP (byte 0xA0), position 173 `'-'` became soft hyphen (byte 0xAD) | upstream text lost these two literals (duplicate `' '` and `'-'`, every tool rejects the file) |
-| `std/2008/standard.vhdl` | as above, then removed `type DIRECTION`, `FILE_OPEN_KIND`'s `READ_WRITE_MODE`, `FILE_OPEN_STATE`, `FILE_ORIGIN_KIND`; INTEGER is `-2147483648 to 2147483647` | these are 1076-2019 additions; 2008 INTEGER is 32 bit |
+| `std/2019/standard.vhdl` | `type DIRECTION` renamed `RANGE_DIRECTION` (also in the comments that list implicit operations and range records; the record element `Direction` is unchanged) | LRM 1076-2019 16.3 and NVC name it `RANGE_DIRECTION`; the package source disagrees with the LRM (VI#97, open); user decision U-3 in `docs/design/lrm-checks.md` |
+| `std/2008/standard.vhdl` | as above, then removed `type RANGE_DIRECTION`, `FILE_OPEN_KIND`'s `READ_WRITE_MODE`, `FILE_OPEN_STATE`, `FILE_ORIGIN_KIND`; INTEGER is `-2147483648 to 2147483647` | these are 1076-2019 additions; 2008 INTEGER is 32 bit |
 | `std/2008/textio.vhdl` | removed `type LINE_VECTOR` | added by 1076-2019 (used by `env.DIRECTORY_ITEMS`) |
 | `std/2008/env.vhdl` | reduced to `STOP`, `FINISH`, `RESOLUTION_LIMIT` (upstream licence header kept) | everything else in `env` is new in 1076-2019 |
 | `ieee/*/ieee_std_context.vhdl`, `ieee_bit_context.vhdl` | written for rsim (VASG does not ship the contexts) | `IEEE_STD_CONTEXT` = `std_logic_1164` + `numeric_std`; `IEEE_BIT_CONTEXT` = `numeric_bit`, as in the 2008 LRM |
@@ -53,11 +54,11 @@ Other facts the consumer must know:
 | File | Upstream path in vasg/Packages | sha256 (first 16) | Status | License |
 |---|---|---|---|---|
 | `std/2008/env.vhdl` | `std/env.vhdl` | e7012d359e034657 | derived (see below) | Apache-2.0 |
-| `std/2008/standard.vhdl` | `std/standard.vhdl` | efb7a13b4092ffc6 | derived (see below) | Apache-2.0 |
+| `std/2008/standard.vhdl` | `std/standard.vhdl` | 12ca66884676a074 | derived (see below) | Apache-2.0 |
 | `std/2008/textio.vhdl` | `std/textio.vhdl` | 73a0b48e671d7cf0 | derived (see below) | Apache-2.0 |
 | `std/2019/env.vhdl` | `std/env.vhdl` | 59169bc8381578d4 | verbatim | Apache-2.0 |
 | `std/2019/reflection.vhdl` | `std/reflection.vhdl` | 66f6366e77c67385 | verbatim | Apache-2.0 |
-| `std/2019/standard.vhdl` | `std/standard.vhdl` | 1a2042a5c9a6ba79 | derived (see below) | Apache-2.0 |
+| `std/2019/standard.vhdl` | `std/standard.vhdl` | 3270f0222ede39bc | derived (see below) | Apache-2.0 |
 | `std/2019/textio.vhdl` | `std/textio.vhdl` | 01028097080267c9 | verbatim | Apache-2.0 |
 | `ieee/2008/fixed_float_types.vhdl` | `ieee/fixed_float_types.vhdl` | 649090aaf4dbb7a6 | verbatim | Apache-2.0 |
 | `ieee/2008/fixed_generic_pkg-body.vhdl` | `ieee/fixed_generic_pkg-body.vhdl` | b5e3731985388b9e | verbatim | Apache-2.0 |

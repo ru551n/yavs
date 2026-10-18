@@ -38,24 +38,24 @@
 
 package STANDARD is
   -- Predefined enumeration types:
-  type DIRECTION is (
+  type RANGE_DIRECTION is (
     ASCENDING,       -- The range is ascending.
     DESCENDING       -- the range is descending.
   );
   -- The predefined operations for this type are as follows:
-  -- function "="(anonymous, anonymous: DIRECTION) return BOOLEAN;
-  -- function "/="(anonymous, anonymous: DIRECTION) return BOOLEAN;
-  -- function "<"(anonymous, anonymous: DIRECTION) return BOOLEAN;
-  -- function "<="(anonymous, anonymous: DIRECTION) return BOOLEAN;
-  -- function ">"(anonymous, anonymous: DIRECTION) return BOOLEAN;
-  -- function ">="(anonymous, anonymous: DIRECTION) return BOOLEAN;
-  -- function MINIMUM (L, R: DIRECTION) return DIRECTION;
-  -- function MAXIMUM (L, R: DIRECTION) return DIRECTION;
-  -- Implicit defined range record for DIRECTION'RANGE_RECORD:
-  -- type DIRECTION_RANGE_RECORD is record
-  --   Left      : DIRECTION;
-  --   Right     : DIRECTION;
-  --   Direction : DIRECTION;
+  -- function "="(anonymous, anonymous: RANGE_DIRECTION) return BOOLEAN;
+  -- function "/="(anonymous, anonymous: RANGE_DIRECTION) return BOOLEAN;
+  -- function "<"(anonymous, anonymous: RANGE_DIRECTION) return BOOLEAN;
+  -- function "<="(anonymous, anonymous: RANGE_DIRECTION) return BOOLEAN;
+  -- function ">"(anonymous, anonymous: RANGE_DIRECTION) return BOOLEAN;
+  -- function ">="(anonymous, anonymous: RANGE_DIRECTION) return BOOLEAN;
+  -- function MINIMUM (L, R: RANGE_DIRECTION) return RANGE_DIRECTION;
+  -- function MAXIMUM (L, R: RANGE_DIRECTION) return RANGE_DIRECTION;
+  -- Implicit defined range record for RANGE_DIRECTION'RANGE_RECORD:
+  -- type RANGE_DIRECTION_RANGE_RECORD is record
+  --   Left      : RANGE_DIRECTION;
+  --   Right     : RANGE_DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type BOOLEAN is (FALSE, TRUE);
@@ -81,7 +81,7 @@ package STANDARD is
   -- type BOOLEAN_RANGE_RECORD is record
   --   Left      : BOOLEAN;
   --   Right     : BOOLEAN;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type BIT is ('0', '1');
@@ -114,7 +114,7 @@ package STANDARD is
   -- type BIT_RANGE_RECORD is record
   --   Left      : BIT;
   --   Right     : BIT;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type CHARACTER is (
@@ -164,7 +164,7 @@ package STANDARD is
   -- type CHARACTER_RANGE_RECORD is record
   --   Left      : CHARACTER;
   --   Right     : CHARACTER;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type SEVERITY_LEVEL is (NOTE, WARNING, ERROR, FAILURE);
@@ -181,7 +181,7 @@ package STANDARD is
   -- type SEVERITY_LEVEL_RANGE_RECORD is record
   --   Left      : SEVERITY_LEVEL;
   --   Right     : SEVERITY_LEVEL;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   -- type universal_integer is range implementation_defined;
@@ -207,7 +207,7 @@ package STANDARD is
   -- type universal_integer_RANGE_RECORD is record
   --   Left      : universal_integer;
   --   Right     : universal_integer;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   -- type universal_real is range implementation_defined;
@@ -234,7 +234,7 @@ package STANDARD is
   -- type universal_real_RANGE_RECORD is record
   --   Left      : universal_real;
   --   Right     : universal_real;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   -- Predefined numeric types:
@@ -264,7 +264,7 @@ package STANDARD is
   -- type INTEGER_RANGE_RECORD is record
   --   Left      : INTEGER;
   --   Right     : INTEGER;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type REAL is range -1.7976931348623157e308 to 1.7976931348623157e308;
@@ -289,7 +289,7 @@ package STANDARD is
   -- type REAL_RANGE_RECORD is record
   --   Left      : REAL;
   --   Right     : REAL;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   -- Predefined type TIME:
@@ -331,7 +331,7 @@ package STANDARD is
   -- type TIME_RANGE_RECORD is record
   --   Left      : TIME;
   --   Right     : TIME;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   subtype DELAY_LENGTH is TIME range 0 fs to TIME'HIGH;
@@ -527,7 +527,7 @@ package STANDARD is
   -- type FILE_OPEN_KIND_RANGE_RECORD is record
   --   Left      : FILE_OPEN_KIND;
   --   Right     : FILE_OPEN_KIND;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type FILE_OPEN_STATUS is (
@@ -549,7 +549,7 @@ package STANDARD is
   -- type FILE_OPEN_STATUS_RANGE_RECORD is record
   --   Left      : FILE_OPEN_STATUS;
   --   Right     : FILE_OPEN_STATUS;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type FILE_OPEN_STATE is (
@@ -569,7 +569,7 @@ package STANDARD is
   -- type FILE_OPEN_STATE_RANGE_RECORD is record
   --   Left      : FILE_OPEN_STATE;
   --   Right     : FILE_OPEN_STATE;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   type FILE_ORIGIN_KIND is (
@@ -590,7 +590,7 @@ package STANDARD is
   -- type FILE_ORIGIN_KIND_RANGE_RECORD is record
   --   Left      : FILE_ORIGIN_KIND;
   --   Right     : FILE_ORIGIN_KIND;
-  --   Direction : DIRECTION;
+  --   Direction : RANGE_DIRECTION;
   -- end record;
 
   -- The 'FOREIGN attribute:

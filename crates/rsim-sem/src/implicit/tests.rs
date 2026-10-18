@@ -204,7 +204,7 @@ impl B {
         self.db.declare_implicit_ops(ui, s);
         self.db.declare_implicit_ops(ur, s);
         if rev >= LangRev::Vhdl2019 {
-            self.enum_ty(s, "DIRECTION", &["ASCENDING", "DESCENDING"]);
+            self.enum_ty(s, "RANGE_DIRECTION", &["ASCENDING", "DESCENDING"]);
         }
         let boolean = self.enum_ty(s, "BOOLEAN", &["FALSE", "TRUE"]);
         let bit = self.enum_ty(s, "BIT", &["'0", "'1"]);
@@ -390,7 +390,7 @@ fn standard_matches_the_listing() {
         } else {
             let mut v = vec![
                 // 2019 5.7: TO_STRING on every scalar type, the listing omits the new types.
-                "to_string(direction) return string",
+                "to_string(range_direction) return string",
                 "to_string(file_open_state) return string",
                 "to_string(file_origin_kind) return string",
             ];

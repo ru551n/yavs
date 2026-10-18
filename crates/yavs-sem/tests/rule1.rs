@@ -1126,40 +1126,14 @@ fn ghdl_1224_element_bounds_from_initial_value() {
     );
 }
 
-/// GHDL #2422: yavs accepts a type conversion on an unconstrained `out` formal and keeps
-/// it as `Actual::Converted`; the formal's bounds are `Actual` (finding F8, #111).
+/// GHDL #2422: a type conversion on an unconstrained `out` formal is `E1312`
+/// (finding F8, #111).
 #[test]
 fn ghdl_2422_formal_conversion_on_unconstrained_port() {
-    use yavs_sem::hir::{Actual, StmtKind};
-    let db = analyze("g2422", &[("work", GHDL_2422)]);
-    check(
-        &db,
-        &[(
-            "o",
-            "Port Signal: (resolved) UNRESOLVED_UNSIGNED(open) [Unconstrained], bounds from Actual",
-        )],
-    );
-    let conv: Vec<String> = db
-        .stmts
-        .iter()
-        .filter_map(|(_, s)| match &s.kind {
-            StmtKind::Instance { port_map, .. } => Some(port_map.iter()),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|a| match &a.actual {
-            Actual::Converted {
-                formal_conv: Some(f),
-                actual_conv: None,
-                actual,
-            } => Some(format!("{} <- {}", db.decls[*f].name, expr(&db, *actual))),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        conv,
-        ["STD_LOGIC_VECTOR <- (resolved) STD_ULOGIC_VECTOR(7 downto 0) [Full]"]
-    );
+    // F8 (#111), decided: rejected like GHDL and Questa; no bounds flow back through
+    // a conversion on the formal side.
+    let errs = errors("g2422", &[("work", GHDL_2422)]);
+    assert_eq!(errs, [("E1312".into(), 16)], "{errs:?}");
 }
 
 /// GHDL #2179: `others` for an element of an unconstrained record port is an error (all

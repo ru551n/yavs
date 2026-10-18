@@ -809,6 +809,20 @@ impl Db {
                 return Err(self.unsupported(fspan, "range actuals", "S4"));
             }
         };
+        // Decided on the rule 1 review (F8, #111): no bounds flow back through a formal
+        // conversion, so the formal must be fully constrained.
+        if formal_conv.is_some() && self.constrainedness(st) != crate::types::Constrainedness::Full
+        {
+            let name = self.decls[f].name;
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::FORMAL_CONV_UNCONSTRAINED,
+                    format!("a conversion of formal `{name}` needs a fully constrained formal"),
+                )
+                .with_primary(fspan, format!("`{name}` is of the unconstrained subtype `{}`", self.subtype_name(st)))
+                .with_help("associate the formal directly and convert on the actual side, or constrain the port"),
+            ));
+        }
         // With a formal conversion the actual has the conversion's result type.
         let target = match formal_conv {
             Some(c) => match &self.decls[c].kind {

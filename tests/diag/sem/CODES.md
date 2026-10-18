@@ -63,6 +63,7 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 | E1302 | ambiguous | 8.1 |
 | E1310 | formal associated twice | 8.1 |
 | E1311 | missing actual | 8.1 |
+| E1312 | conversion on an unconstrained formal (rule 1 review F8) | 6.5.7.1 |
 | E1320 | aggregate type not determined | 8.1 |
 | E1321 | record aggregate: element missing | 3.4 |
 | E1322 | record aggregate: element duplicate or too many positional | 3.4 |

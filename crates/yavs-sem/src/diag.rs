@@ -50,6 +50,7 @@ codes! {
     BAD_OPERATOR_DECL = "E1303", "An operator symbol that is not a VHDL operator, or an operator function with the wrong number of parameters (LRM 4.5.2).";
     FORMAL_TWICE = "E1310", "A formal is associated more than once.";
     MISSING_ACTUAL = "E1311", "A formal without a default has no actual.";
+    FORMAL_CONV_UNCONSTRAINED = "E1312", "A conversion on the formal side of an association needs a formal of a fully constrained subtype: its bounds would have to come back from the actual through the conversion (6.5.7.1; GHDL and Questa reject it too).";
     AGG_NO_TYPE = "E1320", "The type of an aggregate comes only from its context, and this context does not give one.";
     AGG_MISSING = "E1321", "A record aggregate does not give a value for every element.";
     AGG_DUPLICATE = "E1322", "A record aggregate gives a value for an element twice.";

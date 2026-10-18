@@ -5,9 +5,10 @@ Inputs: `docs/plan.md` (rules 1, 2, 4, 7, 8, 12, 13, the error-handling motto, 2
 together, on-demand analysis), `docs/decisions.md`, `lib/README.md`, `lib/NATIVE.md`,
 `crates/rsim-diag`, and the M0 AST (`rsim-syntax`, `ast.rs` on the M0 branch).
 
-LRM references are to IEEE 1076-2008 clause numbers, which 1076-2019 mostly keeps. Claims marked
-**(unsure)** are from memory of the LRM text and must be checked against the LRM before the slice
-that implements them is closed. Nothing here is taken from NVC, GHDL or rust_hdl code.
+LRM references are to IEEE 1076-2008 clause numbers, which 1076-2019 mostly keeps. The former
+**(unsure)** items and Q1/Q2 were checked on 2026-10-18; `docs/design/lrm-checks.md` has the
+evidence per item (tagged `[L<n>]`, `[Q<n>]` here) and the questions still open (`U-<n>`). Nothing
+here is taken from NVC, GHDL or rust_hdl code.
 
 ## 0. Scope and shape
 
@@ -54,9 +55,9 @@ Known 2008-vs-2019 differences and their handling:
 | Difference | Handling |
 |---|---|
 | INTEGER is 32-bit in 2008 (`-2147483648 to 2147483647`), 64-bit in 2019 (`-(2**63-1) to 2**63-1`); REAL is f64 in both rsim copies | design-wide: a 2008 unit in a 2019 design gets 64-bit INTEGER. Uses whose value depends on the range in a 2008 file (`integer'high`, `'low`, `'left`, `'right`, `'range`, `'base` of INTEGER and its subtypes NATURAL/POSITIVE, and of `universal_integer`-typed static bounds that fold differently) get warning `W1008`; plain arithmetic is not diagnosed, since its results agree whenever the 2008 run would not overflow |
-| implicit operations new in 2019 (file `file_state`, `file_mode`, `file_position`, `file_size`, `file_seek`, `file_truncate`, `file_rewind`; `<T>_RANGE_RECORD` types; anything else NATIVE.md section 2 marks 2019) | created with `since: V2019`; a reference from a 2008 file is `E1007`; if the 2008 file declares its own homograph, its explicit declaration hides the implicit one in the same region as usual, and a use-visible user homograph that now meets a directly visible implicit 2019 op gets warning `W1008` instead of a silent change of the chosen overload |
+| implicit operations new in 2019 (file `file_state`, `file_mode`, `file_position`, `file_size`, `file_seek`, `file_truncate`, `file_rewind`; range record types; anything else NATIVE.md section 2 marks 2019) | created with `since: V2019`; a reference from a 2008 file is `E1007`; if the 2008 file declares its own homograph, its explicit declaration hides the implicit one in the same region as usual, and a use-visible user homograph that now meets a directly visible implicit 2019 op gets warning `W1008` instead of a silent change of the chosen overload |
 | std/ieee declarations new in 2019 (`std.env` additions, `std.reflection`, new ieee overloads) | `since: V2019`, `E1007` from a 2008 file |
-| reserved words new in 2019: `view`, `private` **(unsure: whether 2019 reserves any other word; check LRM 15.10)** | a 2008 file may declare and use them as identifiers (M0 lexes per file); a 2019 file cannot name such a declaration (the word is a keyword there, and the extended identifier `\view\` is a different name), so a 2008 declaration named `view` or `private` that is reachable from a 2019 file through `use ... .all` is invisible there; a 2019 reference that fails only because of this gets the usual `E1100` with a help naming the 2008 declaration |
+| reserved words new in 2019: exactly `view` and `private` (15.10) [L1] | a 2008 file may declare and use them as identifiers (M0 lexes per file); a 2019 file cannot name such a declaration (the word is a keyword there, and the extended identifier `\view\` is a different name), so a 2008 declaration named `view` or `private` that is reachable from a 2019 file through `use ... .all` is invisible there; a 2019 reference that fails only because of this gets the usual `E1100` with a help naming the 2008 declaration |
 | 2019-only constructs (views, private variables, generic type classes, 2019 attributes, conditional expressions) in a 2008 file | `E1910` (normally already a syntax error from M0) |
 | 2008 constructs illegal under 2019 rules | none known; if one is found it is `E1007` |
 
@@ -225,9 +226,11 @@ Algorithm:
    - (b) of two potentially visible homographs, if one is explicit and the other implicit, drop
      the implicit one (2008);
    - (c) two potentially visible non-overloadable decls with the same key, or a non-overloadable
-     and an overloadable one, make **all** of them invisible unless they denote the same entity
-     (the same `DeclId`, possibly through aliases). **(unsure: the "same entity through an alias"
-     exception wording)**. Report only at the use: `E1102` with both use clauses as labels.
+     and an overloadable one, make **all** of them invisible unless they are the same declaration
+     or non-object aliases (or the declaration itself) that denote the same named entity. Object
+     aliases get no exception: `alias c is p1.c` against `p1.c` conflicts (12.4 c has no alias
+     exception in its text; NVC and GHDL both treat type aliases as the same entity and object
+     aliases as a conflict) [L2]. Report only at the use: `E1102` with both use clauses as labels.
    - Overloadable potentially visible decls from different packages that are not homographs, or
      are explicit homographs, stay visible; ambiguity is an overload resolution error at the call
      (the classic `numeric_std` + `std_logic_arith` clash).
@@ -245,8 +248,8 @@ Context clauses and declarations (13.3, 13.4):
   (2008). The prefix of a use clause is resolved as an expanded name (1.5); the suffix must
   denote a package or an instance, or a declaration in one.
 - `context l.c;` splices the items of context declaration `c` into the current context region,
-  in order. Inside a context declaration, a library clause naming `work` and names starting with
-  `work.` are errors (13.4) **(unsure: exact rule for `work` in context declarations)**.
+  in order. Inside a context declaration, a library clause naming `work`, and a use clause or
+  context reference whose selected name has the prefix `work`, are errors (13.3) [L3].
 - `use` of a whole library (`use l.all`) makes its primary units potentially visible; entity
   names visible this way matter for default binding (7.3).
 
@@ -370,7 +373,8 @@ pub enum BoundsFrom {
 | `subtype S is T range L to R` | `SubtypeDef{base, Range}` |
 
 Bounds of an integer or physical type declaration must be locally static (5.2.3.1) and are folded.
-The base range of an anonymous integer base type: see Q2.
+The base range of an anonymous integer base type is implementation-defined (it must contain the
+declared range); rsim takes the declared range, see Q2 [Q2].
 
 ### 2.4 Array types (5.3.2)
 
@@ -399,11 +403,11 @@ element names in a record constraint: `E1213`.
 - Incomplete type `type T;` must be completed by a full declaration of `T` in the same region
   (`E1220` otherwise). Before completion it may be used only as the designated type of an access
   type, and, per `lib/README.md`, as a return type of methods in a protected type declaration
-  whose completion appears later in the region (std 2019 `reflection` needs this). **(unsure:
-  the LRM clause allowing incomplete types in protected method profiles; rsim accepts it, since
-  `reflection.vhdl` is IEEE text and must analyze)**.
+  whose completion appears later in the region (std 2019 `reflection` needs this). No LRM text
+  for it was found and NVC/GHDL reject the pattern in user code; rsim accepts it only in
+  subprogram profiles inside a protected type declaration, 2019 only (U-2) [L4].
 - File types (5.5): element type cannot be access, protected, file, or contain those (`E1222`);
-  2008 also bans multi-dimensional arrays as file element **(unsure)**.
+  multi-dimensional arrays as file element are an error in 2008 and 2019 (`E1222`) [L5].
 - Protected types (5.6): see 6.6.
 
 ### 2.7 Resolution indications (6.3)
@@ -424,13 +428,18 @@ subtype keeps the resolution; `std_logic` is `SubtypeDef{base: std_ulogic, resol
 ### 2.8 Universal types and implicit conversion (5.2, 9.3.6)
 
 - Literals: abstract integer literal is `universal_integer`, real literal `universal_real`.
-  Named numbers (`constant N := 8;`) are universal too.
+  VHDL has no named numbers: `constant N := 8;` is a syntax error (6.4.2.2) [Q1]. Universal values
+  come from literals, attributes such as `'pos` and `'length`, and universal operators.
 - Predefined universal operators exist (`*` of universal_integer and universal_real, `/` real by
   int, `**`, arithmetic, relational), declared implicitly in `std.standard` like any type's ops.
-- Implicit conversion of a universal operand to an integer or floating type happens only where
-  the context requires a specific type. The resolver inserts an explicit HIR node
-  `ExprKind::ImplicitConv` there, so M2 never infers conversions. The preference rule between an
-  interpretation that converts at the leaves and one that uses universal operators is Q1.
+- Implicit conversion (9.3.6) applies only to a *convertible universal operand* (a numeric
+  literal, an attribute of universal type, or the division of two values of the same physical
+  type), only where the innermost complete context determines a unique numeric target type, and
+  only if no interpretation of the complete context without the conversion exists. So
+  `(2 + 3) = 5` uses universal `+` and `=` even when a user `"+"` on INTEGER is visible, and
+  `x := 2**40 / 2**20` uses INTEGER `**` and `/` (the universal result of `/` is not
+  convertible). The resolver inserts an explicit HIR node `ExprKind::ImplicitConv` at each
+  converted operand, so M2 never infers conversions [Q1].
 - Discrete ranges whose bounds are both universal_integer (`for i in 0 to 7`, `array (0 to 7)`)
   are of type INTEGER (5.3.2.2 / 10.10).
 
@@ -454,14 +463,14 @@ pub enum GenericClass {           // M0 `GenericTypeDef`
 }
 ```
 
-| Class | Implicit operations inside the generic **(unsure: exact lists in 2019 6.5.3)** |
+| Class | Implicit operations inside the generic: the predefined operations every type of the class has (2019 6.5.3; the exact LRM list was not read, NVC 2019 agrees where it implements them) [L6] |
 |---|---|
 | Private | `=`, `/=` (2008 interface type: the LRM is silent; treat as none and require formal `"="` in 2008, see Q9) |
 | Scalar | relational, `minimum`, `maximum`, `'image`/`'value` and scalar attributes |
 | Discrete | Scalar plus `'pos`, `'val`, `'succ`, `'pred`, `'leftof`, `'rightof` |
 | Integer, Floating | Scalar plus arithmetic of that class |
 | Physical | Scalar plus physical arithmetic |
-| Array | `=`, `/=`, `&`, relational if the element class is discrete, array attributes |
+| Array | `=`, `/=`, `&`, relational if the element class is scalar (2019, LCS-2016-059a; discrete in 2008), array attributes |
 | Access | `=`, `/=`, `deallocate`, `.all` |
 | File | the file operations |
 
@@ -513,7 +522,7 @@ Which families each type gets (from NATIVE.md section 2, with the LRM type-class
 | access | `deallocate` (procedure) |
 | file | `file_open` (2 forms), `file_close`, `read`, `write`, `endfile`, `flush`; 2019 `file_state file_mode file_position file_size file_seek file_truncate file_rewind` |
 | BOOLEAN, BIT signals | `rising_edge`, `falling_edge` (2008, `std.standard` lists them) |
-| scalar types (2019) | the implicit record type `<T>_RANGE_RECORD` and its `range_record` support, as `standard.vhdl` lists **(unsure: whether every scalar type gets one or only on use of `'RANGE_RECORD`; create eagerly, it is cheap)** |
+| scalar types (2019) | an anonymous range record type (`LEFT`, `RIGHT` of the type, `DIRECTION`), created eagerly with every scalar type and reached through `R'RECORD`; the names `<T>_RANGE_RECORD` only for the `std.standard` types that `standard.vhdl` lists (U-3) [L7] |
 
 The native symbol for an implicit op is `rsim.implicit.<family>.<type mangled>`. For explicit
 bodiless std subprograms sem computes the NATIVE.md symbol (`rsim.<package>.[<pt>.]<name>.<param
@@ -658,8 +667,11 @@ it covers must have the same type (9.3.3.2).
 **Array aggregate**: for an n-dimensional array, each element is an (n-1)-dimensional
 aggregate or, for 1-D (2008), an expression of either the element type **or the aggregate's own
 type** (a slice-like positional piece). For each element, intersect `cands(expr)` with
-`{elem type, aggregate type}`; exactly one must remain, else `E1323`. **(unsure: the LRM tie-break
-when both fit, e.g. array of `string` elements; rsim reports ambiguity)**.
+`{elem type, aggregate type}`; exactly one must remain, else `E1323`. The LRM has no tie-break [L8]. The aggregate's own type is a candidate only for a positional
+association or a discrete-range choice (9.3.3.3), and an element that is itself an aggregate takes
+the element type (otherwise `((fs, "fs "), (ps, "ps "))` for an array of records would be
+ambiguous; GHDL and NVC do the same). A remaining tie, such as an overloaded `f` returning both
+types, is `E1323` (as GHDL; NVC picks the element type).
 
 Choices: index expressions, discrete ranges, subtype names, `others`. Rules (9.3.3.3):
 - `others` last and alone in its association; needs a constrained context subtype (`E1325`).
@@ -726,7 +738,7 @@ Bit-string expansion is type independent in 2008 (15.8), so it is folded once to
 | conditional and selected signal/variable assignments in sequential code | 10.5, 10.6 |
 | `case?`, `select?`, matching relational operators | 10.9, 9.2.3 |
 | unary reduction operators, array-scalar logical operators | 9.2.2 |
-| non-static case choices of a non-locally-static subtype of 1-D char arrays when all choices have the same length | 10.9 **(unsure)** |
+| case expression of a 1-D character array type whose subtype is not locally static, when all choices have the same length (analysis error otherwise); the expression length is checked at run time, a mismatch is an error, not `others` | 10.9 [L9] |
 | `if`/`case` generate with alternatives and labels | 11.8 |
 | generics referring to earlier generics, generic types/subprograms/packages | 6.5.6 |
 | `force`/`release` | 10.5.2 |
@@ -754,7 +766,7 @@ Computed for every `Expr` bottom-up while building HIR:
   operands; qualified expressions and conversions to locally static subtypes; aggregates whose
   choices and elements are locally static. 2008 adds calls to functions of `std_logic_1164`,
   `numeric_std`, `numeric_bit`, `numeric_std_unsigned`, `numeric_bit_unsigned` with locally static
-  actuals **(unsure: exact list in 9.4.2)**.
+  actuals; exactly these five packages (9.4.2 e) [L10].
 - **Globally static**: generics, generic-dependent constants, deferred constants, pure function
   calls with globally static actuals, `'path_name`/`'instance_name`, everything in a generate
   parameter's scope that depends on it.
@@ -851,7 +863,7 @@ The visible part is cloned eagerly (clients need its types), the body lazily.
 |---|---|---|
 | constant | expression, `Type(formal subtype after substitution)` | the formal's default expression |
 | `type T` (any class) | a subtype indication; checked against the class (`E1503`) | none (2008), `E1502` if missing |
-| subprogram | a subprogram name, with optional signature, whose profile conforms after substitution | `is <>`: the unique subprogram with the formal's designator visible **at the instantiation** whose profile conforms; `is name`: `name` resolved at the formal's declaration, then checked at the instantiation **(unsure: where `is name` is resolved)**; none or several: `E1504` listing the candidates |
+| subprogram | a subprogram name, with optional signature, whose profile conforms after substitution | `is <>`: the unique subprogram with the formal's designator visible **at the instantiation** whose profile conforms; `is name`: `name` resolved at the formal's declaration (NVC; GHDL crashes on the case), then checked at the instantiation [L11]; none or several: `E1504` listing the candidates |
 | package `package P is new G generic map (<>)` | an instance of `G` | `generic map (default)`: actual instance must use the defaults; explicit partial maps must match the actual's generics |
 
 Generic maps resolve in order, so a later formal's subtype can use an earlier formal type (2008).
@@ -919,12 +931,13 @@ Predefined attributes are a table keyed by `(name, prefix kind)`:
 
 | Prefix kind | Attributes |
 |---|---|
-| scalar type/subtype | `left right high low ascending image value pos val succ pred leftof rightof base`, 2008 `subtype`, 2019 `range_record` **(unsure: spelling of the 2019 range record attribute)** |
+| scalar type/subtype | `left right high low ascending image value pos val succ pred leftof rightof base`, 2008 `subtype` |
+| range (2019, prefix is an attribute name denoting a range, e.g. `t'range`) | `record` (the range record subtype, type mark only), `value` (its value); there is no `'RANGE_RECORD` attribute (16.2.6) [L12] |
 | array object/type | `left right high low range reverse_range length ascending element` (with dimension argument), 2008 `subtype` |
 | signal | `event active last_event last_active last_value driving driving_value`; implicit signals `delayed(t) stable(t) quiet(t) transaction` |
 | named entity | `simple_name instance_name path_name` |
-| object (2019) | `image` **(unsure)**, `reflect` |
-| type (2019) | `reflect`, `designated_subtype` (access/file), `index` **(unsure)** |
+| object (2019) | `image` (scalar objects), `reflect` [L13] |
+| type (2019) | `reflect`, `designated_subtype` (access/file), `index` and `index(n)` (array, the index subtype; type mark only) [L14] |
 | mode view (2019) | `converse` |
 
 - `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` create **implicit signal**
@@ -973,8 +986,10 @@ single overload. No match `E1630`, several `E1631`.
 
 - Declaration region: subprogram declarations, use clauses, attribute specs, aliases; 2019 adds
   `private variable v : other_pt;` (M0 `ObjectDecl.private`), visible only in the protected body,
-  and aliases that forward methods of a private variable as methods of this type
-  **(unsure: the exact 2019 rule set for private variables and method aliases)**.
+  and aliases that forward methods of a private variable as methods of this type. An alias in a
+  protected type declaration that denotes anything other than a method of a protected type is an
+  error (2019 5.6.2); `private shared variable` is an error (a grammar slip, VI#251); private
+  variables may be of any type; methods made visible by an alias need no body [L15].
 - Body: bodies for every declared method (`E1230` for missing), plus any declarations.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.
@@ -992,8 +1007,8 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 
 - `view v of r_t is a, b : in; c : out; d : view w; end view;` every element of `r_t` exactly once
   (`E1660` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
-- `v'converse` is a view with `in`/`out` swapped, `inout`/`buffer` unchanged **(unsure: `buffer`
-  under converse)**, nested views conversed recursively. Sem materializes it as a `ViewDef`
+- `v'converse` is a view with `in`/`out` swapped, `inout` unchanged and `buffer` becoming `in`
+  (GHDL; NVC keeps `buffer`; no LRM text found, U-4) [L16], nested views conversed recursively. Sem materializes it as a `ViewDef`
   on first use.
 - Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
   per element the effective mode. Port association checks per element (an `in` element is not
@@ -1155,7 +1170,7 @@ Each relaxation turns an error into its own warning code; nothing else differs.
 |---|---|---|
 | R1 | shared variable of non-protected type (6.4.2.4) | UVVM and VHDL-93-style code; the kernel already marks such processes serial |
 | R2 | pure function reading or calling something impure (4.?/9.4.?) | common in vendor libraries |
-| R3 | globally static (not locally static) case choices | NVC accepts this relaxed **(unsure: what NVC relaxed covers exactly; check `nvc --help`)** |
+| R3 | dropped: NVC's `--relaxed` does not relax case choices (its list is impure calls and files in pure functions, non-globally-static interface defaults, non-protected shared variables) [L17] | per Q6 |
 | R4 | default binding to an entity in `work` when it is not visible (implementation choice) | none needed if Q4 picks the rule above |
 
 Q6 asks the user to confirm the list.
@@ -1213,13 +1228,13 @@ end of S3 on real code (numeric_std), so a rework does not cost the later slices
 ## 11. Decisions and remaining checks
 
 Q3 to Q9 and Q11 were accepted by the user as recommended (2026-10-18). Q10 was replaced by the
-mixed-revision rule in 0.1. Q1 and Q2 keep the recommendation but must be checked against the LRM
-text before the named slice, like the other **(unsure)** items.
+mixed-revision rule in 0.1. Q1 and Q2 were checked on 2026-10-18 (`lrm-checks.md`): Q1 follows the
+LRM text, Q2's premise was wrong and is back with the user as U-1.
 
 | # | Topic | Decision | Status |
 |---|---|---|---|
-| Q1 | universal preference (`x := 2 ** 3`), LRM 9.3.6 | prefer interpretations that convert only at leaves (literals, named numbers); universal operators only when the complete context is universal | to be checked against the LRM text before slice S2 |
-| Q2 | base range of an anonymous integer base type (`t'base'high`) | smallest of 32-bit or 64-bit that holds the declared range, as NVC/GHDL; arithmetic checked i64 and against the base range | to be checked against the LRM text before slice S1 |
+| Q1 | universal preference (`x := 2 ** 3`), LRM 9.3.6 | 2.8: convert only convertible universal operands, only with a unique numeric target, and only when no interpretation without conversion exists (GHDL agrees; NVC prefers converting) | checked, corrected to the LRM text |
+| Q2 | base range of an anonymous integer base type (`t'base'high`) | proposed: base range = declared range, operations checked against it (NVC; GHDL and NVC both report the declared range for `'base`, neither uses 32/64-bit) | checked; open as U-1 in `lrm-checks.md` |
 | Q3 | 2008 locally static ieee calls without an interpreter in M1 | classified in M1; their choice checks deferred to elab through a `ConstEval` hook implemented by M2's interpreter | decided |
 | Q4 | default binding | last architecture in manifest order, note when several; directly visible entity preferred over `work` (GHDL #66), `W1703` | decided |
 | Q5 | overflow folding where the value is not required | error in required contexts; `W1401` elsewhere, runtime check kept | decided |

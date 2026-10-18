@@ -89,6 +89,8 @@ codes! {
     UNKNOWN_ATTRIBUTE = "E1621", "No predefined or user-defined attribute with this name applies to the prefix.";
     ENTITY_CLASS = "E1622", "The entity class of an attribute specification does not match the named entity.";
     ATTR_DIMENSION = "E1623", "The dimension argument of an array attribute is not a dimension of the prefix.";
+    ATTR_TYPE = "E1625", "The type of an attribute may not be an access, file or protected type, or a composite type with such an element (LRM 6.7).";
+    ATTR_TWICE = "E1626", "An attribute is given to the same named entity twice, or after an `others` or `all` specification for its entity class (LRM 7.2).";
     SIGNATURE_NONE = "E1630", "No declaration matches the signature.";
     // E17xx configurations, binding, components
     NOT_INSTANTIABLE = "E1700", "The instantiated name is not a component, an entity or a configuration.";

@@ -2314,4 +2314,4 @@ fn result_subtype(
 
 #[cfg(test)]
 #[path = "aggregate_tests.rs"]
-mod tests;
+pub(crate) mod tests;

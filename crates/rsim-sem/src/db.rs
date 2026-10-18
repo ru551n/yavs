@@ -88,6 +88,10 @@ pub struct Db {
     pub views: Arena<ViewId, ViewDef>,
     pub externals: Arena<ExternalId, External>,
     pub attr_values: Arena<AttrValueId, AttrValue>,
+    /// User attribute values by (entity, attribute name key) (attr.rs).
+    pub attr_index: HashMap<(DeclId, Symbol), AttrValueId>,
+    /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
+    pub(crate) attr_closed: HashSet<(ScopeId, Symbol, rsim_syntax::token::Kw)>,
     pub well_known: WellKnown,
     pub poison: Poison,
     pub(crate) root: ScopeId,
@@ -174,6 +178,8 @@ impl Db {
             views: Arena::new(),
             externals: Arena::new(),
             attr_values: Arena::new(),
+            attr_index: HashMap::new(),
+            attr_closed: HashSet::new(),
             well_known: WellKnown::default(),
             poison: Poison {
                 decl,

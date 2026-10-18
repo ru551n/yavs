@@ -698,6 +698,15 @@ pub enum AggBounds {
 }
 ```
 
+Implemented in `expr/aggregate.rs`. When the bounds are static (and for a named aggregate with one
+non-static choice) the aggregate's `Expr::subtype` is also an anonymous subtype carrying them, so
+M2 reads the bounds there; otherwise `AggBounds` alone describes them. In an n-dimensional
+aggregate the value of an association for dimension `k < n-1` is a nested `ExprKind::Aggregate`
+(or a string literal `Const` for the last dimension) whose `subtype` is the outermost context
+subtype; its dimension is its nesting depth. Folded array values use the canonical form of
+`aggregate::array_const` (bytes for 1-D enumeration arrays up to 64K elements, merged runs
+otherwise, rule 12).
+
 ### 3.5 Literals
 
 | Literal | Bottom-up | Resolved with type T |
@@ -945,6 +954,8 @@ Predefined attributes are a table keyed by `(name, prefix kind)`:
 | type (2019) | `reflect`, `designated_subtype` (access/file), `index` and `index(n)` (array, the index subtype; type mark only) [L14] |
 | mode view (2019) | `converse` |
 
+- The table, prefix forms per revision and typing are `attr::TABLE` (lrm-checks L12 to L14). An
+  implicit signal object keeps its defining `ExprKind::Attr` as its `default`.
 - `s'delayed(t)`, `s'stable(t)`, `s'quiet(t)`, `s'transaction` create **implicit signal**
   entities (`DeclKind::Object` with `ImplicitSignal{attr, prefix_lsp, param}`) in the enclosing
   region, one per distinct (prefix LSP, attribute, static parameter) occurrence, so M2 creates

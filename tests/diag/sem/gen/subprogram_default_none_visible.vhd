@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1504 7:43 no visible `"+"` for the `is <>` default of `+`
 -- LRM 6.5.6.3
 package g is

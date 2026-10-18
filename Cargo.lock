@@ -1005,158 +1005,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "rsim"
-version = "0.1.0"
-dependencies = [
- "clap",
- "rsim-diag",
- "rsim-elab",
- "rsim-kernel",
- "rsim-lib",
- "rsim-sem",
- "rsim-std",
- "rsim-syntax",
-]
-
-[[package]]
-name = "rsim-diag"
-version = "0.1.0"
-dependencies = [
- "annotate-snippets",
-]
-
-[[package]]
-name = "rsim-elab"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "rsim-interp",
- "rsim-ir",
- "rsim-kernel",
- "rsim-lib",
- "rsim-logic",
- "rsim-lower",
- "rsim-sem",
- "rsim-std",
- "rsim-syntax",
-]
-
-[[package]]
-name = "rsim-ffi"
-version = "0.1.0"
-
-[[package]]
-name = "rsim-interp"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "rsim-ffi",
- "rsim-ir",
- "rsim-kernel",
- "rsim-logic",
- "rsim-std",
-]
-
-[[package]]
-name = "rsim-ir"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "rsim-ffi",
- "rsim-kernel",
-]
-
-[[package]]
-name = "rsim-kernel"
-version = "0.1.0"
-dependencies = [
- "rayon",
- "rsim-logic",
-]
-
-[[package]]
-name = "rsim-lib"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "serde",
- "sha2",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "rsim-llvm"
-version = "0.1.0"
-dependencies = [
- "llvm-sys",
-]
-
-[[package]]
-name = "rsim-logic"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "proptest",
-]
-
-[[package]]
-name = "rsim-lower"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "rsim-interp",
- "rsim-ir",
- "rsim-kernel",
- "rsim-logic",
- "rsim-sem",
-]
-
-[[package]]
-name = "rsim-sem"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "rsim-lib",
- "rsim-std",
- "rsim-syntax",
-]
-
-[[package]]
-name = "rsim-std"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "proptest",
-]
-
-[[package]]
-name = "rsim-syntax"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
-]
-
-[[package]]
-name = "rsim-vhpi"
-version = "0.1.0"
-dependencies = [
- "cc",
- "libloading",
- "rsim-diag",
-]
-
-[[package]]
-name = "rsim-wave"
-version = "0.1.0"
-dependencies = [
- "ctrlc",
- "tempfile",
- "wavefst",
- "wellen",
-]
-
-[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,6 +1414,158 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "yavs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "yavs-diag",
+ "yavs-elab",
+ "yavs-kernel",
+ "yavs-lib",
+ "yavs-sem",
+ "yavs-std",
+ "yavs-syntax",
+]
+
+[[package]]
+name = "yavs-diag"
+version = "0.1.0"
+dependencies = [
+ "annotate-snippets",
+]
+
+[[package]]
+name = "yavs-elab"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-interp",
+ "yavs-ir",
+ "yavs-kernel",
+ "yavs-lib",
+ "yavs-logic",
+ "yavs-lower",
+ "yavs-sem",
+ "yavs-std",
+ "yavs-syntax",
+]
+
+[[package]]
+name = "yavs-ffi"
+version = "0.1.0"
+
+[[package]]
+name = "yavs-interp"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-ffi",
+ "yavs-ir",
+ "yavs-kernel",
+ "yavs-logic",
+ "yavs-std",
+]
+
+[[package]]
+name = "yavs-ir"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-ffi",
+ "yavs-kernel",
+]
+
+[[package]]
+name = "yavs-kernel"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "yavs-logic",
+]
+
+[[package]]
+name = "yavs-lib"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+ "tempfile",
+ "toml",
+ "yavs-diag",
+]
+
+[[package]]
+name = "yavs-llvm"
+version = "0.1.0"
+dependencies = [
+ "llvm-sys",
+]
+
+[[package]]
+name = "yavs-logic"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "proptest",
+]
+
+[[package]]
+name = "yavs-lower"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-interp",
+ "yavs-ir",
+ "yavs-kernel",
+ "yavs-logic",
+ "yavs-sem",
+]
+
+[[package]]
+name = "yavs-sem"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-lib",
+ "yavs-std",
+ "yavs-syntax",
+]
+
+[[package]]
+name = "yavs-std"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "proptest",
+]
+
+[[package]]
+name = "yavs-syntax"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+]
+
+[[package]]
+name = "yavs-vhpi"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libloading",
+ "yavs-diag",
+]
+
+[[package]]
+name = "yavs-wave"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "tempfile",
+ "wavefst",
+ "wellen",
+]
 
 [[package]]
 name = "zerocopy"

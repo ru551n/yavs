@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1302 10:27 call of `f` is ambiguous
 -- help: qualify the call with the package: `work.p1.f(1)`
 -- LRM 12.4

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1403 6:26 value 1.5 is outside subtype `unit_r`
 -- LRM 4.3.2
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1101 9:7 unit `mm` is declared twice
 -- LRM 5.2.4.1
 package p is

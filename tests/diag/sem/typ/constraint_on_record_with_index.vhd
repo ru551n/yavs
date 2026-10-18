@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1211 6:15 an index constraint cannot be applied to record type `r`
 -- LRM 6.3
 package p is

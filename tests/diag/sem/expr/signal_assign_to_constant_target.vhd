@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 9:5 cannot assign to constant `c`
 -- LRM 10.5
 entity e is end entity;

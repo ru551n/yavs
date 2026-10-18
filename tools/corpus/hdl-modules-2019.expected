@@ -1,6 +1,6 @@
-# tools/corpus/run.py expected results for hdl-modules-2019 (rsim); one line per manifest entry, in order
-# Initial list: derived from NVC's results (hdl-modules-2019.nvc.expected). rsim must analyze every file NVC accepts;
-# update with `run.py hdl-modules-2019 --bless` when rsim's behaviour legitimately changes.
+# tools/corpus/run.py expected results for hdl-modules-2019 (yavs); one line per manifest entry, in order
+# Initial list: derived from NVC's results (hdl-modules-2019.nvc.expected). yavs must analyze every file NVC accepts;
+# update with `run.py hdl-modules-2019 --bless` when yavs's behaviour legitimately changes.
 PASS axi_lite hdl-modules/modules/axi_lite/src/axi_lite_pkg.vhd
 PASS axi_stream hdl-modules/modules/axi_stream/src/axi_stream_pkg.vhd
 PASS common hdl-modules/modules/common/src/attribute_pkg.vhd

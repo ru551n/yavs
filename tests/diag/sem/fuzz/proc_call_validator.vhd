@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- fuzz: a procedure call left an ExprKind::Error in the arena (validator ICE)
 entity e is end;

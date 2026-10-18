@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 5.6.3
 -- A protected type declared in a package declaration has its body in the package body.

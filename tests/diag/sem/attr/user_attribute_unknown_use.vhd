@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1621 7:29 `s` has no value for attribute `tag`
 -- LRM 7.2
 package p is

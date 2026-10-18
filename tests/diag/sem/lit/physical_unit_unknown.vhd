@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1100 5:26 `parsec` is not declared
 -- LRM 5.2.4
 package p is

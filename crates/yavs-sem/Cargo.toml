@@ -1,0 +1,24 @@
+[package]
+name = "yavs-sem"
+description = "VHDL-2008/2019 semantic analysis for yavs: libraries, scopes, types, overloading, typed HIR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yavs-diag.workspace = true
+yavs-lib = { path = "../yavs-lib" }
+yavs-std = { path = "../yavs-std" }
+yavs-syntax.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Builds tests/hdl_modules.rs (needs the corpus from tools/fetch-corpus.sh).
+corpus = []
+
+[[test]]
+name = "hdl_modules"
+required-features = ["corpus"]

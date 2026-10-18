@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1505 14:10 `id` is a generic subprogram and must be instantiated before use
 -- LRM 4.4
 package p is

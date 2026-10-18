@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1340 5:34 condition must be BOOLEAN, found `integer`
 -- LRM 2019 9.1
 package p is

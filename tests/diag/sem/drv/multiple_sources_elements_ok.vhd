@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 14.7.2 (distinct static sub-elements have separate sources)
 entity e is end entity;

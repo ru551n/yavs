@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1105 27:8 `iv` is a private variable of `outer`
 -- LRM 2019 5.6.2
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1701 13:9 instance `u1` is of component `c1`, not `c2`
 -- LRM 3.4.2
 entity e is end entity;

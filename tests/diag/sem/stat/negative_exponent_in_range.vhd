@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1401 5:24 negative exponent in integer `**`
 -- LRM 9.2.8
 package p is

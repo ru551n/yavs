@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 6:24 expected a unit of `time`, found unit `m` of `len`
 -- LRM 5.2.4
 package p is

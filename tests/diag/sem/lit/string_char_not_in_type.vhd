@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1330 5:30 character `a` is not a literal of type `bit`
 -- LRM 15.7
 package p is

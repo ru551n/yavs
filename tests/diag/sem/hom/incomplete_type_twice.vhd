@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1101 7:8 `t` is already declared in this region
 -- LRM 5.4.2
 package p is

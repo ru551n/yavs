@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1300 5:44 expected `integer`, found `bit`
 -- LRM 2019 9.1
 package p is

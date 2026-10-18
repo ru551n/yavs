@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 9.3.3.3
 -- `others` aggregates as generic and port actuals and defaults, record element targets,

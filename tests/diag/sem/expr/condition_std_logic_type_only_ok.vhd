@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 9.2.9 (silent on where the implicit `??` is looked up; permissive, as NVC)
 library ieee;

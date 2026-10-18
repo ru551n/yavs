@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1905 20:5 protected type `pt` cannot be assigned
 -- LRM 5.6.2
 package p is

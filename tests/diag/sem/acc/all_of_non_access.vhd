@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1361 11:10 `.all` of an integer
 -- LRM 8.3
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 10:5 cannot assign to parameter `x` of mode `in`
 -- LRM 10.6
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 10:38 `c` is a constant and cannot be an actual for an `out` port
 -- LRM 6.5.7.3
 entity sub is port (a : out bit); end entity;

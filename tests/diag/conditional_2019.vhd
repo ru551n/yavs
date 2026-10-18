@@ -1,4 +1,4 @@
--- rsim: --std 2019
+-- yavs: --std 2019
 -- `( conditional_expression )` is a primary; a qualified expression needs its own parentheses.
 package p is
   constant g : boolean := true;

@@ -1,21 +1,21 @@
-# M2 middle end: rsim-ir, rsim-interp, rsim-elab
+# M2 middle end: yavs-ir, yavs-interp, yavs-elab
 
-Status: `rsim-ir` and `rsim-interp` implemented (M2, built against hand-written IR); lowering
-(`rsim-lower`) and `rsim-elab` in progress. Deviations from this design are listed in section 9.
+Status: `yavs-ir` and `yavs-interp` implemented (M2, built against hand-written IR); lowering
+(`yavs-lower`) and `yavs-elab` in progress. Deviations from this design are listed in section 9.
 Binding inputs: `docs/plan.md` (architecture table, "Designed for
 the GUI", "Parallel kernel design", rules 1 to 12, the error-handling motto) and
-`docs/decisions.md`. Interfaces read from: the kernel worktree (`rsim-kernel`: `Process`, `Ctx`,
-`Builder`, `SimControl`, `Observer`, `SimError { trace: Vec<StmtId> }`), `rsim-logic`,
-`rsim-wave`, the LLVM spike (`rsim-llvm`, `STATUS.md`), `rsim-std` (`arith`), `lib/NATIVE.md`,
+`docs/decisions.md`. Interfaces read from: the kernel worktree (`yavs-kernel`: `Process`, `Ctx`,
+`Builder`, `SimControl`, `Observer`, `SimError { trace: Vec<StmtId> }`), `yavs-logic`,
+`yavs-wave`, the LLVM spike (`yavs-llvm`, `STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
 the VHPI stub. The HIR is specified in `docs/design/sem.md`; section 0 lists what this design
 assumes of it.
 
 ```
-HIR (rsim-sem) --lower, once per design unit--> Program (rsim-ir, immutable, Arc)
+HIR (yavs-sem) --lower, once per design unit--> Program (yavs-ir, immutable, Arc)
                                                     |
      elaborate(design, top, generics, cfg) ---------+--> Design { program, hier, nets, procs }
-     (rsim-elab, runs elab code in rsim-interp)                       |
-                                                    Design::build() --> rsim_kernel::SimControl
+     (yavs-elab, runs elab code in yavs-interp)                       |
+                                                    Design::build() --> yavs_kernel::SimControl
                                                     (InterpProcess per process instance)
 ```
 
@@ -23,7 +23,7 @@ HIR (rsim-sem) --lower, once per design unit--> Program (rsim-ir, immutable, Arc
 
 | # | Assumption | Why the IR needs it |
 |---|---|---|
-| H1 | Arena ids (`UnitId`, `DeclId`, `ExprId`, `SeqStmtId`), each node with a `rsim_diag::Span` | statement ids, spans on every instruction |
+| H1 | Arena ids (`UnitId`, `DeclId`, `ExprId`, `SeqStmtId`), each node with a `yavs_diag::Span` | statement ids, spans on every instruction |
 | H2 | Every expression carries a resolved `TypeId` and, where known, a `SubtypeId`; subtype constraints are HIR expressions (static or not), never pre-folded values | rule 1: lowering emits descriptor computations |
 | H3 | Every call names one `SubprogramId`. Predefined operations are `Implicit { family, type }` (NATIVE.md section 2); bodiless std subprograms carry their native symbol; `attribute foreign` subprograms are marked foreign with the attribute string | three call kinds |
 | H4 | Names are resolved to declarations; indexed/sliced/selected names stay structured; each name has a staticness flag (locally / globally / none) | longest static prefix, driver map |
@@ -35,7 +35,7 @@ HIR (rsim-sem) --lower, once per design unit--> Program (rsim-ir, immutable, Arc
 | H10 | 2019 mode views resolved to per-field modes on the port | port splitting |
 | H11 | `wait` inside a function, and a procedure that can wait called from a function, are rejected by sem | functions never suspend |
 
-## 1. The IR (`rsim-ir`)
+## 1. The IR (`yavs-ir`)
 
 ### 1.1 Program, units, ids
 
@@ -47,7 +47,7 @@ pub struct Program {
     pub funcs: IdVec<FuncId, Func>,        // processes, subprograms, elab bodies, thunks
     pub types: IdVec<TyId, Ty>,            // runtime-shape descriptions (1.3)
     pub consts: ConstPool,                 // compact constant data (rule 12)
-    pub stmts: IdVec<StmtId, StmtInfo>,    // global: StmtId is rsim_kernel::StmtId
+    pub stmts: IdVec<StmtId, StmtInfo>,    // global: StmtId is yavs_kernel::StmtId
     pub natives: IdVec<NativeId, NativeRef>,
     pub foreign: IdVec<ForeignId, ForeignRef>,
     pub cov: IdVec<CovItem, CovInfo>,
@@ -112,13 +112,13 @@ pub enum Ty {
     File    { elem: TyId },               // FileId (u32)
     Protected { unit: UnitIr },           // Handle to instance state
 }
-pub enum LogicKind { StdULogic, Bit, Boolean }       // gets the rsim-logic fast paths
+pub enum LogicKind { StdULogic, Bit, Boolean }       // gets the yavs-logic fast paths
 ```
 
 | Value | In memory | Notes |
 |---|---|---|
 | integer, physical | `i64` | ranges checked by `Check` (1.5); 2008 INTEGER is 32-bit by its range only |
-| enum | `u8` / `u32` | a scalar std_ulogic is the bare rsim-logic code (`StdULogic as u8`, decisions.md) |
+| enum | `u8` / `u32` | a scalar std_ulogic is the bare yavs-logic code (`StdULogic as u8`, decisions.md) |
 | logic array | bit-planes (below) | arrays whose scalar leaf is a `LogicKind` enum |
 | real | `f64` | |
 | other array | elements contiguous, row major | bounds in a **dope**: `[left, right, dir]` per dimension, `i64` each |
@@ -137,17 +137,17 @@ and materialized by `CopyConst`, which expands runs straight into the destinatio
 `others => x` initialiser is 1 element in the pool.
 
 **Logic arrays are bit-planes everywhere** (decisions.md): variables, constants, heap objects,
-signals (the kernel stores logic leaves as rsim-logic planes, K7) and temporaries.
+signals (the kernel stores logic leaves as yavs-logic planes, K7) and temporaries.
 
 | Aspect | Rule |
 |---|---|
-| Format | rsim-logic `Planes`: block `i` = elements `64i..64i+63` as `[u64; 4]` (plane 0 = code bit 0); element 0 is the rightmost element. `bit` and `boolean` arrays use the same blocks (only planes 0 and 1 vary) so one code path serves all `LogicKind`s |
+| Format | yavs-logic `Planes`: block `i` = elements `64i..64i+63` as `[u64; 4]` (plane 0 = code bit 0); element 0 is the rightmost element. `bit` and `boolean` arrays use the same blocks (only planes 0 and 1 vary) so one code path serves all `LogicKind`s |
 | Nesting | an array of logic arrays (memories, `array (0 to 1023) of std_logic_vector(7 downto 0)`, 2-D logic arrays) is **one** plane vector over all elements, rows contiguous; a row is an element range, not a padded block |
 | In records | a logic-array field is its own plane vector at its field offset, padded to whole 32-byte blocks |
 | Size | `ceil(n / 64) * 32` bytes (`LayoutOf` computes it; `u64`) |
 | Element access | `LGet{dst, base, idx}` / `LSet{base, idx, v}`: block `idx / 64`, bit `idx % 64` in each plane; `Index` on a logic array lowers to these |
 | Slices, concatenation, aggregates | `LCopy{dst, dst_off, src, src_off, n}`: word-wise copy with funnel shifts (64 elements per step, any alignment); `Copy` when both ends are block aligned |
-| Operators | `LogicOp`/`LNum` call rsim-logic bit-parallel ops (`and`..`xnor`, `not`, `to_x01`, `resolve`, `match_eq`, shifts, `add_num`, `cmp_num`); 0/1-only values take the `BitVec` word path |
+| Operators | `LogicOp`/`LNum` call yavs-logic bit-parallel ops (`and`..`xnor`, `not`, `to_x01`, `resolve`, `match_eq`, shifts, `add_num`, `cmp_num`); 0/1-only values take the `BitVec` word path |
 | Parameters | in-mode: by reference when block aligned, else `LCopy` into a temp; out/inout of an unaligned slice: copy-in/copy-out (LRM 6.5.6.2 allows either) |
 | Constants | `ConstData::Runs` expand per block (`others => '0'` is a block fill) |
 | Transpose | only at the edges, per changed element range, 64 elements per step: waves (`value_change` range to one char per element for `WaveWriter::change`), VHPI `vhpi_get_value`/`put_value` (`vhpiLogicVecVal`, `vhpiEnumVecVal`), DAP display, foreign calls (1.7), `'image`/`to_string` |
@@ -179,9 +179,9 @@ has a `StmtId` in `Func.loc`.
 |---|---|
 | move/const | `Const{dst, i64}`, `ConstF{dst, f64}`, `Move{dst, src}`, `AddrOf{dst, space, slot}`, `CopyConst{dst_addr, const}` |
 | memory | `Load{dst, addr, w}`, `Store{addr, src, w}`, `Copy{dst, src, bytes}`, `Fill{dst, elem, n, size}`, `Index{dst, base, dope, idx...}` (bounds-checked), `Field{dst, base, layout, n}` |
-| int (checked, rule 7) | `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Mod`/`Pow`/`Neg`/`Abs` on i64: overflow and zero divisors raise `Runtime` through `rsim_std::arith`; never wrap |
+| int (checked, rule 7) | `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Mod`/`Pow`/`Neg`/`Abs` on i64: overflow and zero divisors raise `Runtime` through `yavs_std::arith`; never wrap |
 | real | `FAdd`..`FPow`, `FCmp`, `IToF`, `FToI` (checked round per LRM, `real_to_int`) |
-| compare/logic | `Cmp{op, dst, a, b}`, `And/Or/Xor/Not` on booleans, `LogicOp{op, dst, a, b, n}`, `LNum{op, dst, a, b, signed}` on logic arrays via rsim-logic (bit-planes, 1.3); `LGet`/`LSet`/`LCopy` element and slice access |
+| compare/logic | `Cmp{op, dst, a, b}`, `And/Or/Xor/Not` on booleans, `LogicOp{op, dst, a, b, n}`, `LNum{op, dst, a, b, signed}` on logic arrays via yavs-logic (bit-planes, 1.3); `LGet`/`LSet`/`LCopy` element and slice access |
 | checks | `Check{kind: Range\|Index\|Length\|Null\|Discrete, v, lo, hi, what: CheckMsgId}`; `lo/hi` are regs, so runtime bounds and static bounds use one instruction |
 | subtypes | `MakeDope{dst, dims...}`, `DopeLen{dst, dope, dim}`, `LayoutOf{dst, desc}`, `SubtypeCheck{value, desc}` (composite conversion and constraint checks) |
 | control | `Br{blk}`, `CondBr{c, t, f}`, `Case{v, table: CaseTableId, default}` (ranges and choices as sorted table), `Ret`, `Unreachable` |
@@ -226,8 +226,8 @@ Lowering of the main statement forms:
 
 ### 1.7 Foreign subprograms (VHPIDIRECT), no libffi
 
-Few dependencies: rsim calls C through **its own trampolines**, one per ABI, in a small crate
-`rsim-ffi` (the only `unsafe` besides `rsim-vhpi`; `forbid(unsafe_code)` elsewhere).
+Few dependencies: yavs calls C through **its own trampolines**, one per ABI, in a small crate
+`yavs-ffi` (the only `unsafe` besides `yavs-vhpi`; `forbid(unsafe_code)` elsewhere).
 
 ```rust
 pub enum CType { I8, I16, I32, I64, U8, U16, U32, F32, F64, Ptr }   // the whole C type set
@@ -253,7 +253,7 @@ impl ForeignFn {
 - **VHDL to C mapping** (checked at elaboration; anything else is an error naming the subprogram
   and parameter, fail early). It follows the NVC user manual (`nvc(1)`, "VHPIDIRECT"), which
   defines integers, reals, enumerations and both array kinds; records and access values are
-  rsim additions. `rsim_ffi::vhdl::lower` implements it:
+  yavs additions. `yavs_ffi::vhdl::lower` implements it:
 
 | VHDL | C | Passing |
 |---|---|---|
@@ -266,12 +266,12 @@ impl ForeignFn {
 | unconstrained array | element pointer, then one `int64_t` length argument per dimension | same marshalling; NVC's convention, so C written for NVC works unchanged (bounds and direction are not passed) |
 | record of the scalar kinds above | pointer to a C struct with natural alignment | marshalled both ways |
 | scalar `out`/`inout` | pointer to a C-typed temp | written back after the call |
-| function result | `void` or any scalar C type above | `rsim-ffi` narrows the result register to the declared type (sign/zero extension); the interpreter range-checks |
+| function result | `void` or any scalar C type above | `yavs-ffi` narrows the result register to the declared type (sign/zero extension); the interpreter range-checks |
 
 - Not supported (elaboration error): composite results, struct-by-value, varargs, callbacks
   from C into VHDL (VHPI covers that).
 - Symbols: `attribute foreign of f : function is "VHPIDIRECT [lib] symbol"`; looked up in
-  `--load` libraries (reusing `rsim-vhpi`'s plugin loader), then in the executable. A missing
+  `--load` libraries (reusing `yavs-vhpi`'s plugin loader), then in the executable. A missing
   symbol is an elaboration error that lists every library searched.
 - **Tests on all three ABIs** without a C compiler: Rust `extern "C" fn` callees with mixed
   signatures (interleaved int/float, more arguments than registers to force stack slots,
@@ -300,13 +300,13 @@ impl ForeignFn {
 - Functions cannot suspend (H11); a `MAY_SUSPEND` procedure called from a function is an ICE in
   the verifier.
 
-## 3. Interpreter (`rsim-interp`)
+## 3. Interpreter (`yavs-interp`)
 
 ### 3.1 Dispatch
 
 - `Inst` is a Rust `enum` with `#[repr(u8)]`-sized tag and inline operands (8 to 16 bytes); a
   `match` loop over `code[pc]` with a local `pc`, `regs` and `slots` (rustc compiles it to a jump
-  table). No threaded code, no `unsafe` (foreign calls are the one exception, isolated in `rsim-ffi`, 1.7).
+  table). No threaded code, no `unsafe` (foreign calls are the one exception, isolated in `yavs-ffi`, 1.7).
 - Two loop instances: `exec::<false>` (fast: `Stmt` is a nop, no hook checks) and
   `exec::<true>` (debug: `Stmt` calls the debugger hook). The process switches loops when a
   debugger is attached.
@@ -328,7 +328,7 @@ pub struct InterpProcess {
     debug: Option<Arc<dyn Debugger>>,
 }
 
-impl rsim_kernel::Process for InterpProcess {
+impl yavs_kernel::Process for InterpProcess {
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         // continue frames.last(); signal ops -> ctx.value/assign/wait_on/wait_at/report/force
         // on error: ctx.error(kind) with trace = stmt of each frame, innermost first
@@ -343,25 +343,25 @@ impl rsim_kernel::Process for InterpProcess {
 | `Drive` | `ctx.assign(drivers[slot], target, waveform, DelayMode)` |
 | `Force`/`Release` | `ctx.force/release(r, ForceMode::Effective\|Driving)` |
 | `WaitOn`/`WaitFor`/`WaitAt`/`TimedOut` | `ctx.wait_on/wait_for/wait_at/timed_out` |
-| `Report` | `ctx.report(sev, msg)` (message formatting is rsim's, the kernel only buffers) |
+| `Report` | `ctx.report(sev, msg)` (message formatting is yavs's, the kernel only buffers) |
 | `Now`/`Delta` | `ctx.now()/delta()` |
 | natives `env.stop/finish` | `ctx.stop/finish` |
 
 ### 3.3 Diagnostics and stack traces
 
 - A runtime error builds `SimError` through `ctx.error(ErrorKind::Runtime(msg))` and fills
-  `trace` with the current `StmtId` of every frame, innermost first. rsim-diag renders each frame
+  `trace` with the current `StmtId` of every frame, innermost first. yavs-diag renders each frame
   from `Program.stmts` (subprogram name, file:line, snippet) and adds the process instance path,
   time and delta from `SimError`. An assert inside `numeric_std` therefore shows the user's call
-  site as the second frame (plan, rsim-diag row).
+  site as the second frame (plan, yavs-diag row).
 - Check failures carry a `CheckMsgId` with the static part of the message ("index 8 out of range
   7 downto 0 for s") so the error names the object, the value and the bounds.
 - A broken interpreter invariant returns `ErrorKind::Internal` at the current statement's span:
-  "this is a bug in rsim" (exit 101), never a bare panic.
+  "this is a bug in yavs" (exit 101), never a bare panic.
 
 ### 3.4 Debug hooks (Riviera-PRO / Questa style)
 
-Implemented in `rsim-interp` (`debug.rs`); the DAP server (M8) and the GUI (M10) build on it
+Implemented in `yavs-interp` (`debug.rs`); the DAP server (M8) and the GUI (M10) build on it
 without interpreter changes.
 
 ```rust
@@ -438,11 +438,11 @@ The interpreter also runs `FuncKind::Elab` and `Thunk` functions without a kerne
 expressions, constant declarations, subtype descriptors and signal initial values are all
 computed this way, so elaboration and simulation share one evaluator (rule 4, rule 5).
 
-## 4. Elaboration (`rsim-elab`)
+## 4. Elaboration (`yavs-elab`)
 
 ```rust
 pub fn elaborate(
-    design: &rsim_sem::Design,           // analyzed HIR, read-only
+    design: &yavs_sem::Design,           // analyzed HIR, read-only
     top: UnitId,
     overrides: &[(String, String)],      // -g name=value, parsed with the normal value parser
     cfg: &ElabConfig,                    // std revision, collapse ports, limits
@@ -454,7 +454,7 @@ pub struct Elaborated {
     pub nets: NetGraph,                  // signals, drivers, ports, implicit signals
     pub procs: Vec<ProcInst>,            // in elaboration order = kernel ProcId order
 }
-impl Elaborated { pub fn build(&self, kcfg: rsim_kernel::Config) -> Result<SimControl, SimError>; }
+impl Elaborated { pub fn build(&self, kcfg: yavs_kernel::Config) -> Result<SimControl, SimError>; }
 ```
 
 Pure and re-entrant: no globals, no interior mutability shared across calls; `build` can be
@@ -462,7 +462,7 @@ called again for an in-process restart (rule 4, GHDL #1184).
 
 | Step | What happens | Errors (fail early, with instance path) |
 |---|---|---|
-| 1. Reachability | units reachable from `top` through instances, configurations, packages; lowered once each into `Program` | missing unit names where rsim looked (library manifest) |
+| 1. Reachability | units reachable from `top` through instances, configurations, packages; lowered once each into `Program` | missing unit names where yavs looked (library manifest) |
 | 2. Packages | elab functions of packages in dependency order; generic package instances get `InstData` + mangled identity | |
 | 3. Generics | `-g` overrides parsed as VHDL literals of the generic's type (rule 4, GHDL #1117), then generic map thunks evaluated in the parent instance | missing generic without default; type mismatch; bad override text |
 | 4. Declarations | the unit's `Elab` function: constants, subtype descriptors, signals (`ElabSignal`), shared variables, protected instances | bound/constraint failure at a declaration |
@@ -505,8 +505,8 @@ pub struct SubElemMap;                    // (ObjId, &[Sel]) <-> Vec<(LeafId, Ra
   (recursively, arrays of records become one leaf per field, struct of arrays); a type resolved
   as a whole composite (`resolved_record_port`) is one leaf whose element is the whole composite
   value. Storage and event tracking are therefore per contiguous vector, never per scalar.
-- **Element order** (implemented in `rsim_elab::NetGraph::select`): a leaf's elements are row
-  major, leftmost first; logic leaves mirror it (kernel offset `n - 1 - p`), since rsim-logic's
+- **Element order** (implemented in `yavs_elab::NetGraph::select`): a leaf's elements are row
+  major, leftmost first; logic leaves mirror it (kernel offset `n - 1 - p`), since yavs-logic's
   element 0 is the rightmost.
 - `SubElemMap` is the one mapping from a VHDL name (object plus static index/field selectors) to
   `(leaf, element range)` pairs, and back. Drivers, force/deposit, VHPI handles, waves, coverage
@@ -522,12 +522,12 @@ and the DAP variable references.
 
 ## 5. LLVM tier seam (M6)
 
-What the spike (`rsim-llvm`, STATUS.md, decisions.md) fixes:
+What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
 
 | Spike result | Consequence for the IR |
 |---|---|
 | Functions are `extern "C" fn(...) -> i32` status; runtime errors call a Rust callback and return a status; no unwinding through JIT frames | every `Check`, checked op and native call has an error edge to a "return status" exit; the interpreter's `Result` maps 1:1 |
-| Runtime functions are absolute symbols | `CallNative`, signal ops and checked helpers lower to calls of the same `rsim-rt` functions the interpreter calls; no semantics are re-implemented in LLVM IR beyond i64/f64 arithmetic |
+| Runtime functions are absolute symbols | `CallNative`, signal ops and checked helpers lower to calls of the same `yavs-rt` functions the interpreter calls; no semantics are re-implemented in LLVM IR beyond i64/f64 arithmetic |
 | A `#[repr(C)]` state pointer per process | frame slots and instance data have one byte layout (`FrameLayout`, `Layout`) used by both tiers |
 | Background compile thread, atomic function pointer swap | `Func.native: AtomicPtr` (in a side table, `Program` stays immutable) |
 | O2 time grows superlinearly: 0.15 s at 10k, 0.8 s at 40k, 3.8 s at 100k instructions | **threshold: `Func.size <= 40_000` IR instructions is compiled at O2, larger stays interpreted** (rule 5); an O0 band (40k to 300k) is an M6 option |
@@ -541,7 +541,7 @@ What the spike (`rsim-llvm`, STATUS.md, decisions.md) fixes:
    makes the frame bytes the whole state). Return: `Done | Suspended(resume) | Error | CallInterp(func)`.
 3. The swap happens only at a function entry or a process resumption, never mid-frame. Mixed
    stacks are allowed because both tiers use the same frame layout; a JIT frame calling an
-   interpreted `Func` goes through an `rsim_rt_call_interp` callback.
+   interpreted `Func` goes through an `yavs_rt_call_interp` callback.
 4. The debug loop never runs JIT code: attaching a debugger with breakpoints pins processes to the
    interpreter.
 
@@ -554,7 +554,7 @@ requires identical canonical output.
 | Consumer | Uses | From |
 |---|---|---|
 | CLI, DAP, VHPI | `SimControl` only (run_for, run_until, step_delta, pause, force, deposit, value, driving_value) | kernel |
-| waves (`rsim-wave`) | `Observer::value_change(SignalId, Range)`; `HierarchyBuilder` filled from `Elaborated.hier` + `nets.leaves` (record fields as scopes, logic arrays as `SigType::Vector`, values transposed from planes per changed range, enum names from `Ty::Enum` literals, original spelling); wave `SignalId` = `LeafId` | elab, kernel bus |
+| waves (`yavs-wave`) | `Observer::value_change(SignalId, Range)`; `HierarchyBuilder` filled from `Elaborated.hier` + `nets.leaves` (record fields as scopes, logic arrays as `SigType::Vector`, values transposed from planes per changed range, enum names from `Ty::Enum` literals, original spelling); wave `SignalId` = `LeafId` | elab, kernel bus |
 | VHPI (M5) | object model built from `hier`, `nets`, `Program.types` (records, arrays, generics, generates native, rule 9); handle = generational id over `ObjId`/`ScopeId`; values decoded with `Layout` (logic arrays transposed from planes); `vhpi_put_value` = `SimControl::force/deposit` through `SubElemMap`; callbacks = `Observer` | elab, kernel |
 | coverage (M9) | `Program.cov` items (path + span hash) and the counter array; toggle via `Observer` | ir, interp |
 | DAP (M8) | `Debugger` hook, `FrameView`, `Program.stmts` for stack frames, `hier` for the hierarchy view | interp, elab |
@@ -572,17 +572,17 @@ translation table is needed between elab ids and kernel ids.
 | K4 | `Ctx::driving(DriverId)` and null transactions (`disconnect`) | guarded signals, M3 |
 | K5 | Null-range signals (`len == 0`) accepted as empty | null arrays as signals, M3 |
 | K6 | Buffered writes to user files (stream ids beyond `OUTPUT`) | textio, M3 |
-| K7 | Logic leaves stored as rsim-logic planes (`SignalType` variant), element `Range` copies, resolution and events on planes | slice 2 (in progress, kernel agent) |
+| K7 | Logic leaves stored as yavs-logic planes (`SignalType` variant), element `Range` copies, resolution and events on planes | slice 2 (in progress, kernel agent) |
 
 ## 7. M2 implementation order
 
 Each slice ends with `cargo test`, `clippy -D warnings`, and the listed difftest groups green
-against NVC at `--threads 1` and `--threads 4` (`tools/difftest/difftest.py --candidate rsim
+against NVC at `--threads 1` and `--threads 4` (`tools/difftest/difftest.py --candidate yavs
 --filter ...`). Groups not listed stay red and are not a slice failure.
 
 | Slice | Content | Turns green |
 |---|---|---|
-| 1 | `rsim-ir` core: types for scalars and 1-D arrays with dope, frames, checked int/real/time ops, bit-plane logic arrays (`LGet/LSet/LCopy`), `Check`, control flow, `Report`, `Call`/`CallNative` for `'image`/`to_string`/implicit families on scalars; interpreter fast loop; elab of a single top entity with no ports; processes with `wait for`/`wait`; runtime stacktraces | `report/`, `arith/`, `scalar/` |
+| 1 | `yavs-ir` core: types for scalars and 1-D arrays with dope, frames, checked int/real/time ops, bit-plane logic arrays (`LGet/LSet/LCopy`), `Check`, control flow, `Report`, `Call`/`CallNative` for `'image`/`to_string`/implicit families on scalars; interpreter fast loop; elab of a single top entity with no ports; processes with `wait for`/`wait`; runtime stacktraces | `report/`, `arith/`, `scalar/` |
 | 2 | Signals: `SigRead`, `Drive` (transport, inertial, reject), `WaitOn`, `wait until` lowering, sensitivity lists, concurrent statements as implicit processes, attributes `'event/'active/'last_*`, postponed processes, `std.env` natives | `delta/`, `sigassign/` (minus `stable_quiet` until K2), `process/`, `postponed/`, `env/` |
 | 3 | Hierarchy: entity/component instances, generics (`-g` and generic maps through the interpreter), for/if/case generates, configurations, package generics, collapsed ports only, stable paths (`'path_name`) | `generics/`, `hierarchy/` (minus conversions) |
 | 4 | Ports uncollapsed (K1), conversion functions, expression actuals, `force`/`release`, K2 implicit signals, collapse as a pass with both-way difftest | `force/`, rest of `hierarchy/` and `sigassign/` |
@@ -606,11 +606,11 @@ range, division by zero and the delta limit.
 | Q2 | Port collapsing default | Off in M2; every difftest group runs collapsed and uncollapsed. |
 | Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
 | Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
-| Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `rsim-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
+| Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `yavs-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
 | Q6 | Tier-up threshold | After 1000 resumptions/calls, `--jit-threshold`. |
 | Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |
 
-## 9. Implementation notes and deviations (rsim-ir, rsim-interp)
+## 9. Implementation notes and deviations (yavs-ir, yavs-interp)
 
 What the implementation does differently from sections 1 to 3, and what producers must emit.
 
@@ -626,16 +626,16 @@ What the implementation does differently from sections 1 to 3, and what producer
 | attributes | `SigAttr {Event, Active, LastEvent, LastActive}`, `SigLastValue`, `Driving` and `DrivingValue` per driver slot |
 | logic ops | added `LEq` (element-wise `=`); `LNum::{Add, Sub, Cmp(op)}`; a compare with a metavalue is FALSE (numeric_std) |
 | real ops | `FBin {Add, Sub, Mul, Div, PowI, Pow}`, `Phys {MulReal, DivReal}`; a non-finite result or a division by zero is a runtime error |
-| natives | `NativeRef {symbol, ty}`: implicit families carry their type; `rsim.attr.image` (added, `'image`). Strings return the address of a fat pair `[data, dope]` (dope `1 to len`). An unknown symbol fails `Runtime::new`; a known but unimplemented one is a runtime error naming it |
+| natives | `NativeRef {symbol, ty}`: implicit families carry their type; `yavs.attr.image` (added, `'image`). Strings return the address of a fat pair `[data, dope]` (dope `1 to len`). An unknown symbol fails `Runtime::new`; a known but unimplemented one is a runtime error naming it |
 | foreign | `ForeignRef {name, symbol, args: Vec<ForeignArg>, ret}` with `ForeignArg::{Value(CType), ScalarRef(CType, Width), Array {ty, lengths, copy_back}, Record {ty, copy_back}, Access}`. Arrays: the register is a fat-pair address (constrained arrays too); C gets a C-layout copy left to right (logic elements as one code byte, BIT/BOOLEAN as 0/1) and `lengths` `int64_t` lengths. Records of scalars: a naturally aligned C struct. Access: a pointer to the object's data in VHDL layout (after the descriptor of an array object), NULL for null. Copy-back range-checks what C wrote. The elaborator binds pointers through `Bindings.foreign`; `Runtime::new` fails on unbound or mismatched signatures |
 | heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation, so an object freed and reused within one statement is not detected (freed and not reused is). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated; an object whose handles cannot be located from its type skips the collection (never unsound). `// ponytail:` the shared heap is never collected; add a commit-phase collection when long OSVVM runs show growth |
 | verifier | the "no register live across a suspension" check is intra-block only; cross-block liveness needs dataflow and comes with the LLVM tier |
 | serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}`; `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |
-| elaboration | `Elab` instructions are a runtime "needs rsim-elab" error; `InstData {data, sigs, cov_base}` has no child or package links yet. `call_shared` runs elaboration code with the `SharedState` (shared variables, shared protected objects) |
+| elaboration | `Elab` instructions are a runtime "needs yavs-elab" error; `InstData {data, sigs, cov_base}` has no child or package links yet. `call_shared` runs elaboration code with the `SharedState` (shared variables, shared protected objects) |
 | native arguments | `in` scalars by value; `out`/`inout` scalars and access variables by cell address; unconstrained arrays as a fat-pair address; files as the address of their 4-byte cell; records by address. Results: scalars by value, strings as a fat-pair address, `line` as a handle |
 | files | a file cell holds index + 1 into the runtime's file table (0: never opened); `FILE_INPUT` = 1 and `FILE_OUTPUT` = 2 are textio's `INPUT`/`OUTPUT`. Disk files are read and written directly (not via K6 streams), so a process that writes, closes and reopens a file in one delta reads what it wrote; a file object is used by one process or by serial ones, so the bytes do not depend on `--threads`. `STD_OUTPUT` goes through the kernel's OUTPUT stream, ordered with `report`. Implicit file ops are implemented for TEXT; binary `read`/`write` are not yet |
 | lines | `line` objects are `[1 to len][bytes]`; natives replace and deallocate them. A line cell in shared memory gets a shared-heap object |
-| logic BIT | BIT and BOOLEAN elements of logic arrays: the interpreter writes the codes of '0' and '1' (so the std_ulogic plane ops give correct BIT results) and reads either those or the positions 0/1 that rsim-elab uses for BIT leaves. **Open: one encoding must be chosen** (element 0 is the rightmost) |
+| logic BIT | BIT and BOOLEAN elements of logic arrays: the interpreter writes the codes of '0' and '1' (so the std_ulogic plane ops give correct BIT results) and reads either those or the positions 0/1 that yavs-elab uses for BIT leaves. **Open: one encoding must be chosen** (element 0 is the rightmost) |
 | protected | the object is a handle to its state record (`New {shared}`), methods get `self` first (`CallProt`); a shared object is created at elaboration through `call_shared` |
 | checks | `CheckMsg {what, dir, subtype}`; messages follow NVC (`value 101 outside of PCT range 0 to 100 for variable P`). Added `BinRange` (integer op checked against the base type, `result of .. cannot be represented as T`), `FToIRange` (real to integer against the subtype, message shows the real), `FCheck` (real subtype constraints). Integer division by zero reads `division by zero` |
 | thunks | may return a value or not |

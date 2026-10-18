@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: none
 -- LRM 5.4.1 (2019): access types may designate protected and file types
 package p is

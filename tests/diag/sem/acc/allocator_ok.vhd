@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 5.4, 8.1, 9.3.7
 package p is

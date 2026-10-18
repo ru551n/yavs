@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1326 11:11 a non-static choice must be the only choice of the only association
 -- LRM 9.3.3.3
 entity e is end entity;

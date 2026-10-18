@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E0004 5:12 a generic type definition requires VHDL-2019
 -- LRM 2019 0.1
 package g is

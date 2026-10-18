@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 10:38 expected `bit`, found `integer`
 -- LRM 6.5.7
 entity sub is port (a : in bit); end entity;

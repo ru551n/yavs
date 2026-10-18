@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1621 14:12 attribute `high` is not defined for function `f`
 -- LRM 16.2
 package p is

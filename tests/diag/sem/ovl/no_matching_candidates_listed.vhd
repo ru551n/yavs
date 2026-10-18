@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 16:10 no function `f` matches the call
 -- help: candidates: `f (x: integer) return integer`, `f (x: boolean) return integer`
 -- LRM 12.5

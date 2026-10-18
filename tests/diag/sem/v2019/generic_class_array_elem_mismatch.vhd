@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1503 7:57 element type of `bit_vector` is `bit`, expected `integer`
 -- LRM 2019 6.5.3
 package g is

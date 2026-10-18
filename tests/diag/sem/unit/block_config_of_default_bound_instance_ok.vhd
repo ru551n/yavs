@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 3.4.3, 7.3.3 (default binding; permissive: Questa accepts, NVC and GHDL reject)
 entity c is generic (n : integer := 0); end entity;

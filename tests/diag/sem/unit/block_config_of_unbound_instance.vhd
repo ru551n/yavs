@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1704 13:7 no entity is bound to component `c`, so it has no architecture to configure
 -- LRM 3.4.3
 entity top is end entity;

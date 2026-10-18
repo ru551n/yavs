@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 8.1, 11.8, 14.5.3 (a generate parameter is globally static; a source in a generate exists only if elaborated)
 entity e is end entity;

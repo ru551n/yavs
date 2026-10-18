@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1214 6:15 type `m` has 2 index ranges, the constraint has 1
 -- LRM 5.3.2.2
 package p is

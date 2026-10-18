@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1325 13:12 the result subtype `bit_vector` is not constrained
 -- expect: E1325 18:10 the formal `x` is not constrained
 -- LRM 9.3.3.3

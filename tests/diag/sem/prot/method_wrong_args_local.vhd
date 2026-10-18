@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 18:7 no method `set` matches the call
 -- expect: E1100 19:12 protected type `pt` has no method `reset`
 -- LRM 5.6.2

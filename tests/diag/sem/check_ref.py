@@ -17,7 +17,7 @@ def header(path):
     for l in open(path):
         if not l.startswith('--'):
             break
-        m = re.match(r'-- rsim-test:(.*)', l)
+        m = re.match(r'-- yavs-test:(.*)', l)
         if m:
             for t in m.group(1).split():
                 if t.startswith('std='):

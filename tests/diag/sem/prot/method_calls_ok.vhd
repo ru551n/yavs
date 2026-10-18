@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 4.5.4, 5.6.2 (method calls through an object, overloads, parameterless functions, shared variables, calls inside the body)
 package pk is

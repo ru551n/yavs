@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: none
 -- LRM 2019 16.2, 16.11: 'reflect on objects and type marks, mirror methods through access values
 use std.reflection.all;

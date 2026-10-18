@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 16.2.3, 9.3.3.3 (hdl-modules math_pkg, addr_pkg, axi_lite_register_file, saturate_signed; NVC accepts)
 package p is

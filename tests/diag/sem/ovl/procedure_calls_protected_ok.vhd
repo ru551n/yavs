@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 10.7, 5.6 (method calls through a shared variable)
 package pp is

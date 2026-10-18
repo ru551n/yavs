@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 11:27 no operator `and` matches the operands
 -- help: use `to_unsigned(x, n)` to convert an integer to a vector
 -- LRM 9.2

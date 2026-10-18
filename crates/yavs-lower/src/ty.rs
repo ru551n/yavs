@@ -1,0 +1,179 @@
+//! HIR types to IR type descriptions (ir.md 1.3).
+
+use yavs_diag::Span;
+use yavs_ir::{LogicKind, Program, ProgramBuilder, Ty, TyId, Width};
+use yavs_kernel::Elem;
+use yavs_sem::decl::Designator;
+use yavs_sem::stat::ConstValue;
+use yavs_sem::types::TypeKind;
+use yavs_sem::{Db, SubtypeId, TypeId};
+
+use crate::{Cx, R};
+
+/// The IR type of `t`, lowered once.
+pub(crate) fn lower(
+    db: &Db,
+    cx: &mut Cx,
+    pb: &mut ProgramBuilder,
+    t: TypeId,
+    span: Span,
+) -> R<TyId> {
+    if let Some(&id) = cx.tys.get(&t) {
+        return Ok(id);
+    }
+    let td = &db.types[t];
+    let ty = match &td.kind {
+        TypeKind::Enum { lits } => Ty::Enum {
+            lits: lits.iter().map(|&d| lit_name(db, d)).collect(),
+            logic: logic_kind(db, t),
+        },
+        TypeKind::Integer | TypeKind::UniversalInteger => {
+            let (lo, hi) = int_bounds(db, td.base_subtype).unwrap_or((i64::MIN, i64::MAX));
+            Ty::Int { lo, hi }
+        }
+        TypeKind::Physical { units } => {
+            let (lo, hi) = int_bounds(db, td.base_subtype).unwrap_or((i64::MIN, i64::MAX));
+            let units = units
+                .iter()
+                .map(|u| (db.decls[u.decl].name.to_string(), u.scale))
+                .collect();
+            Ty::Physical { lo, hi, units }
+        }
+        TypeKind::Floating | TypeKind::UniversalReal => Ty::Real,
+        TypeKind::Array { indexes, elem } => {
+            let elem = lower(db, cx, pb, db.base(*elem), span)?;
+            if !matches!(pb.types().get(elem), Some(t) if t.scalar_size().is_some()) {
+                return Err(cx.unsupported(span, "arrays of composite elements"));
+            }
+            Ty::Array {
+                elem,
+                elem_desc: None,
+                dims: indexes.len() as u8,
+            }
+        }
+        TypeKind::Record { .. } => return Err(cx.unsupported(span, "record types (M3)")),
+        TypeKind::Access { .. } => return Err(cx.unsupported(span, "access types (M3)")),
+        TypeKind::File { .. } => return Err(cx.unsupported(span, "file types (M3)")),
+        TypeKind::Protected { .. } => return Err(cx.unsupported(span, "protected types (M3)")),
+        _ => return Err(cx.unsupported(span, "generic and incomplete types")),
+    };
+    let id = pb.ty(ty);
+    cx.tys.insert(t, id);
+    Ok(id)
+}
+
+/// `'image` spelling of an enumeration literal: identifiers as written, characters quoted.
+fn lit_name(db: &Db, d: yavs_sem::DeclId) -> String {
+    match db.decls[d].name {
+        Designator::Char(c) => format!("'{c}'"),
+        n => n.to_string(),
+    }
+}
+
+/// BIT, BOOLEAN and STD_ULOGIC (and their arrays) are stored as yavs-logic codes and planes.
+fn logic_kind(db: &Db, t: TypeId) -> Option<LogicKind> {
+    let wk = &db.well_known;
+    if Some(t) == wk.bit {
+        return Some(LogicKind::Bit);
+    }
+    if Some(t) == wk.boolean {
+        return Some(LogicKind::Boolean);
+    }
+    // ponytail: recognised by name and shape; a `std_ulogic` declared outside ieee is treated
+    // the same, which is harmless since layout is all that changes.
+    let td = &db.types[t];
+    match &td.kind {
+        TypeKind::Enum { lits } if lits.len() == 9 && td.name.key.as_str() == "std_ulogic" => {
+            Some(LogicKind::StdULogic)
+        }
+        _ => None,
+    }
+}
+
+fn int_bounds(db: &Db, st: SubtypeId) -> Option<(i64, i64)> {
+    let (l, d, r) = db.static_bounds(st)?;
+    let (l, r) = (l.as_int()?, r.as_int()?);
+    Some(match d {
+        yavs_sem::types::Direction::To => (l, r),
+        yavs_sem::types::Direction::Downto => (r, l),
+    })
+}
+
+/// Memory width of a scalar of IR type `ty`.
+pub(crate) fn width(ty: &Ty) -> Width {
+    match ty.scalar_size() {
+        Some(1) => Width::B1,
+        Some(4) => Width::B4,
+        _ => Width::B8,
+    }
+}
+
+/// The kernel element representation of a signal of IR type `ty`: logic leaves (BIT, BOOLEAN,
+/// STD_ULOGIC, scalar or array) are bit-planes, everything else its scalar bytes. The
+/// elaborator uses this to create kernel signals the IR's `Drive` and `SigRead` agree with.
+pub fn signal_elem(prog: &Program, ty: TyId) -> Option<Elem> {
+    if Ty::logic_leaf(&prog.types, ty).is_some() {
+        return Some(Elem::Logic);
+    }
+    let mut t = prog.types.get(ty)?;
+    while let Ty::Array { elem, .. } = t {
+        t = prog.types.get(*elem)?;
+    }
+    Some(Elem::Bytes(t.scalar_size()? as u32))
+}
+
+/// A folded scalar as one register cell.
+pub(crate) fn cell(v: &ConstValue) -> Option<u64> {
+    match v {
+        ConstValue::Int(i) | ConstValue::Phys(i) => Some(*i as u64),
+        ConstValue::Enum(p) => Some(u64::from(*p)),
+        ConstValue::Real(f) => Some(f.to_bits()),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_real(db: &Db, t: TypeId) -> bool {
+    matches!(
+        db.types[t].kind,
+        TypeKind::Floating | TypeKind::UniversalReal
+    )
+}
+
+pub(crate) fn is_array(db: &Db, t: TypeId) -> bool {
+    matches!(db.types[t].kind, TypeKind::Array { .. })
+}
+
+/// Element subtype and dimension count of an array type.
+pub(crate) fn array_of(db: &Db, t: TypeId) -> Option<(SubtypeId, u8)> {
+    match &db.types[t].kind {
+        TypeKind::Array { indexes, elem } => Some((*elem, indexes.len() as u8)),
+        _ => None,
+    }
+}
+
+/// Name of a subtype in runtime check messages. Upper case, as NVC prints it, so the
+/// differential corpus compares exactly (difftest is strict for yavs).
+pub(crate) fn subtype_name(db: &Db, st: SubtypeId) -> String {
+    let s = &db.subtypes[st];
+    match s.name {
+        Some(n) => n.text.as_str().to_ascii_uppercase(),
+        None => db.types[s.base].name.text.as_str().to_ascii_uppercase(),
+    }
+}
+
+/// An object as check messages name it: `variable P`, `signal S`, `parameter X`.
+pub(crate) fn obj_desc(db: &Db, d: yavs_sem::DeclId) -> String {
+    use yavs_sem::decl::{DeclKind, ObjClass, ObjRole};
+    let name = db.decls[d].name.to_string().to_ascii_uppercase();
+    let class = match &db.decls[d].kind {
+        DeclKind::Object(o) if o.role == ObjRole::Param => "parameter",
+        DeclKind::Object(o) => match o.class {
+            ObjClass::Constant => "constant",
+            ObjClass::Signal => "signal",
+            ObjClass::Variable | ObjClass::SharedVariable => "variable",
+            ObjClass::File => "file",
+        },
+        _ => return name,
+    };
+    format!("{class} {name}")
+}

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1007 6:29 `'reflect` is not available in VHDL-2008
 -- LRM 2019 16.2
 package p is

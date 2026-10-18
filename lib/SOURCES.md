@@ -38,7 +38,7 @@ a different, non-Apache licence, so they are not used. Therefore:
 | `std/2008/standard.vhdl` | as above, then removed `type RANGE_DIRECTION`, `FILE_OPEN_KIND`'s `READ_WRITE_MODE`, `FILE_OPEN_STATE`, `FILE_ORIGIN_KIND`; INTEGER is `-2147483648 to 2147483647` | these are 1076-2019 additions; 2008 INTEGER is 32 bit |
 | `std/2008/textio.vhdl` | removed `type LINE_VECTOR` | added by 1076-2019 (used by `env.DIRECTORY_ITEMS`) |
 | `std/2008/env.vhdl` | reduced to `STOP`, `FINISH`, `RESOLUTION_LIMIT` (upstream licence header kept) | everything else in `env` is new in 1076-2019 |
-| `ieee/*/ieee_std_context.vhdl`, `ieee_bit_context.vhdl` | written for rsim (VASG does not ship the contexts) | `IEEE_STD_CONTEXT` = `std_logic_1164` + `numeric_std`; `IEEE_BIT_CONTEXT` = `numeric_bit`, as in the 2008 LRM |
+| `ieee/*/ieee_std_context.vhdl`, `ieee_bit_context.vhdl` | written for yavs (VASG does not ship the contexts) | `IEEE_STD_CONTEXT` = `std_logic_1164` + `numeric_std`; `IEEE_BIT_CONTEXT` = `numeric_bit`, as in the 2008 LRM |
 
 Other facts the consumer must know:
 
@@ -67,8 +67,8 @@ Other facts the consumer must know:
 | `ieee/2008/float_generic_pkg-body.vhdl` | `ieee/float_generic_pkg-body.vhdl` | 093b095a30ca3019 | verbatim | Apache-2.0 |
 | `ieee/2008/float_generic_pkg.vhdl` | `ieee/float_generic_pkg.vhdl` | f6bdde6dcd120358 | verbatim | Apache-2.0 |
 | `ieee/2008/float_pkg.vhdl` | `ieee/float_pkg.vhdl` | 46e9f26610bd4571 | verbatim | Apache-2.0 |
-| `ieee/2008/ieee_bit_context.vhdl` | (written for rsim) | 010eff42f7097bde | original | Apache-2.0 (rsim authors) |
-| `ieee/2008/ieee_std_context.vhdl` | (written for rsim) | 1702ddb86dd75c70 | original | Apache-2.0 (rsim authors) |
+| `ieee/2008/ieee_bit_context.vhdl` | (written for yavs) | 010eff42f7097bde | original | Apache-2.0 (yavs authors) |
+| `ieee/2008/ieee_std_context.vhdl` | (written for yavs) | 1702ddb86dd75c70 | original | Apache-2.0 (yavs authors) |
 | `ieee/2008/math_complex-body.vhdl` | `ieee/math_complex-body.vhdl` | 4f2f523002822b27 | verbatim | Apache-2.0 |
 | `ieee/2008/math_complex.vhdl` | `ieee/math_complex.vhdl` | deddee8078c0c85f | verbatim | Apache-2.0 |
 | `ieee/2008/math_real-body.vhdl` | `ieee/math_real-body.vhdl` | ed057e95cd908b54 | verbatim | Apache-2.0 |
@@ -91,8 +91,8 @@ Other facts the consumer must know:
 | `ieee/2019/float_generic_pkg-body.vhdl` | `ieee/float_generic_pkg-body.vhdl` | 093b095a30ca3019 | verbatim | Apache-2.0 |
 | `ieee/2019/float_generic_pkg.vhdl` | `ieee/float_generic_pkg.vhdl` | f6bdde6dcd120358 | verbatim | Apache-2.0 |
 | `ieee/2019/float_pkg.vhdl` | `ieee/float_pkg.vhdl` | 46e9f26610bd4571 | verbatim | Apache-2.0 |
-| `ieee/2019/ieee_bit_context.vhdl` | (written for rsim) | 010eff42f7097bde | original | Apache-2.0 (rsim authors) |
-| `ieee/2019/ieee_std_context.vhdl` | (written for rsim) | 1702ddb86dd75c70 | original | Apache-2.0 (rsim authors) |
+| `ieee/2019/ieee_bit_context.vhdl` | (written for yavs) | 010eff42f7097bde | original | Apache-2.0 (yavs authors) |
+| `ieee/2019/ieee_std_context.vhdl` | (written for yavs) | 1702ddb86dd75c70 | original | Apache-2.0 (yavs authors) |
 | `ieee/2019/math_complex-body.vhdl` | `ieee/math_complex-body.vhdl` | 4f2f523002822b27 | verbatim | Apache-2.0 |
 | `ieee/2019/math_complex.vhdl` | `ieee/math_complex.vhdl` | deddee8078c0c85f | verbatim | Apache-2.0 |
 | `ieee/2019/math_real-body.vhdl` | `ieee/math_real-body.vhdl` | ed057e95cd908b54 | verbatim | Apache-2.0 |

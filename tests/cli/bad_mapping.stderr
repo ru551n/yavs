@@ -1,6 +1,6 @@
 error[L0020]: invalid library mapping `work`
   |
-  = help: expected NAME:PATH, e.g. `ieee:/opt/rsim/lib/ieee`
+  = help: expected NAME:PATH, e.g. `ieee:/opt/yavs/lib/ieee`
 
 error: aborting due to 1 previous error
 

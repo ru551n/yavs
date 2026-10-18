@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1703 9:26 component port `b` has no matching port in entity `sub`
 -- LRM 7.3.3 (default port map of a binding indication)
 entity sub is port (a : in bit := '0'); end entity;

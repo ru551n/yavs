@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1704 9:15 a configuration specification needs an entity aspect
 -- LRM 7.3.2.1
 entity c is generic (n : integer := 0); end entity;

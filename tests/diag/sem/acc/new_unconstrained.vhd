@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1212 17:14 allocator needs a fully constrained subtype, `string` is unconstrained
 -- expect: E1212 18:14 a record with an unconstrained element is not fully constrained
 -- help: give the bounds

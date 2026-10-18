@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1100 7:12 `nothere` is not declared in package `p`
 -- LRM 12.4
 package p is

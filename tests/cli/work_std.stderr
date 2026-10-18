@@ -1,6 +1,6 @@
-error[E0102]: library `std` is provided by rsim
+error[E0102]: library `std` is provided by yavs
   |
-  = help: remove the `std`/`ieee` mapping; rsim resolves them itself
+  = help: remove the `std`/`ieee` mapping; yavs resolves them itself
 
 error: aborting due to 1 previous error
 

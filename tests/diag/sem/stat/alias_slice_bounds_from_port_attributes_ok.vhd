@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 9.4.3, 6.6.2 (OSVVM AxiStreamReceiver: constants from 'length of an unconstrained port are globally static; NVC, GHDL and Questa accept)
 library ieee; use ieee.std_logic_1164.all;

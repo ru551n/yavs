@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 6:13 alias subtype `integer` does not match `bit_vector`
 -- LRM 6.6.2
 package p is

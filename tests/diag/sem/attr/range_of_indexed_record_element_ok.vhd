@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 16.2.3 (hdl-modules axi_lite_simple_read_crossbar; NVC and GHDL accept)
 package p is

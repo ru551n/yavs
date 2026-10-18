@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1302 14:10 call of `to_integer` is ambiguous
 -- help: qualify the operand or use a selected name (`ieee.numeric_std.to_integer`)
 -- LRM 12.4

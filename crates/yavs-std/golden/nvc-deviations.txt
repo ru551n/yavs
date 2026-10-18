@@ -1,0 +1,377 @@
+# Intended deviations of yavs-std from the NVC goldens.
+# revision(2008|2019|*) <TAB> func <TAB> args... <TAB> [expected] or ERROR <TAB> reason
+# Generated with mkdev.py from the failure list, then reviewed. Real formatting
+# rows are checked against C printf (Python %) by mkdev.py.
+*	real_digits	0.0	30	[0.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-0.0	30	[-0.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0	30	[1.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.0	30	[-1.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.1	30	[0.100000000000000005551115123126]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.5	30	[0.500000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.5	30	[1.500000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	2.5	30	[2.500000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-2.5	30	[-2.500000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	3.5	30	[3.500000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.333333333333333314829616256247	30	[0.333333333333333314829616256247]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	123.456	30	[123.456000000000003069544618483633]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-123.456	30	[-123.456000000000003069544618483633]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e-5	30	[0.000010000000000000000818030539]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e-4	30	[0.000100000000000000004792173602]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.001	30	[0.001000000000000000020816681712]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.0001	30	[0.000100000000000000004792173602]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e15	15	[1000000000000000.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e15	17	[1000000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e15	20	[1000000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e15	30	[1000000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e16	15	[10000000000000000.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e16	17	[10000000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e16	20	[10000000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e16	30	[10000000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e17	15	[100000000000000000.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e17	17	[100000000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e17	20	[100000000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e17	30	[100000000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	123456789.0	30	[123456789.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	1	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.0]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	2	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	3	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	6	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	10	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.0000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	15	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	17	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	20	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e100	30	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e-100	30	[0.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	1	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.0]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	2	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	3	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	6	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	10	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.0000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	15	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	17	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	20	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.7976931348623157e308	30	[179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	1	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.0]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	2	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	3	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	6	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	10	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.0000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	15	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	17	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	20	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	-1.7976931348623157e308	30	[-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	2.2250738585072014e-308	30	[0.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	4.9406564584124654e-324	30	[0.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9007199254740993.0	15	[9007199254740992.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9007199254740993.0	17	[9007199254740992.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9007199254740993.0	20	[9007199254740992.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9007199254740993.0	30	[9007199254740992.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	100.0	30	[100.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e21	10	[1000000000000000000000.0000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e21	15	[1000000000000000000000.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e21	17	[1000000000000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e21	20	[1000000000000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e21	30	[1000000000000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e22	10	[10000000000000000000000.0000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e22	15	[10000000000000000000000.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e22	17	[10000000000000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e22	20	[10000000000000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e22	30	[10000000000000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	3.14159265358979	30	[3.141592653589790007373494518106]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.000123456789	30	[0.000123456788999999996685533188]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	999999999999999.0	17	[999999999999999.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	999999999999999.0	20	[999999999999999.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	999999999999999.0	30	[999999999999999.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9999999999999999.0	15	[10000000000000000.000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9999999999999999.0	17	[10000000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9999999999999999.0	20	[10000000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	9999999999999999.0	30	[10000000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.05	30	[0.050000000000000002775557561563]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	0.25	30	[0.250000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e-10	30	[0.000000000100000000000000003643]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	12345.678901234567	30	[12345.678901234567092615179717540741]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e14	17	[100000000000000.00000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e14	20	[100000000000000.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_digits	1.0e14	30	[100000000000000.000000000000000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	0.0	%-10.3f|	[0.000     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%+f	[+0.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	% f	[ 0.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%#g	[0.00000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%#.0f	[0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	x=%6.2f!	[x=  0.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%%%.1f	[%0.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%-+12.3e	[+0.000e+00  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%#.3e	[0.000e+00]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.0	%#.0g	[0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%-10.3f|	[-0.000    |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%+f	[-0.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	% f	[-0.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%#g	[-0.00000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%#.0f	[-0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	x=%6.2f!	[x= -0.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%%%.1f	[%-0.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%-+12.3e	[-0.000e+00  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%#.3e	[-0.000e+00]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-0.0	%#.0g	[-0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%-10.3f|	[1.000     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%+f	[+1.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	% f	[ 1.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%#g	[1.00000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%#.0f	[1.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	x=%6.2f!	[x=  1.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%%%.1f	[%1.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%-+12.3e	[+1.000e+00  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%#.3e	[1.000e+00]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0	%#.0g	[1.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%-10.3f|	[-1.500    |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%+f	[-1.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	% f	[-1.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%#g	[-1.50000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%#.0f	[-2.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	x=%6.2f!	[x= -1.50!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%%%.1f	[%-1.5]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%-+12.3e	[-1.500e+00  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%#.3e	[-1.500e+00]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-1.5	%#.0g	[-2.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%-10.3f|	[0.100     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%+f	[+0.100000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	% f	[ 0.100000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%#g	[0.100000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%#.0f	[0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	x=%6.2f!	[x=  0.10!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%%%.1f	[%0.1]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%-+12.3e	[+1.000e-01  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%#.3e	[1.000e-01]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.1	%#.0g	[0.1]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%-10.3f|	[123.456   |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%+f	[+123.456000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	% f	[ 123.456000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%#g	[123.456]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%#.0f	[123.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	x=%6.2f!	[x=123.46!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%%%.1f	[%123.5]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%-+12.3e	[+1.235e+02  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%#.3e	[1.235e+02]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	123.456	%#.0g	[1.e+02]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%-10.3f|	[0.000     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%+f	[+0.000010]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	% f	[ 0.000010]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%#g	[1.00000e-05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%#.0f	[0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	x=%6.2f!	[x=  0.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%%%.1f	[%0.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%-+12.3e	[+1.000e-05  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%#.3e	[1.000e-05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e-5	%#.0g	[1.e-05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	1.0e100	%.3f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	1.0e100	%10.3f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	1.0e100	%-10.3f|	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000|]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%+f	[+10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	% f	[ 10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%010.2f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	1.0e100	%#g	[1.00000e+100]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%#.0f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%.0f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	1.0e100	x=%6.2f!	[x=10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%%%.1f	[%10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%-+12.3e	[+1.000e+100 ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%#.3e	[1.000e+100]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%#.0g	[1.e+100]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1.0e100	%.20f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	real_format	2.5	%-10.3f|	[2.500     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%+f	[+2.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	% f	[ 2.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%#g	[2.50000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%#.0f	[2.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	x=%6.2f!	[x=  2.50!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%%%.1f	[%2.5]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%-+12.3e	[+2.500e+00  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%#.3e	[2.500e+00]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	2.5	%#.0g	[2.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%-10.3f|	[0.500     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%+f	[+0.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	% f	[ 0.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%#g	[0.500000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%#.0f	[0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	x=%6.2f!	[x=  0.50!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%%%.1f	[%0.5]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%-+12.3e	[+5.000e-01  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%#.3e	[5.000e-01]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.5	%#.0g	[0.5]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%-10.3f|	[100000.000|]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%+f	[+100000.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	% f	[ 100000.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%#g	[100000.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%#.0f	[100000.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	x=%6.2f!	[x=100000.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%%%.1f	[%100000.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%-+12.3e	[+1.000e+05  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%#.3e	[1.000e+05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	100000.0	%#.0g	[1.e+05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%-10.3f|	[1234567.000|]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%+f	[+1234567.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	% f	[ 1234567.000000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%#g	[1.23457e+06]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%#.0f	[1234567.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	x=%6.2f!	[x=1234567.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%%%.1f	[%1234567.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%-+12.3e	[+1.235e+06  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%#.3e	[1.235e+06]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	1234567.0	%#.0g	[1.e+06]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%-10.3f|	[10.000    |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%+f	[+9.999900]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	% f	[ 9.999900]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%#g	[9.99990]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%#.0f	[10.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	x=%6.2f!	[x= 10.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%%%.1f	[%10.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%-+12.3e	[+1.000e+01  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%#.3e	[1.000e+01]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	9.9999	%#.0g	[1.e+01]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%-10.3f|	[0.000     |]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%+f	[+0.000012]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	% f	[ 0.000012]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%#g	[1.23400e-05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%#.0f	[0.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	x=%6.2f!	[x=  0.00!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%%%.1f	[%0.0]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%-+12.3e	[+1.234e-05  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%#.3e	[1.234e-05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	0.00001234	%#.0g	[1.e-05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%-10.3f|	[-987654.321|]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%+f	[-987654.321000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	% f	[-987654.321000]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%#g	[-987654.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%#.0f	[-987654.]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	x=%6.2f!	[x=-987654.32!]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%%%.1f	[%-987654.3]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%-+12.3e	[-9.877e+05  ]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%#.3e	[-9.877e+05]	C99 printf flags and literal text are supported; NVC rejects them
+*	real_format	-987654.321	%#.0g	[-1.e+06]	C99 printf flags and literal text are supported; NVC rejects them
+*	e1_image	1	[\\Bar\\]	LRM 16.2.2: an extended identifier keeps its spelling; NVC lower-cases it and undoubles backslashes
+*	e1_to_string	1	[\\Bar\\]	LRM 16.2.2: an extended identifier keeps its spelling; NVC lower-cases it and undoubles backslashes
+*	e1_image	4	[\\a\\\\b\\]	LRM 16.2.2: an extended identifier keeps its spelling; NVC lower-cases it and undoubles backslashes
+*	e1_to_string	4	[\\a\\\\b\\]	LRM 16.2.2: an extended identifier keeps its spelling; NVC lower-cases it and undoubles backslashes
+*	e1_image	7	[\\X\\]	LRM 16.2.2: an extended identifier keeps its spelling; NVC lower-cases it and undoubles backslashes
+*	e1_to_string	7	[\\X\\]	LRM 16.2.2: an extended identifier keeps its spelling; NVC lower-cases it and undoubles backslashes
+2008	read_int	2147483648	[g=false rest=2147483648]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+2008	read_int	-2147483649	[g=false rest=-2147483649]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+2008	read_int	9223372036854775807	[g=false rest=9223372036854775807]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_int	9223372036854775808	[g=false rest=9223372036854775808]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_int	99999999999999999999	[g=false rest=99999999999999999999]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_real	1.5e+	[g=false rest=1.5e+]	an exponent needs digits (LRM 15.5.2); NVC reads 1.5 and drops 'e+'
+*	read_real	1.0e400	[g=false rest=1.0e400]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_real		[g=false rest=]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_time	  1.5 ns rest	[g=true v=1500000 fs rest= rest]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+*	read_time	1.5 NS	[g=true v=1500000 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+*	read_time	0.1 fs	[g=true v=0 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+*	read_time	1.0e3 ps	[g=true v=1000000 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+2008	read_time	9223372036854775807 fs	[g=true v=9223372036854775807 fs rest=]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_time	9223372036854775808 fs	[g=false rest=9223372036854775808 fs]	NVC aborts inside READ; an unrepresentable value is good=false (LRM 16.4)
+*	read_time	10000000 hr	[g=false rest=10000000 hr]	overflow is good=false; NVC wraps the value
+*	read_time	1.25 us	[g=true v=1250000000 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+*	read_time	0.0000001 ns	[g=true v=0 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+*	read_time	-1.5 ps	[g=true v=-1500 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); NVC READ(TIME) rejects it, GHDL accepts
+*	read_bv	1 0	2	[g=false rest=1 0]	whitespace inside a bit string is not a bit value; GHDL also rejects it
+*	write_real	1.0e100	right	0	1	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.0]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real	1.0e100	right	0	3	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real	1.0e100	right	10	2	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real	1.0e100	left	10	2	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real	1.0e100	right	0	20	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000000000000000000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real	1.0e100	right	3	5	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real_format	1.0e100	%.3f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_real_format	1.0e100	%10.2f	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00]	NVC aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
+*	write_time	-9223372036854775808	right	0	ns	[-9223372036854.775808 ns]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	left	14	ns	[-9223372036854.775808 ns]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	right	14	ps	[-9223372036854775.808 ps]	NVC overflows negating TIME'LOW and prints garbage or aborts
+2008	write_time	-9223372036854775808	right	0	fs	[-9223372036854775808 fs]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	right	0	us	[-9223372036.854775808 us]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	right	0	sec	[-9223.372036854775808 sec]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	right	0	hr	[-2.56204778801521550 hr]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	right	0	ms	[-9223372.036854775808 ms]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	write_time	-9223372036854775808	right	0	min	[-153.7228672809129301 min]	NVC overflows negating TIME'LOW and prints garbage or aborts
+*	readline	a\x0db\x0a	[<3:a\\13b>]	only CRs directly before the line end are dropped; NVC deletes every CR in the line
+*	int_value	+5	[5]	a leading sign is accepted (GHDL agrees)
+*	int_value	1__0	ERROR	LRM 15.5.2: an underscore must stand between two digits
+*	int_value	_1	ERROR	LRM 15.5.2: an underscore must stand between two digits
+*	int_value	1_	ERROR	LRM 15.5.2: an underscore must stand between two digits
+*	int_value	1e3	[1000]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	1E3	[1000]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	16#FF#	[255]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	16#ff#	[255]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	2#1010#E3	[80]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	16:FF:	[255]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	8#777#	[511]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	16#F_F#	[255]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	int_value	2#1_0#	[2]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only
+*	real_value	2#1.1#E2	[6]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	16#F.8#	[15.5]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	.5	ERROR	LRM 15.5.2: a decimal literal needs digits on both sides of the point
+*	real_value	5.	ERROR	LRM 15.5.2: a decimal literal needs digits on both sides of the point
+*	real_value	1_000.5	[1000.5]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	1.0e-400	[0]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	16#1.0#E-2	[0.00390625]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	2#0.1#	[0.5]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	10#1.5#	[1.5]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	1.7976931348623157e308	[1.79769313486232e+308]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	4.9406564584124654e-324	[4.94065645841247e-324]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	2.4703282292062328e-324	[4.94065645841247e-324]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	real_value	1.0E+0_1	[10]	LRM 15.5 literal syntax and IEEE rounding (GHDL agrees); NVC 'VALUE rejects based literals, underscores, extreme values
+*	time_value	1.5 ns	[1500000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	1.5 NS	[1500000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	ns	[1000000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	0.1 fs	[0 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	1.0e3 ps	[1000000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	16#A# ns	[10000000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	10000000 hr	ERROR	overflow is an error; NVC wraps the value
+*	time_value	1.25 us	[1250000000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	1.5 fs	[2 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	2.5 fs	[3 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	-1.5 fs	[-2 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	1.0 hr	[3600000000000000000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	0.5 sec	[500000000000000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	1e3 fs	[1000 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	123456789.123456789 ns	[123456789123457 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	time_value	1.9999999 fs	[2 fs]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	e1_value	\\Bar\\	[\\Bar\\]	extended identifiers match exactly, with their case (LRM 15.4.3)
+*	e1_value	\\a\\\\b\\	[\\a\\\\b\\]	extended identifiers match exactly, with their case (LRM 15.4.3)
+*	e1_value	\\X\\	[\\X\\]	extended identifiers match exactly, with their case (LRM 15.4.3)
+*	e1_value	\\x\\	ERROR	extended identifiers match exactly, with their case (LRM 15.4.3)
+*	e1_value	Fo o	ERROR	two words are not one literal; NVC ignores the text after a space
+*	char_value	' '	[' ']	' ' is a character literal (GHDL agrees)
+*	dist_value	1 \\Ft\\	[304800000 nm]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	dist_value	1.5 mm	[1500000 nm]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	dist_value	m	[1000000000 nm]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	dist_value	0.0001 nm	[0 nm]	LRM 5.2.4.1/15.5: decimal, based and unit-only physical literals, rounded to the primary unit; extended unit names (GHDL agrees)
+*	real_format	1.5	%5	ERROR	an incomplete conversion is an error; NVC returns an empty string
+*	real_format	1.5	%.3	ERROR	an incomplete conversion is an error; NVC returns an empty string
+2019	write_time	-9223372036854775808	right	0	fs	[-9223372036854775808 fs]	NVC overflows negating TIME'LOW and prints garbage or aborts
+2019	trec_minus	0.0	90061.5	[1969-12-30T22:58:58.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	1.0	90061.5	[1969-12-30T22:58:59.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	86400.0	90061.5	[1969-12-31T22:58:58.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	951782400.0	90061.5	[2000-02-27T22:58:58.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	951868800.0	90061.5	[2000-02-28T22:58:58.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	1700000000.123456	90061.5	[2023-11-13T21:12:18.623456]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	-1.0	90061.5	[1969-12-30T22:58:57.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	gmtime_to_string	4102444800.0	0	[2100-01-01T00:00:00]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	gmtime_to_string	4102444800.0	3	[2100-01-01T00:00:00.000]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	gmtime_to_string	4102444800.0	6	[2100-01-01T00:00:00.000000]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	gmtime_fields	4102444800.0	[2100 0 1 0 0 0 0 friday 0]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	epoch_gmtime	4102444800.0	[4102444800]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	trec_plus	4102444800.0	90061.5	[2100-01-02T01:01:01.500000]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	trec_minus	4102444800.0	90061.5	[2099-12-30T22:58:58.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_diff	4102444800.0	1000000.25	[4101444799.75]	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	trec_minus	68169600.0	90061.5	[1972-02-27T22:58:58.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	gmtime_to_string	253402300799.0	0	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	gmtime_to_string	253402300799.0	3	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	gmtime_to_string	253402300799.0	6	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	gmtime_fields	253402300799.0	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	epoch_gmtime	253402300799.0	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	trec_plus	253402300799.0	90061.5	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	trec_minus	253402300799.0	90061.5	ERROR	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_diff	253402300799.0	1000000.25	ERROR	dates after 2038 are exact; NVC wraps epochs beyond 2**31, and a year past 4095 is outside TIME_RECORD
+2019	trec_minus	1709251199.25	90061.5	[2024-02-28T22:58:57.750000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	trec_minus	1.0e9	90061.5	[2001-09-08T00:45:38.500000]	exact microsecond arithmetic; NVC's TIME_RECORD subtraction loses microseconds
+2019	seconds_to_time	9223.372036854775807	ERROR	a result outside TIME is an error; NVC wraps
+2019	int_value	1e10	[10000000000]	LRM 15.5: exponents and based literals are integer literals; NVC 'VALUE accepts decimal digits only

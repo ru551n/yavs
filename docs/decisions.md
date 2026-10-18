@@ -1,6 +1,18 @@
 # Decisions
 
-## Waveform writer: wavefst (rsim-wave)
+## Project name: yavs (user, 2026-10-18), formerly the working name rsim
+
+- **Choice:** the project is yavs, "Yet Another VHDL Simulator". Crates are `yavs-*`, the
+  binary is `yavs`, environment variables are `YAVS_*` (VUnit: `VUNIT_YAVS_PATH`), native symbols
+  start with `yavs.`, and library directories hold `yavs-lib.toml` and `_YAVS_LIB`.
+- **How:** one mechanical sweep, `tools/rename-yavs.sh` (idempotent; other worktrees run it on
+  their own changes). The GitHub repository is `ru551n/yavs` (the old URL redirects).
+- **Kept:** the `~/.cache/rsim-*` scratch directory names and the `~/git/rsim` checkout (both exist
+  on disk), the VUnit branch names, and the vendored `lib/std` and `lib/ieee` files, which keep their old
+  comments so `lib/SHA256SUMS` stays valid. A library directory that still has the old
+  manifest name fails with L0004 and asks to re-analyze: there is no reader for old names.
+
+## Waveform writer: wavefst (yavs-wave)
 
 - **Choice:** the `wavefst` crate (0.4.0, MIT) for FST output, with `default-features = false`,
   features `writer` and `lz4` (pure Rust, no C compiler needed). No FST writing code of our own.
@@ -9,8 +21,8 @@
   flush only works at a time step boundary (`todo!`). `wavefst` has enum tables, VHDL supplemental
   variable metadata (`CreateVar2`), aliases, reals, `flush()` that patches the header, and is
   checked against libfst in both directions.
-- **Risks:** a young single-author crate. All use is behind `rsim-wave`'s own API (`WaveWriter`),
-  so it can be swapped or vendored. rsim-wave's round-trip tests read every file back with wellen.
+- **Risks:** a young single-author crate. All use is behind `yavs-wave`'s own API (`WaveWriter`),
+  so it can be swapped or vendored. yavs-wave's round-trip tests read every file back with wellen.
 - **FST mapping:** std_logic family and bit are written as characters (`u x 0 1 z w l h -`) with
   the VHDL data type set, so viewers show `U`, `X`, ...; other enums are bit vectors with an FST
   enum table (literal names in original spelling); integers and time are two's complement vectors;
@@ -21,22 +33,22 @@
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel
   stops between time steps and calls `finish`, which is also done on drop.
 
-## Packed logic vectors: bit-planes (rsim-logic)
+## Packed logic vectors: bit-planes (yavs-logic)
 
 - **Choice:** `LogicVec` is stored as four bit-planes (`Vec<[u64; 4]>`, 64 elements per block),
   not 4-bit nibbles. The nibble layout stays behind `--features nibbles` since it costs about
   100 lines and shares all tests and benchmarks.
 - **Why:** equal speed up to 32 elements, then 8x to 10x faster logic ops and resolution, and
   40x to 140x faster numeric add/compare at 1024+ elements (a 0/1 vector is plain `u64` words).
-  Memory is the same 4 bits per element. Full table in `crates/rsim-logic/LAYOUT.md`.
+  Memory is the same 4 bits per element. Full table in `crates/yavs-logic/LAYOUT.md`.
 - **Costs:** `to_string` is 2x slower (per-element decode); a 1-element vector takes 32 bytes, so
   the kernel keeps scalar signals as bare `StdULogic`. VHPI/FST need a transpose per element.
 
-## LLVM bindings: llvm-sys 211, no inkwell (rsim-llvm)
+## LLVM bindings: llvm-sys 211, no inkwell (yavs-llvm)
 
 - **Choice:** `llvm-sys` `=211.1.1` (MIT), the raw LLVM 21.1 C API, features `prefer-dynamic` and
   `strict-versioning`, optional behind the crate feature `llvm` (default off, so the workspace
-  builds without LLVM). Test with `cargo test -p rsim-llvm --features llvm`.
+  builds without LLVM). Test with `cargo test -p yavs-llvm --features llvm`.
 - **Why not inkwell:** inkwell 0.10.0 (Apache-2.0) has an `llvm21-1` feature on top of llvm-sys
   211, but its only JITs are MCJIT and the legacy ORCv1 (`LLVMOrcCreateInstance`), which no longer
   exists. ORC LLJIT (rule 5) would need raw llvm-sys anyway, and mixing inkwell's lifetimes with
@@ -50,7 +62,7 @@
   Optimisation: `default<O2>` through `LLVMRunPasses`.
 - **Runtime errors** in JIT code call a Rust `extern "C"` callback that records the error and
   returns; the generated code then returns a status. No unwinding through JIT frames (Win64 does
-  not register unwind info for them, see `crates/rsim-llvm/WINDOWS.md`).
+  not register unwind info for them, see `crates/yavs-llvm/WINDOWS.md`).
 - **Linking:** shared `libLLVM-21.so` on Linux (low link memory). On Windows llvm-sys refuses
   dynamic linking and uses the static libs of the official release tarball; see WINDOWS.md.
 - **Size threshold (rule 5):** codegen time grows faster than linearly with function size (about
@@ -59,9 +71,9 @@
   keep larger units in the interpreter, and lower big processes as several functions rather
   than one. To be confirmed with real lowered code in M6.
 
-## Kernel crate and process interface (rsim-kernel)
+## Kernel crate and process interface (yavs-kernel)
 
-- **Crate:** the LRM 14.7 cycle lives in `crates/rsim-kernel`, independent of the IR. rsim-rt
+- **Crate:** the LRM 14.7 cycle lives in `crates/yavs-kernel`, independent of the IR. yavs-rt
   (heap, std natives) builds on it.
 - **Process interface:** `Process::run(&mut Ctx) -> Result<(), SimError>` runs to the next
   `wait`; the wait is stated through `Ctx::wait_on/wait_for/wait_at`. A `wait until` condition is
@@ -81,9 +93,9 @@
 - **End of simulation:** `Idle` (nothing scheduled) is terminal like `stop`/`finish`;
   `EndOfSim` fires once.
 
-## VHPI ABI and symbol export (rsim-vhpi)
+## VHPI ABI and symbol export (yavs-vhpi)
 
-- **Header:** `crates/rsim-vhpi/include/vhpi_user.h` is the official IEEE 1076-2019 header
+- **Header:** `crates/yavs-vhpi/include/vhpi_user.h` is the official IEEE 1076-2019 header
   ("Copyright 2019 IEEE P1076 WG Authors", Apache-2.0), vendored unchanged with its license
   header from rust-vhpi (`vhpi-sys/vhpi_user.h`, commit `65484e3`; NVC ships the same file with
   `(void)` prototypes). Plugins build against it. We do not write our own: names, values and
@@ -99,15 +111,15 @@
   `RTLD_NOW | RTLD_GLOBAL`, so a missing symbol fails at load, naming it.
 - **Export, Windows:** no VHPI DLL. The executable is linked with a generated `.def`
   (`/DEF:` for MSVC, the `.def` as linker input for MinGW). `build.rs` also writes import
-  libraries `rsim.lib` (naming `rsim.exe`) and `rsim-vhpi-host.lib` with `lib.exe` (MSVC), else
+  libraries `yavs.lib` (naming `yavs.exe`) and `yavs-vhpi-host.lib` with `lib.exe` (MSVC), else
   `llvm-dlltool`, else MinGW `dlltool`; short-format import libraries work with both MSVC link
-  and GNU ld. The import names the executable, so a renamed `rsim.exe` breaks plugins linked
+  and GNU ld. The import names the executable, so a renamed `yavs.exe` breaks plugins linked
   that way (shims that use `GetProcAddress` on the main module do not care).
 - **One list:** `build.rs` turns `src/exports.txt` into the dynamic list, the `.def`, the import
   libraries and a Rust table that references every symbol, which keeps them linked from the rlib.
-  Other packages (the `rsim` CLI) get the paths as `DEP_RSIM_VHPI_DYNAMIC_LIST`, `_DEF` and
-  `_IMPORT_LIB_DIR` (the crate has `links = "rsim_vhpi"`) and must pass them to their own binary
-  link. The spike binary `rsim-vhpi-host` gets them via `rustc-link-arg-bins`.
+  Other packages (the `yavs` CLI) get the paths as `DEP_YAVS_VHPI_DYNAMIC_LIST`, `_DEF` and
+  `_IMPORT_LIB_DIR` (the crate has `links = "yavs_vhpi"`) and must pass them to their own binary
+  link. The spike binary `yavs-vhpi-host` gets them via `rustc-link-arg-bins`.
 - **Variadics:** `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` are in `src/shim.c`
   (stable Rust cannot define C-variadic functions) and call plain Rust functions.
   `vhpi_control` ignores the optional argument after `vhpiStop`/`vhpiFinish` (cocotb passes
@@ -120,10 +132,10 @@
   goes stale even after its slot is reused. 64-bit targets only (compile error otherwise).
 - **Errors (fail early, fail clearly):** a plugin that does not exist, does not load (with the
   OS loader's message and error code) or has no entry point is a hard error before simulation
-  starts: `E0901` (cannot load) and `E0902` (no entry point), rendered through rsim-diag.
+  starts: `E0901` (cannot load) and `E0902` (no entry point), rendered through yavs-diag.
   Each failed VHPI call sets the `vhpi_check_error` info (cleared by the next call, printf
   included). API misuse (NULL arguments, stale or wrong handles) is also reported on stderr every
-  time as `W0903`; calls rsim does not implement yet as `W0904`, once per distinct message.
+  time as `W0903`; calls yavs does not implement yet as `W0904`, once per distinct message.
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since cocotb probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.
@@ -131,13 +143,13 @@
   through `vhpi_startup_routines` and through `LIB:ENTRY`, plus missing file, missing entry and
   unresolved-symbol errors). Windows x86_64 GNU by cross-building with MinGW and running under
   wine (the export table has exactly the 42 symbols, the plugin DLL imports from
-  `rsim-vhpi-host.exe` through the llvm-dlltool import library, same output as Linux). The
+  `yavs-vhpi-host.exe` through the llvm-dlltool import library, same output as Linux). The
   tests themselves cannot run under wine since they call the C compiler. Windows MSVC (`/DEF:`,
   `lib.exe`, `cl` in the tests) is only build-path code until Windows CI runs it.
 
-## std value conversion: NVC formats, LRM parsing (rsim-std)
+## std value conversion: NVC formats, LRM parsing (yavs-std)
 
-- **Text is Latin-1 bytes.** Every VHDL-level string in `rsim-std` is `[u8]`, one byte per
+- **Text is Latin-1 bytes.** Every VHDL-level string in `yavs-std` is `[u8]`, one byte per
   CHARACTER, matching the runtime's STRING layout. Identifiers keep their declared spelling.
 - **Output formats follow NVC byte for byte** where the LRM leaves them to the implementation,
   because NVC is the differential reference for report text: `real'image`/`to_string(real)` is
@@ -147,7 +159,7 @@
   `min(floor(log10(unit)), 17)` truncated digits (GHDL agrees on the last one). GHDL prints reals
   as shortest round-trip VHDL literals (`1.0e-1`) and Questa as `%e`; neither is adopted.
 - **The LRM wins over NVC** where NVC is wrong or crashes, each case listed with its reason in
-  `crates/rsim-std/golden/nvc-deviations.txt`: extended identifiers keep case and doubled
+  `crates/yavs-std/golden/nvc-deviations.txt`: extended identifiers keep case and doubled
   backslashes; `'VALUE` takes full literal syntax (based literals, exponents, underscores only
   between digits, decimal physical literals rounded to the primary unit, unit-only `ns`, extended
   unit names) and rejects what is not one literal (`Fo o`, `1__0`, `.5`, `5.`); overflow is an
@@ -164,12 +176,12 @@
 - **env**: TIME_RECORD arithmetic is exact in microseconds and years outside 1..4095 are errors
   (NVC wraps epochs past 2**31 and loses microseconds in `-`); `seconds_to_time` truncates like
   NVC but errors on overflow; LOCALTIME uses the system zone through `jiff`; `DIRECTORY.items`
-  are sorted, without `.` and `..`; TOOL_* name rsim.
+  are sorted, without `.` and `..`; TOOL_* name yavs.
 - **Verification**: `golden/gen.py` writes testbenches, runs NVC 2008 and 2019 and records
   goldens (about 2,900 cases per revision); the Rust tests compare against them without needing
   NVC, and proptest checks `'value('image(x)) = x` and WRITE-then-READ round trips.
 
-## Parser (rsim-syntax, M0)
+## Parser (yavs-syntax, M0)
 
 Choices made while writing the M0 parser that the plan does not settle. Each is easy to revisit.
 
@@ -185,10 +197,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Conditional analysis in both modes:** `` `if `` etc. are evaluated for 2008 files too
   (`VHDL_VERSION` is `"2008"`), since 2008 already allows tool directives and the evaluation is
   harmless. Unknown directives (`` `protect ``) warn (W0002) and skip their line. `TOOL_VENDOR`
-  and `TOOL_NAME` are `rsim`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
+  and `TOOL_NAME` are `yavs`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
 - **2019 closing keywords:** 2019 makes only `end component` optional (LCS-2016-055a); every
   other ending keeps the 2008 rule. NVC, GHDL and Questa 2025.3 reject a bare `end;` for every
-  other construct (`docs/design/lrm-checks.md` P1); rsim gives E0002 with a help naming the rule.
+  other construct (`docs/design/lrm-checks.md` P1); yavs gives E0002 with a help naming the rule.
 - **2019 conditional expressions** (`a when c else b`, `docs/design/lrm-checks.md` P2): bare in
   constant, signal and variable initial values, interface defaults (U-5, permissive), association
   actuals (also after `inertial`) and `return`, plus anywhere as the 2019 primary
@@ -216,15 +228,15 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   skipped (to `;`, or to the closing `}` of a `vunit`).
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). NVC `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
-  files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (rsim has no 1993
+  files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993
   mode, so 93 code that uses 2008 reserved words is an expected failure). VESTs `vhdl-ams` is
   VHDL-AMS and is not parsed.
 
-## Kernel round 2: K1 to K7 (rsim-kernel)
+## Kernel round 2: K1 to K7 (yavs-kernel)
 
 - **Bit-plane signals:** `SignalType { elem: Bytes(n) | Logic, len }`. Logic signals use
-  rsim-logic's `Block` layout for every buffer (values, drivers, transactions, forces), with
-  chunked shift/mask range ops; byte signals keep plain bytes. rsim-logic gained additive
+  yavs-logic's `Block` layout for every buffer (values, drivers, transactions, forces), with
+  chunked shift/mask range ops; byte signals keep plain bytes. yavs-logic gained additive
   accessors for this: `Planes::blocks`, `Planes::from_blocks`, `Planes::resolve_block`,
   `Logic::repr`, `Logic::from_repr`.
 - **Ports (K1):** an `out`/`inout`/`buffer` formal is one more source in the actual's source list;
@@ -242,7 +254,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **`SimError` is boxed** (`Deref` to `ErrorInfo`) to keep hot-path `Result`s one word; a panic
   in kernel code becomes an internal error like a panic in process code.
 
-## Semantic analysis (rsim-sem, M1)
+## Semantic analysis (yavs-sem, M1)
 
 - **Static values outside the base range** of their type (the declared range, Q2) are overflow:
   `E1401` in required contexts, `W1401` elsewhere. Array type definition bounds are required
@@ -258,14 +270,14 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   packages (checked at the end of the package body) and protected types (s6). A package without
   any analyzed body is not checked at analysis.
 - **A failed file hides all its units in the session** (`Db::analyze_file`): one session over
-  many files gives the per-file result of one `rsim analyze` per file. A file fails when a unit
+  many files gives the per-file result of one `yavs analyze` per file. A file fails when a unit
   reports an error, fails silently (8.2), or needs a unit that failed; then every unit of the file
   is `Failed`, since the CLI records no unit of a failed file. Before, in-session counts were
   inflated by dependents of failed units (vunit-2008: 133 in-session against 108 per file).
 - **Type names in messages** are qualified by their region (`work.i1.rec`) only when two names in
   one message collide.
 
-## IR and interpreter (rsim-ir, rsim-interp, M2)
+## IR and interpreter (yavs-ir, yavs-interp, M2)
 
 - **Memory model:** registers are untyped u64 cells; addresses are `[space: 3 | index: 29 |
   offset: 32]` over eight spaces (frame, instance, package, constant, heap, temp, shared,
@@ -275,10 +287,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   function's unconstrained result survives the return without a copy.
 - **Natives** are looked up by `lib/NATIVE.md` symbol, parsed from the file at build time: a
   symbol that NATIVE.md does not define fails `Runtime::new` (fail early), one that is defined
-  but not implemented is a runtime error naming it. `'image` is `rsim.attr.image` (NATIVE.md
+  but not implemented is a runtime error naming it. `'image` is `yavs.attr.image` (NATIVE.md
   has no attribute natives). Implemented now: `now`, `stop`, `finish`, `to_string` and `'image`
   of scalars; the rest (textio, file, env extras) come with M3.
-- **Foreign calls from safe code:** `rsim_ffi::ForeignFn::from_fn` binds a typed Rust
+- **Foreign calls from safe code:** `yavs_ffi::ForeignFn::from_fn` binds a typed Rust
   `extern "C" fn` without `unsafe`; real symbols are bound by the elaborator (the one unsafe
   step) and passed in `Bindings`. Scalars and scalar `out` parameters are marshalled; arrays,
   records and access values are a "not implemented" runtime error until M3.
@@ -298,15 +310,15 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   delta (a common testbench idiom) would read nothing. Determinism holds because a file object
   belongs to one process or to serial processes. `STD_OUTPUT` still goes through the kernel's
   OUTPUT stream so it stays ordered with `report`. K6 remains available for a future need.
-- **Open, needs a decision: BIT/BOOLEAN in bit-planes.** rsim-elab stores BIT leaves as their
+- **Open, needs a decision: BIT/BOOLEAN in bit-planes.** yavs-elab stores BIT leaves as their
   positions (0/1, codes of 'U'/'X'); the interpreter's natives write the codes of '0'/'1'
   (2/3), with which `LogicOp`/`LNum` (std_ulogic tables) compute BIT results correctly. The
   interpreter reads both for now. Proposal: '0'/'1' codes everywhere.
 - **Foreign arrays** are passed as C-layout copies left to right (NVC convention), logic
   elements one code byte each (BIT/BOOLEAN 0/1); records as naturally aligned structs;
-  access values as a pointer into the object (rsim additions). Copy-back range-checks.
+  access values as a pointer into the object (yavs additions). Copy-back range-checks.
 
-## Generics (rsim-sem, S4)
+## Generics (yavs-sem, S4)
 
 - **Formal packages with a generic map** (6.5.6.3, 6.5.7.2): the actual instance must have been
   instantiated with the same actuals (static values, base types, subprograms); a mismatch is
@@ -321,7 +333,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **An unknown generic in a generic map does not hide a missing actual:** both `E1100` and
   `E1502` are reported, as NVC does.
 
-## Design units and binding (rsim-sem, S5)
+## Design units and binding (yavs-sem, S5)
 
 - **Default binding (Q4, 7.3.3):** an entity made directly visible by a use clause wins over the
   one in the design unit's library (`W1703` when both exist); the architecture is the last one in
@@ -346,14 +358,14 @@ Allowed only in units of library `std` (`std.reflection` needs it). In user code
 a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. Not extended to
 `ieee`: nothing there needs it.
 
-## Elaboration (rsim-elab, M2)
+## Elaboration (yavs-elab, M2)
 
 - **Element order inside a kernel leaf:** composites flatten row major, leftmost first; a logic
   leaf (bit-planes) mirrors it, kernel offset `n - 1 - p` for row-major position `p` (element 0 of
-  rsim-logic is the rightmost element). `NetGraph::select` is the one implementation; lowering
+  yavs-logic is the rightmost element). `NetGraph::select` is the one implementation; lowering
   computing offsets of non-static indices must use the same rule.
 - **Logic leaves:** every leaf whose scalar is `std_ulogic`, `bit` or `boolean` (scalars too) is
-  `Elem::Logic` with the enumeration position as the code, matching `rsim_ir::LogicKind`. Other
+  `Elem::Logic` with the enumeration position as the code, matching `yavs_ir::LogicKind`. Other
   enums are 1 or 4 bytes, integers, physicals and reals 8.
 - **Records** become one leaf per field (arrays of records: struct of arrays).
 - **Unlabeled processes** are named `_pN`, N counting the unlabeled process-like statements of
@@ -362,16 +374,16 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   signals (two port edges per port, uncollapsed); it is not part of path names, the bound entity
   instance carries the label.
 - **Interim evaluator:** globally static expressions are folded with sem's static folder over
-  generic and constant values (`Db::fold_with`); everything else is E2106 until rsim-interp runs
+  generic and constant values (`Db::fold_with`); everything else is E2106 until yavs-interp runs
   elaboration code (ir.md 3.6).
 - **Package constant calling a function of its own package** whose body is not elaborated yet
   (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.
 
 ## Runtime: default exit severity (user, 2026-10-18)
 
-`rsim run` defaults to `--exit-severity=failure`, like NVC, GHDL and Questa. A report or assert of
+`yavs run` defaults to `--exit-severity=failure`, like NVC, GHDL and Questa. A report or assert of
 severity ERROR is printed and the simulation continues; the run exits 1 at the end if any ERROR or
-higher was reported. FAILURE stops the simulation at once. rsim's own runtime errors (bound,
+higher was reported. FAILURE stops the simulation at once. yavs's own runtime errors (bound,
 overflow, null access, delta limit, internal) still stop immediately, per the error motto.
 `--exit-severity=error|warning|note` lowers the threshold. VUnit passes its own setting.
 Reports go to stdout in NVC's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),
@@ -381,7 +393,7 @@ which tools/difftest parses.
 
 - BIT and BOOLEAN elements of bit-plane arrays use the std_ulogic codes for '0'/'1' (2/3), not
   their enum positions 0/1, so the shared plane operations are correct for `bit_vector`.
-  rsim-elab follows; VHPI, waves and foreign calls translate at the boundary.
+  yavs-elab follows; VHPI, waves and foreign calls translate at the boundary.
 - Disk files are written directly by the owning process, not through the kernel's buffered
   streams, so write, close and reopen-for-read in one delta works. Output stays independent of
   `--threads` because a file object belongs to one process or to serial processes. STD_OUTPUT

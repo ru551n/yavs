@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 14:10 no function `f` returns `bit`
 -- LRM 12.5
 package p is

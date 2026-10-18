@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1502 9:9 generic type `t` has no actual
 -- expect: E1100 9:38 package `g` has no generic `n`
 -- LRM 6.5.3

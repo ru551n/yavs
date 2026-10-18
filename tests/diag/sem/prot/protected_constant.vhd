@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1905 16:12 a constant cannot have protected type `pt`
 -- LRM 5.6.2
 package p is

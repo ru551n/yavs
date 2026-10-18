@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 13:14 an allocator of `bit` for an access to `integer`
 -- expect: E1300 14:14 a qualified allocator of `bit` for an access to `integer`
 -- LRM 9.3.7

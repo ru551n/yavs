@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 10:5 `v` is a variable; use `:=` to assign it
 -- LRM 10.5
 entity e is end entity;

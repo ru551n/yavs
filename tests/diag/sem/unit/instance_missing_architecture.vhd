@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1002 8:23 architecture `rtl` of entity `sub` not found
 -- LRM 11.7
 entity sub is end entity;

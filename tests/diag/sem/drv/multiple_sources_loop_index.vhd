@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1812 9:21 unresolved signal `s` has multiple sources
 -- LRM 8.1 (a loop parameter is not static: the driver is all of `s`)
 entity e is end entity;

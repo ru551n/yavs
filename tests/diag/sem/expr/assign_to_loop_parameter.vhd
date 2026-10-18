@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 9:7 cannot assign to loop parameter `i`
 -- LRM 10.10
 entity e is end entity;

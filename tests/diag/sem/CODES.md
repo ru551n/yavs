@@ -1,6 +1,6 @@
 # Diagnostic codes used by the negative suite
 
-Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" means the code table in `docs/design/sem.md` section 8.1. Codes marked **proposed** are not in the 8.1 table (or sem.md uses two different codes for one thing); the rsim-sem owner decides. Nothing here is binding until `rsim-sem::diag` defines it.
+Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" means the code table in `docs/design/sem.md` section 8.1. Codes marked **proposed** are not in the 8.1 table (or sem.md uses two different codes for one thing); the yavs-sem owner decides. Nothing here is binding until `yavs-sem::diag` defines it.
 
 ## Proposed codes (not in sem.md 8.1, or ambiguous there)
 
@@ -21,14 +21,14 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 
 | Code | Meaning | Test |
 |---|---|---|
-| E0004 | construct requires VHDL-2019 (rsim-syntax). 2019-only syntax in a 2008 file never reaches sem, so `E1910` (8.1) is unreachable for syntactic constructs and has no test | `mix/generic_class_2008_file` |
-| E0003 | end label mismatch (rsim-syntax). `E1106` from 8.1 is therefore also covered by the syntax stage and has no sem test | `tests/diag/end_label.vhd` |
+| E0004 | construct requires VHDL-2019 (yavs-syntax). 2019-only syntax in a 2008 file never reaches sem, so `E1910` (8.1) is unreachable for syntactic constructs and has no test | `mix/generic_class_2008_file` |
+| E0003 | end label mismatch (yavs-syntax). `E1106` from 8.1 is therefore also covered by the syntax stage and has no sem test | `tests/diag/end_label.vhd` |
 
 ## Codes from 8.1 with no test, and why
 
 | Code | Why |
 |---|---|
-| E1003 dependency cycle | needs a manifest with two files; NVC/GHDL cannot be run on it as a single file. Add to the harness-level tests with `rsim-lib` |
+| E1003 dependency cycle | needs a manifest with two files; NVC/GHDL cannot be run on it as a single file. Add to the harness-level tests with `yavs-lib` |
 | E1631 several signature matches | a full signature (parameters and result) is unique among homographs; no legal input produces it. Candidate for removal |
 | E1910 | see E0004 above |
 | E1106 | see E0003 above |
@@ -102,8 +102,8 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 | E1802 | `return` misplaced | 8.1 |
 | E1810 | signal driven from outside a process | 8.1 |
 | E1811 | `next`/`exit` misplaced or unknown label | 8.1 |
-| E1812 | unresolved signal with multiple sources (defined in `rsim-sem::diag`, not in 8.1) | 6.9 |
-| E1813 | entity statement not passive (defined in `rsim-sem::diag`, not in 8.1) | 6.9 |
+| E1812 | unresolved signal with multiple sources (defined in `yavs-sem::diag`, not in 8.1) | 6.9 |
+| E1813 | entity statement not passive (defined in `yavs-sem::diag`, not in 8.1) | 6.9 |
 | E1820 | case coverage / duplicates | 8.1 |
 | E1830 | pure function purity | 8.1 |
 | E1901 | view element missing or duplicate (see proposed table) | 8.1 |

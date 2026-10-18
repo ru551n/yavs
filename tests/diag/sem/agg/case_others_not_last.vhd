@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1820 11:12 `others` must be the last alternative
 -- LRM 10.9
 entity e is end entity;

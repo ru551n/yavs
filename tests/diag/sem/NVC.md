@@ -21,29 +21,29 @@ NVC (the primary reference). Every file NVC does not agree with is listed here.
 | `agg/others_with_other_choice_same_assoc` | accepts | rejects @5 | NVC bug/leniency: accepts `others` combined with another choice in one association (LRM 9.3.3.3 forbids); GHDL rejects. |
 | `attr/attribute_spec_overloaded_ok` | rejects @8 | accepts | LRM 7.2 is clear: an overloaded entity tag without a signature decorates every matching declaration. GHDL and Questa accept; NVC is stricter than the LRM. |
 | `gen/formal_package_map_mismatch` | accepts | rejects @14 | LRM 6.5.7.2 is clear: the actual instance must match the formal package's generic map. Questa rejects ("Actual values for generic 'n' don't match"); NVC does not check; GHDL rejects as unsupported. |
-| `gen/unused_generic_warning` | accepts | accepts | rsim-only warning (W1501); NVC and GHDL do not warn. |
+| `gen/unused_generic_warning` | accepts | accepts | yavs-only warning (W1501); NVC and GHDL do not warn. |
 | `hom/interface_param_twice` | accepts | rejects @5 | NVC bug: accepts two parameters with one name in a subprogram declaration; GHDL rejects. |
-| `mix/integer_high_in_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
-| `mix/integer_left_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
-| `mix/integer_range_attribute_2008` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
-| `mix/natural_high_in_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
-| `mix/natural_range_in_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
+| `mix/integer_high_in_2008_file` | accepts | accepts | yavs-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
+| `mix/integer_left_2008_file` | accepts | accepts | yavs-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
+| `mix/integer_range_attribute_2008` | accepts | accepts | yavs-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
+| `mix/natural_high_in_2008_file` | accepts | accepts | yavs-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
+| `mix/natural_range_in_2008_file` | accepts | accepts | yavs-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
 | `drv/stable_attr_in_subprogram_ok` | rejects @10 | accepts | LRM 4.2.2.2 forbids `'STABLE` etc. only of formal signal parameters inside a subprogram; for other signals it is silent, so permissive (GHDL and Questa accept; NVC's message names no LRM rule). |
-| `stat/division_by_zero_in_range` | accepts | rejects @5 | NVC defers these to elaboration; rsim folds type-range bounds at analysis (sem.md 4.2 "required folding"). GHDL rejects. |
-| `stat/integer_overflow_addition` | rejects @5 | warns | rsim warns W1401 (non-required context, Q5, run-time check kept); NVC and GHDL are stricter (NVC error, GHDL warning). |
-| `stat/integer_overflow_multiplication` | rejects @5 | warns | rsim warns W1401 (non-required context, Q5, run-time check kept); NVC and GHDL are stricter (NVC error, GHDL warning). |
-| `stat/mod_by_zero_in_range` | accepts | rejects @5 | NVC defers these to elaboration; rsim folds type-range bounds at analysis (sem.md 4.2 "required folding"). GHDL rejects. |
-| `stat/negative_exponent_in_range` | accepts | rejects @5 | NVC defers these to elaboration; rsim folds type-range bounds at analysis (sem.md 4.2 "required folding"). GHDL rejects. |
-| `stat/static_index_out_of_range_process` | rejects @11 | warns | NVC stricter: reports an error where rsim only warns (W1404, sem.md 4.3: code may be dead). The line agrees. GHDL warns. |
-| `stat/static_slice_out_of_range` | rejects @10 | warns | NVC stricter: reports an error where rsim only warns (W1404, sem.md 4.3: code may be dead). The line agrees. GHDL warns. |
+| `stat/division_by_zero_in_range` | accepts | rejects @5 | NVC defers these to elaboration; yavs folds type-range bounds at analysis (sem.md 4.2 "required folding"). GHDL rejects. |
+| `stat/integer_overflow_addition` | rejects @5 | warns | yavs warns W1401 (non-required context, Q5, run-time check kept); NVC and GHDL are stricter (NVC error, GHDL warning). |
+| `stat/integer_overflow_multiplication` | rejects @5 | warns | yavs warns W1401 (non-required context, Q5, run-time check kept); NVC and GHDL are stricter (NVC error, GHDL warning). |
+| `stat/mod_by_zero_in_range` | accepts | rejects @5 | NVC defers these to elaboration; yavs folds type-range bounds at analysis (sem.md 4.2 "required folding"). GHDL rejects. |
+| `stat/negative_exponent_in_range` | accepts | rejects @5 | NVC defers these to elaboration; yavs folds type-range bounds at analysis (sem.md 4.2 "required folding"). GHDL rejects. |
+| `stat/static_index_out_of_range_process` | rejects @11 | warns | NVC stricter: reports an error where yavs only warns (W1404, sem.md 4.3: code may be dead). The line agrees. GHDL warns. |
+| `stat/static_slice_out_of_range` | rejects @10 | warns | NVC stricter: reports an error where yavs only warns (W1404, sem.md 4.3: code may be dead). The line agrees. GHDL warns. |
 | `typ/incomplete_not_completed` | accepts | accepts | NVC and GHDL both accept an incomplete type that is never completed (LRM 5.4.2 requires completion). Kept for E1220. |
 | `unit/configuration_label_wrong_component` | accepts | rejects @13 | NVC accepts at analysis (checks at elaboration); GHDL rejects. |
 | `unit/configuration_rebinding` | accepts | rejects @16 | NVC accepts at analysis (checks at elaboration); GHDL rejects. |
 | `use/conflict_constant_vs_literal` | accepts | rejects @9 | NVC accepts a use-clause clash between a constant and an enumeration literal (LRM 12.4: both invisible); GHDL rejects. |
-| `drv/multiple_sources_loop_index` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
-| `drv/multiple_sources_overlapping_slice` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
-| `drv/multiple_sources_record_element` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
-| `drv/multiple_sources_two_processes` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_loop_index` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. yavs reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_overlapping_slice` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. yavs reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_record_element` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. yavs reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_two_processes` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. yavs reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
 | `v2019/generic_class_array_elem_mismatch` | accepts | rejects @5,6 | NVC does not check this 2019 rule at analysis; GHDL rejects (but for lack of 2019 syntax support, so no real second opinion). |
 
 GHDL as second opinion: files where GHDL disagrees but NVC agrees.
@@ -84,9 +84,9 @@ GHDL as second opinion: files where GHDL disagrees but NVC agrees.
 
 ## Findings for the sem owner
 
-- `gen/generic_type_no_equality_2008` was dropped: NVC (and GHDL) accept `a = b` on a 2008 `type t` generic, while sem.md Q9 says a 2008 private generic type has no implicit `=`. If Q9 stands, rsim rejects code both references accept.
+- `gen/generic_type_no_equality_2008` was dropped: NVC (and GHDL) accept `a = b` on a 2008 `type t` generic, while sem.md Q9 says a 2008 private generic type has no implicit `=`. If Q9 stands, yavs rejects code both references accept.
 - NVC `--relaxed` does not relax "pure function reads a signal" (only the impure-call case), so only the call case has an R2 test.
-- Several rules are only checked by NVC at elaboration (config binding, division by zero); rsim reports them at analysis by design.
+- Several rules are only checked by NVC at elaboration (config binding, division by zero); yavs reports them at analysis by design.
 - `E1003` (dependency cycle) cannot be written as a single file that both tools analyze; no test.
 
 ## Changes under the LRM interpretation policy (2026-10-18)

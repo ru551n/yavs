@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1100 7:33 `conter` is not declared
 -- help: did you mean `counter`
 -- LRM 12.3

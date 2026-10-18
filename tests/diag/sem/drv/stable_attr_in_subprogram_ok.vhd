@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 4.2.2.2 forbids these attributes only of formal signal parameters (GHDL, Questa accept)
 entity e is end entity;

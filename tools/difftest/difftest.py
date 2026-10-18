@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential test harness for rsim: run corpus testbenches on a candidate
+"""Differential test harness for yavs: run corpus testbenches on a candidate
 simulator and diff the normalised output against checked-in NVC reference
 outputs (`.expected`). Stdlib only. See README.md."""
 import shutil, argparse, zlib, concurrent.futures as cf, difflib, os, re, shlex, subprocess, sys
@@ -21,14 +21,14 @@ NVC = ("nvc --std={std} --work={work} -a {file} || exit 97; "
 GHDL = ("mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file} || exit 97; "
         "ghdl -e --std={std2} --workdir={work} {top} || exit 98; "
         "ghdl -r --std={std2} --workdir={work} {top} {stop_flag}")
-# analyze fails -> 97; `rsim run` exit 2 (usage, elaboration, "not implemented") -> 98; 1 and 3 pass through.
-# --shuffle is a plain switch in rsim, so {shuffle_on} replaces the seeded {shuffle_flag}.
-RSIM = ('R=${{RSIM_BIN:-rsim}}; "$R" analyze --std={std} --work=work:{work} {file} || exit 97; '
+# analyze fails -> 97; `yavs run` exit 2 (usage, elaboration, "not implemented") -> 98; 1 and 3 pass through.
+# --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
+YAVS = ('R=${{YAVS_BIN:-yavs}}; "$R" analyze --std={std} --work=work:{work} {file} || exit 97; '
         '"$R" run --std={std} --work=work:{work} {stop_flag} --threads={threads} {shuffle_on} {top}; '
         "rc=$?; [ $rc -eq 2 ] && exit 98; exit $rc")
-TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "rsim": RSIM}
+TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS}
 # Fields masked by default per builtin candidate (reference prints them all).
-DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "rsim": ""}
+DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": ""}
 
 UNITS = {"fs": 1, "ps": 10**3, "ns": 10**6, "us": 10**9, "ms": 10**12, "sec": 10**15, "s": 10**15}
 
@@ -96,7 +96,7 @@ def norm_msg(m):
     return "Assertion violation" if m == "Assertion violation." else m  # NVC adds a full stop
 
 
-def normalise(rc, out, err, rsim=False):
+def normalise(rc, out, err, yavs=False):
     """Return canonical lines: exit, diag events, stdout lines.
     Event line: diag TAB sev TAB time_fs TAB delta TAB path TAB msg ('-' = absent)."""
     diags, outl = [], []
@@ -152,8 +152,8 @@ def normalise(rc, out, err, rsim=False):
                 continue
             if line.startswith("  instance: ") or line.startswith("  from: "):
                 continue
-            if cur and stream == "out" and rsim:
-                # rsim prints NVC's format on stdout (cli-contract), the process trace last.
+            if cur and stream == "out" and yavs:
+                # yavs prints NVC's format on stdout (cli-contract), the process trace last.
                 t = NVC_TRACE.match(line)
                 if t:
                     if t.group(1) == "Process" and cur[3] == "-":
@@ -232,7 +232,7 @@ def one(vhd, args, template, ignore):
             if rc in (RC_ANALYSE, RC_ELAB) and hdr["exit"] != rc:
                 return {**res, "ok": False, "msg": f"{'analysis' if rc == RC_ANALYSE else 'elaboration'} failed:\n" + (err or out)[:1500],
                         "stage": "analysis" if rc == RC_ANALYSE else "elab", "raw": err or out}
-            outs.append(normalise(rc, out, err, rsim="RSIM_BIN" in template))
+            outs.append(normalise(rc, out, err, yavs="YAVS_BIN" in template))
         if args.bless:
             if hand:
                 return {**res, "msg": "skipped, hand-maintained .expected"}
@@ -263,7 +263,7 @@ def one(vhd, args, template, ignore):
 def main():
     global CORPUS
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--candidate", default="nvc", help="nvc | ghdl | rsim | a bash command template (see README)")
+    ap.add_argument("--candidate", default="nvc", help="nvc | ghdl | yavs | a bash command template (see README)")
     ap.add_argument("--bless", action="store_true", help="regenerate .expected from NVC (candidate must be nvc)")
     ap.add_argument("--jobs", type=int, default=8, help=f"parallel simulations (max {MAX_JOBS})")
     ap.add_argument("--filter", default="", help="regex on the corpus-relative path")

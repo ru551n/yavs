@@ -8,7 +8,7 @@ URL=https://opensource.ieee.org/vasg/Packages.git
 PIN=dc691c8cf8a7365dd1d60895818631320996e983   # branch release, after tag 1076-2019
 here=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:---check}
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/rsim-ieee.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/yavs-ieee.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 git clone -q "$URL" "$tmp/up"
 git -C "$tmp/up" checkout -q "$PIN"

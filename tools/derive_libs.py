@@ -1,4 +1,4 @@
-"""Derive rsim's lib/std and lib/ieee from a checkout of vasg/Packages.
+"""Derive yavs's lib/std and lib/ieee from a checkout of vasg/Packages.
 
 usage: derive_libs.py <packages-checkout> <outdir>
 
@@ -11,7 +11,7 @@ import sys
 
 src, out = sys.argv[1:3]
 NOTE = (
-    "-- rsim: derived from the IEEE VASG 1076-2019 package source by\n"
+    "-- rsim: derived from the IEEE VASG 1076-2019 package source by\n"  # rename: keep, matches lib/SHA256SUMS
     "-- tools/derive_libs.py (see lib/SOURCES.md for the exact edits).\n"
 )
 
@@ -100,9 +100,9 @@ wr(
 )
 
 # ---- ieee: identical files for both revisions + two tiny contexts --------------
-CTX = """-- Copyright 2026 rsim authors. Licensed under the Apache License, Version 2.0
+CTX = """-- Copyright 2026 yavs authors. Licensed under the Apache License, Version 2.0
 -- (http://www.apache.org/licenses/LICENSE-2.0). Content as specified by
--- IEEE Std 1076-2008 (original text, written for rsim).
+-- IEEE Std 1076-2008 (original text, written for yavs).
 
 context {n} is
   library IEEE;

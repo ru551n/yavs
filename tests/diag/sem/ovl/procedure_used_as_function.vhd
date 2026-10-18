@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 14:10 procedure `pr` does not return a value
 -- LRM 9.3.4
 package p is

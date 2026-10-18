@@ -1,12 +1,12 @@
-//! Parser and semantic analysis against rsim's std/ieee must never panic, hang or report an
-//! internal error ("this is a bug in rsim"). A hang is caught by libFuzzer's `-timeout`; the
+//! Parser and semantic analysis against yavs's std/ieee must never panic, hang or report an
+//! internal error ("this is a bug in yavs"). A hang is caught by libFuzzer's `-timeout`; the
 //! parser's own fuel guard ends stalls. Run with `-rss_limit_mb=2048 -timeout=20`.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rsim_sem::{Db, LangRev, Options, default_stdlib};
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use yavs_sem::{Db, LangRev, Options, default_stdlib};
 
 fn stdlib() -> &'static PathBuf {
     static P: OnceLock<PathBuf> = OnceLock::new();
@@ -15,7 +15,7 @@ fn stdlib() -> &'static PathBuf {
 
 fuzz_target!(|data: &[u8]| {
     // The loader reads files, so each worker process has one scratch file (tmpfs).
-    let path = PathBuf::from(format!("/dev/shm/rsim-sem-fuzz-{}.vhd", std::process::id()));
+    let path = PathBuf::from(format!("/dev/shm/yavs-sem-fuzz-{}.vhd", std::process::id()));
     if std::fs::write(&path, data).is_err() {
         return;
     }
@@ -25,11 +25,11 @@ fuzz_target!(|data: &[u8]| {
         for d in db.diagnostics() {
             // Unimplemented slices are expected; an ICE is not.
             assert!(
-                !d.notes.iter().any(|n| n.contains("this is a bug in rsim")),
+                !d.notes.iter().any(|n| n.contains("this is a bug in yavs")),
                 "ICE: {}",
                 d.message
             );
-            rsim_diag::render(&db.sources, d, rsim_diag::MessageFormat::Human, false);
+            yavs_diag::render(&db.sources, d, yavs_diag::MessageFormat::Human, false);
         }
     }
 });

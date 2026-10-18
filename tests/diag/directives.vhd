@@ -1,8 +1,8 @@
--- rsim: --std 2019
+-- yavs: --std 2019
 package p is
   `warning "configured for simulation"
-  `if TOOL_NAME = "rsim" then
-  constant tool : string := "rsim";
+  `if TOOL_NAME = "yavs" then
+  constant tool : string := "yavs";
   `elsif UNKNOWN_NAME = "x" then
   `end if
   `protect begin

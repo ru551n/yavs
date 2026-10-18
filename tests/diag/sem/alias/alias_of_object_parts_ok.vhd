@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 6.6.2 (VUnit run_api: aliases of slices; NVC and GHDL accept)
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 12:8 expected `unsigned`, found `integer`
 -- help: use `to_unsigned(x, n)` to convert
 -- LRM 10.5.2

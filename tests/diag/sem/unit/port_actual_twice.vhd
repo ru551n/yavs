@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1310 10:41 formal `a` is associated twice
 -- LRM 6.5.7.3
 entity sub is port (a : in bit); end entity;

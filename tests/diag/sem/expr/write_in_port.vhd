@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 9:3 cannot assign to port `i` of mode `in`
 -- LRM 6.5.6.3
 entity e is

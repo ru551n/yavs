@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 3.4.2 (generate_specification may be a static discrete range)
 entity c is generic (n : integer := 0); end entity;

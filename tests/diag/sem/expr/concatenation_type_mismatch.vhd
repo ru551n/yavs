@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 5:38 no operator `&` matches `string` and `integer`
 -- LRM 9.2.5
 package p is

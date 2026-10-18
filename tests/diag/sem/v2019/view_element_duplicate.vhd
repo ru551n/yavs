@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1901 12:5 element `a` appears twice in view `v`
 -- LRM 2019 6.5.2
 package p is

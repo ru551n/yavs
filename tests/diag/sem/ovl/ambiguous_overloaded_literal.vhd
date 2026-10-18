@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1302 16:8 enumeration literal `a` is ambiguous
 -- help: qualify the literal: `t1'(a)`
 -- LRM 12.5

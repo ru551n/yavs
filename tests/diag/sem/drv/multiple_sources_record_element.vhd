@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1812 10:3 unresolved signal `s` has multiple sources
 -- LRM 14.7.2
 entity e is end entity;

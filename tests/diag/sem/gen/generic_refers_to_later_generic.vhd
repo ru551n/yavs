@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1100 5:27 `b` is not declared at this point
 -- LRM 6.5.6
 entity e is

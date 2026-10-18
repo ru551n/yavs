@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 13:27 expected `work.i2.rec`, found `work.i1.rec`
 -- LRM 9.3.6
 package g is

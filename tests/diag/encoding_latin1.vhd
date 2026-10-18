@@ -1,4 +1,4 @@
--- rsim: --encoding=latin1
+-- yavs: --encoding=latin1
 package p is
   constant bytes : string := "a → b";
 end package;

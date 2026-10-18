@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 8:12 `k` in a sensitivity list must be a signal
 -- LRM 11.3
 entity e is end entity;

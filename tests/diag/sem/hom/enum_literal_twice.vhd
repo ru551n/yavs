@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1101 5:20 enumeration literal `a` is declared twice
 -- LRM 5.2.2.1
 package p is

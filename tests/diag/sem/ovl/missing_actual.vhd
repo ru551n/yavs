@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1311 14:10 formal `b` has no actual and no default
 -- LRM 6.5.7.1
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1201 6:14 `c` denotes a constant, not a type
 -- LRM 6.3
 package p is

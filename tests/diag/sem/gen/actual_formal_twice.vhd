@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1310 7:46 generic `n` is associated twice
 -- LRM 6.5.7.2
 package g is

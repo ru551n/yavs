@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: none
 -- LRM 16.2.2 (2019): T'DESIGNATED_SUBTYPE of an access and of a file type
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 20:7 no method `set` matches the call
 -- LRM 5.6.2
 package p is

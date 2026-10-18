@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 7.2 (an overloaded entity tag without a signature decorates every match)
 package p is

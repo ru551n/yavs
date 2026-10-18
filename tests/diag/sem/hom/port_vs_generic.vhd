@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1101 6:9 `n` is already declared as a generic of `e`
 -- LRM 12.3
 entity e is

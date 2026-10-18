@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1002 7:31 entity `ghost` not found in library `work`
 -- LRM 7.3.2
 entity e is end entity;

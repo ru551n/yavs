@@ -1,0 +1,13 @@
+[package]
+name = "yavs-diag"
+description = "Diagnostics model and rustc-style renderer shared by every yavs stage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+annotate-snippets.workspace = true
+
+[lints]
+workspace = true

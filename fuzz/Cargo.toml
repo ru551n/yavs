@@ -1,5 +1,5 @@
 [package]
-name = "rsim-fuzz"
+name = "yavs-fuzz"
 version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -13,9 +13,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rsim-diag = { path = "../crates/rsim-diag" }
-rsim-syntax = { path = "../crates/rsim-syntax" }
-rsim-sem = { path = "../crates/rsim-sem" }
+yavs-diag = { path = "../crates/yavs-diag" }
+yavs-syntax = { path = "../crates/yavs-syntax" }
+yavs-sem = { path = "../crates/yavs-sem" }
 
 [[bin]]
 name = "parse"

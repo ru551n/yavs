@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1611 7:9 `f` is overloaded; the alias needs a signature
 -- LRM 6.6.3
 package p is

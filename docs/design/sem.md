@@ -1,9 +1,9 @@
-# M1 design: semantic analysis (`rsim-sem`)
+# M1 design: semantic analysis (`yavs-sem`)
 
 Status: design, binding for M1 once the user has answered the open questions in section 11.
 Inputs: `docs/plan.md` (rules 1, 2, 4, 7, 8, 12, 13, the error-handling motto, 2008+2019
 together, on-demand analysis), `docs/decisions.md`, `lib/README.md`, `lib/NATIVE.md`,
-`crates/rsim-diag`, and the M0 AST (`rsim-syntax`, `ast.rs` on the M0 branch).
+`crates/yavs-diag`, and the M0 AST (`yavs-syntax`, `ast.rs` on the M0 branch).
 
 LRM references are to IEEE 1076-2008 clause numbers, which 1076-2019 mostly keeps. The former
 **(unsure)** items and Q1/Q2 were checked on 2026-10-18; `docs/design/lrm-checks.md` has the
@@ -15,17 +15,17 @@ here is taken from NVC, GHDL or rust_hdl code.
 - **LRM clear:** follow it and fail early, even where a simulator is more lenient.
 - **LRM unclear or silent:** be permissive. Accept the union of what NVC, GHDL, Questa and
   Riviera accept, and pick the semantics that let the most designs elaborate.
-- **Warn only when simulators give different results** for code rsim accepts (for example
+- **Warn only when simulators give different results** for code yavs accepts (for example
   W1506, U-6), never just because a rule is unclear.
 
 Each ruling is in `lrm-checks.md` (verdict table) and section 11 (U-1 to U-6, L8).
 
 ## 0. Scope and shape
 
-`rsim-sem` turns M0 ASTs into a **typed HIR**: every name is resolved to a declaration id, every
+`yavs-sem` turns M0 ASTs into a **typed HIR**: every name is resolved to a declaration id, every
 expression carries a subtype and a staticness, every call names its overload, every statement has
-an id. It runs single-threaded. It owns no files on disk: `rsim-lib` gives it a `LibrarySet`
-(library name to manifest), and it asks `rsim-syntax` to parse files on demand.
+an id. It runs single-threaded. It owns no files on disk: `yavs-lib` gives it a `LibrarySet`
+(library name to manifest), and it asks `yavs-syntax` to parse files on demand.
 
 | In scope for M1 | Not in M1 |
 |---|---|
@@ -41,7 +41,7 @@ Language revision: see 0.1. The analyzer is one code path with revision gates.
 
 ### 0.1 Mixed 2008 and 2019 files (user decision, `docs/plan.md` "VUnit integration")
 
-A project may mix 2008 and 2019 files; `rsim-lib` records the standard per file.
+A project may mix 2008 and 2019 files; `yavs-lib` records the standard per file.
 
 | Step | Revision used |
 |---|---|
@@ -52,7 +52,7 @@ A project may mix 2008 and 2019 files; `rsim-lib` records the standard per file.
 The closure is found before analysis: parse the top's file, scan its ASTs for unit references
 (context clauses, `lib.unit` selected names, entity/configuration instantiations, component names
 for default binding) and follow them through the manifest, parsing only. Then `D` is fixed and
-analysis starts. `rsim analyze f.vhd` uses the same rule over `f`'s closure. A 2008 unit used in a
+analysis starts. `yavs analyze f.vhd` uses the same rule over `f`'s closure. A 2008 unit used in a
 2019 design is analyzed against the 2019 std/ieee.
 
 Every declaration in std and ieee carries `since: LangRev`, computed by comparing the 2008 and
@@ -64,7 +64,7 @@ Known 2008-vs-2019 differences and their handling:
 
 | Difference | Handling |
 |---|---|
-| INTEGER is 32-bit in 2008 (`-2147483648 to 2147483647`), 64-bit in 2019 (`-(2**63-1) to 2**63-1`); REAL is f64 in both rsim copies | design-wide: a 2008 unit in a 2019 design gets 64-bit INTEGER. Uses whose value depends on the range in a 2008 file (`integer'high`, `'low`, `'left`, `'right`, `'range`, `'base` of INTEGER and its subtypes NATURAL/POSITIVE, and of `universal_integer`-typed static bounds that fold differently) get warning `W1008`; plain arithmetic is not diagnosed, since its results agree whenever the 2008 run would not overflow |
+| INTEGER is 32-bit in 2008 (`-2147483648 to 2147483647`), 64-bit in 2019 (`-(2**63-1) to 2**63-1`); REAL is f64 in both yavs copies | design-wide: a 2008 unit in a 2019 design gets 64-bit INTEGER. Uses whose value depends on the range in a 2008 file (`integer'high`, `'low`, `'left`, `'right`, `'range`, `'base` of INTEGER and its subtypes NATURAL/POSITIVE, and of `universal_integer`-typed static bounds that fold differently) get warning `W1008`; plain arithmetic is not diagnosed, since its results agree whenever the 2008 run would not overflow |
 | implicit operations new in 2019 (file `file_state`, `file_mode`, `file_position`, `file_size`, `file_seek`, `file_truncate`, `file_rewind`; range record types; anything else NATIVE.md section 2 marks 2019) | created with `since: V2019`; a reference from a 2008 file is `E1007`; if the 2008 file declares its own homograph, its explicit declaration hides the implicit one in the same region as usual, and a use-visible user homograph that now meets a directly visible implicit 2019 op gets warning `W1008` instead of a silent change of the chosen overload |
 | std/ieee declarations new in 2019 (`std.env` additions, `std.reflection`, new ieee overloads) | `since: V2019`, `E1007` from a 2008 file |
 | reserved words new in 2019: exactly `view` and `private` (15.10) [L1] | a 2008 file may declare and use them as identifiers (M0 lexes per file); a 2019 file cannot name such a declaration (the word is a keyword there, and the extended identifier `\view\` is a different name), so a 2008 declaration named `view` or `private` that is reachable from a 2019 file through `use ... .all` is invisible there; a 2019 reference that fails only because of this gets the usual `E1100` with a help naming the 2008 declaration |
@@ -158,7 +158,7 @@ On-demand loading (plan: no cache, analyze only what is reached):
 - `InProgress` on entry means a dependency cycle: `E1003` with the chain as secondary labels.
 - `Failed` units poison: a reference to one gives no further diagnostic (the unit's own errors
   were already reported).
-- `rsim analyze --work L f.vhd` calls `analyze_file`, which analyzes every unit in the file in
+- `yavs analyze --work L f.vhd` calls `analyze_file`, which analyzes every unit in the file in
   textual order; a later unit in the same file sees earlier ones through `work`.
 - A secondary unit loads its primary first. A package body is loaded only when someone asks for
   it (elab). Deferred constant completion is checked when the body is analyzed.
@@ -384,7 +384,7 @@ pub enum BoundsFrom {
 
 Bounds of an integer or physical type declaration must be locally static (5.2.3.1) and are folded.
 The base range of an anonymous integer base type is implementation-defined (it must contain the
-declared range); rsim takes the declared range and checks intermediate results against it, as
+declared range); yavs takes the declared range and checks intermediate results against it, as
 NVC does (user decision U-1) [Q2].
 
 ### 2.4 Array types (5.3.2)
@@ -419,7 +419,7 @@ element names in a record constraint: `E1213`.
   (`E1220` otherwise). Before completion it may be used only as the designated type of an access
   type, and, per `lib/README.md`, as a return type of methods in a protected type declaration
   whose completion appears later in the region (std 2019 `reflection` needs this). No LRM text
-  for it was found; rsim accepts it in subprogram profiles inside a protected type declaration,
+  for it was found; yavs accepts it in subprogram profiles inside a protected type declaration,
   in 2008 and 2019, but only in library `std` (user decision U-2, amended 2026-10-18); user code gets `E1220` with a help suggesting an access type [L4].
 - File types (5.5): element type cannot be access, protected, file, or contain those (`E1222`);
   multi-dimensional arrays as file element are an error in 2008 and 2019 (`E1222`) [L5].
@@ -518,7 +518,7 @@ pub enum Body {
     Instance(InstId),                     // instantiated subprogram
     Interface,                            // formal generic subprogram
 }
-pub struct ImplicitOp { pub family: Family, pub ty: TypeId, pub form: Form }   // native `rsim.implicit.<family>.<type>[.<form>]`
+pub struct ImplicitOp { pub family: Family, pub ty: TypeId, pub form: Form }   // native `yavs.implicit.<family>.<type>[.<form>]`
 ```
 
 Which families each type gets (from NATIVE.md section 2, with the LRM type-class rules):
@@ -539,12 +539,12 @@ Which families each type gets (from NATIVE.md section 2, with the LRM type-class
 | BOOLEAN, BIT signals | `rising_edge`, `falling_edge` (2008, `std.standard` lists them) |
 | scalar types (2019) | an anonymous range record type (`LEFT`, `RIGHT` of the type, `DIRECTION`), created eagerly with every scalar type and reached through `R'RECORD`; the names `<T>_RANGE_RECORD` only for the `std.standard` types that `standard.vhdl` lists (U-3) [L7] |
 
-The native symbol for an implicit op is `rsim.implicit.<family>.<type mangled>[.<form>]`; `form` tells
+The native symbol for an implicit op is `yavs.implicit.<family>.<type mangled>[.<form>]`; `form` tells
 apart the overloads one type has in one family (`&` array-element `as`, element-array `sa`,
 element-element `ss`; reductions `reduce`; physical `*` `/` by INTEGER/REAL `pi pr ip rp`, P/P `pp`;
 `file_open` with status `status`, the 2019 function `function`; `to_string` `digits format unit`).
 For explicit
-bodiless std subprograms sem computes the NATIVE.md symbol (`rsim.<package>.[<pt>.]<name>.<param
+bodiless std subprograms sem computes the NATIVE.md symbol (`yavs.<package>.[<pt>.]<name>.<param
 types>[.r_<ret>]`) by the same rule as `tools/gen_native_md.py`; a test asserts that analyzing
 std in both revisions yields exactly the 235 symbols of NATIVE.md section 1, and that every
 bodiless subprogram outside std is an error (`E1230`, missing body) unless it has `'FOREIGN`.
@@ -913,7 +913,7 @@ are stable text built from declaration paths:
 | package instance unit | `<lib>.<inst>` (`ieee.fixed_pkg`) |
 | local package/subprogram instance | `<region>.<inst>` |
 | a declaration inside an instance | `<instance mangled>.<name>` |
-| implicit op | `<region of type>.<op>(<types>)`, native link `rsim.implicit.<family>.<type>` |
+| implicit op | `<region of type>.<op>(<types>)`, native link `yavs.implicit.<family>.<type>` |
 
 Per elaborated instance storage (one local package instance in an architecture instantiated 8
 times) is elab's concern; the code identity is the site's mangled name.
@@ -1014,7 +1014,7 @@ and result) is unique among homographs, so there is no code for it.
      name is an error, an entity port with no component port is `open` if it has a default or is
      an `out` (7.3.3).
   GHDL #66 is the ambiguity between rules 1 and 2 (directly visible vs the work library) when both
-  exist with different targets: rsim takes the directly visible one and emits `W1703` naming both.
+  exist with different targets: yavs takes the directly visible one and emits `W1703` naming both.
 - M1 checks every configuration that is analyzed; elab applies them.
 
 ### 6.6 Protected types (5.6)
@@ -1186,7 +1186,7 @@ Sem takes `E1xxx` / `W1xxx`:
 | E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
 | W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1506 an instance of a 2008 `type T` uses the actual's predefined `=`/`/=` while a different user `"="` for the actual type is visible at the instantiation (U-6; NVC uses the user one), W1703 default binding ambiguity (GHDL #66), W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
 
-Codes are `pub const` in `rsim-sem::diag` with an `--explain` text each (one paragraph plus a
+Codes are `pub const` in `yavs-sem::diag` with an `--explain` text each (one paragraph plus a
 minimal example), checked by a test that every constant has an explain entry.
 
 ### 8.2 Cascade suppression
@@ -1249,9 +1249,9 @@ missing; CI fetches them (plan). Every corpus test also runs `hir::validate`.
 ### 9.2 Negative tests
 
 `tests/diag/sem/<area>/<name>.vhd` with the expected rendered output in `<name>.stderr` (plain
-format, no colour), blessed with `RSIM_BLESS=1`. At least one test per error code; for codes with
+format, no colour), blessed with `YAVS_BLESS=1`. At least one test per error code; for codes with
 help text, one test per help pattern. Each file starts with a comment naming the LRM clause.
-Revision is chosen by a `-- rsim: --std=2019` first line.
+Revision is chosen by a `-- yavs: --std=2019` first line.
 
 ### 9.3 Fuzzing (rule 15)
 

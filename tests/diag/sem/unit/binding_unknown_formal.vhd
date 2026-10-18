@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1100 9:48 entity `sub` has no port `b`
 -- LRM 7.3.2.3
 entity sub is port (a : in bit := '0'); end entity;

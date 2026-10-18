@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1403 7:26 value 20 is outside subtype `nibble` range 0 to 15
 -- LRM 4.3.2
 package p is

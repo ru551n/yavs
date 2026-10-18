@@ -1,26 +1,26 @@
-# rsim requirements from VUnit PRs #1235, #1236 and #1239
+# yavs requirements from VUnit PRs #1235, #1236 and #1239
 
-VUnit branch `rsim-integration` (local, in `~/git/vunit-rsim`) merges three open VUnit PRs into the rsim
-support and sets these hooks in `vunit/sim_if/rsim.py`:
+VUnit branch `rsim-integration` (local, in `~/git/vunit-rsim`) merges three open VUnit PRs into the yavs
+support and sets these hooks in `vunit/sim_if/yavs.py`:
 
-| Hook | Value | From PR | Needs from rsim |
+| Hook | Value | From PR | Needs from yavs |
 |---|---|---|---|
 | `supports_concurrent_compiles_into_library` | True | #1235 `--parallel-compile` | section 2 (locking) |
 | `supports_batch_compile` | True | #1236 `--batch-compile` | section 1 (multi-file analyze) |
 | `batch_file_list_arguments` | `("@{}",)` | #1236 | section 1 (`@FILE`) |
 | `supports_vhdl_reflection()` | True (a target) | #1239 `record_dict_pkg` | section 3 (`std.reflection`) |
 
-The fake rsim (`tests/acceptance/rsim/fake_bin/rsim`) implements sections 1 and 2 and passes end to end
+The fake yavs (`tests/acceptance/yavs/fake_bin/yavs`) implements sections 1 and 2 and passes end to end
 with `--parallel-compile -p 8`, `--batch-compile` and both.
 
-## 1. CLI contract: `rsim analyze FILE...` and `@FILE`
+## 1. CLI contract: `yavs analyze FILE...` and `@FILE`
 
 Change section 4 of `docs/cli-contract.md` from "exactly one file per call" to:
 
 ```
-rsim analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
-             [rsim.global_flags] [rsim.a_flags] FILE [FILE ...]
-rsim analyze <same options> @FILELIST
+yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
+             [yavs.global_flags] [yavs.a_flags] FILE [FILE ...]
+yavs analyze <same options> @FILELIST
 ```
 
 - **Several files per call.** All files of a call go into the one `--work` library with the same
@@ -30,7 +30,7 @@ rsim analyze <same options> @FILELIST
   (`batch_*.txt`) and deleted after the call. This is the existing response file rule (UTF-8, one
   argument per line, taken verbatim, `\n` or `\r\n`, no recursion), with the file names as the
   positionals. The options stay on the command line, so `@FILE` comes last. VUnit writes the file in
-  text mode, so it uses `\r\n` on Windows; rsim already accepts that. A file name containing a line
+  text mode, so it uses `\r\n` on Windows; yavs already accepts that. A file name containing a line
   break cannot be listed: that batch fails, and VUnit then compiles its files one at a time.
 - **Order.** Files are analyzed in the order given, which is VUnit's compile order. A later file of
   the batch may use units of an earlier file of the same batch (same library), so each file's units
@@ -38,15 +38,15 @@ rsim analyze <same options> @FILELIST
 - **Stop at the first failing file.** Analysis stops at the first file with errors, and the call
   exits 1. Files after it are not analyzed. Errors inside one file may all be reported (section 0).
   Exit 2 (usage) and 3 (internal) keep their meaning for the whole call.
-- **Report which files were analyzed.** rsim prints one line per file it recorded, in order, for example
-  `rsim: analyzed FILE` on stdout, and under `--message-format=json` one object
+- **Report which files were analyzed.** yavs prints one line per file it recorded, in order, for example
+  `yavs: analyzed FILE` on stdout, and under `--message-format=json` one object
   `{"level": "note", "code": "analyzed", "file": "FILE"}` per file. Today VUnit compiles the
   whole failed batch again one file at a time, so it only needs the exit code. With the report, a later
   VUnit change could mark the analyzed files as compiled and retry only from the failing one.
 - **What is recorded on failure.** Files analyzed before the failing one stay recorded. Nothing of the
   failing file or of later files is recorded. Analyzing a file again replaces its units, so VUnit's
   file-by-file retry of a failed batch is safe.
-- **Lock for the whole call.** The exclusive `_RSIM_LIB` lock of the work library is taken once and
+- **Lock for the whole call.** The exclusive `_YAVS_LIB` lock of the work library is taken once and
   held for the whole batch, not per file, so no other `analyze` into that library interleaves with the
   batch. The manifest may be committed once at the end or after each file, always as temp file plus
   atomic rename.
@@ -55,12 +55,12 @@ rsim analyze <same options> @FILELIST
 
 ## 2. Library locking (plan rule 14) under `--parallel-compile`
 
-With `supports_concurrent_compiles_into_library = True`, VUnit applies no library rule of its own for rsim.
+With `supports_concurrent_compiles_into_library = True`, VUnit applies no library rule of its own for yavs.
 Up to `-p` analyzes run at once, into the same library and into libraries other running analyzes read
-(almost every file reads `vunit_lib` while `vunit_lib` files are still being analyzed). rsim must
+(almost every file reads `vunit_lib` while `vunit_lib` files are still being analyzed). yavs must
 therefore guarantee:
 
-- **Exclusive lock for writers.** `analyze` holds the exclusive lock on `<work>/_RSIM_LIB` while it
+- **Exclusive lock for writers.** `analyze` holds the exclusive lock on `<work>/_YAVS_LIB` while it
   reads, changes and writes the manifest. It reads the manifest again after taking the lock and merges
   its own units into it, never into a copy read before the lock: a lost update drops units silently.
   The fake checks that every file analyzed into `vunit_lib` is in the manifest exactly once.
@@ -70,15 +70,15 @@ therefore guarantee:
   must not fail ("library not found" or a half-written manifest). It either takes the shared lock
   briefly while reading that manifest or relies on the atomic rename.
 - **No deadlock.** VHDL allows libraries that read each other (lib a uses lib b, and lib b uses lib a),
-  so two analyzes can each hold the exclusive lock of their own library and need the other one. rsim
+  so two analyzes can each hold the exclusive lock of their own library and need the other one. yavs
   must never block on another library's lock while it holds its own exclusive lock. It reads other
   libraries lock-free, using the atomic rename, or takes their shared locks before its exclusive lock
   and releases them before analysis. If it takes several locks at once, it takes them in one global
   order, such as the canonical path.
 - **Shared lock for `run`/`elab`**, only while reading the manifest and its source list, as in the
   contract. A long simulation never blocks an analyze.
-- **Read-only libraries never fail.** If the lock file cannot be opened for writing, rsim opens it
-  read-only and takes the shared lock. If it cannot be opened at all, rsim skips locking.
+- **Read-only libraries never fail.** If the lock file cannot be opened for writing, yavs opens it
+  read-only and takes the shared lock. If it cannot be opened at all, yavs skips locking.
 - **Lock waits are not errors.** A wait longer than a few seconds prints a note naming the library and
   does not change the exit code. VUnit shows the output of a passed compile, so the note is harmless.
 - **Windows:** `LockFileEx` through `std::fs::File::lock`. The temp file plus rename must use
@@ -86,15 +86,15 @@ therefore guarantee:
   a reader holding the old manifest open. If not, retry on a sharing violation.
 
 Fake behaviour that a test relies on: two analyzes into one library that interleave without the lock fail
-with exit 3 (`FAKE_RSIM_NO_LOCK=1` shows it). With the lock they never do.
+with exit 3 (`FAKE_YAVS_NO_LOCK=1` shows it). With the lock they never do.
 
 ## 3. `std.reflection` for `tb_record_dict_pkg` (VHDL-2019)
 
-`supports_vhdl_reflection()` is True for rsim as a **target**, not a claim. Reflection is not in the
-rsim plan yet. Until it lands, `vu.add_record_dict()` accepts rsim, but `record_dict_pkg.vhd` fails to
-analyze (`use std.reflection.all`), so `vunit/vhdl/record_dict/run.py` fails on rsim. The VUnit
-acceptance test `test_record_dict_vhdl_2019` stays skipped for rsim (it runs for NVC and Riviera-PRO
-only). Enable it for rsim when reflection lands.
+`supports_vhdl_reflection()` is True for yavs as a **target**, not a claim. Reflection is not in the
+yavs plan yet. Until it lands, `vu.add_record_dict()` accepts yavs, but `record_dict_pkg.vhd` fails to
+analyze (`use std.reflection.all`), so `vunit/vhdl/record_dict/run.py` fails on yavs. The VUnit
+acceptance test `test_record_dict_vhdl_2019` stays skipped for yavs (it runs for NVC and Riviera-PRO
+only). Enable it for yavs when reflection lands.
 
 What `vunit/vhdl/record_dict/src/record_dict_pkg.vhd` and its testbench use:
 
@@ -114,8 +114,8 @@ What `vunit/vhdl/record_dict/src/record_dict_pkg.vhd` and its testbench use:
   ieee-2019 `unsigned` may be either one.
 - `integer_value_mirror.value`, `floating_value_mirror.value`.
 - `physical_value_mirror.value`, multiplied by `std.env.resolution_limit` to get a `time`. The
-  value must be in units of the resolution limit, as on Riviera-PRO (NVC returns fs). rsim must document
-  which one it is, and the package may need an `` `if TOOL_NAME = "rsim" `` branch otherwise.
+  value must be in units of the resolution limit, as on Riviera-PRO (NVC returns fs). yavs must document
+  which one it is, and the package may need an `` `if TOOL_NAME = "yavs" `` branch otherwise.
 - `enumeration_value_mirror`: `pos`, and `image` for user enumerations (`"busy"`).
 - `array_value_mirror`: `get_subtype_mirror` (to `array_subtype_mirror`) and `get(index)` with the
   LRM index of a one-dimensional array.
@@ -140,12 +140,12 @@ instance used to test the "not a record" failure.
   record type.
 - Mirror objects as `variable ... : inout value_mirror` parameters (protected type or access
   semantics), passed between subprograms and assigned to variables of other mirror types.
-- Conditional analysis: `` `if TOOL_NAME = "nvc" then ... `else ... `end if ``. rsim defines
-  `TOOL_NAME` as `rsim` (decisions.md), so it takes the LRM branch.
+- Conditional analysis: `` `if TOOL_NAME = "nvc" then ... `else ... `end if ``. yavs defines
+  `TOOL_NAME` as `yavs` (decisions.md), so it takes the LRM branch.
 - `std.env.resolution_limit` (2019).
-- 2019 call paths (`check_only_log` compares the log location), which rsim already reports through
+- 2019 call paths (`check_only_log` compares the log location), which yavs already reports through
   `supports_vhdl_call_paths`.
 
-Test that defines "done": `VUNIT_SIMULATOR=rsim VUNIT_VHDL_STANDARD=2019 python
+Test that defines "done": `VUNIT_SIMULATOR=yavs VUNIT_VHDL_STANDARD=2019 python
 vunit/vhdl/record_dict/run.py`, 6 of 6 passing (scalars, arrays including ascending ranges and signed/unsigned,
 nested records, lower-case keys, and the two failure messages).

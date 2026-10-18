@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1505 9:32 `g` is a generic package and must be instantiated before use
 -- LRM 4.9
 package g is

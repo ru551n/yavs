@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1102 9:27 `red` is made potentially visible by two use clauses
 -- LRM 12.4
 package p1 is constant red : integer := 1; end package;

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run an analysis corpus manifest through a simulator and compare with the checked-in expected list.
 
-  tools/corpus/run.py MANIFEST.toml [--tool rsim|nvc] [--cmd TEMPLATE] [--keep-going] [--bless]
+  tools/corpus/run.py MANIFEST.toml [--tool yavs|nvc] [--cmd TEMPLATE] [--keep-going] [--bless]
 
 MANIFEST is a path or a bare name (vunit-2008 -> tools/corpus/vunit-2008.toml). Files are analyzed one per
-call, in manifest order. The result of every file (PASS = exit 0) is compared with <name>.expected (rsim) or
+call, in manifest order. The result of every file (PASS = exit 0) is compared with <name>.expected (yavs) or
 <name>.nvc.expected (nvc), one `PASS|FAIL <lib> <source>/<path>` line per manifest entry in order. Any
 difference fails, until the list is updated (--bless rewrites it from this run, which then covers every file).
 Without --keep-going the run stops at the first difference (without an expected list: the first FAIL).
@@ -12,10 +12,10 @@ Without --keep-going the run stops at the first difference (without an expected 
 Command template words: {std} {lib} {dir} {file}; {map} (one --map=LIB:DIR/LIB per library but std/ieee unless the flags have --bootstrap) and
 {flags} (the manifest's [flags] for --tool) expand to several arguments when they are a word of their own.
 Default templates:
-  rsim: rsim analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
+  yavs: yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
   nvc:  nvc --std={std} --work={lib}:{dir}/{lib} -L {dir} -a {flags} {file}
 Every call runs under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` (--no-wrap to disable).
-Sources are looked up as <root>/<source id>, roots: --root, $RSIM_CORPUS, ~/.cache/rsim-corpus,
+Sources are looked up as <root>/<source id>, roots: --root, $YAVS_CORPUS, ~/.cache/rsim-corpus,
 ~/.cache/rsim-corpora (fetch them with tools/fetch-corpus.sh). Nothing is copied into the repo.
 Exit: 0 all as expected, 1 differences, 2 usage/environment error.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 TEMPLATES = {
-    "rsim": "rsim analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}",
+    "yavs": "yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}",
     "nvc": "nvc --std={std} --work={lib}:{dir}/{lib} -L {dir} -a {flags} {file}",
 }
 WRAP = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
@@ -54,7 +54,7 @@ def die(msg):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("manifest")
-    ap.add_argument("--tool", choices=sorted(TEMPLATES), default="rsim")
+    ap.add_argument("--tool", choices=sorted(TEMPLATES), default="yavs")
     ap.add_argument("--cmd")
     ap.add_argument("--root", action="append", default=[])
     ap.add_argument("--out", help="library directory (default ~/.cache/rsim-corpora/<tool>-<name>)")
@@ -70,7 +70,7 @@ def main():
         mp = HERE / (a.manifest + ".toml")
     m = tomllib.loads(mp.read_text())
     name = m["name"]
-    roots = [Path(r).expanduser() for r in a.root + [os.environ.get("RSIM_CORPUS", ""), "~/.cache/rsim-corpus", "~/.cache/rsim-corpora"] if r]
+    roots = [Path(r).expanduser() for r in a.root + [os.environ.get("YAVS_CORPUS", ""), "~/.cache/rsim-corpus", "~/.cache/rsim-corpora"] if r]
     base = {}
     for s in m["source"]:
         if s.get("local"):

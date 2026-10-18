@@ -1,0 +1,360 @@
+//! The yavs IR interpreter (docs/design/ir.md section 3).
+//!
+//! - [`Runtime`]: one per simulation; the verified [`Program`] plus everything bound to it
+//!   outside the IR (foreign function pointers, package instance data, coverage counters,
+//!   limits). Natives are resolved here by their `lib/NATIVE.md` symbol.
+//! - [`InterpProcess`]: one per process instance; implements [`yavs_kernel::Process`]. It
+//!   owns its frame stack (frames are heap objects, so a `wait` inside a procedure needs
+//!   nothing special), its private heap and its temporaries.
+//! - [`call`]: runs a subprogram, elaboration body or thunk without a kernel (elaboration-time
+//!   evaluation, ir.md 3.6).
+//!
+//! Every runtime error is a kernel `SimError` whose `trace` is the VHDL call stack as
+//! `StmtId`s, innermost first. Broken invariants are `ErrorKind::Internal`.
+
+mod debug;
+mod exec;
+mod foreign;
+mod heap;
+mod native;
+mod textio;
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use yavs_ffi::ForeignFn;
+use yavs_ir::{ForeignId, FuncId, FuncKind, Program};
+use yavs_kernel::{
+    Ctx, DriverId, ErrorKind, ProcFlags, Process, Range, SignalId, SignalType, SimError,
+};
+use yavs_std::arith::TimeResolution;
+use yavs_std::types::Revision;
+
+pub use debug::{
+    DebugSession, Debugger, FrameView, HitCond, LineBp, LocalView, ProcState, ProcStatus, Resume,
+    SignalBreak, Stop, StopReason, format_scalar,
+};
+pub use heap::Heap;
+pub use textio::{FILE_INPUT, FILE_OUTPUT};
+
+use exec::{Fault, Machine, Outcome};
+
+/// Per-instance data of a design unit, frozen before simulation (ir.md 2).
+#[derive(Clone, Debug, Default)]
+pub struct InstData {
+    /// Generics and constants, addressed by `AddrSpace::Inst`.
+    pub data: Vec<u8>,
+    /// The instance's kernel signal leaves, indexed by `SigVal::sig`.
+    pub sigs: Vec<InstSig>,
+    /// This instance's first counter in the runtime's coverage array.
+    pub cov_base: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstSig {
+    pub signal: SignalId,
+    pub ty: SignalType,
+}
+
+/// A driver slot of a process: the kernel driver and the signal elements it drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcDriver {
+    pub id: DriverId,
+    /// Index into `InstData::sigs`.
+    pub sig: u32,
+    pub range: Range,
+}
+
+/// Shared variables and the shared heap, used only by serial processes (ir.md 3.5).
+#[derive(Default)]
+pub struct SharedState {
+    /// Addressed by `AddrSpace::Shared`.
+    pub vars: Vec<u8>,
+    pub(crate) heap: Option<Heap>,
+}
+
+impl SharedState {
+    pub fn new(vars: Vec<u8>) -> SharedState {
+        SharedState {
+            vars,
+            heap: Some(Heap::new(heap::SHARED)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Deepest call stack before a "call depth" runtime error.
+    pub max_depth: u32,
+    /// Bytes allocated in a process heap before it is collected at the next suspension.
+    pub gc_threshold: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits {
+            max_depth: 10_000,
+            gc_threshold: 1 << 20,
+        }
+    }
+}
+
+/// What the elaborator binds to a program.
+pub struct Bindings {
+    /// A function for every `Program::foreign` entry (looked up by the elaborator).
+    pub foreign: Vec<(ForeignId, ForeignFn)>,
+    /// Package instance data, addressed by `AddrSpace::Pkg(i)`.
+    pub packages: Vec<Arc<InstData>>,
+    /// Coverage counters (instances times items); `None` means `Program::cov.len()`.
+    pub cov_counters: Option<usize>,
+    pub limits: Limits,
+    /// The analysed revision: INTEGER bounds for textio reads, `vhdl_version`.
+    pub revision: Revision,
+    /// The time resolution, for `resolution_limit`.
+    pub resolution: TimeResolution,
+}
+
+impl Default for Bindings {
+    fn default() -> Bindings {
+        Bindings {
+            foreign: Vec::new(),
+            packages: Vec::new(),
+            cov_counters: None,
+            limits: Limits::default(),
+            revision: Revision::Vhdl2008,
+            resolution: TimeResolution::Fs,
+        }
+    }
+}
+
+/// A program bound for execution, shared by all processes of a simulation.
+pub struct Runtime {
+    pub prog: Arc<Program>,
+    pub(crate) natives: Vec<Option<native::NativeFn>>,
+    pub(crate) foreign: Vec<Option<ForeignFn>>,
+    pub(crate) pkgs: Vec<Arc<InstData>>,
+    pub(crate) cov: Vec<AtomicU64>,
+    /// Compact constants expanded on first use by address.
+    pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
+    pub(crate) limits: Limits,
+    pub(crate) revision: Revision,
+    pub(crate) resolution: TimeResolution,
+    /// Open file objects; a file cell holds index + 1 (0: never opened).
+    pub(crate) files: Mutex<Vec<textio::FileSlot>>,
+}
+
+fn usage(m: String) -> SimError {
+    SimError::new(ErrorKind::Usage(m))
+}
+
+impl Runtime {
+    /// Fails early on a native symbol that `lib/NATIVE.md` does not define, an unbound
+    /// foreign subprogram or a foreign function whose C signature differs from the IR's.
+    pub fn new(prog: Arc<Program>, b: Bindings) -> Result<Arc<Runtime>, SimError> {
+        let mut natives = Vec::with_capacity(prog.natives.len());
+        for (_, n) in prog.natives.iter() {
+            natives.push(native::lookup(&n.symbol).map_err(usage)?);
+        }
+        let mut foreign: Vec<Option<ForeignFn>> = vec![None; prog.foreign.len()];
+        for (id, f) in b.foreign {
+            let Some(x) = prog.foreign.get(id) else {
+                return Err(usage(format!(
+                    "binding for missing foreign subprogram {id}"
+                )));
+            };
+            if f.signature() != &x.signature() {
+                return Err(usage(format!(
+                    "foreign subprogram `{}` ({}): bound function has C signature {:?}, \
+                     the declaration needs {:?}",
+                    x.name,
+                    x.symbol,
+                    f.signature(),
+                    x.signature()
+                )));
+            }
+            foreign[id.0 as usize] = Some(f);
+        }
+        if let Some((id, x)) = prog
+            .foreign
+            .iter()
+            .find(|(id, _)| foreign[id.0 as usize].is_none())
+        {
+            return Err(usage(format!(
+                "foreign subprogram `{}` ({id}): symbol `{}` is not bound",
+                x.name, x.symbol
+            )));
+        }
+        let n = b.cov_counters.unwrap_or(prog.cov.len());
+        Ok(Arc::new(Runtime {
+            natives,
+            foreign,
+            pkgs: b.packages,
+            cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
+            expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
+            limits: b.limits,
+            revision: b.revision,
+            resolution: b.resolution,
+            files: Mutex::new(textio::FileSlot::preopened()),
+            prog,
+        }))
+    }
+
+    /// Coverage counter values.
+    pub fn coverage(&self) -> Vec<u64> {
+        self.cov.iter().map(|c| c.load(Ordering::Relaxed)).collect()
+    }
+}
+
+/// Kernel flags of a process function: serial when it touches shared state (ir.md 3.5).
+pub fn proc_flags(prog: &Program, func: FuncId) -> ProcFlags {
+    ProcFlags {
+        postponed: false,
+        serial: prog.is_serial(func),
+    }
+}
+
+/// A process instance running IR in the interpreter.
+pub struct InterpProcess {
+    m: Machine,
+    started: bool,
+    done: bool,
+    shared: Option<Arc<Mutex<SharedState>>>,
+}
+
+impl InterpProcess {
+    /// `func` must be a `FuncKind::Process` of `rt.prog`. A process that touches shared state
+    /// (`proc_flags(..).serial`) needs `shared`, and must be built serial in the kernel.
+    pub fn new(
+        rt: Arc<Runtime>,
+        func: FuncId,
+        inst: Arc<InstData>,
+        drivers: Vec<ProcDriver>,
+        shared: Option<Arc<Mutex<SharedState>>>,
+    ) -> Result<InterpProcess, SimError> {
+        let Some(f) = rt.prog.func(func) else {
+            return Err(usage(format!("no function {func}")));
+        };
+        if f.kind != FuncKind::Process {
+            return Err(usage(format!("{func} `{}` is not a process", f.name)));
+        }
+        if rt.prog.is_serial(func) && shared.is_none() {
+            return Err(usage(format!(
+                "process `{}` touches shared state: give it the SharedState and build it \
+                 serial",
+                f.name
+            )));
+        }
+        for d in &drivers {
+            if inst.sigs.get(d.sig as usize).is_none() {
+                return Err(usage(format!(
+                    "process `{}`: driver on missing instance signal {}",
+                    f.name, d.sig
+                )));
+            }
+        }
+        Ok(InterpProcess {
+            m: Machine::new(rt, inst, drivers, func),
+            started: false,
+            done: false,
+            shared,
+        })
+    }
+
+    /// Attach a debug session (ir.md 3.4); `name` appears in the session's process table.
+    pub fn with_debug(mut self, session: Arc<DebugSession>, name: &str) -> InterpProcess {
+        let i = session.register(name);
+        self.m.attach(session, i);
+        self
+    }
+
+    /// Objects alive in the private heap (for tests and statistics).
+    pub fn heap_live(&self) -> usize {
+        self.m.heap.live()
+    }
+}
+
+impl Process for InterpProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        if self.done {
+            let e = Fault::Internal("a terminated process was resumed".into());
+            return Err(self.m.error(e, Some(ctx)));
+        }
+        if !self.started {
+            self.started = true;
+            if let Err(e) = self.m.enter(self.m.entry, &[]) {
+                return Err(self.m.error(e, Some(ctx)));
+            }
+        }
+        let shared = self.shared.clone();
+        let mut guard = match &shared {
+            Some(s) => Some(s.lock().map_err(|_| {
+                ctx.error(ErrorKind::Internal("shared state lock poisoned".into()))
+            })?),
+            None => None,
+        };
+        if let Some(g) = guard.as_mut() {
+            self.m.sh = Some(std::mem::take(&mut **g));
+        }
+        let r = self.m.run(Some(&mut *ctx), 0);
+        if let (Some(g), Some(st)) = (guard.as_mut(), self.m.sh.take()) {
+            **g = st;
+        }
+        match r {
+            Ok(Outcome::Suspended) => {
+                self.m.after_suspend();
+                Ok(())
+            }
+            Ok(Outcome::Returned(_)) => {
+                self.done = true;
+                self.m.terminated();
+                Ok(())
+            }
+            Err(e) => Err(self.m.error(e, Some(ctx))),
+        }
+    }
+}
+
+/// Run `func` (a function, procedure that does not wait, elaboration body or thunk) without a
+/// kernel. Signal operations are "during elaboration" errors.
+pub fn call(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[u64],
+) -> Result<Option<u64>, SimError> {
+    call_shared(rt, func, inst, args, None)
+}
+
+/// [`call`] with access to the shared variables and the shared heap, for elaboration code
+/// that creates shared protected objects (`New { shared: true }`) or initialises shared
+/// variables.
+pub fn call_shared(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[u64],
+    shared: Option<&Arc<Mutex<SharedState>>>,
+) -> Result<Option<u64>, SimError> {
+    let mut m = Machine::new(rt, inst, Vec::new(), func);
+    let mut guard = match shared {
+        Some(s) => Some(s.lock().map_err(|_| {
+            SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
+        })?),
+        None => None,
+    };
+    if let Some(g) = guard.as_mut() {
+        m.sh = Some(std::mem::take(&mut **g));
+    }
+    let r = m.enter(func, args).and_then(|()| m.run(None, 0));
+    if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
+        **g = st;
+    }
+    match r {
+        Ok(Outcome::Returned(v)) => Ok(v),
+        Ok(Outcome::Suspended) => Err(m.error(
+            Fault::Runtime("wait statement executed during elaboration".into()),
+            None,
+        )),
+        Err(e) => Err(m.error(e, None)),
+    }
+}

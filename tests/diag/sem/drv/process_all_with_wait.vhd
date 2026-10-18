@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1801 9:5 `wait` is not allowed in a process with a sensitivity list
 -- LRM 11.3
 entity e is end entity;

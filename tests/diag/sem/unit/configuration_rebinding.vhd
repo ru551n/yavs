@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1702 16:7 instance `u1` is already bound by a configuration specification
 -- LRM 3.4.2
 entity sub is end entity;

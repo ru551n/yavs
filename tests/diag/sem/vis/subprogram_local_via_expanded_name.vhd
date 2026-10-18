@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1103 13:29 `v` exists but is not visible here
 -- LRM 8.3
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1820 12:12 choice '0' is given twice
 -- LRM 10.9
 entity e is end entity;

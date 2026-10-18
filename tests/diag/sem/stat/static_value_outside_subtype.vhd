@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1403 6:24 value 256 is outside subtype `byte` range 0 to 255
 -- LRM 4.3.2
 package p is

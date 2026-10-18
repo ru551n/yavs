@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1405 10:10 length mismatch: target has 3 elements, value has 5
 -- LRM 10.6.2
 entity e is end entity;

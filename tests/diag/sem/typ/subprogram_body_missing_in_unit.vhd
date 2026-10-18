@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1230 5:13 procedure `pr` has no body
 -- LRM 4.3
 package p is

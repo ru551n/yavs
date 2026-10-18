@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1704 14:15 this binding adds maps, but no configuration specification binds the instance to an entity
 -- LRM 7.3.2.1
 entity c is generic (n : integer := 0); end entity;

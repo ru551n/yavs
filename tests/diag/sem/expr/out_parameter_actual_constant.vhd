@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1360 14:8 constant `k` cannot be the actual for `out` parameter `x`
 -- LRM 4.2.2
 package p is

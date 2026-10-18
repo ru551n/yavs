@@ -4,7 +4,7 @@
 # non-zero if any file fails. usage: tools/check-nvc.sh [2008|2019 ...]
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-scratch=${RSIM_LIBS_SCRATCH:-$HOME/.cache/rsim-libs/work}
+scratch=${YAVS_LIBS_SCRATCH:-$HOME/.cache/rsim-libs/work}
 fail=0
 for std in "${@:-2008 2019}"; do
   for std in $std; do

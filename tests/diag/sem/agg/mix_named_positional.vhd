@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1326 5:49 positional and named associations cannot be mixed
 -- LRM 9.3.3.3
 package p is

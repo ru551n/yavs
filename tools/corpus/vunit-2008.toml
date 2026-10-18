@@ -168,7 +168,7 @@ file = [
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
 nvc = []
-rsim = []
+yavs = []
 
 [[source]]
 id = "vunit"

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1213 6:16 record `r` has no element `zz`
 -- LRM 5.3.3
 package p is

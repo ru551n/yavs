@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 12.4 (VUnit com_common: use of a type makes its literals visible; NVC and GHDL accept)
 package tp is

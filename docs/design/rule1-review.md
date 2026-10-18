@@ -11,7 +11,7 @@ value is only a cache; `x'subtype`/`x'element` of an object that is not fully co
 
 The M1 lead had pinned this on numeric_std (`tests/stdlib.rs` `numeric_std_subtypes_rule_1`,
 `numeric_std_body_rule_1`). This review covers the composite cases numeric_std does not have.
-Every case below is a test in `crates/rsim-sem/tests/rule1.rs`: 14 shape tests and 5 ignored finding
+Every case below is a test in `crates/yavs-sem/tests/rule1.rs`: 14 shape tests and 5 ignored finding
 tests on VHDL written fresh for the review, plus 4 tests on real code with `--features corpus`. Tests marked `ignore` assert the correct
 shape for a finding and name its issue.
 
@@ -135,7 +135,7 @@ u : entity work.leaf generic map (g_init => x"0F") port map (d => sd, q => sq);
 | `a_un` | own subtype `std_ulogic_vector(open)` | the object |
 
 NVC, GHDL, Questa: all accept and run. Test `interface_objects_results_constants_aliases`.
-`o := (others => v)` for the unconstrained `out` parameter is E1325 in rsim, NVC, GHDL and Questa
+`o := (others => v)` for the unconstrained `out` parameter is E1325 in yavs, NVC, GHDL and Questa
 (`out_parameter_others_is_an_error`); the same holds for `o <= (others => '1')` on an
 unconstrained port (commented on #2 and #38, which assumed NVC accepts it; it does only with
 `--relaxed`).
@@ -175,7 +175,7 @@ the cloned objects keep the generic's `BoundsFrom` (F7).
 
 ## 5. The reproducers behind rule 1 (written fresh)
 
-| Issue | Situation | rsim | NVC | GHDL | Questa |
+| Issue | Situation | yavs | NVC | GHDL | Questa |
 |---|---|---|---|---|---|
 | GHDL #641 | `axi : inout bus_rec_t` (unconstrained elements); `signal address : std_logic_vector(axi.address'range)`; `signal data2 : axi.data'subtype` | `{axi.address'range(1)}` and `from-object(axi.data)`, both `[Full]` (`ghdl_641_subtype_of_record_port_element`) | ok | ok | ok |
 | GHDL #641 alias | `alias axi_data is axi.data; signal data1 : axi_data'subtype;` | `from-object(axi_data)` `[Full]` (F6: an internal error until 260729c landed during this review; `f6_alias_of_record_element`) | ok | ok | ok |
@@ -204,7 +204,7 @@ from the port's subtype (rule 9).
 
 NVC accepts all five files (`tools/corpus/*.nvc.expected`). Tests `corpus::*`. The OSVVM AXI4
 record types (`Axi4InterfacePkg.vhd`) and the UVVM VIP records are not covered: those files do
-not analyze in rsim yet for unrelated reasons (missing units, #60 and the UVVM cascade).
+not analyze in yavs yet for unrelated reasons (missing units, #60 and the UVVM cascade).
 
 ## Findings
 

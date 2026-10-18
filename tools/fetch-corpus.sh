@@ -3,7 +3,7 @@
 #
 #   tools/fetch-corpus.sh [DIR]     (default: ~/.cache/rsim-corpus)
 #
-# Then run the corpus tests with `RSIM_CORPUS=DIR cargo test --test corpus`.
+# Then run the corpus tests with `YAVS_CORPUS=DIR cargo test --test corpus`.
 # Analysis corpora: `tools/corpus/run.py NAME` (finds the sources here). The corpora are read-only test inputs and are never copied into the repo.
 set -euo pipefail
 

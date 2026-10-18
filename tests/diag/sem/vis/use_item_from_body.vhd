@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1105 11:12 `hidden` is not in the visible part of `p`
 -- LRM 12.4
 package p is

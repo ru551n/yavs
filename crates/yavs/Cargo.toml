@@ -1,0 +1,28 @@
+[package]
+name = "yavs"
+description = "yavs VHDL simulator command line"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+yavs-diag.workspace = true
+yavs-elab = { path = "../yavs-elab" }
+yavs-kernel = { path = "../yavs-kernel" }
+yavs-lib = { path = "../yavs-lib" }
+yavs-sem = { path = "../yavs-sem" }
+yavs-std = { path = "../yavs-std" }
+yavs-syntax.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Builds the external parse corpus test (needs YAVS_CORPUS, see tools/fetch-corpus.sh).
+corpus = []
+
+[[test]]
+name = "corpus"
+required-features = ["corpus"]

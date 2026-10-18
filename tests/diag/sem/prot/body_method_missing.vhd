@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1230 7:21 method `get` of protected type `pt` has no body
 -- LRM 5.6.3
 package p is

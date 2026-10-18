@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1302 13:8 aggregate is ambiguous
 -- LRM 9.3.3
 package p is

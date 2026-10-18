@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: none
 -- LRM 2019 6.5.2
 package p is

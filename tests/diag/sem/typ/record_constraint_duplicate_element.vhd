@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1213 6:31 element `a` is constrained twice
 -- LRM 5.3.3
 package p is

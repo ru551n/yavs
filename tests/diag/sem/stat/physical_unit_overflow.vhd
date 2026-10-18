@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1401 9:7 unit scale overflows the base unit
 -- LRM 5.2.4.1
 package p is

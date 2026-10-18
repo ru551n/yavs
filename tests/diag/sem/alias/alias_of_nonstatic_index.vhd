@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1610 8:16 the aliased name is not a static name of an object
 -- LRM 6.6.2, 8.1
 package p is

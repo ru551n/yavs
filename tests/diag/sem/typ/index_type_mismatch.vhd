@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 7:18 expected an index of type `color`, found `integer`
 -- LRM 5.3.2.2
 package p is

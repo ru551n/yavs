@@ -251,7 +251,7 @@ file = [
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
 nvc = ["--relaxed"]
-rsim = ["--relaxed"]
+yavs = ["--relaxed"]
 
 [[source]]
 id = "uvvm"

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1503 14:43 `x` was not instantiated with the `n` the formal package requires
 -- LRM 6.5.7.2
 package a is

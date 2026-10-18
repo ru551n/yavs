@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1621 8:27 attribute `range` is not defined for scalar `a`
 -- LRM 16.2
 package p is

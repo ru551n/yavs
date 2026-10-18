@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1201 7:43 `true` is not a type
 -- LRM 6.5.3
 package g is

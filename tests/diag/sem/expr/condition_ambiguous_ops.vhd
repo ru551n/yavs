@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1341 19:8 condition `??` is ambiguous
 -- LRM 9.2.9
 package p1 is

@@ -1,6 +1,6 @@
-# tools/corpus/run.py expected results for uvvm-2008 (rsim); one line per manifest entry, in order
-# Initial list: derived from NVC's results (uvvm-2008.nvc.expected). rsim must analyze every file NVC accepts;
-# update with `run.py uvvm-2008 --bless` when rsim's behaviour legitimately changes.
+# tools/corpus/run.py expected results for uvvm-2008 (yavs); one line per manifest entry, in order
+# Initial list: derived from NVC's results (uvvm-2008.nvc.expected). yavs must analyze every file NVC accepts;
+# update with `run.py uvvm-2008 --bless` when yavs's behaviour legitimately changes.
 PASS uvvm_util uvvm/uvvm_util/src/types_pkg.vhd
 PASS uvvm_util uvvm/uvvm_util/src/adaptations_pkg.vhd
 PASS uvvm_util uvvm/uvvm_util/src/string_methods_pkg.vhd

@@ -1,6 +1,6 @@
-# tools/corpus/run.py expected results for vunit-2019 (rsim); one line per manifest entry, in order
-# Initial list: derived from NVC's results (vunit-2019.nvc.expected). rsim must analyze every file NVC accepts;
-# update with `run.py vunit-2019 --bless` when rsim's behaviour legitimately changes.
+# tools/corpus/run.py expected results for vunit-2019 (yavs); one line per manifest entry, in order
+# Initial list: derived from NVC's results (vunit-2019.nvc.expected). yavs must analyze every file NVC accepts;
+# update with `run.py vunit-2019 --bless` when yavs's behaviour legitimately changes.
 PASS vunit_lib vunit/vunit/vhdl/data_types/src/codec_builder.vhd
 PASS vunit_lib vunit/vunit/vhdl/data_types/src/codec.vhd
 PASS vunit_lib vunit/vunit/vhdl/data_types/src/codec_builder-2008p.vhd

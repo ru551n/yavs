@@ -1,0 +1,22 @@
+[package]
+name = "yavs-elab"
+description = "Elaboration of an analyzed yavs design into a kernel model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yavs-diag.workspace = true
+yavs-interp = { path = "../yavs-interp" }
+yavs-ir = { path = "../yavs-ir" }
+yavs-kernel = { path = "../yavs-kernel" }
+yavs-lib = { path = "../yavs-lib" }
+yavs-logic.workspace = true
+yavs-lower = { path = "../yavs-lower" }
+yavs-sem = { path = "../yavs-sem" }
+yavs-std = { path = "../yavs-std" }
+yavs-syntax.workspace = true
+
+[lints]
+workspace = true

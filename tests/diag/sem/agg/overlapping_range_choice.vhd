@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1327 5:54 choice overlaps an earlier choice
 -- LRM 9.3.3.3
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1105 23:13 `v` is not in the visible part of protected type `pt`
 -- LRM 5.6.3
 package p is

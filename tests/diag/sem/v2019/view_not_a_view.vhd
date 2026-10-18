@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1902 10:18 `k` is not a mode view
 -- LRM 2019 6.5.2
 package p is

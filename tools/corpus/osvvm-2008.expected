@@ -1,6 +1,6 @@
-# tools/corpus/run.py expected results for osvvm-2008 (rsim); one line per manifest entry, in order
-# Initial list: derived from NVC's results (osvvm-2008.nvc.expected). rsim must analyze every file NVC accepts;
-# update with `run.py osvvm-2008 --bless` when rsim's behaviour legitimately changes.
+# tools/corpus/run.py expected results for osvvm-2008 (yavs); one line per manifest entry, in order
+# Initial list: derived from NVC's results (osvvm-2008.nvc.expected). yavs must analyze every file NVC accepts;
+# update with `run.py osvvm-2008 --bless` when yavs's behaviour legitimately changes.
 PASS osvvm osvvm-libraries/osvvm/IfElsePkg.vhd
 PASS osvvm osvvm-libraries/osvvm/OsvvmTypesPkg.vhd
 PASS osvvm osvvm-libraries/osvvm/SetGetBoundedGenericPkg.vhd

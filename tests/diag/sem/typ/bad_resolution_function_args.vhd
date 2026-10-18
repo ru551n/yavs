@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1225 6:19 resolution function `res` must have one parameter of an array type
 -- LRM 4.6
 package p is

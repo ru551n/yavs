@@ -1,7 +1,7 @@
-# Plan: rsim, a production VHDL simulator in Rust
+# Plan: yavs, a production VHDL simulator in Rust
 
 ## Context
-rsim is a new VHDL simulator. The aim is that it can replace GHDL or NVC for VUnit, OSVVM and cocotb users, with a Riviera-Pro-style debugging GUI. The first proof point is a real VUnit testbench running end to end. "rsim" is a placeholder because the name is taken on crates.io, so every crate is `rsim-*` with `publish = false` until it is renamed.
+yavs is a new VHDL simulator. The aim is that it can replace GHDL or NVC for VUnit, OSVVM and cocotb users, with a Riviera-Pro-style debugging GUI. The first proof point is a real VUnit testbench running end to end. The name is yavs, "Yet Another VHDL Simulator" (user decision 2026-10-18; formerly the working name rsim). Every crate is `yavs-*` with `publish = false`.
 
 Decisions made with the user:
 - Written in Rust, with **its own parser and its own semantic analysis**.
@@ -14,21 +14,21 @@ Decisions made with the user:
 - **GUI:** egui with an embedded **libsurfer**, as a separate process. It is built last, but everything before it is designed for it.
 - **Platforms (all tier 1, in CI from M0):** Linux x86_64, Linux aarch64 and Windows x86_64.
   - Windows includes LLVM and cocotb.
-  - VHPI uses no separate DLL. `rsim.exe` exports the `vhpi_*` symbols and ships an import library (`rsim.lib`) for external plugins, the way Riviera does.
+  - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols and ships an import library (`yavs.lib`) for external plugins, the way Riviera does.
   - LLVM on Windows needs a pinned prebuilt LLVM 21 package with static libs; the prebuilt packages lack `llvm-config`.
 - **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. For **any** dependency that has to be installed by hand, **ask the user first**. Approved so far: LLVM 21 (optional, behind the `llvm` feature) and a C compiler at build time (the VHPI variadic shim). NVC and GHDL are dev-only references.
 - **Performance:** correctness first, no speed target yet. Benchmarks are tracked, not gated.
-- **Embedded Python is deferred.** A Tcl-like `rsim` scripting module comes after the DAP server.
-- **Interop with the VUnit python bridge:** rsim needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), and an entry in the bridge's simulator table.
+- **Embedded Python is deferred.** A Tcl-like `yavs` scripting module comes after the DAP server.
+- **Interop with the VUnit python bridge:** yavs needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), and an entry in the bridge's simulator table.
 - **Vendor libraries:**
   - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
   - Synopsys `std_logic_arith`/`unsigned`/`signed` are **deferred to M4b** (user, 2026-10-18). Two clean-room attempts were stopped by the content filter while writing the package declaration. The black-box testbenches and runner stay in `lib/synopsys/test/`.
 - **VUnit integration** (user, 2026-10-18):
   - **Mixing VHDL-2008 and 2019 files in one project is allowed.** The manifest records the standard per file. Each file is parsed with its own standard's syntax. A design is analyzed and elaborated against **one** `std`/`ieee` revision, the newest one in its closure, so types such as `INTEGER` are the same type everywhere. A construct that is illegal under that revision is a fail-early error naming the file and its standard. A construct whose **meaning changes** (e.g. `integer'high` going 64-bit) is a **warning**, given once per construct and escalatable with `-Werror`, so VUnit and OSVVM keep working from 2019 testbenches.
-  - **Each rsim defaults to `--threads 1`** under VUnit's `-p N`; users opt in through `rsim.sim_flags`.
+  - **Each yavs defaults to `--threads 1`** under VUnit's `-p N`; users opt in through `yavs.sim_flags`.
   - **`@file` response files are supported from the start.** VUnit uses them on Windows for long `runner_cfg` generics.
   - Installation is documented as VUnit `add_library` recipes, with no installer command.
-- **Repo:** `ru551n/rsim` on GitHub stays **private until the rename**, **Initial phase:** agents push straight to `main`, with no PRs and no CI. Once something works, CI is added on Linux x86_64, Linux aarch64 and Windows, and each milestone then lands as a PR that the user merges.
+- **Repo:** `ru551n/yavs` on GitHub stays **private until the rename**, **Initial phase:** agents push straight to `main`, with no PRs and no CI. Once something works, CI is added on Linux x86_64, Linux aarch64 and Windows, and each milestone then lands as a PR that the user merges.
 - **External test inputs (never copied into the repo):** VESTs, NVC `test/regress` and GHDL `testsuite/gna`, fetched in CI or read from local checkouts, for parse, sem and differential runs.
 - **Licensing:** MIT/Apache, published once the repo goes public. The GUI crate alone is EUPL-1.2, because libsurfer is.
 - **Workflow:** one subagent per milestone.
@@ -37,35 +37,35 @@ What the research found locally:
 - **No Rust simulator exists to build on.**
 - **rust_hdl** (`vhdl_lang`, `vhdl_syntax`) is MPL. Its 2019 grammar is close to empty, and a global interner lock serializes parsing. It is a test-corpus and behaviour reference only, not a dependency.
 - **LLVM 21.1.8** with dev headers and static libs is in `/usr/lib/llvm-21`. Use `llvm-sys` 211.x, falling back to `prefer-dynamic`.
-- **wellen** (`~/git/wellen`, BSD-3) provides public `HierarchyBuilder` and `wavemem::Encoder`. It works as rsim's in-memory waveform model and as Surfer's data source.
+- **wellen** (`~/git/wellen`, BSD-3) provides public `HierarchyBuilder` and `wavemem::Encoder`. It works as yavs's in-memory waveform model and as Surfer's data source.
 - **NVC** (`~/git/nvc`, GPL) is an architecture reference only; never copy its code.
   - VHPI is in `src/vhpi/vhpi-model.c`.
   - The JIT pipeline is `jit-irgen.c` → `jit-interp.c` and `jit-llvm.c`.
   - Coverage is in `src/cov/` and `rt/cover.c`.
   - NVC passes cocotb's whole regression, so its exported VHPI symbol set is the checklist to cover.
 - **Library sources:**
-  - `~/git/rust_hdl/vhdl_libraries/{std,ieee2008}`. The IEEE parts are Apache-2.0. `std` has declarations only, so rsim writes the bodies for standard, textio and env natively.
+  - `~/git/rust_hdl/vhdl_libraries/{std,ieee2008}`. The IEEE parts are Apache-2.0. `std` has declarations only, so yavs writes the bodies for standard, textio and env natively.
   - VUnit and OSVVM in `~/git/vunit/vunit/vhdl`.
 - **Not installed:** cocotb and a Surfer checkout. Both are needed in later milestones.
 
 ## Architecture (Cargo workspace at `~/git/rsim`)
 | Crate | Role |
 |---|---|
-| `rsim-diag` | One diagnostics model shared by every stage, rendered rustc-style with `annotate-snippets`. A diagnostic carries a severity and colour, a stable code (`rsim --explain E0xxx`), a primary span plus labelled secondary spans, and `note:`/`help:` lines with suggested fixes. Errors recover and are reported together, with cascading errors suppressed. **Runtime errors** add a VHDL stacktrace (one frame per subprogram, with its source line), the process, the instance path, and the time and delta, so an assert raised inside an IEEE library still points at the caller in user code. Colour turns off when the output isn't a TTY, with `--color` and `NO_COLOR` to override. Also `--message-format=json\|short` for VUnit, editors and DAP. Internal compiler errors are caught and rendered at the span being processed. |
-| `rsim-syntax` | Lexer and recursive-descent parser into an owned AST with spans. Handles 2008 and 2019, including mode views, private regions, the 2019 generic forms and the sequential block. Conditional analysis (`` `if ``) is evaluated in the token stream. Parsing and analysis run on a single thread. |
-| `rsim-sem` | Libraries and design units, scopes and visibility (`use`, `context`, selected names), the type system, overload resolution, static expression evaluation, and diagnostics. Its output is a **typed HIR** in which every expression carries its type and every call names the overload it resolved to. |
-| `rsim-lib` | Library manifests, with **no incremental compilation cache**. `rsim analyze --work L f.vhd` checks the file and records it in `L/rsim-lib.toml` (in compile order), under the library lock (rule 14), so parallel analysis is safe. `elab` and `run` re-parse and re-analyze from source. The serialized-unit format is skipped and not needed. **Analysis is on demand:** the manifest maps unit names to files, and `elab` analyzes only the units the top level can reach. This keeps big vendor libraries such as UNISIM from being re-analyzed in full on every run, without needing a cache. |
-| `rsim-ir` | Lowers the HIR to a register-based IR. Each instruction carries a statement-location tag, used for stepping and for coverage. |
-| `rsim-elab` | Elaboration. Folds generics through the interpreter, expands generates, binds components and configurations, and resolves external names. It builds the signal net graph (drivers, resolution, port conversions). |
-| `rsim-interp` | IR interpreter. Used for elaboration-time evaluation, cold code, and debug stepping. |
-| `rsim-llvm` | IR → LLVM, JIT through the ORC C API. There is no object cache: code is compiled again on every run. Tiered: a process starts in the interpreter and moves to LLVM once it is hot. Compilation runs on a single thread, in the background, so the simulation is never blocked waiting for it. |
-| `rsim-rt` | The kernel. Implements the LRM 14.7 cycle with **parallel process evaluation** (described below). Holds the value heap (access types, protected types) and the native `std.standard`, `textio` and `env`. Logic values, **signals included**, use **bit-planes** everywhere (user, 2026-10-18; rsim-logic benchmarked planes as the winner). Protected-type callers run serial through M3. Foreign subprograms are supported (VHPIDIRECT style, plus `--load`). The calls go through **our own per-ABI call trampolines** (SysV x86_64, AArch64, Win64), with no libffi, so library dependencies stay minimal. |
-| `rsim-wave` | Records values into a wellen `Hierarchy` and signals, and writes FST. |
-| `rsim-cov` | Statement, branch and toggle counters, a database that can be merged, and HTML and Cobertura reports. |
-| `rsim-vhpi` | IEEE 1076 VHPI C ABI (`vhpi_user.h`) and `vhpi_startup_routines` loading for cocotb. |
-| `rsim-dap` | Debug Adapter Protocol server: breakpoints, step in/over per process, stack, and variables. Extensions add hierarchy browsing, signal peek/force/deposit, run-to-time, and live waveform streaming. |
-| `rsim` | The CLI: `rsim analyze`, `rsim elab`, `rsim run [--wave] [--cov] [--vhpi lib] [--dap port]`. The exit code follows `env.stop`/`finish` and severity, as VUnit expects. |
-| `rsim-gui` (EUPL-1.2, **built last**) | egui/eframe app embedding libsurfer. It connects to `rsim --dap`. It provides the hierarchy and source panes, breakpoints, a console and live waves. **Debugging matches Riviera-PRO and Questa** (user, 2026-10-18): line breakpoints with conditions and hit counts; signal breakpoints (on change or on a value); step into/over/out within a process plus a global step to the next statement of any process; run for a time, to the next delta or to the next time step; call stack and locals per process; a list of active and waiting processes with what they wait on; time and delta shown at every stop. **Look: the more modern Riviera-PRO style** (dockable panels, hierarchy tree, source view with breakpoint gutter, embedded waves), not Questa's classic Tk look. |
+| `yavs-diag` | One diagnostics model shared by every stage, rendered rustc-style with `annotate-snippets`. A diagnostic carries a severity and colour, a stable code (`yavs --explain E0xxx`), a primary span plus labelled secondary spans, and `note:`/`help:` lines with suggested fixes. Errors recover and are reported together, with cascading errors suppressed. **Runtime errors** add a VHDL stacktrace (one frame per subprogram, with its source line), the process, the instance path, and the time and delta, so an assert raised inside an IEEE library still points at the caller in user code. Colour turns off when the output isn't a TTY, with `--color` and `NO_COLOR` to override. Also `--message-format=json\|short` for VUnit, editors and DAP. Internal compiler errors are caught and rendered at the span being processed. |
+| `yavs-syntax` | Lexer and recursive-descent parser into an owned AST with spans. Handles 2008 and 2019, including mode views, private regions, the 2019 generic forms and the sequential block. Conditional analysis (`` `if ``) is evaluated in the token stream. Parsing and analysis run on a single thread. |
+| `yavs-sem` | Libraries and design units, scopes and visibility (`use`, `context`, selected names), the type system, overload resolution, static expression evaluation, and diagnostics. Its output is a **typed HIR** in which every expression carries its type and every call names the overload it resolved to. |
+| `yavs-lib` | Library manifests, with **no incremental compilation cache**. `yavs analyze --work L f.vhd` checks the file and records it in `L/yavs-lib.toml` (in compile order), under the library lock (rule 14), so parallel analysis is safe. `elab` and `run` re-parse and re-analyze from source. The serialized-unit format is skipped and not needed. **Analysis is on demand:** the manifest maps unit names to files, and `elab` analyzes only the units the top level can reach. This keeps big vendor libraries such as UNISIM from being re-analyzed in full on every run, without needing a cache. |
+| `yavs-ir` | Lowers the HIR to a register-based IR. Each instruction carries a statement-location tag, used for stepping and for coverage. |
+| `yavs-elab` | Elaboration. Folds generics through the interpreter, expands generates, binds components and configurations, and resolves external names. It builds the signal net graph (drivers, resolution, port conversions). |
+| `yavs-interp` | IR interpreter. Used for elaboration-time evaluation, cold code, and debug stepping. |
+| `yavs-llvm` | IR → LLVM, JIT through the ORC C API. There is no object cache: code is compiled again on every run. Tiered: a process starts in the interpreter and moves to LLVM once it is hot. Compilation runs on a single thread, in the background, so the simulation is never blocked waiting for it. |
+| `yavs-rt` | The kernel. Implements the LRM 14.7 cycle with **parallel process evaluation** (described below). Holds the value heap (access types, protected types) and the native `std.standard`, `textio` and `env`. Logic values, **signals included**, use **bit-planes** everywhere (user, 2026-10-18; yavs-logic benchmarked planes as the winner). Protected-type callers run serial through M3. Foreign subprograms are supported (VHPIDIRECT style, plus `--load`). The calls go through **our own per-ABI call trampolines** (SysV x86_64, AArch64, Win64), with no libffi, so library dependencies stay minimal. |
+| `yavs-wave` | Records values into a wellen `Hierarchy` and signals, and writes FST. |
+| `yavs-cov` | Statement, branch and toggle counters, a database that can be merged, and HTML and Cobertura reports. |
+| `yavs-vhpi` | IEEE 1076 VHPI C ABI (`vhpi_user.h`) and `vhpi_startup_routines` loading for cocotb. |
+| `yavs-dap` | Debug Adapter Protocol server: breakpoints, step in/over per process, stack, and variables. Extensions add hierarchy browsing, signal peek/force/deposit, run-to-time, and live waveform streaming. |
+| `yavs` | The CLI: `yavs analyze`, `yavs elab`, `yavs run [--wave] [--cov] [--vhpi lib] [--dap port]`. The exit code follows `env.stop`/`finish` and severity, as VUnit expects. |
+| `yavs-gui` (EUPL-1.2, **built last**) | egui/eframe app embedding libsurfer. It connects to `yavs --dap`. It provides the hierarchy and source panes, breakpoints, a console and live waves. **Debugging matches Riviera-PRO and Questa** (user, 2026-10-18): line breakpoints with conditions and hit counts; signal breakpoints (on change or on a value); step into/over/out within a process plus a global step to the next statement of any process; run for a time, to the next delta or to the next time step; call stack and locals per process; a list of active and waiting processes with what they wait on; time and delta shown at every stop. **Look: the more modern Riviera-PRO style** (dockable panels, hierarchy tree, source view with breakpoint gutter, embedded waves), not Questa's classic Tk look. |
 
 **Designed for the GUI from the start** (none of it is built until M10):
 - **The kernel is driven through a `SimControl` API**: run-for, run-until, step-delta, pause, plus breakpoint and watch hooks. The CLI, DAP and VHPI all call this one API, and nothing else drives simulation.
@@ -81,11 +81,11 @@ What the research found locally:
 - **There is no prior art to copy.** NVC tried work-queue parallelism in 2022 and went back to a serial run queue in 2023, and GHDL is serial. So `--threads` defaults to 1 until the differential suites pass at N threads, and the GC/heap safepoints are designed together with the thread pool (NVC #1649 was a deadlock between GC and threads).
 
 ## Error-handling motto: fail early, fail clearly
-Every error is reported through `rsim-diag` in the rustc format: code, spans, labels, notes and help, and for runtime errors the VHDL stacktrace with instance path and time. Concretely:
+Every error is reported through `yavs-diag` in the rustc format: code, spans, labels, notes and help, and for runtime errors the VHDL stacktrace with instance path and time. Concretely:
 - **Never continue past a failed stage.** If analysis has errors, there is no elaboration. If elaboration has errors, there is no simulation. Inside one stage, independent errors may be listed together the way rustc does, but no guessed value is ever carried into the next stage.
-- **No silent fallbacks.** Don't use `unwrap_or(default)` on anything that comes from the design, the user or the environment. A missing library, unit, file, generic, plugin or VHPI symbol is an error that names what is missing and where rsim looked.
+- **No silent fallbacks.** Don't use `unwrap_or(default)` on anything that comes from the design, the user or the environment. A missing library, unit, file, generic, plugin or VHPI symbol is an error that names what is missing and where yavs looked.
 - **Runtime errors stop the simulation at once** (bound check, overflow, null access, delta limit, assertion at or above `--exit-severity`), with a clear exit code. Nothing is clamped or wrapped.
-- **Internal invariants are checked.** A broken invariant becomes an internal compiler error rendered at the span being processed, with "this is a bug in rsim" and a report hint. It is never undefined behaviour or a bare panic message.
+- **Internal invariants are checked.** A broken invariant becomes an internal compiler error rendered at the span being processed, with "this is a bug in yavs" and a report hint. It is never undefined behaviour or a bare panic message.
 - **External tools and plugins:** non-zero exit codes and error statuses are propagated and never swallowed.
 - **LRM interpretation policy** (user, 2026-10-18): where the LRM is clear, follow it and fail early. Where it is unclear or silent, be permissive: accept the union of what NVC, GHDL, Questa and Riviera accept, and pick the semantics that let the most designs elaborate. Warn only where those simulators give different results. The rulings per item are in `docs/design/lrm-checks.md`.
 
@@ -104,11 +104,11 @@ Both simulators kept running into these bug classes; issue numbers are in bracke
 11. **Waves come from the same sub-element change events.** There are include/exclude globs, a size cap for arrays and memories, and enum names kept in metadata. The FST is flushed on SIGINT and at the end of simulation (GHDL #2617/#2706, NVC #959).
 12. **Constant aggregates are compact** (run-length or `others`), so a 64K-entry memory initialiser doesn't blow up elaboration (GHDL #49/#1349).
 13. **Diagnostics have a stable code** that can be suppressed or escalated per code (`-W`, `-Werror`). The few relaxations of LRM rules sit behind `--relaxed` (NVC #641/#1004/#1669).
-14. **Process-safe on disk, with automatic library locking like NVC's.** Every library directory has a `_RSIM_LIB` lock file locked with an OS advisory lock (Rust `std::fs::File::lock`/`lock_shared`, which is `flock` on Unix and `LockFileEx` on Windows), so parallel `rsim analyze` runs into the same library are safe.
+14. **Process-safe on disk, with automatic library locking like NVC's.** Every library directory has a `_YAVS_LIB` lock file locked with an OS advisory lock (Rust `std::fs::File::lock`/`lock_shared`, which is `flock` on Unix and `LockFileEx` on Windows), so parallel `yavs analyze` runs into the same library are safe.
    - `analyze` takes the **exclusive** lock while it updates the manifest. Each write goes to a temp file followed by an atomic rename.
    - `elab` and `run` take the **shared** lock only while they read the manifest and its source list, then release it. A long simulation never blocks compilation.
    - `run` never writes into library directories (NVC #507).
-   - **Read-only libraries never fail** (NVC #651, Bazel sandboxes). If the lock file can't be opened for writing, rsim opens it read-only with a shared lock. If it can't be opened at all on a read-only directory, rsim skips locking, since nothing can change that library anyway.
+   - **Read-only libraries never fail** (NVC #651, Bazel sandboxes). If the lock file can't be opened for writing, yavs opens it read-only with a shared lock. If it can't be opened at all on a read-only directory, yavs skips locking, since nothing can change that library anyway.
    - A lock wait longer than a few seconds prints a note naming the library.
 15. **Front-end fuzzing from M0.** cargo-fuzz runs on the parser and on semantic analysis; one week of AFL found 32 crashes in NVC (#1038).
 
@@ -122,21 +122,21 @@ Both simulators kept running into these bug classes; issue numbers are in bracke
   - textio and file I/O, `env`, package generics, external names.
   - Foreign subprograms with `--load`.
   - The packed-logic layout benchmark and decision.
-- **M4: VUnit end to end.** A minimal testbench, then VUnit's `vunit/vhdl/**/test` suites. Add an rsim `SimulatorInterface` in `~/git/vunit/vunit/sim_if/` so that `run.py --simulator rsim` works.
+- **M4: VUnit end to end.** A minimal testbench, then VUnit's `vunit/vhdl/**/test` suites. Add an yavs `SimulatorInterface` in `~/git/vunit/vunit/sim_if/` so that `run.py --simulator yavs` works.
 - **M4b: ecosystem libraries.**
   - The clean-room Synopsys packages.
   - Functional VITAL.
   - UNISIM/UNIMACRO, altera_mf/lpm and Lattice/Microchip primitives analyze and simulate, each with a documented VUnit recipe.
-  - The VUnit python bridge's test suite passes on rsim, after adding rsim to its simulator table.
-- **M5: VHPI (mandatory).** The full VHPI object model over `SimControl` and the event bus. Install cocotb into a venv. Check: cocotb's own regression passes on rsim.
+  - The VUnit python bridge's test suite passes on yavs, after adding yavs to its simulator table.
+- **M5: VHPI (mandatory).** The full VHPI object model over `SimControl` and the event bus. Install cocotb into a venv. Check: cocotb's own regression passes on yavs.
 - **M6: LLVM tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against NVC are tracked in `STATUS.md`.
 - **M7: waves.** FST output through wellen, as an event-bus subscriber.
 - **M8: DAP server.** Interpreter stepping, signal peek/force, and the wave-stream extension. Check: scripted DAP sessions in tests, plus manual use from VS Code.
 - **M9: coverage.** Statement, branch and toggle coverage, merge, HTML and Cobertura output.
 - **M9b: embedded Python scripting (deferred).**
-  - A pyo3 `rsim` module over `SimControl`: run, step, force, examine, breakpoints, waves.
+  - A pyo3 `yavs` module over `SimControl`: run, step, force, examine, breakpoints, waves.
   - libpython is loaded dynamically, and an interpreter that cocotb or the bridge has already started is reused (one CPython per process).
-- **M10: GUI (later).** rsim-gui with embedded libsurfer, connected over DAP. Nothing in it should need kernel changes.
+- **M10: GUI (later).** yavs-gui with embedded libsurfer, connected over DAP. Nothing in it should need kernel changes.
 
 ## Working rules for the milestone subagents
 - One background agent at a time (an earlier memory records OOM crashes when agents fanned out). Each one works on a branch, and I review and merge.

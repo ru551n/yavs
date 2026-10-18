@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 5:27 expected `real`, found `universal_integer`
 -- LRM 5.2.5
 package p is

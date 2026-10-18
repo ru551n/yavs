@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 12:11 procedure `pr` takes 1 argument, found 2
 -- LRM 6.5.7.1
 package p is

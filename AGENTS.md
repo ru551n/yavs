@@ -1,8 +1,8 @@
-# AGENTS.md: working on rsim
+# AGENTS.md: working on yavs
 
-rsim is a production VHDL simulator in Rust: VHDL-2008 and 2019, an IR interpreter plus an
+yavs is a production VHDL simulator in Rust: VHDL-2008 and 2019, an IR interpreter plus an
 optional LLVM tier, a parallel kernel, VHPI for cocotb, VUnit support, and later a DAP server and a
-GUI. "rsim" is a working name. This file is for AI agents (and humans) changing the code. Read it
+GUI. The name stands for "Yet Another VHDL Simulator". This file is for AI agents (and humans) changing the code. Read it
 fully before your first edit. It is short on purpose: the details live in the documents it points
 to, and those documents win over your memory.
 
@@ -16,10 +16,10 @@ to, and those documents win over your memory.
 
 | When you touch | Also read |
 |---|---|
-| parser (`rsim-syntax`) | `docs/decisions.md` "Parser", `docs/design/lrm-checks.md` P1/P2 |
-| semantic analysis (`rsim-sem`) | `docs/design/sem.md`, `docs/design/lrm-checks.md`, `crates/rsim-sem/CONTRIBUTING.md` |
-| IR, interpreter, lowering, elaboration | `docs/design/ir.md`, `crates/rsim-kernel/DESIGN.md` |
-| kernel (`rsim-kernel`) | `crates/rsim-kernel/DESIGN.md` |
+| parser (`yavs-syntax`) | `docs/decisions.md` "Parser", `docs/design/lrm-checks.md` P1/P2 |
+| semantic analysis (`yavs-sem`) | `docs/design/sem.md`, `docs/design/lrm-checks.md`, `crates/yavs-sem/CONTRIBUTING.md` |
+| IR, interpreter, lowering, elaboration | `docs/design/ir.md`, `crates/yavs-kernel/DESIGN.md` |
+| kernel (`yavs-kernel`) | `crates/yavs-kernel/DESIGN.md` |
 | CLI, libraries, VUnit integration | `docs/cli-contract.md` (VUnit depends on it: change it deliberately) |
 | `lib/` (std/ieee sources) | `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
 
@@ -27,19 +27,19 @@ to, and those documents win over your memory.
 
 | Path | What |
 |---|---|
-| `crates/rsim-diag` | Diagnostics model and rustc-style renderer; code registry in its crate docs |
-| `crates/rsim-syntax` | Lexer, conditional analysis, parser, owned AST (2008 and 2019) |
-| `crates/rsim-sem` | Semantic analysis to typed HIR (`hir.rs`); module owners in its `CONTRIBUTING.md` |
-| `crates/rsim-lib` | Library manifests, `_RSIM_LIB` locking, unit closure |
-| `crates/rsim-logic` | `std_ulogic` and packed logic vectors (bit-planes are the default) |
-| `crates/rsim-std` | Native `std.standard`/`textio`/`env` semantics, checked arithmetic |
-| `crates/rsim-kernel` | LRM 14.7 cycle, drivers, ports, parallel evaluation, `SimControl`, event bus |
-| `crates/rsim-ir`, `rsim-interp`, `rsim-lower`, `rsim-elab` | M2 middle end (see `docs/design/ir.md`) |
-| `crates/rsim-ffi` | Foreign-call trampolines per ABI (no libffi) |
-| `crates/rsim-vhpi` | VHPI C ABI and plugin loading; vendored IEEE `vhpi_user.h` |
-| `crates/rsim-wave` | FST waveform sink |
-| `crates/rsim-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (off by default) |
-| `crates/rsim` | The `rsim` binary |
+| `crates/yavs-diag` | Diagnostics model and rustc-style renderer; code registry in its crate docs |
+| `crates/yavs-syntax` | Lexer, conditional analysis, parser, owned AST (2008 and 2019) |
+| `crates/yavs-sem` | Semantic analysis to typed HIR (`hir.rs`); module owners in its `CONTRIBUTING.md` |
+| `crates/yavs-lib` | Library manifests, `_YAVS_LIB` locking, unit closure |
+| `crates/yavs-logic` | `std_ulogic` and packed logic vectors (bit-planes are the default) |
+| `crates/yavs-std` | Native `std.standard`/`textio`/`env` semantics, checked arithmetic |
+| `crates/yavs-kernel` | LRM 14.7 cycle, drivers, ports, parallel evaluation, `SimControl`, event bus |
+| `crates/yavs-ir`, `yavs-interp`, `yavs-lower`, `yavs-elab` | M2 middle end (see `docs/design/ir.md`) |
+| `crates/yavs-ffi` | Foreign-call trampolines per ABI (no libffi) |
+| `crates/yavs-vhpi` | VHPI C ABI and plugin loading; vendored IEEE `vhpi_user.h` |
+| `crates/yavs-wave` | FST waveform sink |
+| `crates/yavs-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (off by default) |
+| `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |
 | `tests/corpus/` | Differential testbenches with NVC reference outputs (`tools/difftest`) |
@@ -50,11 +50,11 @@ to, and those documents win over your memory.
 ## 3. Rules (mandatory)
 
 ### Correctness and behaviour
-1. **Fail early, fail clearly.** Every problem is a `rsim_diag::Diagnostic` in the rustc format:
+1. **Fail early, fail clearly.** Every problem is a `yavs_diag::Diagnostic` in the rustc format:
    code, primary span, labels, notes, help. No stage runs after a failed one. No silent
    fallbacks: never `unwrap_or(default)` on anything that comes from the design, the user or the
    environment. A broken invariant is an internal-compiler-error diagnostic ("this is a bug in
-   rsim"), never a bare panic. Not-yet-implemented features report an explicit "not implemented"
+   yavs"), never a bare panic. Not-yet-implemented features report an explicit "not implemented"
    diagnostic naming the milestone or slice, never a guess.
 2. **LRM policy.** Where the LRM is clear, follow it and fail early. Where it is unclear or silent,
    be permissive: accept what any major simulator (NVC, GHDL, Questa, Riviera) accepts, pick the
@@ -65,7 +65,7 @@ to, and those documents win over your memory.
 4. **Respect the design rules** in `docs/plan.md` (runtime constraints on every composite, one
    sub-element signal map, checked i64 everywhere, original identifier spelling, generational
    handles, and the rest). If you think one is wrong, say so in your report; don't route around it.
-5. **Every diagnostic has a stable code** from the registry (`rsim-diag` crate docs, `sem.md` 8.1).
+5. **Every diagnostic has a stable code** from the registry (`yavs-diag` crate docs, `sem.md` 8.1).
    New codes are added to the registry in the same commit.
 
 ### Licensing and sources
@@ -86,7 +86,7 @@ to, and those documents win over your memory.
     `ponytail:` comment naming the ceiling and the upgrade path.
 11. **`unsafe` only where unavoidable** (FFI, VHPI, LLVM). Those crates opt out of the workspace
     `forbid` and confine `unsafe` to one module with a comment.
-12. **Ownership.** In shared crates (notably `rsim-sem`) claim your module in its `CONTRIBUTING.md`
+12. **Ownership.** In shared crates (notably `yavs-sem`) claim your module in its `CONTRIBUTING.md`
     before editing. Changes in someone else's module must be small, additive, in their own commit,
     or a request in that file's Requests section. Never fork another crate's types.
 
@@ -96,7 +96,7 @@ to, and those documents win over your memory.
     `cargo test --workspace`. Never pipe a check through `grep`/`tail` in a way that hides its exit
     status.
 14. **Every behaviour gets a test.** Errors get a negative test with the code and position.
-    Rendered output changes are snapshot changes that show up in review (`RSIM_BLESS=1` to update,
+    Rendered output changes are snapshot changes that show up in review (`YAVS_BLESS=1` to update,
     then inspect the diff).
 15. **Simulator reference runs** (NVC, GHDL, Questa) are wrapped as
     `timeout 300 systemd-run --user --scope -p MemoryMax=2G ...`, at most 8 at once, with work
@@ -121,8 +121,8 @@ to, and those documents win over your memory.
     force-pushing, publishing, contacting external services beyond read-only fetches.
 
 ### Issues
-22. **Work is tracked as GitHub issues** on `ru551n/rsim` (private). Before starting, find the
-    issue for your task (`gh issue list -R ru551n/rsim --search ...`); if none exists, create one
+22. **Work is tracked as GitHub issues** on `ru551n/yavs` (private). Before starting, find the
+    issue for your task (`gh issue list -R ru551n/yavs --search ...`); if none exists, create one
     with the labels described in its template (milestone `M<n>`, crate `crate:<name>`, kind).
     Reference it in your commits, and close it with `Fixes #N` in the commit that completes it
     (or `gh issue close N --comment "<commit>: <what was done>"` if work was spread over several
@@ -134,13 +134,13 @@ to, and those documents win over your memory.
 cargo test --workspace                               # unit, snapshot and lib/ tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-RSIM_BLESS=1 cargo test -p rsim                      # update rendered snapshots, then review the diff
+YAVS_BLESS=1 cargo test -p yavs                      # update rendered snapshots, then review the diff
 tools/fetch-corpus.sh                                # external corpora into ~/.cache/rsim-corpus
-RSIM_CORPUS=~/.cache/rsim-corpus cargo test -p rsim --features corpus   # parse corpora
+YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus   # parse corpora
 tools/corpus/report.sh                               # analyze all corpora, write tools/corpus/RESULTS.md
 python3 tools/difftest/difftest.py --candidate nvc   # differential corpus (see tools/difftest/README.md)
-cargo test -p rsim-llvm --features llvm              # LLVM tier (needs LLVM 21)
-cargo run -p rsim -- analyze --std=2008 --work=work:out/work file.vhd
+cargo test -p yavs-llvm --features llvm              # LLVM tier (needs LLVM 21)
+cargo run -p yavs -- analyze --std=2008 --work=work:out/work file.vhd
 ```
 
 AArch64 under qemu and Windows under Wine: see the commands in `STATUS.md` ("ffi").

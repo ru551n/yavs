@@ -33,7 +33,7 @@ LCS text was read.
 
 ## Verdicts
 
-| # | sem.md item | Clause | Verdict | Rule for rsim |
+| # | sem.md item | Clause | Verdict | Rule for yavs |
 |---|---|---|---|---|
 | Q1 | universal vs INTEGER interpretation | 9.3.6 | **corrected** | an implicit conversion is used only when no interpretation without it exists; only convertible operands convert |
 | Q1a | "named numbers (`constant N := 8;`)" | 6.4.2.2 | **corrected** | VHDL has no named numbers; the syntax is an error in both tools |
@@ -81,7 +81,7 @@ returning 100):
 | `constant I : integer := 2 + 3;` | integer `+` (result of `+` is not convertible), 100 | 100 | 100 |
 | `x := 2**40 / 2**20;` (`q1b`, 32-bit INTEGER) | integer `**`, overflow | overflow error | 1048576 (folds universally) |
 
-Rule for rsim: an interpretation with fewer implicit conversions never loses to one with more;
+Rule for yavs: an interpretation with fewer implicit conversions never loses to one with more;
 precisely, if any interpretation of the complete context needs no implicit conversion, every
 interpretation that needs one is dropped; conversions are inserted only at convertible operands and
 only where the context gives a unique numeric type. This is GHDL's behaviour; NVC deviates. The old
@@ -135,7 +135,7 @@ work.p1.c; alias t is work.p1.t;`, both used with `.all`):
 | `c` (object alias) | error "no declaration for c (due to conflicts)" | error "multiple conflicting visible declarations" |
 | `t` (type alias) | accepted | accepted |
 
-Rule for rsim: under 12.4 c), two potentially visible declarations whose non-object-alias targets
+Rule for yavs: under 12.4 c), two potentially visible declarations whose non-object-alias targets
 are the same named entity count as one (both tools); an object alias and its object, or two object
 aliases, conflict like any two declarations.
 
@@ -192,7 +192,7 @@ NVC 2019 (`u13_3`, `u14_*`, `u7.vhd`): `integer'range'record` and `integer'range
 `DIRECTION` is not; for a user type `t` both `t'range'record` and `T_RANGE_RECORD` fail ("type T
 does not have a range record"). GHDL 19 supports none of it.
 
-Rule for rsim: every scalar type (and the universal types) gets an anonymous range record type with
+Rule for yavs: every scalar type (and the universal types) gets an anonymous range record type with
 elements `LEFT`, `RIGHT` (of the type) and `DIRECTION`, created with the type; `R'RECORD` denotes it
 and `R'VALUE` gives the value, for `R` an attribute name denoting a range. Decided (U-3): the names
 `<T>_RANGE_RECORD` exist only for the `std.standard` types; the direction type is `RANGE_DIRECTION`
@@ -212,7 +212,7 @@ create a lot of ambiguities" (`((fs, "fs "), (ps, "ps "))` for an array of recor
 `u8.vhd` (`f` overloaded to return `string` and `sa`, `sa` an array of `string(1 to 2)`, `(f, f)`):
 GHDL "type of element is ambiguous"; NVC takes the element type.
 
-Rule for rsim: the aggregate's own type is a candidate only for a positional association or a
+Rule for yavs: the aggregate's own type is a candidate only for a positional association or a
 discrete-range choice; an element that is an aggregate (or string or bit-string literal whose type
 would be the aggregate type only through the context) takes the element type. The LRM is silent on
 a remaining tie; decided (permissive): it takes the element type, as NVC, with no `E1323`.
@@ -293,13 +293,13 @@ called with `"0001"` and `"001"`:
 
 The text says "predefined", which reads as the actual type's predefined operator, the GHDL result;
 `VI#273` (open) asks the same question for the 2019 implicit `<` of an array interface type. Rule
-for rsim: implicitly declare `=`/`/=` after every interface type (2008 and 2019 `private`); at
+for yavs: implicitly declare `=`/`/=` after every interface type (2008 and 2019 `private`); at
 instantiation they denote the actual's predefined `=`/`/=`, matching the existing remap rule of
 `sem.md` 5.1. Code that wants `numeric_std."="` declares a formal `function "=" ... is <>`.
 Decided (U-6): since the tools give different results, the instantiation gets warning `W1506` when
 a user `"="` for the actual type other than the predefined one is visible there.
 
-Effect on rsim: any check that rejects `=` on a 2008 `type T` without an interface `"="` must be
+Effect on yavs: any check that rejects `=` on a 2008 `type T` without an interface `"="` must be
 removed, and a negative test that expects such an error must become a positive one.
 
 ### P1: optional closing keywords (2019)
@@ -319,7 +319,7 @@ file per construct that spells the keyword and passes NVC 2019):
 | `end process`, `end block`, `end generate`, `end if`, `end case`, `end loop`, `end for` (block configuration) | error | error | error | error |
 
 No simulator accepts the other forms and the LCS text is clear, so the LRM rule applies.
-Parser change for `crates/rsim-syntax` (implemented; a bare `end;` elsewhere is E0002 with a help
+Parser change for `crates/yavs-syntax` (implemented; a bare `end;` elsewhere is E0002 with a help
 naming LCS-2016-055a, and a 2008 `end;` for a component is E0004): in 2019 mode only the reserved word
 `component` after `end` of a component declaration is optional; every other construct requires its
 closing keyword exactly as in 2008. (Endings that are already optional in 2008, such as `end
@@ -362,7 +362,7 @@ Black-box NVC 2019 (`~/.cache/rsim-lrmcheck/t/cond/`; GHDL 19 accepts none of th
 | unparenthesized in qualified expression, aggregate element, index, `report`, `wait for` | rejected | not in the grammar |
 | generic, port and parameter defaults | rejected | not confirmed either way (U-5: accepted, permissive) |
 
-Parser change for `crates/rsim-syntax` (implemented):
+Parser change for `crates/yavs-syntax` (implemented):
 1. Add `( conditional_expression )` as a primary in 2019 mode: a parenthesized expression followed
    by `when` is a conditional expression; this covers every expression position, including
    `T'((a when c else b))`.
@@ -377,10 +377,10 @@ Parser change for `crates/rsim-syntax` (implemented):
 
 ## Changes to code paths
 
-`crates/rsim-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,
+`crates/yavs-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,
 universal preference, aggregate or visibility logic yet. One implemented item is affected:
 
-- **`crates/rsim-sem/src/attr.rs`** maps the name `"range_record"` to `RangeRecord`. There is no
+- **`crates/yavs-sem/src/attr.rs`** maps the name `"range_record"` to `RangeRecord`. There is no
   such attribute [L12]: it must become `record` (2019, prefix a range attribute name, type mark
   only) next to the existing `value`, which then also accepts a range prefix. `record` is a
   reserved word, so the parser must accept it after `'` (as NVC does). The table also needs
@@ -391,7 +391,7 @@ universal preference, aggregate or visibility logic yet. One implemented item is
 
 Future paths: Q1 (overload selection, S2), Q2 (`Constraint` of integer base types, S1), L2 (12.4
 filter), L7 (`std.standard` implicit decls), L8 (aggregate elements); P1/P2 change
-`crates/rsim-syntax` (M0 parser, implemented) and `docs/decisions.md` "Parser".
+`crates/yavs-syntax` (M0 parser, implemented) and `docs/decisions.md` "Parser".
 
 ## Decisions (user, 2026-10-18)
 

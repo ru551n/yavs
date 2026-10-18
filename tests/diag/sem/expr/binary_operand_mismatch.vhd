@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1301 7:27 no operator `+` matches `integer` and `real`
 -- LRM 9.2
 package p is

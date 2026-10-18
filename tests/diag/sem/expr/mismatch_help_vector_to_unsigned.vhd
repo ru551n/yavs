@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 13:8 expected `unsigned`, found `std_logic_vector`
 -- help: use `unsigned(x)` to convert
 -- LRM 10.6.2

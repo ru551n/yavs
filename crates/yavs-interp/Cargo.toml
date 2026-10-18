@@ -1,0 +1,18 @@
+[package]
+name = "yavs-interp"
+description = "yavs IR interpreter: runs IR processes on yavs-kernel and elaboration code without it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yavs-diag.workspace = true
+yavs-ffi = { path = "../yavs-ffi" }
+yavs-ir = { path = "../yavs-ir" }
+yavs-kernel = { path = "../yavs-kernel" }
+yavs-logic.workspace = true
+yavs-std = { path = "../yavs-std" }
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 6.5.7.2 (OSVVM ScoreboardPkg_int: Match => "="; NVC and GHDL accept)
 package g is

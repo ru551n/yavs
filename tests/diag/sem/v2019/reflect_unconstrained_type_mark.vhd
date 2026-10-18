@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1621 9:43 `'reflect` of a type mark needs a fully constrained subtype
 -- LRM 2019 16.2
 use std.reflection.all;

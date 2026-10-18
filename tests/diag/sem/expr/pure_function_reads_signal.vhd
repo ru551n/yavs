@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1830 9:12 pure function `f` reads signal `s` declared outside it
 -- LRM 4.3
 entity e is end entity;

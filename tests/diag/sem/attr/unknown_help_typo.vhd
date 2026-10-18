@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1621 7:29 attribute `lenght` is not defined for `s`
 -- help: did you mean `length`
 -- LRM 16.2

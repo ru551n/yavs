@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """Generate tools/corpus/<name>.toml compile manifests from each project's own build description.
 
-    gen_manifests.py [--root DIR ...] [NAME ...]     (names: vunit-2008 osvvm-2019 uvvm-2008 rsim-lib-2019 ...)
+    gen_manifests.py [--root DIR ...] [NAME ...]     (names: vunit-2008 osvvm-2019 uvvm-2008 yavs-lib-2019 ...)
 
 Sources are read from the corpus cache (see tools/fetch-corpus.sh) and never copied.
   vunit : vunit/builtins.py rules (file-name standard tags, per-library globs) + a regex
           dependency scan for the order (VUnit also scans; it has no static order list)
   osvvm : OsvvmLibraries.pro, interpreted by a small Tcl subset with NVC's tool settings
   uvvm  : script/component_list.txt + each component's script/compile_order.txt
-  rsim-lib : lib/ORDER.md
+  yavs-lib : lib/ORDER.md
 """
 import argparse, glob, os, re, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-ROOTS = [os.environ.get("RSIM_CORPUS", ""), "~/.cache/rsim-corpus", "~/.cache/rsim-corpora"]
+ROOTS = [os.environ.get("YAVS_CORPUS", ""), "~/.cache/rsim-corpus", "~/.cache/rsim-corpora"]
 
 SOURCES = {
     "vunit": ("https://github.com/VUnit/vunit", "d627259f9795f28f3d1f57a3a3de9f9978bd49b8",
@@ -346,12 +346,12 @@ def gen_hdl_modules(std):
         f"order: regex dependency scan; library per module (tsfpga), src/ and rtl/ only, VHDL {std}"
 
 
-# ---------------------------------------------------------------- rsim lib
-def gen_rsim_lib(std):
+# ---------------------------------------------------------------- yavs lib
+def gen_yavs_lib(std):
     t = (REPO / "lib/ORDER.md").read_text()
     blk = re.search(rf"```order-{std}\n(.*?)```", t, re.S).group(1)
-    files = [(l, "rsim", "lib/" + f, std) for l, f in (x.split() for x in blk.splitlines() if x.strip())]
-    return ["rsim"], files, [], f"order: lib/ORDER.md order-{std} block"
+    files = [(l, "yavs", "lib/" + f, std) for l, f in (x.split() for x in blk.splitlines() if x.strip())]
+    return ["yavs"], files, [], f"order: lib/ORDER.md order-{std} block"
 
 
 def toml_str(s):
@@ -371,15 +371,15 @@ def write(name, std, srcs, files, excl, note, flags):
     for tool, fl in flags.items():
         L.append(f"{tool} = [{', '.join(toml_str(x) for x in fl)}]")
     for sid in srcs:
-        url, commit, why = SOURCES.get(sid, ("(this repository)", "(see git)", "rsim's own lib/"))
+        url, commit, why = SOURCES.get(sid, ("(this repository)", "(see git)", "yavs's own lib/"))
         L += ["", "[[source]]", f"id = {toml_str(sid)}", f"url = {toml_str(url)}", f"commit = {toml_str(commit)}",
-              f"# {why}"] + ([] if sid != "rsim" else ["local = true"])
+              f"# {why}"] + ([] if sid != "yavs" else ["local = true"])
     (HERE / f"{name}.toml").write_text("\n".join(L) + "\n")
     print(f"{name}: {len(files)} files, {len(excl)} exclusions")
 
 
-GEN = {"hdl-modules": gen_hdl_modules, "vunit": gen_vunit, "osvvm": gen_osvvm, "uvvm": gen_uvvm, "rsim-lib": gen_rsim_lib}
-FLAGS = {"rsim-lib": {"nvc": [], "rsim": ["--bootstrap"]}, "uvvm": {"nvc": ["--relaxed"], "rsim": ["--relaxed"]}}
+GEN = {"hdl-modules": gen_hdl_modules, "vunit": gen_vunit, "osvvm": gen_osvvm, "uvvm": gen_uvvm, "yavs-lib": gen_yavs_lib}
+FLAGS = {"yavs-lib": {"nvc": [], "yavs": ["--bootstrap"]}, "uvvm": {"nvc": ["--relaxed"], "yavs": ["--relaxed"]}}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -392,4 +392,4 @@ if __name__ == "__main__":
     for n in names:
         c, s = n.rsplit("-", 1)
         srcs, files, excl, note = GEN[c](s)
-        write(n, s, srcs, files, excl, note, FLAGS.get(c, {"nvc": [], "rsim": []}))
+        write(n, s, srcs, files, excl, note, FLAGS.get(c, {"nvc": [], "yavs": []}))

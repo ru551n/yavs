@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 6.3, 9.3.3.3 (OSVVM InterruptGeneratorBit: TransRec.DataFromModel <= (others => '0'); NVC accepts)
 package p is

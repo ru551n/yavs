@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1601 8:5 external name of class `variable` cannot be the target of a signal assignment
 -- LRM 8.7
 entity e is end entity;

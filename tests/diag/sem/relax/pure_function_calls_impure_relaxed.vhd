@@ -1,4 +1,4 @@
--- rsim-test: std=2008 flags=--relaxed
+-- yavs-test: std=2008 flags=--relaxed
 -- expect: W1830 12:12 pure function `f` calls impure function `g`
 -- LRM 4.3
 package p is

@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1903 20:3 element `a` of port `x` has mode `in` and cannot be driven
 -- LRM 2019 6.5.2
 package p is

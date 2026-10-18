@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1100 9:51 entity `sub` has no generic `m`
 -- LRM 7.3.2
 entity sub is generic (n : integer := 1); end entity;

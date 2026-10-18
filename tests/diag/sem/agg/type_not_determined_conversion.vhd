@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1320 11:21 the type of this aggregate cannot be determined
 -- LRM 9.3.3
 package p is

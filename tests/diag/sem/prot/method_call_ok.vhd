@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: none
 -- LRM 5.6.2, 8.3: method calls on a protected variable and through an access value
 -- (an access to a protected type is 2019, 5.4.1; E1221 in 2008)

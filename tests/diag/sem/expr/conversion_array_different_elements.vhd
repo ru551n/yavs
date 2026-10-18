@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1350 7:30 cannot convert `bit_vector` to `iv`
 -- LRM 9.3.6
 package p is

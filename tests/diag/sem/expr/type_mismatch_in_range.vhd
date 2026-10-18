@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1300 8:19 expected `integer`, found `boolean`
 -- LRM 5.2.1
 entity e is end entity;

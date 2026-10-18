@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1622 7:24 `s` is a signal, not a variable
 -- LRM 7.2
 package p is

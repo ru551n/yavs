@@ -1,0 +1,20 @@
+[package]
+name = "yavs-lower"
+description = "Lowering of yavs-sem's typed HIR into yavs-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yavs-diag.workspace = true
+yavs-sem = { path = "../yavs-sem" }
+yavs-ir = { path = "../yavs-ir" }
+yavs-kernel = { path = "../yavs-kernel" }
+
+[dev-dependencies]
+yavs-interp = { path = "../yavs-interp" }
+yavs-logic.workspace = true
+
+[lints]
+workspace = true

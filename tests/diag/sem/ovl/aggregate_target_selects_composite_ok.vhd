@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: none
 -- LRM 10.6.2.1, 10.5.2.1 (OSVVM ClockResetPkg: an aggregate target selects the composite overload; NVC and GHDL accept)
 package p is

@@ -304,57 +304,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "rsim-diag"
-version = "0.1.0"
-dependencies = [
- "annotate-snippets",
-]
-
-[[package]]
-name = "rsim-fuzz"
-version = "0.0.0"
-dependencies = [
- "libfuzzer-sys",
- "rsim-diag",
- "rsim-sem",
- "rsim-syntax",
-]
-
-[[package]]
-name = "rsim-lib"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "serde",
- "sha2",
- "toml",
-]
-
-[[package]]
-name = "rsim-sem"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
- "rsim-lib",
- "rsim-std",
- "rsim-syntax",
-]
-
-[[package]]
-name = "rsim-std"
-version = "0.1.0"
-dependencies = [
- "jiff",
-]
-
-[[package]]
-name = "rsim-syntax"
-version = "0.1.0"
-dependencies = [
- "rsim-diag",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -520,3 +469,54 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+
+[[package]]
+name = "yavs-diag"
+version = "0.1.0"
+dependencies = [
+ "annotate-snippets",
+]
+
+[[package]]
+name = "yavs-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "yavs-diag",
+ "yavs-sem",
+ "yavs-syntax",
+]
+
+[[package]]
+name = "yavs-lib"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+ "toml",
+ "yavs-diag",
+]
+
+[[package]]
+name = "yavs-sem"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-lib",
+ "yavs-std",
+ "yavs-syntax",
+]
+
+[[package]]
+name = "yavs-std"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+]
+
+[[package]]
+name = "yavs-syntax"
+version = "0.1.0"
+dependencies = [
+ "yavs-diag",
+]

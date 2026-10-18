@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1002 7:7 architecture `nope` of entity `e` not found
 -- LRM 3.4
 entity e is end entity;

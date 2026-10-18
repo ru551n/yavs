@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: E1505 15:35 `pt` is a generic protected type and must be instantiated before use
 -- LRM 2019 5.6.2
 package p is

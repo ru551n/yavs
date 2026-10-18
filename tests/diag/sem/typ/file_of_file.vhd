@@ -1,4 +1,4 @@
--- rsim-test: std=2008
+-- yavs-test: std=2008
 -- expect: E1222 6:22 a file cannot contain file type `f1`
 -- LRM 5.5
 package p is

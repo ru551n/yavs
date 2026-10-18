@@ -1180,7 +1180,11 @@ impl Db {
             ast::Actual::Expr(ast::Expr {
                 kind: ast::ExprKind::Name(n),
                 ..
-            }) => self.type_mark(scope, n)?,
+            }) => match self.index_constrained_name(scope, n) {
+                // `t_element => std_logic_vector(W - 1 downto 0)` parses as a name (UVVM).
+                Some(st) => st?,
+                None => self.type_mark(scope, n)?,
+            },
             ast::Actual::Expr(e) => {
                 return Err(self.error(
                     Diagnostic::error(

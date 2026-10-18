@@ -1764,6 +1764,92 @@ impl Db {
         }
     }
 
+    /// `t(r1, r2)` written as a name, where a subtype indication is wanted but the
+    /// parser saw an expression (a generic type actual `t => slv(n - 1 downto 0)`):
+    /// `None` when `n` is not an index-constrained type mark.
+    pub(crate) fn index_constrained_name(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Option<Result<SubtypeId, Reported>> {
+        let ast::NameKind::Apply { prefix, args } = &n.kind else {
+            return None;
+        };
+        let mark = self.quiet_type_mark(scope, prefix)?;
+        let base = self.base(mark);
+        let TypeKind::Array { indexes, .. } = &self.types[base].kind else {
+            return None;
+        };
+        let indexes = indexes.clone();
+        Some((|| {
+            let (old_dims, elem) = match &self.subtypes[mark].constraint {
+                Constraint::Array { dims, elem } => (dims.clone(), (**elem).clone()),
+                _ => (None, Constraint::None),
+            };
+            if old_dims.is_some() {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::CONSTRAINED_TWICE,
+                        "the index ranges of this array subtype are already constrained",
+                    )
+                    .with_primary(n.span, "second index constraint"),
+                ));
+            }
+            if args.len() != indexes.len() {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::INDEX_ARITY,
+                        format!(
+                            "the array has {} dimension(s), the constraint {}",
+                            indexes.len(),
+                            args.len()
+                        ),
+                    )
+                    .with_primary(n.span, "wrong number of index ranges"),
+                ));
+            }
+            let mut dims = Vec::with_capacity(args.len());
+            for (a, &i) in args.iter().zip(indexes.iter()) {
+                let it = self.base(i);
+                dims.push(match &a.actual {
+                    ast::Actual::Range(r) => self.range(scope, r, it)?,
+                    ast::Actual::Expr(ast::Expr {
+                        kind: ast::ExprKind::Name(rn),
+                        ..
+                    }) => self.range_name(scope, rn, it)?,
+                    ast::Actual::Subtype(si) => {
+                        let st = self.subtype_indication(scope, si)?;
+                        RangeC::Attr {
+                            prefix: AttrPrefix::Subtype(st),
+                            reverse: false,
+                            dim: 1,
+                        }
+                    }
+                    _ => {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::BAD_CONSTRAINT,
+                                "an index constraint needs a range",
+                            )
+                            .with_primary(a.span, "not a range"),
+                        ));
+                    }
+                });
+            }
+            Ok(self.subtypes.push(SubtypeDef {
+                base,
+                name: None,
+                parent: Some(mark),
+                constraint: Constraint::Array {
+                    dims: Some(dims.into()),
+                    elem: Box::new(elem),
+                },
+                resolution: self.subtypes[mark].resolution.clone(),
+                span: n.span,
+            }))
+        })())
+    }
+
     /// The subtype of element `elem` of a record object of subtype `st`: the
     /// element's declared subtype with the record constraint of `st` on it (6.3).
     pub(crate) fn field_subtype(&mut self, st: SubtypeId, elem: u32) -> SubtypeId {

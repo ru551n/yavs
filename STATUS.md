@@ -13,10 +13,10 @@
 
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt`.
-- `tests/stdlib.rs`: std, ieee packages, and the bodies of math_real, math_complex, numeric_std,
-  numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019). std_logic_1164's body stops on
-  `.all`. `numeric_std_body_rule_1` is the rule 1 review: every object of the numeric_std body
-  has its bounds from the one subtype representation.
+- `tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
+  math_complex, numeric_std, numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019).
+  `numeric_std_body_rule_1` is the rule 1 review: every object and object alias of the numeric_std
+  body has its bounds from the one subtype representation.
 - Declarations: objects, subprograms (operator arity `E1303`, function parameter modes, missing
   bodies `E1230`), components, generic and port clauses (components, blocks), attribute
   declarations and specifications, aliases, protected types.

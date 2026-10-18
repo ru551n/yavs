@@ -33,6 +33,7 @@ const BODIES: &[&str] = &[
     "numeric_bit_unsigned",
     "numeric_std",
     "numeric_bit",
+    "std_logic_1164",
 ];
 
 fn analyze(rev: LangRev, lib: &str, unit: &str) -> Db {
@@ -159,7 +160,7 @@ fn numeric_std_subtypes_rule_1() {
 /// (`Expr::value`), the others stay expressions, and nothing else decides.
 #[test]
 fn numeric_std_body_rule_1() {
-    use rsim_sem::decl::{DeclKind, ObjRole};
+    use rsim_sem::decl::{Alias, DeclKind, ObjRole};
     use rsim_sem::stat::Staticness;
     use rsim_sem::types::{BoundsFrom, Constraint, RangeC};
     let db = analyze_with(LangRev::Vhdl2008, "ieee", "numeric_std", true);
@@ -173,10 +174,15 @@ fn numeric_std_body_rule_1() {
         {
             continue;
         }
-        let DeclKind::Object(o) = &d.kind else {
-            continue;
+        // Objects, and object aliases with a subtype indication (6.6.2).
+        let (st, obj) = match &d.kind {
+            DeclKind::Object(o) => (o.subtype, Some(o)),
+            DeclKind::Alias(Alias::Object {
+                subtype: Some(st), ..
+            }) => (*st, None),
+            _ => continue,
         };
-        let shape = match &db.subtypes[o.subtype].constraint {
+        let shape = match &db.subtypes[st].constraint {
             Constraint::Array {
                 dims: Some(dims), ..
             } => {
@@ -211,6 +217,12 @@ fn numeric_std_body_rule_1() {
             Constraint::Record { .. } => "record".into(),
             Constraint::FromObject { .. } => "from-object".into(),
         };
+        let Some(o) = obj else {
+            // An alias's subtype gives the bounds when it is constrained, else the
+            // aliased object does (6.6.2); either way nothing is guessed.
+            *tally.entry(format!("alias {shape}")).or_default() += 1;
+            continue;
+        };
         // An object whose subtype is not fully constrained takes its bounds from
         // its initial value or its actual, never from a guess.
         let full = db.constrainedness(o.subtype) == rsim_sem::types::Constrainedness::Full;
@@ -227,5 +239,9 @@ fn numeric_std_body_rule_1() {
     assert!(
         tally.keys().any(|k| k.starts_with("array(expr)")),
         "dynamic bounds such as UNSIGNED(L'length-1 downto 0)"
+    );
+    assert!(
+        tally.keys().any(|k| k.starts_with("alias array(expr)")),
+        "aliases such as XARG : UNSIGNED(ARG_LEFT downto 0) is ARG"
     );
 }

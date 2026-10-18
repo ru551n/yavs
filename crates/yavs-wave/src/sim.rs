@@ -312,7 +312,12 @@ impl Design<'_> {
                 let id = self.entry(leaf, k, len, conv);
                 self.b.signal(name, id, sty, port, ObjClass::Signal);
             }
-            Shape::Array { ty, dims, elem } => {
+            Shape::Array {
+                ty,
+                dims,
+                elem,
+                res: whole,
+            } => {
                 if let (
                     [d],
                     Shape::Scalar {
@@ -328,7 +333,7 @@ impl Design<'_> {
                         return;
                     }
                     let (SigType::Scalar(ScalarType::Enum(e)), conv) =
-                        self.scalar(*et, Elem::Logic, res.is_some())
+                        self.scalar(*et, Elem::Logic, res.is_some() || whole.is_some())
                     else {
                         unreachable!("logic scalars are enums")
                     };
@@ -336,7 +341,7 @@ impl Design<'_> {
                     let sty = SigType::Vector {
                         elem: e,
                         bounds: bounds(*d),
-                        type_name: Some(self.vector_name(*ty, res.is_some())),
+                        type_name: Some(self.vector_name(*ty, res.is_some() || whole.is_some())),
                     };
                     self.b.signal(name, id, sty, port, ObjClass::Signal);
                     return;

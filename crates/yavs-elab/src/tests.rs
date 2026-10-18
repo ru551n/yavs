@@ -1451,3 +1451,37 @@ fn configuration_others_after_incremental_binding() {
     let lens: Vec<u32> = e.nets.leaves.iter().map(|l| l.ty.len).collect();
     assert_eq!(lens, [2, 5, 2]);
 }
+
+/// An alias of an external signal binds where it is declared, in elaboration order (LRM 8.7,
+/// 14.4.1): in the architecture before the instance it names it is an error, in a process
+/// after it the alias denotes the instance's signal.
+#[test]
+fn external_signal_alias_binds_in_elaboration_order() {
+    let sub = "entity sub is end; architecture a of sub is signal s : bit; begin end;";
+    let early = format!(
+        "{sub} entity t is end; architecture a of t is
+           alias s is <<signal .t.u.s : bit>>;
+         begin u : entity work.sub; end;"
+    );
+    assert_eq!(
+        err_codes("ext_early", &early, "t", &[]),
+        [codes::EXTERNAL_NOT_FOUND]
+    );
+    let late = format!(
+        "{sub} entity t is end; architecture a of t is
+         begin
+           u : entity work.sub;
+           p : process alias s is <<signal .t.u.s : bit>>; begin s <= '1'; wait; end process;
+         end;"
+    );
+    let (db, e) = elab("ext_late", &late, "t", &[]);
+    let alias = db
+        .decls
+        .iter()
+        .find(|(id, _)| db.external_signal_alias(*id).is_some())
+        .map(|(id, _)| id)
+        .expect("the alias");
+    let root = crate::hier::ScopeId(0);
+    let o = e.signal(root, alias).expect("bound");
+    assert_eq!(e.hier.scope(e.nets.obj(o).scope).name.text.as_str(), "u");
+}

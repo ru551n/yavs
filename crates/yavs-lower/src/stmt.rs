@@ -1267,15 +1267,15 @@ impl Fx<'_, '_> {
         let [lsp] = &target.lsps[..] else {
             return Err(self.cx.unsupported(span, "aggregate signal targets"));
         };
-        if !matches!(lsp.root, ObjRoot::Decl(_)) {
+        let Some(root) = self.cx.root_decl(lsp.root) else {
             return Err(self.cx.unsupported(
                 lsp.span,
                 "assignments to external names and implicit signals",
             ));
-        }
+        };
         let param_slot = match lsp.root {
-            ObjRoot::Decl(d) => match self.cx.objs.get(&d).copied() {
-                Some(Obj::SignalRef { out: true, .. }) => Some(self.driver_slot_of(d, span)?),
+            ObjRoot::Decl(_) => match self.cx.objs.get(&root).copied() {
+                Some(Obj::SignalRef { out: true, .. }) => Some(self.driver_slot_of(root, span)?),
                 Some(Obj::SignalRef { out: false, .. }) => {
                     return Err(self.cx.ice(span, "assignment to an `in` signal parameter"));
                 }
@@ -1429,7 +1429,10 @@ impl Fx<'_, '_> {
     /// `WaitOn` for each signal of a sensitivity list.
     pub fn wait_on(&mut self, sens: &[Lsp]) -> R<()> {
         for l in sens {
-            let (ObjRoot::Decl(d) | ObjRoot::ImplicitSignal(d)) = l.root else {
+            let Some(d) = (match l.root {
+                ObjRoot::ImplicitSignal(d) => Some(d),
+                r => self.cx.root_decl(r),
+            }) else {
                 return Err(self.cx.unsupported(l.span, "sensitivity to external names"));
             };
             if matches!(self.cx.objs.get(&d), Some(Obj::RecSignal)) {

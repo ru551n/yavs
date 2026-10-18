@@ -385,7 +385,7 @@ association of unconstrained array ports, implicit signals (`'stable`,
 signal of a loaded package, visible from every region), package data initialised once in
 analysis order with `yavs_interp::init_package` (shared variables, constants computed once,
 #183; a declaration constant calling its own package's function is E2114 before lowering, #197),
-external signal names bound in elaboration order (E2117), guarded blocks and `bus`/`register`
+external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays

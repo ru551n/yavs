@@ -328,6 +328,9 @@ pub(crate) struct Cx {
     /// Port actuals that get an equivalent process ([`Lowerer::port_actual`]), with the
     /// formal's subtype for the scalar range check.
     pub actuals: HashMap<ExprId, Option<SubtypeId>>,
+    /// External signal names aliased in the unit being lowered: the alias that holds the
+    /// signal (`func::external_alias`).
+    pub ext_sigs: HashMap<yavs_sem::ExternalId, DeclId>,
 }
 
 /// One kernel signal of a record signal.
@@ -344,6 +347,16 @@ impl Cx {
         let off = self.inst_size.next_multiple_of(8);
         self.inst_size = off + size;
         off
+    }
+
+    /// The declaration a signal LSP root names: an object, or the alias of an external
+    /// signal name.
+    pub fn root_decl(&self, r: yavs_sem::hir::ObjRoot) -> Option<DeclId> {
+        match r {
+            yavs_sem::hir::ObjRoot::Decl(d) => Some(d),
+            yavs_sem::hir::ObjRoot::External(x) => self.ext_sigs.get(&x).copied(),
+            yavs_sem::hir::ObjRoot::ImplicitSignal(_) => None,
+        }
     }
 
     pub fn error(&mut self, code: &'static str, span: Span, msg: impl Into<String>) -> Failed {
@@ -413,6 +426,7 @@ impl<'a> Lowerer<'a> {
                 shared_size: 0,
                 rec_leaves: HashMap::new(),
                 actuals: HashMap::new(),
+                ext_sigs: HashMap::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),

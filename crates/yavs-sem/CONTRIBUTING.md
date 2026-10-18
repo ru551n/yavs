@@ -16,7 +16,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead |
 | `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170; ctxlib: context-reference libraries (#36); semuse: use clauses and visibility #54 |
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead; semuse: use clauses and visibility #54 |
-| `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead; semstatic: deferred constants outside packages #53; s7left: named return values #33; subhdr: subprogram header generic maps and non-object parameters in `subprogram_spec` #227 (done); constnoval: constants without a value outside packages and missing full declarations #213 |
+| `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead; semstatic: deferred constants outside packages #53; s7left: named return values #33; subhdr: subprogram header generic maps and non-object parameters in `subprogram_spec` #227 (done); constnoval: constants without a value outside packages and missing full declarations #213; extuse: aliases of external names #19 |
 | `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1); semdrv: range attribute prefix diagnostics #47 |
 | `implicit.rs` | implicitly declared operations per type (2.10) | S2 | owner: implicit |
 | `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead; semtyping: expression typing, conversions, conditions, parameter class checks #48; indivassoc: sub-element associations in calls #210; s7left: 2019 conditional expressions #33; callconv: conversions in call associations #229 |
@@ -161,12 +161,12 @@ Protected method calls are wired (reflect): `obj.m` / `obj.m(args)` in names.rs
 An access to a protected type is dereferenced implicitly (`ExprKind::Deref`, built inline in
 `method_object`; alloc: switch it to `Db::deref` once that lands).
 
-Wiring still open (M1 lead will do these in expr/names.rs unless someone asks for them):
-`external_name` (`NameKind::External`), `match_signature` in `use`. Done (modeview, #32):
-`view_ref` through `Db::view_name`, method aliases of private variables (`Db::forwarding`,
-`forwarded_object` in names.rs builds `ExprKind::PrivateVar` as the call's object). Done:
-calls inside a protected body use the implicit object (`method_of: None`), `match_signature`
-in attribute specifications, the aggregate resolver. Linkage ports: reads are E1360 through
+Done: `external_name` (`NameKind::External`, #49, aliases of external names #19), `view_ref`
+(`Db::view_name`: view ports and `'converse`), method aliases of private variables (modeview,
+#32: `Db::forwarding`, `forwarded_object` in names.rs builds `ExprKind::PrivateVar` as the
+call's object), `match_signature` in alias declarations, attribute specifications and generic
+subprogram actuals (use clauses take no signature, LRM 12.4), calls inside a protected body use
+the implicit object (`method_of: None`), the aggregate resolver. Linkage ports: reads are E1360 through
 `check_linkage_reads` from stmt.rs's `st_expr`/`st_target` (names).
 
 From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests; they need calls:

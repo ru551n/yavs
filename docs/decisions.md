@@ -634,6 +634,17 @@ a note and a help suggesting an access type, as the reference simulators reject 
   configuration's port map, and the range check of a scalar formal whose subtype bounds
   depend on the instance's generics.
 
+- **Aliases of external signal names** (#19, LRM 6.6.2, 8.7, 14.4.1): `alias s is
+  <<signal .tb.dut.x : t>>;` in an architecture, block, generate or process binds when the
+  elaborator reaches the alias declaration, in elaboration order, so an alias declared before
+  the instance it names is `E2117`, as the reference simulator reports. The alias is an
+  instance signal slot of its region (a process's alias belongs to the enclosing region's
+  instance data) that the elaborator maps to the bound target's kernel signal
+  (`Elaborated::sigs` keyed by the alias), its descriptor written from the target's bounds; the
+  process's drivers and sensitivity rooted at the external name go through that slot
+  (`Cx::ext_sigs`, `Cx::root_decl`). External names used directly in sequential code, external
+  constants and variables, and external signals with records stay `E2001`/`E9999` (#93).
+
 - **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
   14.3.5, `docs/design/lrm-checks.md` L59): accepted in 2008 and 2019; the port takes the
   bounds of its default value (`Model::shape_init`). Without a default it stays `E1311`.

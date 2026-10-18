@@ -656,10 +656,8 @@ impl Db {
             | ast::NameKind::Selected { .. }
             | ast::NameKind::Operator(_)
             | ast::NameKind::Character(_) => self.classify(scope, name),
-            ast::NameKind::External(_) => {
-                return Err(self.unsupported(name.span, "aliases of external names", "S6"));
-            }
-            // Indexed or sliced names denote parts of objects (6.6.2).
+            // Indexed or sliced names denote parts of objects (6.6.2), external names
+            // objects (8.7).
             _ => NameRes::Value,
         };
         // `alias m is pv.m [sig];` (2019 5.6.2): a method of a protected object, typically
@@ -737,6 +735,22 @@ impl Db {
             self.declare(scope, d);
         }
         Ok(())
+    }
+
+    /// The external signal name `d` aliases when it is `alias a is <<signal ...>>` (a whole
+    /// external name): elab binds it at the alias, lowering gives it a signal slot (#19).
+    pub fn external_signal_alias(&self, d: DeclId) -> Option<crate::ids::ExternalId> {
+        let DeclKind::Alias(Alias::Object { target, .. }) = &self.decls[d].kind else {
+            return None;
+        };
+        match self.exprs[*target].kind {
+            crate::hir::ExprKind::External(x)
+                if self.externals[x].class == yavs_syntax::ast::ExternalClass::Signal =>
+            {
+                Some(x)
+            }
+            _ => None,
+        }
     }
 
     /// A name that must denote (a part of) an object, such as the target of an

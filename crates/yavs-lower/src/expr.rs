@@ -685,6 +685,14 @@ impl<'a> Fx<'a, '_> {
             let what = self.db.decls[d].name.to_string();
             return self.dope_as(dope, st, &what, span).map(Some);
         }
+        if let Some(x) = self.db.external_signal_alias(d) {
+            // An alias of an external signal: its descriptor slot holds the target's bounds.
+            if !ty::is_array(self.db, self.db.base(self.db.externals[x].subtype)) {
+                return Ok(None);
+            }
+            let (space, off) = *self.cx.sig_dopes.get(&d).ok_or(Failed)?;
+            return Ok(Some(self.addr(space, off)));
+        }
         let DeclKind::Object(o) = &self.db.decls[d].kind else {
             return Err(self.cx.ice(span, "signal is not an object"));
         };

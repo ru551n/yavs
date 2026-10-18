@@ -1165,18 +1165,28 @@ fn ghdl_2179_others_for_record_port_element() {
     );
 }
 
-/// NVC #1543: aliases of external names are not implemented yet (S6): yavs says so
-/// (`E9999`) instead of guessing the bounds.
+/// NVC #1543: aliases of external names take the external name's subtype (6.6.2: no subtype
+/// indication of their own); an unconstrained one gets its bounds from the target at
+/// elaboration, never guessed at analysis.
 #[test]
-fn nvc_1543_external_name_alias_is_reported_not_implemented() {
-    let errs = errors("n1543", &[("work", NVC_1543)]);
-    assert_eq!(
-        errs,
-        [
-            ("E9999".into(), 25),
-            ("E9999".into(), 26),
-            ("E9999".into(), 27)
-        ]
+fn nvc_1543_external_name_alias_subtypes() {
+    let db = analyze("n1543", &[("work", NVC_1543)]);
+    check(
+        &db,
+        &[
+            (
+                "ram_un",
+                "alias of << signal .outer1543.u.ram : ram_t >> : ram_t(open) [Unconstrained], own subtype none",
+            ),
+            (
+                "ram_c",
+                "alias of << signal .outer1543.u.ram : ram_t(0 to 15)(31 downto 0) >> : ram_t(0 to 15)(31 downto 0) [Full], own subtype none",
+            ),
+            (
+                "width",
+                "Plain Constant: INTEGER range 0 to 2147483647 [Full], bounds from Subtype",
+            ),
+        ],
     );
 }
 

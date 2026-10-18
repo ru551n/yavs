@@ -41,6 +41,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | `stat/static_index_out_of_range_process` | rejects @11 | warns | The reference simulator stricter: reports an error where yavs only warns (W1404, sem.md 4.3: code may be dead). The line agrees. The second reference simulator warns. |
 | `stat/static_slice_out_of_range` | rejects @10 | warns | The reference simulator stricter: reports an error where yavs only warns (W1404, sem.md 4.3: code may be dead). The line agrees. The second reference simulator warns. |
 | `typ/incomplete_not_completed` | accepts | accepts | The reference simulators both accept an incomplete type that is never completed (LRM 5.4.2 requires completion). Kept for E1220. |
+| `ext/alias_of_external_ok` | rejects @40 | accepts | The reference simulator bug: "protected type COUNTER has no method named INC" for a method call through an alias of an external shared variable (LRM 6.6.2: the alias denotes the variable); the second reference simulator accepts. |
 | `unit/configuration_label_wrong_component` | accepts | rejects @13 | The reference simulator accepts at analysis (checks at elaboration); the second reference simulator rejects. |
 | `unit/configuration_rebinding` | accepts | rejects @16 | The reference simulator accepts at analysis (checks at elaboration); the second reference simulator rejects. |
 | `unit/configuration_others_rebinding` | accepts | rejects @17 | The reference simulator accepts at analysis (checks at elaboration); the second reference simulator rejects. |

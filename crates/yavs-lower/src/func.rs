@@ -971,6 +971,52 @@ fn region(
     if ok { Ok(()) } else { Err(Failed) }
 }
 
+/// An alias `d` of external signal `x`: an instance signal of the region, which the
+/// elaborator binds to the external name's target (LRM 8.7); uses of the alias and drivers
+/// rooted at `x` go through it.
+fn external_alias(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    ir: &mut UnitIr,
+    d: DeclId,
+    x: yavs_sem::ExternalId,
+) -> R<()> {
+    let decl = &db.decls[d];
+    let st = db.externals[x].subtype;
+    let t = db.base(st);
+    if ty::has_record(db, t) {
+        return Err(cx.unsupported(decl.span, "aliases of external signals with records"));
+    }
+    let tid = ty::lower(db, cx, pb, t, decl.span)?;
+    let dope = if ty::is_array(db, t) {
+        let Some(size) = yavs_ir::Ty::desc_size(pb.types(), tid) else {
+            return Err(cx.ice(decl.span, "array type without a descriptor size"));
+        };
+        let off = cx.inst_alloc(size as u32);
+        cx.sig_dopes.insert(d, (Space::Inst, off));
+        Some((off, tid))
+    } else {
+        None
+    };
+    cx.ext_sigs.insert(x, d);
+    cx.objs.insert(
+        d,
+        Obj::Signal {
+            sig: ir.signals.len() as u32,
+        },
+    );
+    ir.signals.push(SignalIr {
+        decl: d,
+        name: decl.name.to_string(),
+        ty: tid,
+        init: None,
+        path: Vec::new(),
+        dope,
+    });
+    Ok(())
+}
+
 /// A thunk evaluating one cell (an initial value), for the elaborator.
 pub(crate) fn thunk(
     db: &Db,
@@ -1000,6 +1046,9 @@ pub(crate) fn thunk(
 
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
     let decl = &db.decls[d];
+    if let Some(x) = db.external_signal_alias(d) {
+        return external_alias(db, pb, cx, ir, d, x);
+    }
     let DeclKind::Object(o) = &decl.kind else {
         return Ok(());
     };
@@ -1223,12 +1272,20 @@ fn process(
     if let Some(sc) = scope {
         cx.scope_func.insert(sc, (f, 0));
     }
+    // Aliases of external signals declared in the process are signals of its region.
+    if let Some(sc) = scope {
+        for &d in &db.scopes[sc].order {
+            if let Some(x) = db.external_signal_alias(d) {
+                external_alias(db, pb, cx, ir, d, x)?;
+            }
+        }
+    }
     // Driver slots: per longest static prefix, in `ProcessInfo::drivers` order, one per kernel
     // signal it covers (one, or the leaves of a record signal below its fields).
     let mut sigs = Vec::new();
     let mut bases = Vec::new();
     for l in &info.drivers {
-        let hir::ObjRoot::Decl(d) = l.root else {
+        let Some(d) = cx.root_decl(l.root) else {
             return Err(cx.unsupported(l.span, "drivers of external names and implicit signals"));
         };
         bases.push(sigs.len() as u32);

@@ -829,6 +829,17 @@ impl Elab<'_> {
         for d in order {
             let db: &Db = self.db;
             let decl = &db.decls[d];
+            if let Some(x) = db.external_signal_alias(d) {
+                // An alias of an external signal binds here, in elaboration order (LRM 8.7,
+                // 14.4.1); a process's alias belongs to its region's instance data.
+                let o = self.m.external(db, x, s)?;
+                let mut r = s;
+                while let ScopeKind::Process { .. } = self.m.hier.scope(r).kind {
+                    r = self.m.hier.scope(r).parent.expect("a process has a region");
+                }
+                self.m.sigs.insert((r, d), o);
+                continue;
+            }
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };

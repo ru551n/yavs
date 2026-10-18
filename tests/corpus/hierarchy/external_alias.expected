@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:external_alias:u:_p1	dut: req='0'
+diag	note	0	0	:external_alias:mon:_p0	count=0
+diag	note	5000000	1	:external_alias:mon:_p0	count=1
+diag	note	12000000	1	:external_alias:u:_p1	dut: req='1'
+diag	note	15000000	1	:external_alias:mon:_p0	count=2
+diag	note	15000000	1	:external_alias:stim	data=03 len=8 bit0='1'
+diag	note	25000000	1	:external_alias:mon:_p0	count=3
+diag	note	25000000	1	:external_alias:stim	data=06
+diag	note	25000000	2	:external_alias:u:_p1	dut: req='0'
+diag	note	35000000	1	:external_alias:mon:_p0	count=4

@@ -963,7 +963,9 @@ for the entity, plus `.<arch>` for the architecture, so declarations inside get 
 `<<signal .tb.dut.s : std_logic>>`, `<<constant ^.^.c : integer>>`, `<<variable @lib.pkg.v : t>>`.
 Sem resolves the subtype indication and the class; the path is kept as data and bound by elab
 (rule 4). HIR: `ExprKind::External(ExternalId)` with `class`, `path`, `subtype`.
-Usage checks by class at sem (a constant external name is not a target, `E1601`). Package paths
+Usage checks by class at sem (a constant external name is not a target, `E1601`), through
+aliases too: `alias s is <<signal .tb.dut.s : t>>;` is an object alias of the external name
+(6.6.2, no subtype indication, `E1612`), bound by elab where the alias is declared. Package paths
 (`@lib.pkg.obj`) could be checked at analysis; for one code path they are also bound at elab.
 
 ### 6.2 Aliases (6.6)

@@ -25,7 +25,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate |
-| `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); do not implement the Q9 `=` restriction on 2008 `type T` until the LRM verdict lands | S4 | free |
+| `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
 | `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt |

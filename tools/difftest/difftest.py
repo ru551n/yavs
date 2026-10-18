@@ -21,11 +21,12 @@ NVC = ("nvc --std={std} --work={work} -a {file} || exit 97; "
 GHDL = ("mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file} || exit 97; "
         "ghdl -e --std={std2} --workdir={work} {top} || exit 98; "
         "ghdl -r --std={std2} --workdir={work} {top} {stop_flag}")
-# analyze fails -> 97; `yavs run` exit 2 (usage, elaboration, "not implemented") -> 98; 1 and 3 pass through.
+# analyze fails -> 97; `yavs elab` fails (usage, elaboration, "not implemented") -> 98. `yavs run`
+# then passes its status through: `stop(2)` exits 2, the same code as an elaboration error.
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
 YAVS = ('R=${{YAVS_BIN:-yavs}}; "$R" analyze --std={std} --work=work:{work} {file} || exit 97; '
-        '"$R" run --std={std} --work=work:{work} {stop_flag} --threads={threads} {shuffle_on} {top}; '
-        "rc=$?; [ $rc -eq 2 ] && exit 98; exit $rc")
+        '"$R" elab --std={std} --work=work:{work} {top} || exit 98; '
+        '"$R" run --std={std} --work=work:{work} {stop_flag} --threads={threads} {shuffle_on} {top}')
 TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS}
 # Fields masked by default per builtin candidate (reference prints them all).
 DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": ""}

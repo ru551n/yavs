@@ -68,7 +68,7 @@ to stderr in NVC and stdout in GHDL, so cross-stream order is not compared).
 `--candidate` takes `nvc`, `ghdl`, `yavs` or any bash command template. The built-in `yavs`
 template (`YAVS` in `difftest.py`) analyzes the file with `yavs analyze` into the work library,
 then `yavs run`s the top; `YAVS_BIN` selects the binary (default `yavs` on `PATH`),
-`DIFFTEST_CACHE` the output directory. `yavs run` exit 2 (usage, elaboration, "not implemented")
+`DIFFTEST_CACHE` the output directory. A failing `yavs elab` (run first, so that `stop(2)` in `yavs run` can exit 2)
 is reported as an elaboration failure. `tools/difftest/report.sh` runs the corpus at 1 thread,
 4 threads and 4 threads shuffled and writes `tests/corpus/RESULTS.md`; `--json FILE` writes the
 raw per-test results it summarises.

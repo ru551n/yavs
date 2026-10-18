@@ -1,0 +1,109 @@
+# Sources
+
+Origin of every vendored file under `lib/std` and `lib/ieee`.
+
+- **Upstream:** <https://opensource.ieee.org/vasg/Packages> ("IEEE 1076: VHDL Packages", Apache-2.0)
+- **Pinned commit:** `dc691c8cf8a7365dd1d60895818631320996e983` (branch `release`; the tag
+  `1076-2019` is `16a012320947d378611cc7457f64ed76cb52bac4`, the pin is two README/CHANGELOG-only
+  commits later; `ieee/` and `std/` are identical at both).
+- **License verification:** every one of the 26 upstream files under `std/` and `ieee/` carries the
+  header "Copyright 2019 IEEE P1076 WG Authors ... Apache License, Version 2.0" (checked with
+  `grep -a`), and the repository `LICENSE` is the Apache-2.0 text. Upstream sha256 of all 26 files:
+  `UPSTREAM.sha256`. Sha256 of everything vendored here: `SHA256SUMS`.
+- **Regenerate / verify:** `tools/update-ieee-libs.sh` (check) or `--write`. It re-clones at the pin,
+  verifies `UPSTREAM.sha256`, re-derives the tree with `tools/derive_libs.py` and compares.
+- **No NVC or GHDL files are used.** The rust_hdl `vhdl_libraries` copies were only compared against
+  (see "Cross-check" in `README.md`).
+
+## Which revision is which
+
+The VASG repository has a single release (published December 2019 with IEEE 1076-2019) and **no
+separate 1076-2008 tree**. The official IEEE 1076-2008 package files (ieee.org downloads) are under
+a different, non-Apache licence, so they are not used. Therefore:
+
+- `ieee/2019/` is verbatim VASG (plus the two context files). The VASG ieee packages are the 2008
+  packages with the later fixes; NVC analyzes all of them under both `--std=2008` and `--std=2019`.
+- `ieee/2008/` has **the same bytes** as `ieee/2019/`. The directories are duplicated so each revision
+  can be analyzed independently and diverge later without moving files.
+- `std/2019/` is VASG with the edits below.
+- `std/2008/` is **derived from VASG 2019** by removing the declarations 1076-2019 added.
+
+## Edits to upstream files (all in `tools/derive_libs.py`)
+
+| Target | Edit | Why |
+|---|---|---|
+| `std/2019/standard.vhdl` | `type INTEGER/REAL/TIME is range implementation_defined` replaced by `-9223372036854775807 to 9223372036854775807` (INTEGER, TIME) and `-1.7976931348623157e308 to 1.7976931348623157e308` (REAL) | upstream is a template, not valid VHDL; plan.md: 64-bit integers in 2019 mode |
+| `std/2019/standard.vhdl` | CHARACTER position 160 `' '` became NBSP (byte 0xA0), position 173 `'-'` became soft hyphen (byte 0xAD) | upstream text lost these two literals (duplicate `' '` and `'-'`, every tool rejects the file) |
+| `std/2008/standard.vhdl` | as above, then removed `type DIRECTION`, `FILE_OPEN_KIND`'s `READ_WRITE_MODE`, `FILE_OPEN_STATE`, `FILE_ORIGIN_KIND`; INTEGER is `-2147483648 to 2147483647` | these are 1076-2019 additions; 2008 INTEGER is 32 bit |
+| `std/2008/textio.vhdl` | removed `type LINE_VECTOR` | added by 1076-2019 (used by `env.DIRECTORY_ITEMS`) |
+| `std/2008/env.vhdl` | reduced to `STOP`, `FINISH`, `RESOLUTION_LIMIT` (upstream licence header kept) | everything else in `env` is new in 1076-2019 |
+| `ieee/*/ieee_std_context.vhdl`, `ieee_bit_context.vhdl` | written for rsim (VASG does not ship the contexts) | `IEEE_STD_CONTEXT` = `std_logic_1164` + `numeric_std`; `IEEE_BIT_CONTEXT` = `numeric_bit`, as in the 2008 LRM |
+
+Other facts the consumer must know:
+
+- `std/*/standard.vhdl` and `ieee/*/numeric_std.vhdl`, `numeric_bit.vhdl` contain **8-bit ISO-8859-1
+  bytes** (CHARACTER literals, the copyright sign). The lexer must read VHDL source as Latin-1 bytes,
+  not UTF-8. `lib/.gitattributes` turns off text conversion for these files.
+- `std/*/textio.vhdl` and `env.vhdl` have **no package bodies**; all of their subprograms are native
+  (see `NATIVE.md`). `std_logic_textio` is aliases only.
+- The comments in `standard.vhdl` list the implicit operations; the analyzer creates them.
+
+## Files
+
+| File | Upstream path in vasg/Packages | sha256 (first 16) | Status | License |
+|---|---|---|---|---|
+| `std/2008/env.vhdl` | `std/env.vhdl` | e7012d359e034657 | derived (see below) | Apache-2.0 |
+| `std/2008/standard.vhdl` | `std/standard.vhdl` | efb7a13b4092ffc6 | derived (see below) | Apache-2.0 |
+| `std/2008/textio.vhdl` | `std/textio.vhdl` | 73a0b48e671d7cf0 | derived (see below) | Apache-2.0 |
+| `std/2019/env.vhdl` | `std/env.vhdl` | 59169bc8381578d4 | verbatim | Apache-2.0 |
+| `std/2019/reflection.vhdl` | `std/reflection.vhdl` | 66f6366e77c67385 | verbatim | Apache-2.0 |
+| `std/2019/standard.vhdl` | `std/standard.vhdl` | 1a2042a5c9a6ba79 | derived (see below) | Apache-2.0 |
+| `std/2019/textio.vhdl` | `std/textio.vhdl` | 01028097080267c9 | verbatim | Apache-2.0 |
+| `ieee/2008/fixed_float_types.vhdl` | `ieee/fixed_float_types.vhdl` | 649090aaf4dbb7a6 | verbatim | Apache-2.0 |
+| `ieee/2008/fixed_generic_pkg-body.vhdl` | `ieee/fixed_generic_pkg-body.vhdl` | b5e3731985388b9e | verbatim | Apache-2.0 |
+| `ieee/2008/fixed_generic_pkg.vhdl` | `ieee/fixed_generic_pkg.vhdl` | 76f98d70b4e5e80e | verbatim | Apache-2.0 |
+| `ieee/2008/fixed_pkg.vhdl` | `ieee/fixed_pkg.vhdl` | bbd601960c294aa0 | verbatim | Apache-2.0 |
+| `ieee/2008/float_generic_pkg-body.vhdl` | `ieee/float_generic_pkg-body.vhdl` | 093b095a30ca3019 | verbatim | Apache-2.0 |
+| `ieee/2008/float_generic_pkg.vhdl` | `ieee/float_generic_pkg.vhdl` | f6bdde6dcd120358 | verbatim | Apache-2.0 |
+| `ieee/2008/float_pkg.vhdl` | `ieee/float_pkg.vhdl` | 46e9f26610bd4571 | verbatim | Apache-2.0 |
+| `ieee/2008/ieee_bit_context.vhdl` | (written for rsim) | 010eff42f7097bde | original | Apache-2.0 (rsim authors) |
+| `ieee/2008/ieee_std_context.vhdl` | (written for rsim) | 1702ddb86dd75c70 | original | Apache-2.0 (rsim authors) |
+| `ieee/2008/math_complex-body.vhdl` | `ieee/math_complex-body.vhdl` | 4f2f523002822b27 | verbatim | Apache-2.0 |
+| `ieee/2008/math_complex.vhdl` | `ieee/math_complex.vhdl` | deddee8078c0c85f | verbatim | Apache-2.0 |
+| `ieee/2008/math_real-body.vhdl` | `ieee/math_real-body.vhdl` | ed057e95cd908b54 | verbatim | Apache-2.0 |
+| `ieee/2008/math_real.vhdl` | `ieee/math_real.vhdl` | 33fe4fe3fc21cbe6 | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_bit-body.vhdl` | `ieee/numeric_bit-body.vhdl` | 21fc27ef3d7ff093 | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_bit.vhdl` | `ieee/numeric_bit.vhdl` | e54a257a6da6141e | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_bit_unsigned-body.vhdl` | `ieee/numeric_bit_unsigned-body.vhdl` | bcf17a63b59f1d73 | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_bit_unsigned.vhdl` | `ieee/numeric_bit_unsigned.vhdl` | 49bb77a8ad3eb994 | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_std-body.vhdl` | `ieee/numeric_std-body.vhdl` | 10e8bdc4fedc881a | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_std.vhdl` | `ieee/numeric_std.vhdl` | fcb9b1d05f8d98cd | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_std_unsigned-body.vhdl` | `ieee/numeric_std_unsigned-body.vhdl` | dccecb858d476cec | verbatim | Apache-2.0 |
+| `ieee/2008/numeric_std_unsigned.vhdl` | `ieee/numeric_std_unsigned.vhdl` | a39859f391c7d635 | verbatim | Apache-2.0 |
+| `ieee/2008/std_logic_1164-body.vhdl` | `ieee/std_logic_1164-body.vhdl` | 6534fe4842c11331 | verbatim | Apache-2.0 |
+| `ieee/2008/std_logic_1164.vhdl` | `ieee/std_logic_1164.vhdl` | 2a34c7d7b2c8ba21 | verbatim | Apache-2.0 |
+| `ieee/2008/std_logic_textio.vhdl` | `ieee/std_logic_textio.vhdl` | 526a2e1e0a05f35a | verbatim | Apache-2.0 |
+| `ieee/2019/fixed_float_types.vhdl` | `ieee/fixed_float_types.vhdl` | 649090aaf4dbb7a6 | verbatim | Apache-2.0 |
+| `ieee/2019/fixed_generic_pkg-body.vhdl` | `ieee/fixed_generic_pkg-body.vhdl` | b5e3731985388b9e | verbatim | Apache-2.0 |
+| `ieee/2019/fixed_generic_pkg.vhdl` | `ieee/fixed_generic_pkg.vhdl` | 76f98d70b4e5e80e | verbatim | Apache-2.0 |
+| `ieee/2019/fixed_pkg.vhdl` | `ieee/fixed_pkg.vhdl` | bbd601960c294aa0 | verbatim | Apache-2.0 |
+| `ieee/2019/float_generic_pkg-body.vhdl` | `ieee/float_generic_pkg-body.vhdl` | 093b095a30ca3019 | verbatim | Apache-2.0 |
+| `ieee/2019/float_generic_pkg.vhdl` | `ieee/float_generic_pkg.vhdl` | f6bdde6dcd120358 | verbatim | Apache-2.0 |
+| `ieee/2019/float_pkg.vhdl` | `ieee/float_pkg.vhdl` | 46e9f26610bd4571 | verbatim | Apache-2.0 |
+| `ieee/2019/ieee_bit_context.vhdl` | (written for rsim) | 010eff42f7097bde | original | Apache-2.0 (rsim authors) |
+| `ieee/2019/ieee_std_context.vhdl` | (written for rsim) | 1702ddb86dd75c70 | original | Apache-2.0 (rsim authors) |
+| `ieee/2019/math_complex-body.vhdl` | `ieee/math_complex-body.vhdl` | 4f2f523002822b27 | verbatim | Apache-2.0 |
+| `ieee/2019/math_complex.vhdl` | `ieee/math_complex.vhdl` | deddee8078c0c85f | verbatim | Apache-2.0 |
+| `ieee/2019/math_real-body.vhdl` | `ieee/math_real-body.vhdl` | ed057e95cd908b54 | verbatim | Apache-2.0 |
+| `ieee/2019/math_real.vhdl` | `ieee/math_real.vhdl` | 33fe4fe3fc21cbe6 | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_bit-body.vhdl` | `ieee/numeric_bit-body.vhdl` | 21fc27ef3d7ff093 | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_bit.vhdl` | `ieee/numeric_bit.vhdl` | e54a257a6da6141e | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_bit_unsigned-body.vhdl` | `ieee/numeric_bit_unsigned-body.vhdl` | bcf17a63b59f1d73 | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_bit_unsigned.vhdl` | `ieee/numeric_bit_unsigned.vhdl` | 49bb77a8ad3eb994 | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_std-body.vhdl` | `ieee/numeric_std-body.vhdl` | 10e8bdc4fedc881a | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_std.vhdl` | `ieee/numeric_std.vhdl` | fcb9b1d05f8d98cd | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_std_unsigned-body.vhdl` | `ieee/numeric_std_unsigned-body.vhdl` | dccecb858d476cec | verbatim | Apache-2.0 |
+| `ieee/2019/numeric_std_unsigned.vhdl` | `ieee/numeric_std_unsigned.vhdl` | a39859f391c7d635 | verbatim | Apache-2.0 |
+| `ieee/2019/std_logic_1164-body.vhdl` | `ieee/std_logic_1164-body.vhdl` | 6534fe4842c11331 | verbatim | Apache-2.0 |
+| `ieee/2019/std_logic_1164.vhdl` | `ieee/std_logic_1164.vhdl` | 2a34c7d7b2c8ba21 | verbatim | Apache-2.0 |
+| `ieee/2019/std_logic_textio.vhdl` | `ieee/std_logic_textio.vhdl` | 526a2e1e0a05f35a | verbatim | Apache-2.0 |

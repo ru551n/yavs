@@ -51,3 +51,5 @@ fetch ghdl https://github.com/ghdl/ghdl 71b3e1ac7088489b1214e0c626e00d2dfad7c6d9
 # Analysis corpora (tools/corpus/*.toml): standalone OSVVM (tag 2026.09, with its library submodules) and UVVM.
 fetch_with_submodules osvvm-libraries https://github.com/OSVVM/OsvvmLibraries ab47a2637008a0709bbf593aa1ab0060dcc39aac
 fetch uvvm https://github.com/UVVM/UVVM 90d56e93c542bf0d5e2ab9f791cc7395bd1aa896
+# hdl-modules release v6.2.1 (src/ and rtl/ of each module are the analysis corpus).
+fetch hdl-modules https://github.com/hdl-modules/hdl-modules c4f01c4bb69aab66c879f545e80abb477f1ebf35

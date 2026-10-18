@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CACHE = Path.home() / ".cache" / "rsim-std"
+CACHE = Path.home() / ".cache" / "yavs-std"
 JOBS = 8
 
 STDS = ["2008", "2019"]

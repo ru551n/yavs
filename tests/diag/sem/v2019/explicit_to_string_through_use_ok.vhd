@@ -1,4 +1,4 @@
--- rsim-test: std=2019
+-- yavs-test: std=2019
 -- expect: none
 -- LRM 2019 5.7, 12.5 (UVVM rand_pkg: a user to_string through a use clause wins over the implicit INTEGER_VECTOR TO_STRING; NVC, GHDL and Questa accept)
 package sm is

@@ -13,7 +13,7 @@ Python 3 stdlib only.
 
 Every simulator run is `timeout 300 systemd-run --user --scope -p MemoryMax=2G bash -c ...`,
 at most 8 at a time (`--jobs` is clamped). Work libraries and raw `stdout.txt`/`stderr.txt`
-go to `~/.cache/rsim-difftest/<candidate>/<test>/t<threads>/`. `--no-sandbox` skips
+go to `~/.cache/yavs-difftest/<candidate>/<test>/t<threads>/`. `--no-sandbox` skips
 systemd-run for debugging.
 
 ## Test header

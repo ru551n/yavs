@@ -8,7 +8,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CORPUS = ROOT / "tests" / "corpus"
-CACHE = Path(os.environ.get("DIFFTEST_CACHE", Path.home() / ".cache" / "rsim-difftest"))
+CACHE = Path(os.environ.get("DIFFTEST_CACHE", Path.home() / ".cache" / "yavs-difftest"))
 MAX_JOBS = 8
 TIMEOUT = 300
 RC_ANALYSE, RC_ELAB = 97, 98

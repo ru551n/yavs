@@ -872,7 +872,7 @@ impl Db {
             ast::Actual::Expr(ast::Expr {
                 kind: ast::ExprKind::Name(n),
                 ..
-            }) => self.range(scope, &ast::Range::Name(clone_name_shallow(n)), index),
+            }) => self.range_name(scope, n, index),
             _ => return self.poison_expr(),
         };
         let Ok(range) = range else {
@@ -1495,36 +1495,4 @@ pub(crate) fn assoc_map(formals: &[Symbol], args: &[ast::AssocElem]) -> Option<V
         }
     }
     Some(map)
-}
-
-/// A copy of a simple, selected or attribute name for re-analysis as a range.
-fn clone_name_shallow(n: &ast::Name) -> ast::Name {
-    fn go(n: &ast::Name) -> ast::Name {
-        let kind = match &n.kind {
-            ast::NameKind::Simple(i) => ast::NameKind::Simple(*i),
-            ast::NameKind::Operator(o) => ast::NameKind::Operator(*o),
-            ast::NameKind::Character(c) => ast::NameKind::Character(*c),
-            ast::NameKind::Selected { prefix, suffix } => ast::NameKind::Selected {
-                prefix: Box::new(go(prefix)),
-                suffix: match suffix {
-                    ast::Suffix::Ident(i) => ast::Suffix::Ident(*i),
-                    ast::Suffix::Char(c) => ast::Suffix::Char(*c),
-                    ast::Suffix::Operator(o, s) => ast::Suffix::Operator(*o, *s),
-                    ast::Suffix::All(s) => ast::Suffix::All(*s),
-                },
-            },
-            ast::NameKind::Attribute { prefix, attr } => ast::NameKind::Attribute {
-                prefix: Box::new(go(prefix)),
-                attr: *attr,
-            },
-            // Other forms never denote a range; keep the span for the diagnostic.
-            _ => ast::NameKind::Simple(Ident {
-                text: Symbol::intern("<name>"),
-                key: Symbol::intern("<name>"),
-                span: n.span,
-            }),
-        };
-        ast::Name { kind, span: n.span }
-    }
-    go(n)
 }

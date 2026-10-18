@@ -1396,29 +1396,39 @@ impl Db {
                     right: rr,
                 })
             }
-            ast::Range::Name(n) => match self.range_attr(scope, n) {
-                Some(r) => {
-                    let (rc, t) = r?;
-                    if t != base && t != self.poison.ty && base != self.poison.ty {
-                        return Err(self.error(
-                            Diagnostic::error(diag::TYPE_MISMATCH, {
-                                let n = self.type_names(&[base, t]);
-                                format!("expected a range of `{}`, found one of `{}`", n[0], n[1])
-                            })
-                            .with_primary(n.span, "wrong type"),
-                        ));
-                    }
-                    Ok(rc)
+            ast::Range::Name(n) => self.range_name(scope, n, base),
+        }
+    }
+
+    /// A range written as a name: a range attribute, or a type mark for its range.
+    pub(crate) fn range_name(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+        base: TypeId,
+    ) -> Result<RangeC, Reported> {
+        match self.range_attr(scope, n) {
+            Some(r) => {
+                let (rc, t) = r?;
+                if t != base && t != self.poison.ty && base != self.poison.ty {
+                    return Err(self.error(
+                        Diagnostic::error(diag::TYPE_MISMATCH, {
+                            let n = self.type_names(&[base, t]);
+                            format!("expected a range of `{}`, found one of `{}`", n[0], n[1])
+                        })
+                        .with_primary(n.span, "wrong type"),
+                    ));
                 }
-                None => {
-                    let st = self.type_mark(scope, n)?;
-                    Ok(RangeC::Attr {
-                        prefix: AttrPrefix::Subtype(st),
-                        reverse: false,
-                        dim: 1,
-                    })
-                }
-            },
+                Ok(rc)
+            }
+            None => {
+                let st = self.type_mark(scope, n)?;
+                Ok(RangeC::Attr {
+                    prefix: AttrPrefix::Subtype(st),
+                    reverse: false,
+                    dim: 1,
+                })
+            }
         }
     }
 

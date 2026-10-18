@@ -801,8 +801,9 @@ impl Db {
         } else {
             let e = self.st_expr(scope, target, Expected::Any)?;
             let lsps = self.check_target(e, kind)?;
-            let ty = self.expr_type(e);
-            let rhs = self.rhs(scope, rhs, Some(ty), each)?;
+            // The target's subtype, so an `others` aggregate takes its bounds (9.3.3.3).
+            let st = self.exprs[e].subtype;
+            let rhs = self.rhs(scope, rhs, Some(st), each)?;
             Ok((Target { expr: e, lsps }, rhs))
         }
     }
@@ -865,7 +866,7 @@ impl Db {
         &mut self,
         scope: ScopeId,
         w: &ast::Waveform,
-        ty: Option<TypeId>,
+        ty: Option<SubtypeId>,
         nulls: &mut Vec<Span>,
     ) -> Result<Waveform, Reported> {
         let els = match w {
@@ -880,14 +881,14 @@ impl Db {
                 kind: ast::LiteralKind::Null,
                 ..
             }) = el.value.kind
-                && ty.is_none_or(|t| !self.is_access(t))
+                && ty.is_none_or(|t| !self.is_access(self.base(t)))
             {
                 nulls.push(el.value.span);
                 None
             } else {
                 let v = errs.keep(self.value_expr(scope, &el.value, ty));
                 if let Some(v) = v {
-                    ty.get_or_insert(self.expr_type(v));
+                    ty.get_or_insert(self.types[self.expr_type(v)].first_subtype);
                 }
                 v
             };
@@ -907,20 +908,29 @@ impl Db {
         matches!(self.types[t].kind, crate::types::TypeKind::Access { .. })
     }
 
+    /// A right-hand side value for a target of subtype `st`, if known.
     fn value_expr(
         &mut self,
         scope: ScopeId,
         e: &ast::Expr,
-        ty: Option<TypeId>,
+        st: Option<SubtypeId>,
     ) -> Result<ExprId, Reported> {
-        self.st_expr(scope, e, ty.map_or(Expected::Any, Expected::Type))
+        let Some(st) = st else {
+            return self.st_expr(scope, e, Expected::Any);
+        };
+        let id = self.expr_in_subtype(scope, e, st);
+        if self.is_poison_expr(id) {
+            Err(Reported)
+        } else {
+            Ok(id)
+        }
     }
 
     fn var_value(
         &mut self,
         scope: ScopeId,
         e: &ast::Expr,
-        ty: Option<TypeId>,
+        ty: Option<SubtypeId>,
     ) -> Result<ExprId, Reported> {
         if let ast::ExprKind::Unaffected = e.kind {
             return Err(self.unsupported(e.span, "`unaffected` in a variable assignment", "S7"));
@@ -932,7 +942,7 @@ impl Db {
         &mut self,
         scope: ScopeId,
         rhs: &ast::Rhs<A>,
-        ty: Option<TypeId>,
+        ty: Option<SubtypeId>,
         each: &mut Each<'_, A, H>,
     ) -> Result<Rhs<H>, Reported>
     where
@@ -940,12 +950,12 @@ impl Db {
     {
         let mut ty = ty;
         let mut errs = Errs::default();
-        let mut one = |db: &mut Db, a: &A, ty: &mut Option<TypeId>, errs: &mut Errs| {
+        let mut one = |db: &mut Db, a: &A, ty: &mut Option<SubtypeId>, errs: &mut Errs| {
             let h = errs.keep(each(db, a, *ty));
             if let Some(h) = &h
                 && ty.is_none()
             {
-                *ty = h.ty(db);
+                *ty = h.ty(db).map(|t| db.types[t].first_subtype);
             }
             h
         };
@@ -1863,8 +1873,8 @@ impl crate::expr::aggregate::AggResolver for ChoiceResolver {
     }
 }
 
-/// Resolves one right-hand side piece, given the target type if known.
-type Each<'a, A, H> = dyn FnMut(&mut Db, &A, Option<TypeId>) -> Result<H, Reported> + 'a;
+/// Resolves one right-hand side piece, given the target subtype if known.
+type Each<'a, A, H> = dyn FnMut(&mut Db, &A, Option<SubtypeId>) -> Result<H, Reported> + 'a;
 
 /// The value type of a resolved right-hand side piece.
 trait HasType {

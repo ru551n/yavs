@@ -80,7 +80,8 @@ to span, statement kind and enclosing subprogram without any other table.
 
 - Registers are untyped 64-bit cells; `reg_ty` exists for the verifier and the JIT tier.
   `RegTy::Ptr` is an `Addr` (1.4), `RegTy::Sig` a signal reference `SigVal` (packed
-  `{base: u32 index into the instance's signal table, offset: u32, len: u32}` in two cells).
+  `{base: u32 index into the instance's signal table, offset: u32, len: u32}` in two cells),
+  or a reference of several parts (1.8).
 - Lowering allocates registers with a per-statement free list: temporaries die at the end of
   their statement, so allocation is linear and registers are reused across statements. Objects
   (variables, loop parameters, constants with non-trivial values) live in **frame slots**, never
@@ -187,7 +188,7 @@ has a `StmtId` in `Func.loc`.
 | control | `Br{blk}`, `CondBr{c, t, f}`, `Case{v, table: CaseTableId, default}` (ranges and choices as sorted table), `Ret`, `Unreachable` |
 | calls | `Call{func, args}` (VHDL), `CallNative{id, args}` (NATIVE.md symbols and implicit families), `CallForeign{id, args}` (VHPIDIRECT, 1.7), `CallIndirect{func_reg, args}` (subprogram generics), `CallProt{func, obj, args}` (protected method: takes the instance lock, 3.5) |
 | heap | `New{dst, ty, init}`, `Free{handle}` (`deallocate`), `Deref{dst, handle}` (null check included) |
-| signal read | `SigVal{dst, inst_sig, offset, len}` builds a signal reference; `SigRead{dst_addr, sig}` (effective value), `SigReadScalar{dst, sig}`, `SigDriving{dst_addr, driver_slot}` (`'driving_value`, out-port read) |
+| signal read | `SigVal{dst, inst_sig, offset, len}` builds a signal reference; `SigParts{dst, parts, n}` one of several parts and `SigSlice{dst, sig, offset, len}` a slice of either form (1.8); `SigRead{dst_addr, sig}` (effective value), `SigReadScalar{dst, sig}`, `SigDriving{dst_addr, driver_slot}` (`'driving_value`, out-port read) |
 | attributes | `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
 | signal write | `Drive{driver_slot, target: Option<sig>, waveform: Addr, n, mode: Transport\|Inertial{reject: Option<Reg>}}` (waveform = `n` `(time, value)` pairs in a temp, ascending); `Force{sig, mode: In\|Out, value}`, `Release{sig, mode}`; `Disconnect{driver_slot}` (null transaction, guarded, M3) |
 | wait | `WaitOn{sig}` (adds to sensitivity), `WaitFor{t}`, `WaitAt{abs}`, `Suspend{resume}`; `TimedOut{dst}`, `Now{dst}`, `Delta{dst}` |
@@ -282,6 +283,39 @@ impl ForeignFn {
   x86_64, Linux aarch64 and Windows x86_64. The JIT tier calls foreign functions directly with
   the same mapping.
 
+### 1.8 Signal references of several parts (#71)
+
+A signal parameter is a reference, and an individually associated signal formal
+(`drive2(x(1) => s1, x(0) => s0)`, a record formal whose fields come from different signals)
+covers ranges of several kernel signals. Such a reference keeps the two-register shape of
+`RegTy::Sig`, so parameter passing, frames and the calling convention do not change:
+
+- **Form.** First register `0xffff_ffff << 32 | count` (no instance has that many signals),
+  second register the address of `count` entries `[ref lo, len, driver slot]` (24 bytes each) in
+  temporary memory, in order of the referenced object's kernel elements (rule 2: the same
+  element order as the one sub-element map).
+- **Building.** `SigParts{dst, parts, n}` reads `n` entries of `SIG_PART_BYTES` (32): a reference
+  (16 bytes), the caller's driver slot for that part (`-1` for `in`), and the part's first
+  element in the whole object. Lowering computes the first element by binding the formal to a
+  reference from element 0 of signal 0 while it lowers the formal part (`x(1)`, `x.a.v(0)`),
+  so the walk over signal names is the one walk (rule 2). The interpreter flattens parts that
+  are themselves multi-part references, orders the parts by first element and checks that they
+  tile the object (an ICE otherwise: sem checks coverage, LRM 6.5.7.1).
+- **Slicing.** `SigSlice{dst, sig, offset, len}` replaces the arithmetic on the packed cell: on
+  a single range it moves the offset, on several parts it clips them (a reference of several
+  parts stays one, so every piece keeps its driver slot). Names below a signal parameter (index,
+  slice, record leaf) go through it.
+- **Use.** Every signal instruction maps the parts in order onto the kernel `Ctx` calls of one
+  process step: `SigRead`/`SigLastValue` concatenate (all parts of one element kind),
+  `SigAttr` combines (`'event`/`'active`: any part; `'last_event`/`'last_active`: the most
+  recent, LRM 16.2.4), `WaitOn`/`Release` take every part, `Force` splits the value, and
+  `Drive`/`DriveSlot` split each waveform element and drive each part through the slot it
+  carries (the instruction's own slot cell is `-1` for such a formal). So reads, drives and
+  attributes stay in the same delta, need no kernel change, and do not depend on the thread
+  count. `Disconnect` of such a reference is an ICE (no guarded signal parameters yet).
+- A record formal (one reference per leaf, #215) gets one such reference per leaf; its first
+  driver slot cell is `-1` as well, since each leaf's parts carry their own slots.
+
 ## 2. Processes, subprograms, suspension, shared code
 
 - **One `Func` per process or subprogram per design unit**, shared by every instance. Generics
@@ -340,7 +374,7 @@ impl yavs_kernel::Process for InterpProcess {
 
 | Instruction | Kernel call |
 |---|---|
-| `SigRead`, `SigReadScalar` | `ctx.value(SigRef)` then copy; logic leaves arrive as planes and are copied with `LCopy` (no transpose) |
+| `SigRead`, `SigReadScalar` | `ctx.value(SigRef)` then copy; logic leaves arrive as planes and are copied with `LCopy` (no transpose); a reference of several parts reads each part in order (1.8) |
 | `SigAttr` | `ctx.event/active/last_event/last_active/last_value` |
 | `Drive` | `ctx.assign(drivers[slot], target, waveform, DelayMode)` |
 | `Force`/`Release` | `ctx.force/release(r, ForceMode::Effective\|Driving)` |

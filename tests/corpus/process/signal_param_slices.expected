@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	1	:signal_param_slices:_p0	show 3 0 0UUU event=true
+diag	note	1000000	0	:signal_param_slices:_p0	show 3 0 0101 event=true
+diag	note	1000000	0	:signal_param_slices:_p0	show 1 0 01 event=true
+diag	note	1000000	0	:signal_param_slices:_p0	lv=010 l0='1'
+diag	note	1000000	0	:signal_param_slices:_p0	sum 5 to 7 = 6
+diag	note	1000000	1	:signal_param_slices:_p0	i0=10 iv=11,12

@@ -80,7 +80,11 @@ a call into your module in a small commit.
   (`Actual::Individual`, 6.5.7.1, `assoc.rs`) of variable or constant class is a temporary of
   the formal's subtype: each part is copied in through its formal part (a name of the formal,
   bound to the temporary while it is lowered) and, for `out`/`inout`, copied back after the
-  call; a signal formal takes one part as its reference. An unconstrained formal's bounds run
+  call. A signal formal of one part takes its actual's reference; one of several parts is a
+  reference of several parts (`Inst::SigParts`, ir.md 1.8): each part's actual with its driver
+  slot, at the element offset its formal part names (the formal part lowered with the formal
+  bound to a reference from element 0), one such reference per leaf for a formal with
+  records, and `-1` in the formal's driver slot cell. An unconstrained formal's bounds run
   from the lowest to the highest index named, in the index subtype's direction. A converted
   parameter (`Actual::Converted` with `copy_out`, an `out`/`inout` variable, #229) is a
   temporary of the formal's subtype holding `copy_in` (or the default for `out`); after the

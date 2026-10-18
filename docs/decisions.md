@@ -747,8 +747,9 @@ which tools/difftest parses.
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for
-  `out`/`inout`. A signal formal is a reference to one kernel range, so it takes one part only;
-  several parts are `E2001` (one reference simulator rejects them too). An unconstrained
+  `out`/`inout`. A signal formal of several parts is a reference of several parts (see
+  "Multi-part signal references and port converters"; one reference simulator rejects the
+  form, the other agrees on the values). An unconstrained
   formal's bounds run from the lowest to the highest index named, in the index subtype's
   direction, as yavs-elab does for ports.
 - **Conversions in call associations** (#229, LRM 6.5.7.1, lrm-checks L66): sem gives
@@ -950,4 +951,16 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   process per conversion (one delta late, unlike the reference simulators). Ordering: the edge
   converts at the part that the level-ordered update worklist reaches last, so the result does
   not depend on which part changed or on the thread count (docs/design/ir.md 4.1).
+- **Signal references of several parts** (#71): an individually associated signal formal whose
+  parts lie in different signals (`drive2(x(1) => s1, x(0) => s0)`, a record formal field by
+  field) is a reference of several parts in the IR (`SigParts`, ir.md 1.8): still two
+  registers, the second the address of a table of `[reference, length, driver slot]`, ordered
+  by the formal's kernel elements. The interpreter maps every signal instruction onto the parts
+  in order within one process step, so reads, drives, `'event` and the other attributes behave
+  as for one signal in the same delta, at any thread count, without kernel support. Each part
+  carries the caller's driver slot of its own actual, since parts in different signals have
+  different drivers. Rejected: copying a signal formal like a variable (wrong for `'event`,
+  `wait on` and for drives that must reach the actuals' drivers), and a reference per element
+  (O(n) per array access). Slices of references are an instruction (`SigSlice`), so names below
+  a formal work on both forms.
 

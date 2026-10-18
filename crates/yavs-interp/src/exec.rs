@@ -57,6 +57,56 @@ pub(crate) enum Outcome {
 }
 
 // Address spaces as stored in the top 3 bits of an address.
+/// `base` of a signal reference of several parts: the low half is the part count, the second
+/// register the address of `[lo, len, slot]` entries (`Inst::SigParts`).
+const MULTI: u64 = 0xffff_ffff;
+const PART_BYTES: u64 = 24;
+const NO_SLOT: u64 = u64::MAX;
+
+/// The element kind shared by the parts of a reference.
+fn same_elem(parts: &[(SigRef, yavs_kernel::SignalType, Option<u32>)]) -> R<Elem> {
+    let mut it = parts.iter().map(|p| p.1.elem);
+    let e = it.next().unwrap_or(Elem::Bytes(1));
+    if it.any(|x| x != e) {
+        return Err(ice("signal reference parts of different element types"));
+    }
+    Ok(e)
+}
+
+/// Values of consecutive element ranges as one value.
+fn concat(elem: Elem, vals: &[Value]) -> R<Value> {
+    Ok(match elem {
+        Elem::Bytes(_) => Value::Bytes(
+            vals.iter()
+                .flat_map(|v| v.as_bytes().unwrap_or_default().iter().copied())
+                .collect(),
+        ),
+        Elem::Logic => {
+            let ls: Vec<&LogicVec> = vals.iter().filter_map(Value::as_logic).collect();
+            if ls.len() != vals.len() {
+                return Err(ice("logic signal part without a logic value"));
+            }
+            let codes: Vec<_> = ls.iter().flat_map(|l| l.iter()).collect();
+            Value::Logic(LogicVec::from_fn(codes.len(), |i| codes[i]))
+        }
+    })
+}
+
+/// Elements `at .. at + len` of a value of `elem` elements.
+fn sub_value(v: &Value, elem: Elem, at: u32, len: u32) -> R<Value> {
+    let bad = || ice("signal value shorter than its reference");
+    Ok(match (v, elem) {
+        (Value::Bytes(b), Elem::Bytes(w)) => {
+            let (a, n) = (at as usize * w as usize, len as usize * w as usize);
+            Value::Bytes(b.get(a..a + n).ok_or_else(bad)?.to_vec())
+        }
+        (Value::Logic(l), Elem::Logic) if (at + len) as usize <= l.len() => {
+            Value::Logic(l.slice(at as usize, len as usize))
+        }
+        _ => return Err(bad()),
+    })
+}
+
 const FRAME: u8 = 0;
 const INST: u8 = 1;
 const PKG: u8 = 2;
@@ -800,6 +850,139 @@ impl Machine {
             .get(base as usize)
             .ok_or_else(|| ice(format!("no instance signal {base}")))?;
         Ok((s.signal.slice(off, len), s.ty))
+    }
+
+    /// The raw entries `[lo, len, slot]` of signal reference `(lo, hi)` in its two registers:
+    /// one for a single range (no slot), the table of a reference of several parts.
+    fn raw_parts(&self, lo: u64, hi: u64) -> R<Vec<[u64; 3]>> {
+        if lo >> 32 != MULTI {
+            return Ok(vec![[lo, hi, NO_SLOT]]);
+        }
+        let n = lo & 0xffff_ffff;
+        let b = self.rd(hi, n * PART_BYTES)?;
+        Ok(b.as_chunks::<24>()
+            .0
+            .iter()
+            .map(|e| {
+                std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| e[k * 8 + j])))
+            })
+            .collect())
+    }
+
+    /// The kernel ranges of signal reference `r`, in order, with the driver slot each came
+    /// with (`None`: a single range, driven through the instruction's own slot).
+    fn sigparts(&self, r: Reg) -> R<Vec<(SigRef, yavs_kernel::SignalType, Option<u32>)>> {
+        let (lo, hi) = (self.r(r), self.r(Reg(r.0 + 1)));
+        let multi = lo >> 32 == MULTI;
+        self.raw_parts(lo, hi)?
+            .into_iter()
+            .map(|[lo, len, slot]| {
+                let (base, off) = ((lo >> 32) as u32, lo as u32);
+                let s = self
+                    .inst
+                    .sigs
+                    .get(base as usize)
+                    .ok_or_else(|| ice(format!("no instance signal {base}")))?;
+                let slot = match (multi, u32::try_from(slot)) {
+                    (true, Ok(s)) => Some(s),
+                    _ => None,
+                };
+                Ok((s.signal.slice(off, len as u32), s.ty, slot))
+            })
+            .collect()
+    }
+
+    /// Write raw part entries as a reference of several parts in temporary memory.
+    fn set_parts(&mut self, dst: Reg, parts: &[[u64; 3]]) -> R<()> {
+        let a = self.temp_alloc(parts.len() as u64 * PART_BYTES)?;
+        let b: Vec<u8> = parts
+            .iter()
+            .flatten()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        self.put(a, &b)?;
+        self.set(dst, MULTI << 32 | parts.len() as u64);
+        self.set(Reg(dst.0 + 1), a);
+        Ok(())
+    }
+
+    /// The value of the parts of a reference, concatenated in order (`effective` or
+    /// `'last_value`).
+    fn read_parts(
+        &self,
+        c: &Ctx<'_>,
+        parts: &[(SigRef, yavs_kernel::SignalType, Option<u32>)],
+        last: bool,
+    ) -> R<Value> {
+        let elem = same_elem(parts)?;
+        let mut vals = Vec::with_capacity(parts.len());
+        for &(sr, ty, _) in parts {
+            vals.push(if last {
+                c.last_value(sr)?
+            } else {
+                match ty.elem {
+                    Elem::Bytes(_) => Value::Bytes(c.value(sr)?.to_vec()),
+                    Elem::Logic => Value::Logic(c.logic(sr)?),
+                }
+            });
+        }
+        concat(elem, &vals)
+    }
+
+    /// `Drive`/`DriveSlot` onto a reference of several parts: each part's elements of the
+    /// waveform through the driver slot it came with.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_parts(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        target: Reg,
+        wave: Reg,
+        n: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    ) -> R<()> {
+        let parts = self.sigparts(target)?;
+        let elem = same_elem(&parts)?;
+        let total: u32 = parts.iter().map(|p| p.0.range.map_or(0, |r| r.len)).sum();
+        let stride = 8 + value_size(elem, total).next_multiple_of(8);
+        let w = self.r(wave);
+        let mut items = Vec::new();
+        for k in 0..self.r(n) {
+            let at = add_addr(w, k * stride)?;
+            let t = to_time(self.load(at, Width::B8)? as i64)?;
+            items.push((t, self.get_value(add_addr(at, 8)?, elem, total)?));
+        }
+        let mode = match mode {
+            DriveMode::Transport => DelayMode::Transport,
+            DriveMode::Inertial => DelayMode::Inertial {
+                reject: match reject {
+                    Some(r) => Some(to_time(self.ri(r))?),
+                    None => None,
+                },
+            },
+        };
+        let mut at = 0;
+        for (sr, _, slot) in parts {
+            let len = sr.range.map_or(0, |r| r.len);
+            let slot = slot.ok_or_else(|| ice("a signal part without a driver is driven"))?;
+            let d = self.driver(slot)?;
+            let vals = items
+                .iter()
+                .map(|(t, v)| Ok((*t, sub_value(v, elem, at, len)?)))
+                .collect::<R<Vec<(Time, Value)>>>()?;
+            let refs: Vec<(Time, ValueRef<'_>)> =
+                vals.iter().map(|(t, v)| (*t, v.as_ref())).collect();
+            let Some(c) = ctx.as_deref_mut() else {
+                return rt_err("signal or wait operation during elaboration");
+            };
+            c.assign(d.id, sr.range, &refs, mode)?;
+            at += len;
+        }
+        Ok(())
+    }
+
+    fn is_multi(&self, r: Reg) -> bool {
+        self.r(r) >> 32 == MULTI
     }
 
     fn driver(&self, d: u32) -> R<ProcDriver> {
@@ -1728,6 +1911,75 @@ impl Machine {
                 self.set(dst, u64::from(sig) << 32 | u64::from(o));
                 self.set(Reg(dst.0 + 1), u64::from(l));
             }
+            Inst::SigParts { dst, parts, n } => {
+                // Flatten nested references, order by first element, check the tiling.
+                let (base, n) = (self.r(parts), self.r(n));
+                let mut flat = Vec::new();
+                for k in 0..n {
+                    let e = add_addr(base, k * u64::from(yavs_ir::SIG_PART_BYTES))?;
+                    let (lo, hi) = (
+                        self.load(e, Width::B8)?,
+                        self.load(add_addr(e, 8)?, Width::B8)?,
+                    );
+                    let slot = self.load(add_addr(e, 16)?, Width::B8)?;
+                    let mut first = self.load(add_addr(e, 24)?, Width::B8)?;
+                    let nested = lo >> 32 == MULTI;
+                    for [plo, plen, pslot] in self.raw_parts(lo, hi)? {
+                        flat.push((first, [plo, plen, if nested { pslot } else { slot }]));
+                        first += plen;
+                    }
+                }
+                flat.sort_by_key(|p| p.0);
+                let mut at = 0;
+                for (first, [_, len, _]) in &flat {
+                    if *first != at {
+                        return Err(ice("signal reference parts do not tile the object"));
+                    }
+                    at += len;
+                }
+                let raw: Vec<[u64; 3]> = flat.into_iter().map(|p| p.1).collect();
+                self.set_parts(dst, &raw)?;
+            }
+            Inst::SigSlice {
+                dst,
+                sig,
+                offset,
+                len,
+            } => {
+                let (o, l) = (self.ri(offset), self.ri(len));
+                let (Ok(o), Ok(l)) = (u64::try_from(o), u64::try_from(l)) else {
+                    return rt_err(format!("signal element range {o} + {l} out of bounds"));
+                };
+                let (lo, hi) = (self.r(sig), self.r(Reg(sig.0 + 1)));
+                if lo >> 32 != MULTI {
+                    if o + l > hi || (lo as u32 as u64) + o > u64::from(u32::MAX) {
+                        return rt_err(format!("signal element range {o} + {l} out of bounds"));
+                    }
+                    self.set(dst, lo + o);
+                    self.set(Reg(dst.0 + 1), l);
+                } else {
+                    // The pieces of the parts that overlap `o .. o + l`, with their slots.
+                    let mut out = Vec::new();
+                    let mut at = 0;
+                    for [plo, plen, slot] in self.raw_parts(lo, hi)? {
+                        let a = o.max(at);
+                        let z = (o + l).min(at + plen);
+                        if a < z {
+                            out.push([plo + (a - at), z - a, slot]);
+                        }
+                        at += plen;
+                    }
+                    if o + l > at {
+                        return rt_err(format!("signal element range {o} + {l} out of bounds"));
+                    }
+                    self.set_parts(dst, &out)?;
+                }
+            }
+            Inst::SigRead { dst, sig } if self.is_multi(sig) => {
+                let parts = self.sigparts(sig)?;
+                let v = self.read_parts(kc!(), &parts, false)?;
+                self.put_value(self.r(dst), &v)?;
+            }
             Inst::SigRead { dst, sig } => {
                 let (sr, ty) = self.sigref(sig)?;
                 let c = kc!();
@@ -1738,7 +1990,10 @@ impl Machine {
                 self.put_value(self.r(dst), &v)?;
             }
             Inst::SigReadScalar { dst, sig } => {
-                let (sr, ty) = self.sigref(sig)?;
+                let (sr, ty) = match self.sigparts(sig)?.as_slice() {
+                    [(sr, ty, _)] => (*sr, *ty),
+                    _ => return Err(ice("scalar read of a reference of several parts")),
+                };
                 let c = kc!();
                 let v = match ty.elem {
                     Elem::Bytes(es) if es <= 8 => {
@@ -1762,19 +2017,26 @@ impl Machine {
                 self.set(dst, v);
             }
             Inst::SigLastValue { dst, sig } => {
-                let (sr, _) = self.sigref(sig)?;
-                let v = kc!().last_value(sr)?;
+                let parts = self.sigparts(sig)?;
+                let v = self.read_parts(kc!(), &parts, true)?;
                 self.put_value(self.r(dst), &v)?;
             }
             Inst::SigAttr { dst, kind, sig } => {
-                let (sr, _) = self.sigref(sig)?;
+                // Over several parts: any event or activity, the most recent one (LRM 16.2.4).
+                let parts = self.sigparts(sig)?;
                 let c = kc!();
-                let v = match kind {
-                    AttrKind::Event => u64::from(c.event(sr)?),
-                    AttrKind::Active => u64::from(c.active(sr)?),
-                    AttrKind::LastEvent => c.last_event(sr)?.as_fs(),
-                    AttrKind::LastActive => c.last_active(sr)?.as_fs(),
+                let mut v = match kind {
+                    AttrKind::Event | AttrKind::Active => 0,
+                    AttrKind::LastEvent | AttrKind::LastActive => u64::MAX,
                 };
+                for (sr, _, _) in parts {
+                    v = match kind {
+                        AttrKind::Event => v | u64::from(c.event(sr)?),
+                        AttrKind::Active => v | u64::from(c.active(sr)?),
+                        AttrKind::LastEvent => v.min(c.last_event(sr)?.as_fs()),
+                        AttrKind::LastActive => v.min(c.last_active(sr)?.as_fs()),
+                    };
+                }
                 self.set(dst, v);
             }
             Inst::Driving { dst, driver } => {
@@ -1786,6 +2048,24 @@ impl Machine {
                 let d = self.driver(driver)?;
                 let v = kc!().driving_value(d.id)?;
                 self.put_value(self.r(dst), &v)?;
+            }
+            Inst::Drive {
+                target: Some(target),
+                wave,
+                n,
+                mode,
+                reject,
+                ..
+            }
+            | Inst::DriveSlot {
+                target,
+                wave,
+                n,
+                mode,
+                reject,
+                ..
+            } if self.is_multi(target) => {
+                self.drive_parts(ctx, target, wave, n, mode, reject)?;
             }
             Inst::Drive {
                 driver,
@@ -1817,6 +2097,9 @@ impl Machine {
                 after,
                 mode,
             } => {
+                if target.is_some_and(|t| self.is_multi(t)) {
+                    return Err(ice("disconnect of a signal reference of several parts"));
+                }
                 let d = self.driver(driver)?;
                 let range = match target {
                     Some(t) => self.sigref(t)?.0.range,
@@ -1833,21 +2116,29 @@ impl Machine {
                 kc!().disconnect(d.id, range, after, mode)?;
             }
             Inst::Force { sig, kind, value } => {
-                let (sr, ty) = self.sigref(sig)?;
-                let len = sr.range.map_or(0, |r| r.len);
-                let v = self.get_value(self.r(value), ty.elem, len)?;
+                let parts = self.sigparts(sig)?;
+                let elem = same_elem(&parts)?;
+                let total = parts.iter().map(|p| p.0.range.map_or(0, |r| r.len)).sum();
+                let v = self.get_value(self.r(value), elem, total)?;
                 let m = force_mode(kind);
-                kc!().force(sr, m, &v)?;
+                let mut at = 0;
+                for (sr, _, _) in parts {
+                    let len = sr.range.map_or(0, |r| r.len);
+                    kc!().force(sr, m, &sub_value(&v, elem, at, len)?)?;
+                    at += len;
+                }
             }
             Inst::Release { sig, kind } => {
-                let (sr, _) = self.sigref(sig)?;
-                kc!().release(sr, force_mode(kind))?;
+                for (sr, _, _) in self.sigparts(sig)? {
+                    kc!().release(sr, force_mode(kind))?;
+                }
             }
             Inst::WaitOn { sig } => {
-                let (sr, _) = self.sigref(sig)?;
-                kc!().wait_on(sr)?;
-                if self.dbg.is_some() {
-                    self.waits.sens.push(sr);
+                for (sr, _, _) in self.sigparts(sig)? {
+                    kc!().wait_on(sr)?;
+                    if self.dbg.is_some() {
+                        self.waits.sens.push(sr);
+                    }
                 }
             }
             Inst::WaitFor { t } => {

@@ -669,7 +669,7 @@ impl<'a> Fx<'a, '_> {
     /// of composite signal `d` that actual `e` of an `out` signal parameter names: the slot of
     /// the actual's longest static prefix plus the leaf's position below it, or the slot a
     /// signal parameter was given plus the leaf's index.
-    fn leaf_slot(&mut self, d: DeclId, e: ExprId, part: &SigPart, span: Span) -> R<Reg> {
+    pub(crate) fn leaf_slot(&mut self, d: DeclId, e: ExprId, part: &SigPart, span: Span) -> R<Reg> {
         let Some((first, _, _)) = part.leaves.first() else {
             return Err(self.cx.ice(span, "composite signal part without leaves"));
         };
@@ -923,7 +923,7 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// Elements of the leaf at field path `rel` in one value of type `t` (descriptor `desc`).
-    fn leaf_count(&mut self, t: TypeId, desc: Reg, rel: &[u32], span: Span) -> R<Reg> {
+    pub(crate) fn leaf_count(&mut self, t: TypeId, desc: Reg, rel: &[u32], span: Span) -> R<Reg> {
         let db = self.db;
         let (mut t, mut desc, mut rel) = (t, desc, rel);
         let mut n = self.int(1);
@@ -1330,15 +1330,15 @@ impl<'a> Fx<'a, '_> {
             Ok(sig) => return self.sigval_at(sig, offset, len),
             Err(r) => r,
         };
-        // `[base << 32 | offset, len]`: move the offset, replace the length.
-        let buf = self.alloc_n(16);
-        self.store(buf, r, Width::Sig);
-        let lo = self.load(buf, Width::B8, RegTy::I64);
-        let moved = self.bin(IntOp::Add, lo, offset);
-        self.store(buf, moved, Width::B8);
-        let hi = self.offset(buf, 8);
-        self.store(hi, len, Width::B8);
-        self.load(buf, Width::Sig, RegTy::Sig)
+        // A reference of several parts is sliced across them (`Inst::SigSlice`).
+        let dst = self.reg(RegTy::Sig);
+        self.emit(Inst::SigSlice {
+            dst,
+            sig: r,
+            offset,
+            len,
+        });
+        dst
     }
 
     /// Elements `offset .. offset + len` (kernel order) of instance signal `sig`.

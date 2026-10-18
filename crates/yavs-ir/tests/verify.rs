@@ -96,6 +96,19 @@ fn malformed_ir_is_rejected() {
             fb.emit(Inst::Ret { v: None });
         },
     );
+    // A slice of a signal reference takes a reference, not an integer.
+    expect(FuncKind::Process, "expected Some(Sig)", |fb| {
+        fb.stmt(StmtKind::Null, sp());
+        let i = fb.int(1);
+        let dst = fb.reg(RegTy::Sig);
+        fb.emit(Inst::SigSlice {
+            dst,
+            sig: i,
+            offset: i,
+            len: i,
+        });
+        fb.emit(Inst::Ret { v: None });
+    });
     expect(FuncKind::Procedure, "return value does not match", |fb| {
         fb.stmt(StmtKind::Return, sp());
         let z = fb.int(0);

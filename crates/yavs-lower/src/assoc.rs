@@ -1,6 +1,7 @@
 //! Individual association of subprogram parameters (LRM 6.5.7.1, `Actual::Individual`): the
 //! formal is a temporary of its subtype, each part copied in before the call and, for `out`
-//! and `inout`, back after it. A signal formal is a reference, so it takes one part only.
+//! and `inout`, back after it. A signal formal is a reference: of the one actual of a single
+//! part, or of several parts (`Inst::SigParts`, #71).
 //! Conversions (`Actual::Converted`) use the same temporary: copied in through the actual
 //! part for `inout`, back through the formal part.
 
@@ -29,16 +30,26 @@ impl Fx<'_, '_> {
         let Some(f) = p.decl else {
             return Err(self.cx.ice(span, "parameter without a declaration"));
         };
+        let sh = shape(db, self.cx, p, span)?;
+        if let Shape::RecSig(out) = sh {
+            return self.rec_sig_parts(f, p, parts, out, span, cells);
+        }
         let dope = self.formal_dope(p, parts, span)?;
-        match shape(db, self.cx, p, span)? {
+        match sh {
+            sh @ (Shape::Sig | Shape::SigOut) if parts.len() > 1 => {
+                let out = sh == Shape::SigOut;
+                let sref = self.sig_parts(f, p, parts, dope, out, span)?;
+                cells.push(sref);
+                if out {
+                    // Each part drives through the slot it carries (`Inst::SigParts`).
+                    let none = self.int(-1);
+                    cells.push(none);
+                }
+                cells.extend(dope);
+            }
             sh @ (Shape::Sig | Shape::SigOut) => {
-                // ponytail: one part only; parts in several signals need a reference that
-                // spans kernel ranges of different signals (#71).
                 let [(_, e, _)] = parts else {
-                    return Err(self.cx.unsupported(
-                        span,
-                        "individual association of a signal parameter with more than one part",
-                    ));
+                    return Err(self.cx.ice(span, "individual association without parts"));
                 };
                 let (d, sref, adope) = self.sig_name(*e)?;
                 cells.push(sref);
@@ -184,6 +195,245 @@ impl Fx<'_, '_> {
         };
         let part: Part = (Box::new([]), actual, copy_out);
         self.writeback_parts.push((obj, f, Box::new([part])));
+        Ok(())
+    }
+
+    /// A reference of several parts for signal formal `f` (of parameter `p`, with descriptor
+    /// `dope` for an array): each part's actual with its driver slot for `out`/`inout`, at the
+    /// formal's kernel offset its formal part names. The offset comes from the one walk of
+    /// signal names (rule 2): the formal is bound to a reference of signal 0 from element 0
+    /// while its formal parts are lowered, so a part's reference starts at its offset.
+    fn sig_parts(
+        &mut self,
+        f: DeclId,
+        p: &Param,
+        parts: &[Part],
+        dope: Option<Reg>,
+        out: bool,
+        span: Span,
+    ) -> R<Reg> {
+        let n = parts.len() as u32;
+        let table = self.alloc_n(n * yavs_ir::SIG_PART_BYTES);
+        for (k, &(_, e, _)) in parts.iter().enumerate() {
+            let (d, sref, _) = self.sig_name(e)?;
+            let slot = if out {
+                self.out_driver_slot(d, e)?
+            } else {
+                self.int(-1)
+            };
+            let at = self.offset(table, k as u32 * yavs_ir::SIG_PART_BYTES);
+            self.store(at, sref, Width::Sig);
+            let s = self.offset(at, 16);
+            self.store(s, slot, Width::B8);
+        }
+        // The formal seen as `[signal 0, offset 0, all elements][descriptor]`.
+        let total = match dope {
+            Some(dope) => self.leaf_count(self.db.base(p.subtype), dope, &[], span)?,
+            None => self.int(1),
+        };
+        let fake = self.fb.slot(24, 8);
+        let a = self.addr(Space::Frame(self.depth), fake);
+        let z = self.int(0);
+        self.store(a, z, Width::B8);
+        let l = self.offset(a, 8);
+        self.store(l, total, Width::B8);
+        if let Some(dope) = dope {
+            let dp = self.offset(a, 16);
+            self.store(dp, dope, Width::B8);
+        }
+        let obj = Obj::SignalRef {
+            space: Space::Frame(self.depth),
+            off: fake,
+            out: false,
+        };
+        let saved = self.cx.objs.insert(f, obj);
+        let r = (|| {
+            for (k, &(_, _, formal)) in parts.iter().enumerate() {
+                let (_, fref, _) = self.sig_name(formal)?;
+                let buf = self.alloc_n(16);
+                self.store(buf, fref, Width::Sig);
+                let first = self.load(buf, Width::B8, RegTy::I64);
+                let at = self.offset(table, k as u32 * yavs_ir::SIG_PART_BYTES + 24);
+                self.store(at, first, Width::B8);
+            }
+            Ok(())
+        })();
+        match saved {
+            Some(o) => self.cx.objs.insert(f, o),
+            None => self.cx.objs.remove(&f),
+        };
+        r?;
+        let dst = self.reg(RegTy::Sig);
+        let n = self.int(i64::from(n));
+        self.emit(Inst::SigParts {
+            dst,
+            parts: table,
+            n,
+        });
+        Ok(dst)
+    }
+
+    /// The cells of signal formal `f` with records in its type (`Shape::RecSig`) associated
+    /// part by part: per leaf of the formal a reference of the parts that cover it, each
+    /// with its driver slot (`out`), at the leaf offsets the formal parts name (found as in
+    /// [`Fx::sig_parts`], the formal bound to references from element 0), then the unused
+    /// slot cell and the formal's descriptor.
+    fn rec_sig_parts(
+        &mut self,
+        f: DeclId,
+        p: &Param,
+        parts: &[Part],
+        out: bool,
+        span: Span,
+        cells: &mut Vec<Reg>,
+    ) -> R<()> {
+        let db = self.db;
+        let leaves = crate::ty::leaves(db, p.subtype);
+        let t = self.ty(db.base(p.subtype), span)?;
+        let desc = if yavs_ir::Ty::needs_desc(self.fb.program().types(), t) {
+            match self.desc_of(p.subtype, None, span)? {
+                Some(d) => Some(d),
+                None => {
+                    return Err(self.cx.unsupported(
+                        span,
+                        "individual association of an unconstrained composite signal formal",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        // The formal as `[signal 0, offset 0, all of leaf k]` per leaf, then its descriptor.
+        let n = leaves.len() as u32;
+        let fake = self.fb.slot(16 * n + 8, 8);
+        let root = match desc {
+            Some(d) => d,
+            None => match self.desc_of(p.subtype, None, span)? {
+                Some(d) => d,
+                None => return Err(self.cx.ice(span, "composite signal without a descriptor")),
+            },
+        };
+        for (k, (path, _)) in leaves.iter().enumerate() {
+            let total = self.leaf_count(db.base(p.subtype), root, path, span)?;
+            let a = self.addr(Space::Frame(self.depth), fake + 16 * k as u32);
+            let z = self.int(0);
+            self.store(a, z, Width::B8);
+            let l = self.offset(a, 8);
+            self.store(l, total, Width::B8);
+        }
+        if let Some(d) = desc {
+            let a = self.addr(Space::Frame(self.depth), fake + 16 * n);
+            self.store(a, d, Width::B8);
+        }
+        let rec: Vec<crate::RecLeaf> = leaves
+            .iter()
+            .enumerate()
+            .map(|(k, (path, st))| crate::RecLeaf {
+                path: path.clone(),
+                st: *st,
+                sig: k as u32,
+            })
+            .collect();
+        let param = crate::RecParam {
+            space: Space::Frame(self.depth),
+            off: fake,
+            leaves: n,
+            out: false,
+            desc: desc.is_some(),
+        };
+        // Per formal leaf: (actual reference, slot, first element) of each part over it.
+        let mut per: Vec<Vec<(Reg, Reg, Reg)>> = vec![Vec::new(); leaves.len()];
+        for &(_, e, formal) in parts {
+            let es = db.exprs[e].span;
+            // The actual's leaves, in order, each with its driver slot.
+            let mut actual = Vec::new();
+            if let Some((d, steps)) = self.comp_steps(e) {
+                let part = self.comp_select(d, &steps, es)?;
+                let slot0 = if out {
+                    Some(self.leaf_slot(d, e, &part, es)?)
+                } else {
+                    None
+                };
+                for (j, (_, r, _)) in part.leaves.iter().enumerate() {
+                    let slot = match slot0 {
+                        Some(s0) => {
+                            let j = self.int(j as i64);
+                            self.bin(yavs_ir::IntOp::Add, s0, j)
+                        }
+                        None => self.int(-1),
+                    };
+                    actual.push((*r, slot));
+                }
+            } else {
+                let (d, r, _) = self.sig_name(e)?;
+                let slot = if out {
+                    self.out_driver_slot(d, e)?
+                } else {
+                    self.int(-1)
+                };
+                actual.push((r, slot));
+            }
+            let saved = (
+                self.cx.objs.insert(f, Obj::RecSignal(Some(param))),
+                self.cx.rec_leaves.insert(f, rec.clone()),
+            );
+            let r = (|| {
+                let Some((d, steps)) = self.comp_steps(formal) else {
+                    return Err(self.cx.ice(span, "formal part is not a name of the formal"));
+                };
+                self.comp_select(d, &steps, db.exprs[formal].span)
+            })();
+            match saved.0 {
+                Some(o) => self.cx.objs.insert(f, o),
+                None => self.cx.objs.remove(&f),
+            };
+            match saved.1 {
+                Some(o) => self.cx.rec_leaves.insert(f, o),
+                None => self.cx.rec_leaves.remove(&f),
+            };
+            let fpart = r?;
+            if fpart.leaves.len() != actual.len() {
+                return Err(self.cx.ice(es, "formal part and actual differ in leaves"));
+            }
+            for ((leaf, fref, _), (aref, slot)) in fpart.leaves.iter().zip(actual) {
+                let buf = self.alloc_n(16);
+                self.store(buf, *fref, Width::Sig);
+                let first = self.load(buf, Width::B8, RegTy::I64);
+                let k = leaf.sig as usize;
+                per.get_mut(k)
+                    .ok_or_else(|| self.cx.ice(es, "formal part outside the formal"))?
+                    .push((aref, slot, first));
+            }
+        }
+        for entries in per {
+            let m = entries.len() as u32;
+            if m == 0 {
+                return Err(self.cx.ice(span, "a leaf of the formal is not associated"));
+            }
+            let table = self.alloc_n(m * yavs_ir::SIG_PART_BYTES);
+            for (k, (r, slot, first)) in entries.into_iter().enumerate() {
+                let at = self.offset(table, k as u32 * yavs_ir::SIG_PART_BYTES);
+                self.store(at, r, Width::Sig);
+                let s = self.offset(at, 16);
+                self.store(s, slot, Width::B8);
+                let fa = self.offset(at, 24);
+                self.store(fa, first, Width::B8);
+            }
+            let dst = self.reg(RegTy::Sig);
+            let m = self.int(i64::from(m));
+            self.emit(Inst::SigParts {
+                dst,
+                parts: table,
+                n: m,
+            });
+            cells.push(dst);
+        }
+        if out {
+            // Each leaf drives through the slots its parts carry.
+            let none = self.int(-1);
+            cells.push(none);
+        }
+        cells.extend(desc);
         Ok(())
     }
 

@@ -37,6 +37,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | Every instruction carries a `StmtId` (span, statement id) | Stepping, coverage, DAP, stack traces | `docs/plan.md` "Designed for the GUI", ir.md 1.1 |
 | Constraints are runtime descriptors on every composite; static ones are pool constants | Rule 1 | `docs/plan.md` rule 1, ir.md 1.3 |
 | Registers are untyped u64 cells; addresses `[space:3 | index:29 | offset:32]` over eight spaces; out-of-object access is an ICE | Memory model | `docs/decisions.md` "IR and interpreter (M2)", ir.md 1.4 |
+| A signal reference is two registers: one range of one instance signal, or (`SigParts`) a table of parts with a driver slot each; sliced only with `SigSlice` | Individually associated signal formals across signals (#71) without changing the calling convention | ir.md 1.8, `docs/decisions.md` "Multi-part signal references and port converters" |
 | Logic arrays are bit-planes; BIT/BOOLEAN elements use the std_ulogic codes of '0'/'1' | Shared plane ops (orchestrator, 2026-10-18) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes" |
 | Constant aggregates are compact (`ConstData` run-length / `others`) | Rule 12 | `docs/plan.md` rule 12 |
 | Natives named by `lib/NATIVE.md` symbol; `'image` is `yavs.attr.image` | One symbol table | `docs/decisions.md` "IR and interpreter", `lib/NATIVE.md` |

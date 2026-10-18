@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:signal_param_records:_p0	show 7 00 '1' event=false
+diag	note	0	1	:signal_param_records:_p0	show 42 10 '0' event=true
+diag	note	0	2	:signal_param_records:_p0	show 2 00 '0' event=true
+diag	note	0	2	:signal_param_records:_p0	show 2 00 '0' event=true
+diag	note	0	2	:signal_param_records:_p0	c 42
+diag	note	0	3	:signal_param_records:_p0	show 0 00 '0' event=true
+diag	note	0	3	:signal_param_records:_p0	c -1

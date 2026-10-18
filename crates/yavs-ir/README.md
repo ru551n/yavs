@@ -40,6 +40,10 @@ textual dump.
 
 ## Changes
 
+- `Inst::SigParts` and `Inst::SigSlice` (#71): signal references of several parts, possibly in
+  different signals, in the same two registers (ir.md 1.8); `SIG_PART_BYTES` is the size of a
+  `SigParts` entry. Producers slice references with `SigSlice`, never with arithmetic on the
+  packed cell.
 - `Program.reflect` (`Refl`, `ReflKind`, `ReflId`): subtype descriptions for `std.reflection`
   mirrors, built by `ProgramBuilder::reflect` / `reflect_set`; `yavs.attr.reflect` takes
   `(refl, is_value, v)` (yavs-interp `reflect.rs`).

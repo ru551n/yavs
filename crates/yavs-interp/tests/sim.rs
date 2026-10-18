@@ -1420,3 +1420,177 @@ fn elaboration_call_with_composites() {
     );
     assert_eq!(r.unwrap(), Some(v));
 }
+
+/// A reference of several parts (`SigParts`, #71): `x(0) => a, x(1 to 2) => b` given out of
+/// order, driven, read whole and sliced across the parts, and waited on.
+#[test]
+fn signal_reference_of_several_parts() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    // `[parts]` with b first: entries [ref, slot, first element].
+    let parts = |fb: &mut FuncBuilder<'_>| {
+        let size = fb.int(2 * i64::from(SIG_PART_BYTES));
+        let t = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: t, size });
+        for (k, (s, len, slot, first)) in [(1, 2, 1, 1), (0, 1, 0, 0)].into_iter().enumerate() {
+            let r = sig(fb, s, 0, len);
+            let at = fb.reg(RegTy::Ptr);
+            let o = fb.int(k as i64 * i64::from(SIG_PART_BYTES));
+            fb.emit(Inst::Index {
+                dst: at,
+                base: t,
+                pos: o,
+                stride: 1,
+            });
+            fb.emit(Inst::Store {
+                addr: at,
+                src: r,
+                w: Width::Sig,
+            });
+            for (off, v) in [(16, slot), (24, first)] {
+                let c = fb.int(off);
+                let a = fb.reg(RegTy::Ptr);
+                fb.emit(Inst::Index {
+                    dst: a,
+                    base: at,
+                    pos: c,
+                    stride: 1,
+                });
+                let v = fb.int(v);
+                fb.emit(Inst::Store {
+                    addr: a,
+                    src: v,
+                    w: Width::B8,
+                });
+            }
+        }
+        let n = fb.int(2);
+        let x = fb.reg(RegTy::Sig);
+        fb.emit(Inst::SigParts {
+            dst: x,
+            parts: t,
+            n,
+        });
+        x
+    };
+    let p = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(p);
+        stmt(&mut fb, StmtKind::SigAssign);
+        let x = parts(&mut fb);
+        // x <= (10, 20, 30) after 1 ns, through each part's own slot.
+        let size = fb.int(32);
+        let wave = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: wave, size });
+        for (k, v) in [NS, 10, 20, 30].into_iter().enumerate() {
+            let at = fb.reg(RegTy::Ptr);
+            let o = fb.int(8 * k as i64);
+            fb.emit(Inst::Index {
+                dst: at,
+                base: wave,
+                pos: o,
+                stride: 1,
+            });
+            let v = fb.int(v);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: v,
+                w: Width::B8,
+            });
+        }
+        let (none, one) = (fb.int(-1), fb.int(1));
+        fb.emit(Inst::DriveSlot {
+            slot: none,
+            target: x,
+            wave,
+            n: one,
+            mode: DriveMode::Transport,
+            reject: None,
+        });
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let q = pb.declare("q", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(q);
+        stmt(&mut fb, StmtKind::Report);
+        let x = parts(&mut fb);
+        let size = fb.int(24);
+        let buf = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: buf, size });
+        fb.emit(Inst::SigRead { dst: buf, sig: x });
+        for k in 0..3 {
+            let v = load_at(&mut fb, buf, 8 * k);
+            report_image(&mut fb, &format!("x({k}) = "), int, v);
+        }
+        let (one, two) = (fb.int(1), fb.int(2));
+        let tail = fb.reg(RegTy::Sig);
+        fb.emit(Inst::SigSlice {
+            dst: tail,
+            sig: x,
+            offset: one,
+            len: two,
+        });
+        let ev = fb.reg(RegTy::I64);
+        fb.emit(Inst::SigAttr {
+            dst: ev,
+            kind: AttrKind::Event,
+            sig: tail,
+        });
+        report_image(&mut fb, "x(1 to 2)'event = ", int, ev);
+        stmt(&mut fb, StmtKind::Wait);
+        let x = parts(&mut fb);
+        fb.emit(Inst::WaitOn { sig: x });
+        fb.emit(Inst::Suspend { resume: 0 });
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.signals = vec![byte_sig("a", 1, 8), byte_sig("b", 2, 8)];
+    d.procs = vec![
+        ProcSpec {
+            name: "p",
+            func: p,
+            drives: vec![(0, 1), (1, 2)],
+        },
+        ProcSpec {
+            name: "q",
+            func: q,
+            drives: vec![],
+        },
+    ];
+    let (lines, r) = d.run(Time::ns(10));
+    assert_eq!(r, Ok(RunStatus::Ended(EndReason::Idle)));
+    let reports: Vec<&String> = lines.iter().filter(|l| l.contains("Note")).collect();
+    assert_eq!(
+        reports,
+        [
+            "0 fs +0 p1 Note: x(0) = 0",
+            "0 fs +0 p1 Note: x(1) = 0",
+            "0 fs +0 p1 Note: x(2) = 0",
+            "0 fs +0 p1 Note: x(1 to 2)'event = 0",
+            "1 ns +0 p1 Note: x(0) = 10",
+            "1 ns +0 p1 Note: x(1) = 20",
+            "1 ns +0 p1 Note: x(2) = 30",
+            "1 ns +0 p1 Note: x(1 to 2)'event = 1",
+        ]
+    );
+}
+
+fn load_at(fb: &mut FuncBuilder<'_>, base: Reg, off: i64) -> Reg {
+    let at = fb.reg(RegTy::Ptr);
+    let o = fb.int(off);
+    fb.emit(Inst::Index {
+        dst: at,
+        base,
+        pos: o,
+        stride: 1,
+    });
+    let v = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: v,
+        addr: at,
+        w: Width::B8,
+    });
+    v
+}

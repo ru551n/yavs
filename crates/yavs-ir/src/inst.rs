@@ -9,6 +9,9 @@ use crate::{
     BlockId, CaseTableId, CheckMsgId, ConstId, CovItem, ForeignId, FuncId, NativeId, TyId,
 };
 
+/// Bytes of one entry of [`Inst::SigParts`]: reference, driver slot, first element.
+pub const SIG_PART_BYTES: u32 = 32;
+
 /// A register: an untyped 64-bit cell. A `Sig` value takes two consecutive registers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u32);
@@ -40,7 +43,8 @@ pub enum RegTy {
     F64,
     /// An address (`Addr`).
     Ptr,
-    /// A signal reference `{base, offset}` in this register and `len` in the next.
+    /// A signal reference in two registers: `{base, offset}` and `len` (one range of one
+    /// instance signal), or a reference of several parts (`Inst::SigParts`).
     Sig,
 }
 
@@ -525,6 +529,24 @@ pub enum Inst {
         offset: Reg,
         len: Reg,
     },
+    /// A signal reference over several parts, possibly in different signals, in order of
+    /// the referenced object's kernel elements (an individually associated signal parameter,
+    /// #71). `parts` holds `n` entries of [`SIG_PART_BYTES`]: a signal reference (16 bytes),
+    /// the caller's driver slot for it (`-1`: none) and the part's first element in the whole
+    /// (8 bytes each). The entries tile `0 .. total` in any order; a part may itself be a
+    /// reference of several parts.
+    SigParts {
+        dst: Reg,
+        parts: Reg,
+        n: Reg,
+    },
+    /// Elements `offset .. offset + len` of signal reference `sig`, of either form.
+    SigSlice {
+        dst: Reg,
+        sig: Reg,
+        offset: Reg,
+        len: Reg,
+    },
     SigRead {
         dst: Reg,
         sig: Reg,
@@ -906,6 +928,22 @@ impl Inst {
                 dst, offset, len, ..
             } => {
                 d(dst, s);
+                f(offset, Use, i);
+                f(len, Use, i);
+            }
+            Inst::SigParts { dst, parts, n } => {
+                d(dst, s);
+                f(parts, Use, p);
+                f(n, Use, i);
+            }
+            Inst::SigSlice {
+                dst,
+                sig,
+                offset,
+                len,
+            } => {
+                d(dst, s);
+                f(sig, Use, s);
                 f(offset, Use, i);
                 f(len, Use, i);
             }

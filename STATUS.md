@@ -63,7 +63,7 @@ An installed binary finds `lib/` next to itself (#43).
   slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
   typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210); the elements of an unconstrained formal must form a
   contiguous range, each once: a gap is `E1311`, a repeat `E1310` (#224).
-  Lowering runs them (#71), except signal formals with more than one part.
+  Lowering runs them (#71), signal formals with several parts too.
 - Conversions in subprogram call associations (`seti(to_r(x) => r)`, `inc(real(x) =>
   integer(r))`, #229) resolve to `Actual::Converted`, per overload candidate; conversions the
   formal's class or mode does not allow are `E1313` (6.5.7.1, 4.2.2.3). Lowering copies in
@@ -188,7 +188,7 @@ expressions with runtime descriptors (bit-planes for logic arrays), aggregates, 
 attributes including 'path_name/'instance_name, 'driving/'driving_value and signal attributes
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
-(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal takes one part, #71); parameters associated through conversions (copy-in through the actual part, copy-out through the formal part, #229); nested names of signals of arrays of arrays
+(arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal of several parts, also in different signals and field by field for records, is a reference of several parts, #71); parameters associated through conversions (copy-in through the actual part, copy-out through the formal part, #229); nested names of signals of arrays of arrays
 (`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`, below a slice `m(0 to 1)(0)`, through subtype
 aliases) as targets, actuals and sensitivity (#89, #230); 2008 array-valued pieces of
 positional aggregates as values and targets, and of named aggregates and arrays with open
@@ -347,7 +347,8 @@ std.textio (read/write of every textio type, linear in the line length over many
 readline/writeline/tee, hread/oread/sread, justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version
 strings, time conversions, resolution_limit, the 2019 time_record functions, call paths and
 the VHDL assert state), VHPIDIRECT calls with scalars, arrays,
-records and access values (copy-back included), runtime errors with the VHDL stack as
+records and access values (copy-back included), signal references of several parts in
+different signals (`SigParts`, `SigSlice`, #71), runtime errors with the VHDL stack as
 `SimError::trace`, and debug hooks in the style of commercial simulators (docs/design/ir.md 3.4).
 
 Tests (`cargo test -p yavs-ir -p yavs-interp`): 11 end-to-end designs run through the kernel at

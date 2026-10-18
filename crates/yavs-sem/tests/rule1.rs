@@ -1350,7 +1350,6 @@ fn f6_alias_of_record_element() {
 
 /// F7: after instantiation, `BoundsFrom` and the fully-constrained check follow the actual.
 #[test]
-#[ignore = "finding F7 (#109): instance objects keep the generic's BoundsFrom; no E1212 for `signal s : t`"]
 fn f7_instance_rechecks_constraints() {
     let db = analyze(
         "f7",
@@ -1545,8 +1544,7 @@ mod corpus {
                 _ => false,
             })
             .count();
-        // ponytail: asserts the finding's current count; becomes 0 when F7 is fixed.
-        assert_eq!(stale, 53, "objects with stale BoundsFrom (F7)");
+        assert_eq!(stale, 0, "objects with stale BoundsFrom (F7, #109)");
     }
 
     /// VUnit: a record of unconstrained vectors (axi_stream_pkg.vhd:369-377) passed as an

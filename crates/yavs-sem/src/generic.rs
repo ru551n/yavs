@@ -1976,7 +1976,7 @@ impl Db {
             DeclKind::Unit(u) => DeclKind::Unit(*u),
             DeclKind::Type(t) => DeclKind::Type(self.r_ty(r, *t)),
             DeclKind::Subtype(s) => DeclKind::Subtype(self.r_subtype(r, *s)),
-            DeclKind::Object(o) => DeclKind::Object(self.r_object(r, o)),
+            DeclKind::Object(o) => DeclKind::Object(self.r_object(r, new, o)),
             DeclKind::Subprogram(s) => DeclKind::Subprogram(self.r_subprogram(r, new, s)),
             DeclKind::GenericSubprogram(s) => {
                 DeclKind::GenericSubprogram(self.r_subprogram(r, new, s))
@@ -2101,18 +2101,55 @@ impl Db {
         c
     }
 
-    fn r_object(&mut self, r: &mut Remap, o: &Object) -> Object {
+    fn r_object(&mut self, r: &mut Remap, new: DeclId, o: &Object) -> Object {
+        let subtype = self.r_subtype(r, o.subtype);
         Object {
             class: o.class,
             role: o.role.clone(),
             mode: o.mode,
-            subtype: self.r_subtype(r, o.subtype),
+            subtype,
             default: o.default.map(|e| self.r_expr(r, e)),
-            bounds: o.bounds,
+            bounds: self.r_bounds(r, new, o, subtype),
             signal_kind: o.signal_kind,
             file_open: o
                 .file_open
                 .map(|(k, n)| (k.map(|k| self.r_expr(r, k)), self.r_expr(r, n))),
+        }
+    }
+
+    /// Where a cloned object's bounds come from, from its substituted subtype: a
+    /// generic type counts as fully constrained in the generic unit, the actual may
+    /// not be (rule 1: decided again here, never inherited). A signal or variable
+    /// whose subtype is no longer fully constrained is `E1212`, as in NVC and Questa.
+    fn r_bounds(&mut self, r: &mut Remap, new: DeclId, o: &Object, st: SubtypeId) -> BoundsFrom {
+        if o.bounds != BoundsFrom::Subtype || self.constrainedness(st) == Constrainedness::Full {
+            return o.bounds;
+        }
+        match (&o.role, o.class) {
+            (ObjRole::Param | ObjRole::Port | ObjRole::Generic, _) => BoundsFrom::Actual,
+            (ObjRole::Deferred, _) => BoundsFrom::Initializer,
+            (_, ObjClass::Constant) if o.default.is_some() => BoundsFrom::Initializer,
+            _ => {
+                let name = self.decls[new].name;
+                let what = match o.class {
+                    ObjClass::Signal => "signal",
+                    ObjClass::Constant => "constant",
+                    _ => "variable",
+                };
+                self.report(
+                    Diagnostic::error(
+                        diag::NOT_FULLY_CONSTRAINED,
+                        format!("{what} `{name}` needs a fully constrained subtype"),
+                    )
+                    .with_primary(self.decls[new].name_span(), "declared here")
+                    .with_note(format!(
+                        "in this instance its subtype is `{}`, which is not fully constrained",
+                        self.subtype_name(st)
+                    )),
+                );
+                r.failed = true;
+                o.bounds
+            }
         }
     }
 

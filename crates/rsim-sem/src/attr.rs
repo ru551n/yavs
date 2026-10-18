@@ -739,6 +739,25 @@ fn class_holds(db: &Db, class: Class, prefix: &Prefix) -> bool {
     if matches!(kind, TypeKind::Error) {
         return true;
     }
+    // A generic type has the attributes of its class (2019 6.5.3, generic.rs).
+    if let TypeKind::Generic { class: g } = kind {
+        use crate::generic::GenericClass as G;
+        let scalar = !matches!(
+            g,
+            G::Private | G::Array { .. } | G::Access { .. } | G::File { .. }
+        );
+        let discrete = matches!(g, G::Discrete | G::Integer);
+        return match class {
+            Class::Any => true,
+            Class::Scalar | Class::Representable => scalar,
+            Class::Discrete => discrete,
+            Class::DiscreteOrPhysical => discrete || matches!(g, G::Physical),
+            Class::Array => matches!(g, G::Array { .. }),
+            Class::ConstrainedArray => matches!(g, G::Array { .. }) && prefix.fully_constrained,
+            Class::AccessOrFile => matches!(g, G::Access { .. } | G::File { .. }),
+            Class::Constrained => prefix.fully_constrained,
+        };
+    }
     match class {
         Class::Any => true,
         Class::Scalar => kind.is_scalar(),

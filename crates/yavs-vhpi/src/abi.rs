@@ -470,6 +470,8 @@ pub unsafe extern "C" fn vhpi_check_error(info: *mut vhpiErrorInfoT) -> c_int {
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_is_printable(ch: c_char) -> c_int {
     with_state(|_| ());
+    // c_char is i8 on x86_64 and Windows, u8 on aarch64 Linux.
+    #[allow(clippy::unnecessary_cast)]
     let ch = ch as u8;
     c_int::from((0x20..=0x7e).contains(&ch) || ch >= 0xa0)
 }

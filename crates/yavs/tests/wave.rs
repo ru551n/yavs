@@ -35,6 +35,7 @@ fn analyze(dir: &Path, file: &Path, std: &str) -> bool {
 fn run(dir: &Path, args: &[&str]) -> Output {
     let work = format!("--work=work:{}", dir.join("lib").display());
     yavs()
+        .current_dir(dir)
         .args(["run", &work])
         .args(args)
         .output()

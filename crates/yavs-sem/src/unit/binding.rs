@@ -1241,7 +1241,85 @@ impl Db {
             }
             out.push((steps.into_boxed_slice(), id, fe));
         }
+        if !errs.0 && out.len() == parts.len() {
+            let spans: Vec<Span> = parts.iter().map(|p| p.1).collect();
+            if let Err(e) = self.check_contiguous(f, &out, &spans) {
+                errs.keep::<()>(Err(e));
+            }
+        }
         errs.finish(Actual::Individual(out.into()))
+    }
+
+    /// 6.5.7.1: the sub-elements associated individually with an unconstrained
+    /// one-dimensional array formal form a contiguous index range, each element once.
+    /// Only locally static integer or enumeration indices and ranges are checked.
+    // ponytail: scalar-index checks only; multidimensional formals and non-folded
+    // bounds are not checked.
+    fn check_contiguous(
+        &mut self,
+        f: DeclId,
+        out: &[(Box<[crate::hir::LspStep]>, ExprId, ExprId)],
+        spans: &[Span],
+    ) -> Result<(), Reported> {
+        use crate::hir::{Direction, LspStep, RangeC};
+        let DeclKind::Object(o) = &self.decls[f].kind else { return Ok(()) };
+        let unconstrained = matches!(
+            self.subtypes[o.subtype].constraint,
+            crate::types::Constraint::None | crate::types::Constraint::Array { dims: None, .. }
+        ) && matches!(self.types[self.base(o.subtype)].kind, crate::types::TypeKind::Array { .. });
+        if !unconstrained {
+            return Ok(());
+        }
+        // (lo, hi, whole element, span) per association, null ranges dropped.
+        let mut iv: Vec<(i64, i64, bool, Span)> = Vec::new();
+        for ((steps, ..), &sp) in out.iter().zip(spans) {
+            let (lo, hi) = match steps.first() {
+                Some(LspStep::Index(ix)) if ix.len() == 1 => {
+                    let Some(v) = self.value(ix[0]).and_then(|c| c.as_int()) else { return Ok(()) };
+                    (v, v)
+                }
+                Some(LspStep::Slice(RangeC::Explicit { left, dir, right })) => {
+                    let (Some(l), Some(r)) = (
+                        self.value(*left).and_then(|c| c.as_int()),
+                        self.value(*right).and_then(|c| c.as_int()),
+                    ) else {
+                        return Ok(());
+                    };
+                    if *dir == Direction::To { (l, r) } else { (r, l) }
+                }
+                _ => return Ok(()),
+            };
+            if lo <= hi {
+                iv.push((lo, hi, steps.len() == 1, sp));
+            }
+        }
+        iv.sort_by_key(|&(lo, hi, ..)| (lo, hi));
+        let mut next: Option<i64> = None;
+        for &(lo, hi, whole, sp) in &iv {
+            if let Some(n) = next {
+                if lo > n {
+                    let what = if lo - 1 == n {
+                        format!("index {n} of the formal has no actual")
+                    } else {
+                        format!("indices {n} to {} of the formal have no actual", lo - 1)
+                    };
+                    return Err(self.error(
+                        Diagnostic::error(diag::MISSING_ACTUAL, "gap in the individually associated formal")
+                            .with_primary(sp, "elements of the formal are skipped before this one")
+                            .with_note(what),
+                    ));
+                }
+                if lo < n && whole {
+                    return Err(self.error(
+                        Diagnostic::error(diag::FORMAL_TWICE, "element of the formal is associated twice")
+                            .with_primary(sp, "overlaps an earlier association")
+                            .with_note(format!("index {lo} of the formal is associated more than once")),
+                    ));
+                }
+            }
+            next = Some(next.map_or(hi + 1, |n| n.max(hi + 1)));
+        }
+        Ok(())
     }
 
     // -- configuration specifications and declarations -------------------------------

@@ -61,7 +61,8 @@ An installed binary finds `lib/` next to itself (#43).
   hints for calls from several packages and for vector/integer operators.
 - Subprogram calls with sub-element (individual) associations (`pr(x(0) => s)`, `f(r.i => 1)`,
   slices), also of unconstrained formals, resolve and give `Actual::Individual`; each actual is
-  typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210).
+  typed by its sub-element, a non-static formal index is `E1410`, whole and part `E1310` (#210); the elements of an unconstrained formal must form a
+  contiguous range, each once: a gap is `E1311`, a repeat `E1310` (#224).
   Lowering runs them (#71), except signal formals with more than one part.
 - Mixed 2008/2019 designs (#50, sem.md 0.1, `src/rev.rs`): under a 2019 design revision a 2008
   file that names a std/ieee declaration the 2008 copy lacks (`std.env.tool_name`,

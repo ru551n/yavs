@@ -565,3 +565,23 @@ fn interpreted_processes_restart() {
     assert_eq!(first, ["0 1 s=3", "2000000 1 s=5"]);
     assert_eq!(first, run(&e));
 }
+
+/// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).
+#[test]
+fn bit_and_boolean_use_std_ulogic_codes() {
+    let src = "entity t is end; architecture a of t is
+        signal v : bit_vector(0 to 2) := \"011\";
+        signal b : boolean := true;
+      begin end;";
+    let (_, e) = elab("bitcodes", src, "t", &[]);
+    let rsim_kernel::Value::Logic(v) = &e.nets.leaves[0].init else {
+        panic!("logic")
+    };
+    // Rightmost element first: '1', '1', '0' as codes 3, 3, 2.
+    let codes: Vec<u8> = (0..3).map(|i| v.get(i) as u8).collect();
+    assert_eq!(codes, [3, 3, 2]);
+    let rsim_kernel::Value::Logic(b) = &e.nets.leaves[1].init else {
+        panic!("logic")
+    };
+    assert_eq!(b.get(0) as u8, 3);
+}

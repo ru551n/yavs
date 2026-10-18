@@ -1440,7 +1440,7 @@ impl Model {
         init: Option<&Val>,
         at: Span,
     ) -> R<ObjId> {
-        let vals = leaf_values(&shape, init).map_err(|m| {
+        let vals = leaf_values(db, &shape, init).map_err(|m| {
             Box::new(
                 Diagnostic::error(
                     codes::EVAL_FAILED,

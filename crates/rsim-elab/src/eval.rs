@@ -626,12 +626,12 @@ fn flatten(
 }
 
 /// Initial kernel values of each leaf of `shape`, in leaf order.
-pub fn leaf_values(shape: &Shape, v: Option<&Val>) -> Result<Vec<Value>, String> {
+pub fn leaf_values(db: &Db, shape: &Shape, v: Option<&Val>) -> Result<Vec<Value>, String> {
     let mut flat = Vec::new();
     flatten(shape, v, &mut flat, &mut Vec::new())?;
     let mut out = Vec::new();
     for (path, leaf, n) in shape.leaves() {
-        let Shape::Scalar { elem, .. } = leaf else {
+        let Shape::Scalar { elem, ty, .. } = leaf else {
             continue;
         };
         let xs: Vec<&Val> = flat
@@ -640,18 +640,21 @@ pub fn leaf_values(shape: &Shape, v: Option<&Val>) -> Result<Vec<Value>, String>
             .map(|(v, _)| v)
             .collect();
         debug_assert_eq!(xs.len() as u64, n);
-        out.push(encode(*elem, &xs));
+        out.push(encode(*elem, !is_std_ulogic(db, *ty), &xs));
     }
     Ok(out)
 }
 
-/// Kernel bytes or planes of scalar values in row-major order.
-pub fn encode(elem: Elem, xs: &[&Val]) -> Value {
+/// Kernel bytes or planes of scalar values in row-major order. `bit01`: a BIT or BOOLEAN
+/// leaf, whose positions 0/1 are stored as the std_ulogic codes of '0'/'1' (2/3,
+/// docs/decisions.md).
+pub fn encode(elem: Elem, bit01: bool, xs: &[&Val]) -> Value {
     match elem {
         Elem::Logic => {
             let n = xs.len();
+            let off = if bit01 { 2 } else { 0 };
             Value::Logic(LogicVec::from_fn(n, |i| {
-                let code = xs[n - 1 - i].as_int().unwrap_or(0) as u8;
+                let code = xs[n - 1 - i].as_int().unwrap_or(0) as u8 + off;
                 rsim_logic::StdULogic::from_code_pub(code)
             }))
         }

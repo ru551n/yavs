@@ -1,0 +1,18 @@
+exit	0
+diag	note	0	0	:math_complex_ops:_p0	add 4000000 2000000
+diag	note	0	0	:math_complex_ops:_p0	sub 2000000 6000000
+diag	note	0	0	:math_complex_ops:_p0	mul 11000000 -2000000
+diag	note	0	0	:math_complex_ops:_p0	div -1000000 2000000
+diag	note	0	0	:math_complex_ops:_p0	neg -3000000 -4000000
+diag	note	0	0	:math_complex_ops:_p0	conj 3000000 -4000000
+diag	note	0	0	:math_complex_ops:_p0	mixed 4000000 4000000
+diag	note	0	0	:math_complex_ops:_p0	scale 2000000 -4000000
+diag	note	0	0	:math_complex_ops:_p0	abs 5000000 arg 927295
+diag	note	0	0	:math_complex_ops:_p0	polar 5000000 927295
+diag	note	0	0	:math_complex_ops:_p0	back 3000000 4000000
+diag	note	0	0	:math_complex_ops:_p0	sqrt 0 2000000
+diag	note	0	0	:math_complex_ops:_p0	exp -1000000 0
+diag	note	0	0	:math_complex_ops:_p0	log 1000000 0
+diag	note	0	0	:math_complex_ops:_p0	sin 1000000 0
+diag	note	0	0	:math_complex_ops:_p0	cos 1000000 0
+diag	note	0	0	:math_complex_ops:_p0	done

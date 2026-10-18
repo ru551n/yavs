@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:ieee_textio_2019:_p0	line [10ZX01HL C3 1110.1100 0:01111110:00000000000000000000000]
+diag	note	0	0	:ieee_textio_2019:_p0	read slv 10ZX01HL true
+diag	note	0	0	:ieee_textio_2019:_p0	read sfixed 1110.1100 true
+diag	note	0	0	:ieee_textio_2019:_p0	read float 0:01111110:00000000000000000000000 true
+diag	note	0	0	:ieee_textio_2019:_p0	done

@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:numeric_bit_ops:_p0	add 11000001 sub 10100111 mul 2340
+diag	note	0	0	:numeric_bit_ops:_p0	div 13 rem 11 mod 11
+diag	note	0	0	:numeric_bit_ops:_p0	sdiv -8 srem -5 smod 4
+diag	note	0	0	:numeric_bit_ops:_p0	abs 01001101 neg 11110111 resize 1110110011
+diag	note	0	0	:numeric_bit_ops:_p0	shift 01101000 11101100 11010000 01011010
+diag	note	0	0	:numeric_bit_ops:_p0	red '0' max 10110100
+diag	note	0	0	:numeric_bit_ops:_p0	done

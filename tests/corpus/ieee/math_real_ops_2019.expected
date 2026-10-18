@@ -1,0 +1,33 @@
+exit	0
+diag	note	0	0	:math_real_ops_2019:_p0	ceil 3000000
+diag	note	0	0	:math_real_ops_2019:_p0	floor -3000000
+diag	note	0	0	:math_real_ops_2019:_p0	round 3000000
+diag	note	0	0	:math_real_ops_2019:_p0	round_neg -3000000
+diag	note	0	0	:math_real_ops_2019:_p0	trunc -2000000
+diag	note	0	0	:math_real_ops_2019:_p0	sign -1000000
+diag	note	0	0	:math_real_ops_2019:_p0	mod 1500000
+diag	note	0	0	:math_real_ops_2019:_p0	realmax 2000000
+diag	note	0	0	:math_real_ops_2019:_p0	sqrt 1414214
+diag	note	0	0	:math_real_ops_2019:_p0	cbrt 3000000
+diag	note	0	0	:math_real_ops_2019:_p0	pow 1414214
+diag	note	0	0	:math_real_ops_2019:_p0	ipow 9000000
+diag	note	0	0	:math_real_ops_2019:_p0	exp 2718282
+diag	note	0	0	:math_real_ops_2019:_p0	log 1000000
+diag	note	0	0	:math_real_ops_2019:_p0	log2 3000000
+diag	note	0	0	:math_real_ops_2019:_p0	log10 3000000
+diag	note	0	0	:math_real_ops_2019:_p0	logb 4000000
+diag	note	0	0	:math_real_ops_2019:_p0	sin 500000
+diag	note	0	0	:math_real_ops_2019:_p0	cos 500000
+diag	note	0	0	:math_real_ops_2019:_p0	tan 1000000
+diag	note	0	0	:math_real_ops_2019:_p0	arcsin 1570796
+diag	note	0	0	:math_real_ops_2019:_p0	arccos 1570796
+diag	note	0	0	:math_real_ops_2019:_p0	arctan 785398
+diag	note	0	0	:math_real_ops_2019:_p0	arctan2 -2356194
+diag	note	0	0	:math_real_ops_2019:_p0	sinh 1175201
+diag	note	0	0	:math_real_ops_2019:_p0	cosh 1543081
+diag	note	0	0	:math_real_ops_2019:_p0	tanh 462117
+diag	note	0	0	:math_real_ops_2019:_p0	arcsinh 881374
+diag	note	0	0	:math_real_ops_2019:_p0	arccosh 1316958
+diag	note	0	0	:math_real_ops_2019:_p0	arctanh 549306
+diag	note	0	0	:math_real_ops_2019:_p0	uniform 171572 seeds 185014591 1964049897
+diag	note	0	0	:math_real_ops_2019:_p0	done

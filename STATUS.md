@@ -318,3 +318,9 @@ as `fatal` events. Normalisations for NVC's free choices (default assert message
 path, per-test `ignore=order`) are in `docs/decisions.md`. The 9 failures wait for sem (#1, #3)
 and lowering (out signal parameters, `'stable`, `'path_name`, guarded blocks, instantiated
 package bodies #101).
+
+IEEE packages from source (`tests/corpus/ieee`, #94): std_logic_1164, numeric_std, numeric_bit,
+math_real, math_complex, fixed_pkg and float_pkg bodies, 2008 and 2019, equal NVC at 1, 4 and 4
+shuffled threads (15 of 17); `ieee_warnings` (`ref=hand`) checks the numeric_std body's own
+warnings, which NVC omits. Open: `ieee_textio{,_2019}` (HREAD needs a logic slice as an out
+parameter in lowering, #194).

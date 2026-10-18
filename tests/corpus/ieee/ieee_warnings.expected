@@ -1,0 +1,6 @@
+exit	0
+diag	warning	0	0	:ieee_warnings:_p0	NUMERIC_STD.TO_UNSIGNED: vector truncated
+diag	note	0	0	:ieee_warnings:_p0	trunc 00101100
+diag	warning	0	0	:ieee_warnings:_p0	NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0
+diag	note	0	0	:ieee_warnings:_p0	meta 0
+diag	warning	0	0	:ieee_warnings:_p0	NUMERIC_STD."/=": metavalue detected, returning TRUE

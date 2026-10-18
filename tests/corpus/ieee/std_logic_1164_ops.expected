@@ -1,0 +1,13 @@
+exit	0
+diag	note	1000000	0	:std_logic_1164_ops:_p3	resolved '1'
+diag	note	1000000	0	:std_logic_1164_ops:_p3	and 1000 or 1110 xor 0110
+diag	note	1000000	0	:std_logic_1164_ops:_p3	nand 0111 nor 0001 xnor 1001
+diag	note	1000000	0	:std_logic_1164_ops:_p3	not 0101XX1U
+diag	note	1000000	0	:std_logic_1164_ops:_p3	reduce and='0' or='1' xor='0'
+diag	note	1000000	0	:std_logic_1164_ops:_p3	x01 1010XX0X x01z 1010ZX0X ux01 1010XX0U
+diag	note	1000000	0	:std_logic_1164_ops:_p3	bv 1100 slv 1100
+diag	note	1000000	0	:std_logic_1164_ops:_p3	sll 1000 srl 0011 rol 1001 ror 1001
+diag	note	1000000	0	:std_logic_1164_ops:_p3	hstring A5 ostring 56
+diag	note	1000000	0	:std_logic_1164_ops:_p3	match '1' '1' '1'
+diag	note	9000000	0	:std_logic_1164_ops:_p3	rises 4
+diag	note	9000000	0	:std_logic_1164_ops:_p3	done

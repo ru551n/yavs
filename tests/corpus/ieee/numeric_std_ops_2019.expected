@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:numeric_std_ops_2019:_p0	add 00000001 sub 10001111 mul 0010110010001000
+diag	note	0	0	:numeric_std_ops_2019:_p0	div 3 rem 29 mod 29
+diag	note	0	0	:numeric_std_ops_2019:_p0	sdiv -2 srem -26 smod 11
+diag	note	0	0	:numeric_std_ops_2019:_p0	sadd 11000001 smul -3700 abs 01100100 neg 11011011
+diag	note	0	0	:numeric_std_ops_2019:_p0	resize 111110011100 1000 0101
+diag	note	0	0	:numeric_std_ops_2019:_p0	shift 00100000 11110011 11001001 10011100
+diag	note	0	0	:numeric_std_ops_2019:_p0	sum of squares 42925
+diag	note	0	0	:numeric_std_ops_2019:_p0	slv 11001000 back 57
+diag	note	0	0	:numeric_std_ops_2019:_p0	find 7 3
+diag	note	0	0	:numeric_std_ops_2019:_p0	q 32767
+diag	note	0	0	:numeric_std_ops_2019:_p0	and 00001000 xor 10111001 red '0'
+diag	note	0	0	:numeric_std_ops_2019:_p0	done

@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:fixed_pkg_ops:_p0	a 0001.1000 b 1101.1100 c 00110.011
+diag	note	0	0	:fixed_pkg_ops:_p0	add 11111.0100 sub 00011.1100 mul 11111100.10100000
+diag	note	0	0	:fixed_pkg_ops:_p0	uadd 001000.001 umul 00001011.00101
+diag	note	0	0	:fixed_pkg_ops:_p0	div 0000011.101001 real 3641
+diag	note	0	0	:fixed_pkg_ops:_p0	neg 11110.1000 abs 00010.0100
+diag	note	0	0	:fixed_pkg_ops:_p0	round 0011.00
+diag	note	0	0	:fixed_pkg_ops:_p0	saturate 0111.11
+diag	note	0	0	:fixed_pkg_ops:_p0	int -5 slv 00011000
+diag	note	0	0	:fixed_pkg_ops:_p0	hstr 06.6 ostr 01.40
+diag	note	0	0	:fixed_pkg_ops:_p0	from_str 0110.1000
+diag	note	0	0	:fixed_pkg_ops:_p0	unsigned 1011.0 scalb 00011.000
+diag	note	0	0	:fixed_pkg_ops:_p0	done

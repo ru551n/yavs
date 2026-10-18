@@ -52,6 +52,8 @@ An installed binary finds `lib/` next to itself (#43).
   result type (`E1301`), an ambiguous procedure call reported at the one actual that decides it
   (`E1302` with a qualification help in the declaration's spelling), candidate lists in help, and
   hints for calls from several packages and for vector/integer operators.
+- Object types: constants, signals, generics, ports and constant or signal parameters of an access
+  or file type (or containing one) are `E1223` (#198); protected ones `E1905`.
 - `tests/stdlib.rs`: std, ieee packages, and the bodies of std_logic_1164, math_real,
   math_complex, numeric_std, numeric_bit and numeric_*_unsigned analyze clean (2008 and 2019).
   `numeric_std_body_rule_1` is the rule 1 review: every object and object alias of the numeric_std

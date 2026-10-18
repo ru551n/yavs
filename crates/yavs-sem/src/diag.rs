@@ -40,6 +40,7 @@ codes! {
     INCOMPLETE = "E1220", "An incomplete type declaration is not completed in the same declarative region, or the incomplete type is used before its full declaration other than as the designated subtype of an access type (LRM 5.4.2).";
     BAD_DESIGNATED = "E1221", "In VHDL-2008 the designated type of an access type may not be a file type or a protected type (LRM 5.4.1); VHDL-2019 allows both.";
     BAD_FILE_ELEMENT = "E1222", "The element type of a file type may not be an access, protected or file type, or contain one.";
+    BAD_OBJECT_TYPE = "E1223", "A constant, signal, generic, port or constant or signal parameter may not be of an access or file type, or contain one (LRM 6.4.2.2, 6.4.2.3, 6.5.2): only variables hold access values.";
     BAD_RESOLUTION = "E1225", "A resolution function must be a pure function with one constant parameter of a one-dimensional unconstrained array of the resolved type, returning that type.";
     MISSING_BODY = "E1230", "A subprogram or protected type is declared but its body is missing.";
     BAD_TYPE_DECL = "E1231", "The type definition is not legal, for example a range whose bounds are not of an integer or floating point type.";

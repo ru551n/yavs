@@ -1,0 +1,7 @@
+-- yavs-test: std=2008
+-- expect: E1223 6:15 a constant parameter cannot be of access type `int_ptr`
+-- LRM 6.5.2
+package p is
+  type int_ptr is access integer;
+  function f (x : int_ptr) return integer;
+end package;

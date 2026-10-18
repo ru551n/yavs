@@ -343,7 +343,7 @@ impl Db {
             }
             ast::TypeDef::File(n) => {
                 let elem = self.type_mark(scope, n)?;
-                if let Some((what, bad)) = self.bad_file_elem(self.base(elem)) {
+                if let Some((what, bad)) = self.bad_elem(self.base(elem), true) {
                     return Err(self.error(
                         Diagnostic::error(
                             diag::BAD_FILE_ELEMENT,
@@ -1407,18 +1407,53 @@ impl Db {
     }
 
     /// A range constraint of type `base`.
-    /// The access, file or protected type in `t`, through composites (5.5).
-    fn bad_file_elem(&self, t: TypeId) -> Option<(&'static str, TypeId)> {
+    /// The access, file or (with `protected`) protected type in `t`, through composites
+    /// (5.5, 6.4.2.2).
+    fn bad_elem(&self, t: TypeId, protected: bool) -> Option<(&'static str, TypeId)> {
         match &self.types[t].kind {
             TypeKind::Access { .. } => Some(("access", t)),
             TypeKind::File { .. } => Some(("file", t)),
-            TypeKind::Protected { .. } => Some(("protected", t)),
-            TypeKind::Array { elem, .. } => self.bad_file_elem(self.base(*elem)),
+            TypeKind::Protected { .. } if protected => Some(("protected", t)),
+            TypeKind::Array { elem, .. } => self.bad_elem(self.base(*elem), protected),
             TypeKind::Record { elems } => elems
                 .iter()
-                .find_map(|e| self.bad_file_elem(self.base(e.subtype))),
+                .find_map(|e| self.bad_elem(self.base(e.subtype), protected)),
             _ => None,
         }
+    }
+
+    /// `E1223` when a constant, signal, generic, port or constant or signal parameter
+    /// (`what`) would be of an access or file type or contain one (6.4.2.2, 6.4.2.3, 6.5.2).
+    /// Protected types are `check_not_protected`'s.
+    pub(crate) fn check_not_access_or_file(
+        &mut self,
+        what: &str,
+        st: SubtypeId,
+        span: Span,
+    ) -> Result<(), Reported> {
+        let t = self.base(st);
+        let Some((kind, bad)) = self.bad_elem(t, false) else {
+            return Ok(());
+        };
+        let msg = if bad == t {
+            format!("a {what} cannot be of {kind} type `{}`", self.type_name(t))
+        } else {
+            format!(
+                "a {what} cannot be of type `{}`, which contains {kind} type `{}`",
+                self.type_name(t),
+                self.type_name(bad)
+            )
+        };
+        Err(self.error(
+            Diagnostic::error(diag::BAD_OBJECT_TYPE, msg)
+                .with_primary(span, format!("{what} of {kind} type"))
+                .with_note("LRM 6.4.2.2, 6.4.2.3, 6.5.2: access values live only in variables, files only in file objects")
+                .with_help(if kind == "access" {
+                    "use a variable, or a variable parameter"
+                } else {
+                    "declare a file object, or a file parameter"
+                }),
+        ))
     }
 
     pub(crate) fn range(

@@ -497,6 +497,12 @@ impl Db {
             ast::ObjectClass::Variable => ObjClass::Variable,
             ast::ObjectClass::SharedVariable => ObjClass::SharedVariable,
         };
+        let first = o.names.first().map_or(o.subtype.span, |n| n.span);
+        match class {
+            ObjClass::Constant => self.check_not_access_or_file("constant", subtype, first)?,
+            ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first)?,
+            _ => {}
+        }
         let default = o
             .default
             .as_ref()
@@ -1145,9 +1151,13 @@ impl Db {
                     .with_primary(o.span, "variable port"),
                 ));
             }
-        } else if role == ObjRole::Port {
-            for n in &o.names {
-                self.check_not_protected("port", subtype, n.span)?;
+        } else {
+            let first = o.names.first().map_or(o.span, |n| n.span);
+            self.check_not_access_or_file(what, subtype, first)?;
+            if role == ObjRole::Port {
+                for n in &o.names {
+                    self.check_not_protected("port", subtype, n.span)?;
+                }
             }
         }
         Ok(self.declare_interface(scope, o, role, class, mode, subtype))
@@ -1289,6 +1299,21 @@ impl Db {
             }
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
+        // The IEEE 2019 std.env source itself declares constant parameters of
+        // DIRECTORY and CALL_PATH_VECTOR_PTR (16.5), which the reference simulators reject in
+        // user code in 2008 and 2019: library `std` is exempt (#198).
+        let in_std = self.in_std_library(pscope);
+        let first = o.names.first().map_or(o.span, |n| n.span);
+        match class {
+            _ if in_std => {}
+            ObjClass::Constant => {
+                self.check_not_access_or_file("constant parameter", subtype, first)?
+            }
+            ObjClass::Signal => {
+                self.check_not_access_or_file("signal parameter", subtype, first)?
+            }
+            _ => {}
+        }
         let default = o
             .default
             .as_ref()
@@ -1329,6 +1354,21 @@ impl Db {
             });
         }
         Ok(out)
+    }
+
+    /// Is `scope` inside a design unit of library `std`?
+    fn in_std_library(&self, mut scope: ScopeId) -> bool {
+        loop {
+            if let Some(o) = self.scopes[scope].owner
+                && let DeclKind::Unit(u) = self.decls[o].kind
+            {
+                return self.libs[self.units[u].lib].name.key.as_str() == "std";
+            }
+            match self.scopes[scope].parent {
+                Some(p) => scope = p,
+                None => return false,
+            }
+        }
     }
 
     /// `(package, protected type)` when `scope` is the declaration of a package of

@@ -1764,6 +1764,34 @@ impl Db {
         }
     }
 
+    /// The subtype of element `elem` of a record object of subtype `st`: the
+    /// element's declared subtype with the record constraint of `st` on it (6.3).
+    pub(crate) fn field_subtype(&mut self, st: SubtypeId, elem: u32) -> SubtypeId {
+        let TypeKind::Record { elems } = &self.types[self.base(st)].kind else {
+            return self.poison.subtype;
+        };
+        let declared = elems[elem as usize].subtype;
+        let c = match &self.subtypes[st].constraint {
+            Constraint::Record { elems } => elems
+                .iter()
+                .find(|(i, _)| *i == elem)
+                .map(|(_, c)| c.clone()),
+            _ => None,
+        };
+        let Some(c) = c else {
+            return declared;
+        };
+        let base = self.base(declared);
+        self.subtypes.push(SubtypeDef {
+            base,
+            name: None,
+            parent: Some(declared),
+            constraint: c,
+            resolution: self.subtypes[declared].resolution.clone(),
+            span: Span::default(),
+        })
+    }
+
     /// 5.1: computed, never stored.
     pub fn constrainedness(&self, st: SubtypeId) -> Constrainedness {
         let c = self.subtypes[st].constraint.clone();

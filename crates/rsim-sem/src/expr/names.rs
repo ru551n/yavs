@@ -795,10 +795,7 @@ impl Db {
             }
             (ast::NameKind::Selected { prefix, .. }, Via::Field(t, elem)) => {
                 let p = self.resolve_prefix(scope, prefix, t);
-                let subtype = match &self.types[t].kind {
-                    TypeKind::Record { elems } => elems[elem as usize].subtype,
-                    _ => self.poison.subtype,
-                };
+                let subtype = self.field_subtype(self.exprs[p].subtype, elem);
                 let stat = self.exprs[p].stat;
                 self.add_expr(Expr {
                     kind: ExprKind::Field { prefix: p, elem },

@@ -119,7 +119,7 @@ cd fuzz && cargo +nightly fuzz run sem                            # see fuzz/AGE
   `CONTRIBUTING.md` "Requests" (sections per requesting area, including "Requests from elab").
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:sem`):
   false positives #23, #38, #157; bugs #18, #25, #27, #36, #41, #154,
-  #155; features #19, #22, #24, #28, #29, #30, #31, #32, #33, #34, #35, #37; negative-suite xfail
+  #155; features #19, #22, #24, #28, #29, #30, #31, #32, #33, #34, #35; negative-suite xfail
   groups #45 to #54; driver-analysis perf #42; names/units leftovers #44;
   OSVVM/UVVM suites #115. Older unlabeled ones: #1, #2, #3 (sem false positives found by the
   difftest), #20 (`--encoding` in analyze), #21 (empty mapped library).

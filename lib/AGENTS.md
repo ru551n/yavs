@@ -70,5 +70,5 @@ cargo test -p yavs --test lib_parse && cargo test -p yavs-sem --test stdlib --te
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18): #37 fixed/float generic package bodies; #94 numeric_std, fixed and float run correctly from source; #117 clean-room
+- Open issues (snapshot 2026-10-18): #94 numeric_std, fixed and float run correctly from source; #117 clean-room
   Synopsys packages (M4b).

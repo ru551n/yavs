@@ -297,9 +297,8 @@ generic.rs (S4) is in. What other modules can use, and what is still open:
 - Open: anonymous generic types (`type is private` in an interface object, S7), mode views inside
   generic units (views are not analyzed yet), formal packages with a map stay opaque inside the
   generic (their generics do not take the map's values).
-- Blocked in lib: the bodies of `fixed_generic_pkg` and `float_generic_pkg` (so the instance
-  bodies of `fixed_pkg`/`float_pkg`) need aggregates with `others` from a return or parameter
-  context (`E1325`), `.all` and allocators; the declarations and instances analyze clean.
+- lib: the bodies of `fixed_generic_pkg` and `float_generic_pkg` and the instance bodies of
+  `fixed_pkg`/`float_pkg` analyze clean (`tests/stdlib.rs`, #37).
 
 ## Requests from elab (yavs-elab)
 

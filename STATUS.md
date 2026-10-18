@@ -30,8 +30,8 @@
   `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
   (`(<>)`, `(default)`, generic map, checked against the actual instance); package and subprogram
   instances, also inside generic units, by HIR cloning (visible part eager, bodies lazy via
-  `Db::instance_body`); `W1501`, `W1506`. The fixed/float packages' declarations and instances
-  analyze clean; their bodies wait for `E1325` and `.all`/allocators. Open: anonymous generic
+  `Db::instance_body`); `W1501`, `W1506`. The fixed/float packages' declarations, generic bodies
+  and instance bodies analyze clean in 2008 and 2019 (#37). Open: anonymous generic
   types, mode views in generic units, instantiating a generic protected type (parser request).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`

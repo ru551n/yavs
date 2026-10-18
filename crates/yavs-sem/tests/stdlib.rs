@@ -34,6 +34,8 @@ const BODIES: &[&str] = &[
     "numeric_std",
     "numeric_bit",
     "std_logic_1164",
+    "fixed_generic_pkg",
+    "float_generic_pkg",
 ];
 
 fn analyze(rev: LangRev, lib: &str, unit: &str) -> Db {
@@ -78,6 +80,31 @@ fn ieee_bodies_analyze_clean() {
     for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {
         for unit in BODIES {
             analyze_with(rev, "ieee", unit, true);
+        }
+    }
+}
+
+/// `fixed_pkg` and `float_pkg` are instances of generic packages: their bodies are
+/// clones of the generic bodies (#37).
+#[test]
+fn ieee_instance_bodies_analyze_clean() {
+    for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {
+        for unit in ["fixed_pkg", "float_pkg"] {
+            let mut db = analyze(rev, "ieee", unit);
+            let insts: Vec<_> = db.insts.iter().map(|(i, _)| i).collect();
+            assert!(!insts.is_empty(), "{unit} is an instance");
+            for i in insts {
+                let r = db.instance_body(i);
+                let text: String = db
+                    .diagnostics()
+                    .iter()
+                    .map(|d| render(&db.sources, d, MessageFormat::Human, false))
+                    .collect();
+                assert!(
+                    r.is_ok() && db.diagnostics().is_empty(),
+                    "{unit} ({rev:?}):\n{text}"
+                );
+            }
         }
     }
 }

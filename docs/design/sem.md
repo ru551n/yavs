@@ -26,10 +26,49 @@ an id. It runs single-threaded. It owns no files on disk: `rsim-lib` gives it a 
 | configurations (checked), protected types, views, reflection types | |
 | diagnostics with stable codes, `--relaxed` | |
 
-Language revision: one `LangRev { V2008, V2019 }` per session. The analyzer is one code path
-with revision gates (`self.rev >= V2019`). std and ieee are taken from `lib/{std,ieee}/<rev>`.
-A session never mixes revisions (INTEGER is 32-bit in 2008 and 64-bit in 2019, so units cannot be
-mixed); see Q10.
+Language revision: see 0.1. The analyzer is one code path with revision gates.
+
+### 0.1 Mixed 2008 and 2019 files (user decision, `docs/plan.md` "VUnit integration")
+
+A project may mix 2008 and 2019 files; `rsim-lib` records the standard per file.
+
+| Step | Revision used |
+|---|---|
+| parsing | each file with **its own** recorded revision (keywords, grammar, `` `if `` tool directives) |
+| sem and elab of a design | **one** design revision `D`: the newest revision recorded for any file in the design's closure; std and ieee are loaded from `lib/{std,ieee}/<D>`, so INTEGER, STRING, `std_ulogic` etc. are one type across the whole design |
+| revision gates in sem | a construct is checked against the file's own revision `F` (is it legal syntax and semantics for `F`) **and** against `D` (does it mean the same) |
+
+The closure is found before analysis: parse the top's file, scan its ASTs for unit references
+(context clauses, `lib.unit` selected names, entity/configuration instantiations, component names
+for default binding) and follow them through the manifest, parsing only. Then `D` is fixed and
+analysis starts. `rsim analyze f.vhd` uses the same rule over `f`'s closure. A 2008 unit used in a
+2019 design is analyzed against the 2019 std/ieee.
+
+Every declaration in std and ieee carries `since: LangRev`, computed by comparing the 2008 and
+2019 sources (a declaration with the same designator and profile in both is `V2008`). A reference
+from a file with `F < since` is a revision error, which covers new subprograms, new overloads that
+would change overload resolution, and new types.
+
+Known 2008-vs-2019 differences and their handling:
+
+| Difference | Handling |
+|---|---|
+| INTEGER is 32-bit in 2008 (`-2147483648 to 2147483647`), 64-bit in 2019 (`-(2**63-1) to 2**63-1`); REAL is f64 in both rsim copies | design-wide: a 2008 unit in a 2019 design gets 64-bit INTEGER. Uses whose value depends on the range in a 2008 file (`integer'high`, `'low`, `'left`, `'right`, `'range`, `'base` of INTEGER and its subtypes NATURAL/POSITIVE, and of `universal_integer`-typed static bounds that fold differently) are `E1008`; plain arithmetic is not diagnosed, since its results agree whenever the 2008 run would not overflow |
+| implicit operations new in 2019 (file `file_state`, `file_mode`, `file_position`, `file_size`, `file_seek`, `file_truncate`, `file_rewind`; `<T>_RANGE_RECORD` types; anything else NATIVE.md section 2 marks 2019) | created with `since: V2019`; a reference from a 2008 file is `E1007`; if the 2008 file declares its own homograph, its explicit declaration hides the implicit one in the same region as usual, and a use-visible user homograph that now meets a directly visible implicit 2019 op is `E1008` instead of a silent change of the chosen overload |
+| std/ieee declarations new in 2019 (`std.env` additions, `std.reflection`, new ieee overloads) | `since: V2019`, `E1007` from a 2008 file |
+| reserved words new in 2019: `view`, `private` **(unsure: whether 2019 reserves any other word; check LRM 15.10)** | a 2008 file may declare and use them as identifiers (M0 lexes per file); a 2019 file cannot name such a declaration (the word is a keyword there, and the extended identifier `\view\` is a different name), so a 2008 declaration named `view` or `private` that is reachable from a 2019 file through `use ... .all` is invisible there; a 2019 reference that fails only because of this gets `E1008` with a help naming the 2008 declaration |
+| 2019-only constructs (views, private variables, generic type classes, 2019 attributes, conditional expressions) in a 2008 file | `E1910` (normally already a syntax error from M0) |
+| 2008 constructs illegal under 2019 rules | none known; if one is found it gets `E1008` |
+
+`E1007`: "`<name>` is not available in VHDL-2008", primary at the reference, note "file `<path>`
+is analyzed as VHDL-2008 (`--std=2008` in the manifest); the design is elaborated with the
+VHDL-2019 std/ieee because `<unit>` (`<path>`) is VHDL-2019". `E1008`: same notes, message
+"`<construct>` means something different under VHDL-2019". Both are errors (fail early); neither
+is affected by `--relaxed`.
+
+Note: `docs/cli-contract.md` section 2 says the elaboration standard is the top-level unit's
+recorded standard; this design uses the newest revision in the closure (coordinator decision,
+2026-10-18). The two documents must be aligned.
 
 Crate layout (files, not crates):
 
@@ -1067,7 +1106,7 @@ Sem takes `E1xxx` / `W1xxx`:
 
 | Range | Area | Examples |
 |---|---|---|
-| E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1006 unit analyzed with another `--std` |
+| E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration not available in the file's revision, E1008 construct means something different under the design revision (0.1) |
 | E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1105 private/not in visible part, E1106 end label mismatch |
 | E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed, E1222 illegal file element, E1225 bad resolution function, E1230 missing body |
 | E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1310 formal associated twice, E1311 missing actual, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
@@ -1170,18 +1209,22 @@ Revision is chosen by a `-- rsim: --std=2019` first line.
 The plan's gate "the type and constraint model (rule 1) is reviewed before M2" happens at the
 end of S3 on real code (numeric_std), so a rework does not cost the later slices.
 
-## 11. Open questions (for the user, each with a recommendation)
+## 11. Decisions and remaining checks
 
-| # | Question | Recommendation |
-|---|---|---|
-| Q1 | Universal preference: in `x := 2 ** 3` both the universal `**` (result converted) and INTEGER `**` (literal converted) fit. The LRM 9.3.6 text ("implicit conversion only if there is no legal interpretation without it") is subtle **(unsure of exact wording)**. | Prefer interpretations that convert only at leaves (literals, named numbers) over ones that use universal operators; use universal operators only when the complete context is universal (named number declarations). Matches NVC/GHDL behaviour in practice. |
-| Q2 | Base range of an anonymous integer base type (`type t is range 0 to 9`: what is `t'base'high`?). | The smallest of 32-bit or 64-bit that holds the declared range, as NVC/GHDL do, so differential tests agree; arithmetic is still checked i64 (rule 7) and checked against the base range. |
-| Q3 | 2008 makes some ieee calls locally static (case choices like `to_unsigned(3, 4)`), but M1 has no interpreter. | M1 classifies them; their duplicate/coverage checks are deferred to elab through a `ConstEval` hook that M2's interpreter implements; no Rust reimplementation of ieee functions in sem. |
-| Q4 | Default binding: "most recently analyzed architecture" without a cache. | Last architecture of the entity in manifest order (the manifest is in compile order), with a note when there are several; GHDL #66: prefer the directly visible entity over `work`, warn with W1703. |
-| Q5 | Overflow in folding a locally static expression in a context that does not require the value (dead branch, constant never read). | Error in required contexts (4.2); warning `W1401` elsewhere, and the runtime check stays. |
-| Q6 | Contents of `--relaxed` (8.4). | R1 and R2 now, R3 only after checking NVC's list; nothing else. |
-| Q7 | Generic instances: clone the HIR (5.1) or keep one HIR and lower with an environment in M2. | Clone (visible part eager, body lazy): per-instance types are distinct entities as the LRM requires, and M2 stays simpler. |
-| Q8 | Mangled name format (5.3) is long and quoted (`"+"`, parentheses). | Keep it: readable in stacktraces and LLVM accepts any bytes in symbol names; NATIVE.md symbols stay as they are for natives only. |
-| Q9 | Equality on a generic type: does the generic's `=` call the actual's predefined `=` or a user-defined one, and does a 2008 `type T` have `=` at all? | Predefined `=` of the actual type for class-implicit operations; 2008 `type T` has no implicit operations, require an interface `"="` (VUnit/OSVVM generics declare one); confirm against the LRM. |
-| Q10 | One revision per session: a manifest that records units analyzed with a different `--std` than the run. | Error `E1006` naming the unit and both revisions; no mixing. |
-| Q11 | Bit-string expansion lives in sem (3.5) while M0 keeps the text. | Keep it in sem: one place, typed diagnostics (`E1331`) with the literal's span. |
+Q3 to Q9 and Q11 were accepted by the user as recommended (2026-10-18). Q10 was replaced by the
+mixed-revision rule in 0.1. Q1 and Q2 keep the recommendation but must be checked against the LRM
+text before the named slice, like the other **(unsure)** items.
+
+| # | Topic | Decision | Status |
+|---|---|---|---|
+| Q1 | universal preference (`x := 2 ** 3`), LRM 9.3.6 | prefer interpretations that convert only at leaves (literals, named numbers); universal operators only when the complete context is universal | to be checked against the LRM text before slice S2 |
+| Q2 | base range of an anonymous integer base type (`t'base'high`) | smallest of 32-bit or 64-bit that holds the declared range, as NVC/GHDL; arithmetic checked i64 and against the base range | to be checked against the LRM text before slice S1 |
+| Q3 | 2008 locally static ieee calls without an interpreter in M1 | classified in M1; their choice checks deferred to elab through a `ConstEval` hook implemented by M2's interpreter | decided |
+| Q4 | default binding | last architecture in manifest order, note when several; directly visible entity preferred over `work` (GHDL #66), `W1703` | decided |
+| Q5 | overflow folding where the value is not required | error in required contexts; `W1401` elsewhere, runtime check kept | decided |
+| Q6 | `--relaxed` | R1 and R2 now; R3 only after checking NVC's list | decided |
+| Q7 | generic instances | clone the HIR: visible part eager, body lazy | decided |
+| Q8 | mangled names | long readable form of 5.3; NATIVE.md names only for natives | decided |
+| Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has no implicit `=`, an interface `"="` is required | decided |
+| Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007`/`E1008` | decided |
+| Q11 | bit-string expansion | in sem, `E1331` at the literal | decided |

@@ -759,14 +759,18 @@ impl Db {
             hit
         };
         let k = l.path.iter().position(|st| match st {
-            LspStep::Field(_) => false,
+            LspStep::Field(_) | LspStep::Rebase(_) => false,
             LspStep::Index(ix) => ix.iter().any(|&e| dynamic(e)),
             LspStep::Slice(RangeC::Explicit { left, right, .. }) => {
                 dynamic(*left) || dynamic(*right)
             }
             LspStep::Slice(RangeC::Attr { .. }) => false,
         });
-        if let Some(k) = k {
+        if let Some(mut k) = k {
+            // A rebase only applies to the steps after it.
+            while k > 0 && matches!(l.path[k - 1], LspStep::Rebase(_)) {
+                k -= 1;
+            }
             l.path = l.path[..k].into();
         }
         l

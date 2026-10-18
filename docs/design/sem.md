@@ -53,22 +53,23 @@ Known 2008-vs-2019 differences and their handling:
 
 | Difference | Handling |
 |---|---|
-| INTEGER is 32-bit in 2008 (`-2147483648 to 2147483647`), 64-bit in 2019 (`-(2**63-1) to 2**63-1`); REAL is f64 in both rsim copies | design-wide: a 2008 unit in a 2019 design gets 64-bit INTEGER. Uses whose value depends on the range in a 2008 file (`integer'high`, `'low`, `'left`, `'right`, `'range`, `'base` of INTEGER and its subtypes NATURAL/POSITIVE, and of `universal_integer`-typed static bounds that fold differently) are `E1008`; plain arithmetic is not diagnosed, since its results agree whenever the 2008 run would not overflow |
-| implicit operations new in 2019 (file `file_state`, `file_mode`, `file_position`, `file_size`, `file_seek`, `file_truncate`, `file_rewind`; `<T>_RANGE_RECORD` types; anything else NATIVE.md section 2 marks 2019) | created with `since: V2019`; a reference from a 2008 file is `E1007`; if the 2008 file declares its own homograph, its explicit declaration hides the implicit one in the same region as usual, and a use-visible user homograph that now meets a directly visible implicit 2019 op is `E1008` instead of a silent change of the chosen overload |
+| INTEGER is 32-bit in 2008 (`-2147483648 to 2147483647`), 64-bit in 2019 (`-(2**63-1) to 2**63-1`); REAL is f64 in both rsim copies | design-wide: a 2008 unit in a 2019 design gets 64-bit INTEGER. Uses whose value depends on the range in a 2008 file (`integer'high`, `'low`, `'left`, `'right`, `'range`, `'base` of INTEGER and its subtypes NATURAL/POSITIVE, and of `universal_integer`-typed static bounds that fold differently) get warning `W1008`; plain arithmetic is not diagnosed, since its results agree whenever the 2008 run would not overflow |
+| implicit operations new in 2019 (file `file_state`, `file_mode`, `file_position`, `file_size`, `file_seek`, `file_truncate`, `file_rewind`; `<T>_RANGE_RECORD` types; anything else NATIVE.md section 2 marks 2019) | created with `since: V2019`; a reference from a 2008 file is `E1007`; if the 2008 file declares its own homograph, its explicit declaration hides the implicit one in the same region as usual, and a use-visible user homograph that now meets a directly visible implicit 2019 op gets warning `W1008` instead of a silent change of the chosen overload |
 | std/ieee declarations new in 2019 (`std.env` additions, `std.reflection`, new ieee overloads) | `since: V2019`, `E1007` from a 2008 file |
-| reserved words new in 2019: `view`, `private` **(unsure: whether 2019 reserves any other word; check LRM 15.10)** | a 2008 file may declare and use them as identifiers (M0 lexes per file); a 2019 file cannot name such a declaration (the word is a keyword there, and the extended identifier `\view\` is a different name), so a 2008 declaration named `view` or `private` that is reachable from a 2019 file through `use ... .all` is invisible there; a 2019 reference that fails only because of this gets `E1008` with a help naming the 2008 declaration |
+| reserved words new in 2019: `view`, `private` **(unsure: whether 2019 reserves any other word; check LRM 15.10)** | a 2008 file may declare and use them as identifiers (M0 lexes per file); a 2019 file cannot name such a declaration (the word is a keyword there, and the extended identifier `\view\` is a different name), so a 2008 declaration named `view` or `private` that is reachable from a 2019 file through `use ... .all` is invisible there; a 2019 reference that fails only because of this gets the usual `E1100` with a help naming the 2008 declaration |
 | 2019-only constructs (views, private variables, generic type classes, 2019 attributes, conditional expressions) in a 2008 file | `E1910` (normally already a syntax error from M0) |
-| 2008 constructs illegal under 2019 rules | none known; if one is found it gets `E1008` |
+| 2008 constructs illegal under 2019 rules | none known; if one is found it is `E1007` |
 
 `E1007`: "`<name>` is not available in VHDL-2008", primary at the reference, note "file `<path>`
 is analyzed as VHDL-2008 (`--std=2008` in the manifest); the design is elaborated with the
-VHDL-2019 std/ieee because `<unit>` (`<path>`) is VHDL-2019". `E1008`: same notes, message
-"`<construct>` means something different under VHDL-2019". Both are errors (fail early); neither
-is affected by `--relaxed`.
+VHDL-2019 std/ieee because `<unit>` (`<path>`) is VHDL-2019". `E1007` is an error (fail early).
+`W1008` is a **warning** (user decision 2026-10-18): same notes, message "`<construct>` means
+something different under VHDL-2019"; reported once per construct (per source span), analysis
+continues, and `-Werror=W1008` escalates it. The same two codes apply the other way round when
+`--std=2008` on `run`/`elab` forces a 2008 design revision over 2019 files. Neither is affected by
+`--relaxed`.
 
-Note: `docs/cli-contract.md` section 2 says the elaboration standard is the top-level unit's
-recorded standard; this design uses the newest revision in the closure (coordinator decision,
-2026-10-18). The two documents must be aligned.
+`docs/cli-contract.md` section 2 states the same rule for `run`/`elab`.
 
 Crate layout (files, not crates):
 
@@ -1106,7 +1107,7 @@ Sem takes `E1xxx` / `W1xxx`:
 
 | Range | Area | Examples |
 |---|---|---|
-| E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration not available in the file's revision, E1008 construct means something different under the design revision (0.1) |
+| E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration or construct not available under the file's or the design's revision (0.1) |
 | E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1105 private/not in visible part, E1106 end label mismatch |
 | E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed, E1222 illegal file element, E1225 bad resolution function, E1230 missing body |
 | E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1310 formal associated twice, E1311 missing actual, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
@@ -1116,7 +1117,7 @@ Sem takes `E1xxx` / `W1xxx`:
 | E17xx | configurations, binding, components | E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity |
 | E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1820 case coverage/duplicates, E1830 pure function side effect |
 | E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
-| W1xxx | warnings | W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1990 relaxed rule applied (one code per relaxation, 8.4) |
+| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1990 relaxed rule applied (one code per relaxation, 8.4) |
 
 Codes are `pub const` in `rsim-sem::diag` with an `--explain` text each (one paragraph plus a
 minimal example), checked by a test that every constant has an explain entry.
@@ -1226,5 +1227,5 @@ text before the named slice, like the other **(unsure)** items.
 | Q7 | generic instances | clone the HIR: visible part eager, body lazy | decided |
 | Q8 | mangled names | long readable form of 5.3; NATIVE.md names only for natives | decided |
 | Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has no implicit `=`, an interface `"="` is required | decided |
-| Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007`/`E1008` | decided |
+| Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007` error, `W1008` warning | decided |
 | Q11 | bit-string expansion | in sem, `E1331` at the literal | decided |

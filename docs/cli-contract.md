@@ -86,14 +86,16 @@ raises an error itself for a project containing VHDL-93/2002 files.
   standard of that one file (default 2008), and rsim records it per file in the
   library manifest. VUnit passes each file's own standard.
 - `run`/`elab` re-analyze every file with its recorded standard. Their `--std`
-  is optional and VUnit does not pass it: the design is elaborated with the
-  standard recorded for the top level's unit, and that standard selects the
-  `std` and `ieee` versions and the run-time semantics of the whole design
-  (e.g. 64-bit `integer` in 2019, plan rule 7). `--std` on `run`/`elab`
-  overrides it. A 2008 unit used from a 2019 design (or the other way round)
-  that cannot be bound under the elaboration standard is an elaboration error
-  naming both units and their standards (exit 2), never a silent
-  reinterpretation.
+  is optional and VUnit does not pass it: the whole design uses ONE `std`
+  and `ieee` revision, the newest standard recorded for any file in the
+  design's closure (not the top level unit's standard), and that revision
+  selects the run-time semantics of the whole design (e.g. 64-bit `integer`
+  in 2019, plan rule 7). `--std` on `run`/`elab` overrides it. A file using a
+  declaration or construct that is not available under that revision fails
+  early with `E1007`, naming the file and its recorded standard (exit 2),
+  never a silent reinterpretation. A construct whose meaning changes under
+  that revision is warning `W1008` (once per construct; `-Werror=W1008`
+  escalates it). See `docs/design/sem.md` section 0.1.
 
 ## 3. Libraries
 

@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::error::{debug, err, io, note};
+use crate::error::{debug, io, note};
 use crate::manifest::{LOCK_FILE, MANIFEST_FILE, Manifest, UnitRecord};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -122,28 +122,10 @@ impl Library {
         let mp = self.manifest_path();
         let mut m = match fs::read_to_string(&mp) {
             Ok(t) => Manifest::parse(&t, &mp)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Manifest::new(&self.name, standard)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::new(&self.name),
             Err(e) => return Err(io("L0002", "read", &mp, &e)),
         };
-        if m.standard != standard {
-            return Err(Box::new(
-                err(
-                    "L0005",
-                    format!(
-                        "library `{}` holds VHDL-{} units, cannot analyze `{}` as VHDL-{standard}",
-                        self.name,
-                        m.standard,
-                        path.display()
-                    ),
-                )
-                .with_help(
-                    "analyze with the library's standard, or use a separate library directory",
-                ),
-            ));
-        }
-        m.replace_file(path, hash.to_string(), units);
+        m.replace_file(path, hash.to_string(), standard.to_string(), units);
 
         let tmp = self
             .dir

@@ -48,7 +48,7 @@ instructions per function, larger units stay interpreted (docs/decisions.md).
 Done: library directories (`rsim-lib.toml` manifest + `_RSIM_LIB` lock, rule 14), `NAME:PATH`
 mapping, atomic manifest updates under an exclusive lock, shared-lock reads that never write,
 on-demand closure query (unknown library/unit with suggestion, cycles, stale hashes), multi-process
-concurrency test. The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file.
+concurrency test. The standard is stored per file (manifest format 2). The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file.
 
 ## kernel (`crates/rsim-kernel`)
 

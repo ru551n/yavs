@@ -48,6 +48,8 @@ pub struct ClosureFile {
     pub library: String,
     pub path: PathBuf,
     pub hash: String,
+    /// Standard to re-parse this file with.
+    pub std: String,
 }
 
 type Node = (String, UnitKind, String); // library, kind, key
@@ -294,15 +296,15 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
     // 4. Verify content hashes.
     let mut out = Vec::new();
     for (lib, path) in done {
-        let recorded = &cx.manifests[&lib]
+        let fe = cx.manifests[&lib]
             .file(&path)
-            .expect("file of a reachable unit")
-            .hash;
-        check_hash(&lib, &path, recorded)?;
+            .expect("file of a reachable unit");
+        check_hash(&lib, &path, &fe.hash)?;
         out.push(ClosureFile {
             library: lib,
             path,
-            hash: recorded.clone(),
+            hash: fe.hash.clone(),
+            std: fe.std.clone(),
         });
     }
     Ok(out)

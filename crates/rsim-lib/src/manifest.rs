@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 pub const MANIFEST_FILE: &str = "rsim-lib.toml";
 pub const LOCK_FILE: &str = "_RSIM_LIB";
-pub(crate) const FORMAT: u32 = 1;
+pub(crate) const FORMAT: u32 = 2;
 
 /// Case-fold an identifier: basic identifiers are case-insensitive,
 /// extended identifiers (`\Foo\`) are not.
@@ -136,6 +136,8 @@ pub struct FileEntry {
     /// Absolute path as analyzed.
     pub path: PathBuf,
     pub hash: String,
+    /// VHDL standard this file was analyzed with (per file: projects may mix 2008 and 2019).
+    pub std: String,
     #[serde(default, rename = "unit")]
     pub units: Vec<UnitRecord>,
 }
@@ -145,22 +147,35 @@ pub struct FileEntry {
 pub struct Manifest {
     pub format: u32,
     pub name: String,
-    pub standard: String,
     #[serde(default, rename = "file")]
     pub files: Vec<FileEntry>,
 }
 
 impl Manifest {
-    pub(crate) fn new(name: &str, standard: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Manifest {
             format: FORMAT,
             name: name.into(),
-            standard: standard.into(),
             files: vec![],
         }
     }
 
     pub(crate) fn parse(text: &str, origin: &std::path::Path) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Head {
+            format: u32,
+        }
+        if let Ok(h) = toml::from_str::<Head>(text)
+            && h.format != FORMAT
+        {
+            return Err(Box::new(
+                err(
+                    "L0004",
+                    format!("library manifest `{}` has format version {}, this rsim reads version {FORMAT}", origin.display(), h.format),
+                )
+                .with_help("re-analyze the library's files to rewrite the manifest"),
+            ));
+        }
         let mut m: Manifest = toml::from_str(text).map_err(|e| {
             Box::new(
                 err(
@@ -170,16 +185,6 @@ impl Manifest {
                 .with_note(e.to_string()),
             )
         })?;
-        if m.format != FORMAT {
-            return Err(Box::new(err(
-                "L0004",
-                format!(
-                    "library manifest `{}` has format version {}, this rsim reads version {FORMAT}",
-                    origin.display(),
-                    m.format
-                ),
-            )));
-        }
         for f in &mut m.files {
             for u in &mut f.units {
                 u.file = f.path.clone();
@@ -193,7 +198,13 @@ impl Manifest {
     }
 
     /// Replace everything `path` defined with `units`; the file moves to the end.
-    pub(crate) fn replace_file(&mut self, path: PathBuf, hash: String, mut units: Vec<UnitRecord>) {
+    pub(crate) fn replace_file(
+        &mut self,
+        path: PathBuf,
+        hash: String,
+        std: String,
+        mut units: Vec<UnitRecord>,
+    ) {
         self.files.retain(|f| f.path != path);
         for u in &mut units {
             u.file = path.clone();
@@ -203,7 +214,12 @@ impl Manifest {
                 .retain(|o| !units.iter().any(|u| u.kind == o.kind && u.key == o.key));
         }
         self.files.retain(|f| !f.units.is_empty());
-        self.files.push(FileEntry { path, hash, units });
+        self.files.push(FileEntry {
+            path,
+            hash,
+            std,
+            units,
+        });
     }
 
     pub fn units(&self) -> impl Iterator<Item = &UnitRecord> {

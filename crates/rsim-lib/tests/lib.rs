@@ -113,15 +113,6 @@ fn errors() {
         snap(&l.add_spec("oops").unwrap_err(), t.path()),
         "error[L0020]: invalid library mapping `oops`\n  |\n  = help: expected NAME:PATH, e.g. `ieee:/opt/rsim/lib/ieee`\n"
     );
-    assert_eq!(
-        snap(
-            &work
-                .update_file("1993", &t.path().join("a.vhd"), "h", vec![])
-                .unwrap_err(),
-            t.path()
-        ),
-        "error[L0005]: library `work` holds VHDL-2008 units, cannot analyze `<tmp>/a.vhd` as VHDL-1993\n  |\n  = help: analyze with the library's standard, or use a separate library directory\n"
-    );
 }
 
 #[test]
@@ -330,4 +321,50 @@ fn concurrent_analyze() {
     for f in &m.files {
         assert_eq!(f.hash, hash_content(&std::fs::read(&f.path).unwrap()));
     }
+}
+
+#[test]
+fn mixed_standards_per_file() {
+    let (t, libs, work, _) = setup();
+    let a = t.path().join("a.vhd");
+    std::fs::write(&a, "a").unwrap();
+    let h = hash_content(b"a");
+    work.update_file("2008", &a, &h, vec![pkg("A")]).unwrap();
+    let b = t.path().join("b.vhd");
+    std::fs::write(&b, "b").unwrap();
+    work.update_file(
+        "2019",
+        &b,
+        &hash_content(b"b"),
+        vec![pkg("B").depends("work", UnitKind::Package, "a")],
+    )
+    .unwrap();
+    let c = closure(&libs, &UnitRef::new("work", UnitKind::Package, "b")).unwrap();
+    assert_eq!(
+        c.iter().map(|f| f.std.as_str()).collect::<Vec<_>>(),
+        ["2008", "2019"]
+    );
+    // Re-analyzing with another standard replaces the entry.
+    work.update_file("2019", &a, &h, vec![pkg("A")]).unwrap();
+    assert_eq!(work.read().unwrap().file(&a).unwrap().std, "2019");
+}
+
+#[test]
+fn old_format_manifest() {
+    let (t, _, work, _) = setup();
+    std::fs::create_dir_all(&work.dir).unwrap();
+    std::fs::write(
+        work.dir.join("rsim-lib.toml"),
+        "format = 1\nname = \"work\"\nstandard = \"2008\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        snap(&work.read().unwrap_err(), t.path()),
+        "error[L0004]: library manifest `<tmp>/work/rsim-lib.toml` has format version 1, this rsim reads version 2\n  |\n  = help: re-analyze the library's files to rewrite the manifest\n"
+    );
+    // Analyzing into it also fails early rather than overwriting.
+    assert!(
+        work.update_file("2008", &t.path().join("x.vhd"), "h", vec![])
+            .is_err()
+    );
 }

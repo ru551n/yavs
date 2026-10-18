@@ -486,11 +486,30 @@ called again for an in-process restart (rule 4).
 | actual signal, no conversion, collapsing on | formal aliases actual's `SignalId` | nothing |
 | actual signal, no collapse / mode `inout`/`buffer` | `Port { formal, actual, mode }` edge | effective/driving value relation in the update phase (kernel ask K1) |
 | conversion function or type conversion | `Port { .., conv_in/conv_out: FuncId }` | converter callback runs the IR function in the update phase (K1) |
+| conversion of a composite with several leaves (record, array of composites) | `ConvPort { formal: [(leaf, range)], actual: [(leaf, range)], .. }` | `Builder::port_parts`: one converter call over all source parts per cycle, writing all target parts, in the same update phase (section 4.1) |
 | expression actual (2008) | implicit process `formal <= expr` sensitive to the expression's signals, `IMPLICIT` | ordinary process + driver (LRM 6.5.6.3 defines it this way) |
 | `open` / default | initial value only | |
 
 Port collapsing is a separate pass over the net graph, off by default in M2 (`--collapse-ports`),
 with every difftest group run both ways (rule 3, Q2).
+
+### 4.1 Multi-part ports (#74)
+
+A converted association whose formal or actual is more than one kernel leaf (a record port, an
+array of records: struct of arrays, rule 2) is one kernel port edge with a list of parts on each
+side, in leaf order (`NetGraph::select`). The converter receives one value per source part and
+returns one per target part; yavs-elab packs the parts into the IR value of the function's
+parameter and unpacks its result the same way as a composite resolved as a whole (`whole::Map`:
+leaves concatenated, a logic element one code byte, a byte element its bytes).
+
+Same delta, deterministic: the update phase stays one pass by port level (formal parts deeper
+than every actual part). Each edge names the part its worklist reaches last: for driving values
+(deepest first, then lowest id) the formal part of lowest level and highest id, for effective
+values (shallowest first) the actual part of highest level and highest id. Updating any other
+part only queues that one; updating it runs the conversion once, with every part current, and
+marks the targets active. So the conversion runs once per cycle in which any source part is
+active, in the delta of the source, independent of thread count (the port update is serial).
+An equivalent process would be a delta late, which is why this is kernel state and not IR.
 
 **Signal net graph and sub-element driver map (rule 2).**
 

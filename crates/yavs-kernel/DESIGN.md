@@ -97,6 +97,12 @@ range: `in` feeds the formal's port layer, `out` and `buffer` add the formal as 
 actual (the formal's effective value is its own driving value, LRM 14.7.3.3 b), `inout` does
 both. Conversions run in the update phase and must return the full target range; a failure is
 `ErrorKind::Conversion`. Port levels come from the association graph; a cycle is a build error.
+`Builder::port_parts` relates a formal and an actual of several ranges each, possibly in
+different signals (a record port with a conversion function, #74): the converter gets one value
+per source part and returns one per target part. Every formal part is deeper than every actual
+part; each edge runs its conversion when the worklist reaches the part it reaches last
+(`PortEdge::up_at`, `down_at`), so it runs once per cycle with every part current, in the same
+update phase (docs/design/ir.md 4.1). Without a conversion both sides must be one range.
 
 **Guarded signals** (`Builder::guard(sig, Bus | Register, disconnect_time)`, resolved only):
 `Ctx::disconnect` schedules a null transaction (after the given delay or the disconnection

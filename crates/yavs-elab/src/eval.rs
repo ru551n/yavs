@@ -65,7 +65,8 @@ pub enum Class {
 }
 
 /// A conversion of a port association (LRM 6.5.7.1): a function of one value, run in
-/// yavs-interp, or a type conversion. Scalars and arrays of scalars (one kernel leaf each).
+/// yavs-interp, or a type conversion. Each side is one kernel leaf (a scalar or an array of
+/// scalars) or, for a function, a composite of several leaves.
 #[derive(Clone)]
 pub struct ConvFn {
     /// The function and the IR type of its result.
@@ -78,27 +79,57 @@ pub struct ConvFn {
     pub to: Side,
 }
 
-/// One end of a conversion: a scalar, or an array leaf with its bounds as an IR descriptor.
-#[derive(Clone, Debug)]
+/// One end of a conversion: a scalar, an array leaf with its bounds as an IR descriptor, or
+/// a composite of several leaves (a record, an array of composites) with the kernel length
+/// and element of each leaf part, in leaf order, and how they map to IR memory.
+#[derive(Clone)]
 pub enum Side {
     Scalar(Enc),
-    Array { elem: Elem, len: u64, desc: Vec<u8> },
+    Array {
+        elem: Elem,
+        len: u64,
+        desc: Vec<u8>,
+    },
+    Composite {
+        map: std::sync::Arc<crate::whole::Map>,
+        parts: Vec<(Elem, u64)>,
+    },
 }
 
 impl ConvFn {
-    /// Convert a kernel leaf value.
-    pub fn apply(&self, v: &Value) -> Result<Value, String> {
+    /// Convert kernel values: one per part of the source side, one per part of the target.
+    pub fn apply(&self, vs: &[Value]) -> Result<Vec<Value>, String> {
+        let one = || match vs {
+            [v] => Ok(v),
+            _ => Err(format!("a port conversion got {} values for one", vs.len())),
+        };
         let arg = match &self.from {
-            Side::Scalar(e) => yavs_interp::CallVal::Cell(decode(e, v)?),
+            Side::Scalar(e) => yavs_interp::CallVal::Cell(decode(e, one()?)?),
             Side::Array { desc, .. } => yavs_interp::CallVal::Composite {
-                data: value_bytes(v),
+                data: value_bytes(one()?),
                 desc: desc.clone(),
             },
+            Side::Composite { map, parts } => {
+                if vs.len() != parts.len() {
+                    return Err("a port conversion got the wrong number of parts".into());
+                }
+                let mut codes = Vec::new();
+                for v in vs {
+                    match v {
+                        Value::Bytes(b) => codes.extend_from_slice(b),
+                        Value::Logic(l) => codes.extend((0..l.len()).map(|i| l.get(i) as u8)),
+                    }
+                }
+                yavs_interp::CallVal::Composite {
+                    data: map.pack(&codes)?,
+                    desc: map.desc.clone(),
+                }
+            }
         };
         let r = match &self.func {
             Some((rt, f, ret)) => {
                 let ret = match self.to {
-                    Side::Array { .. } => *ret,
+                    Side::Array { .. } | Side::Composite { .. } => *ret,
                     Side::Scalar(_) => None,
                 };
                 yavs_interp::call_values(rt.clone(), *f, Default::default(), &[arg], ret)
@@ -121,13 +152,39 @@ impl ConvFn {
                 }
                 // Closely related arrays of the same element: the elements unchanged.
                 (Side::Array { elem: a, .. }, Side::Array { elem: b, .. }, _) if a == b => {
-                    return Ok(v.clone());
+                    return Ok(vec![one()?.clone()]);
                 }
                 _ => return Err("this type conversion of a port is not implemented yet".into()),
             },
         };
         match (&self.to, r) {
-            (Side::Scalar(e), yavs_interp::CallVal::Cell(c)) => Ok(encode_cell(e, c)),
+            (Side::Scalar(e), yavs_interp::CallVal::Cell(c)) => Ok(vec![encode_cell(e, c)]),
+            (Side::Composite { map, parts }, yavs_interp::CallVal::Composite { data, desc }) => {
+                let rt = match &self.func {
+                    Some((rt, _, Some(ret))) => (rt, *ret),
+                    _ => return Err("a composite conversion without a function".into()),
+                };
+                let codes = map.unpack(&rt.0.prog, rt.1, &data, &desc)?;
+                let mut at = 0;
+                let mut out = Vec::with_capacity(parts.len());
+                for &(elem, n) in parts {
+                    let w = match elem {
+                        Elem::Logic => 1,
+                        Elem::Bytes(w) => u64::from(w),
+                    };
+                    let b = codes
+                        .get(at..at + (n * w) as usize)
+                        .ok_or("conversion result of the wrong size")?;
+                    at += (n * w) as usize;
+                    out.push(match elem {
+                        Elem::Logic => Value::Logic(LogicVec::from_fn(n as usize, |i| {
+                            yavs_logic::StdULogic::from_code_pub(b[i])
+                        })),
+                        Elem::Bytes(_) => Value::Bytes(b.to_vec()),
+                    });
+                }
+                Ok(out)
+            }
             (Side::Array { elem, len, .. }, yavs_interp::CallVal::Composite { data, desc }) => {
                 let n: u64 = desc
                     .as_chunks::<24>()
@@ -152,7 +209,7 @@ impl ConvFn {
                         "the conversion result has {n} elements, the port {len}"
                     ));
                 }
-                Ok(match elem {
+                Ok(vec![match elem {
                     Elem::Logic => {
                         let blocks: Vec<yavs_logic::Block> = data
                             .as_chunks::<32>()
@@ -173,7 +230,7 @@ impl ConvFn {
                     }
                     Elem::Bytes(w) if data.len() as u64 == n * u64::from(*w) => Value::Bytes(data),
                     Elem::Bytes(_) => return Err("conversion result of the wrong size".into()),
-                })
+                }])
             }
             _ => Err("the conversion result does not fit the port".into()),
         }
@@ -268,14 +325,17 @@ pub(crate) fn enc_of(db: &Db, t: TypeId) -> Option<Enc> {
 
 /// A conversion `f` (a function or a type) from a signal of shape `from` to one of `to`.
 pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) -> R<ConvFn> {
-    let (Some(fe), Some(te)) = (side_of(db, from), side_of(db, to)) else {
+    let (fe, te) = (side_of(db, from), side_of(db, to));
+    let is_fn = matches!(db.decls[f].kind, DeclKind::Subprogram(_));
+    let mut pty = None;
+    if (fe.is_none() || te.is_none()) && !is_fn {
         return Err(err(
             codes::NOT_IMPLEMENTED,
             at,
-            "conversions of record ports and arrays of composites are not implemented yet",
+            "type conversions of record ports and arrays of composites are not implemented yet",
             "conversion",
         ));
-    };
+    }
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {
             let l = lower_one(db, f).map_err(|e| match e {
@@ -283,14 +343,40 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
                 crate::pkgcall::Fail::Unsupported(w) => err(codes::INTERNAL, at, w, "here"),
                 crate::pkgcall::Fail::Runtime(w) => err(codes::INTERNAL, at, w, "here"),
             })?;
+            pty = l.sig.params.first().copied();
             Some((l.rt, l.sig.func, l.sig.ret))
         }
         _ => None,
     };
+    // A composite side maps its kernel leaves to the IR value of the function's parameter or
+    // result (whole.rs, as for a composite resolved as a whole).
+    let composite = |side: Option<Side>, ty: Option<yavs_ir::TyId>, shape: &Shape| -> R<Side> {
+        if let Some(s) = side {
+            return Ok(s);
+        }
+        let fail = |m: String| err(codes::INTERNAL, at, m, "conversion");
+        let (Some((rt, _, _)), Some(ty)) = (&func, ty) else {
+            return Err(fail("composite conversion without a typed function".into()));
+        };
+        let map = crate::whole::Map::new(&rt.prog, ty, shape).map_err(fail)?;
+        let parts = shape
+            .leaves()
+            .into_iter()
+            .map(|(_, leaf, n)| match leaf {
+                Shape::Scalar { elem, .. } => (*elem, n),
+                _ => (Elem::Bytes(0), 0),
+            })
+            .collect();
+        Ok(Side::Composite {
+            map: std::sync::Arc::new(map),
+            parts,
+        })
+    };
+    let rty = func.as_ref().and_then(|f| f.2);
     Ok(ConvFn {
+        from: composite(fe, pty, from)?,
+        to: composite(te, rty, to)?,
         func,
-        from: fe,
-        to: te,
     })
 }
 

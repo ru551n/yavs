@@ -93,6 +93,7 @@ const PASS: &[&str] = &[
     "hierarchy/package_signal",
     "hierarchy/package_signal_alias",
     "hierarchy/port_conv_composite",
+    "hierarchy/port_conv_record",
     "hierarchy/port_expr_actual",
     "hierarchy/port_expr_parts",
     "hierarchy/port_individual_unconstrained",

@@ -49,6 +49,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | A composite resolved as a whole keeps its per-field leaves (logic on planes) and is resolved as one group, not stored as one byte leaf (#83) | Bit-planes everywhere (user, 2026-10-18) | `docs/decisions.md` "Kernel round 3", DESIGN.md "Segments" |
 | `'transaction`, `'stable` and `'quiet` may have several sources (`Builder::implicit_source`): one implicit signal for a record prefix; `'delayed` has one | LRM 16.2.3 over all scalar subelements, #215 | DESIGN.md "The cycle" |
 | Uncollapsed ports, conversions in the update phase without an extra delta (K1) | Rule 3 | `docs/plan.md` rule 3, `docs/decisions.md` "Kernel round 2" |
+| Port edges are lists of parts on each side (`Builder::port_parts`); a converter maps all source parts to all target parts once per cycle, at the part the level-ordered worklist reaches last | Record ports with conversion functions in the same delta, deterministic (#74) | DESIGN.md "The cycle", ir.md 4.1, `docs/decisions.md` "Multi-part signal references and port converters" |
 | Forces and deposits queued and applied next cycle | VHDL-2008 force semantics | `docs/decisions.md` "Kernel crate and process interface" |
 | Delta numbering: init is delta 0 at 0 fs; default delta limit 10000; delays truncated to the resolution | Clear, reference-simulator-compatible report times | same |
 | Exit status: 101 internal (also a caught panic in process code), 1 otherwise; `Idle` is terminal like `stop`/`finish` | Error motto | same; DESIGN.md "Error handling" |

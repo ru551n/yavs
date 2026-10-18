@@ -287,7 +287,8 @@ evaluation with ordered commit (threads and shuffle invariance tested on 1000+ p
 `crates/yavs-kernel/DESIGN.md`.
 
 Kernel asks of docs/design/ir.md, all done: K1 uncollapsed ports with conversions in the update
-phase (no extra delta), K2 kernel-maintained `'stable`/`'quiet`/`'delayed`/`'transaction`, K3
+phase (no extra delta; a port of several parts in different signals converts all of them in one
+call, `Builder::port_parts`, #74), K2 kernel-maintained `'stable`/`'quiet`/`'delayed`/`'transaction`, K3
 `'driving_value`, K4 `'driving`, null transactions and guarded `bus`/`register` signals with
 disconnection time, K5 null-range signals, K7 bit-plane storage for logic signals (bytes for
 everything else). K6 (buffered user-file streams) was dropped: disk files are the interpreter's
@@ -386,7 +387,8 @@ package constants with impure initial values are read from the package data, and
 simulation replays these calls (#77); an impure constant elaboration cannot evaluate at all
 (`'PATH_NAME`) runs at simulation start with W2118 (#220). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
-and type conversions in port maps (kernel converters, scalars and arrays of scalars), individual
+and type conversions in port maps (kernel converters; conversion functions of record ports and
+arrays of records convert all leaves in one call in the same delta, #74), individual
 association of unconstrained array ports, implicit signals (`'stable`,
 `'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`, every
 signal of a loaded package, visible from every region), package data initialised once in
@@ -405,7 +407,7 @@ instance data; #75; components and blocks with them, configuration specification
 architecture, #222), `others` in a configuration after component configurations naming
 specification-bound instances, non-static expression actuals of `in` ports and of parts of
 them driven by their equivalent IR process one delta later, static expression parts in the
-formal's initial value (#74). Not yet: conversions of record ports, record-typed signal-name
+formal's initial value (#74). Not yet: type conversions of record ports, record-typed signal-name
 expression actuals (#74); `inertial` signal-name actuals are expression actuals (#233).
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and

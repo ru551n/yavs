@@ -129,21 +129,30 @@ impl Elaborated {
             let leaves: Vec<_> = (a.0..z.0).map(yavs_kernel::SignalId).collect();
             b.resolved_composite(&leaves, res(*d, a)?);
         }
+        let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| {
+            yavs_kernel::SignalId(l.0).slice(r.offset, r.len)
+        };
+        let conv = |i: Option<u32>| -> Option<yavs_kernel::Converter> {
+            let c = self.convs.get(i? as usize)?.clone();
+            Some(std::sync::Arc::new(move |v: &[yavs_kernel::Value]| {
+                c.apply(v)
+            }))
+        };
         for e in &self.nets.ports {
-            let sig = |(l, r): (crate::LeafId, yavs_kernel::Range)| {
-                yavs_kernel::SignalId(l.0).slice(r.offset, r.len)
-            };
-            let conv = |i: Option<u32>| -> Option<yavs_kernel::Converter> {
-                let c = self.convs.get(i? as usize)?.clone();
-                Some(std::sync::Arc::new(move |v: yavs_kernel::Value| {
-                    c.apply(&v)
-                }))
-            };
             let pc = PortConv {
                 to_formal: conv(e.to_formal),
                 to_actual: conv(e.to_actual),
             };
-            b.port(sig(e.formal), sig(e.actual), e.mode, pc);
+            b.port(sig(&e.formal), sig(&e.actual), e.mode, pc);
+        }
+        for e in &self.nets.conv_ports {
+            let pc = PortConv {
+                to_formal: conv(e.to_formal),
+                to_actual: conv(e.to_actual),
+            };
+            let f: Vec<_> = e.formal.iter().map(sig).collect();
+            let a: Vec<_> = e.actual.iter().map(sig).collect();
+            b.port_parts(&f, &a, e.mode, pc);
         }
         for p in &self.procs {
             let ds: Vec<DriverId> = p

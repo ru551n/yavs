@@ -209,16 +209,20 @@ pub(crate) struct ProcMeta {
     pub ready: bool,
 }
 
-/// A port association between a formal and an actual sub-element range (K1).
+/// A port association between a formal and an actual (K1), each one or more sub-element
+/// ranges, in order (`Builder::port_parts`).
 pub(crate) struct PortEdge {
-    pub formal: SignalId,
-    pub frange: Range,
-    pub actual: SignalId,
-    pub arange: Range,
+    pub formal: Vec<(SignalId, Range)>,
+    pub actual: Vec<(SignalId, Range)>,
     pub mode: PortMode,
     pub conv: PortConv,
-    /// The actual's source slot fed by the formal (`out`, `inout`, `buffer`).
-    pub slot: Option<u32>,
+    /// Per actual part, its source slot fed by the formal (`out`, `inout`, `buffer`).
+    pub slots: Vec<u32>,
+    /// The formal part (signal) whose update passes the driving values up, and the actual
+    /// part whose update passes the effective values down: the one each worklist reaches
+    /// last, so every other part is up to date (`Builder::build`).
+    pub up_at: u32,
+    pub down_at: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,21 +295,32 @@ pub struct SimControl {
     stats: Stats,
 }
 
-/// Run a port conversion and check that its result fits `n` elements of the target.
+/// Run a port conversion over the source parts `v` and check that its result fits the
+/// target parts. Without a conversion both sides are one part of the same type (`build`).
 fn convert(
     conv: Option<&crate::builder::Converter>,
-    v: Buf,
-    target: &Signal,
-    n: usize,
+    v: Vec<Buf>,
+    signals: &[Signal],
+    targets: &[(SignalId, Range)],
     formal: &str,
-) -> Result<Buf, ErrorKind> {
+) -> Result<Vec<Buf>, ErrorKind> {
     let Some(f) = conv else { return Ok(v) };
     let fail = |message| ErrorKind::Conversion {
         formal: formal.to_string(),
         message,
     };
-    let out = f(v.to_value()).map_err(fail)?;
-    Buf::from_ref(target.ty.elem, n, out.as_ref()).map_err(fail)
+    let vals: Vec<Value> = v.iter().map(Buf::to_value).collect();
+    let out = f(&vals).map_err(fail)?;
+    if out.len() != targets.len() {
+        let m = format!("{} values for {} port parts", out.len(), targets.len());
+        return Err(fail(m));
+    }
+    out.iter()
+        .zip(targets)
+        .map(|(o, (s, r))| {
+            Buf::from_ref(signals[s.0 as usize].ty.elem, r.len as usize, o.as_ref()).map_err(fail)
+        })
+        .collect()
 }
 
 impl SimControl {
@@ -338,13 +353,20 @@ impl SimControl {
         let mut ports_down = vec![Vec::new(); signals.len()];
         let mut independent: Vec<bool> = signals.iter().map(|s| s.group.is_none()).collect();
         for (i, p) in ports.iter().enumerate() {
-            independent[p.formal.0 as usize] = false;
-            independent[p.actual.0 as usize] = false;
-            if p.slot.is_some() {
-                ports_up[p.formal.0 as usize].push(i as u32);
+            let i = i as u32;
+            for &(f, _) in &p.formal {
+                independent[f.0 as usize] = false;
+                let up = &mut ports_up[f.0 as usize];
+                if !p.slots.is_empty() && up.last() != Some(&i) {
+                    up.push(i);
+                }
             }
-            if matches!(p.mode, PortMode::In | PortMode::Inout) {
-                ports_down[p.actual.0 as usize].push(i as u32);
+            for &(a, _) in &p.actual {
+                independent[a.0 as usize] = false;
+                let down = &mut ports_down[a.0 as usize];
+                if matches!(p.mode, PortMode::In | PortMode::Inout) && down.last() != Some(&i) {
+                    down.push(i);
+                }
             }
         }
         let mut sim = SimControl {
@@ -409,70 +431,88 @@ impl SimControl {
     }
 
     /// Pass the formal's driving value up to the actuals of its out-ports. With `active`,
-    /// only ports whose formal elements were active this cycle, marking the actuals.
+    /// only ports whose formal elements were active this cycle, marking the actuals. Returns
+    /// the signals to update next: the actuals, and the formal part of a multi-part port
+    /// that passes the values up once all its parts are updated (`PortEdge::up_at`).
     fn push_up(&mut self, s: u32, active: bool) -> Result<Vec<u32>, ErrorKind> {
         let mut touched = Vec::new();
         for &e in &self.ports_up[s as usize] {
             let p = &self.ports[e as usize];
-            let formal = &self.signals[s as usize];
-            if active && !formal.active_in(p.frange, self.cycle) {
+            let is_active =
+                |(f, r): &(SignalId, Range)| self.signals[f.0 as usize].active_in(*r, self.cycle);
+            if p.up_at != s {
+                if active && p.formal.iter().any(|f| f.0.0 == s && is_active(f)) {
+                    touched.push(p.up_at);
+                }
                 continue;
             }
-            let v = formal.driving_of(p.frange);
-            let actual = &self.signals[p.actual.0 as usize];
-            let v = convert(
-                p.conv.to_actual.as_ref(),
-                v,
-                actual,
-                p.arange.len as usize,
-                &formal.name,
-            )?;
-            let slot = p
-                .slot
-                .ok_or_else(|| ErrorKind::Internal("out-port without a source slot".into()))?;
-            let actual = &mut self.signals[p.actual.0 as usize];
-            actual.drivers[slot as usize].value = v;
-            if active {
-                actual.mark_active(p.arange, self.now, self.cycle);
-                actual.dirty.push(p.arange);
+            if active && !p.formal.iter().any(is_active) {
+                continue;
             }
-            touched.push(p.actual.0);
+            let v = p
+                .formal
+                .iter()
+                .map(|(f, r)| self.signals[f.0 as usize].driving_of(*r))
+                .collect();
+            let name = &self.signals[p.formal[0].0.0 as usize].name;
+            let vs = convert(p.conv.to_actual.as_ref(), v, &self.signals, &p.actual, name)?;
+            if p.slots.len() != p.actual.len() {
+                return Err(ErrorKind::Internal("out-port without a source slot".into()));
+            }
+            for ((v, &(a, ar)), &slot) in vs.into_iter().zip(&p.actual).zip(&p.slots) {
+                let actual = &mut self.signals[a.0 as usize];
+                actual.drivers[slot as usize].value = v;
+                if active {
+                    actual.mark_active(ar, self.now, self.cycle);
+                    actual.dirty.push(ar);
+                }
+                touched.push(a.0);
+            }
         }
         Ok(touched)
     }
 
-    /// Pass the actual's effective value down to the formals of its in-ports.
+    /// Pass the actual's effective value down to the formals of its in-ports. Returns the
+    /// signals to update next: the formals, and the actual part of a multi-part port that
+    /// passes the values down once all its parts are updated (`PortEdge::down_at`).
     fn push_down(&mut self, s: u32, active: bool) -> Result<Vec<u32>, ErrorKind> {
         let mut touched = Vec::new();
         for &e in &self.ports_down[s as usize] {
             let p = &self.ports[e as usize];
-            let actual = &self.signals[s as usize];
-            if active && !actual.active_in(p.arange, self.cycle) {
+            let is_active =
+                |(a, r): &(SignalId, Range)| self.signals[a.0 as usize].active_in(*r, self.cycle);
+            if p.down_at != s {
+                if active && p.actual.iter().any(|a| a.0.0 == s && is_active(a)) {
+                    touched.push(p.down_at);
+                }
                 continue;
             }
-            let v = actual
-                .cur
-                .extract(p.arange.offset as usize, p.arange.len as usize);
-            let formal = &self.signals[p.formal.0 as usize];
-            let v = convert(
-                p.conv.to_formal.as_ref(),
-                v,
-                formal,
-                p.frange.len as usize,
-                &formal.name,
-            )?;
-            let formal = &mut self.signals[p.formal.0 as usize];
-            let layer = formal.port_in.as_mut().ok_or_else(|| {
-                ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
-            })?;
-            layer
-                .value
-                .copy(p.frange.offset as usize, &v, 0, p.frange.len as usize);
-            if active {
-                formal.mark_active(p.frange, self.now, self.cycle);
-                formal.eff_dirty.push(p.frange);
+            if active && !p.actual.iter().any(is_active) {
+                continue;
             }
-            touched.push(p.formal.0);
+            let v = p
+                .actual
+                .iter()
+                .map(|(a, r)| {
+                    self.signals[a.0 as usize]
+                        .cur
+                        .extract(r.offset as usize, r.len as usize)
+                })
+                .collect();
+            let name = &self.signals[p.formal[0].0.0 as usize].name;
+            let vs = convert(p.conv.to_formal.as_ref(), v, &self.signals, &p.formal, name)?;
+            for (v, &(f, fr)) in vs.into_iter().zip(&p.formal) {
+                let formal = &mut self.signals[f.0 as usize];
+                let layer = formal.port_in.as_mut().ok_or_else(|| {
+                    ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
+                })?;
+                layer.value.copy(fr.offset as usize, &v, 0, fr.len as usize);
+                if active {
+                    formal.mark_active(fr, self.now, self.cycle);
+                    formal.eff_dirty.push(fr);
+                }
+                touched.push(f.0);
+            }
         }
         Ok(touched)
     }

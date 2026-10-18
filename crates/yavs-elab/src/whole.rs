@@ -168,14 +168,14 @@ fn places(
 }
 
 /// How one composite value maps between the kernel and IR memory.
-struct Map {
+pub struct Map {
     /// One place per kernel element, in the kernel's concatenation order.
     flat: Vec<Place>,
     /// Bytes of the IR value, and the distance between array elements of it.
     size: u64,
     count: u64,
     stride: u64,
-    desc: Vec<u8>,
+    pub(crate) desc: Vec<u8>,
     /// `Some(n)`: the composite is a logic array of `n` elements, so an array of them is one
     /// block of planes (ir.md 1.3).
     logic: Option<u64>,
@@ -186,7 +186,7 @@ fn short() -> String {
 }
 
 impl Map {
-    fn new(prog: &Program, ty: TyId, shape: &Shape) -> Result<Map, String> {
+    pub(crate) fn new(prog: &Program, ty: TyId, shape: &Shape) -> Result<Map, String> {
         let desc = desc_of(prog, ty, shape)?;
         let mut per = BTreeMap::new();
         places(prog, ty, shape, &desc, 0, &mut Vec::new(), &mut per)?;
@@ -219,6 +219,41 @@ impl Map {
             desc,
             logic,
         })
+    }
+
+    /// One value of the composite in IR memory from its kernel leaves concatenated (a port
+    /// conversion's argument).
+    pub(crate) fn pack(&self, src: &[u8]) -> Result<Vec<u8>, String> {
+        let mut data = vec![0u8; self.size as usize];
+        self.put(src, &mut data, 0, 0).ok_or_else(short)?;
+        Ok(data)
+    }
+
+    /// The kernel leaves concatenated of the IR value `data` of type `ty` with descriptor
+    /// `desc` (a port conversion's result), checked to have this composite's size.
+    pub(crate) fn unpack(
+        &self,
+        prog: &Program,
+        ty: TyId,
+        data: &[u8],
+        desc: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let fits = Ty::layout(&prog.types, &prog.consts, ty, desc)
+            .is_ok_and(|(l, _)| l.size == self.size && l.count == self.count);
+        if !fits {
+            return Err("the conversion result does not fit the port's subtype".into());
+        }
+        let n = self
+            .flat
+            .iter()
+            .map(|p| match p {
+                Place::Bytes { w, .. } => *w as usize,
+                Place::Pos { .. } | Place::Plane { .. } => 1,
+            })
+            .sum();
+        let mut out = vec![0u8; n];
+        self.get(data, &mut out).ok_or_else(short)?;
+        Ok(out)
     }
 
     /// Write kernel value `src` into `data`, `sb` bytes and `bs` plane bits further on.

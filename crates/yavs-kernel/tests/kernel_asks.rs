@@ -134,14 +134,16 @@ fn inout_port_on_a_resolved_logic_bus() {
 fn conversion_functions_in_both_directions() {
     // Formal: an 8-bit count as one byte; actual: an 8-element logic vector.
     let to_formal: Converter = Arc::new(|v| {
-        let l = v.as_logic().ok_or("not logic")?;
-        Ok(Value::Bytes(vec![l.to_u64().ok_or("metavalue")? as u8]))
+        let l = v[0].as_logic().ok_or("not logic")?;
+        Ok(vec![Value::Bytes(vec![
+            l.to_u64().ok_or("metavalue")? as u8
+        ])])
     });
     let to_actual: Converter = Arc::new(|v| {
-        Ok(Value::Logic(LogicVec::from_u64(
+        Ok(vec![Value::Logic(LogicVec::from_u64(
             8,
-            u64::from(v.as_bytes().ok_or("not bytes")?[0]),
-        )))
+            u64::from(v[0].as_bytes().ok_or("not bytes")?[0]),
+        ))])
     });
     let mut b = Builder::new();
     let a = b.signal("a", SignalType::logic(8), &lv("00000000"));
@@ -191,8 +193,125 @@ fn conversion_functions_in_both_directions() {
 }
 
 #[test]
+fn multi_part_conversions_run_in_the_same_delta() {
+    // A record port of two leaves (a byte and a logic element) converted to and from two
+    // actual signals at different port levels: one conversion call per cycle sees both
+    // parts, and everything settles in the delta of the source.
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let swap: Converter = Arc::new(move |v| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = v[0].as_bytes().ok_or("not bytes")?[0];
+        let l = v[1].as_logic().ok_or("not logic")?.get(0);
+        let b = u8::from(l == StdULogic::One);
+        Ok(vec![
+            Value::Logic(LogicVec::new(
+                1,
+                if n & 1 == 1 {
+                    StdULogic::One
+                } else {
+                    StdULogic::Zero
+                },
+            )),
+            Value::Bytes(vec![n + b]),
+        ])
+    });
+    let mut b = Builder::new();
+    let n = b.signal("n", BYTE, &[0]);
+    let l = b.signal("l", SignalType::logic(1), &lv("0"));
+    // `l` is fed through a port of its own, so its level differs from `n`.
+    let lsrc = b.signal("lsrc", SignalType::logic(1), &lv("0"));
+    let fa = b.signal("u.r.a", SignalType::logic(1), &lv("0"));
+    let fb = b.signal("u.r.b", BYTE, &[0]);
+    b.port(l, lsrc, PortMode::In, PortConv::default());
+    b.port_parts(
+        &[fa.into(), fb.into()],
+        &[n.into(), l.into()],
+        PortMode::In,
+        PortConv {
+            to_formal: Some(swap),
+            to_actual: None,
+        },
+    );
+    stim(&mut b, "sn", n, &[(1, 3), (2, 4)]);
+    let dl = b.driver(lsrc);
+    b.process(
+        "sl",
+        NONE,
+        &[dl],
+        p(move |c| c.assign(dl, None, &[(ns(2), &lv("1"))], DelayMode::Transport)),
+    );
+    let (mut sim, t) = build(b, Config::default());
+    sim.run_until(ns(3)).unwrap();
+    assert_eq!(sim.value(fb).unwrap(), Value::Bytes(vec![5]));
+    assert_eq!(sim.value(fa).unwrap(), Value::Logic(lv("0")));
+    // Initialisation, 1 ns and 2 ns: once per cycle although both parts change at 2 ns.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+    let got = lines_with(&t, "u.r.");
+    assert_eq!(
+        got,
+        [
+            "1 ns +0 u.r.a[0..1]=\"1\"",
+            "1 ns +0 u.r.b[0..1]=[3]",
+            "2 ns +0 u.r.a[0..1]=\"0\"",
+            "2 ns +0 u.r.b[0..1]=[5]",
+        ]
+    );
+}
+
+#[test]
+fn multi_part_out_conversion_feeds_every_actual_part() {
+    let split: Converter = Arc::new(|v| {
+        let n = v[0].as_bytes().ok_or("not bytes")?[0];
+        Ok(vec![Value::Bytes(vec![n / 16]), Value::Bytes(vec![n % 16])])
+    });
+    let mut b = Builder::new();
+    let hi = b.signal("hi", BYTE, &[0]);
+    let lo = b.signal("lo", BYTE, &[0]);
+    let o = b.signal("u.o", BYTE, &[0]);
+    b.port_parts(
+        &[o.into()],
+        &[hi.into(), lo.into()],
+        PortMode::Out,
+        PortConv {
+            to_formal: None,
+            to_actual: Some(split),
+        },
+    );
+    stim(&mut b, "so", o, &[(1, 0x35)]);
+    let (mut sim, t) = build(b, Config::default());
+    sim.run_until(ns(2)).unwrap();
+    assert_eq!(sim.value(hi).unwrap(), Value::Bytes(vec![3]));
+    assert_eq!(sim.value(lo).unwrap(), Value::Bytes(vec![5]));
+    assert_eq!(
+        lines_with(&t, "1 ns"),
+        [
+            "1 ns +0 hi[0..1]=[3]",
+            "1 ns +0 lo[0..1]=[5]",
+            "1 ns +0 u.o[0..1]=[53]"
+        ]
+    );
+}
+
+#[test]
+fn multi_part_ports_need_a_conversion() {
+    let mut b = Builder::new();
+    let a = b.signal("a", BYTE, &[0]);
+    let c = b.signal("c", BYTE, &[0]);
+    let f = b.signal("u.f", SignalType::bytes(1, 2), &[0, 0]);
+    b.port_parts(
+        &[f.into()],
+        &[a.into(), c.into()],
+        PortMode::In,
+        PortConv::default(),
+    );
+    let err = b.build(Config::default()).err().unwrap();
+    assert!(err.to_string().contains("no conversion"), "{err}");
+}
+
+#[test]
 fn conversion_failure_stops_the_simulation() {
-    let bad: Converter = Arc::new(|_| Ok(Value::Bytes(vec![1, 2])));
+    let bad: Converter = Arc::new(|_| Ok(vec![Value::Bytes(vec![1, 2])]));
     let mut b = Builder::new();
     let a = b.signal("a", BYTE, &[0]);
     let f = b.signal("u.f", BYTE, &[0]);

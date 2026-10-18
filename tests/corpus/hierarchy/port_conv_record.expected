@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:port_conv_record:u:_p2	sub w 18 true
+diag	note	0	0	:port_conv_record:u:_p3	sub x 17 34
+diag	note	1000000	0	:port_conv_record:_p0	q 0001 3 s 0000 6
+diag	note	1000000	1	:port_conv_record:u:_p2	sub w 47 true
+diag	note	1000000	2	:port_conv_record:_p0	delta2 q 0011 0 s 0010 2
+diag	note	1000000	3	:port_conv_record:u:_p2	sub w 36 true
+diag	note	2000000	0	:port_conv_record:_p0	q 0010 5
+diag	note	2000000	1	:port_conv_record:u:_p3	sub x 17 66

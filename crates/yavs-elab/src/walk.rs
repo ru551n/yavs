@@ -1075,7 +1075,28 @@ impl Elab<'_> {
                 let to_formal = idx(&mut self.m, *actual_conv, &ashape, &fshape)?;
                 let to_actual = idx(&mut self.m, *formal_conv, &fshape, &ashape)?;
                 let ([f], [a]) = (fl.as_slice(), al.as_slice()) else {
-                    return Err(unsupported(aspan, "conversions of composite ports", "M3"));
+                    // Several leaves on a side: one kernel converter over all of them, so
+                    // the conversion runs once per cycle with every part current.
+                    let one_way = match mode {
+                        PortMode::In => to_formal.is_none(),
+                        PortMode::Out | PortMode::Buffer => to_actual.is_none(),
+                        PortMode::Inout => to_formal.is_none() || to_actual.is_none(),
+                    };
+                    if one_way {
+                        return Err(unsupported(
+                            aspan,
+                            "a composite port converted in one direction only",
+                            "M3",
+                        ));
+                    }
+                    self.m.nets.conv_ports.push(crate::hier::ConvPort {
+                        formal: fl,
+                        actual: al,
+                        mode,
+                        to_formal,
+                        to_actual,
+                    });
+                    return Ok(());
                 };
                 self.m.nets.ports.push(PortEdge {
                     formal: *f,
@@ -2034,17 +2055,26 @@ impl Elab<'_> {
                 format!("process {}", self.m.hier.path_name(p.scope, Case::Original)),
             ));
         }
-        for e in &self.m.nets.ports {
-            if e.mode != PortMode::In {
-                let f = self.m.nets.obj(self.m.nets.leaf(e.formal.0).obj);
-                src.entry(e.actual.0).or_default().push((
-                    e.actual.1,
-                    format!(
-                        "port {}{}",
-                        self.m.hier.path_name(f.scope, Case::Original),
-                        f.name.text
-                    ),
-                ));
+        let nets = &self.m.nets;
+        let edges = nets
+            .ports
+            .iter()
+            .map(|e| (e.mode, e.formal.0, vec![e.actual]));
+        let convs = nets
+            .conv_ports
+            .iter()
+            .map(|e| (e.mode, e.formal[0].0, e.actual.clone()));
+        for (mode, formal, actual) in edges.chain(convs) {
+            if mode != PortMode::In {
+                let f = nets.obj(nets.leaf(formal).obj);
+                let name = format!(
+                    "port {}{}",
+                    self.m.hier.path_name(f.scope, Case::Original),
+                    f.name.text
+                );
+                for (l, r) in actual {
+                    src.entry(l).or_default().push((r, name.clone()));
+                }
             }
         }
         let mut leaves: Vec<_> = src.into_iter().collect();

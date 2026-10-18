@@ -1,5 +1,6 @@
 //! Elaboration-free model construction.
 
+use std::cmp::Reverse;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -32,8 +33,10 @@ pub enum PortMode {
 }
 
 /// A conversion function or type conversion in a port association, run in the update phase.
-/// It receives the whole source range and must return the whole target range.
-pub type Converter = Arc<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
+/// It receives the value of every source part, in order, and must return one value per
+/// target part, each the whole part ([`Builder::port_parts`]; one part on each side for
+/// [`Builder::port`]).
+pub type Converter = Arc<dyn Fn(&[Value]) -> Result<Vec<Value>, String> + Send + Sync>;
 
 /// Conversions of one association: actual to formal (`in`, `inout`) and formal to actual
 /// (`out`, `inout`, `buffer`).
@@ -306,36 +309,70 @@ impl Builder {
         mode: PortMode,
         conv: PortConv,
     ) {
-        let (Some((f, fr)), Some((a, ar))) = (self.chk(formal.into()), self.chk(actual.into()))
-        else {
+        self.port_parts(&[formal.into()], &[actual.into()], mode, conv);
+    }
+
+    /// [`Builder::port`] for a formal and an actual made of several parts, possibly in
+    /// different signals (the leaves of a record port with a conversion function). Every
+    /// direction the mode uses needs a conversion unless both sides are one part. The
+    /// conversion sees all source parts and writes all target parts in the same update phase
+    /// (no delta), once per cycle in which any source part is active.
+    pub fn port_parts(
+        &mut self,
+        formal: &[SigRef],
+        actual: &[SigRef],
+        mode: PortMode,
+        conv: PortConv,
+    ) {
+        let mut parts = |refs: &[SigRef]| -> Option<Vec<(SignalId, Range)>> {
+            refs.iter().map(|&r| self.chk(r)).collect()
+        };
+        let (Some(fs), Some(as_)) = (parts(formal), parts(actual)) else {
             return;
         };
-        let (fs, as_) = (&self.signals[f.0 as usize], &self.signals[a.0 as usize]);
+        let name = |b: &Builder, p: &[(SignalId, Range)]| {
+            p.first().map_or("<no parts>".into(), |(s, _)| {
+                b.signals[s.0 as usize].name.clone()
+            })
+        };
+        if fs.is_empty() || as_.is_empty() {
+            let msg = format!("port {}: a side without parts", name(self, &fs));
+            return self.usage(msg);
+        }
         let needs = match mode {
             PortMode::In => conv.to_formal.is_none(),
             PortMode::Out | PortMode::Buffer => conv.to_actual.is_none(),
             PortMode::Inout => conv.to_formal.is_none() || conv.to_actual.is_none(),
         };
-        if needs && (fs.ty.elem != as_.ty.elem || fr.len != ar.len) {
-            let msg = format!(
-                "port {} -> {}: types differ and no conversion is given",
-                fs.name, as_.name
-            );
-            self.usage(msg);
-            return;
+        if needs {
+            let same = match (fs.as_slice(), as_.as_slice()) {
+                ([(f, fr)], [(a, ar)]) => {
+                    self.signals[f.0 as usize].ty.elem == self.signals[a.0 as usize].ty.elem
+                        && fr.len == ar.len
+                }
+                _ => false,
+            };
+            if !same {
+                let msg = format!(
+                    "port {} -> {}: types differ and no conversion is given",
+                    name(self, &fs),
+                    name(self, &as_)
+                );
+                return self.usage(msg);
+            }
         }
-        if f == a {
-            self.usage(format!("port {} is associated with itself", fs.name));
-            return;
+        if fs.iter().any(|f| as_.iter().any(|a| a.0 == f.0)) {
+            let msg = format!("port {} is associated with itself", name(self, &fs));
+            return self.usage(msg);
         }
         self.ports.push(PortEdge {
-            formal: f,
-            frange: fr,
-            actual: a,
-            arange: ar,
+            formal: fs,
+            actual: as_,
             mode,
             conv,
-            slot: None,
+            slots: Vec::new(),
+            up_at: 0,
+            down_at: 0,
         });
     }
 
@@ -365,32 +402,29 @@ impl Builder {
             add_source(s, range).map_err(usage)?;
         }
         for p in &mut self.ports {
-            let f = &self.signals[p.formal.0 as usize];
-            if matches!(p.mode, PortMode::In)
-                && f.drivers.iter().any(|d| d.range.overlaps(p.frange))
-            {
-                return Err(usage(format!("in-port {} has a driver", f.name)));
-            }
-            if matches!(p.mode, PortMode::In | PortMode::Inout) {
-                let f = &mut self.signals[p.formal.0 as usize];
-                let l = Signal::layer(&mut f.port_in, &f.cur);
-                crate::value::fill_bits(
-                    &mut l.mask,
-                    p.frange.offset as usize,
-                    p.frange.len as usize,
-                    true,
-                );
+            for &(f, fr) in &p.formal {
+                let f = &mut self.signals[f.0 as usize];
+                if matches!(p.mode, PortMode::In) && f.drivers.iter().any(|d| d.range.overlaps(fr))
+                {
+                    return Err(usage(format!("in-port {} has a driver", f.name)));
+                }
+                if matches!(p.mode, PortMode::In | PortMode::Inout) {
+                    let l = Signal::layer(&mut f.port_in, &f.cur);
+                    crate::value::fill_bits(&mut l.mask, fr.offset as usize, fr.len as usize, true);
+                }
             }
             if !matches!(p.mode, PortMode::In) {
-                let a = &mut self.signals[p.actual.0 as usize];
-                p.slot = Some(a.drivers.len() as u32);
-                add_source(a, p.arange).map_err(usage)?;
-                if let Some(d) = a.drivers.last_mut() {
-                    d.off = None; // a port source is never disconnected
+                for &(a, ar) in &p.actual {
+                    let a = &mut self.signals[a.0 as usize];
+                    p.slots.push(a.drivers.len() as u32);
+                    add_source(a, ar).map_err(usage)?;
+                    if let Some(d) = a.drivers.last_mut() {
+                        d.off = None; // a port source is never disconnected
+                    }
                 }
             }
         }
-        // Port levels: every formal deeper than its actual.
+        // Port levels: every formal part deeper than every actual part.
         let mut changed = true;
         let mut passes = 0;
         while changed {
@@ -400,13 +434,34 @@ impl Builder {
                 return Err(usage("port associations form a cycle".into()));
             }
             for p in &self.ports {
-                let want = self.signals[p.actual.0 as usize].level + 1;
-                let f = &mut self.signals[p.formal.0 as usize];
-                if f.level < want {
-                    f.level = want;
-                    changed = true;
+                let want = p
+                    .actual
+                    .iter()
+                    .map(|a| self.signals[a.0.0 as usize].level + 1)
+                    .max()
+                    .unwrap_or(0);
+                for f in &p.formal {
+                    let f = &mut self.signals[f.0.0 as usize];
+                    if f.level < want {
+                        f.level = want;
+                        changed = true;
+                    }
                 }
             }
+        }
+        // The part of each side that the update phase reaches last: driving values pop
+        // deepest first (then lowest id), effective values shallowest first (then lowest id).
+        // A multi-part conversion runs when that part is reached, after all others.
+        let level = |s: &SignalId| self.signals[s.0 as usize].level;
+        for p in &mut self.ports {
+            let up = p
+                .formal
+                .iter()
+                .map(|f| f.0)
+                .max_by_key(|s| (Reverse(level(s)), s.0));
+            let down = p.actual.iter().map(|a| a.0).max_by_key(|s| (level(s), s.0));
+            p.up_at = up.map_or(0, |s| s.0);
+            p.down_at = down.map_or(0, |s| s.0);
         }
         for s in &mut self.signals {
             s.build_segments();

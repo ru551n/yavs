@@ -917,3 +917,17 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`), without the glibc version, so installers
   that match on target triples find them; OS-arch names such as `linux-arm64` were considered
   (user, 2026-10-18). The docs say that aarch64 is also known as arm64.
+
+## Multi-part signal references and port converters (yavs-ir, yavs-interp, yavs-kernel, #71, #74, 2026-10-18)
+
+- **Port converters over several leaves** (#74): a port edge in the kernel is a list of parts on
+  each side (`Builder::port_parts`; `Builder::port` is the one-part case), and `Converter` maps
+  the values of all source parts to all target parts. A record port (or an array of records)
+  with a conversion function is one such edge in yavs-elab (`ConvPort`), so the conversion runs
+  once per cycle with every leaf current, in the update phase of the source's delta (LRM
+  6.5.7.1, 14.7.3: the conversion is part of the port's driving/effective value). Rejected: one
+  edge per leaf (a function of the whole record cannot be split per leaf), and an equivalent
+  process per conversion (one delta late, unlike the reference simulators). Ordering: the edge
+  converts at the part that the level-ordered update worklist reaches last, so the result does
+  not depend on which part changed or on the thread count (docs/design/ir.md 4.1).
+

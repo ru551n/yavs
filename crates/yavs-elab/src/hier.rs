@@ -365,6 +365,18 @@ pub struct PortEdge {
     pub to_actual: Option<u32>,
 }
 
+/// A converted port association with several leaves on a side (a record port, an array of
+/// composites): kernel `Builder::port_parts`, converted in the update phase like a
+/// [`PortEdge`]. Parts are in leaf order, as `NetGraph::select` gives them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConvPort {
+    pub formal: Vec<(LeafId, Range)>,
+    pub actual: Vec<(LeafId, Range)>,
+    pub mode: PortMode,
+    pub to_formal: Option<u32>,
+    pub to_actual: Option<u32>,
+}
+
 /// A driver of a process: the elements of one leaf it drives.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DriverDecl {
@@ -378,6 +390,7 @@ pub struct NetGraph {
     pub objs: Vec<SigObj>,
     pub leaves: Vec<Leaf>,
     pub ports: Vec<PortEdge>,
+    pub conv_ports: Vec<ConvPort>,
     pub drivers: Vec<DriverDecl>,
     /// Expression actuals elab builds without lowering (#186): `(formal, actual)` leaf
     /// parts, each the equivalent process `formal <= actual` (LRM 6.5.6.3), one kernel

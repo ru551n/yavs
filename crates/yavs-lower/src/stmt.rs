@@ -59,6 +59,13 @@ impl Fx<'_, '_> {
         match &s.kind {
             H::Null => Ok(()),
             H::VarAssign { target, rhs } => self.var_assign(target, rhs, span),
+            H::ConcSignalAssign {
+                target,
+                delay,
+                rhs,
+                guarded: true,
+                ..
+            } => self.guarded_assign(target, delay, rhs, span),
             H::SignalAssign { target, delay, rhs }
             | H::ConcSignalAssign {
                 target, delay, rhs, ..
@@ -415,6 +422,92 @@ impl Fx<'_, '_> {
         Ok(r)
     }
 
+    /// A guarded concurrent assignment (LRM 11.6): assign while GUARD is true; otherwise
+    /// disconnect the drivers of a guarded (`bus` or `register`) target.
+    fn guarded_assign(
+        &mut self,
+        target: &Target,
+        delay: &Delay,
+        rhs: &Rhs<Waveform>,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let Some(g) = self.guard else {
+            return Err(self
+                .cx
+                .ice(span, "guarded assignment outside a guarded block"));
+        };
+        let c = self.sig_of(g, span)?;
+        let raw = self.reg(RegTy::I64);
+        self.emit(Inst::SigReadScalar { dst: raw, sig: c });
+        let tid = self.decl_ty(g, span)?;
+        let bias = self.code_bias(tid);
+        let c = self.dec(raw, bias);
+        let (t, f, j) = (self.block(), self.block(), self.block());
+        self.branch(c, t, f);
+        self.at(t);
+        self.sig_assign(target, delay, rhs, span)?;
+        if self.live {
+            self.jump(j);
+        }
+        self.at(f);
+        let guarded_target = target.lsps.iter().all(|l| match l.root {
+            ObjRoot::Decl(d) => matches!(&db.decls[d].kind,
+                yavs_sem::decl::DeclKind::Object(o) if o.signal_kind.is_some()),
+            _ => false,
+        });
+        if guarded_target {
+            let [lsp] = &target.lsps[..] else {
+                return Err(self.cx.unsupported(span, "aggregate signal targets"));
+            };
+            let slot = self.driver_of(lsp)?;
+            let (_, sref, _) = self.sig_name(target.expr)?;
+            let mode = match delay {
+                Delay::Transport => DriveMode::Transport,
+                _ => DriveMode::Inertial,
+            };
+            // ponytail: disconnection after 0 fs until disconnection specifications reach
+            // the HIR (yavs-elab uses 0 for the kernel's guarded signals too).
+            self.emit(Inst::Disconnect {
+                driver: slot,
+                target: Some(sref),
+                after: None,
+                mode,
+            });
+        }
+        self.jump(j);
+        self.at(j);
+        Ok(())
+    }
+
+    /// `GUARD <= condition` (zero delay) in a block's guard process; GUARD is driver slot 0.
+    pub fn drive_guard(&mut self, g: yavs_sem::DeclId, cond: ExprId, span: Span) -> R<()> {
+        let v = self.scalar_expr(cond)?;
+        let tid = self.decl_ty(g, span)?;
+        let bias = self.code_bias(tid);
+        let code = self.enc(v, bias);
+        let wave = self.alloc_n(8 + 32);
+        let z = self.int(0);
+        self.store(wave, z, Width::B8);
+        let va = self.offset(wave, 8);
+        self.emit(Inst::LSet {
+            base: va,
+            idx: z,
+            v: code,
+        });
+        let n = self.int(1);
+        let s = self.sig_of(g, span)?;
+        self.emit(Inst::Drive {
+            driver: 0,
+            target: Some(s),
+            wave,
+            n,
+            mode: DriveMode::Inertial,
+            reject: None,
+        });
+        Ok(())
+    }
+
     fn report(
         &mut self,
         msg: Option<ExprId>,
@@ -732,7 +825,7 @@ impl Fx<'_, '_> {
     }
 
     /// Signals named in `e` (the implicit sensitivity of `wait until`, LRM 10.2).
-    fn signals_in(&self, e: ExprId, out: &mut Vec<Lsp>) {
+    pub fn signals_in(&self, e: ExprId, out: &mut Vec<Lsp>) {
         let db = self.db;
         let x = &db.exprs[e];
         match &x.kind {

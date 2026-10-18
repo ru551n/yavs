@@ -474,3 +474,21 @@ which tools/difftest parses.
   byte-identical by construction. difftest instead gained a per-test `ignore=order` header; the
   `order` mask now sorts a cycle's events stably by process path, so each process's own order is
   still compared. Strict comparison stays the default for yavs.
+## Lowering (yavs-lower, M2)
+
+- **Instance data per region:** an architecture's `UnitIr` covers its blocks and generates.
+  yavs-elab builds one instance data per region (instance, block, generate iteration) and
+  looks values and signals up from the process's region outwards. Slots of nested regions'
+  values and signals stay empty in outer regions, whose processes never name them.
+- **Instance values:** generics, generate parameters and non-static constants are written by
+  the elaborator from its folded values (`UnitIr::write_value`); scalar constants it cannot
+  fold run a thunk. Locally static constants have no slot. Composite constants of an
+  architecture are re-evaluated at each use until elaboration folds them all (#73).
+- **Driver slots** are one per `ProcessInfo::drivers` entry, in order; a target picks the entry
+  with the same root and path.
+- **GUARD:** sem keeps a guarded block's condition as the GUARD signal's default; lowering
+  emits the guard process (`GUARD <= condition`, zero delay) and guarded assignments that
+  disconnect `bus`/`register` targets when GUARD is false (disconnection after 0 fs until
+  disconnection specifications reach the HIR).
+- **Matching case** (`case?`, `select?`) compares with `?=` on BIT and STD_ULOGIC elements:
+  '-' matches anything, metavalues match nothing, L/H match 0/1 (LRM 9.2.3).

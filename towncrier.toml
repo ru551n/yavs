@@ -1,32 +1,35 @@
-# Changelog fragments (user, 2026-10-18): each change adds `changes/<issue>.<type>.md` (or
-# `changes/+<name>.<type>.md` without an issue), so parallel work never edits one shared file.
-# A release runs `uvx towncrier build --version X.Y.Z --yes`, which moves them into CHANGELOG.md.
+# Release note fragments (user, 2026-10-18): each change adds
+# release_notes/news.d/<issue>.<type>.md, so parallel work never edits one shared file. They are
+# collected into release_notes/unreleased.md with `towncrier build --version <version>` when
+# releasing, and that file is renamed release_notes/<version>.md.
 [tool.towncrier]
-name = "yavs"
-directory = "changes"
-filename = "CHANGELOG.md"
-start_string = "<!-- towncrier release notes start -->\n"
-title_format = "## yavs {version} ({project_date})"
-issue_format = "[#{issue}](https://github.com/ru551n/yavs/issues/{issue})"
-underlines = ["", "", ""]
+directory = "release_notes/news.d"
+filename = "release_notes/unreleased.md"
+title_format = false
+issue_format = "#{issue}"
 ignore = ["README.md"]
 
 [[tool.towncrier.type]]
-directory = "added"
-name = "Added"
+directory = "breaking"
+name = "Breaking changes"
 showcontent = true
 
 [[tool.towncrier.type]]
-directory = "changed"
-name = "Changed"
+directory = "feature"
+name = "Features"
 showcontent = true
 
 [[tool.towncrier.type]]
-directory = "fixed"
-name = "Fixed"
+directory = "bugfix"
+name = "Bug fixes"
 showcontent = true
 
 [[tool.towncrier.type]]
-directory = "removed"
-name = "Removed"
+directory = "doc"
+name = "Documentation"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "misc"
+name = "Miscellaneous"
 showcontent = true

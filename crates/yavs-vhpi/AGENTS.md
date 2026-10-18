@@ -38,7 +38,7 @@ cocotb needs (startup, symbol list, Linux and Windows linking, upstream changes)
 
 | Decision | Why | Source |
 |---|---|---|
-| VHPI is mandatory (cocotb) and uses no separate DLL: the executable exports `vhpi_*`; no import library is built or shipped, plugins bring their own (user, 2026-10-18) | The python bridge handles it | `docs/plan.md` "Decisions" / "Platforms" |
+| VHPI is mandatory (cocotb) and uses no separate DLL: the executable exports `vhpi_*`; no import library is built or shipped, plugins bring their own (user, 2026-10-18) | Plugins build against the exports themselves | `docs/plan.md` "Decisions" / "Platforms" |
 | Header is the official IEEE file, unchanged; Rust side hand-written, checked against it by a test | Names and layouts are fixed by the standard; no libclang on Windows | `docs/decisions.md` "VHPI ABI and symbol export" |
 | Linux exports exactly `src/exports.txt` via `-Wl,--dynamic-list`; plugins loaded `RTLD_NOW | RTLD_GLOBAL` | Missing symbols fail at load, naming them | same |
 | Windows: `.def` plus import libraries from `lib.exe`, `llvm-dlltool` or MinGW `dlltool` | Same symbol set as Linux | same; COCOTB.md "Windows" |

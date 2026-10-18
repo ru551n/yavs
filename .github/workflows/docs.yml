@@ -1,0 +1,62 @@
+name: docs
+
+# Builds the documentation with warnings as errors, as Read the Docs does, and keeps the HTML
+# as an artifact. Read the Docs publishes it, see .readthedocs.yaml: a push to main builds
+# latest, and a release tag vX.Y.Z gets a version of its own and updates stable.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A new push cancels the run of the same branch or pull request still in progress.
+# On main and on tags every commit has a group of its own, so every run finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: |
+          pip install -r docs/requirements.txt
+          sphinx-build -W --keep-going -b html docs docs/_build/html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/_build/html
+
+  publish:
+    needs: docs
+    if: >-
+      github.event_name == 'push' && github.repository == 'ru551n/yavs' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    env:
+      API: https://app.readthedocs.org/api/v3/projects/yavs
+      AUTH: "Authorization: Token ${{ secrets.READTHEDOCS_TOKEN }}"
+    steps:
+      - name: Build latest
+        if: github.ref == 'refs/heads/main'
+        run: curl --fail-with-body -X POST -H "$AUTH" "$API/versions/latest/builds/"
+
+      # Read the Docs learns about the tag in the background, so wait for its version
+      - name: Build the release and stable
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          curl --fail-with-body -X POST -H "$AUTH" "$API/sync-versions/"
+          for attempt in $(seq 30); do
+            curl --fail -s -o /dev/null -H "$AUTH" "$API/versions/$GITHUB_REF_NAME/" && break
+            [ "$attempt" = 30 ] && { echo "::error::Read the Docs has no version $GITHUB_REF_NAME"; exit 1; }
+            sleep 10
+          done
+          curl --fail-with-body -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+            -d '{"active": true, "hidden": false}' "$API/versions/$GITHUB_REF_NAME/"
+          curl --fail-with-body -X POST -H "$AUTH" "$API/versions/$GITHUB_REF_NAME/builds/"
+          curl --fail-with-body -X POST -H "$AUTH" "$API/versions/stable/builds/"

@@ -1,7 +1,7 @@
 # Release on a `v*` tag (#165, docs/decisions.md "Release trigger and first release"): the CI
 # checks on the tagged commit, a release build of `yavs` per platform (std/ieee built in),
-# SHA256SUMS and a GitHub pre-release with notes from the version's CHANGELOG.md section
-# (towncrier, run before tagging).
+# SHA256SUMS and a GitHub pre-release with notes from release_notes/<version>.md (towncrier,
+# collected and renamed in the commit that bumps the version).
 # workflow_dispatch with dry_run builds and packages the same archives as workflow artifacts
 # and publishes nothing.
 name: Release
@@ -93,9 +93,8 @@ jobs:
       - name: SHA256SUMS and notes
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
-          awk -v h="## yavs $version " 'index($0, h) == 1 { on = 1; next } on && /^## yavs / { exit } on' \
-            CHANGELOG.md > notes.md
-          grep -q . notes.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+          test -s "release_notes/$version.md" || { echo "release_notes/$version.md is missing"; exit 1; }
+          cp "release_notes/$version.md" notes.md
           cd dist && sha256sum yavs-* > SHA256SUMS && cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:

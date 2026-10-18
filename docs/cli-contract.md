@@ -213,7 +213,7 @@ VUnit passes everything after `run`/`elab` in a response file (Conventions).
   end, on stop, and on SIGINT.
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by VUnit, used through
-  `yavs.sim_flags` or simulator hooks (the VUnit python bridge adds `--load`).
+  `yavs.sim_flags` or simulator hooks (a VUnit package can add `--load`).
 - Threads: yavs defaults to `--threads=1`. VUnit already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

@@ -32,14 +32,19 @@ milestone users care about works.
   virtual root `<yavs>/lib`; `$YAVS_STDLIB` replaces it with a tree on disk. This supersedes
   the `lib/`-next-to-the-executable lookup of #43. Nothing is precompiled: analysis stays on
   demand from source, so there is still no cache.
-- **No VHPI import library** (user, 2026-10-18: "vhpi shall not be compiled, that is handled by
-  the python bridge"). The release builds and ships no `yavs.lib`; a VHPI plugin brings its own
+- **No VHPI import library** (user, 2026-10-18). The release builds and ships no `yavs.lib`; a VHPI plugin brings its own
   import library for `yavs.exe`'s exports (cocotb ships `.def` files per simulator). #124 is
   reduced to checking that the exports are there.
-- **Changelog with towncrier** (user, 2026-10-18, "for easier parallel work"): fragments in
-  `changes/` (AGENTS.md rule 25), built into `CHANGELOG.md` before tagging with
-  `uvx towncrier build --version X.Y.Z --yes`. The release notes are that version's section;
-  `docs/release-notes/` is gone. Fragments describe features, not numbers.
+- **Release notes with towncrier** (user, 2026-10-18, "for easier parallel work"), with fragments in `release_notes/news.d/` (AGENTS.md rule 25); a release runs
+  `uvx towncrier build --version X.Y.Z --yes` into `release_notes/unreleased.md` and renames it
+  `release_notes/X.Y.Z.md` in the version-bump commit. The GitHub release notes are that file.
+  Fragments describe features, not numbers.
+- **User documentation** (user, 2026-10-18): Sphinx (sphinx_rtd_theme, MyST, sphinxcontrib-towncrier for the "Unreleased" section) in `docs/`,
+  published on Read the Docs as project `yavs` (`.readthedocs.yaml`). `.github/workflows/docs.yml`
+  builds with `-W` on every push and, through the Read the Docs API (secret
+  `READTHEDOCS_TOKEN`), rebuilds `latest` on main and activates a version per release tag plus
+  `stable`. The developer documents in `docs/` (plan, decisions, design, CLI contract) are
+  excluded from the site.
 - CI (agent, 2026-10-18, #134): fmt, clippy and tests with default features on ubuntu-24.04,
   ubuntu-24.04-arm and windows-latest (MSVC). No LLVM, no external corpora (#63), no qemu/Wine
   runs (the aarch64 and Windows runners are native). The release workflow calls the same

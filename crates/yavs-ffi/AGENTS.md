@@ -33,7 +33,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|---|
 | Own per-ABI trampolines (SysV, AArch64, Win64), no libffi | Minimal dependencies, no manual install | `docs/plan.md` architecture `yavs-rt`, ir.md 1.7 |
 | `unsafe` denied crate-wide, allowed only in `sys` (crate opts out of the workspace `forbid`) | Root `AGENTS.md` rule 11 | `Cargo.toml` comment |
-| NVC's VHDL to C type convention | Existing VHPIDIRECT C code works | `src/vhdl.rs`; `docs/plan.md` "Interop with the VUnit python bridge" |
+| NVC's VHDL to C type convention | Existing VHPIDIRECT C code works | `src/vhdl.rs`; `docs/plan.md` "Foreign subprograms" |
 | More than 64 arguments is an error, never a crash | Fail early | `MAX_ARGS` |
 | Typed Rust callees bind without `unsafe` (`ForeignFn::from_fn`); real symbols are bound by the elaborator, the one unsafe step | Safe tests and natives | `docs/decisions.md` "IR and interpreter" (Foreign calls) |
 | All three platforms tier 1: test aarch64 under qemu-user, Windows under wine | Plan platforms | `docs/plan.md` "Platforms"; STATUS.md "ffi" |

@@ -14,12 +14,12 @@ Decisions made with the user:
 - **GUI:** egui with an embedded **libsurfer**, as a separate process. It is built last, but everything before it is designed for it.
 - **Platforms (all tier 1, in CI from M0):** Linux x86_64, Linux aarch64 and Windows x86_64.
   - Windows includes LLVM and cocotb.
-  - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols. **No import library is built or shipped** (user, 2026-10-18: "vhpi shall not be compiled, that is handled by the python bridge"): a plugin brings its own, as cocotb does with its `.def` files.
+  - VHPI uses no separate DLL. `yavs.exe` exports the `vhpi_*` symbols. **No import library is built or shipped** (user, 2026-10-18): a plugin brings its own, as cocotb does with its `.def` files.
   - LLVM on Windows needs a pinned prebuilt LLVM 21 package with static libs; the prebuilt packages lack `llvm-config`.
 - **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. For **any** dependency that has to be installed by hand, **ask the user first**. Approved so far: LLVM 21 (optional, behind the `llvm` feature) and a C compiler at build time (the VHPI variadic shim). NVC and GHDL are dev-only references.
 - **Performance:** correctness first, no speed target yet. Benchmarks are tracked, not gated.
 - **Embedded Python is deferred.** A Tcl-like `yavs` scripting module comes after the DAP server.
-- **Interop with the VUnit python bridge:** yavs needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), and an entry in the bridge's simulator table.
+- **Foreign subprograms:** yavs needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), so VUnit packages that call C (and Python through C) from VHDL work.
 - **Vendor libraries:**
   - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
   - Synopsys `std_logic_arith`/`unsigned`/`signed` are **deferred to M4b** (user, 2026-10-18). A clean-room implementation is deferred until then. The black-box testbenches and runner stay in `lib/synopsys/test/`.
@@ -127,7 +127,7 @@ Both simulators kept running into these bug classes; issue numbers are in bracke
   - The clean-room Synopsys packages.
   - Functional VITAL.
   - UNISIM/UNIMACRO, altera_mf/lpm and Lattice/Microchip primitives analyze and simulate, each with a documented VUnit recipe.
-  - The VUnit python bridge's test suite passes on yavs, after adding yavs to its simulator table.
+  - Python called from VHDL through VHPIDIRECT foreign subprograms and `--load` works under VUnit.
 - **M5: VHPI (mandatory).** The full VHPI object model over `SimControl` and the event bus. Install cocotb into a venv. Check: cocotb's own regression passes on yavs.
 - **M6: LLVM tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against NVC are tracked in `STATUS.md`.
 - **M7: waves.** FST output through wellen, as an event-bus subscriber.
@@ -135,7 +135,7 @@ Both simulators kept running into these bug classes; issue numbers are in bracke
 - **M9: coverage.** Statement, branch and toggle coverage, merge, HTML and Cobertura output.
 - **M9b: embedded Python scripting (deferred).**
   - A pyo3 `yavs` module over `SimControl`: run, step, force, examine, breakpoints, waves.
-  - libpython is loaded dynamically, and an interpreter that cocotb or the bridge has already started is reused (one CPython per process).
+  - libpython is loaded dynamically, and an interpreter that cocotb or a VUnit package has already started is reused (one CPython per process).
 - **M10: GUI (later).** yavs-gui with embedded libsurfer, connected over DAP. Nothing in it should need kernel changes.
 
 ## Working rules for the milestone subagents

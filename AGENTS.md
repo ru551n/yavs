@@ -13,7 +13,7 @@ to, and those documents win over your memory.
 | `docs/plan.md` | Binding plan: decisions, the 15 design rules, milestones, error motto, LRM policy |
 | `docs/decisions.md` | Decisions made since the plan, by area; append yours here |
 | `STATUS.md` | What exists and works, per crate and milestone |
-| `changes/README.md` | Changelog fragments (towncrier): one file per user-visible change (rule 25) |
+| `release_notes/news.d/README.md` | Release note fragments (towncrier): one file per user-visible change (rule 25) |
 | `<module>/AGENTS.md` | Per-module guide (every crate, `lib/`, `tools/`, `tests/`, `fuzz/`): boundaries, map, binding decisions, pitfalls, commands, open issues (rule 23) |
 
 | When you touch | Also read |
@@ -154,11 +154,13 @@ to, and those documents win over your memory.
     - LRM interpretations: `docs/design/lrm-checks.md` (policy, rule 2: a clear LRM wins; where it
       is unclear, be permissive and match the existing simulators);
     - CLI or VUnit-facing behaviour: `docs/cli-contract.md`.
-25. **Changelog: one towncrier fragment per user-visible change** (user, 2026-10-18), in the
-    same commit: `changes/<issue>.<type>.md` (`+<name>.<type>.md` without an issue), type
-    `added`, `changed`, `fixed` or `removed`, one or two sentences on what a user can do now:
-    features, not numbers. Never edit `CHANGELOG.md` by hand; a release builds it
-    (`uvx towncrier build --version X.Y.Z --yes`) and the release notes are its section.
+25. **Release notes: one towncrier fragment per user-visible change** (user, 2026-10-18), in the
+    same commit: `release_notes/news.d/<issue>.<type>.md` (`+<name>.<type>.md` without an
+    issue), type `breaking`, `feature`, `bugfix`, `doc` or `misc`, one or two sentences on what
+    a user can do now: features, not numbers. Never write `release_notes/<version>.md` by hand
+    outside a release. The user documentation (Sphinx, `docs/conf.py`, `docs/*.rst`, published
+    on Read the Docs) shows the fragments under "Unreleased"; build it with
+    `sphinx-build -W -b html docs docs/_build/html` after `pip install -r docs/requirements.txt`.
 
     Each entry gives the decision, a one-line rationale, and who decided it (`user, YYYY-MM-DD`
     for user rulings). Decisions that need the user get a GitHub issue labelled `decision`, and
@@ -185,6 +187,7 @@ AArch64 under qemu and Windows under Wine: see the commands in `STATUS.md` ("ffi
 ## 5. When you finish a task
 
 - Update `STATUS.md` for what you changed, and `docs/decisions.md` for any decision you made.
-- Add a changelog fragment in `changes/` for every user-visible change (rule 25).
+- Add a release note fragment in `release_notes/news.d/` for every user-visible change (rule 25),
+  and update the user documentation in `docs/*.rst` when the change shows there.
 - Report: commits pushed, what works now (with test and corpus numbers), what is left, and
   every decision the user should confirm. Say plainly what you did not verify.

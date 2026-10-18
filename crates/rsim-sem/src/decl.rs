@@ -845,6 +845,14 @@ impl Db {
         let mut out = Vec::new();
         let mut failed = None;
         for i in list {
+            // Generic types, subprograms and packages (generic.rs).
+            if role == ObjRole::Generic && !matches!(i, ast::InterfaceDecl::Object(_)) {
+                match self.generic_item(scope, i) {
+                    Ok(ds) => out.extend(ds),
+                    Err(r) => failed = Some(r),
+                }
+                continue;
+            }
             let ast::InterfaceDecl::Object(o) = i else {
                 let sp = match i {
                     ast::InterfaceDecl::Type(t) => t.span,

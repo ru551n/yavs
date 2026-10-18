@@ -285,7 +285,7 @@ impl Db {
         if failed { Err(Reported) } else { Ok(out) }
     }
 
-    fn generic_item(
+    pub(crate) fn generic_item(
         &mut self,
         scope: ScopeId,
         g: &ast::InterfaceDecl,

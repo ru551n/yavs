@@ -2,6 +2,7 @@ use crate::Result;
 use crate::error::{debug, err, io, note};
 use crate::manifest::{LOCK_FILE, MANIFEST_FILE, Manifest, UnitRecord};
 use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -213,8 +214,12 @@ impl Session {
             .lib
             .dir
             .join(format!("{MANIFEST_FILE}.{}.tmp", std::process::id()));
-        let r = fs::write(&tmp, m.to_text())
-            .and_then(|()| File::open(&tmp)?.sync_all())
+        // Synced through the writing handle: Windows refuses FlushFileBuffers on a read-only one.
+        let r = File::create(&tmp)
+            .and_then(|mut f| {
+                f.write_all(m.to_text().as_bytes())?;
+                f.sync_all()
+            })
             // std::fs::rename replaces an existing target on Windows too (MOVEFILE_REPLACE_EXISTING).
             .and_then(|()| fs::rename(&tmp, &mp));
         if let Err(e) = r {

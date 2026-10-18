@@ -1,0 +1,520 @@
+//! The typed HIR that M2 consumes (sem.md section 7).
+//!
+//! Every name is resolved to an id, every expression carries a subtype and a
+//! staticness, every call names its overload, every statement has a `StmtId`.
+//! No HIR node keeps a name to be looked up again (3.9). Spans everywhere;
+//! identifiers as `Ident` (spelling plus key, rule 8).
+//!
+//! Invariants are checked by [`crate::validate`].
+
+use rsim_diag::Span;
+use rsim_syntax::Symbol;
+use rsim_syntax::ast::{ExternalClass, ForceMode, Ident, PathKind};
+
+pub use crate::attr::PredefAttr;
+pub use crate::stat::{ConstValue, Staticness};
+pub use crate::types::{Direction, RangeC};
+
+use crate::ids::{
+    AttrValueId, ConstId, DeclId, ExprId, ExternalId, InstId, ScopeId, StmtId, SubtypeId, UnitId,
+    ViewId,
+};
+
+// ---------------------------------------------------------------------------
+// Expressions (7.1)
+
+pub struct Expr {
+    pub kind: ExprKind,
+    /// The result subtype; the type is `subtype.base`.
+    pub subtype: SubtypeId,
+    pub span: Span,
+    pub stat: Staticness,
+    /// Folded value, a cache: the tree stays so M2 can always emit code (rule 1).
+    pub value: Option<ConstId>,
+}
+
+pub enum ExprKind {
+    /// Literals and folded enum literals.
+    Const(ConstId),
+    /// Object, interface object, generic constant.
+    Obj(DeclId),
+    External(ExternalId),
+    Call {
+        callee: DeclId,
+        /// Complete and in formal order.
+        args: Box<[Arg]>,
+        /// Protected type method call: the object (`self`).
+        method_of: Option<ExprId>,
+        /// Inserted `??` of a condition (3.6).
+        implicit_cond: bool,
+    },
+    Index {
+        prefix: ExprId,
+        indices: Box<[ExprId]>,
+    },
+    Slice {
+        prefix: ExprId,
+        range: RangeC,
+    },
+    Field {
+        prefix: ExprId,
+        elem: u32,
+    },
+    /// `.all` and implicit dereference.
+    Deref {
+        prefix: ExprId,
+    },
+    Attr {
+        attr: PredefAttr,
+        prefix: AttrPrefix,
+        args: Box<[ExprId]>,
+    },
+    /// User-defined attribute value.
+    AttrValue {
+        spec: AttrValueId,
+    },
+    Aggregate {
+        assocs: Box<[AggAssoc]>,
+        bounds: AggBounds,
+    },
+    Qualified {
+        to: SubtypeId,
+        operand: ExprId,
+    },
+    /// Explicit type conversion.
+    Conv {
+        to: SubtypeId,
+        operand: ExprId,
+    },
+    /// Universal operand converted to `Expr::subtype` (2.8); M2 never infers conversions.
+    ImplicitConv {
+        operand: ExprId,
+    },
+    New {
+        init: NewInit,
+    },
+    Null,
+    /// Port/generic map `open`.
+    Open,
+    /// 2019 conditional expression `a when c else b`.
+    Conditional {
+        alts: Box<[(ExprId, Option<ExprId>)]>,
+    },
+    /// Poison. Never reaches M2: errors stop the pipeline.
+    Error,
+}
+
+/// The prefix of a predefined attribute or a range attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttrPrefix {
+    /// A type mark.
+    Subtype(SubtypeId),
+    /// An object or value.
+    Expr(ExprId),
+    /// A named entity (`'simple_name`, `'path_name`, labels, units).
+    Entity(DeclId),
+}
+
+pub struct Arg {
+    /// Index into the callee's formals.
+    pub formal: u16,
+    pub actual: Actual,
+}
+
+pub enum Actual {
+    Expr(ExprId),
+    /// The formal's default.
+    Default,
+    Open,
+    /// Sub-element association: one entry per sub-element path.
+    Individual(Box<[(Box<[LspStep]>, ExprId)]>),
+    Converted {
+        formal_conv: Option<DeclId>,
+        actual_conv: Option<DeclId>,
+        actual: ExprId,
+    },
+}
+
+pub struct AggAssoc {
+    pub choices: Box<[Choice]>,
+    pub value: ExprId,
+    /// 2008 1-D aggregates: the value is of the aggregate type (a slice-like piece).
+    pub slice_piece: bool,
+}
+
+/// Bounds of an aggregate's result (3.4), stored so M2 does not recompute them.
+pub enum AggBounds {
+    /// A fully constrained context subtype gives them.
+    Context,
+    /// Left = index subtype 'left, direction of the index subtype.
+    Positional { count: ExprId },
+    /// From the choices; direction of the index subtype.
+    Named { low: ExprId, high: ExprId },
+    /// 2008 slice-valued elements: runtime sum of lengths.
+    Concat,
+    /// Record aggregates.
+    Record,
+}
+
+pub enum NewInit {
+    Subtype(SubtypeId),
+    Value(ExprId),
+}
+
+// ---------------------------------------------------------------------------
+// Longest static prefixes (6.9)
+
+pub struct Lsp {
+    pub root: ObjRoot,
+    pub path: Box<[LspStep]>,
+    pub stat: Staticness,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjRoot {
+    Decl(DeclId),
+    External(ExternalId),
+    ImplicitSignal(DeclId),
+}
+
+pub enum LspStep {
+    Field(u32),
+    Index(Box<[ExprId]>),
+    Slice(RangeC),
+}
+
+/// Drivers and `all` sensitivity of a process or of a concurrent statement's
+/// equivalent process (M2 builds the process, rule 3).
+#[derive(Default)]
+pub struct ProcessInfo {
+    pub drivers: Vec<Lsp>,
+    /// For `process (all)`: the signals read (11.3).
+    pub reads_all: Option<Vec<Lsp>>,
+}
+
+// ---------------------------------------------------------------------------
+// Modes and views
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    In,
+    Out,
+    Inout,
+    Buffer,
+    Linkage,
+    /// 2019 `view v` (record) or `view (v) of arr_t` (`array`).
+    View {
+        view: ViewId,
+        array: bool,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Statements (7.2)
+
+pub struct Stmt {
+    pub id: StmtId,
+    pub label: Option<Ident>,
+    pub span: Span,
+    pub kind: StmtKind,
+}
+
+/// A signal or variable target: the name and, for signals, its longest static
+/// prefix (an aggregate target has one per element).
+pub struct Target {
+    pub expr: ExprId,
+    pub lsps: Box<[Lsp]>,
+}
+
+pub enum Rhs<T> {
+    Simple(T),
+    /// The last condition may be absent.
+    Conditional(Box<[(T, Option<ExprId>)]>),
+    Selected {
+        expr: ExprId,
+        matching: bool,
+        alts: Box<[(T, ChoiceSet)]>,
+    },
+}
+
+pub enum Waveform {
+    Elements(Box<[WaveElem]>),
+    Unaffected,
+}
+
+pub struct WaveElem {
+    /// `None` is `null` (disconnect a guarded signal).
+    pub value: Option<ExprId>,
+    pub after: Option<ExprId>,
+}
+
+pub enum Delay {
+    /// No delay mechanism given: inertial without reject limit.
+    Default,
+    Transport,
+    Inertial {
+        reject: Option<ExprId>,
+    },
+}
+
+pub struct ChoiceSet {
+    pub choices: Box<[Choice]>,
+    /// Folded sorted position intervals, when every choice is locally static.
+    pub intervals: Option<Box<[(i64, i64)]>>,
+}
+
+pub enum Choice {
+    Expr(ExprId),
+    Range(RangeC),
+    /// A record element name in an aggregate.
+    Element(u32),
+    Others,
+}
+
+pub enum LoopScheme {
+    Forever,
+    While(ExprId),
+    For { param: DeclId, range: RangeC },
+}
+
+pub struct Call {
+    pub callee: DeclId,
+    pub args: Box<[Arg]>,
+    pub method_of: Option<ExprId>,
+    pub span: Span,
+}
+
+pub enum Sensitivity {
+    None,
+    All,
+    List(Box<[Lsp]>),
+}
+
+pub enum InstTarget {
+    Component(DeclId),
+    Entity { unit: UnitId, arch: Option<Ident> },
+    Configuration(UnitId),
+}
+
+pub struct GenAlt {
+    pub label: Option<Ident>,
+    /// `None` for the final `else`.
+    pub cond: Option<ExprId>,
+    pub scope: ScopeId,
+    pub body: Box<[StmtId]>,
+}
+
+pub enum StmtKind {
+    // Sequential.
+    Wait {
+        on: Box<[Lsp]>,
+        until: Option<ExprId>,
+        timeout: Option<ExprId>,
+    },
+    Assert {
+        cond: ExprId,
+        report: Option<ExprId>,
+        severity: Option<ExprId>,
+    },
+    Report {
+        report: ExprId,
+        severity: Option<ExprId>,
+    },
+    SignalAssign {
+        target: Target,
+        delay: Delay,
+        rhs: Rhs<Waveform>,
+    },
+    Force {
+        target: Target,
+        mode: Option<ForceMode>,
+        rhs: Rhs<ExprId>,
+    },
+    Release {
+        target: Target,
+        mode: Option<ForceMode>,
+    },
+    VarAssign {
+        target: Target,
+        rhs: Rhs<ExprId>,
+    },
+    ProcCall(Call),
+    If {
+        branches: Box<[(ExprId, Box<[StmtId]>)]>,
+        else_: Option<Box<[StmtId]>>,
+    },
+    Case {
+        expr: ExprId,
+        matching: bool,
+        alts: Box<[(ChoiceSet, Box<[StmtId]>)]>,
+    },
+    Loop {
+        scheme: LoopScheme,
+        scope: ScopeId,
+        body: Box<[StmtId]>,
+    },
+    Next {
+        loop_: StmtId,
+        when: Option<ExprId>,
+    },
+    Exit {
+        loop_: StmtId,
+        when: Option<ExprId>,
+    },
+    Return(Option<ExprId>),
+    Null,
+    /// 2019 sequential block.
+    SeqBlock {
+        scope: ScopeId,
+        body: Box<[StmtId]>,
+    },
+
+    // Concurrent (kept as written, H6).
+    Process {
+        postponed: bool,
+        sensitivity: Sensitivity,
+        info: ProcessInfo,
+        scope: ScopeId,
+        body: Box<[StmtId]>,
+    },
+    Block {
+        scope: ScopeId,
+        /// The implicit `GUARD` signal.
+        guard: Option<DeclId>,
+        generics: Box<[DeclId]>,
+        generic_map: Box<[Arg]>,
+        ports: Box<[DeclId]>,
+        port_map: Box<[Arg]>,
+        body: Box<[StmtId]>,
+    },
+    ConcSignalAssign {
+        postponed: bool,
+        guarded: bool,
+        target: Target,
+        delay: Delay,
+        rhs: Rhs<Waveform>,
+        info: ProcessInfo,
+    },
+    ConcProcCall {
+        postponed: bool,
+        call: Call,
+        info: ProcessInfo,
+    },
+    ConcAssert {
+        postponed: bool,
+        cond: ExprId,
+        report: Option<ExprId>,
+        severity: Option<ExprId>,
+        info: ProcessInfo,
+    },
+    Instance {
+        target: InstTarget,
+        generic_map: Box<[Arg]>,
+        port_map: Box<[Arg]>,
+    },
+    ForGenerate {
+        param: DeclId,
+        range: RangeC,
+        scope: ScopeId,
+        body: Box<[StmtId]>,
+    },
+    IfGenerate {
+        alts: Box<[GenAlt]>,
+    },
+    CaseGenerate {
+        expr: ExprId,
+        alts: Box<[(ChoiceSet, GenAlt)]>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// External names (6.1): the path is data, bound by elab (rule 4).
+
+pub struct External {
+    pub class: ExternalClass,
+    pub path_kind: PathKind,
+    /// Path elements with optional generate index.
+    pub path: Box<[(Ident, Option<ExprId>)]>,
+    pub subtype: SubtypeId,
+    pub span: Span,
+}
+
+// ---------------------------------------------------------------------------
+// Design units (7.2)
+
+/// Kind-specific HIR of a design unit.
+pub enum UnitHir {
+    /// Not analyzed yet (or its analysis failed).
+    Pending,
+    Entity {
+        generics: Box<[DeclId]>,
+        ports: Box<[DeclId]>,
+        stmts: Box<[StmtId]>,
+    },
+    Architecture {
+        entity: UnitId,
+        stmts: Box<[StmtId]>,
+    },
+    Package {
+        generics: Option<Box<[DeclId]>>,
+    },
+    PackageBody {
+        package: UnitId,
+    },
+    PackageInst(InstId),
+    Context,
+    Configuration(BlockConfig),
+}
+
+pub struct BlockConfig {
+    pub target: BlockTarget,
+    pub items: Vec<ConfigItem>,
+    pub span: Span,
+}
+
+pub enum BlockTarget {
+    Architecture(UnitId),
+    Block(StmtId),
+    /// A generate statement, with an optional index, range or alternative label.
+    Generate {
+        stmt: StmtId,
+        select: Option<GenSelect>,
+    },
+}
+
+pub enum GenSelect {
+    Index(ExprId),
+    Range(RangeC),
+    Alternative(Symbol),
+}
+
+pub enum ConfigItem {
+    Block(BlockConfig),
+    Component(ComponentConfig),
+}
+
+pub enum InstanceSel {
+    Labels(Box<[StmtId]>),
+    All,
+    Others,
+}
+
+pub struct ComponentConfig {
+    pub instances: InstanceSel,
+    pub component: DeclId,
+    pub binding: Option<Binding>,
+    pub block: Option<BlockConfig>,
+    pub span: Span,
+}
+
+pub struct Binding {
+    pub aspect: Option<EntityAspect>,
+    pub generic_map: Box<[Arg]>,
+    pub port_map: Box<[Arg]>,
+}
+
+pub enum EntityAspect {
+    Entity { unit: UnitId, arch: Option<Ident> },
+    Configuration(UnitId),
+    Open,
+}

@@ -40,6 +40,11 @@ impl Libraries {
         let n = fold(name);
         self.libs.iter().find(|l| l.name == n)
     }
+
+    /// Folded names of the mapped libraries, in mapping order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.libs.iter().map(|l| l.name.as_str())
+    }
 }
 
 /// One source file in the closure, in compile order.

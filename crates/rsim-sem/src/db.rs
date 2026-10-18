@@ -1,0 +1,276 @@
+//! The session database: arenas, well-known entities, diagnostics (sem.md 1.1).
+//!
+//! One `Db` per session. Ids are deterministic for a given input because
+//! analysis order is deterministic; they are not stable across inputs.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+use rsim_diag::{Diagnostic, Severity, SourceMap, Span};
+use rsim_syntax::Symbol;
+use rsim_syntax::ast::Ident;
+
+use crate::attr::AttrValue;
+use crate::decl::{Decl, DeclKind, Designator};
+use crate::diag;
+use crate::generic::Instance;
+use crate::hir::{Expr, ExprKind, External, Stmt};
+use crate::ids::*;
+use crate::loader::{FileCache, Library, Unit};
+use crate::scope::{Scope, ScopeKind};
+use crate::stat::{ConstValue, Staticness};
+use crate::types::{Constraint, SubtypeDef, TypeDef, TypeKind};
+use crate::view::ViewDef;
+use crate::{LangRev, Options};
+
+/// Entities of `std.standard` that analysis refers to directly. Filled while
+/// `std.standard` is analyzed; `None` before that.
+#[derive(Default, Clone, Debug)]
+pub struct WellKnown {
+    pub universal_integer: Option<TypeId>,
+    pub universal_real: Option<TypeId>,
+    pub boolean: Option<TypeId>,
+    pub bit: Option<TypeId>,
+    pub character: Option<TypeId>,
+    pub severity_level: Option<TypeId>,
+    pub integer: Option<TypeId>,
+    pub real: Option<TypeId>,
+    pub time: Option<TypeId>,
+    pub string: Option<TypeId>,
+    pub natural: Option<SubtypeId>,
+    pub positive: Option<SubtypeId>,
+    pub delay_length: Option<SubtypeId>,
+    pub file_open_kind: Option<TypeId>,
+    pub file_open_status: Option<TypeId>,
+    pub direction: Option<TypeId>,
+    /// The `std.standard` package scope.
+    pub standard: Option<ScopeId>,
+}
+
+/// Poison entities (sem.md 8.2): compatible with everything, silent in checks.
+#[derive(Clone, Copy, Debug)]
+pub struct Poison {
+    pub decl: DeclId,
+    pub ty: TypeId,
+    pub subtype: SubtypeId,
+    pub expr: ExprId,
+}
+
+/// Marker that an error was already reported; callers propagate it silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reported;
+
+/// The unit currently being analyzed (on-demand loading nests these).
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct UnitCx {
+    pub unit: UnitId,
+    pub lib: LibId,
+    /// The file's own revision `F` (sem.md 0.1).
+    pub file_rev: LangRev,
+}
+
+pub struct Db {
+    /// The design revision `D`: std and ieee are loaded for it.
+    pub rev: LangRev,
+    pub(crate) opts: Options,
+    pub sources: SourceMap,
+    pub libs: Arena<LibId, Library>,
+    pub units: Arena<UnitId, Unit>,
+    pub decls: Arena<DeclId, Decl>,
+    pub scopes: Arena<ScopeId, Scope>,
+    pub types: Arena<TypeId, TypeDef>,
+    pub subtypes: Arena<SubtypeId, SubtypeDef>,
+    pub exprs: Arena<ExprId, Expr>,
+    pub stmts: Arena<StmtId, Stmt>,
+    pub consts: Arena<ConstId, ConstValue>,
+    pub insts: Arena<InstId, Instance>,
+    pub views: Arena<ViewId, ViewDef>,
+    pub externals: Arena<ExternalId, External>,
+    pub attr_values: Arena<AttrValueId, AttrValue>,
+    pub well_known: WellKnown,
+    pub poison: Poison,
+    pub(crate) root: ScopeId,
+    /// `None`: the library is unknown and that was reported.
+    pub(crate) lib_by_key: HashMap<Symbol, Option<LibId>>,
+    pub(crate) files: HashMap<PathBuf, FileCache>,
+    pub(crate) stack: Vec<UnitCx>,
+    #[allow(dead_code)]
+    /// Undeclared names already reported, per (unit, key) (8.2).
+    pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
+    diags: Vec<Diagnostic>,
+    errors: usize,
+}
+
+// Helpers below are used by the slices being filled in (CONTRIBUTING.md).
+#[allow(dead_code)]
+impl Db {
+    pub fn new(opts: Options) -> Db {
+        let mut scopes = Arena::new();
+        let root = scopes.push(Scope::new(ScopeKind::Root, None, None));
+        let mut decls: Arena<DeclId, Decl> = Arena::new();
+        let mut types: Arena<TypeId, TypeDef> = Arena::new();
+        let mut subtypes: Arena<SubtypeId, SubtypeDef> = Arena::new();
+        let mut exprs: Arena<ExprId, Expr> = Arena::new();
+        let name = Ident {
+            text: Symbol::intern("<error>"),
+            key: Symbol::intern("<error>"),
+            span: Span::default(),
+        };
+        let decl = decls.push(Decl {
+            name: Designator::Ident(name),
+            kind: DeclKind::Error,
+            scope: root,
+            span: Span::default(),
+            implicit: true,
+            since: LangRev::Vhdl2008,
+        });
+        let ty = types.next_id();
+        let subtype = subtypes.push(SubtypeDef {
+            base: ty,
+            name: Some(name),
+            parent: None,
+            constraint: Constraint::None,
+            resolution: None,
+            span: Span::default(),
+        });
+        types.push(TypeDef {
+            decl,
+            name,
+            anonymous: false,
+            kind: TypeKind::Error,
+            first_subtype: subtype,
+        });
+        let expr = exprs.push(Expr {
+            kind: ExprKind::Error,
+            subtype,
+            span: Span::default(),
+            stat: Staticness::Locally,
+            value: None,
+        });
+        Db {
+            rev: opts.rev,
+            opts,
+            sources: SourceMap::default(),
+            libs: Arena::new(),
+            units: Arena::new(),
+            decls,
+            scopes,
+            types,
+            subtypes,
+            exprs,
+            stmts: Arena::new(),
+            consts: Arena::new(),
+            insts: Arena::new(),
+            views: Arena::new(),
+            externals: Arena::new(),
+            attr_values: Arena::new(),
+            well_known: WellKnown::default(),
+            poison: Poison {
+                decl,
+                ty,
+                subtype,
+                expr,
+            },
+            root,
+            lib_by_key: HashMap::new(),
+            files: HashMap::new(),
+            stack: Vec::new(),
+            undeclared: HashSet::new(),
+            diags: Vec::new(),
+            errors: 0,
+        }
+    }
+
+    // -- diagnostics ---------------------------------------------------------
+
+    /// Record a diagnostic. Every sem diagnostic goes through here.
+    pub fn report(&mut self, d: Diagnostic) {
+        if d.severity == Severity::Error {
+            self.errors += 1;
+        }
+        self.diags.push(d);
+    }
+
+    /// Report an error and return the marker callers propagate.
+    pub(crate) fn error(&mut self, d: Diagnostic) -> Reported {
+        debug_assert_eq!(d.severity, Severity::Error);
+        self.report(d);
+        Reported
+    }
+
+    /// Internal compiler error at the span being processed (plan: error motto).
+    pub(crate) fn ice(&mut self, span: Span, what: impl Into<String>) -> Reported {
+        self.error(
+            Diagnostic::error(diag::INTERNAL, format!("internal error: {}", what.into()))
+                .with_primary(span, "while analyzing this")
+                .with_note("this is a bug in rsim")
+                .with_help("please report it with the source that triggers it"),
+        )
+    }
+
+    /// A construct a later slice implements (sem.md section 10). Never a silent
+    /// default: analysis of the enclosing unit fails.
+    pub(crate) fn unsupported(&mut self, span: Span, what: &str, slice: &str) -> Reported {
+        self.error(
+            Diagnostic::error(
+                diag::INTERNAL,
+                format!("{what} is not implemented yet in rsim's semantic analysis"),
+            )
+            .with_primary(span, "not supported yet")
+            .with_note(format!(
+                "planned for slice {slice} of docs/design/sem.md section 10; this is a limitation of rsim, not an error in the design"
+            )),
+        )
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diags
+    }
+
+    pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.diags)
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.errors
+    }
+
+    // -- arena helpers -------------------------------------------------------
+
+    pub(crate) fn add_scope(
+        &mut self,
+        kind: ScopeKind,
+        parent: Option<ScopeId>,
+        owner: Option<DeclId>,
+    ) -> ScopeId {
+        self.scopes.push(Scope::new(kind, parent, owner))
+    }
+
+    pub(crate) fn add_const(&mut self, v: ConstValue) -> ConstId {
+        self.consts.push(v)
+    }
+
+    pub(crate) fn add_expr(&mut self, e: Expr) -> ExprId {
+        self.exprs.push(e)
+    }
+
+    /// The type of a subtype.
+    pub fn base(&self, st: SubtypeId) -> TypeId {
+        self.subtypes[st].base
+    }
+
+    /// The folded value of an expression, if any.
+    pub fn value(&self, e: ExprId) -> Option<&ConstValue> {
+        self.exprs[e].value.map(|c| &self.consts[c])
+    }
+
+    pub(crate) fn cur(&self) -> Option<UnitCx> {
+        self.stack.last().copied()
+    }
+
+    /// The revision of the file being analyzed (`F`), or `D` outside any unit.
+    pub(crate) fn file_rev(&self) -> LangRev {
+        self.cur().map_or(self.rev, |c| c.file_rev)
+    }
+}

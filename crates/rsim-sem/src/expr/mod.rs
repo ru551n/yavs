@@ -1,0 +1,71 @@
+//! Expression typing and overload resolution (sem.md section 3).
+//!
+//! Two passes over each complete context (LRM 12.5): bottom-up `cands` (the
+//! possible result types of an AST expression) and top-down `resolve` (pick
+//! exactly one interpretation that fits the expected type, build HIR).
+
+pub mod aggregate;
+pub mod cands;
+pub mod literal;
+pub mod names;
+pub mod resolve;
+
+use crate::ids::{DeclId, TypeId};
+
+/// What the context requires of an expression (3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expected {
+    /// Assignment target, formal, index type, ...
+    Type(TypeId),
+    /// BOOLEAN, else the implicit `??` (3.6).
+    Condition,
+    /// Must resolve without context (case expression, conversion operand, ...).
+    Any,
+    /// Range bounds without a type mark: both universal gives INTEGER.
+    Discrete,
+}
+
+/// Literal forms typed only by context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ClassMask(pub u8);
+
+impl ClassMask {
+    pub const ANY_INTEGER: ClassMask = ClassMask(1);
+    pub const ANY_REAL: ClassMask = ClassMask(2);
+    /// `null`, allocators.
+    pub const ANY_ACCESS: ClassMask = ClassMask(4);
+    /// Aggregates.
+    pub const ANY_COMPOSITE: ClassMask = ClassMask(8);
+    /// 1-D array of a character-literal enum: string and bit string literals.
+    pub const STRING_LIKE: ClassMask = ClassMask(16);
+    pub const ANY_ARRAY: ClassMask = ClassMask(32);
+    pub const ANY_RECORD: ClassMask = ClassMask(64);
+
+    pub fn contains(self, other: ClassMask) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+/// How an interpretation produces its value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    Object,
+    Call(DeclId),
+    EnumLit(DeclId),
+    Attr,
+    Literal,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Interp {
+    pub ty: TypeId,
+    pub via: Via,
+}
+
+/// The bottom-up result of `cands` (3.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CandSet {
+    Types(Vec<Interp>),
+    Class(ClassMask),
+}

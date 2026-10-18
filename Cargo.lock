@@ -1058,6 +1058,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsim-sem"
+version = "0.1.0"
+dependencies = [
+ "rsim-diag",
+ "rsim-lib",
+ "rsim-syntax",
+]
+
+[[package]]
 name = "rsim-std"
 version = "0.1.0"
 dependencies = [

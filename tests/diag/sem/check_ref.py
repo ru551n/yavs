@@ -37,6 +37,7 @@ def run(cmd, cwd):
 
 
 def one(path):
+    path = os.path.abspath(path)  # the tools run in a work dir, so relative paths would not open
     std, flags, exp = header(path)
     rel = os.path.relpath(path, ROOT)
     wd = os.path.join(CACHE, rel.replace('/', '_'))

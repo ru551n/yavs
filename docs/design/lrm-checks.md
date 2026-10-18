@@ -328,10 +328,20 @@ Parser change for `crates/rsim-syntax` (not made here):
 
 ## Changes to code paths
 
-`crates/rsim-sem` on `wip/sem` (946 lines, read only) has no base range, universal preference,
-aggregate, attribute or visibility code yet. Every change lands before it is written. Affected
-future paths: Q1 (overload selection, S2), Q2 (`Constraint` of integer base types, S1), L2 (12.4
-filter), L7/L12 (attribute table, `std.standard` implicit decls), L8 (aggregate elements).
+`crates/rsim-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,
+universal preference, aggregate or visibility logic yet. One implemented item is affected:
+
+- **`crates/rsim-sem/src/attr.rs`** maps the name `"range_record"` to `RangeRecord`. There is no
+  such attribute [L12]: it must become `record` (2019, prefix a range attribute name, type mark
+  only) next to the existing `value`, which then also accepts a range prefix. `record` is a
+  reserved word, so the parser must accept it after `'` (as NVC does). The table also needs
+  `image` on object prefixes [L13].
+- `db.rs` keeps `direction: Option<TypeId>` for the std type that `lib/std/2019/standard.vhdl`
+  calls `DIRECTION`; the LRM and NVC call it `RANGE_DIRECTION` (U-3).
+
+Future paths: Q1 (overload selection, S2), Q2 (`Constraint` of integer base types, S1), L2 (12.4
+filter), L7 (`std.standard` implicit decls), L8 (aggregate elements); P1/P2 change
+`crates/rsim-syntax` (M0 parser, implemented) and `docs/decisions.md` "Parser".
 
 ## Questions for the user
 

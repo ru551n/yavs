@@ -1063,7 +1063,7 @@ impl Elab<'_> {
         };
         let Some(((ao, asels), aspan)) = actual else {
             // open or default; an unconstrained `in` port takes the bounds of its default
-            // (#218, docs/design/lrm-checks.md L50)
+            // (#218, docs/design/lrm-checks.md L59)
             let own = match (own, &init) {
                 (None, Some(v)) if mode == PortMode::In => {
                     self.m.shape_init(db, subtype, Some(v), Some(s), span)?

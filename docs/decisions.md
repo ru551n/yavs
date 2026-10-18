@@ -614,7 +614,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   `actual'delayed(0 ns)`, which has the right event delta but starts at the actual's value.
 
 - **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
-  14.3.5, `docs/design/lrm-checks.md` L50): accepted in 2008 and 2019; the port takes the
+  14.3.5, `docs/design/lrm-checks.md` L59): accepted in 2008 and 2019; the port takes the
   bounds of its default value (`Model::shape_init`). Without a default it stays `E1311`.
 
 ## Runtime: default exit severity (user, 2026-10-18)

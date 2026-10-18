@@ -827,10 +827,8 @@ impl Fx<'_, '_> {
     /// `WaitOn` for each signal of a sensitivity list.
     pub fn wait_on(&mut self, sens: &[Lsp]) -> R<()> {
         for l in sens {
-            let ObjRoot::Decl(d) = l.root else {
-                return Err(self
-                    .cx
-                    .unsupported(l.span, "sensitivity to external names and implicit signals"));
+            let (ObjRoot::Decl(d) | ObjRoot::ImplicitSignal(d)) = l.root else {
+                return Err(self.cx.unsupported(l.span, "sensitivity to external names"));
             };
             let s = match &l.path[..] {
                 [] => self.sig_of(d, l.span)?,

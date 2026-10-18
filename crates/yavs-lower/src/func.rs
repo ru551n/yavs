@@ -935,7 +935,11 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 return Err(cx.unsupported(decl.span, "unconstrained array ports"));
             }
             let (st, def) = (o.subtype, o.default);
-            let init = if array || matches!(o.role, ObjRole::Port | ObjRole::Guard) {
+            let init = if array
+                || matches!(
+                    o.role,
+                    ObjRole::Port | ObjRole::Guard | ObjRole::ImplicitSignal
+                ) {
                 None
             } else {
                 Some(thunk(

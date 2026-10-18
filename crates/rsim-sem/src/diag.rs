@@ -58,6 +58,7 @@ codes! {
     AGG_NONSTATIC_CHOICE = "E1326", "A choice that is not locally static must be the only choice of the only association.";
     CHOICE_OVERLAP = "E1327", "Choices overlap or repeat a value.";
     CHOICE_UNCOVERED = "E1328", "Choices do not cover every value of the subtype and there is no `others`.";
+    AGG_RECORD_CHOICE = "E1329", "A record aggregate choice must name an element of the record, positional elements must come first and not outnumber the elements, and elements sharing one value must have the same type.";
     CHAR_NOT_IN_TYPE = "E1330", "A character of a string literal is not a literal of the element type.";
     BITSTRING_DIGITS = "E1331", "Adjusting the length of a bit string literal would drop significant digits (non-zero for unsigned, differing from the sign for signed), or an empty signed bit string cannot be extended.";
     BAD_LITERAL = "E1332", "A literal is malformed in a way the lexer accepts: a digit outside its base, a base outside 2 to 16, a negative exponent in an integer literal, a non-digit in a decimal bit string, or a physical literal with a unit the type does not have.";

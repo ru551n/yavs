@@ -85,3 +85,28 @@ through the orchestrator.
 - `cargo test -p rsim-sem`. The positive corpus test analyzes the vendored `lib/` tree
   (`tests/stdlib.rs`); extend its list as slices land (sem.md 10, "green when").
 - Outputs and scratch files go to `~/.cache/rsim-sem`, never into the repo.
+
+## Requests
+
+From s6 (alias/external/protected/view). The S6/S7 checks exist as `Db` methods with unit tests;
+they need calls from the analyzers that own the constructs:
+
+- **decl.rs**: alias declarations: `object_alias` when the name denotes an object (or a subtype
+  indication is written), else `nonobject_alias` with the lookup result and the resolved
+  `alias::Signature`, then `declare` every returned decl; in a protected type declaration also
+  `check_protected_alias`. Shared variables: `check_shared_variable`. Signals, ports and
+  constants: `check_not_protected`; parameters: `check_protected_param`. Protected types:
+  `check_protected_decl_items` / `check_protected_body_items` on the AST, `pair_protected_body`
+  (the body region's parent becomes the declaration region, so a method body must complete the
+  spec found there), `check_protected_complete` at `end protected body`, `check_protected_bodies`
+  at the end of each region (for a package: at the end of its body). Views: `declare_view`, and
+  `view_port` for `p : view v [of t]` interface objects.
+- **expr/names.rs**: `external_name` for `NameKind::External`; `protected_member` for selection
+  from a protected object (E1100 missing, E1105 private); `match_signature` for signatures in
+  attribute specifications, generic subprogram actuals and `use`; `view_ref` for view names
+  (`'converse` sets `converse: true`).
+- **stmt.rs**: `check_external_target` for external-name targets; `check_view_drive` for signal
+  targets rooted at a view port (with the target's LSP path).
+- **types.rs** (ruling U-2): incomplete types are allowed in method profiles of a protected type
+  declaration in both 2008 and 2019 (`Db::protected_of_region` / `ScopeKind::Protected` tells the
+  region).

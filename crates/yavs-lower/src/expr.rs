@@ -467,6 +467,18 @@ impl Fx<'_, '_> {
     pub fn copy_out(&mut self, span: Span) -> R<()> {
         for (off, e, st) in std::mem::take(&mut self.writeback) {
             let Some(e) = e else { continue };
+            if self.is_comp(self.db.base(st)) {
+                // A logic slice actual: the temporary's elements go back into it.
+                let t = self.addr(Space::Frame(self.depth), off);
+                let tmp = self.load(t, Width::B8, RegTy::Ptr);
+                let p = self.place(e)?;
+                let Place::Array { dope, .. } = p else {
+                    return Err(self.cx.ice(span, "array write-back to a scalar"));
+                };
+                let what = format!("parameter of {}", self.name);
+                self.store_place(p, V::A(tmp, dope), st, &what, span)?;
+                continue;
+            }
             let (_, rt, w) = self.scalar(st, span)?;
             let t = self.addr(Space::Frame(self.depth), off);
             let v = self.load(t, w, rt);
@@ -1384,10 +1396,33 @@ impl Fx<'_, '_> {
                                 off: None,
                                 ..
                             } => (data, dope),
+                            Place::Array {
+                                data,
+                                dope,
+                                off: Some(o),
+                                tid,
+                                ..
+                            } => {
+                                // A logic slice is not addressable: copy in to a temporary,
+                                // write it back after the call (copy-out).
+                                let (size, count) = self.layout(tid, dope);
+                                let tmp = self.alloc(size);
+                                let z = self.int(0);
+                                self.emit(Inst::LCopy {
+                                    dst: tmp,
+                                    dst_off: z,
+                                    src: data,
+                                    src_off: o,
+                                    n: count,
+                                });
+                                let slot = self.fb.slot(8, 8);
+                                let a = self.addr(Space::Frame(self.depth), slot);
+                                self.store(a, tmp, Width::B8);
+                                self.writeback.push((slot, Some(e), p.subtype));
+                                (tmp, dope)
+                            }
                             _ => {
-                                return Err(self
-                                    .cx
-                                    .unsupported(es, "a logic slice as out parameter"));
+                                return Err(self.cx.ice(es, "scalar place for an array parameter"));
                             }
                         },
                     };
@@ -2078,22 +2113,27 @@ impl Fx<'_, '_> {
                     }
                     Succ | Pred | Leftof | Rightof => {
                         let v = self.scalar_expr(args[0])?;
-                        let up = match attr {
-                            Succ => true,
-                            Pred => false,
+                        // The step: +1 or -1 (`'leftof`/`'rightof` follow the direction).
+                        let step = match attr {
+                            Succ => self.int(1),
+                            Pred => self.int(-1),
                             _ => {
                                 let r = self.scalar_bounds(st, span)?;
-                                let Dr::Static(d) = r.dir else {
-                                    return Err(self.cx.unsupported(
-                                        span,
-                                        "'leftof of a subtype with a runtime direction",
-                                    ));
-                                };
-                                (attr == Rightof) == (d == Direction::To)
+                                let toward = if attr == Rightof { 1 } else { -1 };
+                                match r.dir {
+                                    Dr::Static(Direction::To) => self.int(toward),
+                                    Dr::Static(Direction::Downto) => self.int(-toward),
+                                    Dr::Dyn(d) => {
+                                        let z = self.int(0);
+                                        let up = self.cmp(CmpOp::Eq, d, z);
+                                        let a = self.int(toward);
+                                        let b = self.int(-toward);
+                                        self.select(up, a, b, RegTy::I64)
+                                    }
+                                }
                             }
                         };
-                        let one = self.int(1);
-                        let r = self.bin(if up { IntOp::Add } else { IntOp::Sub }, v, one);
+                        let r = self.bin(IntOp::Add, v, step);
                         let check = if matches!(attr, Succ | Pred) {
                             db.types[t].base_subtype
                         } else {

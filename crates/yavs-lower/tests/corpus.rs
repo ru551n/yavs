@@ -66,10 +66,15 @@ const PASS: &[&str] = &[
     "reflect/scalars",
     "access/access_string_array",
     "access/linked_list",
+    "access/null_deref",
+    "composite/arrays_aggregates",
+    "composite/records",
+    "composite/strings_ops",
     "composite/unconstrained_records",
     "textio/file_roundtrip",
     "force/force_drivers",
     "force/force_in",
+    "resolution/std_logic_table",
 ];
 
 const GROUPS: &[&str] = &[
@@ -88,6 +93,7 @@ const GROUPS: &[&str] = &[
     "protected",
     "textio",
     "force",
+    "resolution",
 ];
 
 fn corpus() -> PathBuf {

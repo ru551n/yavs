@@ -93,7 +93,7 @@ impl Elaborated {
             let inst = match insts.get(&i) {
                 Some(d) => d.clone(),
                 None => {
-                    let d = Arc::new(self.inst_data(&rt, u, i)?);
+                    let d = Arc::new(self.inst_data(&rt, u, i, &shared)?);
                     insts.insert(i, d.clone());
                     d
                 }
@@ -139,14 +139,27 @@ impl Elaborated {
     }
 
     /// Instance data of instance `i`: constants from their thunks, the signal table.
-    fn inst_data(&self, rt: &Arc<Runtime>, u: &UnitIr, i: ScopeId) -> Result<InstData, SimError> {
+    fn inst_data(
+        &self,
+        rt: &Arc<Runtime>,
+        u: &UnitIr,
+        i: ScopeId,
+        shared: &Arc<Mutex<SharedState>>,
+    ) -> Result<InstData, SimError> {
         let mut inst = InstData {
             data: vec![0; u.inst_size as usize],
             ..Default::default()
         };
         for c in &u.consts {
-            let v = yavs_interp::call(rt.clone(), c.init, Arc::new(inst.clone()), &[])?
-                .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))?;
+            // With the shared state: a shared protected variable's thunk creates its object.
+            let v = yavs_interp::call_shared(
+                rt.clone(),
+                c.init,
+                Arc::new(inst.clone()),
+                &[],
+                Some(shared),
+            )?
+            .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))?;
             let n = c.w.bytes() as usize;
             inst.data[c.off as usize..c.off as usize + n].copy_from_slice(&v.to_le_bytes()[..n]);
         }

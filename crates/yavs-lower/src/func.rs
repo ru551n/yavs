@@ -678,7 +678,7 @@ pub(crate) fn architecture(
 }
 
 /// A thunk evaluating one cell (an initial value), for the elaborator.
-fn thunk(
+pub(crate) fn thunk(
     db: &Db,
     pb: &mut ProgramBuilder,
     cx: &mut Cx,
@@ -710,6 +710,17 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
         return Ok(());
     };
     let name = decl.name.to_string();
+    if o.class == ObjClass::Constant
+        && matches!(
+            db.types[db.base(o.subtype)].kind,
+            yavs_sem::types::TypeKind::Array { .. } | yavs_sem::types::TypeKind::Record { .. }
+        )
+    {
+        // ponytail: like a package constant, a composite constant of an architecture is
+        // re-evaluated from its initialiser at each use (`read_obj`); instance data when
+        // composite instance values land (#67, #73).
+        return Ok(());
+    }
     if ty::is_array(db, db.base(o.subtype)) {
         return Err(cx.unsupported(
             decl.span,
@@ -792,6 +803,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
             });
             Ok(())
         }
+        ObjClass::SharedVariable => crate::protected::shared_var(db, pb, cx, ir, d),
         _ => Err(cx.unsupported(
             decl.span,
             "shared variables and files in an architecture (M3)",

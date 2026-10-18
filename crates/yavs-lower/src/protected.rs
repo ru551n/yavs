@@ -268,3 +268,44 @@ impl Fx<'_, '_> {
         Ok(())
     }
 }
+
+/// A shared variable of a protected type in an architecture: an instance cell holding the
+/// object's handle, created at elaboration in the shared heap (the elaborator runs the
+/// thunk with `call_shared`).
+pub(crate) fn shared_var(
+    db: &Db,
+    pb: &mut yavs_ir::ProgramBuilder,
+    cx: &mut crate::Cx,
+    ir: &mut crate::UnitIr,
+    d: DeclId,
+) -> R<()> {
+    let decl = &db.decls[d];
+    let DeclKind::Object(o) = &decl.kind else {
+        return Err(cx.ice(decl.span, "not an object"));
+    };
+    let t = db.base(o.subtype);
+    if !matches!(db.types[t].kind, TypeKind::Protected { .. }) {
+        return Err(cx.unsupported(decl.span, "shared variables of non-protected types"));
+    }
+    let name = decl.name.to_string();
+    let span = decl.span;
+    let init = crate::func::thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))?;
+    let off = ir.inst_size.next_multiple_of(8);
+    ir.inst_size = off + 8;
+    cx.objs.insert(
+        d,
+        Obj::Scalar {
+            space: Space::Inst,
+            off,
+            w: Width::B8,
+        },
+    );
+    ir.consts.push(crate::InstConst {
+        decl: d,
+        name,
+        off,
+        w: Width::B8,
+        init,
+    });
+    Ok(())
+}

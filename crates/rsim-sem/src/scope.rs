@@ -277,6 +277,7 @@ impl Db {
             cur = self.scopes[s].parent;
         }
         if let Some(d) = single {
+            self.generic.unused.remove(&d);
             return Visible::One(d);
         }
         // Keep walking parents for use clauses even when overloadables were found.

@@ -36,6 +36,9 @@ pub struct Model {
     /// User functions lowered for elaboration-time calls (ir.md 3.6): `None` when lowering
     /// failed (the reason is reported at the call).
     pub(crate) funcs: HashMap<DeclId, Result<Lowered1, Box<Diagnostic>>>,
+    /// Package scopes by package unit, library scopes by library.
+    pub(crate) pkg_scopes: HashMap<yavs_sem::UnitId, ScopeId>,
+    pub(crate) lib_scopes: HashMap<yavs_sem::LibId, ScopeId>,
 }
 
 /// A function lowered on its own into a program, for `yavs_interp::call`.

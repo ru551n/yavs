@@ -17,8 +17,8 @@ use yavs_syntax::ast::Ident;
 
 use crate::eval::{Model, Val, leaf_values, parse_override};
 use crate::hier::{
-    Case, DriverDecl, Leaf, LeafId, LeafRes, ObjId, ObjKind, PortEdge, ProcIdx, ScopeId, ScopeKind,
-    Sel, Shape, SigObj,
+    Case, DriverDecl, ImplicitKind, Leaf, LeafId, LeafRes, ObjId, ObjKind, PortEdge, ProcIdx,
+    ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
 use crate::{ElabConfig, Elaborated, ProcInst, Top, codes};
 
@@ -582,6 +582,108 @@ impl Elab<'_> {
         Ok(())
     }
 
+    /// `s'stable(t)`, `s'quiet(t)`, `s'delayed(t)`, `s'transaction` (K2): a kernel-maintained
+    /// signal over the elements of the prefix.
+    fn implicit_signal(&mut self, s: ScopeId, d: DeclId) -> R<()> {
+        use yavs_sem::hir::{AttrPrefix, PredefAttr};
+        let db: &Db = self.db;
+        let decl = &db.decls[d];
+        let span = decl.span;
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(Box::new(ice(span, "implicit signal")));
+        };
+        let Some(def) = o.default else {
+            return Err(Box::new(ice(span, "implicit signal without definition")));
+        };
+        let ExprKind::Attr {
+            attr,
+            prefix: AttrPrefix::Expr(prefix),
+            args,
+        } = &db.exprs[def].kind
+        else {
+            return Err(Box::new(ice(span, "implicit signal definition")));
+        };
+        let (attr, prefix, arg) = (*attr, *prefix, args.first().copied());
+        let Some((po, sels)) = self.m.name_ref(self.db, prefix, s)? else {
+            return Err(unsupported(span, "implicit signals of this prefix", "M3"));
+        };
+        let (rs, pshape) = self.m.select(po, &sels, span)?;
+        let [(leaf, range)] = rs.as_slice() else {
+            return Err(unsupported(
+                span,
+                "implicit signals of a record (several kernel signals)",
+                "M3",
+            ));
+        };
+        let t = match arg {
+            Some(a) => {
+                let v = self.m.eval(self.db, a, Some(s))?;
+                let fs = v.as_int().unwrap_or(0);
+                if fs < 0 {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            codes::EVAL_FAILED,
+                            format!("the time of `'{}` is negative", attr.name()),
+                        )
+                        .with_primary(self.db.exprs[a].span, "negative"),
+                    ));
+                }
+                yavs_kernel::Time::from_vhdl(fs).map_err(|_| {
+                    Box::new(
+                        Diagnostic::error(codes::EVAL_FAILED, "time out of range")
+                            .with_primary(span, "here"),
+                    )
+                })?
+            }
+            None => yavs_kernel::Time::ZERO,
+        };
+        let kind = match attr {
+            PredefAttr::Stable => ImplicitKind::Stable(t),
+            PredefAttr::Quiet => ImplicitKind::Quiet(t),
+            PredefAttr::Delayed => ImplicitKind::Delayed(t),
+            PredefAttr::Transaction => ImplicitKind::Transaction,
+            _ => return Err(Box::new(ice(span, "not an implicit signal attribute"))),
+        };
+        let src = (*leaf, *range);
+        let db: &Db = self.db;
+        let (shape, init) = match kind {
+            ImplicitKind::Delayed(_) => {
+                let init = self.m.nets.leaf(src.0).init.clone();
+                (pshape, Some(init))
+            }
+            _ => {
+                let st = o.subtype;
+                let Some(sh) = self.m.shape(db, st, Some(s), span)? else {
+                    return Err(Box::new(ice(span, "implicit signal subtype")));
+                };
+                (sh, None)
+            }
+        };
+        let obj = self
+            .m
+            .add_obj(self.db, s, d, ObjKind::Implicit, shape, None, span)?;
+        let (a, b) = self.m.nets.obj(obj).leaves;
+        if b.0 != a.0 + 1 {
+            return Err(Box::new(ice(span, "implicit signal of several leaves")));
+        }
+        let src_elem = self.m.nets.leaves[src.0.index()].ty.elem;
+        let l = &mut self.m.nets.leaves[a.index()];
+        // The kernel decides the representation of these signals (K2): one byte per
+        // element for 'stable, 'quiet and 'transaction; the prefix's for 'delayed.
+        l.ty = match kind {
+            ImplicitKind::Delayed(_) => yavs_kernel::SignalType {
+                elem: src_elem,
+                len: src.1.len,
+            },
+            _ => yavs_kernel::SignalType::bytes(1, 1),
+        };
+        if let Some(init) = init {
+            l.init = init;
+        }
+        l.implicit = Some((kind, src.0, src.1));
+        Ok(())
+    }
+
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
         let order = self.db.scopes[region].order.clone();
@@ -634,11 +736,7 @@ impl Elab<'_> {
                         .add_obj(self.db, s, d, ObjKind::Signal, shape, None, span)?;
                 }
                 (ObjClass::Signal, ObjRole::ImplicitSignal) => {
-                    return Err(unsupported(
-                        decl.span,
-                        "implicit signals ('stable, 'quiet, 'delayed, 'transaction, GUARD)",
-                        "slice 4",
-                    ));
+                    self.implicit_signal(s, d)?;
                 }
                 _ => {}
             }
@@ -835,7 +933,19 @@ impl Elab<'_> {
                     }
                 });
                 let (postponed, lsps) = (*postponed, info.drivers.clone());
-                self.process(s, st, name, postponed, &lsps)
+                let pscope = match &stmt.kind {
+                    StmtKind::Process { scope, .. } => Some(*scope),
+                    _ => None,
+                };
+                self.process(s, st, name, postponed, &lsps)?;
+                // Implicit signals ('stable, ...) are declared in the process's region.
+                match pscope {
+                    Some(r) => {
+                        let ps = self.procs.last().expect("just added").scope;
+                        self.decls(ps, r)
+                    }
+                    None => Ok(()),
+                }
             }
             StmtKind::Block {
                 scope: bscope,
@@ -1610,6 +1720,7 @@ impl Model {
                 ty: yavs_kernel::SignalType { elem: *elem, len },
                 resolution,
                 guard: None,
+                implicit: None,
                 init,
             });
         }
@@ -1635,7 +1746,13 @@ impl Model {
     fn name_ref(&mut self, db: &Db, e: ExprId, scope: ScopeId) -> R<Option<(ObjId, Vec<Sel>)>> {
         let ex = &db.exprs[e];
         let (prefix, sel) = match &ex.kind {
-            ExprKind::Obj(d) => return Ok(self.signal(scope, *d).map(|o| (o, Vec::new()))),
+            ExprKind::Obj(d) => {
+                let o = self.signal_or_package(db, scope, *d, ex.span)?;
+                return Ok(o.map(|o| (o, Vec::new())));
+            }
+            ExprKind::External(x) => {
+                return Ok(Some((self.external(db, *x, scope)?, Vec::new())));
+            }
             ExprKind::Index { prefix, indices } => {
                 let mut v = Vec::with_capacity(indices.len());
                 for &i in indices.iter() {
@@ -1656,16 +1773,234 @@ impl Model {
         }))
     }
 
-    fn lsp_ref(&mut self, db: &Db, l: &Lsp, scope: ScopeId) -> R<(ObjId, Vec<Sel>)> {
-        let ObjRoot::Decl(d) = l.root else {
-            return Err(unsupported(
-                l.span,
-                "external names and implicit signals as targets",
-                "M3",
-            ));
+    /// Bind external signal name `x` (LRM 8.7) against the hierarchy elaborated so far
+    /// (GHDL #548: a target that is not elaborated yet is an error, never a guess).
+    pub(crate) fn external(
+        &mut self,
+        db: &Db,
+        x: yavs_sem::ExternalId,
+        scope: ScopeId,
+    ) -> R<ObjId> {
+        use yavs_syntax::ast::{ExternalClass, PathKind};
+        let ext = &db.externals[x];
+        let span = ext.span;
+        let path: Vec<String> = ext.path.iter().map(|(i, _)| i.text.to_string()).collect();
+        let shown = path.join(".");
+        let fail = |why: String| {
+            Box::new(
+                Diagnostic::error(
+                    codes::EXTERNAL_NOT_FOUND,
+                    format!("external name `{shown}` cannot be bound: {why}"),
+                )
+                .with_primary(span, "external name")
+                .with_note(
+                    "external names are bound in elaboration order: the target must be \
+                     elaborated before the external name (LRM 14.4.1)",
+                ),
+            )
         };
-        let Some(o) = self.signal(scope, d) else {
-            return Err(unsupported(l.span, "signals declared in packages", "M3"));
+        if ext.class != ExternalClass::Signal {
+            return Err(unsupported(span, "external constants and variables", "M3"));
+        }
+        let Some(((last, _), steps)) = ext.path.split_last() else {
+            return Err(fail("empty path".into()));
+        };
+        if ext.path_kind == PathKind::Package {
+            // `@lib.pkg.obj`: the signal declared in the package.
+            let [(l, _), (p, _)] = steps else {
+                return Err(unsupported(span, "nested package paths", "M3"));
+            };
+            let unit = db
+                .libs
+                .iter()
+                .find(|(_, lib)| lib.name.key == l.key)
+                .and_then(|(_, lib)| {
+                    match lib.units.get(&yavs_sem::loader::UnitKey::Primary(p.key)) {
+                        Some(yavs_sem::loader::UnitSlot::Done(u)) => Some(*u),
+                        _ => None,
+                    }
+                });
+            let Some(u) = unit else {
+                return Err(fail(format!(
+                    "package `{}.{}` is not analyzed",
+                    l.text, p.text
+                )));
+            };
+            let d = db.scopes[db.units[u].scope]
+                .names
+                .get(&last.key)
+                .and_then(|v| v.first().copied());
+            let Some(d) = d else {
+                return Err(fail(format!(
+                    "package `{}` declares no `{}`",
+                    p.text, last.text
+                )));
+            };
+            return self
+                .signal_or_package(db, scope, d, span)?
+                .ok_or_else(|| fail(format!("`{}` is not a signal", last.text)));
+        }
+        let (mut cur, rest) = match ext.path_kind {
+            PathKind::Absolute => {
+                let root = ScopeId(0);
+                let Some(((first, _), rest)) = steps.split_first() else {
+                    return Err(fail("an absolute path names the top level first".into()));
+                };
+                if self.hier.scope(root).name.key != first.key {
+                    return Err(fail(format!("the top level is not `{}`", first.text)));
+                }
+                (root, rest)
+            }
+            _ => {
+                // Relative: from the innermost enclosing region, `^` steps up.
+                let ups = match ext.path_kind {
+                    PathKind::Relative(n) => n,
+                    _ => 0,
+                };
+                let mut c = scope;
+                while matches!(self.hier.scope(c).kind, ScopeKind::Process { .. }) {
+                    c = self.hier.scope(c).parent.expect("a process has a parent");
+                }
+                for _ in 0..ups {
+                    c = match self.hier.scope(c).parent {
+                        Some(p)
+                            if matches!(self.hier.scope(p).kind, ScopeKind::Component { .. }) =>
+                        {
+                            self.hier
+                                .scope(p)
+                                .parent
+                                .ok_or_else(|| fail("`^` above the top".into()))?
+                        }
+                        Some(p) => p,
+                        None => return Err(fail("`^` above the top level".into())),
+                    };
+                }
+                (c, steps)
+            }
+        };
+        for (name, index) in rest {
+            let want = match index {
+                Some(i) => {
+                    let v = self.eval(db, *i, Some(scope))?;
+                    Some(v.as_int().map(|x| x.to_string()).unwrap_or_default())
+                }
+                None => None,
+            };
+            let child = self.hier.scope(cur).children.iter().copied().find_map(|c| {
+                let sc = self.hier.scope(c);
+                // A component scope is transparent: its entity instance has the label.
+                let c = match sc.kind {
+                    ScopeKind::Component { .. } => *sc.children.first()?,
+                    _ => c,
+                };
+                let sc = self.hier.scope(c);
+                (sc.name.key == name.key && sc.index == want).then_some(c)
+            });
+            cur = child.ok_or_else(|| {
+                fail(format!(
+                    "no elaborated region `{}` in {}",
+                    name.text,
+                    self.hier.path_name(cur, Case::Original)
+                ))
+            })?;
+        }
+        self.hier
+            .scope(cur)
+            .objs
+            .iter()
+            .copied()
+            .find(|&o| self.nets.obj(o).name.key == last.key)
+            .ok_or_else(|| {
+                fail(format!(
+                    "{} has no signal `{}` (yet)",
+                    self.hier.path_name(cur, Case::Original),
+                    last.text
+                ))
+            })
+    }
+
+    /// The signal object of `d` seen from `scope`; a signal declared in a package is
+    /// elaborated on first use, in its package's scope.
+    fn signal_or_package(
+        &mut self,
+        db: &Db,
+        scope: ScopeId,
+        d: DeclId,
+        at: Span,
+    ) -> R<Option<ObjId>> {
+        if let Some(o) = self.signal(scope, d) {
+            return Ok(Some(o));
+        }
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Ok(None);
+        };
+        if o.class != ObjClass::Signal {
+            return Ok(None);
+        }
+        let region = decl.scope;
+        let Some(unit) = db.scopes[region]
+            .owner
+            .and_then(|ow| match db.decls[ow].kind {
+                DeclKind::Unit(u) if db.units[u].kind == UnitKind::Package => Some(u),
+                _ => None,
+            })
+        else {
+            return Ok(None);
+        };
+        let ps = match self.pkg_scopes.get(&unit) {
+            Some(&p) => p,
+            None => {
+                let lib = db.units[unit].lib;
+                let ls = match self.lib_scopes.get(&lib) {
+                    Some(&l) => l,
+                    None => {
+                        let l = self.hier.add(None, ScopeKind::Library, db.libs[lib].name);
+                        self.lib_scopes.insert(lib, l);
+                        l
+                    }
+                };
+                let p = self
+                    .hier
+                    .add(Some(ls), ScopeKind::Package { unit }, db.units[unit].name);
+                self.pkg_scopes.insert(unit, p);
+                p
+            }
+        };
+        if let Some(&obj) = self.sigs.get(&(ps, d)) {
+            return Ok(Some(obj));
+        }
+        let Some(shape) = self.shape(db, o.subtype, None, decl.span)? else {
+            return Err(Box::new(ice(
+                at,
+                "package signal of an unconstrained subtype",
+            )));
+        };
+        if o.signal_kind.is_some() {
+            return Err(unsupported(decl.span, "guarded signals in packages", "M3"));
+        }
+        let init = match o.default {
+            Some(e) => Some(self.eval(db, e, None)?),
+            None => None,
+        };
+        let obj = self.add_obj(db, ps, d, ObjKind::Signal, shape, init.as_ref(), decl.span)?;
+        Ok(Some(obj))
+    }
+
+    fn lsp_ref(&mut self, db: &Db, l: &Lsp, scope: ScopeId) -> R<(ObjId, Vec<Sel>)> {
+        let d = match l.root {
+            ObjRoot::Decl(d) => d,
+            ObjRoot::External(x) => {
+                let o = self.external(db, x, scope)?;
+                let sels = self.steps(db, &l.path, scope, l.span)?;
+                return Ok((o, sels));
+            }
+            ObjRoot::ImplicitSignal(_) => {
+                return Err(unsupported(l.span, "implicit signals as targets", "M3"));
+            }
+        };
+        let Some(o) = self.signal_or_package(db, scope, d, l.span)? else {
+            return Err(Box::new(ice(l.span, "driven signal without object")));
         };
         let sels = self.steps(db, &l.path, scope, l.span)?;
         Ok((o, sels))

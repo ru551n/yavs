@@ -5,7 +5,7 @@ use yavs_kernel::{
     Builder, Config, DriverId, PortConv, ProcFlags, Process, Resolution, SimControl, SimError,
 };
 
-use crate::hier::{Case, LeafRes};
+use crate::hier::{Case, ImplicitKind, LeafRes};
 use crate::{Elaborated, ProcInst};
 
 struct Boxed(Box<dyn Process>);
@@ -59,12 +59,21 @@ impl Elaborated {
         let mut b = Builder::new();
         for (i, leaf) in self.nets.leaves.iter().enumerate() {
             let name = self.leaf_name(crate::LeafId(i as u32));
-            let id = match &leaf.resolution {
-                None => b.signal(&name, leaf.ty, &leaf.init),
-                Some(LeafRes::StdLogic) => {
+            let id = match (&leaf.resolution, leaf.implicit) {
+                (_, Some((k, src, r))) => {
+                    let src = yavs_kernel::SignalId(src.0).slice(r.offset, r.len);
+                    match k {
+                        ImplicitKind::Stable(t) => b.stable_signal(src, t),
+                        ImplicitKind::Quiet(t) => b.quiet_signal(src, t),
+                        ImplicitKind::Delayed(t) => b.delayed_signal(src, t),
+                        ImplicitKind::Transaction => b.transaction_signal(src),
+                    }
+                }
+                (None, None) => b.signal(&name, leaf.ty, &leaf.init),
+                (Some(LeafRes::StdLogic), None) => {
                     b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::StdLogic)
                 }
-                Some(LeafRes::Func(_)) => {
+                (Some(LeafRes::Func(_)), None) => {
                     return Err(usage(format!(
                         "signal {name}: user resolution functions need yavs-interp (M3)"
                     )));

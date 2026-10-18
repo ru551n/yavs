@@ -662,3 +662,193 @@ fn elaboration_calls_math_real() {
     let (_, e) = elab("mathreal", src, "t", &[]);
     assert_eq!(e.nets.leaves[0].ty.len, 7);
 }
+
+/// Implicit signals are kernel signals over their prefix's elements (#76). Sem does not
+/// create them from names yet, so the test declares them with `attr::implicit_signal`.
+#[test]
+fn implicit_signals() {
+    use yavs_sem::hir::{Expr, ExprKind, PredefAttr, Staticness};
+    let src = "entity t is end; architecture a of t is
+        signal s : bit_vector(0 to 3);
+      begin end;";
+    let mut db = analyze("implicit", src);
+    let arch = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, yavs_sem::hir::UnitHir::Architecture { .. }))
+        .map(|(_, u)| u.scope)
+        .expect("arch");
+    let s = db.scopes[arch].order[0];
+    let yavs_sem::decl::DeclKind::Object(o) = &db.decls[s].kind else {
+        panic!("signal")
+    };
+    let (st, span) = (o.subtype, db.decls[s].span);
+    let prefix = db.exprs.push(Expr {
+        kind: ExprKind::Obj(s),
+        subtype: st,
+        span,
+        stat: Staticness::Locally,
+        value: None,
+    });
+    let time = db.types[db.well_known.time.expect("time")].first_subtype;
+    let c = db.consts.push(yavs_sem::stat::ConstValue::Phys(2_000_000));
+    let two_ns = db.exprs.push(Expr {
+        kind: ExprKind::Const(c),
+        subtype: time,
+        span,
+        stat: Staticness::Locally,
+        value: Some(c),
+    });
+    let boolean = db.types[db.well_known.boolean.expect("boolean")].first_subtype;
+    for (attr, param, sub) in [
+        (PredefAttr::Stable, Some(two_ns), boolean),
+        (PredefAttr::Transaction, None, boolean),
+        (PredefAttr::Delayed, Some(two_ns), st),
+    ] {
+        yavs_sem::attr::implicit_signal(&mut db, attr, false, arch, prefix, param, sub, span)
+            .expect("implicit signal");
+    }
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let kinds: Vec<_> = e.nets.leaves.iter().filter_map(|l| l.implicit).collect();
+    assert_eq!(
+        kinds,
+        [
+            (
+                crate::ImplicitKind::Stable(yavs_kernel::Time::ns(2)),
+                crate::LeafId(0),
+                Range::new(0, 4)
+            ),
+            (
+                crate::ImplicitKind::Transaction,
+                crate::LeafId(0),
+                Range::new(0, 4)
+            ),
+            (
+                crate::ImplicitKind::Delayed(yavs_kernel::Time::ns(2)),
+                crate::LeafId(0),
+                Range::new(0, 4)
+            ),
+        ]
+    );
+    let sim = e
+        .build_with(yavs_kernel::Config::default(), |_, _| Ok(Box::new(Idle)))
+        .expect("build");
+    let names: Vec<String> = (0..sim.signal_count())
+        .map(|i| {
+            sim.signal_name(yavs_kernel::SignalId(i as u32))
+                .expect("name")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(names.len(), 4);
+    assert!(names[1].contains("'stable"), "{names:?}");
+    assert!(names[3].contains("'delayed"), "{names:?}");
+}
+
+/// Signals declared in a package are elaborated once, on first use, as `:lib:pkg:s` (#76).
+#[test]
+fn package_signals() {
+    let src = "package p is signal pk : integer := 7; end;
+      use work.p.all;
+      entity c is port (i : in integer); end; architecture a of c is begin end;
+      use work.p.all;
+      entity t is end; architecture a of t is
+      begin
+        pk <= 1;
+        u1 : entity work.c port map (pk);
+        u2 : entity work.c port map (i => pk);
+      end;";
+    let (_, e) = elab("pkgsig", src, "t", &[]);
+    assert_eq!(sig_paths(&e), [":work:p:pk", ":t:u1:i", ":t:u2:i"]);
+    assert_eq!(e.nets.ports[0].actual.0, e.nets.ports[1].actual.0);
+    let yavs_kernel::Value::Bytes(b) = &e.nets.leaves[0].init else {
+        panic!("bytes")
+    };
+    assert_eq!(b[0], 7);
+}
+
+/// External names bind against the elaborated hierarchy (#76, GHDL #548). Sem does not
+/// analyze them in port maps yet, so the test binds HIR externals directly.
+#[test]
+fn external_names() {
+    use yavs_syntax::ast::{ExternalClass, PathKind};
+    let src = "entity d is end; architecture a of d is signal s : integer := 4; begin end;
+      entity t is end; architecture a of t is
+      begin
+        dut : entity work.d;
+        g : for k in 0 to 1 generate inner : entity work.d; end generate;
+      end;";
+    let (mut db, e) = elab("external", src, "t", &[]);
+    let id = |db: &mut Db, kind, names: &[(&str, Option<i64>)]| {
+        let mut path = Vec::new();
+        for (n, ix) in names {
+            let sym = yavs_syntax::Symbol::intern(n);
+            let ix = ix.map(|v| {
+                let c = db.consts.push(yavs_sem::stat::ConstValue::Int(v));
+                db.exprs.push(yavs_sem::hir::Expr {
+                    kind: yavs_sem::hir::ExprKind::Const(c),
+                    subtype: db.poison.subtype,
+                    span: Default::default(),
+                    stat: yavs_sem::hir::Staticness::Locally,
+                    value: Some(c),
+                })
+            });
+            path.push((
+                yavs_syntax::ast::Ident {
+                    text: sym,
+                    key: sym,
+                    span: Default::default(),
+                },
+                ix,
+            ));
+        }
+        db.externals.push(yavs_sem::hir::External {
+            class: ExternalClass::Signal,
+            path_kind: kind,
+            path: path.into(),
+            subtype: db.poison.subtype,
+            span: Default::default(),
+        })
+    };
+    let abs = id(
+        &mut db,
+        PathKind::Absolute,
+        &[("t", None), ("dut", None), ("s", None)],
+    );
+    let gn = id(
+        &mut db,
+        PathKind::Absolute,
+        &[("t", None), ("g", Some(1)), ("inner", None), ("s", None)],
+    );
+    let rel = id(
+        &mut db,
+        PathKind::Relative(0),
+        &[("dut", None), ("s", None)],
+    );
+    let bad = id(
+        &mut db,
+        PathKind::Absolute,
+        &[("t", None), ("nope", None), ("s", None)],
+    );
+    let mut m = crate::Model {
+        hier: e.hier,
+        nets: e.nets,
+        vals: e.model_vals,
+        sigs: e.sigs,
+        ..Default::default()
+    };
+    let top = crate::ScopeId(0);
+    let name = |m: &crate::Model, o: crate::ObjId| {
+        let o = m.nets.obj(o);
+        format!("{}{}", m.hier.path_name(o.scope, Case::Lrm), o.name.key)
+    };
+    let o = m.external(&db, abs, top).expect("absolute");
+    assert_eq!(name(&m, o), ":t:dut:s");
+    let o = m.external(&db, gn, top).expect("generate index");
+    assert_eq!(name(&m, o), ":t:g(1):inner:s");
+    let o = m.external(&db, rel, top).expect("relative");
+    assert_eq!(name(&m, o), ":t:dut:s");
+    let err = m.external(&db, bad, top).expect_err("missing region");
+    assert_eq!(err.code, codes::EXTERNAL_NOT_FOUND);
+}

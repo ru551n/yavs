@@ -64,6 +64,12 @@ pub enum ScopeKind {
     Process {
         stmt: StmtId,
     },
+    /// A library holding elaborated packages (a root scope, after the top level).
+    Library,
+    /// A package with signals (LRM 14.4.2): `:lib:pkg:s`.
+    Package {
+        unit: UnitId,
+    },
 }
 
 pub struct Scope {
@@ -295,6 +301,17 @@ pub enum ObjKind {
     Port(PortMode),
     /// A port of a component (between the instance's actual and the entity's formal).
     ComponentPort(PortMode),
+    /// `'stable`, `'quiet`, `'delayed`, `'transaction` of a signal (kernel-maintained, K2).
+    Implicit,
+}
+
+/// The implicit signal attributes the kernel maintains (K2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImplicitKind {
+    Stable(yavs_kernel::Time),
+    Quiet(yavs_kernel::Time),
+    Delayed(yavs_kernel::Time),
+    Transaction,
 }
 
 pub struct SigObj {
@@ -323,6 +340,8 @@ pub struct Leaf {
     pub resolution: Option<LeafRes>,
     /// `bus` or `register` (a guarded signal, LRM 6.4.2.3).
     pub guard: Option<yavs_kernel::GuardKind>,
+    /// An implicit signal: its kind and the source elements.
+    pub implicit: Option<(ImplicitKind, LeafId, Range)>,
     pub init: Value,
 }
 

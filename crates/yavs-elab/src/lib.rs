@@ -19,8 +19,8 @@ mod tests;
 
 pub use eval::{Model, Val, elem_of};
 pub use hier::{
-    Bounds, Case, DriverDecl, Hierarchy, Leaf, LeafId, LeafRes, NetGraph, ObjId, ObjKind, PortEdge,
-    ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
+    Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
+    ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
 pub use sim::Ir;
 
@@ -61,6 +61,8 @@ pub mod codes {
     pub const GENERIC_RANGE: &str = "E2115";
     /// A package needs a body (subprograms, deferred constants) and has none (LRM 4.8).
     pub const BODY_MISSING: &str = "E2116";
+    /// An external name names no elaborated object (LRM 8.7, 14.4.1).
+    pub const EXTERNAL_NOT_FOUND: &str = "E2117";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").

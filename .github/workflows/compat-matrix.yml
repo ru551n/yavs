@@ -1,0 +1,131 @@
+# TEMPORARY (issue #228): one-off distro sweep of the released 0.4.0 Linux archives. Removed after.
+name: Compat matrix
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  sweep:
+    name: ${{ matrix.name }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "centos:7", name: "centos:7", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "centos:7", name: "centos:7", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "rockylinux:8", name: "rockylinux:8", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "rockylinux:8", name: "rockylinux:8", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "rockylinux:9", name: "rockylinux:9", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "rockylinux:9", name: "rockylinux:9", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "almalinux:8", name: "almalinux:8", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "almalinux:8", name: "almalinux:8", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "almalinux:9", name: "almalinux:9", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "almalinux:9", name: "almalinux:9", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "oraclelinux:7", name: "oraclelinux:7", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "oraclelinux:7", name: "oraclelinux:7", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "oraclelinux:8", name: "oraclelinux:8", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "oraclelinux:8", name: "oraclelinux:8", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "oraclelinux:9", name: "oraclelinux:9", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "oraclelinux:9", name: "oraclelinux:9", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "amazonlinux:2", name: "amazonlinux:2", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "amazonlinux:2", name: "amazonlinux:2", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "amazonlinux:2023", name: "amazonlinux:2023", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "amazonlinux:2023", name: "amazonlinux:2023", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "debian/eol:jessie", name: "debian/eol:jessie", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "debian/eol:jessie", name: "debian/eol:jessie", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "debian/eol:stretch", name: "debian/eol:stretch", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "debian/eol:stretch", name: "debian/eol:stretch", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "debian/eol:buster", name: "debian/eol:buster", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "debian/eol:buster", name: "debian/eol:buster", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "debian:11", name: "debian:11", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "debian:11", name: "debian:11", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "debian:12", name: "debian:12", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "debian:12", name: "debian:12", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "debian:13", name: "debian:13", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "debian:13", name: "debian:13", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ubuntu:14.04", name: "ubuntu:14.04", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ubuntu:14.04", name: "ubuntu:14.04", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ubuntu:16.04", name: "ubuntu:16.04", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ubuntu:16.04", name: "ubuntu:16.04", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ubuntu:18.04", name: "ubuntu:18.04", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ubuntu:18.04", name: "ubuntu:18.04", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ubuntu:20.04", name: "ubuntu:20.04", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ubuntu:20.04", name: "ubuntu:20.04", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ubuntu:22.04", name: "ubuntu:22.04", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ubuntu:22.04", name: "ubuntu:22.04", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ubuntu:24.04", name: "ubuntu:24.04", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ubuntu:24.04", name: "ubuntu:24.04", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "fedora:39", name: "fedora:39", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "fedora:39", name: "fedora:39", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "fedora:latest", name: "fedora:latest", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "fedora:latest", name: "fedora:latest", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "fedora:rawhide", name: "fedora:rawhide", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "fedora:rawhide", name: "fedora:rawhide", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "opensuse/leap:15", name: "opensuse/leap:15", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "opensuse/leap:15", name: "opensuse/leap:15", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "opensuse/tumbleweed", name: "opensuse/tumbleweed", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "opensuse/tumbleweed", name: "opensuse/tumbleweed", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "archlinux:latest", name: "archlinux:latest", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "gentoo/stage3", name: "gentoo/stage3", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "gentoo/stage3", name: "gentoo/stage3", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "ghcr.io/void-linux/void-glibc", name: "ghcr.io/void-linux/void-glibc", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "ghcr.io/void-linux/void-glibc", name: "ghcr.io/void-linux/void-glibc", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "mageia", name: "mageia", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "mageia", name: "mageia", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "photon", name: "photon", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "photon", name: "photon", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "busybox:glibc", name: "busybox:glibc", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "busybox:glibc", name: "busybox:glibc", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "gcr.io/distroless/cc-debian12", name: "gcr.io/distroless/cc-debian12", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "gcr.io/distroless/cc-debian12", name: "gcr.io/distroless/cc-debian12", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "alpine:latest", name: "alpine:latest", arch: x86_64, runner: ubuntu-24.04, pre: ""}
+          - {image: "alpine:latest", name: "alpine:latest", arch: aarch64, runner: ubuntu-24.04-arm, pre: ""}
+          - {image: "alpine:latest", name: "alpine:latest+gcompat", arch: x86_64, runner: ubuntu-24.04, pre: "apk add gcompat"}
+          - {image: "alpine:latest", name: "alpine:latest+gcompat", arch: aarch64, runner: ubuntu-24.04-arm, pre: "apk add gcompat"}
+    env:
+      V: "0.4.0"
+      BASE: https://github.com/ru551n/yavs/releases/download/v0.4.0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch and unpack on the runner
+        run: |
+          mkdir w && cd w
+          t=yavs-$V-${{ matrix.arch }}-unknown-linux-gnu
+          curl -fsSLO "$BASE/$t.tar.gz"
+          curl -fsSLO "$BASE/SHA256SUMS"
+          grep " $t.tar.gz\$" SHA256SUMS > sum.txt
+          tar xzf "$t.tar.gz"
+          cp ../.github/compat-t.vhd t.vhd
+          cat > run.sh <<'EOS'
+          set -e
+          cd /w && sha256sum -c sum.txt
+          Y=/w/yavs-0.4.0-$1-unknown-linux-gnu/yavs
+          $Y --version
+          cd /tmp
+          $Y analyze --std=2008 --work=work:w /w/t.vhd
+          out=$($Y run --work=work:w t)
+          echo "$out"
+          case "$out" in *"distro-ok sum=300"*) ;; *) echo "report line missing"; exit 1;; esac
+          EOS
+      - name: Run in container
+        run: |
+          set -o pipefail
+          cd w
+          arch=${{ matrix.arch }}
+          t=yavs-$V-$arch-unknown-linux-gnu
+          if [ "${{ matrix.image }}" = gcr.io/distroless/cc-debian12 ]; then
+            # no shell: checksum on the runner, then run yavs directly as the entrypoint
+            sha256sum -c sum.txt
+            mkdir wk; d="docker run --rm -v $PWD:/w -v $PWD/wk:/wk -w /wk --entrypoint /w/$t/yavs"
+            I=${{ matrix.image }}
+            $d $I --version
+            $d $I analyze --std=2008 --work=work:w /w/t.vhd
+            out=$($d $I run --work=work:w t)
+            echo "$out"
+            case "$out" in *"distro-ok sum=300"*) ;; *) echo "report line missing"; exit 1;; esac
+          else
+            docker run --rm -v "$PWD:/w" ${{ matrix.image }} sh -c "${{ matrix.pre }}
+          $(cat run.sh)" sh $arch 2>&1 | tee ../log.txt
+          fi

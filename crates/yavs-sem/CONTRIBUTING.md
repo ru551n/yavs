@@ -317,3 +317,13 @@ Corpus groups `tests/corpus/hierarchy` and `generics` (difftest) stop in analysi
   E1300.
 - **units**: for elaboration of `for` generates under a configuration, `GenSelect::Index`
   expressions are evaluated without the generate's scope (fine while they are locally static).
+- **generic** (#75, open, yavs-elab 2026-10-18): entities with generic types, subprograms or
+  packages. `generics/generic_types_2019.vhd` now analyzes and its instances carry
+  `Actual::Subtype`/`Actual::Subprogram`, but the entity and architecture HIR still name the
+  formal type (`TypeKind::Generic`) and formal subprogram, so neither elab (port shapes) nor
+  yavs-lower (layouts, calls) can use them. Elab asks for the package-instance mechanism
+  applied to design units: `Db::instantiate_entity(entity, arch, map: GenericMap) ->
+  (UnitId, UnitId)` cloning the entity and architecture with the formals replaced by the
+  actuals (5.1), one clone per distinct map, with a mangled identity (rule 4). Elab would
+  call it per instance whose entity has non-constant generics and elaborate and lower the
+  clone like any other unit.

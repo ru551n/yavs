@@ -127,12 +127,18 @@ impl ConvFn {
             (Side::Scalar(e), yavs_interp::CallVal::Cell(c)) => Ok(encode_cell(e, c)),
             (Side::Array { elem, len, .. }, yavs_interp::CallVal::Composite { data, desc }) => {
                 let n: u64 = desc
-                    .chunks_exact(24)
+                    .as_chunks::<24>()
+                    .0
+                    .iter()
                     .map(|d| {
-                        let w = |k: usize| i64::from_le_bytes(d[k..k + 8].try_into().unwrap_or([0; 8]));
+                        let w = |k: usize| i64::from_le_bytes(std::array::from_fn(|j| d[k + j]));
                         crate::hier::Bounds {
                             left: w(0),
-                            dir: if w(16) == 0 { Direction::To } else { Direction::Downto },
+                            dir: if w(16) == 0 {
+                                Direction::To
+                            } else {
+                                Direction::Downto
+                            },
                             right: w(8),
                         }
                         .len()
@@ -146,10 +152,12 @@ impl ConvFn {
                 Ok(match elem {
                     Elem::Logic => {
                         let blocks: Vec<yavs_logic::Block> = data
-                            .chunks_exact(32)
+                            .as_chunks::<32>()
+                            .0
+                            .iter()
                             .map(|c| {
                                 std::array::from_fn(|k| {
-                                    u64::from_le_bytes(c[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]))
+                                    u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j]))
                                 })
                             })
                             .collect();

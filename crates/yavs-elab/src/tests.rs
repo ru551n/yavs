@@ -17,10 +17,14 @@ fn dir(name: &str) -> PathBuf {
 }
 
 fn analyze(name: &str, src: &str) -> Db {
+    analyze_rev(name, src, LangRev::Vhdl2008)
+}
+
+fn analyze_rev(name: &str, src: &str, rev: LangRev) -> Db {
     let p = dir(name).join("t.vhd");
     std::fs::write(&p, src).expect("write");
-    let mut db = Db::new(Options::new(LangRev::Vhdl2008, yavs_sem::default_stdlib()));
-    let r = db.analyze_file("work", &p, LangRev::Vhdl2008);
+    let mut db = Db::new(Options::new(rev, yavs_sem::default_stdlib()));
+    let r = db.analyze_file("work", &p, rev);
     let msgs: Vec<String> = db
         .diagnostics()
         .iter()
@@ -1058,5 +1062,34 @@ fn composite_values_at_elaboration() {
     assert_eq!(
         err_codes("composite_op", bad, "t", &[]),
         [codes::NOT_EVALUATED]
+    );
+}
+
+/// 2019 mode views give each record element its own port mode; linkage ports read like `in`.
+#[test]
+fn mode_view_and_linkage_ports() {
+    let src = "
+      package p is
+        type bus_t is record req : bit; addr : integer; ack : bit; end record;
+        view master of bus_t is req, addr : out; ack : in; end view;
+      end;
+      use work.p.all;
+      entity m is port (b : view master; l : linkage bit); end;
+      architecture a of m is begin end;
+      use work.p.all;
+      entity t is end;
+      architecture a of t is
+        signal s : bus_t;
+        signal x : bit;
+      begin
+        u : entity work.m port map (s, x);
+      end;";
+    let mut db = analyze_rev("views", src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let modes: Vec<PortMode> = e.nets.ports.iter().map(|p| p.mode).collect();
+    assert_eq!(
+        modes,
+        [PortMode::Out, PortMode::Out, PortMode::In, PortMode::In]
     );
 }

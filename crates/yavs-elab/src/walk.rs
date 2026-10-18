@@ -816,15 +816,14 @@ impl Elab<'_> {
             return Err(unsupported(span, "variable ports (2019)", "M3"));
         }
         let component = matches!(self.m.hier.scope(s).kind, ScopeKind::Component { .. });
-        let mode = match o.mode {
-            Some(Mode::In) => PortMode::In,
-            Some(Mode::Out) => PortMode::Out,
-            Some(Mode::Inout) => PortMode::Inout,
-            Some(Mode::Buffer) => PortMode::Buffer,
-            Some(Mode::Linkage) => return Err(unsupported(span, "linkage ports", "M3")),
-            Some(Mode::View { .. }) | None => {
-                return Err(unsupported(span, "mode view ports", "M3"));
-            }
+        let Some(hmode) = o.mode else {
+            return Err(Box::new(ice(span, "port without a mode")));
+        };
+        // A mode view (2019) gives each record element its own mode; the object's mode is
+        // only a summary, the port edges take each leaf's (ir.md 4, H10).
+        let mode = match hmode {
+            Mode::View { .. } => PortMode::Inout,
+            m => port_mode(m),
         };
         let kind = if component {
             ObjKind::ComponentPort(mode)
@@ -956,7 +955,8 @@ impl Elab<'_> {
                         ));
                     };
                     let (al, _) = self.m.select(ao, &asels, espan)?;
-                    self.m.edges(&fl, &al, mode, espan)?;
+                    let modes = self.m.leaf_modes(db, fo, hmode, span)?;
+                    self.m.edges(&fl, &al, &modes, espan)?;
                 }
                 return Ok(());
             }
@@ -985,7 +985,8 @@ impl Elab<'_> {
             .m
             .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
         let fl = self.m.select(fo, &[], span)?.0;
-        self.m.edges(&fl, &al, mode, aspan)
+        let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
+        self.m.edges(&fl, &al, &modes, aspan)
     }
 
     // -- statements ---------------------------------------------------------------------
@@ -2164,12 +2165,19 @@ impl Model {
     ) -> R<Shape> {
         let ty = db.base(st);
         let yavs_sem::types::TypeKind::Array { indexes, elem } = &db.types[ty].kind else {
-            return Err(unsupported(span, "individual association of this unconstrained port", "M3"));
+            return Err(unsupported(
+                span,
+                "individual association of this unconstrained port",
+                "M3",
+            ));
         };
         let mut lh: Vec<Option<(i64, i64)>> = vec![None; indexes.len()];
         for (steps, e) in parts {
             let espan = db.exprs[*e].span;
-            let Some(first) = self.steps(db, &steps[..1.min(steps.len())], sc, espan)?.pop() else {
+            let Some(first) = self
+                .steps(db, &steps[..1.min(steps.len())], sc, espan)?
+                .pop()
+            else {
                 return Err(Box::new(ice(espan, "empty sub-element path")));
             };
             let ranges: Vec<(i64, i64)> = match first {
@@ -2187,17 +2195,37 @@ impl Model {
         for (d, &ix) in indexes.iter().enumerate() {
             let dir = self.scalar_bounds(db, ix, Some(s), span)?.dir;
             let Some((lo, hi)) = lh[d] else {
-                return Err(unsupported(span, "an individually associated port with only null slices", "M3"));
+                return Err(unsupported(
+                    span,
+                    "an individually associated port with only null slices",
+                    "M3",
+                ));
             };
             dims.push(match dir {
-                yavs_sem::types::Direction::To => crate::hier::Bounds { left: lo, dir, right: hi },
-                yavs_sem::types::Direction::Downto => crate::hier::Bounds { left: hi, dir, right: lo },
+                yavs_sem::types::Direction::To => crate::hier::Bounds {
+                    left: lo,
+                    dir,
+                    right: hi,
+                },
+                yavs_sem::types::Direction::Downto => crate::hier::Bounds {
+                    left: hi,
+                    dir,
+                    right: lo,
+                },
             });
         }
         let Some(es) = self.shape(db, *elem, Some(s), span)? else {
-            return Err(unsupported(span, "individual association of a port with unconstrained elements", "M3"));
+            return Err(unsupported(
+                span,
+                "individual association of a port with unconstrained elements",
+                "M3",
+            ));
         };
-        Ok(Shape::Array { ty, dims, elem: Box::new(es) })
+        Ok(Shape::Array {
+            ty,
+            dims,
+            elem: Box::new(es),
+        })
     }
 
     fn steps(&mut self, db: &Db, path: &[LspStep], scope: ScopeId, span: Span) -> R<Vec<Sel>> {
@@ -2231,11 +2259,56 @@ impl Model {
         })
     }
 
+    /// The port mode of each leaf of port object `fo` with mode `m`: one for all, or per
+    /// record element from a mode view.
+    fn leaf_modes(&self, db: &Db, fo: ObjId, m: Mode, span: Span) -> R<HashMap<LeafId, PortMode>> {
+        let obj = self.nets.obj(fo);
+        let (a, _) = obj.leaves;
+        let tree = match m {
+            Mode::View { .. } => Some(db.port_mode_tree(m)),
+            _ => None,
+        };
+        let mut out = HashMap::new();
+        for (k, (path, _, _)) in obj.shape.leaves().into_iter().enumerate() {
+            let mode = match &tree {
+                None => port_mode(m),
+                Some(t) => {
+                    let mut t = t;
+                    let mut p = path.as_slice();
+                    loop {
+                        match t {
+                            yavs_sem::view::ModeTree::Leaf(m) => break port_mode(*m),
+                            yavs_sem::view::ModeTree::Array(e) => t = e,
+                            yavs_sem::view::ModeTree::Record { elems, .. } => {
+                                let Some((&f, rest)) = p.split_first() else {
+                                    return Err(Box::new(ice(
+                                        span,
+                                        "mode view deeper than the port",
+                                    )));
+                                };
+                                let Some(e) = elems.get(f as usize) else {
+                                    return Err(Box::new(ice(
+                                        span,
+                                        "mode view does not fit the port",
+                                    )));
+                                };
+                                t = e;
+                                p = rest;
+                            }
+                        }
+                    }
+                }
+            };
+            out.insert(LeafId(a.0 + k as u32), mode);
+        }
+        Ok(out)
+    }
+
     fn edges(
         &mut self,
         fl: &[(LeafId, Range)],
         al: &[(LeafId, Range)],
-        mode: PortMode,
+        modes: &HashMap<LeafId, PortMode>,
         span: Span,
     ) -> R<()> {
         let ok = fl.len() == al.len()
@@ -2256,6 +2329,9 @@ impl Model {
             if f.1.len == 0 {
                 continue;
             }
+            let Some(&mode) = modes.get(&f.0) else {
+                return Err(Box::new(ice(span, "formal leaf without a mode")));
+            };
             self.nets.ports.push(PortEdge {
                 formal: *f,
                 actual: *a,
@@ -2279,5 +2355,16 @@ fn unconstrained_signal(o: &yavs_sem::decl::Object, span: Span) -> Box<Diagnosti
         )
     } else {
         Box::new(ice(span, "signal of an unconstrained subtype"))
+    }
+}
+
+/// The kernel mode of a simple port mode. A linkage port takes the actual's value like an
+/// `in` port: VHDL code cannot read or update it (LRM 6.5.2), so it never drives the actual.
+fn port_mode(m: Mode) -> PortMode {
+    match m {
+        Mode::In | Mode::Linkage | Mode::View { .. } => PortMode::In,
+        Mode::Out => PortMode::Out,
+        Mode::Inout => PortMode::Inout,
+        Mode::Buffer => PortMode::Buffer,
     }
 }

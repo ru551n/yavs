@@ -27,23 +27,50 @@ use rsim_sem::{Db, LangRev, Options};
 const PASS: &[&str] = &[
     "scalar/real_image",
     "arith/int_ops",
+    "arith/real_arith",
     "arith/time_arith",
     "process/case_if",
     "process/loops_exit_next",
     "process/sensitivity",
     "process/wait_forms",
+    "report/assert_user_message",
     "report/concurrent_assert",
     "report/error_then_end",
     "report/message_forms",
+    "delta/concurrent_assign",
+    "delta/delta_order",
+    "delta/event_attrs",
+    "delta/signal_update_order",
+    "sigassign/assign_inertial",
+    "sigassign/assign_reject",
+    "sigassign/assign_transport",
+    "sigassign/pulse_swallow",
+    "sigassign/waveforms",
+    "postponed/postponed_basic",
+    "postponed/postponed_wait",
+    "env/finish_noarg",
+    "env/stop_status",
+    "env/stop_time_limit",
+    "run/sig_params",
 ];
 
-const GROUPS: &[&str] = &["scalar", "arith", "process", "report"];
+const GROUPS: &[&str] = &[
+    "scalar",
+    "arith",
+    "process",
+    "report",
+    "delta",
+    "sigassign",
+    "postponed",
+    "env",
+    "run",
+];
 
 fn corpus() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus"))
 }
 
-fn header(src: &str) -> (String, LangRev) {
+fn header(src: &str) -> (String, LangRev, Time) {
     let line = src
         .lines()
         .take(15)
@@ -51,20 +78,25 @@ fn header(src: &str) -> (String, LangRev) {
         .expect("difftest header");
     let mut top = String::new();
     let mut rev = LangRev::Vhdl2008;
+    let mut stop = Time::MAX;
     for kv in line.split_whitespace() {
         match kv.split_once('=') {
             Some(("top", v)) => top = v.to_string(),
             Some(("std", "2019")) => rev = LangRev::Vhdl2019,
+            Some(("stop", v)) => {
+                let ns = v.strip_suffix("ns").expect("stop in ns").parse().unwrap();
+                stop = Time::ns(ns);
+            }
             _ => {}
         }
     }
-    (top, rev)
+    (top, rev, stop)
 }
 
 /// Analyze and lower `file`; `Err` holds rendered diagnostics.
-fn lower(file: &Path) -> Result<(Lowered, Vec<String>), String> {
+fn lower(file: &Path) -> Result<(Lowered, Vec<String>, Time), String> {
     let src = std::fs::read_to_string(file).unwrap();
-    let (top, rev) = header(&src);
+    let (top, rev, stop) = header(&src);
     // The checkout's own lib/ tree, not `default_stdlib()` (a shared target dir can carry another
     // checkout's compile-time path).
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
@@ -123,7 +155,7 @@ fn lower(file: &Path) -> Result<(Lowered, Vec<String>), String> {
             format!(":{}:{}", top.to_ascii_lowercase(), l.to_ascii_lowercase())
         })
         .collect();
-    Ok((lowered, names))
+    Ok((lowered, names, stop))
 }
 
 /// (severity, time in fs, delta, process index, message).
@@ -150,7 +182,7 @@ fn escape(s: &str) -> String {
 }
 
 /// Run a lowered top level and return its canonical output.
-fn run(l: Lowered, names: &[String]) -> Result<String, String> {
+fn run(l: Lowered, names: &[String], stop: Time) -> Result<String, String> {
     let prog = Arc::new(l.program);
     let u = &l.units[0];
     let rt = Runtime::new(prog.clone(), Bindings::default()).map_err(|e| e.to_string())?;
@@ -207,7 +239,7 @@ fn run(l: Lowered, names: &[String]) -> Result<String, String> {
     let mut sim = b.build(Config::default()).map_err(|e| e.to_string())?;
     let reps = Arc::new(Mutex::new(Vec::new()));
     sim.subscribe(Box::new(Reports(reps.clone())));
-    let status = sim.run_until(Time::MAX);
+    let status = sim.run_until(stop);
     let mut out = String::new();
     let mut code = 0;
     for (sev, t, d, p, m) in reps.lock().unwrap().iter() {
@@ -223,7 +255,16 @@ fn run(l: Lowered, names: &[String]) -> Result<String, String> {
         writeln!(out, "diag\t{s}\t{t}\t{d}\t{}\t{}", names[*p], escape(m)).unwrap();
     }
     match status {
-        Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => code = c,
+        Ok(RunStatus::Ended(r @ (EndReason::Stop(c) | EndReason::Finish(c)))) => {
+            code = c;
+            let k = if matches!(r, EndReason::Stop(_)) {
+                "stop"
+            } else {
+                "finish"
+            };
+            let (t, d) = (sim.now().as_fs(), sim.delta());
+            writeln!(out, "diag\t{k}\t{t}\t{d}\t-\t{c}").unwrap();
+        }
         Ok(_) => {}
         Err(e) => {
             code = 1;
@@ -249,7 +290,13 @@ fn corpus_groups() {
     let mut summary = String::new();
     let mut failed = Vec::new();
     for g in GROUPS {
-        let mut files: Vec<_> = std::fs::read_dir(corpus().join(g))
+        let dir = match *g {
+            // This crate's own runnable tests (`.expected` blessed from NVC with
+            // `tools/difftest/difftest.py --corpus crates/rsim-lower/tests/vhdl/run --bless`).
+            "run" => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vhdl/run")),
+            g => corpus().join(g),
+        };
+        let mut files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().path())
             .filter(|p| p.extension().is_some_and(|e| e == "vhd"))
@@ -258,7 +305,7 @@ fn corpus_groups() {
         for f in files {
             let name = format!("{g}/{}", f.file_stem().unwrap().to_string_lossy());
             let expected = std::fs::read_to_string(f.with_extension("expected")).unwrap();
-            let got = lower(&f).and_then(|(l, n)| run(l, &n));
+            let got = lower(&f).and_then(|(l, n, stop)| run(l, &n, stop));
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {
                 _ if pass => "PASS".to_string(),

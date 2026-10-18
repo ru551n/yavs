@@ -107,6 +107,8 @@ pub(crate) enum Obj {
     Array { space: Space, off: u32 },
     /// Instance signal `sig`.
     Signal { sig: u32 },
+    /// A signal parameter: the slot holds a signal reference (two cells).
+    SignalRef { space: Space, off: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -3,9 +3,10 @@
 
 use rsim_diag::Span;
 use rsim_ir::CheckKind;
-use rsim_ir::{CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, RegTy, StmtKind, Width};
+use rsim_ir::{BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, RegTy, StmtKind, Width};
 use rsim_sem::hir::{
-    Choice, Delay, ExprKind, LoopScheme, Lsp, ObjRoot, Rhs, StmtKind as H, Target, Waveform,
+    Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, ObjRoot, Rhs, StmtKind as H, Target,
+    Waveform,
 };
 use rsim_sem::types::{Direction, TypeKind};
 use rsim_sem::{ExprId, StmtId};
@@ -115,49 +116,9 @@ impl Fx<'_, '_> {
                 matching,
                 alts,
             } => {
-                if *matching {
-                    return Err(self.cx.unsupported(span, "matching case statements"));
-                }
-                if ty::is_array(db, db.base(db.exprs[*expr].subtype)) {
-                    return Err(self.cx.unsupported(span, "case statements over arrays"));
-                }
-                let v = self.scalar_expr(*expr)?;
+                let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.0).collect();
+                let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
                 let j = self.block();
-                let mut arms = Vec::new();
-                let mut default = None;
-                let mut blocks = Vec::new();
-                for (set, _) in alts.iter() {
-                    let b = self.block();
-                    blocks.push(b);
-                    if set.choices.iter().any(|c| matches!(c, Choice::Others)) {
-                        default = Some(b);
-                    }
-                    match &set.intervals {
-                        Some(iv) => arms.extend(iv.iter().map(|&(lo, hi)| (lo, hi, b))),
-                        None if default == Some(b) => {}
-                        None => {
-                            return Err(self
-                                .cx
-                                .unsupported(span, "case choices that are not locally static"));
-                        }
-                    }
-                }
-                let default = match default {
-                    Some(b) => b,
-                    None => {
-                        let b = self.block();
-                        let cur = self.live;
-                        self.at(b);
-                        let what =
-                            self.msg("case expression value not covered by any choice", Dir::To);
-                        self.term(Inst::Unreachable { what });
-                        self.live = cur;
-                        b
-                    }
-                };
-                arms.sort_by_key(|a| a.0);
-                let table = self.fb.program().case_table(CaseTable { arms, default });
-                self.term(Inst::Case { v, table });
                 let mut ok = true;
                 for ((_, body), b) in alts.iter().zip(blocks) {
                     self.at(b);
@@ -204,6 +165,61 @@ impl Fx<'_, '_> {
                 .cx
                 .ice(span, "concurrent statement in a sequential region")),
         }
+    }
+
+    /// Branch on `expr` to one new block per choice set (LRM 10.9); the current block is
+    /// closed. A value no choice covers is a runtime error (sem checks coverage, so only an
+    /// out-of-subtype value can get there).
+    fn case_blocks(
+        &mut self,
+        expr: ExprId,
+        matching: bool,
+        sets: &[&ChoiceSet],
+        span: Span,
+    ) -> R<Vec<BlockId>> {
+        let db = self.db;
+        if matching {
+            return Err(self
+                .cx
+                .unsupported(span, "matching case and selected statements"));
+        }
+        if ty::is_array(db, db.base(db.exprs[expr].subtype)) {
+            return Err(self
+                .cx
+                .unsupported(span, "case and selected statements over arrays"));
+        }
+        let v = self.scalar_expr(expr)?;
+        let mut arms = Vec::new();
+        let mut default = None;
+        let mut blocks = Vec::new();
+        for set in sets {
+            let b = self.block();
+            blocks.push(b);
+            let others = set.choices.iter().any(|c| matches!(c, Choice::Others));
+            if others {
+                default = Some(b);
+            }
+            match &set.intervals {
+                Some(iv) => arms.extend(iv.iter().map(|&(lo, hi)| (lo, hi, b))),
+                None if others => {}
+                None => {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "choices that are not locally static"));
+                }
+            }
+        }
+        let missing = default.is_none();
+        let default = default.unwrap_or_else(|| self.block());
+        arms.sort_by_key(|a| a.0);
+        let table = self.fb.program().case_table(CaseTable { arms, default });
+        self.term(Inst::Case { v, table });
+        if missing {
+            self.at(default);
+            let what = self.msg("case expression value not covered by any choice", Dir::To);
+            self.term(Inst::Unreachable { what });
+        }
+        Ok(blocks)
     }
 
     fn report(
@@ -268,7 +284,23 @@ impl Fx<'_, '_> {
                 self.at(j);
                 Ok(())
             }
-            Rhs::Selected { .. } => Err(self.cx.unsupported(span, "selected variable assignments")),
+            Rhs::Selected {
+                expr,
+                matching,
+                alts,
+            } => {
+                let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.1).collect();
+                let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
+                let j = self.block();
+                for (&(e, _), b) in alts.iter().zip(blocks) {
+                    self.at(b);
+                    self.cover_branch(span);
+                    self.assign(target.expr, e, &what, span)?;
+                    self.jump(j);
+                }
+                self.at(j);
+                Ok(())
+            }
         }
     }
 
@@ -317,7 +349,23 @@ impl Fx<'_, '_> {
                 self.at(j);
                 Ok(())
             }
-            Rhs::Selected { .. } => Err(self.cx.unsupported(span, "selected signal assignments")),
+            Rhs::Selected {
+                expr,
+                matching,
+                alts,
+            } => {
+                let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.1).collect();
+                let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
+                let j = self.block();
+                for ((w, _), b) in alts.iter().zip(blocks) {
+                    self.at(b);
+                    self.cover_branch(span);
+                    self.drive(target, delay, w, span)?;
+                    self.jump(j);
+                }
+                self.at(j);
+                Ok(())
+            }
         }
     }
 
@@ -444,12 +492,7 @@ impl Fx<'_, '_> {
                     .cx
                     .unsupported(l.span, "sensitivity to signal sub-elements"));
             }
-            let Some(Obj::Signal { sig }) = self.cx.objs.get(&d).copied() else {
-                return Err(self
-                    .cx
-                    .unsupported(l.span, "sensitivity to ports and signal parameters"));
-            };
-            let s = self.sigval(sig);
+            let s = self.sig_of(d, l.span)?;
             self.emit(Inst::WaitOn { sig: s });
         }
         Ok(())

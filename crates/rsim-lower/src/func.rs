@@ -21,11 +21,21 @@ pub(crate) enum Shape {
     Ref,
     /// Array: data address and descriptor address, two cells.
     Arr,
+    /// Scalar `in` signal: a signal reference (two cells).
+    Sig,
 }
 
 pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
     match p.class {
-        ObjClass::Signal => return Err(cx.unsupported(span, "signal parameters")),
+        ObjClass::Signal if ty::is_array(db, db.base(p.subtype)) => {
+            return Err(cx.unsupported(span, "array signal parameters"));
+        }
+        ObjClass::Signal if p.mode == HMode::In => return Ok(Shape::Sig),
+        // ponytail: `Drive` names a static driver slot; an `out` signal parameter needs the
+        // caller's slot at run time (rsim-ir request).
+        ObjClass::Signal => {
+            return Err(cx.unsupported(span, "signal parameters of mode out and inout"));
+        }
         ObjClass::File => return Err(cx.unsupported(span, "file parameters (M3)")),
         _ => {}
     }
@@ -546,6 +556,15 @@ pub(crate) fn subprogram(
                     space: Space::Frame(depth),
                     off,
                     w,
+                }
+            }
+            Shape::Sig => {
+                let off = fx
+                    .fb
+                    .param(&name, Width::Sig, ParamClass::Signal, mode, None);
+                Obj::SignalRef {
+                    space: Space::Frame(depth),
+                    off,
                 }
             }
             Shape::Arr => {

@@ -1,0 +1,5 @@
+exit	0
+diag	note	5000000	0	:sig_params:_p2	edge1=4 last=2 event=false
+diag	note	15000000	0	:sig_params:_p2	edge2=4 last=2 event=false
+diag	note	25000000	0	:sig_params:_p2	edge3=4 last=2 event=false
+diag	note	25000000	0	:sig_params:_p2	pick 16 3012 7018 -990

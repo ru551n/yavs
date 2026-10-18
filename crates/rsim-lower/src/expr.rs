@@ -8,7 +8,7 @@ use rsim_ir::{
 };
 use rsim_ir::{CheckKind, Inst};
 use rsim_sem::decl::{Body, DeclKind, Param, Subprogram};
-use rsim_sem::hir::{Actual, Arg, AttrPrefix, ExprKind, PredefAttr};
+use rsim_sem::hir::{Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Choice, ExprKind, PredefAttr};
 use rsim_sem::implicit::{Family, Form, ImplicitOp};
 use rsim_sem::stat::{ConstValue, Elems};
 use rsim_sem::types::{Constraint, Direction, RangeC, TypeKind};
@@ -151,7 +151,9 @@ impl Fx<'_, '_> {
                 let alts = alts.clone();
                 self.conditional(&alts, e.subtype, span)
             }
-            ExprKind::Aggregate { .. } => Err(self.cx.unsupported(span, "non-static aggregates")),
+            ExprKind::Aggregate { assocs, bounds } => {
+                self.aggregate(assocs, bounds, e.subtype, span)
+            }
             ExprKind::Field { .. } => Err(self.cx.unsupported(span, "record fields (M3)")),
             ExprKind::Deref { .. } | ExprKind::New { .. } | ExprKind::Null => {
                 Err(self.cx.unsupported(span, "access values (M3)"))
@@ -280,8 +282,8 @@ impl Fx<'_, '_> {
                 let dope = self.load(dp, Width::B8, RegTy::Ptr);
                 Ok(V::A(data, dope))
             }
-            Some(Obj::Signal { sig }) => {
-                let s = self.sigval(sig);
+            Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => {
+                let s = self.sig_of(d, span)?;
                 let dst = self.reg(RegTy::I64);
                 self.emit(Inst::SigReadScalar { dst, sig: s });
                 if self.obj_rt(d) == RegTy::F64 {
@@ -326,6 +328,29 @@ impl Fx<'_, '_> {
         match &self.db.decls[d].kind {
             DeclKind::Object(o) => self.rt_of(self.db.base(o.subtype)),
             _ => RegTy::I64,
+        }
+    }
+
+    /// A reference to all of the scalar signal or signal parameter `d`.
+    pub fn sig_of(&mut self, d: DeclId, span: Span) -> R<Reg> {
+        match self.cx.objs.get(&d).copied() {
+            Some(Obj::Signal { sig }) => Ok(self.sigval(sig)),
+            Some(Obj::SignalRef { space, off }) => {
+                let a = self.addr(space, off);
+                Ok(self.load(a, Width::Sig, RegTy::Sig))
+            }
+            _ => Err(self.cx.unsupported(span, "this signal (ports, M2 slice 3)")),
+        }
+    }
+
+    /// The signal an expression names.
+    pub fn sig_expr(&mut self, e: ExprId) -> R<Reg> {
+        let x = &self.db.exprs[e];
+        match x.kind {
+            ExprKind::Obj(d) => self.sig_of(d, x.span),
+            _ => Err(self
+                .cx
+                .unsupported(x.span, "signal sub-elements as signal actuals")),
         }
     }
 
@@ -544,6 +569,186 @@ impl Fx<'_, '_> {
         let parts = self.fb.regs(&parts);
         self.emit(Inst::MakeDope { at, parts });
         Ok(Some(at))
+    }
+
+    // ---- aggregates ----
+
+    /// A one-dimensional array aggregate of scalar elements (LRM 9.3.3.3).
+    fn aggregate(
+        &mut self,
+        assocs: &[AggAssoc],
+        bounds: &AggBounds,
+        st: SubtypeId,
+        span: Span,
+    ) -> R<V> {
+        let db = self.db;
+        let t = db.base(st);
+        let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
+            return Err(self.cx.unsupported(span, "record aggregates (M3)"));
+        };
+        if indexes.len() != 1 {
+            return Err(self.cx.unsupported(span, "multi-dimensional aggregates"));
+        }
+        if assocs.iter().any(|a| a.slice_piece) {
+            return Err(self
+                .cx
+                .unsupported(span, "aggregates with array-valued elements (2008)"));
+        }
+        let (index, elem) = (indexes[0], *elem);
+        let dope = match bounds {
+            AggBounds::Context => match self.subtype_dope(st, span)? {
+                Some(d) => d,
+                None => return Err(self.cx.ice(span, "aggregate context without bounds")),
+            },
+            AggBounds::Positional { count } => {
+                let s = self.scalar_bounds(index, span)?;
+                let n = self.scalar_expr(*count)?;
+                let one = self.int(1);
+                let last = self.bin(IntOp::Sub, n, one);
+                let right = match s.dir {
+                    Dr::Static(Direction::To) => self.bin(IntOp::Add, s.left, last),
+                    Dr::Static(Direction::Downto) => self.bin(IntOp::Sub, s.left, last),
+                    Dr::Dyn(_) => {
+                        return Err(self.cx.ice(span, "index subtype with a runtime direction"));
+                    }
+                };
+                let dir = self.dir_reg(s.dir);
+                self.one_dope(s.left, right, dir)
+            }
+            AggBounds::Named { low, high } => {
+                let s = self.scalar_bounds(index, span)?;
+                let lo = self.scalar_expr(*low)?;
+                let hi = self.scalar_expr(*high)?;
+                match s.dir {
+                    Dr::Static(Direction::To) => {
+                        let d = self.int(0);
+                        self.one_dope(lo, hi, d)
+                    }
+                    Dr::Static(Direction::Downto) => {
+                        let d = self.int(1);
+                        self.one_dope(hi, lo, d)
+                    }
+                    Dr::Dyn(_) => {
+                        return Err(self.cx.ice(span, "index subtype with a runtime direction"));
+                    }
+                }
+            }
+            _ => return Err(self.cx.unsupported(span, "this aggregate form")),
+        };
+        let (tid, logic, w) = self.elem_facts(t, span)?;
+        let (size, count) = self.layout(tid, dope);
+        let data = self.alloc(size);
+        let set = |fx: &mut Self, pos: Reg, v: Reg| {
+            if logic {
+                let one = fx.int(1);
+                let last = fx.bin(IntOp::Sub, count, one);
+                let idx = fx.bin(IntOp::Sub, last, pos);
+                fx.emit(Inst::LSet { base: data, idx, v });
+            } else {
+                let a = fx.reg(RegTy::Ptr);
+                fx.emit(Inst::Index {
+                    dst: a,
+                    base: data,
+                    pos,
+                    stride: w.bytes(),
+                });
+                fx.store(a, v, w);
+            }
+        };
+        let elem_value = |fx: &mut Self, e: ExprId| -> R<Reg> {
+            let v = fx.scalar_expr(e)?;
+            let what = ty::subtype_name(fx.db, elem);
+            fx.check_scalar(v, Some(fx.db.exprs[e].subtype), elem, &what, span)?;
+            Ok(v)
+        };
+        let m = self.msg("aggregate", Dir::To);
+        // `others` first: the named and positional elements then overwrite their positions.
+        for a in assocs
+            .iter()
+            .filter(|a| a.choices.iter().any(|c| matches!(c, Choice::Others)))
+        {
+            let v = elem_value(self, a.value)?;
+            self.for_n(count, |fx, i| {
+                set(fx, i, v);
+                Ok(())
+            })?;
+        }
+        let mut k = 0i64;
+        for a in assocs.iter() {
+            if a.choices.iter().any(|c| matches!(c, Choice::Others)) {
+                continue;
+            }
+            let v = elem_value(self, a.value)?;
+            if a.choices.is_empty() {
+                let pos = self.int(k);
+                k += 1;
+                set(self, pos, v);
+                continue;
+            }
+            for c in a.choices.iter() {
+                match c {
+                    Choice::Expr(c) => {
+                        let i = self.scalar_expr(*c)?;
+                        let pos = self.reg(RegTy::I64);
+                        self.emit(Inst::Pos {
+                            dst: pos,
+                            dope,
+                            dim: 0,
+                            idx: i,
+                            what: m,
+                        });
+                        set(self, pos, v);
+                    }
+                    Choice::Range(rc) => {
+                        let r = self.range(rc, span)?;
+                        let d = self.dir_reg(r.dir);
+                        let rd = self.one_dope(r.left, r.right, d);
+                        let n = self.dope_len(rd);
+                        let z = self.int(0);
+                        let up = self.cmp(CmpOp::Eq, d, z);
+                        let one = self.int(1);
+                        let m1 = self.int(-1);
+                        let step = self.select(up, one, m1, RegTy::I64);
+                        let left = r.left;
+                        self.for_n(n, |fx, i| {
+                            let off = fx.bin(IntOp::Mul, i, step);
+                            let idx = fx.bin(IntOp::Add, left, off);
+                            let pos = fx.reg(RegTy::I64);
+                            fx.emit(Inst::Pos {
+                                dst: pos,
+                                dope,
+                                dim: 0,
+                                idx,
+                                what: m,
+                            });
+                            set(fx, pos, v);
+                            Ok(())
+                        })?;
+                    }
+                    _ => return Err(self.cx.ice(span, "element choice in an array aggregate")),
+                }
+            }
+        }
+        Ok(V::A(data, dope))
+    }
+
+    /// `body(i)` for `i` in `0 .. n`.
+    fn for_n(&mut self, n: Reg, mut body: impl FnMut(&mut Self, Reg) -> R<()>) -> R<()> {
+        let i = self.reg(RegTy::I64);
+        self.emit(Inst::Const { dst: i, v: 0 });
+        let (head, b, exit) = (self.block(), self.block(), self.block());
+        self.jump(head);
+        self.at(head);
+        let more = self.cmp(CmpOp::Lt, i, n);
+        self.branch(more, b, exit);
+        self.at(b);
+        body(self, i)?;
+        let one = self.int(1);
+        let next = self.bin(IntOp::Add, i, one);
+        self.emit(Inst::Move { dst: i, src: next });
+        self.jump(head);
+        self.at(exit);
+        Ok(())
     }
 
     fn one_dope(&mut self, left: Reg, right: Reg, dir: Reg) -> Reg {
@@ -788,6 +993,7 @@ impl Fx<'_, '_> {
                             .unsupported(es, "a logic array element as out parameter"));
                     }
                 },
+                Shape::Sig => cells.push(self.sig_expr(e)?),
                 Shape::Arr => {
                     let (data, mut dope) = match p.mode {
                         rsim_sem::hir::Mode::In => {
@@ -1016,6 +1222,27 @@ impl Fx<'_, '_> {
                 return self.logic_op(op, &ex, t, span).map(Some);
             }
             Cat => return self.cat(op, &ex, span).map(Some),
+            RisingEdge | FallingEdge => {
+                let s = self.sig_expr(ex[0])?;
+                let ev = self.reg(RegTy::I64);
+                self.emit(Inst::SigAttr {
+                    dst: ev,
+                    kind: AttrKind::Event,
+                    sig: s,
+                });
+                let v = self.reg(RegTy::I64);
+                self.emit(Inst::SigReadScalar { dst: v, sig: s });
+                let want = self.int(i64::from(op.family == RisingEdge));
+                let c = self.cmp(CmpOp::Eq, v, want);
+                let dst = self.reg(RegTy::I64);
+                self.emit(Inst::Bool {
+                    op: BoolOp::And,
+                    dst,
+                    a: ev,
+                    b: c,
+                });
+                dst
+            }
             _ => {
                 let mut cells = Vec::new();
                 for &e in &ex {
@@ -1499,29 +1726,44 @@ impl Fx<'_, '_> {
                 self.range_attr(attr, r, Some((dope, k)), span)
             }
             AttrPrefix::Expr(e) => {
-                let kind = match attr {
-                    Event => AttrKind::Event,
-                    Active => AttrKind::Active,
-                    LastEvent => AttrKind::LastEvent,
-                    LastActive => AttrKind::LastActive,
-                    _ => {
-                        return Err(self.cx.unsupported(
-                            span,
-                            &format!("attribute '{} of an object", attr.name()),
-                        ));
-                    }
-                };
                 let ExprKind::Obj(d) = db.exprs[e].kind else {
                     return Err(self
                         .cx
                         .unsupported(span, "signal attributes of a sub-element"));
                 };
-                let Some(Obj::Signal { sig }) = self.cx.objs.get(&d).copied() else {
-                    return Err(self
-                        .cx
-                        .unsupported(span, "signal attributes of ports and signal parameters"));
+                let kind = match attr {
+                    Event => AttrKind::Event,
+                    Active => AttrKind::Active,
+                    LastEvent => AttrKind::LastEvent,
+                    LastActive => AttrKind::LastActive,
+                    LastValue => {
+                        let st = db.exprs[e].subtype;
+                        let (tid, rt, w) = self.scalar(st, span)?;
+                        let s = self.sig_of(d, span)?;
+                        let logic = self.is_logic(tid);
+                        // A logic leaf arrives as one block of planes.
+                        let buf = self.alloc_n(if logic { 32 } else { 8 });
+                        self.emit(Inst::SigLastValue { dst: buf, sig: s });
+                        if logic {
+                            let z = self.int(0);
+                            let dst = self.reg(RegTy::I64);
+                            self.emit(Inst::LGet {
+                                dst,
+                                base: buf,
+                                idx: z,
+                            });
+                            return Ok(V::S(dst));
+                        }
+                        return Ok(V::S(self.load(buf, w, rt)));
+                    }
+                    _ => {
+                        return Err(self.cx.unsupported(
+                            span,
+                            &format!("attribute '{} (implicit signals, M2 slice 4)", attr.name()),
+                        ));
+                    }
                 };
-                let s = self.sigval(sig);
+                let s = self.sig_of(d, span)?;
                 let dst = self.reg(RegTy::I64);
                 self.emit(Inst::SigAttr { dst, kind, sig: s });
                 Ok(V::S(dst))

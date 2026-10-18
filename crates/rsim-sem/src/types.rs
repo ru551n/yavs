@@ -944,14 +944,10 @@ impl Db {
                         && t != self.poison.ty
                     {
                         return Err(self.error(
-                            Diagnostic::error(
-                                diag::TYPE_MISMATCH,
-                                format!(
-                                    "expected a range of `{}`, found one of `{}`",
-                                    self.type_name(w),
-                                    self.type_name(t)
-                                ),
-                            )
+                            Diagnostic::error(diag::TYPE_MISMATCH, {
+                                let n = self.type_names(&[w, t]);
+                                format!("expected a range of `{}`, found one of `{}`", n[0], n[1])
+                            })
                             .with_primary(n.span, "wrong index type"),
                         ));
                     }
@@ -1402,14 +1398,10 @@ impl Db {
                     let (rc, t) = r?;
                     if t != base && t != self.poison.ty && base != self.poison.ty {
                         return Err(self.error(
-                            Diagnostic::error(
-                                diag::TYPE_MISMATCH,
-                                format!(
-                                    "expected a range of `{}`, found one of `{}`",
-                                    self.type_name(base),
-                                    self.type_name(t)
-                                ),
-                            )
+                            Diagnostic::error(diag::TYPE_MISMATCH, {
+                                let n = self.type_names(&[base, t]);
+                                format!("expected a range of `{}`, found one of `{}`", n[0], n[1])
+                            })
                             .with_primary(n.span, "wrong type"),
                         ));
                     }

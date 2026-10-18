@@ -5,6 +5,10 @@
 //! Files listed in `diag_sem_xfail.txt` are expected to fail until the slice
 //! that handles them lands. A listed file that passes fails the test, so the
 //! list only shrinks: remove the line and commit.
+//!
+//! A file with a `<name>.stderr` next to it is also a rendered snapshot: the
+//! human-readable output must equal it (`RSIM_BLESS=1` rewrites existing ones;
+//! create an empty `.stderr` to start a new snapshot).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -101,7 +105,7 @@ fn check(path: &Path) -> Result<(), String> {
         .filter(|h| !all_help.iter().any(|a| a.contains(h.as_str())))
         .collect();
     if got == want && extra.is_empty() && missing_help.is_empty() {
-        return Ok(());
+        return snapshot(path, &db);
     }
     let fmt = |s: &BTreeSet<(String, usize, usize)>| {
         s.iter()
@@ -120,6 +124,40 @@ fn check(path: &Path) -> Result<(), String> {
         msg += &format!("; first: {} {}", d.code, d.message);
     }
     Err(msg)
+}
+
+fn snapshot(path: &Path, db: &Db) -> Result<(), String> {
+    let snap = path.with_extension("stderr");
+    if !snap.exists() {
+        return Ok(());
+    }
+    let shown = path.display().to_string();
+    let rel = format!(
+        "tests/diag/sem/{}",
+        path.strip_prefix(repo().join("tests/diag/sem"))
+            .expect("under the suite")
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
+    let text: String = db
+        .diagnostics()
+        .iter()
+        .map(|d| rsim_diag::render(&db.sources, d, rsim_diag::MessageFormat::Human, false))
+        .collect::<String>()
+        .replace(&shown, &rel);
+    if std::env::var_os("RSIM_BLESS").is_some_and(|v| v == "1") {
+        std::fs::write(&snap, &text).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let expected = std::fs::read_to_string(&snap).map_err(|e| e.to_string())?;
+    if expected == text {
+        Ok(())
+    } else {
+        Err(format!(
+            "rendered output differs from {}:\n{text}",
+            snap.display()
+        ))
+    }
 }
 
 #[test]

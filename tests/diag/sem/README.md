@@ -50,7 +50,7 @@ A file is clean (`-- expect: none`) when it is legal and rsim-sem must report no
 2. Compare the produced diagnostics with the `expect` lines **exactly**: same set of `(code, line, col)`, no extra and no missing diagnostics (this is what checks cascade suppression), warnings included. Reason text is not compared.
 3. Check each `help:` fragment against the rendered help of the file's diagnostics (substring).
 4. A file with `expect: none` must produce no diagnostics at all.
-5. Later: rendered-text snapshots `<name>.stderr` next to each file, produced with `RSIM_BLESS=1` like the other `tests/diag` tests. They are not here yet; the headers are the contract until then.
+5. Rendered-text snapshots: a file with a `<name>.stderr` next to it must also render exactly that (human format, path relative to the repository). Create an empty `.stderr` and run `RSIM_BLESS=1 cargo test -p rsim-sem --test diag_sem` to fill it; bless rewrites only existing snapshots. The headers stay the contract for every file.
 
 Cases that depend on a second unit (E1007 and W1008, with `--design-std=2019`) put the 2019 side in the harness (the std/ieee revision), not in a second file.
 

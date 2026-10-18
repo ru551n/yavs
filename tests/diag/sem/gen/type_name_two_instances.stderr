@@ -1,0 +1,6 @@
+error[E1300]: expected `work.i2.rec`, found `work.i1.rec`
+  --> tests/diag/sem/gen/type_name_two_instances.vhd:13:27
+   |
+13 |   constant c2 : i2.rec := c1;
+   |                           ^^ expected `work.i2.rec`
+

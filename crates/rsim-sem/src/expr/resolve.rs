@@ -609,12 +609,17 @@ impl Db {
             );
             return;
         }
-        let found: Vec<String> = is
-            .iter()
-            .map(|i| format!("`{}`", self.type_name(i.ty)))
-            .collect();
+        let mut ts: Vec<TypeId> = is.iter().map(|i| i.ty).collect();
+        if let Expected::Type(t) = exp {
+            ts.push(t);
+        }
+        let mut names = self.type_names(&ts);
+        let want_name = matches!(exp, Expected::Type(_))
+            .then(|| names.pop())
+            .flatten();
+        let found: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
         let want = match exp {
-            Expected::Type(t) => format!("`{}`", self.type_name(t)),
+            Expected::Type(_) => format!("`{}`", want_name.unwrap_or_default()),
             Expected::Condition => "BOOLEAN".into(),
             Expected::Discrete => "a discrete type".into(),
             Expected::Any => "a value".into(),
@@ -658,6 +663,31 @@ impl Db {
             TypeKind::UniversalReal => "universal_real".into(),
             _ => td.name.text.to_string(),
         }
+    }
+
+    /// Names of `ts` for one message: types whose simple names collide (the
+    /// same type declared by two generic instances) are qualified by their region.
+    pub fn type_names(&self, ts: &[TypeId]) -> Vec<String> {
+        let simple: Vec<String> = ts.iter().map(|&t| self.type_name(t)).collect();
+        ts.iter()
+            .enumerate()
+            .map(|(i, &t)| {
+                let clash = ts
+                    .iter()
+                    .enumerate()
+                    .any(|(j, &u)| u != t && simple[j].eq_ignore_ascii_case(&simple[i]));
+                if !clash {
+                    return simple[i].clone();
+                }
+                let scope = self.decls[self.types[t].decl].scope;
+                let region = crate::mangle::region(self, scope);
+                if region.is_empty() {
+                    simple[i].clone()
+                } else {
+                    format!("{region}.{}", simple[i])
+                }
+            })
+            .collect()
     }
 
     /// `function "+" (l: unsigned; r: natural) return unsigned` (8.3), original spelling.

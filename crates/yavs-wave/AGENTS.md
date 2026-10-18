@@ -1,0 +1,67 @@
+# AGENTS.md: yavs-wave
+
+Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-wave`.
+The writer choice and the FST mapping are in `docs/decisions.md` "Waveform writer: wavefst".
+
+## 1. Purpose and boundaries
+
+- Waveform recording sink: a `Hierarchy` description (built with `HierarchyBuilder`) plus a
+  stream of `(time, SignalId, value bytes)` changes into `WaveWriter`, written as FST through the
+  `wavefst` crate; include/exclude globs and an array size cap (`Selection`); SIGINT/SIGTERM flag
+  (`interrupt::install`).
+- Does not: depend on the kernel or subscribe to the event bus itself. The M7 subscriber that
+  turns kernel value changes (bit-planes) into these byte layouts is not written yet (#129), and
+  `yavs run --wave` reports "not implemented (M7)" (#116).
+- Depends on: `wavefst` (writer, lz4; no C compiler), `ctrlc`; dev: `wellen` (read-back),
+  `tempfile`. Called by: nobody yet (`examples/demo.rs`).
+
+## 2. Map
+
+| File | Responsibility |
+|---|---|
+| `src/lib.rs` | Re-exports; the value byte layouts per `SigType` (crate docs) |
+| `src/model.rs` | `Hierarchy`, `HierarchyBuilder`, `Scope`/`ScopeKind` (`Record`, `Array`, ...), `Signal`, `SignalId`, `SigType`, `ScalarType`, `EnumType`, `Bounds`, `Dir`, `ObjClass`, `PortDir`, `Skipped` |
+| `src/select.rs` | `Selection`: case-insensitive globs (`*` one level, `**` across, `?`), `max_array_elems` |
+| `src/writer.rs` | `WaveWriter` (`change`, `finish`, also on drop), `WaveConfig` (timescale `-15` fs, `flush_interval` 5 s, `block_change_limit`), `Error` |
+| `src/interrupt.rs` | `install()`: Ctrl-C/SIGTERM only set a flag |
+| `tests/roundtrip.rs` | Every file read back with wellen |
+| `examples/demo.rs` | Small end-to-end use |
+
+## 3. Design decisions that bind this module
+
+| Decision | Why | Source |
+|---|---|---|
+| `wavefst` 0.4.0 for FST, behind our own `WaveWriter` API; no FST code of our own | Enum tables, VHDL var types, reals, header-patching flush | `docs/decisions.md` "Waveform writer: wavefst" |
+| std_logic family and bit written as characters with the VHDL data type set; other enums as bit vectors with an FST enum table (original spelling); integers/time two's complement; reals doubles; vector bounds in the name (`data[7:0]`, left first) | Viewers show `U`, `X`, direction kept | same, "FST mapping" |
+| Records and arrays are scopes with one signal per sub-element | Rule 11 (same sub-element events as everything else) | `docs/plan.md` rule 11 |
+| Include/exclude globs, size cap for arrays and memories, enum names in metadata | Rule 11 | `docs/plan.md` rule 11 |
+| Flushed on the next time advance after `flush_interval` or `block_change_limit`; header patched each time; SIGINT only sets a flag and the kernel stops between time steps and calls `finish` | A killed run is readable (GHDL #2617, NVC #959) | `docs/decisions.md` "Durability" |
+| Waves come in through the event bus as a subscriber (M7) | Plan "Designed for the GUI" | `docs/plan.md` |
+| Identifiers keep original spelling in the file; matching is case-insensitive | Rule 8 | `docs/plan.md` rule 8, `src/select.rs` |
+
+Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
+
+## 4. Invariants and pitfalls
+
+- Value bytes follow the per-`SigType` layouts in the crate docs (vector: one byte per element,
+  the enumeration position). The kernel stores logic as bit-planes and BIT/BOOLEAN array elements
+  as std_ulogic codes 2/3: the subscriber must transpose and translate at the boundary
+  (`docs/decisions.md` "Interpreter: BIT/BOOLEAN codes").
+- Never write FST bytes by hand; keep all `wavefst` use inside `writer.rs` so it can be swapped.
+- Tests write into `tempfile` dirs; keep large outputs out of `/tmp` (root rule 20).
+
+## 5. How to work here
+
+```sh
+CARGO_BUILD_JOBS=6 cargo test -p yavs-wave          # round trips through wellen
+cargo run -p yavs-wave --example demo
+```
+
+- No diagnostic codes yet; I/O failures are `writer::Error`. When wired into the CLI, its errors
+  need codes (pick a range and add it to the registry in `crates/yavs-diag/src/lib.rs`).
+
+## 6. Coordination
+
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:wave`): #129 FST
+  output as an event-bus subscriber, hierarchy, enum tables, globs and size caps; #116 `--wave`
+  wired into `yavs run`. Epic: #145 (M7).

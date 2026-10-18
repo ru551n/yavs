@@ -16,7 +16,7 @@ the IR plugs in, error handling, open questions); read it before editing.
   `SignalType`. It does not print anything (the CLI's `Observer` prints reports).
 - Depends on: `yavs-logic`, `rayon`. Called by: `yavs-interp` (implements `Process`, uses `Ctx`),
   `yavs-ir` (types like `StmtId`), `yavs-lower`, `yavs-elab` (`Builder`), `yavs` (`Config`,
-  `SimControl`, `Observer`). Planned subscribers: `yavs-wave`, `yavs-vhpi`, DAP.
+  `SimControl`, `Observer`; runtime errors are rendered by `yavs_elab::Elaborated::runtime_diagnostic`). Planned subscribers: `yavs-wave`, `yavs-vhpi`, DAP.
 
 ## 2. Map
 
@@ -29,7 +29,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
 | `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
 | `src/time.rs` | `Time` (checked fs arithmetic), `Unit`, `TimeError` |
-| `src/error.rs` | `SimError` (boxed `ErrorInfo { kind, time, delta, process, trace }`), `ErrorKind`, `StmtId`, `exit_status()` |
+| `src/error.rs` | `SimError` (boxed `ErrorInfo { kind, time, delta, process, trace }`), `ErrorKind` (`code()`: `E3001`-`E3010`, `Internal` = `E9999`), `StmtId`, `exit_status()` |
 | `tests/scenarios.rs`, `tests/kernel_asks.rs`, `tests/determinism.rs` | Cycle scenarios; K1 to K7 asks of ir.md; 1 vs 8 threads and shuffle seeds on 1000+ processes |
 | `examples/bench.rs` | `cargo run --release -p yavs-kernel --example bench -- 10000 <work>` |
 
@@ -67,7 +67,8 @@ rule 24).
   write/close/reopen in one delta works (`docs/decisions.md` "IR and interpreter"); `STD_OUTPUT`
   still goes through `StreamId::OUTPUT` to stay ordered with `report` (#82 records the K6 gap).
 - Records resolved as a whole composite are one byte leaf: logic fields inside are bytes (#83).
-- Kernel errors have no diagnostic code yet (#84).
+- A new `ErrorKind` needs its own code in `ErrorKind::code` (registry range `E3000`-`E3099`) and
+  an entry in the yavs-diag registry table if it opens a new sub-range.
 
 ## 5. How to work here
 
@@ -80,7 +81,9 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 
 - Add a scenario test with hand-written processes (`tests/common/mod.rs` helpers); a
   thread-sensitive change also gets a case in `tests/determinism.rs`.
-- No diagnostic codes owned yet (#84 proposes codes per `ErrorKind`).
+- Codes owned: `E3000`-`E3099` (`ErrorKind::code`: E3001 time overflow, E3002 delta limit, E3003
+  postponed delta, E3004 invalid assignment, E3005 deadline in the past, E3006 bad reference,
+  E3007 resolution, E3008 conversion, E3009 VHDL runtime error, E3010 usage), plus `E9999`.
 
 ## 6. Coordination
 
@@ -88,6 +91,6 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
   `docs/design/ir.md` sections 3.2 and 6 describe the seam.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #82
   write-then-read of a user file inside one delta (K6); #83 records resolved as a whole store
-  logic fields as bytes; #84 errors carry no diagnostic code; #103 update/commit phases are
+  logic fields as bytes; #103 update/commit phases are
   single-threaded; #107 `--threads N` determinism across the difftest and shared variables.
   Questions on report order vs NVC: #11, #12.

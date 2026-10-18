@@ -77,7 +77,8 @@ python3 tools/difftest/difftest.py --candidate yavs              # end to end ag
 
 - A new native: row in `lib/NATIVE.md` (see `lib/AGENTS.md`), implementation in `native.rs` /
   `implicit.rs` / `textio.rs` / `reflect.rs`, a test in `tests/`.
-- No diagnostic codes yet: runtime errors are kernel `SimError`s (codes per `ErrorKind`: #84).
+- No codes of its own: runtime errors are kernel `SimError`s with `ErrorKind::Runtime` (`E3009`)
+  or `Internal` (`E9999`); the message text is what the user sees, so keep it NVC-compatible.
 
 ## 6. Coordination
 

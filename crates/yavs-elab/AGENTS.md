@@ -25,7 +25,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | `src/walk.rs` | The elaborator: instances, generics, generates, blocks, binding (configuration declaration, then specification, then default binding), ports, processes, depth-first in statement order |
 | `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls for scalar user functions; `-g` overrides via the yavs-std `'value` parser |
 | `src/hier.rs` | `Hierarchy`/`Scope`/`ScopeKind` (path names in `Case::Lrm` and original spelling), `NetGraph` (`select`: the one sub-element map), `Leaf`, `SigObj`, `PortEdge`, `DriverDecl`, `ImplicitKind` |
-| `src/sim.rs` | `Elaborated::lower` (yavs-lower), `Elaborated::build(Config) -> SimControl`, `Ir`, `instance_of` |
+| `src/sim.rs` | `Elaborated::lower` (yavs-lower), `Elaborated::build(Config) -> SimControl`, `runtime_diagnostic` (a kernel `SimError` as a coded diagnostic with the VHDL call stack as labels), `Ir`, `instance_of` |
 | `src/build.rs` | `Elaborated::build_with` (kernel `Builder`, repeatable), `leaf_name` |
 | `src/tests.rs` | Unit tests incl. the restart test (two elaborations and two builds give identical results) |
 

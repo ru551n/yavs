@@ -1,0 +1,24 @@
+[package]
+name = "rsim-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not part of the main workspace: `cargo fuzz` needs nightly.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rsim-diag = { path = "../crates/rsim-diag" }
+rsim-syntax = { path = "../crates/rsim-syntax" }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false

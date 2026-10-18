@@ -4,6 +4,9 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 
 ## Proposed codes (not in sem.md 8.1, or ambiguous there)
 
+Status (2026-10-18): every proposed code in this table is now defined in `yavs-sem::diag`
+(`crates/yavs-sem/src/diag.rs`), so the table records where each code came from; W1990 stays unused.
+
 | Code | Meaning | sem.md section | Tests |
 |---|---|---|---|
 | E1104 | prefix of a use clause or context reference is not a package, library, package instance or context declaration | 1.4 (suffix "must denote a package or an instance") | `use/prefix_not_a_package`, `use/prefix_is_type`, `use/context_not_a_context` |

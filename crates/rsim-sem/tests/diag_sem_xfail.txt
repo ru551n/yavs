@@ -13,7 +13,6 @@ agg/record_too_many_positional.vhd
 agg/record_unknown_element.vhd
 agg/uncovered_index.vhd
 alias/enum_literal_needs_signature.vhd
-alias/for_label_ok.vhd
 alias/object_alias_non_static.vhd
 alias/subprogram_needs_signature.vhd
 alias/subtype_mismatch.vhd

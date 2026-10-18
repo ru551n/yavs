@@ -510,14 +510,15 @@ impl Db {
             ast::NameKind::External(_) => {
                 return Err(self.unsupported(name.span, "aliases of external names", "S6"));
             }
-            _ => {
-                return Err(self.unsupported(
-                    name.span,
-                    "aliases of indexed, sliced or selected object names",
-                    "S3",
-                ));
-            }
+            // Indexed or sliced names denote parts of objects (6.6.2).
+            _ => NameRes::Value,
         };
+        if let NameRes::Value = res {
+            let target = self.object_name_expr(scope, name)?;
+            let alias = self.object_alias(scope, a, target, subtype)?;
+            self.declare(scope, alias);
+            return Ok(());
+        }
         let cands = match res {
             NameRes::One(d) if self.object_type(d).is_some() => {
                 let target = self.object_ref(d, name.span);
@@ -542,6 +543,60 @@ impl Db {
             self.declare(scope, d);
         }
         Ok(())
+    }
+
+    /// A name that must denote (a part of) an object, such as the target of an
+    /// object alias: `r.f`, `a(i)`, `v(0 to 3)`. Function calls do not qualify.
+    fn object_name_expr(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Result<crate::ids::ExprId, crate::Reported> {
+        let saved = std::mem::take(&mut self.memo);
+        let r = match self.name_cands(scope, n) {
+            crate::expr::CandSet::Types(is) => {
+                let objs: Vec<_> = is
+                    .iter()
+                    .copied()
+                    .filter(|i| !matches!(i.via, crate::expr::Via::Call(_)))
+                    .collect();
+                match objs.as_slice() {
+                    [i] => {
+                        let e = self.build_name(scope, n, *i, n.span);
+                        if self.is_poison_expr(e) {
+                            Err(crate::Reported)
+                        } else {
+                            Ok(e)
+                        }
+                    }
+                    _ if is.iter().any(|i| i.ty == self.poison.ty) => Err(crate::Reported),
+                    _ => Err(self.error(
+                        rsim_diag::Diagnostic::error(
+                            crate::diag::NOT_AN_OBJECT,
+                            "the aliased name does not denote an object",
+                        )
+                        .with_primary(
+                            n.span,
+                            if objs.is_empty() {
+                                "not an object"
+                            } else {
+                                "several objects fit"
+                            },
+                        )
+                        .with_note("LRM 6.6.2"),
+                    )),
+                }
+            }
+            crate::expr::CandSet::Class(_) => Err(self.error(
+                rsim_diag::Diagnostic::error(
+                    crate::diag::NOT_AN_OBJECT,
+                    "the aliased name does not denote an object",
+                )
+                .with_primary(n.span, "not an object"),
+            )),
+        };
+        self.memo = saved;
+        r
     }
 
     /// Resolve the type marks of a signature (4.5.3).

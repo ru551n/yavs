@@ -28,7 +28,7 @@ exclude_patterns = [
     "plan.md",
     "decisions.md",
     "cli-contract.md",
-    "vunit-pr-requirements.md",
+    "test-runner-requirements.md",
     "design",
     "AGENTS.md",
     "CLAUDE.md",

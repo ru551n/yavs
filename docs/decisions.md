@@ -3,19 +3,19 @@
 ## Project name: yavs (user, 2026-10-18), formerly the working name rsim
 
 - **Choice:** the project is yavs, "Yet Another VHDL Simulator". Crates are `yavs-*`, the
-  binary is `yavs`, environment variables are `YAVS_*` (VUnit: `VUNIT_YAVS_PATH`), native symbols
+  binary is `yavs`, environment variables are `YAVS_*` (the external test runner: `VUNIT_YAVS_PATH`), native symbols
   start with `yavs.`, and library directories hold `yavs-lib.toml` and `_YAVS_LIB`.
 - **How:** one mechanical sweep, `tools/rename-yavs.sh` (idempotent; other worktrees run it on
   their own changes). The GitHub repository is `ru551n/yavs` (the old URL redirects).
 - **Kept:** the `~/.cache/rsim-*` scratch directory names and the `~/git/rsim` checkout (both exist
-  on disk), the VUnit branch names, and the vendored `lib/std` and `lib/ieee` files, which keep their old
+  on disk), the test runner integration branch names, and the vendored `lib/std` and `lib/ieee` files, which keep their old
   comments so `lib/SHA256SUMS` stays valid. A library directory that still has the old
   manifest name fails with L0004 and asks to re-analyze: there is no reader for old names.
 
 ## Release trigger and first release (user, 2026-10-18)
 
-When yavs simulates a VUnit testbench end to end (issue #110: `run.py --simulator yavs` passes a
-minimal VUnit testbench on the real binary), CI is added (#134) together with a release workflow
+When yavs simulates a test runner testbench end to end (issue #110: `run.py --simulator yavs` passes a
+minimal test runner testbench on the real binary), CI is added (#134) together with a release workflow
 (#165), and the first release is cut. Rationale: a release is only useful once the first
 milestone users care about works.
 
@@ -33,17 +33,20 @@ milestone users care about works.
   the `lib/`-next-to-the-executable lookup of #43. Nothing is precompiled: analysis stays on
   demand from source, so there is still no cache.
 - **No VHPI import library** (user, 2026-10-18). The release builds and ships no `yavs.lib`; a VHPI plugin brings its own
-  import library for `yavs.exe`'s exports (cocotb ships `.def` files per simulator). #124 is
+  import library for `yavs.exe`'s exports (Python testbench frameworks ship `.def` files per simulator). #124 is
   reduced to checking that the exports are there.
 - **Release notes with towncrier** (user, 2026-10-18, "for easier parallel work"), with fragments in `release_notes/news.d/` (AGENTS.md rule 25); a release runs
   `uvx towncrier build --version X.Y.Z --yes` into `release_notes/unreleased.md` and renames it
   `release_notes/X.Y.Z.md` in the version-bump commit. The GitHub release notes are that file.
   Fragments describe features, not numbers.
-- **User docs name no other projects** (user, 2026-10-18: "dont mention VUnit in the docs, it is
-  not related to this project. this is just a simulator"; "avoid mentioning other projects in
-  the docs, except in license notes"). Applies to README, `docs/*.rst` and the release notes;
-  the developer documents (plan, decisions, design, CLI contract, AGENTS.md) may still name the
-  reference simulators and integrations they are about.
+- **No document names other projects** (user, 2026-10-18: "it is not related to this project, this is
+  just a simulator"; "avoid mentioning other projects in the docs, except in license notes"; widened
+  the same day to the developer docs: "clean the developer docs too"). Applies to every document in
+  the repository: README, `docs/*.rst`, release notes, plan, decisions, design documents, CLI
+  contract, `STATUS.md`, every `AGENTS.md`, and tool and test docs. Use neutral terms ("reference
+  simulators", "other simulators", "external test runners", "Python testbench frameworks").
+  Exceptions: licence notes, and commands, flags, environment variables, file and directory names,
+  crate and dependency names, code identifiers and corpus identifiers, which stay as they are.
 - **When to release** (delegated by the user, 2026-10-18: "decide when to cut new releases.
   often is not bad"): the orchestrator cuts a release whenever main is green (CI and docs) and
   `release_notes/news.d/` holds at least one `feature`, `bugfix` or `breaking` fragment,
@@ -71,13 +74,13 @@ milestone users care about works.
 
 - **Choice:** the `wavefst` crate (0.4.0, MIT) for FST output, with `default-features = false`,
   features `writer` and `lz4` (pure Rust, no C compiler needed). No FST writing code of our own.
-- **Why:** wellen is reader only. `fst-writer` 0.3.1 (BSD-3) has no hierarchy attributes, so it
+- **Why:** the `wellen` crate is reader only. `fst-writer` 0.3.1 (BSD-3) has no hierarchy attributes, so it
   cannot carry VHDL variable/data types or enum tables, its real-value path is unused and its
   flush only works at a time step boundary (`todo!`). `wavefst` has enum tables, VHDL supplemental
   variable metadata (`CreateVar2`), aliases, reals, `flush()` that patches the header, and is
   checked against libfst in both directions.
 - **Risks:** a young single-author crate. All use is behind `yavs-wave`'s own API (`WaveWriter`),
-  so it can be swapped or vendored. yavs-wave's round-trip tests read every file back with wellen.
+  so it can be swapped or vendored. yavs-wave's round-trip tests read every file back with `wellen`.
 - **FST mapping:** std_logic family and bit are written as characters (`u x 0 1 z w l h -`) with
   the VHDL data type set, so viewers show `U`, `X`, ...; other enums are bit vectors with an FST
   enum table (literal names in original spelling); integers and time are two's complement vectors;
@@ -152,7 +155,7 @@ milestone users care about works.
 
 - **Header:** `crates/yavs-vhpi/include/vhpi_user.h` is the official IEEE 1076-2019 header
   ("Copyright 2019 IEEE P1076 WG Authors", Apache-2.0), vendored unchanged with its license
-  header from rust-vhpi (`vhpi-sys/vhpi_user.h`, commit `65484e3`; NVC ships the same file with
+  header from rust-vhpi (`vhpi-sys/vhpi_user.h`, commit `65484e3`; the reference simulator ships the same file with
   `(void)` prototypes). Plugins build against it. We do not write our own: names, values and
   layouts are fixed by the standard, and the IEEE text is what every other simulator ships.
 - **Rust side:** hand-written `#[repr(C)]` types and one constant per enumerator in `sys.rs`
@@ -177,7 +180,7 @@ milestone users care about works.
   link. The spike binary `yavs-vhpi-host` gets them via `rustc-link-arg-bins`.
 - **Variadics:** `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` are in `src/shim.c`
   (stable Rust cannot define C-variadic functions) and call plain Rust functions.
-  `vhpi_control` ignores the optional argument after `vhpiStop`/`vhpiFinish` (cocotb passes
+  `vhpi_control` ignores the optional argument after `vhpiStop`/`vhpiFinish` (the Python testbench framework passes
   `vhpiDiagTimeLoc`).
 - **Unsafe:** the crate does not inherit the workspace lints, since `forbid(unsafe_code)` cannot
   be relaxed per crate; unsafe stays in `abi.rs` and `plugin.rs`, `model.rs` is safe Rust.
@@ -192,7 +195,7 @@ milestone users care about works.
   included). API misuse (NULL arguments, stale or wrong handles) is also reported on stderr every
   time as `W0903`; calls yavs does not implement yet as `W0904`, once per distinct message.
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
-  `vhpi_check_error`, since cocotb probes names routinely. Codes `E09xx`/`W09xx` are reserved
+  `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.
 - **Verified:** Linux x86_64 by `cargo test` (C plugin built against only the header, loaded
   through `vhpi_startup_routines` and through `LIB:ENTRY`, plus missing file, missing entry and
@@ -202,18 +205,18 @@ milestone users care about works.
   tests themselves cannot run under wine since they call the C compiler. Windows MSVC (`/DEF:`,
   `lib.exe`, `cl` in the tests) is only build-path code until Windows CI runs it.
 
-## std value conversion: NVC formats, LRM parsing (yavs-std)
+## std value conversion: the reference simulator formats, LRM parsing (yavs-std)
 
 - **Text is Latin-1 bytes.** Every VHDL-level string in `yavs-std` is `[u8]`, one byte per
   CHARACTER, matching the runtime's STRING layout. Identifiers keep their declared spelling.
-- **Output formats follow NVC byte for byte** where the LRM leaves them to the implementation,
-  because NVC is the differential reference for report text: `real'image`/`to_string(real)` is
+- **Output formats follow the reference simulator byte for byte** where the LRM leaves them to the implementation,
+  because the reference simulator is the differential reference for report text: `real'image`/`to_string(real)` is
   C `%.15g` (`1e-05`, `0.333333333333333`), `to_string(real, 0)` is `%.17g` (round-trips),
   `write(real)` with `digits = 0` is `%e`, `time'image` is in fs, `to_string(time, unit)` is an
   integer when exact and `%.15g` otherwise, and `write(time, unit)` is exact decimal with at most
-  `min(floor(log10(unit)), 17)` truncated digits (GHDL agrees on the last one). GHDL prints reals
-  as shortest round-trip VHDL literals (`1.0e-1`) and Questa as `%e`; neither is adopted.
-- **The LRM wins over NVC** where NVC is wrong or crashes, each case listed with its reason in
+  `min(floor(log10(unit)), 17)` truncated digits (the second reference simulator agrees on the last one). The second reference simulator prints reals
+  as shortest round-trip VHDL literals (`1.0e-1`) and the third reference simulator as `%e`; neither is adopted.
+- **The LRM wins over the reference simulator** where the reference simulator is wrong or crashes, each case listed with its reason in
   `crates/yavs-std/golden/nvc-deviations.txt`: extended identifiers keep case and doubled
   backslashes; `'VALUE` takes full literal syntax (based literals, exponents, underscores only
   between digits, decimal physical literals rounded to the primary unit, unit-only `ns`, extended
@@ -222,24 +225,24 @@ milestone users care about works.
   literal text), with anything else an error; no fixed output buffer limits.
 - **Real literals are correctly rounded in every base** (ties to even, subnormals rounded at
   2^-1074, `Abstract::to_f64` through exact big-integer arithmetic), for source literals (sem)
-  and `'VALUE` alike (#105). NVC agrees for decimal and normal-range based literals and flushes a
-  based subnormal it should round (`2#1.1#E-1075` is 0 in NVC, 2^-1074 here); the LRM's "nearest
+  and `'VALUE` alike (#105). The reference simulator agrees for decimal and normal-range based literals and flushes a
+  based subnormal it should round (`2#1.1#E-1075` is 0 in the reference simulator, 2^-1074 here); the LRM's "nearest
   value" wins.
-- **Leniencies kept from NVC/GHDL**: a leading `+`, an integer literal for a real, no separator
+- **Leniencies kept from the reference simulators**: a leading `+`, an integer literal for a real, no separator
   in `5ns`, and format effectors (HT, CR, LF, VT, FF) as whitespace around a value.
 - **READ**: numbers are `[sign] digits [. digits] [E [sign] digits]` with no underscores or bases
-  (NVC and GHDL agree), TIME accepts decimals (`1.5 ns`, as GHDL; NVC rejects), the unit is the
+  (the reference simulators agree), TIME accepts decimals (`1.5 ns`, as the second reference simulator; the reference simulator rejects), the unit is the
   longest unit name prefixing the rest (`5 nsx` reads 5 ns), a failed READ leaves the line
-  unchanged (GHDL; NVC consumes part of it) and returns a structured error that the GOOD form
-  maps to `false`. READLINE drops the CRs just before LF (CRLF files) but keeps inner CRs (NVC
+  unchanged (the second reference simulator; the reference simulator consumes part of it) and returns a structured error that the GOOD form
+  maps to `false`. READLINE drops the CRs just before LF (CRLF files) but keeps inner CRs (the reference simulator
   deletes every CR); WRITELINE writes LF on all platforms.
 - **env**: TIME_RECORD arithmetic is exact in microseconds and years outside 1..4095 are errors
-  (NVC wraps epochs past 2**31 and loses microseconds in `-`); `seconds_to_time` truncates like
-  NVC but errors on overflow; LOCALTIME uses the system zone through `jiff`; `DIRECTORY.items`
+  (the reference simulator wraps epochs past 2**31 and loses microseconds in `-`); `seconds_to_time` truncates like
+  the reference simulator but errors on overflow; LOCALTIME uses the system zone through `jiff`; `DIRECTORY.items`
   are sorted, without `.` and `..`; TOOL_* name yavs.
-- **Verification**: `golden/gen.py` writes testbenches, runs NVC 2008 and 2019 and records
+- **Verification**: `golden/gen.py` writes testbenches, runs the reference simulator 2008 and 2019 and records
   goldens (about 2,900 cases per revision); the Rust tests compare against them without needing
-  NVC, and proptest checks `'value('image(x)) = x` and WRITE-then-READ round trips.
+  the reference simulator, and proptest checks `'value('image(x)) = x` and WRITE-then-READ round trips.
 
 ## Parser (yavs-syntax, M0)
 
@@ -259,7 +262,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   harmless. Unknown directives (`` `protect ``) warn (W0002) and skip their line. `TOOL_VENDOR`
   and `TOOL_NAME` are `yavs`, `TOOL_TYPE` is `SIMULATION`, `TOOL_EDITION` is empty.
 - **2019 closing keywords:** 2019 makes only `end component` optional (LCS-2016-055a); every
-  other ending keeps the 2008 rule. NVC, GHDL and Questa 2025.3 reject a bare `end;` for every
+  other ending keeps the 2008 rule. The reference simulators 2025.3 reject a bare `end;` for every
   other construct (`docs/design/lrm-checks.md` P1); yavs gives E0002 with a help naming the rule.
 - **2019 conditional expressions** (`a when c else b`, `docs/design/lrm-checks.md` P2): bare in
   constant, signal and variable initial values, interface defaults (U-5, permissive), association
@@ -287,9 +290,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **PSL** is out of scope: PSL declarations, directives and verification units get E0005 and are
   skipped (to `;`, or to the closing `}` of a `vunit`).
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
-  simulation corpus). NVC `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
+  simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993
-  mode, so 93 code that uses 2008 reserved words is an expected failure). VESTs `vhdl-ams` is
+  mode, so 93 code that uses 2008 reserved words is an expected failure). The conformance suite's `vhdl-ams` part is
   VHDL-AMS and is not parsed.
 
 ## Kernel round 2: K1 to K7 (yavs-kernel)
@@ -395,29 +398,29 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   - The assert state (counts, enables, read severity) is global but read deterministically
     (rule 3): a process sees the state as of the start of its cycle plus its own changes;
     all processes' changes are applied in process order when the next cycle first touches the
-    state. NVC updates at once, so a same-cycle read across processes is order dependent there
+    state. The reference simulator updates at once, so a same-cycle read across processes is order dependent there
     (`tests/corpus/env/assert_count_cycles` is `ref=hand`).
-  - As NVC: report statements count too; a disabled severity is neither shown nor counted; the
+  - As the reference simulator: report statements count too; a disabled severity is neither shown nor counted; the
     no-argument `GetVhdlAssertCount`/`IsVhdlAssertFailed` cover warning, error and failure;
     the read severity starts at ERROR. The exit status follows the error and failure counts
     at the end of the run, so `ClearVhdlAssert` clears a pending exit 1, as the reference simulator (#191).
   - `SetVhdlAssertFormat` with a non-empty format is a "not implemented" runtime error; the
     format stays the default and `GetVhdlAssertFormat` returns "".
   - Call path elements are innermost first, names upper case, the line of the calling
-    statement, `file_path` the absolute directory; `to_string` of an element is NVC's
-    `<path>/<file>:<line>:<NAME>`. `to_string` of a vector honours `Separator` (LRM); NVC
+    statement, `file_path` the absolute directory; `to_string` of an element is the reference simulator's
+    `<path>/<file>:<line>:<NAME>`. `to_string` of a vector honours `Separator` (LRM); the reference simulator
     1.23 ignores it and always uses LF.
   - `DELTA - TREC` moves the record back by DELTA, like `TREC - DELTA`.
   - Records are passed to natives as fat pairs, like arrays (what lowering emits; the README
     said "by address", which broke `dir_open` end to end).
-- **Debugging like Riviera-PRO and Questa** (user requirement): conditional line breakpoints
+- **Debugging like the other major simulators** (user requirement): conditional line breakpoints
   (the condition is an IR function nested in the stopped frame's function) with hit counts,
   step in/over/out per process, a global step across processes, pause inside endless loops,
   signal breakpoints as an event-bus observer that pauses `SimControl`, call stack and locals
   through `FrameView`, a process table with what each process waits on. Stops inside a process
   require `--threads 1`. API in docs/design/ir.md 3.4.
 - **Verifier** is one linear walk; register liveness across suspension is checked within a
-  block only (cross-block needs dataflow, LLVM tier).
+  block only (cross-block needs dataflow, JIT tier).
 - **Disk files bypass the kernel's K6 streams:** writes go straight to the file. With K6
   buffering a process that writes a file, closes it and reopens it for reading in the same
   delta (a common testbench idiom) would read nothing. Determinism holds because a file object
@@ -427,7 +430,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   positions (0/1, codes of 'U'/'X'); the interpreter's natives write the codes of '0'/'1'
   (2/3), with which `LogicOp`/`LNum` (std_ulogic tables) compute BIT results correctly. The
   interpreter reads both for now. Proposal: '0'/'1' codes everywhere.
-- **Foreign arrays** are passed as C-layout copies left to right (NVC convention), logic
+- **Foreign arrays** are passed as C-layout copies left to right (the reference simulator convention), logic
   elements one code byte each (BIT/BOOLEAN 0/1); records as naturally aligned structs;
   access values as a pointer into the object (yavs additions). Copy-back range-checks.
 
@@ -435,7 +438,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 
 - **Formal packages with a generic map** (6.5.6.3, 6.5.7.2): the actual instance must have been
   instantiated with the same actuals (static values, base types, subprograms); a mismatch is
-  `E1503`. The LRM is clear and Questa rejects; NVC does not check. Non-static values are not
+  `E1503`. The LRM is clear and the third reference simulator rejects; the reference simulator does not check. Non-static values are not
   compared. Inside the generic the formal package stays opaque.
 - **W1501 (unused generic)** applies to the generics of packages and subprograms, reported once
   the unit is complete: after the package body, after the package declaration when the library
@@ -444,7 +447,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Generic protected types (2019):** analyzed with opaque generics; an object of one is `E1505`
   until the parser accepts the generic map on variable declarations.
 - **An unknown generic in a generic map does not hide a missing actual:** both `E1100` and
-  `E1502` are reported, as NVC does.
+  `E1502` are reported, as the reference simulator does.
 
 ## Design units and binding (yavs-sem, S5)
 
@@ -452,50 +455,50 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   one in the design unit's library (`W1703` when both exist); the architecture is the last one in
   manifest or analysis order. `Db::default_binding(scope, component)` with the instance's
   `StmtKind::Instance::scope`.
-- **Selected entity names:** `architecture a of lib.e` is accepted (LRM 3.3.1 gives a name; NVC,
-  GHDL and Questa accept it); `lib` must be a visible library name and the architecture's own.
+- **Selected entity names:** `architecture a of lib.e` is accepted (LRM 3.3.1 gives a name; the reference simulator,
+  the reference simulators accept it); `lib` must be a visible library name and the architecture's own.
 - **Block configuration of a default-bound instance** (`for u : c  for rtl end for;  end for;`
   with no binding indication): accepted, the default binding (7.3.3) supplies the entity. LRM
-  3.4.3 does not say whether an implicit binding makes the instance "fully bound"; Questa accepts,
-  NVC and GHDL reject, so the permissive reading applies. With no entity to bind it is `E1704`.
+  3.4.3 does not say whether an implicit binding makes the instance "fully bound"; the third reference simulator accepts,
+  the reference simulators reject, so the permissive reading applies. With no entity to bind it is `E1704`.
 
 ## Reflection: TIME values in mirrors (user, 2026-10-18)
 
 `PHYSICAL_VALUE_MIRROR.value` for a `TIME` value is expressed in units of
-`std.env.resolution_limit`, as Riviera-PRO does (NVC returns femtoseconds). The LRM is unclear,
-and VUnit's `record_dict_pkg` (PR #1239) relies on this reading. With the default femtosecond
+`std.env.resolution_limit`, as a commercial simulator does (the reference simulator returns femtoseconds). The LRM is unclear,
+and the test runner's `record_dict_pkg` (PR #1239) relies on this reading. With the default femtosecond
 resolution both readings give the same number. Applies to the M3 runtime that builds mirrors.
 `PHYSICAL_VALUE_MIRROR.unit_index` is then the index of the unit equal to the resolution limit
 (the primary unit for other physical types).
 
 ## Reflection: names, indices and case (user and yavs-interp, 2026-10-18)
 
-- **Physical unit indices are 1-based** (`unit_name(1)` is the primary unit), as NVC; the LRM
+- **Physical unit indices are 1-based** (`unit_name(1)` is the primary unit), as the reference simulator; the LRM
   does not say (user).
-- **A physical mirror's `image`** uses NVC's unit case: `5000000 FS` (user). Other `image`
+- **A physical mirror's `image`** uses the reference simulator's unit case: `5000000 FS` (user). Other `image`
   results are the type's `'image`.
-- `simple_name`, `element_name` and `unit_name` are upper case, as NVC returns them (LRM silent;
-  VUnit's `record_dict_pkg` accepts any case). Enumeration literals, element and unit names are
-  looked up case-insensitively (NVC compares `enumeration_literal(name)` case-sensitively; the
+- `simple_name`, `element_name` and `unit_name` are upper case, as the reference simulator returns them (LRM silent;
+  the test runner's `record_dict_pkg` accepts any case). Enumeration literals, element and unit names are
+  looked up case-insensitively (the reference simulator compares `enumeration_literal(name)` case-sensitively; the
   permissive reading accepts both spellings).
 - Record element indices and `enumeration_literal(idx)` count from 0 (the element / literal
-  position within the subtype), as NVC.
+  position within the subtype), as the reference simulator.
 - **Index bases checked (#156, yavs-interp, 2026-10-18):** the 2019 package declaration types
   only `enumeration_literal(literal_idx : NATURAL_INDEX)`, consistent with `pos` from 0;
   `element_name`, `element_index`, `unit_name`, `unit_index` and `scale` take plain `INDEX`, and
-  the LRM prose fixes no base for them (unclear, so rule 2: match the simulators). NVC 1.23
+  the LRM prose fixes no base for them (unclear, so rule 2: match the simulators). The reference simulator 1.23
   gives literal 0 = first literal, element 0 = first element, unit 1 = primary unit; yavs
   keeps exactly these bases. They differ between classes, but changing either would break
-  designs written against NVC (VUnit's `record_dict_pkg` walks elements `0 .. length - 1`).
+  designs written against the reference simulator (the test runner's `record_dict_pkg` walks elements `0 .. length - 1`).
   Pinned by `tests/corpus/reflect/index_bases`.
 - `array_value_mirror.get` takes LRM indices (`get(left - i)` on a `downto` array is element `i`
-  from the left); NVC 1.23 normalises some indices differently (`tests/corpus/reflect/multidim`
+  from the left); the reference simulator 1.23 normalises some indices differently (`tests/corpus/reflect/multidim`
   is `ref=hand`).
 - A conversion to the wrong class (`value_mirror.to_record` of an integer) is a runtime error.
 ## Incomplete types in protected method profiles (user, 2026-10-18; amends U-2)
 
 Allowed only in units of library `std` (`std.reflection` needs it). In user code it is `E1220` with
-a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. Not extended to
+a note and a help suggesting an access type, as the reference simulators reject it. Not extended to
 `ieee`: nothing there needs it.
 
 ## Elaboration (yavs-elab, M2)
@@ -509,7 +512,7 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   enums are 1 or 4 bytes, integers, physicals and reals 8.
 - **Records** become one leaf per field (arrays of records: struct of arrays).
 - **Unlabeled processes** are named `_pN`, N counting the unlabeled process-like statements of
-  the region (NVC's names, so difftest paths match).
+  the region (the reference simulator's names, so difftest paths match).
 - **Component instances** get a hidden `Component` scope holding the component ports as their own
   signals (two port edges per port, uncollapsed); it is not part of path names, the bound entity
   instance carries the label.
@@ -535,19 +538,19 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   6.5.2, so it never drives its actual). A port with a 2019 mode view takes each record leaf's
   mode from `Db::port_mode_tree` (arrays of records: the element view for every element).
 - **Package constant calling a function of its own package** whose body is not elaborated yet
-  (LRM 14.4.2): E2114 with both spans, as NVC and Questa do. Since package data is initialised
+  (LRM 14.4.2): E2114 with both spans, as the reference simulators do. Since package data is initialised
   at run time (#183), `Elaborated::lower` checks every constant of each run-time package's
   declaration before lowering, so a constant only processes read is E2114 too, never
   evaluated at package initialisation (#197, the LRM is clear).
 
 ## Runtime: default exit severity (user, 2026-10-18)
 
-`yavs run` defaults to `--exit-severity=failure`, like NVC, GHDL and Questa. A report or assert of
+`yavs run` defaults to `--exit-severity=failure`, like the reference simulators. A report or assert of
 severity ERROR is printed and the simulation continues; the run exits 1 at the end if any ERROR or
 higher was reported and not cleared by `ClearVhdlAssert` (the std.env assert counts, #191). FAILURE stops the simulation at once. yavs's own runtime errors (bound,
 overflow, null access, delta limit, internal) still stop immediately, per the error motto.
-`--exit-severity=error|warning|note` lowers the threshold. VUnit passes its own setting.
-Reports go to stdout in NVC's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),
+`--exit-severity=error|warning|note` lowers the threshold. The test runner passes its own setting.
+Reports go to stdout in the reference simulator's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),
 which tools/difftest parses.
 
 ## Interpreter: BIT/BOOLEAN codes and file writes (orchestrator, 2026-10-18)
@@ -563,43 +566,43 @@ which tools/difftest parses.
   are globally static is globally static (sem never folds it; only implicit operations become
   locally static). Array attributes of a port or generic whose subtype is not fully constrained,
   or of a sub-element of one (`bus.dat'length`), are globally static too: its bounds are fixed at
-  elaboration, and NVC, GHDL and Questa accept such constants in static names (OSVVM
-  AxiStreamReceiver, WishboneRegisterSubordinate).
+  elaboration, and the reference simulators accept such constants in static names (seen in
+  AXI-stream and Wishbone verification components).
 - **Implicit versus explicit:** a call ambiguous only between implicit operations and explicit
   subprograms picks the explicit ones (2019: a user `to_string(a; sep := " ")` beside the
-  implicit composite `TO_STRING`, in the same package or through a use clause). NVC, GHDL and
-  Questa accept OSVVM's RandomBasePkg and UVVM's rand_pkg this way; the LRM does not settle it.
+  implicit composite `TO_STRING`, in the same package or through a use clause). The reference simulators
+  accept the random packages of two verification libraries this way; the LRM does not settle it.
 
 ## Implicit operation natives (yavs-interp `implicit.rs`)
 
 - **Shifts with a negative count** follow LRM 9.2.4 (`sla -k` is `sra k`, `sra -k` is `sla k`),
-  as GHDL does. NVC fills from the wrong end for negative arithmetic shifts.
+  as the second reference simulator does. The reference simulator fills from the wrong end for negative arithmetic shifts.
 - **Concatenation bounds** follow LRM 2008 9.2.5: two null operands give the right operand;
   otherwise the result starts at `S'LEFT` in the direction of `S` and both bounds must belong
-  to `S`. GHDL agrees; NVC gives `S'LEFT to S'LEFT - 1` for two null operands and a wrong
+  to `S`. The second reference simulator agrees; the reference simulator gives `S'LEFT to S'LEFT - 1` for two null operands and a wrong
   (null) range for downto index subtypes. The `cat` native takes `S'LEFT`, `S'RIGHT` and the
   direction as three extra cells.
 - **`?<` .. `?>=` with a `'-'` operand** is a runtime error (LRM 9.2.3 says it is an error);
-  NVC returns `'X'` silently.
+  the reference simulator returns `'X'` silently.
 - **2019 `TO_STRING` of an array** whose element type is not a character enumeration is
-  `(e1,e2,...)` as NVC prints it; a null such array gives `()` (NVC prints `)`).
-- **`MINIMUM`/`MAXIMUM` of a null array** give the element type's `'HIGH`/`'LOW` (NVC agrees).
+  `(e1,e2,...)` as the reference simulator prints it; a null such array gives `()` (the reference simulator prints `)`).
+- **`MINIMUM`/`MAXIMUM` of a null array** give the element type's `'HIGH`/`'LOW` (the reference simulator agrees).
 
 ## Differential testing (tools/difftest, M2 conformance, 2026-10-18)
 
-- **Default assert message (#12):** for `assert c;` without a report expression NVC prints a source
+- **Default assert message (#12):** for `assert c;` without a report expression the reference simulator prints a source
   snippet instead of the `Process` line. yavs keeps its CLI format (cli-contract section 5: the
   `Process` line after every report), and the difftest normaliser drops the path of an
   `Assertion violation` event on both sides.
-- **Exit 2 is not always an elaboration failure:** `stop(2)` exits 2 like NVC, so the yavs template
+- **Exit 2 is not always an elaboration failure:** `stop(2)` exits 2 like the reference simulator, so the yavs template
   runs `yavs elab` first and maps only its failure to "elaboration failed".
-- **Report order within one cycle (#11): yavs keeps committing in elaboration order.** NVC's
+- **Report order within one cycle (#11): yavs keeps committing in elaboration order.** the reference simulator's
   order is neither elaboration nor wakeup (FIFO) order: six processes whose timeouts all fall on
-  3 ns, scheduled at 0, 1 and 2 ns, report as p2 p4 p1 p5 p6 p3 in NVC, an artefact of its event
+  3 ns, scheduled at 0, 1 and 2 ns, report as p2 p4 p1 p5 p6 p3 in the reference simulator, an artefact of its event
   heap; processes woken by one signal event report in reverse registration order. Matching that
-  would mean reproducing NVC's heap layout, which the LRM does not ask for (the order is
+  would mean reproducing the reference simulator's heap layout, which the LRM does not ask for (the order is
   unspecified) and which no other simulator shares. A deterministic wakeup order would match
-  NVC no better than ProcId order, so the kernel is unchanged and `--threads N` stays
+  the reference simulator no better than ProcId order, so the kernel is unchanged and `--threads N` stays
   byte-identical by construction. difftest instead gained a per-test `ignore=order` header; the
   `order` mask now sorts a cycle's events stably by process path, so each process's own order is
   still compared. Strict comparison stays the default for yavs.
@@ -635,12 +638,12 @@ which tools/difftest parses.
 
 ## CLI: JSON diagnostics, `-W` forms, `--explain` (yavs CLI, 2026-10-18)
 
-- **JSON diagnostics follow rustc** (`level`, `children`, `rendered`, plus `code` as a plain string
+- **JSON diagnostics follow the common compiler shape** (`level`, `children`, `rendered`, plus `code` as a plain string
   and byte/line/column `spans`), as `docs/cli-contract.md` section 0 promised. The contract won over
   the first renderer (`severity`, `notes`, `help`) because nothing consumed that shape (#158).
 - **`-W` forms:** `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE`, for `analyze`, `elab` and
   `run`; per code the last option wins; `CODE` must be a registered warning code, else `E0103`.
-  Same spelling as the contract's `yavs.a_flags` list, GCC-like rather than rustc's `-A/-W/-D` (#137).
+  Same spelling as the contract's `yavs.a_flags` list, GCC-like rather than the `-A/-W/-D` style (#137).
 - **`--explain CODE`** lives in the CLI crate, not in `yavs-diag` (a leaf): one table for all stages
   but `yavs-sem`, which keeps its own. A test fails for any code literal without a text (#136).
 - **A panic is `E9999`, exit 3** in every command (#159).

@@ -7,14 +7,14 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
-| M4: VUnit end to end | first VUnit testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and VUnit's `examples/vhdl/user_guide` give the right pass/fail per test with the VUnit `rsim-integration` branch; VUnit's own suites next (#112) |
+| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites next (#112) |
 | M3 to M10 | not started (crate spikes below) |
 
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on
 ubuntu-24.04, ubuntu-24.04-arm and windows-latest (MSVC) for every push to main and every pull
-request (#134); not yet in CI: LLVM tier, corpus gates (#63). `.github/workflows/release.yml`
+request (#134); not yet in CI: JIT tier, corpus gates (#63). `.github/workflows/release.yml`
 builds and packages `yavs` with `lib/` for the three targets on a `v*` tag and publishes a
 pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives.
 An installed binary finds `lib/` next to itself (#43).
@@ -70,14 +70,14 @@ updates the lists). Plain `cargo test --workspace` still parses `lib/` and runs 
 | Corpus | Files | Pass | Expected failures |
 |---|---:|---:|---|
 | `lib/` std and ieee, 2008 and 2019 (in repo) | 55 | 55 | none |
-| VUnit `vunit/vhdl` | 194 | 194 | none |
-| OSVVM | 36 | 36 | none |
-| rust_hdl `vhdl_libraries` (std, ieee2008, synopsys, vital2000) | 37 | 37 | none |
-| NVC `test/regress` + `test/parse` | 1401 | 1360 | 41: tests of invalid syntax (most of them), PSL, VHDL-87 syntax, `abs x ** 2`, one `` `if `` that needs `--define` |
-| VESTs `vhdl-93` | 3782 | 3244 | 538: 533 in `non_compliant/analyzer_failure`, 2 other non-compliant, 2 broken book excerpts, 1 VHDL-93 file using `default` |
-| GHDL `testsuite/gna` | 3216 | 2973 | 243: `analyze_failure` tests and fuzz crashers, PSL, 93 code using 2008 reserved words |
+| External test runner library (`vunit`) | 194 | 194 | none |
+| External verification library (`osvvm`) | 36 | 36 | none |
+| Third-party parser library sources (std, ieee2008, synopsys, vital2000) | 37 | 37 | none |
+| Reference simulator regression and parse tests | 1401 | 1360 | 41: tests of invalid syntax (most of them), PSL, VHDL-87 syntax, `abs x ** 2`, one `` `if `` that needs `--define` |
+| Conformance suite `vhdl-93` | 3782 | 3244 | 538: 533 in `non_compliant/analyzer_failure`, 2 other non-compliant, 2 broken book excerpts, 1 VHDL-93 file using `default` |
+| Second reference simulator testsuite | 3216 | 2973 | 243: `analyze_failure` tests and fuzz crashers, PSL, 93 code using 2008 reserved words |
 
-Throughput on the VUnit corpus (read, decode, lex, preprocess and parse; release build, one
+Throughput on the `vunit` corpus (read, decode, lex, preprocess and parse; release build, one
 thread, Intel Core Ultra 9 275HX, warm cache): about 5,600 files/s and 60 MB/s (best of three: 5,769 files/s, 62.4 MB/s).
 
 Fuzzing: `cargo +nightly fuzz run parse` (lexer, directives, parser and rendering in both
@@ -107,7 +107,7 @@ case, aggregate targets, every wait form; subprograms with signal parameters of 
 (arrays too, `DriveSlot` for out/inout), copy-out of logic elements and slices; package
 objects at run time (`Lowerer::package`: constants evaluated once, shared protected variables,
 package signals and files). `tests/corpus.rs` runs every corpus group plus
-`crates/yavs-lower/tests/vhdl/run` (blessed from NVC) through yavs-elab and the kernel; VUnit's
+`crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
 composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
@@ -124,10 +124,9 @@ any diagnostic carrying "this is a bug in yavs". The negative suite fails on any
 `yavs analyze` over all ten `tools/corpus` manifests (debug build, so the HIR validator runs; `timeout 60`
 per file) shows no panic and no timeout.
 
-External library corpora (`tools/corpus/gen_external.py`, validated per file with NVC and GHDL, 2019 with NVC and
-Questa; rejects and reasons in `tools/corpus/rejects/`): en_cl_fix, open-logic, PoC, JSON-for-VHDL, vhdl-extras,
-vhlib, fletcher, satcat5, SURF, neorv32, neoTRNG, VHDL/Compliance-Tests, VHDL/Interfaces, VHDL-Tool-Checks,
-vhdl-ideas and VUnit's own tests and examples. Several carry a `[testbenches]` section (top units, runner, pass
+External library corpora (`tools/corpus/gen_external.py`, validated per file with the reference simulators; rejects and reasons in `tools/corpus/rejects/`): `en_cl_fix`, `open-logic`, `poc`, `json-for-vhdl`, `vhdl-extras`,
+`vhlib`, `fletcher`, `satcat5`, `surf`, `neorv32`, `neotrng`, `vhdl-compliance`, `vhdl-interfaces`, `vhdl-tool-checks`,
+`vhdl-ideas` and `vunit-tests`. Several carry a `[testbenches]` section (top units, runner, pass
 condition) for the M2/M4 simulation tests. Results: `tools/corpus/RESULTS.md`.
 
 | Run | Fuzz time | Executions | Crashes found | Fixed | Open |
@@ -147,7 +146,7 @@ and property tests, criterion benchmarks. Default layout is bit-planes; see
 
 ## llvm (`crates/yavs-llvm`)
 
-LLVM risk spike ahead of M6, behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`).
+JIT risk spike ahead of M6, behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`).
 Done: llvm-sys 211 bindings (docs/decisions.md), ORC LLJIT with a portable CPU, O2 through
 `LLVMRunPasses`, Rust runtime callbacks as absolute symbols, a checked i64 sum that traps into
 Rust on overflow, a process body reading and writing a `#[repr(C)]` struct, a 10k-instruction
@@ -239,7 +238,7 @@ readline/writeline/tee, hread/oread/sread, justify), TEXT file ops including the
 strings, time conversions, resolution_limit, the 2019 time_record functions, call paths and
 the VHDL assert state), VHPIDIRECT calls with scalars, arrays,
 records and access values (copy-back included), runtime errors with the VHDL stack as
-`SimError::trace`, and Riviera/Questa-style debug hooks (docs/design/ir.md 3.4).
+`SimError::trace`, and debug hooks in the style of commercial simulators (docs/design/ir.md 3.4).
 
 Tests (`cargo test -p yavs-ir -p yavs-interp`): 11 end-to-end designs run through the kernel at
 1 and 4 threads with identical traces (clock and counter, delta ordering, wait forms with a
@@ -255,7 +254,7 @@ std.reflection (`yavs-interp/src/reflect.rs`, `yavs-lower/src/reflect.rs`): all 
 methods and `'reflect` (value and subtype mirrors, built from the value and its descriptor;
 private-heap mirror objects traced by the GC). End to end through `yavs run` for integer,
 floating, physical (TIME in resolution-limit units), enumeration and array mirrors
-(`tests/corpus/reflect`, 3/3 against NVC, one `ref=hand`). Record, access, file and protected
+(`tests/corpus/reflect`, 3/3 against the reference simulator, one `ref=hand`). Record, access, file and protected
 mirrors are implemented in the runtime (unit-tested element extraction) and wait on the
 lowering of those types and of mirror variables (lower2).
 
@@ -296,7 +295,7 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 (restart test with the interpreter).
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
-revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in NVC's
+revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in the reference simulator's
 format on stdout). Difftest: see `tests/corpus/RESULTS.md` (93 of 96 at 1, 4 and 4 shuffled
 threads on 2026-10-18; open: `generics/generic_types_2019` (generic types on entities, #75),
 `hierarchy/external_port_actual` (expression actuals, #74), `hierarchy/mode_view_ports` (record
@@ -305,7 +304,7 @@ port elements in lowering)).
 ## ffi (`crates/yavs-ffi`)
 
 Done: VHPIDIRECT call trampolines without libffi (SysV x86_64, Win64, AAPCS64), argument
-classification in Rust, naked asm stubs, up to 64 arguments, and the VHDL to C mapping in NVC's
+classification in Rust, naked asm stubs, up to 64 arguments, and the VHDL to C mapping in the reference simulator's
 convention (`vhdl::lower`). Tests: unit tests, hand-written ABI tests and 431 generated callees
 compared against direct calls. All pass on Linux x86_64 natively, on aarch64 under qemu-user and
 on Windows under wine. The cross commands (configured through the environment, no cargo config):
@@ -330,12 +329,12 @@ Open: marshalling VHDL values (bit-planes to bytes, records, copy-back) belongs 
 4 threads (identical to 1) and 4 threads shuffled. `std.env.stop`/`finish` end the calling
 process at once; check messages print reals as `%.15g`; runtime errors are coded diagnostics
 (`E3001`-`E3010`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
-as `fatal` events. Normalisations for NVC's free choices (default assert message without a
+as `fatal` events. Normalisations for the reference simulator's free choices (default assert message without a
 path, per-test `ignore=order`) are in `docs/decisions.md`. The 9 failures wait for sem (#1, #3)
 and lowering (out signal parameters, `'stable`, `'path_name`, guarded blocks, instantiated
 package bodies #101).
 
 IEEE packages from source (`tests/corpus/ieee`, #94): std_logic_1164, numeric_std, numeric_bit,
-math_real, math_complex, fixed_pkg and float_pkg bodies, 2008 and 2019, equal NVC at 1, 4 and 4
+math_real, math_complex, fixed_pkg and float_pkg bodies, 2008 and 2019, equal the reference simulator at 1, 4 and 4
 shuffled threads (17 of 17, with textio of std_logic_vector, fixed and float values);
-`ieee_warnings` (`ref=hand`) checks the numeric_std body's own warnings, which NVC omits.
+`ieee_warnings` (`ref=hand`) checks the numeric_std body's own warnings, which the reference simulator omits.

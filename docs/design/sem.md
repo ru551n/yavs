@@ -8,13 +8,13 @@ together, on-demand analysis), `docs/decisions.md`, `lib/README.md`, `lib/NATIVE
 LRM references are to IEEE 1076-2008 clause numbers, which 1076-2019 mostly keeps. The former
 **(unsure)** items and Q1/Q2 were checked on 2026-10-18; `docs/design/lrm-checks.md` has the
 evidence per item (tagged `[L<n>]`, `[Q<n>]` here) and the user decisions (`U-<n>`, section 11). Nothing
-here is taken from NVC, GHDL or rust_hdl code.
+here is taken from the code of the reference simulators or of other VHDL front ends.
 
 ## LRM interpretation policy (user, 2026-10-18)
 
 - **LRM clear:** follow it and fail early, even where a simulator is more lenient.
-- **LRM unclear or silent:** be permissive. Accept the union of what NVC, GHDL, Questa and
-  Riviera accept, and pick the semantics that let the most designs elaborate.
+- **LRM unclear or silent:** be permissive. Accept the union of what the reference simulators and
+  A commercial simulator accept, and pick the semantics that let the most designs elaborate.
 - **Warn only when simulators give different results** for code yavs accepts (for example
   W1506, U-6), never just because a rule is unclear.
 
@@ -39,7 +39,7 @@ an id. It runs single-threaded. It owns no files on disk: `yavs-lib` gives it a 
 
 Language revision: see 0.1. The analyzer is one code path with revision gates.
 
-### 0.1 Mixed 2008 and 2019 files (user decision, `docs/plan.md` "VUnit integration")
+### 0.1 Mixed 2008 and 2019 files (user decision, `docs/plan.md` "Test-runner integration")
 
 A project may mix 2008 and 2019 files; `yavs-lib` records the standard per file.
 
@@ -239,7 +239,7 @@ Algorithm:
      and an overloadable one, make **all** of them invisible unless they are the same declaration
      or non-object aliases (or the declaration itself) that denote the same named entity. Object
      aliases get no exception: `alias c is p1.c` against `p1.c` conflicts (12.4 c has no alias
-     exception in its text; NVC and GHDL both treat type aliases as the same entity and object
+     exception in its text; the reference simulators both treat type aliases as the same entity and object
      aliases as a conflict) [L2]. Report only at the use: `E1102` with both use clauses as labels.
    - Overloadable potentially visible decls from different packages that are not homographs, or
      are explicit homographs, stay visible; ambiguity is an overload resolution error at the call
@@ -385,7 +385,7 @@ pub enum BoundsFrom {
 Bounds of an integer or physical type declaration must be locally static (5.2.3.1) and are folded.
 The base range of an anonymous integer base type is implementation-defined (it must contain the
 declared range); yavs takes the declared range and checks intermediate results against it, as
-NVC does (user decision U-1) [Q2].
+the reference simulator does (user decision U-1) [Q2].
 
 ### 2.4 Array types (5.3.2)
 
@@ -478,7 +478,7 @@ pub enum GenericClass {           // M0 `GenericTypeDef`
 }
 ```
 
-| Class | Implicit operations inside the generic: the predefined operations every type of the class has (2019 6.5.3; the exact LRM list was not read, NVC 2019 agrees where it implements them) [L6] |
+| Class | Implicit operations inside the generic: the predefined operations every type of the class has (2019 6.5.3; the exact LRM list was not read, the reference simulator 2019 agrees where it implements them) [L6] |
 |---|---|
 | Private, and 2008 `type T` | `=`, `/=`: 2008 6.5.3 declares them implicitly "as formal generic subprograms immediately following the interface type declaration"; no interface `"="` is needed (Q9) [L18] |
 | Scalar | relational, `minimum`, `maximum`, `'image`/`'value` and scalar attributes |
@@ -691,8 +691,8 @@ type** (a slice-like positional piece). For each element, intersect `cands(expr)
 `{elem type, aggregate type}`. The LRM has no tie-break [L8]. The aggregate's own type is a candidate only for a positional
 association or a discrete-range choice (9.3.3.3), and an element that is itself an aggregate takes
 the element type (otherwise `((fs, "fs "), (ps, "ps "))` for an array of records would be
-ambiguous; GHDL and NVC do the same). A remaining tie, such as an overloaded `f` returning both
-types, takes the element type (NVC; user decision L8, permissive), with no `E1323`. `E1323`
+ambiguous; the reference simulators do the same). A remaining tie, such as an overloaded `f` returning both
+types, takes the element type (the reference simulator; user decision L8, permissive), with no `E1323`. `E1323`
 stays for an element that fits neither type.
 
 Choices: index expressions, discrete ranges, subtype names, `others`. Rules (9.3.3.3):
@@ -893,7 +893,7 @@ ambiguous). Cloning keeps every resolved reference and only remaps ids:
 - calls to an implicit op of a formal generic type are remapped to the same family's implicit op
   of the actual type; for a 2008 `type T`, `=`/`/=` become the actual's **predefined** `=`/`/=`,
   and `W1506` warns at the instantiation when a different user `"="` for the actual type is
-  visible there (NVC would use that one; U-6);
+  visible there (the reference simulator would use that one; U-6);
 - folded constants that depended on generics are dropped and re-folded if the actual is locally
   static.
 
@@ -905,14 +905,14 @@ The visible part is cloned eagerly (clients need its types), the body lazily.
 |---|---|---|
 | constant | expression, `Type(formal subtype after substitution)` | the formal's default expression |
 | `type T` (any class) | a subtype indication; checked against the class (`E1503`) | none (2008), `E1502` if missing |
-| subprogram | a subprogram name, with optional signature, whose profile conforms after substitution | `is <>`: the unique subprogram with the formal's designator visible **at the instantiation** whose profile conforms; `is name`: `name` resolved at the formal's declaration (NVC; GHDL crashes on the case), then checked at the instantiation [L11]; none or several: `E1504` listing the candidates |
+| subprogram | a subprogram name, with optional signature, whose profile conforms after substitution | `is <>`: the unique subprogram with the formal's designator visible **at the instantiation** whose profile conforms; `is name`: `name` resolved at the formal's declaration (the reference simulator; the second reference simulator crashes on the case), then checked at the instantiation [L11]; none or several: `E1504` listing the candidates |
 | package `package P is new G generic map (<>)` | an instance of `G` | `generic map (default)`: actual instance must use the defaults; explicit partial maps must match the actual's generics |
 
 Generic maps resolve in order, so a later formal's subtype can use an earlier formal type (2008).
 
 ### 5.3 Identity and mangling (rule 4)
 
-Every instance is a distinct entity, even with identical actuals (NVC #1492/#1408). Mangled names
+Every instance is a distinct entity, even with identical actuals. Mangled names
 are stable text built from declaration paths:
 
 | Entity | Mangled name |
@@ -943,7 +943,7 @@ times) is elab's concern; the code identity is the site's mangled name.
 
 `<<signal .tb.dut.s : std_logic>>`, `<<constant ^.^.c : integer>>`, `<<variable @lib.pkg.v : t>>`.
 Sem resolves the subtype indication and the class; the path is kept as data and bound by elab
-(rule 4, GHDL #548). HIR: `ExprKind::External(ExternalId)` with `class`, `path`, `subtype`.
+(rule 4). HIR: `ExprKind::External(ExternalId)` with `class`, `path`, `subtype`.
 Usage checks by class at sem (a constant external name is not a target, `E1601`). Package paths
 (`@lib.pkg.obj`) could be checked at analysis; for one code path they are also bound at elab.
 
@@ -1023,7 +1023,7 @@ and result) is unique among homographs, so there is no code for it.
   4. generics and ports associated by name; a component port with no entity port of the same
      name is an error, an entity port with no component port is `open` if it has a default or is
      an `out` (7.3.3).
-  GHDL #66 is the ambiguity between rules 1 and 2 (directly visible vs the work library) when both
+  One reported case is the ambiguity between rules 1 and 2 (directly visible vs the work library) when both
   exist with different targets: yavs takes the directly visible one and emits `W1703` naming both.
 - M1 checks every configuration that is analyzed; elab applies them.
 
@@ -1039,7 +1039,7 @@ and result) is unique among homographs, so there is no code for it.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.
 - Restrictions: no signals, ports, files of protected type; no `=`; function methods follow the
-  normal rule, pure unless declared `impure` (LRM 4.2.1; NVC rejects a pure method reading the
+  normal rule, pure unless declared `impure` (LRM 4.2.1; the reference simulator rejects a pure method reading the
   body's variables, `E1830`); shared variables must be of a protected type (6.4.2.4, `E1904`,
   `--relaxed` makes it `W1904`, R1 in 8.4). Parameters of protected type are class variable.
 - Incomplete types as method return types, 2.6.
@@ -1053,14 +1053,14 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 
 - `view v of r_t is a, b : in; c : out; d : view w; end view;` every element of `r_t` exactly once
   (`E1901` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
-- `v'converse` is a view with `in`/`out` swapped and `inout` and `buffer` unchanged (NVC; user
+- `v'converse` is a view with `in`/`out` swapped and `inout` and `buffer` unchanged (the reference simulator; user
   decision U-4, permissive: a `buffer` element may be read and driven) [L16], nested views
   conversed recursively. Sem materializes it as a `ViewDef`
   on first use.
 - Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
   per element the effective mode. Port association checks per element (an `in` element is not
   driven inside, etc.) use the same mode tree.
-- **Driver overlay** (rule 2, NVC #856): sem does not build drivers but gives M2 everything to
+- **Driver overlay** (rule 2): sem does not build drivers but gives M2 everything to
   build the one longest-static-prefix map (6.9): each port's mode tree and each assignment's LSP.
 
 ### 6.8 Shared variables, files, access deallocate
@@ -1078,7 +1078,7 @@ pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC) }
 ```
 
 - The LSP of a name is its longest prefix whose every index/slice expression is static
-  (globally static counts, 8.1; elab evaluates the globally static ones, NVC #856 was this).
+  (globally static counts, 8.1; elab evaluates the globally static ones, one reported case was this).
 - Each process gets `ProcessInfo { drivers: Vec<Lsp>, reads_all: Option<Vec<Lsp>> }`: the LSPs of
   all signal targets in the process (including targets in procedures declared inside the process,
   14.7.2), and for `process (all)` the LSPs of signals read in the process (11.3: names read in
@@ -1098,7 +1098,7 @@ pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC) }
   (blocks included, generate bodies not: whether they exist is elab's) for two sources whose
   prefixes overlap on locally static values and whose overlapping part is unresolved; the error
   names both. Everything else (generates, globally static indices, ports driven from outside) is
-  elab's, which builds the full map. NVC and GHDL report the same cases at elaboration.
+  elab's, which builds the full map. The reference simulators report the same cases at elaboration.
 - `return e` in a function where `e` is a 2019 conditional expression without a final `else` is
   the conditional return (10.14): when no condition holds, execution continues.
 
@@ -1190,14 +1190,14 @@ Sem takes `E1xxx` / `W1xxx`:
 | E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration or construct not available under the file's or the design's revision (0.1) |
 | E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1104 prefix of a use clause, context reference or expanded name is not a library, package, package instance or context declaration (a missing suffix in a package is E1100), E1105 private/not in visible part, E1106 end label mismatch |
 | E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1225 bad resolution function, E1230 missing body |
-| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1310 formal associated twice, E1311 missing actual, E1312 conversion on an unconstrained formal (F8: rejected like GHDL and Questa), E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
+| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1310 formal associated twice, E1311 missing actual, E1312 conversion on an unconstrained formal (F8: rejected like the reference simulators), E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
 | E14xx | static evaluation | E1401 overflow, E1402 literal out of range, E1403 static value outside subtype, E1405 static length mismatch, E1410 choice/range not locally static where required |
 | E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |
 | E16xx | names, aliases, attributes, signatures | E1601 external name class misuse, E1610 alias of a non-static name, E1611 alias needs a signature, E1620 implicit signal attribute in subprogram, E1621 unknown attribute, E1622 entity class mismatch, E1623 attribute dimension argument out of range for the prefix, E1630 signature matches nothing |
 | E17xx | configurations, binding, components | E1700 instantiated name is not a component, entity or configuration, E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity, E1704 no entity bound where one is needed |
 | E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1803 sensitivity name not static, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1812 unresolved signal with multiple sources, E1813 entity statement not passive, E1820 case coverage/duplicates, E1830 pure function side effect |
 | E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
-| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1506 an instance of a 2008 `type T` uses the actual's predefined `=`/`/=` while a different user `"="` for the actual type is visible at the instantiation (U-6; NVC uses the user one), W1703 default binding ambiguity (GHDL #66), W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
+| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1506 an instance of a 2008 `type T` uses the actual's predefined `=`/`/=` while a different user `"="` for the actual type is visible at the instantiation (U-6; the reference simulator uses the user one), W1703 default binding ambiguity, W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
 
 Codes are `pub const` in `yavs-sem::diag` with an `--explain` text each (one paragraph plus a
 minimal example), checked by a test that every constant has an explain entry.
@@ -1233,9 +1233,9 @@ Each relaxation turns an error into its own warning code; nothing else differs.
 
 | Id | Relaxation | Why |
 |---|---|---|
-| R1 | shared variable of non-protected type (6.4.2.4) | UVVM and VHDL-93-style code; the kernel already marks such processes serial |
+| R1 | shared variable of non-protected type (6.4.2.4) | verification libraries and VHDL-93-style code; the kernel already marks such processes serial |
 | R2 | pure function reading or calling something impure (4.?/9.4.?) | common in vendor libraries |
-| R3 | dropped: NVC's `--relaxed` does not relax case choices (its list is impure calls and files in pure functions, non-globally-static interface defaults, non-protected shared variables) [L17] | per Q6 |
+| R3 | dropped: the reference simulator's `--relaxed` does not relax case choices (its list is impure calls and files in pure functions, non-globally-static interface defaults, non-protected shared variables) [L17] | per Q6 |
 | R4 | default binding to an entity in `work` when it is not visible (implementation choice) | none needed if Q4 picks the rule above |
 
 Q6 asks the user to confirm the list.
@@ -1248,13 +1248,13 @@ Q6 asks the user to confirm the list.
 |---|---|---|
 | std, ieee 2008 and 2019 | `lib/` | `lib/ORDER.md` blocks, analyzed in order; plus on-demand (analyze `ieee.float_pkg` alone and let it pull its deps) |
 | NATIVE.md cross-check | `lib/NATIVE.md` | 2.10 |
-| VUnit (incl. its OSVVM copy) | `~/git/vunit/vunit/vhdl` | compile order from VUnit's own dependency scan (run `run.py --compile` style ordering offline once and check the order list into `tests/corpus/vunit.order`) |
-| OSVVM | `~/git/vunit/vunit/vhdl/osvvm` | its `.pro` order, checked in as `tests/corpus/osvvm.order` |
-| UVVM | `~/.cache/rsim-corpora/uvvm` (shallow clone, read-only, commit `90d56e9`) | each component's `script/compile_order.txt`; needs `--relaxed` (R1) |
-| NVC `test/regress` | `~/git/nvc/test/regress` | pass/fail list checked into the repo (expected-fail entries included) |
-| NVC `test/sem`, `test/parse` | `~/git/nvc/test/sem` (184 files) | files NVC expects to fail: list with "must produce >= 1 error"; others must analyze clean |
-| GHDL `testsuite/gna` | fetched in CI, not local now | pass/fail list |
-| VESTs | fetched in CI | pass/fail list |
+| External test runner library (incl. its copy of a verification library) | local checkout of its `vhdl` directory | compile order from the runner's own dependency scan (run its compile-style ordering offline once and check the order list into `tests/corpus/vunit.order`) |
+| External verification library | the copy inside the runner's `vhdl` directory | its `.pro` order, checked in as `tests/corpus/osvvm.order` |
+| Second external verification library | `~/.cache/rsim-corpora/uvvm` (shallow clone, read-only, commit `90d56e9`) | each component's `script/compile_order.txt`; needs `--relaxed` (R1) |
+| Primary reference simulator `test/regress` | local checkout, `test/regress` | pass/fail list checked into the repo (expected-fail entries included) |
+| Primary reference simulator `test/sem`, `test/parse` | local checkout, `test/sem` (184 files) | files the reference simulator expects to fail: list with "must produce >= 1 error"; others must analyze clean |
+| Second reference simulator `testsuite/gna` | fetched in CI, not local now | pass/fail list |
+| Conformance suite | fetched in CI | pass/fail list |
 
 All corpus tests are cargo tests that skip with a printed reason when a local checkout is
 missing; CI fetches them (plan). Every corpus test also runs `hir::validate`.
@@ -1282,10 +1282,10 @@ Revision is chosen by a `-- yavs: --std=2019` first line.
 | S2 | implicit operations, natives, universal types, literals, overload resolution core (3.1-3.3, 3.5, 3.6), subprogram bodies, sequential statements | `std.textio`, `std.env` (2008, 2019), `std_logic_1164` + body; NATIVE.md cross-check passes |
 | S3 | arrays, records, the full constraint model (2.2-2.7), aggregates and choices, attributes, static folding (section 4) | numeric_std/bit (+unsigned), math_real, math_complex, std_logic_textio; **rule 1 review checkpoint with the user** |
 | S4 | generics: generic packages/types/subprograms, instantiation by cloning, mangling | fixed/float generic packages and `fixed_pkg`/`float_pkg` instances, both revisions; all of `lib/` green |
-| S5 | design units: entity, architecture, concurrent statements, processes, LSPs, drivers, `all`, components, instances, configurations | VUnit corpus green |
-| S6 | protected types, access, files, shared variables, aliases complete, user attributes, external names | OSVVM green |
+| S5 | design units: entity, architecture, concurrent statements, processes, LSPs, drivers, `all`, components, instances, configurations | External test runner corpus green |
+| S6 | protected types, access, files, shared variables, aliases complete, user attributes, external names | external verification library green |
 | S7 | 2019: views/`'converse`, private variables, reflection, range records, generic classes complete | `std/2019/reflection.vhdl`, `env.vhdl` (2019) and the 2019 corpus subsets green |
-| S8 | negative suite to full code coverage, help patterns, `--relaxed`, fuzz target, NVC/GHDL/VESTs lists, UVVM | M1 exit criteria in the plan met |
+| S8 | negative suite to full code coverage, help patterns, `--relaxed`, fuzz target, reference simulator and conformance suite lists, external verification libraries | M1 exit criteria in the plan met |
 
 The plan's gate "the type and constraint model (rule 1) is reviewed before M2" happens at the
 end of S3 on real code (numeric_std), so a rework does not cost the later slices.
@@ -1300,21 +1300,21 @@ them.
 
 | # | Topic | Decision | Status |
 |---|---|---|---|
-| Q1 | universal preference (`x := 2 ** 3`), LRM 9.3.6 | 2.8: convert only convertible universal operands, only with a unique numeric target, and only when no interpretation without conversion exists (GHDL agrees; NVC prefers converting) | checked, corrected to the LRM text |
-| Q2 | base range of an anonymous integer base type (`t'base'high`) | base range = declared range, intermediate results checked against it (NVC; GHDL and NVC both report the declared range for `'base`, neither uses 32/64-bit) | decided (U-1) |
+| Q1 | universal preference (`x := 2 ** 3`), LRM 9.3.6 | 2.8: convert only convertible universal operands, only with a unique numeric target, and only when no interpretation without conversion exists (the second reference simulator agrees; the reference simulator prefers converting) | checked, corrected to the LRM text |
+| Q2 | base range of an anonymous integer base type (`t'base'high`) | base range = declared range, intermediate results checked against it (the reference simulator; the reference simulators both report the declared range for `'base`, neither uses 32/64-bit) | decided (U-1) |
 | Q3 | 2008 locally static ieee calls without an interpreter in M1 | classified in M1; their choice checks deferred to elab through a `ConstEval` hook implemented by M2's interpreter | decided |
-| Q4 | default binding | last architecture in manifest order, note when several; directly visible entity preferred over `work` (GHDL #66), `W1703` | decided |
+| Q4 | default binding | last architecture in manifest order, note when several; directly visible entity preferred over `work`, `W1703` | decided |
 | Q5 | overflow folding where the value is not required | error `E1401` only in required contexts (type and array bounds, physical unit scales, choices, attribute dimension arguments); `W1401` elsewhere, e.g. a constant initializer, with the runtime check kept | decided |
-| Q6 | `--relaxed` | R1 and R2 now; R3 only after checking NVC's list | decided |
+| Q6 | `--relaxed` | R1 and R2 now; R3 only after checking the reference simulator's list | decided |
 | Q7 | generic instances | clone the HIR: visible part eager, body lazy | decided |
 | Q8 | mangled names | long readable form of 5.3; NATIVE.md names only for natives | decided |
-| Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has implicit `=` and `/=` (6.5.3), mapped to the actual's **predefined** `=`/`/=` (GHDL; NVC uses the `"="` visible at the instantiation, e.g. `numeric_std."="`; U-6) | corrected 2026-10-18 (`lrm-checks.md` L18); the "no implicit `=`" half is withdrawn |
+| Q9 | equality on generic types | class-implicit ops map to the actual's predefined op; 2008 `type T` has implicit `=` and `/=` (6.5.3), mapped to the actual's **predefined** `=`/`/=` (the second reference simulator; the reference simulator uses the `"="` visible at the instantiation, e.g. `numeric_std."="`; U-6) | corrected 2026-10-18 (`lrm-checks.md` L18); the "no implicit `=`" half is withdrawn |
 | Q10 | revisions | replaced by 0.1: per-file parsing, one design revision (newest in the closure), `E1007` error, `W1008` warning | decided |
 | Q11 | bit-string expansion | in sem, `E1331` at the literal | decided |
-| U-1 | base range of `type T is range L to R` | declared range; intermediate results checked (NVC) | decided |
-| U-2 | incomplete types in protected method profiles | allowed in subprogram profiles inside a protected type declaration, 2008 and 2019, **only in units of library `std`** (`std.reflection` needs it); an error `E1220` in user code, as NVC, GHDL and Questa (user, 2026-10-18) | decided |
+| U-1 | base range of `type T is range L to R` | declared range; intermediate results checked (the reference simulator) | decided |
+| U-2 | incomplete types in protected method profiles | allowed in subprogram profiles inside a protected type declaration, 2008 and 2019, **only in units of library `std`** (`std.reflection` needs it); an error `E1220` in user code, as the reference simulators (user, 2026-10-18) | decided |
 | U-3 | range record names | `<T>_RANGE_RECORD` only for `std.standard` types; the direction type is `RANGE_DIRECTION` (LRM 16.3, `lib` patched) | decided |
 | U-4 | `buffer` under `'converse` | stays `buffer`, so both reading and driving are allowed (permissive) | decided |
 | U-5 | conditional expressions as interface defaults | accepted bare and parenthesized (permissive) | decided |
 | U-6 | `=` of a 2008 `type T` instance | the actual's predefined `=`/`/=`; `W1506` at the instantiation when a different user `"="` for the actual type is visible there | decided |
-| L8 | aggregate element: element type vs aggregate type tie | the element type (NVC), no `E1323` for that case | decided |
+| L8 | aggregate element: element type vs aggregate type tie | the element type (the reference simulator), no `E1323` for that case | decided |

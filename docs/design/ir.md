@@ -78,7 +78,7 @@ to span, statement kind and enclosing subprogram without any other table.
 
 ### 1.2 Registers and passes
 
-- Registers are untyped 64-bit cells; `reg_ty` exists for the verifier and the LLVM tier.
+- Registers are untyped 64-bit cells; `reg_ty` exists for the verifier and the JIT tier.
   `RegTy::Ptr` is an `Addr` (1.4), `RegTy::Sig` a signal reference `SigVal` (packed
   `{base: u32 index into the instance's signal table, offset: u32, len: u32}` in two cells).
 - Lowering allocates registers with a per-statement free list: temporaries die at the end of
@@ -88,7 +88,7 @@ to span, statement kind and enclosing subprogram without any other table.
 - **Suspension invariant:** no register is live across a `Wait` or a call to a `MAY_SUSPEND`
   procedure. Arguments are written into the callee's slots before the call, out/inout write-back
   addresses are kept in caller slots. The interpreter keeps registers anyway (frames are heap
-  objects), but the LLVM tier relies on this: resuming needs only the frame memory and a resume
+  objects), but the JIT tier relies on this: resuming needs only the frame memory and a resume
   index.
 - Every pass is one walk over blocks in order: verifier (types, invariant above, every instruction
   has a `StmtId`), `MAY_SUSPEND` and `TOUCHES_SHARED` propagation (worklist over the reverse call
@@ -217,7 +217,7 @@ Lowering of the main statement forms:
 - **GC:** a process heap is collected when its process suspends and allocation since the last
   collection exceeds a threshold; roots are that process's frames (root maps). The shared heap is
   collected at the end of a delta, when no process runs. No GC ever waits for another thread
-  (NVC #1649 cannot happen).
+  (the deadlock class seen in other simulators cannot happen).
 - **Protected:** an instance is a heap object holding its private variables; methods are `Func`s
   with `self` as the first parameter. `CallProt` takes the instance's lock (3.5).
 - **Files:** `FileId` indexes the owner's file table (process or shared). Reads are immediate;
@@ -252,7 +252,7 @@ impl ForeignFn {
 | Win64 (Windows x86_64) | rcx rdx r8 r9 **by position** | xmm0-xmm3 by the same position | 32-byte shadow space, then args 5+ in 8-byte slots; `rsp` 16-aligned |
 
 - **VHDL to C mapping** (checked at elaboration; anything else is an error naming the subprogram
-  and parameter, fail early). It follows the NVC user manual (`nvc(1)`, "VHPIDIRECT"), which
+  and parameter, fail early). It follows the primary reference simulator's user manual ("VHPIDIRECT" section), which
   defines integers, reals, enumerations and both array kinds; records and access values are
   yavs additions. `yavs_ffi::vhdl::lower` implements it:
 
@@ -264,7 +264,7 @@ impl ForeignFn {
 | `real` | `double` | value |
 | access | `void *` | value |
 | constrained array | element pointer | marshalled into a C-layout temp (`int32_t`/`uint8_t`/`double` elements, logic arrays transposed from planes to one code byte per element), copied back for `out`/`inout` |
-| unconstrained array | element pointer, then one `int64_t` length argument per dimension | same marshalling; NVC's convention, so C written for NVC works unchanged (bounds and direction are not passed) |
+| unconstrained array | element pointer, then one `int64_t` length argument per dimension | same marshalling; the reference simulator's convention, so C written for the reference simulator works unchanged (bounds and direction are not passed) |
 | record of the scalar kinds above | pointer to a C struct with natural alignment | marshalled both ways |
 | scalar `out`/`inout` | pointer to a C-typed temp | written back after the call |
 | function result | `void` or any scalar C type above | `yavs-ffi` narrows the result register to the declared type (sign/zero extension); the interpreter range-checks |
@@ -277,7 +277,7 @@ impl ForeignFn {
 - **Tests on all three ABIs** without a C compiler: Rust `extern "C" fn` callees with mixed
   signatures (interleaved int/float, more arguments than registers to force stack slots,
   `int32_t`/`uint8_t` results with garbage upper bits, pointer write-back), run in CI on Linux
-  x86_64, Linux aarch64 and Windows x86_64. The LLVM tier calls foreign functions directly with
+  x86_64, Linux aarch64 and Windows x86_64. The JIT tier calls foreign functions directly with
   the same mapping.
 
 ## 2. Processes, subprograms, suspension, shared code
@@ -285,19 +285,18 @@ impl ForeignFn {
 - **One `Func` per process or subprogram per design unit**, shared by every instance. Generics
   (constant), signals, drivers and declared constants are per-instance data read through
   `Space::Inst`, never baked in. This keeps code size linear in the source, not in the number of
-  instances (NVC #1331).
+  instances.
 - Instance data `InstData { generics, consts, sigs: Box<[SigBase]>, child: Box<[InstRef]>, pkg: ... }`
   is computed by the unit's `Elab` function and frozen (read-only) before simulation.
 - **Type generics and generic subprograms** are runtime data too: a type generic is a descriptor
   plus a `TyId` class, a subprogram generic is a `FuncId` in the instance data called through
   `CallIndirect`. One body per unit; specialisation per actual is an optional later pass (Q4).
-- **Generic package instances** each get their own `InstData` and `Mangled` identity (rule 4,
-  NVC #1492/#1408); code is shared with the uninstantiated package.
+- **Generic package instances** each get their own `InstData` and `Mangled` identity (rule 4); code is shared with the uninstantiated package.
 - **Suspension:** a process is a frame stack `Vec<Frame>` owned by its `InterpProcess`. `Suspend`
   returns from `Process::run` with the stack intact; the next `run` continues at the top frame's
   `pc`. A `wait` inside a procedure therefore needs nothing special: the procedure frame is just
   on the stack (frames are on the heap). Each `Suspend` names a resume index (`Func.resume`),
-  which is the state number for the LLVM tier's resumable state machine.
+  which is the state number for the JIT tier's resumable state machine.
 - Functions cannot suspend (H11); a `MAY_SUSPEND` procedure called from a function is an ICE in
   the verifier.
 
@@ -306,7 +305,7 @@ impl ForeignFn {
 ### 3.1 Dispatch
 
 - `Inst` is a Rust `enum` with `#[repr(u8)]`-sized tag and inline operands (8 to 16 bytes); a
-  `match` loop over `code[pc]` with a local `pc`, `regs` and `slots` (rustc compiles it to a jump
+  `match` loop over `code[pc]` with a local `pc`, `regs` and `slots` (the Rust compiler compiles it to a jump
   table). No threaded code, no `unsafe` (foreign calls are the one exception, isolated in `yavs-ffi`, 1.7).
 - Two loop instances: `exec::<false>` (fast: `Stmt` is a nop, no hook checks) and
   `exec::<true>` (debug: `Stmt` calls the debugger hook). The process switches loops when a
@@ -360,7 +359,7 @@ impl yavs_kernel::Process for InterpProcess {
 - A broken interpreter invariant returns `ErrorKind::Internal` at the current statement's span:
   "this is a bug in yavs" (exit 101), never a bare panic.
 
-### 3.4 Debug hooks (Riviera-PRO / Questa style)
+### 3.4 Debug hooks (the reference simulators style)
 
 Implemented in `yavs-interp` (`debug.rs`); the DAP server (M8) and the GUI (M10) build on it
 without interpreter changes.
@@ -396,7 +395,7 @@ SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Obs
 | condition | an IR `Function` without parameters whose `parent` is the function containing the statement; it reads the stopped frame through `AddrSpace::Up(1)`. Lowering produces it from the HIR expression typed in the debugger. An error in it is a stop with `ConditionError`, not a simulation error |
 | hit count | `HitCond::{Always, Eq(n), Ge(n), Multiple(n)}` over the hits where the condition held; `LineBp::hits()` |
 | step in / over / out | per process, by frame depth (`StepMode`) |
-| global step | a session flag: the next `Stmt` executed by any attached process stops (Questa `step`, Riviera trace) |
+| global step | a session flag: the next `Stmt` executed by any attached process stops (the third reference simulator `step`, a commercial simulator trace) |
 | pause inside a process | session flag polled every 4096 instructions, stops at the next statement (endless loops) |
 | signal breakpoint | `SignalBreak` observer on the event bus: on a change of the signal (or to a value) it records the hit and calls `Interrupt::pause`; `SimControl::run_*` returns `Paused` after that cycle |
 | run for / next delta / next time step | `SimControl::run_for`, `run_until`, `step_delta`, `step_timestep` |
@@ -427,7 +426,7 @@ SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Obs
   instance.
 - **Protected locking (M2/M3):** every protected caller is serial, so the kernel already runs it
   alone and `CallProt` takes no lock. `// ponytail: protected calls serialised via serial
-  marking; per-instance locks when VUnit-scale benchmarks show serial processes dominate`. The
+  marking; per-instance locks when benchmarks at the scale of large test-runner suites show serial processes dominate`. The
   per-instance lock design (Q3) only changes `CallProt` and the marking rule.
 - `--threads 1` and `--threads N` produce identical output because all observable effects go
   through the kernel's buffered effects, and serial processes see a deterministic order.
@@ -460,19 +459,19 @@ impl Elaborated { pub fn build(&self, kcfg: yavs_kernel::Config) -> Result<SimCo
 ```
 
 Pure and re-entrant: no globals, no interior mutability shared across calls; `build` can be
-called again for an in-process restart (rule 4, GHDL #1184).
+called again for an in-process restart (rule 4).
 
 | Step | What happens | Errors (fail early, with instance path) |
 |---|---|---|
 | 1. Reachability | units reachable from `top` through instances, configurations, packages; lowered once each into `Program` | missing unit names where yavs looked (library manifest) |
 | 2. Packages | elab functions of packages in dependency order; generic package instances get `InstData` + mangled identity | |
-| 3. Generics | `-g` overrides parsed as VHDL literals of the generic's type (rule 4, GHDL #1117), then generic map thunks evaluated in the parent instance | missing generic without default; type mismatch; bad override text |
+| 3. Generics | `-g` overrides parsed as VHDL literals of the generic's type (rule 4), then generic map thunks evaluated in the parent instance | missing generic without default; type mismatch; bad override text |
 | 4. Declarations | the unit's `Elab` function: constants, subtype descriptors, signals (`ElabSignal`), shared variables, protected instances | bound/constraint failure at a declaration |
 | 5. Generates | `for`: evaluate range, one child scope per value, path `label(i)`; `if`/`case`: evaluate and pick one alternative (2008 alternative labels) | non-static range use errors |
 | 6. Binding | component instance: configuration declaration, then configuration specification, then default binding (LRM 7.3.3); entity instance directly | unbound component (warning per LRM, then open); port/generic mismatch between component and entity |
 | 7. Ports | association per formal sub-element (`ElabPort`), see below | type/mode mismatch, unassociated in-port without default |
 | 8. Processes | `ElabProcess` per process: drivers from the process's static driver list (per `Drive` slot, evaluated for this instance), flags (postponed, serial) | multiple drivers on an unresolved signal (LRM 14.7.2), names both processes |
-| 9. External names | bound in elaboration order against the partial hierarchy (GHDL #548) | target not found or not yet elaborated, with the path tried |
+| 9. External names | bound in elaboration order against the partial hierarchy | target not found or not yet elaborated, with the path tried |
 | 10. Check | net graph verified (every port connected or defaulted, every driver has a target) | |
 
 **Ports (rule 3).** Each formal is its own signal in the net graph. Association kinds:
@@ -525,7 +524,7 @@ object has the LRM `'path_name` / `'instance_name` strings with original spellin
 are VHPI's object identity, the wave hierarchy's order, coverage's path (plus span hash, rule 10)
 and the DAP variable references.
 
-## 5. LLVM tier seam (M6)
+## 5. JIT tier seam (M6)
 
 What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
 
@@ -582,7 +581,7 @@ translation table is needed between elab ids and kernel ids.
 ## 7. M2 implementation order
 
 Each slice ends with `cargo test`, `clippy -D warnings`, and the listed difftest groups green
-against NVC at `--threads 1` and `--threads 4` (`tools/difftest/difftest.py --candidate yavs
+against the reference simulator at `--threads 1` and `--threads 4` (`tools/difftest/difftest.py --candidate yavs
 --filter ...`). Groups not listed stay red and are not a slice failure.
 
 | Slice | Content | Turns green |
@@ -635,7 +634,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 | foreign | `ForeignRef {name, symbol, args: Vec<ForeignArg>, ret}` with `ForeignArg::{Value(CType), ScalarRef(CType, Width), Array {ty, lengths, copy_back}, Record {ty, copy_back}, Access}`. Arrays: the register is a fat-pair address (constrained arrays too); C gets a C-layout copy left to right (logic elements as one code byte, BIT/BOOLEAN as 0/1) and `lengths` `int64_t` lengths. Records of scalars: a naturally aligned C struct. Access: a pointer to the object's data in VHDL layout (after the descriptor of an array object), NULL for null. Copy-back range-checks what C wrote. The elaborator binds pointers through `Bindings.foreign`; `Runtime::new` fails on unbound or mismatched signatures |
 | heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation; a deallocated slot is quarantined until a suspension finds no address to it in the owner's frames and temporaries, so a stale address always meets the freed slot (runtime error, #81). Handles are found through each object's descriptor (#80). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated; objects that addresses in the frames reach are kept; an object whose handles cannot be located from its type skips the collection (never unsound). `// ponytail:` the shared heap is never collected; add a commit-phase collection when long OSVVM runs show growth |
 | std.env 2019 | call paths from the frame stack and `Bindings::sources`; the VHDL assert state is per-cycle snapshots plus each process's own changes, merged in process order (deterministic at any thread count); records go to natives as fat pairs (docs/decisions.md, #99) |
-| verifier | the "no register live across a suspension" check is intra-block only; cross-block liveness needs dataflow and comes with the LLVM tier |
+| verifier | the "no register live across a suspension" check is intra-block only; cross-block liveness needs dataflow and comes with the JIT tier |
 | serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}` and `CallNative` of a file or directory native (#82); `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |
 | elaboration | `Elab` instructions are a runtime "needs yavs-elab" error; `InstData {data, sigs, cov_base}` has no child or package links yet. `call_shared` runs elaboration code with the `SharedState` (shared variables, shared protected objects) |
 | native arguments | `in` scalars by value; `out`/`inout` scalars and access variables by cell address; unconstrained arrays as a fat-pair address; files as the address of their 4-byte cell; records by address. Results: scalars by value, strings as a fat-pair address, `line` as a handle |
@@ -643,11 +642,11 @@ What the implementation does differently from sections 1 to 3, and what producer
 | lines | `line` objects are `[1 to len][bytes]`; natives replace and deallocate them. A line cell in shared memory gets a shared-heap object |
 | logic BIT | BIT and BOOLEAN elements of logic arrays: the interpreter writes the codes of '0' and '1' (so the std_ulogic plane ops give correct BIT results) and reads either those or the positions 0/1 that yavs-elab uses for BIT leaves. **Open: one encoding must be chosen** (element 0 is the rightmost) |
 | protected | the object is a handle to its state record (`New {shared}`), methods get `self` first (`CallProt`); a shared object is created at elaboration through `call_shared` |
-| checks | `CheckMsg {what, dir, subtype}`; messages follow NVC (`value 101 outside of PCT range 0 to 100 for variable P`). Added `BinRange` (integer op checked against the base type, `result of .. cannot be represented as T`), `FToIRange` (real to integer against the subtype, message shows the real), `FCheck` (real subtype constraints). Integer division by zero reads `division by zero` |
+| checks | `CheckMsg {what, dir, subtype}`; messages follow the reference simulator (`value 101 outside of PCT range 0 to 100 for variable P`). Added `BinRange` (integer op checked against the base type, `result of .. cannot be represented as T`), `FToIRange` (real to integer against the subtype, message shows the real), `FCheck` (real subtype constraints). Integer division by zero reads `division by zero` |
 | thunks | may return a value or not |
 | stop severity | after a `Report` at `Ctx::stop_severity()` the process executes no further |
 | constants | compact constants (`Repeat`, `Runs`, `Logic`) are expanded on first use by address (`AddrOf Const`) |
-| debug | section 3.4 (rewritten for the Riviera/Questa requirements) |
+| debug | section 3.4 (rewritten for the reference simulators requirements) |
 
 **What lowering and elaboration must produce for the interpreter:**
 

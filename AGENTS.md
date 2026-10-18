@@ -1,7 +1,7 @@
 # AGENTS.md: working on yavs
 
 yavs is a production VHDL simulator in Rust: VHDL-2008 and 2019, an IR interpreter plus an
-optional LLVM tier, a parallel kernel, VHPI for cocotb, VUnit support, and later a DAP server and a
+optional JIT tier, a parallel kernel, VHPI for Python testbench frameworks, external test runner support, and later a DAP server and a
 GUI. The name stands for "Yet Another VHDL Simulator". This file is for AI agents (and humans) changing the code. Read it
 fully before your first edit. It is short on purpose: the details live in the documents it points
 to, and those documents win over your memory.
@@ -22,7 +22,7 @@ to, and those documents win over your memory.
 | semantic analysis (`yavs-sem`) | `crates/yavs-sem/AGENTS.md`, `docs/design/sem.md`, `docs/design/lrm-checks.md`, `crates/yavs-sem/CONTRIBUTING.md` |
 | IR, interpreter, lowering, elaboration | `crates/yavs-{ir,interp,lower,elab}/AGENTS.md`, `docs/design/ir.md`, `crates/yavs-ir/README.md`, `crates/yavs-lower/DESIGN.md`, `crates/yavs-kernel/DESIGN.md` |
 | kernel (`yavs-kernel`) | `crates/yavs-kernel/AGENTS.md`, `crates/yavs-kernel/DESIGN.md` |
-| CLI, libraries, VUnit integration | `crates/yavs/AGENTS.md`, `crates/yavs-lib/AGENTS.md`, `docs/cli-contract.md` (VUnit depends on it: change it deliberately) |
+| CLI, libraries, test-runner integration | `crates/yavs/AGENTS.md`, `crates/yavs-lib/AGENTS.md`, `docs/cli-contract.md` (external test runners depend on it: change it deliberately) |
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
 | FFI, VHPI, waves, LLVM | `crates/yavs-{ffi,vhpi,wave,llvm}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
@@ -32,7 +32,7 @@ to, and those documents win over your memory.
 
 | Path | What |
 |---|---|
-| `crates/yavs-diag` | Diagnostics model and rustc-style renderer; code registry in its crate docs |
+| `crates/yavs-diag` | Diagnostics model and renderer (codes, snippets, labels, notes, help); code registry in its crate docs |
 | `crates/yavs-syntax` | Lexer, conditional analysis, parser, owned AST (2008 and 2019) |
 | `crates/yavs-sem` | Semantic analysis to typed HIR (`hir.rs`); module owners in its `CONTRIBUTING.md` |
 | `crates/yavs-lib` | Library manifests, `_YAVS_LIB` locking, unit closure |
@@ -47,25 +47,25 @@ to, and those documents win over your memory.
 | `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |
-| `tests/corpus/` | Differential testbenches with NVC reference outputs (`tools/difftest`) |
+| `tests/corpus/` | Differential testbenches with reference-simulator outputs (`tools/difftest`) |
 | `tests/parse-corpus/` | Expected parse results for external corpora |
-| `tools/corpus/` | Analysis corpus manifests (VUnit, OSVVM, UVVM, hdl-modules, lib, external libraries), `run.py`, `RESULTS.md` |
+| `tools/corpus/` | Analysis corpus manifests (external libraries, `lib`), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |
 
 ## 3. Rules (mandatory)
 
 ### Correctness and behaviour
-1. **Fail early, fail clearly.** Every problem is a `yavs_diag::Diagnostic` in the rustc format:
-   code, primary span, labels, notes, help. No stage runs after a failed one. No silent
+1. **Fail early, fail clearly.** Every problem is a `yavs_diag::Diagnostic` with a code, primary span, labels, notes and help.
+   No stage runs after a failed one. No silent
    fallbacks: never `unwrap_or(default)` on anything that comes from the design, the user or the
    environment. A broken invariant is an internal-compiler-error diagnostic ("this is a bug in
    yavs"), never a bare panic. Not-yet-implemented features report an explicit "not implemented"
    diagnostic naming the milestone or slice, never a guess.
 2. **LRM policy.** Where the LRM is clear, follow it and fail early. Where it is unclear or silent,
-   be permissive: accept what any major simulator (NVC, GHDL, Questa, Riviera) accepts, pick the
+   be permissive: accept what the other major simulators accept, pick the
    semantics that lets the most designs elaborate, and warn only when simulators give different
    results. Record each such choice in `docs/decisions.md` or `docs/design/lrm-checks.md`.
-3. **The interpreter is the semantic reference.** The LLVM tier must produce identical results.
+3. **The interpreter is the semantic reference.** The JIT tier must produce identical results.
    Runs with `--threads 1` and `--threads N` must produce byte-identical output.
 4. **Respect the design rules** in `docs/plan.md` (runtime constraints on every composite, one
    sub-element signal map, checked i64 everywhere, original identifier spelling, generational
@@ -82,7 +82,7 @@ to, and those documents win over your memory.
    Synopsys packages, which are deferred) from memory.
 9. **Dependencies:** a crate that cargo fetches and builds by itself is fine. Anything that needs a
    manual install must be approved by the user first. Approved so far: LLVM 21 (optional feature),
-   a C compiler at build time, NVC/GHDL/Questa as dev-only references, qemu-user and the aarch64
+   a C compiler at build time, reference simulators as dev-only references, qemu-user and the aarch64
    cross linker for testing.
 
 ### Code
@@ -104,7 +104,7 @@ to, and those documents win over your memory.
 14. **Every behaviour gets a test.** Errors get a negative test with the code and position.
     Rendered output changes are snapshot changes that show up in review (`YAVS_BLESS=1` to update,
     then inspect the diff).
-15. **Simulator reference runs** (NVC, GHDL, Questa) are wrapped as
+15. **Simulator reference runs** are wrapped as
     `timeout 300 systemd-run --user --scope -p MemoryMax=2G ...`, at most 8 at once, with work
     directories under `~/.cache/<your-dir>`, never inside the repository.
 16. **No testbench may run longer than 5 minutes.** Shrink the scenario, never weaken assertions.
@@ -152,14 +152,16 @@ to, and those documents win over your memory.
     - decisions local to one module: that module's `AGENTS.md` "Design decisions" section (plus its
       design doc section if one exists, e.g. `docs/design/sem.md`, `ir.md`, a crate `DESIGN.md`);
     - LRM interpretations: `docs/design/lrm-checks.md` (policy, rule 2: a clear LRM wins; where it
-      is unclear, be permissive and match the existing simulators);
-    - CLI or VUnit-facing behaviour: `docs/cli-contract.md`.
+      is unclear, be permissive and match the other simulators);
+    - CLI or test-runner-facing behaviour: `docs/cli-contract.md`.
 25. **Release notes: one towncrier fragment per user-visible change** (user, 2026-10-18), in the
     same commit: `release_notes/news.d/<issue>.<type>.md` (`+<name>.<type>.md` without an
     issue), type `breaking`, `feature`, `bugfix`, `doc` or `misc`, one or two sentences on what
     a user can do now: features, not numbers. The user documentation (README, `docs/*.rst`,
     release notes) describes yavs as a simulator on its own: never mention other projects there
-    (VUnit, NVC, GHDL, cocotb, rustc, ...), except in licence notes (user, 2026-10-18). Never write `release_notes/<version>.md` by hand
+    (test runners, simulators, libraries, frameworks), and the same holds for every document in the
+    repository (developer docs, `AGENTS.md` files, `STATUS.md`, tool and test docs), except licence notes
+    (user, 2026-10-18, widened the same day). Never write `release_notes/<version>.md` by hand
     outside a release. The user documentation (Sphinx, `docs/conf.py`, `docs/*.rst`, published
     on Read the Docs) shows the fragments under "Unreleased"; build it with
     `sphinx-build -W -b html docs docs/_build/html` after `pip install -r docs/requirements.txt`.

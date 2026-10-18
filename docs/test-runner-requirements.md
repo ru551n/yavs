@@ -1,16 +1,16 @@
-# yavs requirements from VUnit PRs #1235, #1236 and #1239
+# yavs requirements from an external test runner
 
-VUnit branch `rsim-integration` (local, in `~/git/vunit-rsim`) merges three open VUnit PRs into the yavs
-support and sets these hooks in `vunit/sim_if/yavs.py`:
+The test runner's yavs integration (a local branch that merges three open feature requests into its yavs
+support) sets these hooks in its yavs interface module:
 
-| Hook | Value | From PR | Needs from yavs |
+| Hook | Value | From feature | Needs from yavs |
 |---|---|---|---|
-| `supports_concurrent_compiles_into_library` | True | #1235 `--parallel-compile` | section 2 (locking) |
-| `supports_batch_compile` | True | #1236 `--batch-compile` | section 1 (multi-file analyze) |
-| `batch_file_list_arguments` | `("@{}",)` | #1236 | section 1 (`@FILE`) |
-| `supports_vhdl_reflection()` | True (a target) | #1239 `record_dict_pkg` | section 3 (`std.reflection`) |
+| `supports_concurrent_compiles_into_library` | True | `--parallel-compile` | section 2 (locking) |
+| `supports_batch_compile` | True | `--batch-compile` | section 1 (multi-file analyze) |
+| `batch_file_list_arguments` | `("@{}",)` | `--batch-compile` | section 1 (`@FILE`) |
+| `supports_vhdl_reflection()` | True (a target) | `record_dict_pkg` | section 3 (`std.reflection`) |
 
-The fake yavs (`tests/acceptance/yavs/fake_bin/yavs`) implements sections 1 and 2 and passes end to end
+The test runner's fake yavs implements sections 1 and 2 and passes end to end
 with `--parallel-compile -p 8`, `--batch-compile` and both.
 
 ## 1. CLI contract: `yavs analyze FILE...` and `@FILE`
@@ -24,15 +24,15 @@ yavs analyze <same options> @FILELIST
 ```
 
 - **Several files per call.** All files of a call go into the one `--work` library with the same
-  options and the same `--std`. VUnit batches only VHDL files whose commands match apart from the
+  options and the same `--std`. The test runner batches only VHDL files whose commands match apart from the
   file name, so files with another standard or other flags arrive in a separate call.
-- **`@FILELIST`.** VUnit passes the files of a batch as `@FILE`, written next to its output path
+- **`@FILELIST`.** The test runner passes the files of a batch as `@FILE`, written next to its output path
   (`batch_*.txt`) and deleted after the call. This is the existing response file rule (UTF-8, one
   argument per line, taken verbatim, `\n` or `\r\n`, no recursion), with the file names as the
-  positionals. The options stay on the command line, so `@FILE` comes last. VUnit writes the file in
+  positionals. The options stay on the command line, so `@FILE` comes last. The test runner writes the file in
   text mode, so it uses `\r\n` on Windows; yavs already accepts that. A file name containing a line
-  break cannot be listed: that batch fails, and VUnit then compiles its files one at a time.
-- **Order.** Files are analyzed in the order given, which is VUnit's compile order. A later file of
+  break cannot be listed: that batch fails, and the test runner then compiles its files one at a time.
+- **Order.** Files are analyzed in the order given, which is the test runner's compile order. A later file of
   the batch may use units of an earlier file of the same batch (same library), so each file's units
   must be visible to the next file before the call ends.
 - **Stop at the first failing file.** Analysis stops at the first file with errors, and the call
@@ -40,22 +40,22 @@ yavs analyze <same options> @FILELIST
   Exit 2 (usage) and 3 (internal) keep their meaning for the whole call.
 - **Report which files were analyzed.** yavs prints one line per file it recorded, in order, for example
   `yavs: analyzed FILE` on stdout, and under `--message-format=json` one object
-  `{"level": "note", "code": "analyzed", "file": "FILE"}` per file. Today VUnit compiles the
+  `{"level": "note", "code": "analyzed", "file": "FILE"}` per file. Today the test runner compiles the
   whole failed batch again one file at a time, so it only needs the exit code. With the report, a later
-  VUnit change could mark the analyzed files as compiled and retry only from the failing one.
+  test runner change could mark the analyzed files as compiled and retry only from the failing one.
 - **What is recorded on failure.** Files analyzed before the failing one stay recorded. Nothing of the
-  failing file or of later files is recorded. Analyzing a file again replaces its units, so VUnit's
+  failing file or of later files is recorded. Analyzing a file again replaces its units, so the test runner's
   file-by-file retry of a failed batch is safe.
 - **Lock for the whole call.** The exclusive `_YAVS_LIB` lock of the work library is taken once and
   held for the whole batch, not per file, so no other `analyze` into that library interleaves with the
   batch. The manifest may be committed once at the end or after each file, always as temp file plus
   atomic rename.
-- No command-length limit applies: with `@FILE` VUnit lists any number of files
-  (`_MAX_BATCH_COMMAND_LENGTH` applies only to compilers without a file list).
+- No command-length limit applies: with `@FILE` the test runner lists any number of files
+  (the runner's batch command-length limit applies only to compilers without a file list).
 
 ## 2. Library locking (plan rule 14) under `--parallel-compile`
 
-With `supports_concurrent_compiles_into_library = True`, VUnit applies no library rule of its own for yavs.
+With `supports_concurrent_compiles_into_library = True`, the test runner applies no library rule of its own for yavs.
 Up to `-p` analyzes run at once, into the same library and into libraries other running analyzes read
 (almost every file reads `vunit_lib` while `vunit_lib` files are still being analyzed). yavs must
 therefore guarantee:
@@ -80,7 +80,7 @@ therefore guarantee:
 - **Read-only libraries never fail.** If the lock file cannot be opened for writing, yavs opens it
   read-only and takes the shared lock. If it cannot be opened at all, yavs skips locking.
 - **Lock waits are not errors.** A wait longer than a few seconds prints a note naming the library and
-  does not change the exit code. VUnit shows the output of a passed compile, so the note is harmless.
+  does not change the exit code. The test runner shows the output of a passed compile, so the note is harmless.
 - **Windows:** `LockFileEx` through `std::fs::File::lock`. The temp file plus rename must use
   `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING` (Rust `std::fs::rename` does this), and must survive
   a reader holding the old manifest open. If not, retry on a sharing violation.
@@ -91,12 +91,12 @@ with exit 3 (`FAKE_YAVS_NO_LOCK=1` shows it). With the lock they never do.
 ## 3. `std.reflection` for `tb_record_dict_pkg` (VHDL-2019)
 
 `supports_vhdl_reflection()` is True for yavs as a **target**, not a claim. Reflection is not in the
-yavs plan yet. Until it lands, `vu.add_record_dict()` accepts yavs, but `record_dict_pkg.vhd` fails to
-analyze (`use std.reflection.all`), so `vunit/vhdl/record_dict/run.py` fails on yavs. The VUnit
-acceptance test `test_record_dict_vhdl_2019` stays skipped for yavs (it runs for NVC and Riviera-PRO
+yavs plan yet. Until it lands, the runner's `add_record_dict()` accepts yavs, but `record_dict_pkg.vhd` fails to
+analyze (`use std.reflection.all`), so the runner's `record_dict` example fails on yavs. The test runner
+acceptance test `test_record_dict_vhdl_2019` stays skipped for yavs (it runs for the reference simulators
 only). Enable it for yavs when reflection lands.
 
-What `vunit/vhdl/record_dict/src/record_dict_pkg.vhd` and its testbench use:
+What the runner's `record_dict_pkg.vhd` and its testbench use:
 
 **Package `std.reflection`** (LRM 2019 16.11), with `use std.reflection.all`:
 
@@ -114,14 +114,14 @@ What `vunit/vhdl/record_dict/src/record_dict_pkg.vhd` and its testbench use:
   ieee-2019 `unsigned` may be either one.
 - `integer_value_mirror.value`, `floating_value_mirror.value`.
 - `physical_value_mirror.value`, multiplied by `std.env.resolution_limit` to get a `time`. The
-  value must be in units of the resolution limit, as on Riviera-PRO (NVC returns fs). yavs must document
+  value must be in units of the resolution limit, as on a commercial simulator (the primary reference simulator returns fs). yavs must document
   which one it is, and the package may need an `` `if TOOL_NAME = "yavs" `` branch otherwise.
 - `enumeration_value_mirror`: `pos`, and `image` for user enumerations (`"busy"`).
 - `array_value_mirror`: `get_subtype_mirror` (to `array_subtype_mirror`) and `get(index)` with the
   LRM index of a one-dimensional array.
 - `array_subtype_mirror`: `left`, `ascending`, `length`. For both `downto` and `to` arrays,
   `get(left + i)` (ascending) and `get(left - i)` (descending) must return element `i` from the left.
-  This is the non-NVC branch.
+  This is the branch for other simulators.
 - `record_value_mirror`: `get_subtype_mirror` (to `record_subtype_mirror`) and `get(idx)` for an element
   index `0 .. length - 1`.
 - `record_subtype_mirror`: `length` and `element_name(idx)`. Names may be returned in any case; the
@@ -146,6 +146,5 @@ instance used to test the "not a record" failure.
 - 2019 call paths (`check_only_log` compares the log location), which yavs already reports through
   `supports_vhdl_call_paths`.
 
-Test that defines "done": `VUNIT_SIMULATOR=yavs VUNIT_VHDL_STANDARD=2019 python
-vunit/vhdl/record_dict/run.py`, 6 of 6 passing (scalars, arrays including ascending ranges and signed/unsigned,
+Test that defines "done": `VUNIT_SIMULATOR=yavs VUNIT_VHDL_STANDARD=2019 python run.py` in the runner's `record_dict` example directory, 6 of 6 passing (scalars, arrays including ascending ranges and signed/unsigned,
 nested records, lower-case keys, and the two failure messages).

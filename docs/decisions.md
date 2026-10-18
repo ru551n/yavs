@@ -741,6 +741,12 @@ which tools/difftest parses.
   Reading any name below such a signal reads the whole signal and then selects (ponytail:
   read only the selected ranges if large memories of records need it); driving a part copies
   each leaf's elements of every waveform value into one transaction per leaf.
+- **Arrays of arrays without records** (#89) stay one kernel signal of all their scalars, row
+  major (logic mirrored). Every name of indices and slices below such a signal (`m(i)`,
+  `m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`), as target, actual, alias or sensitivity, selects
+  one contiguous range by the same walk as composite signals (`Fx::sig_steps`), so a whole
+  element is all its scalars, not one. Paths through a subtype alias (`LspStep::Rebase`) of
+  such a signal are still E2001.
 
 ## Foreign subprograms and `--load` (yavs-lower, yavs-vhpi, CLI, #95, 2026-10-18)
 

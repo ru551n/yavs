@@ -71,6 +71,18 @@ pub(crate) enum Step<'d> {
     Slice(&'d RangeC),
 }
 
+/// Where a chain of selections leads (`Fx::walk_steps`): the part's type, descriptor and
+/// field path, and the `count` consecutive instances from instance `offset` it covers, each
+/// of type `inst` (the element type after a slice) or the part's own.
+pub(crate) struct Walk {
+    t: TypeId,
+    desc: Reg,
+    path: Vec<u32>,
+    offset: Reg,
+    count: Reg,
+    inst: Option<(TypeId, Reg)>,
+}
+
 /// The part of a composite signal that a name selects (`Fx::comp_select`).
 pub(crate) struct SigPart {
     pub t: TypeId,
@@ -511,8 +523,9 @@ impl<'a> Fx<'a, '_> {
         match self.cx.objs.get(&d).copied() {
             Some(Obj::Signal { sig }) => match self.sig_dope(d, span)? {
                 Some(dope) => {
-                    let tid = self.decl_ty(d, span)?;
-                    let (_, count) = self.layout(tid, dope);
+                    // Every scalar: an array of arrays is one leaf of all of them, row major.
+                    let t = self.db.base(ty::obj_subtype(self.db, d).ok_or(Failed)?);
+                    let count = self.leaf_count(t, dope, &[], span)?;
                     let offset = self.int(0);
                     Ok(self.sigval_at(sig, offset, count))
                 }
@@ -692,37 +705,57 @@ impl<'a> Fx<'a, '_> {
             let dope = ty::is_array(db, p.t).then_some(p.desc);
             return Ok((d, *r, dope));
         }
-        let (prefix, sel) = match &x.kind {
-            ExprKind::Obj(d) => {
-                let dope = match self.cx.objs.get(d) {
-                    Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => self.sig_dope(*d, span)?,
-                    None if self.alias_target(*d).is_some() => self.sig_dope(*d, span)?,
-                    _ => None,
-                };
-                return Ok((*d, self.sig_of(*d, span)?, dope));
-            }
-            ExprKind::Index { prefix, indices } if indices.len() == 1 => (*prefix, Ok(indices[0])),
-            ExprKind::Slice { prefix, range } => (*prefix, Err(range)),
-            _ => {
-                return Err(self
-                    .cx
-                    .unsupported(span, "signal names with record or nested selections"));
-            }
-        };
-        let ExprKind::Obj(d) = db.exprs[prefix].kind else {
+        if let Some((d, steps)) = self.nested_steps(e) {
+            let (r, dope) = self.sig_steps(d, &steps, span)?;
+            return Ok((d, r, dope));
+        }
+        let ExprKind::Obj(d) = &x.kind else {
             return Err(self
                 .cx
-                .unsupported(span, "signal names with nested selections"));
+                .unsupported(span, "signal names with record or nested selections"));
         };
-        let (r, dope) = self.sig_select(d, sel, span)?;
-        Ok((d, r, dope))
+        let dope = match self.cx.objs.get(d) {
+            Some(Obj::Signal { .. } | Obj::SignalRef { .. }) => self.sig_dope(*d, span)?,
+            None if self.alias_target(*d).is_some() => self.sig_dope(*d, span)?,
+            _ => None,
+        };
+        Ok((*d, self.sig_of(*d, span)?, dope))
     }
 
-    /// Element `Ok(index)` or slice `Err(range)` of array signal `d`.
-    pub fn sig_select(
+    /// The root object and the indices and slices of a name below a signal without records:
+    /// `s(i)`, `s(i)(j)`, `s(i, j)`, `s(i)(7 downto 4)`.
+    fn nested_steps(&self, e: ExprId) -> Option<(DeclId, Vec<Step<'a>>)> {
+        let db = self.db;
+        let mut steps = Vec::new();
+        let mut e = e;
+        let d = loop {
+            match &db.exprs[e].kind {
+                ExprKind::Index { prefix, indices } => {
+                    steps.push(Step::Index(indices));
+                    e = *prefix;
+                }
+                ExprKind::Slice { prefix, range } => {
+                    steps.push(Step::Slice(range));
+                    e = *prefix;
+                }
+                ExprKind::Obj(d) => break *d,
+                _ => return None,
+            }
+        };
+        if steps.is_empty() {
+            return None;
+        }
+        steps.reverse();
+        Some((d, steps))
+    }
+
+    /// The elements of signal `d` (without records) that `steps` select, and their descriptor
+    /// for an array: one contiguous kernel range by the rule of `NetGraph::select`, row major
+    /// over all scalars, mirrored for logic signals.
+    pub fn sig_steps(
         &mut self,
         d: DeclId,
-        sel: Result<ExprId, &yavs_sem::types::RangeC>,
+        steps: &[Step<'_>],
         span: Span,
     ) -> R<(Reg, Option<Reg>)> {
         let db = self.db;
@@ -732,13 +765,26 @@ impl<'a> Fx<'a, '_> {
             None if self.alias_target(d).is_some() => Err(self.sig_of(d, span)?),
             _ => return Err(self.cx.ice(span, "selection of a non-signal")),
         };
-        let Some(dope) = self.sig_dope(d, span)? else {
+        let Some(root) = self.sig_dope(d, span)? else {
             return Err(self.cx.ice(span, "indexed scalar signal"));
         };
-        let tid = self.decl_ty(d, span)?;
-        let logic = self.is_logic(tid);
+        let root_t = db.base(ty::obj_subtype(db, d).ok_or(Failed)?);
         let what = db.decls[d].name.to_string();
-        self.select_in(sig, dope, logic, &what, sel, span)
+        let w = self.walk_steps(root_t, root, steps, &what, span)?;
+        let (it, idesc) = w.inst.unwrap_or((w.t, w.desc));
+        let total = self.leaf_count(root_t, root, &[], span)?;
+        let k = self.leaf_count(it, idesc, &[], span)?;
+        let a = self.bin(IntOp::Mul, w.offset, k);
+        let len = self.bin(IntOp::Mul, w.count, k);
+        let tid = self.ty(root_t, span)?;
+        let a = if self.is_logic(tid) {
+            let r = self.bin(IntOp::Sub, total, a);
+            self.bin(IntOp::Sub, r, len)
+        } else {
+            a
+        };
+        let dope = ty::is_array(db, w.t).then_some(w.desc);
+        Ok((self.sub_sig(sig, a, len), dope))
     }
 
     /// Element `Ok(index)` or slice `Err(range)` of the array signal `sig` (an instance
@@ -882,46 +928,9 @@ impl<'a> Fx<'a, '_> {
             return Err(self.cx.unsupported(span, "unconstrained composite signals"));
         };
         let what = db.decls[d].name.to_string();
-        let (mut t, mut desc) = (root_t, root);
-        let mut path = Vec::new();
-        // `count` consecutive instances of the part, from instance `offset`, each of type
-        // `inst` (the element type after a slice).
-        let (mut offset, mut count) = (self.int(0), self.int(1));
-        let mut inst: Option<(TypeId, Reg)> = None;
-        for s in steps {
-            if inst.is_some() {
-                return Err(self
-                    .cx
-                    .unsupported(span, "names below a slice of a composite signal"));
-            }
-            let tid = self.ty(t, span)?;
-            match *s {
-                Step::Field(n) => {
-                    desc = self.field_desc(tid, desc, n, span)?;
-                    t = db.base(self.field_subtype(t, n)?);
-                    path.push(n);
-                }
-                Step::Index(ix) => {
-                    let n = self.elems(tid, desc);
-                    let lin = self.flat_pos(desc, ix, &what)?;
-                    let o = self.bin(IntOp::Mul, offset, n);
-                    offset = self.bin(IntOp::Add, o, lin);
-                    desc = self.elem_desc(tid, desc)?.1;
-                    t = db.base(ty::array_of(db, t).ok_or(Failed)?.0);
-                }
-                Step::Slice(r) => {
-                    let n = self.elems(tid, desc);
-                    let (p, len, nd) = self.slice_of(desc, r, &what, span)?;
-                    let o = self.bin(IntOp::Mul, offset, n);
-                    offset = self.bin(IntOp::Add, o, p);
-                    count = len;
-                    let ed = self.elem_desc(tid, desc)?.1;
-                    inst = Some((db.base(ty::array_of(db, t).ok_or(Failed)?.0), ed));
-                    desc = self.slice_desc(tid, desc, nd);
-                }
-            }
-        }
-        let (it, idesc) = inst.unwrap_or((t, desc));
+        let w = self.walk_steps(root_t, root, steps, &what, span)?;
+        let (t, desc, path, offset, count) = (w.t, w.desc, w.path, w.offset, w.count);
+        let (it, idesc) = w.inst.unwrap_or((t, desc));
         let mut leaves = Vec::new();
         for l in self.leaves_under(d, &path) {
             let total = self.leaf_count(root_t, root, &l.path, span)?;
@@ -945,6 +954,63 @@ impl<'a> Fx<'a, '_> {
             desc,
             path,
             leaves,
+        })
+    }
+
+    /// Follow `steps` from a value of type `root_t` with descriptor `root` (`Walk`).
+    fn walk_steps(
+        &mut self,
+        root_t: TypeId,
+        root: Reg,
+        steps: &[Step<'_>],
+        what: &str,
+        span: Span,
+    ) -> R<Walk> {
+        let db = self.db;
+        let (mut t, mut desc) = (root_t, root);
+        let mut path = Vec::new();
+        let (mut offset, mut count) = (self.int(0), self.int(1));
+        let mut inst: Option<(TypeId, Reg)> = None;
+        for s in steps {
+            if inst.is_some() {
+                return Err(self
+                    .cx
+                    .unsupported(span, "names below a slice of a composite signal"));
+            }
+            let tid = self.ty(t, span)?;
+            match *s {
+                Step::Field(n) => {
+                    desc = self.field_desc(tid, desc, n, span)?;
+                    t = db.base(self.field_subtype(t, n)?);
+                    path.push(n);
+                }
+                Step::Index(ix) => {
+                    let n = self.elems(tid, desc);
+                    let lin = self.flat_pos(desc, ix, what)?;
+                    let o = self.bin(IntOp::Mul, offset, n);
+                    offset = self.bin(IntOp::Add, o, lin);
+                    desc = self.elem_desc(tid, desc)?.1;
+                    t = db.base(ty::array_of(db, t).ok_or(Failed)?.0);
+                }
+                Step::Slice(r) => {
+                    let n = self.elems(tid, desc);
+                    let (p, len, nd) = self.slice_of(desc, r, what, span)?;
+                    let o = self.bin(IntOp::Mul, offset, n);
+                    offset = self.bin(IntOp::Add, o, p);
+                    count = len;
+                    let ed = self.elem_desc(tid, desc)?.1;
+                    inst = Some((db.base(ty::array_of(db, t).ok_or(Failed)?.0), ed));
+                    desc = self.slice_desc(tid, desc, nd);
+                }
+            }
+        }
+        Ok(Walk {
+            t,
+            desc,
+            path,
+            offset,
+            count,
+            inst,
         })
     }
 

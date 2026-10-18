@@ -1193,8 +1193,6 @@ impl Fx<'_, '_> {
             }
             let s = match &l.path[..] {
                 [] => self.sig_of(d, l.span)?,
-                [LspStep::Index(ix)] if ix.len() == 1 => self.sig_select(d, Ok(ix[0]), l.span)?.0,
-                [LspStep::Slice(r)] => self.sig_select(d, Err(r), l.span)?.0,
                 path => self.lsp_sig(d, path, l.span)?,
             };
             self.emit(Inst::WaitOn { sig: s });
@@ -1205,11 +1203,30 @@ impl Fx<'_, '_> {
     /// The signal at path `path` of array signal `d`: slices and elements, each indexed in
     /// the index space of the alias subtype a `Rebase` step gives (LRM 6.6.2).
     fn lsp_sig(&mut self, d: yavs_sem::DeclId, path: &[LspStep], span: Span) -> R<Reg> {
+        let steps: Option<Vec<_>> = path
+            .iter()
+            .map(|s| match s {
+                LspStep::Index(ix) => Some(crate::expr::Step::Index(ix)),
+                LspStep::Slice(r) => Some(crate::expr::Step::Slice(r)),
+                _ => None,
+            })
+            .collect();
+        if let Some(steps) = steps {
+            return Ok(self.sig_steps(d, &steps, span)?.0);
+        }
         let nested = |fx: &mut Self| {
             Err(fx
                 .cx
                 .unsupported(span, "sensitivity to record and nested sub-elements"))
         };
+        // ponytail: subtype-alias paths select one level at a time (`select_in`), so only over
+        // arrays of scalars; walk them like `sig_steps` once nested aliases need it.
+        let t = ty::obj_subtype(self.db, d).map(|st| self.db.base(st));
+        if t.and_then(|t| ty::array_of(self.db, t))
+            .is_some_and(|(e, _)| ty::is_array(self.db, self.db.base(e)))
+        {
+            return nested(self);
+        }
         let mut sig = match self.cx.objs.get(&d).copied() {
             Some(Obj::Signal { sig }) => Ok(sig),
             _ => Err(self.sig_of(d, span)?),

@@ -1,0 +1,8 @@
+exit	0
+diag	note	1000000	0	:nested_selections:_p2	m(1)=00001000 m(2)=10100000
+diag	note	1000000	0	:nested_selections:_p2	q=780 0420
+diag	note	1000000	0	:nested_selections:_p2	g(2,1)=5 g(1,2)=0
+diag	note	2000000	0	:nested_selections:_p2	m(3)=00001000 m(0)(0)='1'
+diag	note	5000000	0	:nested_selections:_p2	m(3)=01001000 p(1)=00010000 p(2)=00110000
+diag	note	6000000	0	:nested_selections:_p2	n0=2 n1=3 nm=2
+diag	note	6000000	1	:nested_selections:_p2	p=11110000 00010000 00010001 00100010 q(1)(3)=6

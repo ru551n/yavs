@@ -50,6 +50,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | A subprogram declared in a process drives through that process's driver slots | LRM 14.7.2: the process owns those drivers, #206 | DESIGN.md "Contract with yavs-interp and yavs-elab" |
 | Signals with records in their type: one instance signal per field path (struct of arrays); names select one kernel range per leaf by the `NetGraph::select` rule, at run time; reads read the whole signal | Rule 2, one sub-element map; rule 1 | `docs/decisions.md` "Lowering", DESIGN.md "Composites", #200 |
 | Guarded blocks: GUARD's default is the condition; a `_guard` process drives GUARD | LRM 11.2, 11.6 | `docs/decisions.md` "Lowering" |
+| Signals of arrays of arrays without records: one instance signal of all scalars; every index/slice name selects one range by the same walk (`sig_steps`) | Rule 2, one sub-element map | `docs/decisions.md` "Lowering", #89 |
 | Signal aliases have no storage: uses lower the aliased name with the alias subtype's descriptor; `LspStep::Rebase` paths are walked by `lsp_sig` | LRM 6.6.2, #203 | `docs/decisions.md` "Lowering" |
 | Matching case compares with `?=` on BIT/STD_ULOGIC elements | LRM 10.9, 9.2.3 | `docs/decisions.md` "Lowering" |
 | Foreign calls: symbol is the last word after `VHPIDIRECT` (else the name), C types from the formal's own subtype, result range-checked; signal and file parameters, composite results are `E2001` | Reference simulator conventions, fail early | `docs/decisions.md` "Foreign subprograms and `--load`" |

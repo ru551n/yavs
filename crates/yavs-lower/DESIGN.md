@@ -213,6 +213,9 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   `Fx::comp_select` turns a name (fields, indices, a final slice) into one kernel range per
   leaf with the rule of `yavs_elab::NetGraph::select`; `leaf_walk` copies a leaf's elements
   between a leaf buffer and the composite value (#200).
+- Signals of arrays of arrays without records are one instance signal of all their scalars;
+  `Fx::sig_steps` selects a name's range by the same walk (`walk_steps`) with that one leaf
+  (#89). A subtype-alias path (`LspStep::Rebase`) over one is E2001.
 - Objects of record and composite-array type are a slot `[data, desc, handle]` over a private
   heap object `[descriptor][value]`, the handle a GC root. Access variables are handle slots;
   allocators build the same `[descriptor][value]` object, so `p.all` keeps its bounds.

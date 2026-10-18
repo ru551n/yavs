@@ -449,6 +449,8 @@ pub struct AttributeSpec {
     pub entities: EntityNameList,
     /// The entity class keyword (`signal`, `function`, `label`, ...).
     pub class: Kw,
+    /// The span of the entity class keyword.
+    pub class_span: Span,
     pub value: Expr,
     pub span: Span,
 }

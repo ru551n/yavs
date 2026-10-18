@@ -586,6 +586,7 @@ impl Parser<'_> {
             EntityNameList::Names(v)
         };
         self.expect(Tok::Colon)?;
+        let class_span = self.span();
         let class = self.entity_class()?;
         self.expect_kw(Kw::Is)?;
         let value = self.expr()?;
@@ -594,6 +595,7 @@ impl Parser<'_> {
             attr,
             entities,
             class,
+            class_span,
             value,
             span: self.span_from(start),
         }))

@@ -16,7 +16,7 @@ Decisions made with the user:
   - Windows includes LLVM and cocotb.
   - VHPI uses no separate DLL. `rsim.exe` exports the `vhpi_*` symbols and ships an import library (`rsim.lib`) for external plugins, the way Riviera does.
   - LLVM on Windows needs a pinned prebuilt LLVM 21 package with static libs; the prebuilt packages lack `llvm-config`.
-- **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. Avoid anything the user would have to install by hand. The one exception is LLVM, which is optional behind the `llvm` feature.
+- **Dependencies** (user, 2026-10-18): any crate that cargo fetches and builds by itself is fine. For **any** dependency that has to be installed by hand, **ask the user first**. Approved so far: LLVM 21 (optional, behind the `llvm` feature) and a C compiler at build time (the VHPI variadic shim). NVC and GHDL are dev-only references.
 - **Performance:** correctness first, no speed target yet. Benchmarks are tracked, not gated.
 - **Embedded Python is deferred.** A Tcl-like `rsim` scripting module comes after the DAP server.
 - **Interop with the VUnit python bridge:** rsim needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), and an entry in the bridge's simulator table.
@@ -24,7 +24,7 @@ Decisions made with the user:
   - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
   - Synopsys `std_logic_arith`/`unsigned`/`signed` are **deferred to M4b** (user, 2026-10-18). Two clean-room attempts were stopped by the content filter while writing the package declaration. The black-box testbenches and runner stay in `lib/synopsys/test/`.
 - **VUnit integration** (user, 2026-10-18):
-  - **Mixing VHDL-2008 and 2019 files in one project is allowed.** The manifest records the standard per file. Each file is parsed with its own standard's syntax. A design is analyzed and elaborated against **one** `std`/`ieee` revision, the newest one in its closure, so types such as `INTEGER` are the same type everywhere. A construct that is illegal or means something different under that revision is a fail-early error naming the file and its standard.
+  - **Mixing VHDL-2008 and 2019 files in one project is allowed.** The manifest records the standard per file. Each file is parsed with its own standard's syntax. A design is analyzed and elaborated against **one** `std`/`ieee` revision, the newest one in its closure, so types such as `INTEGER` are the same type everywhere. A construct that is illegal under that revision is a fail-early error naming the file and its standard. A construct whose **meaning changes** (e.g. `integer'high` going 64-bit) is a **warning**, given once per construct and escalatable with `-Werror`, so VUnit and OSVVM keep working from 2019 testbenches.
   - **Each rsim defaults to `--threads 1`** under VUnit's `-p N`; users opt in through `rsim.sim_flags`.
   - **`@file` response files are supported from the start.** VUnit uses them on Windows for long `runner_cfg` generics.
   - Installation is documented as VUnit `add_library` recipes, with no installer command.

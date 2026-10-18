@@ -302,7 +302,7 @@ impl Db {
         match a {
             Actual::Expr(e) | Actual::Converted { actual: e, .. } => self.walk_expr(*e, f),
             Actual::Individual(parts) => {
-                for (_, e) in parts.iter() {
+                for (_, e, _) in parts.iter() {
                     self.walk_expr(*e, f);
                 }
             }
@@ -497,7 +497,7 @@ impl Db {
         match a {
             Actual::Expr(e) | Actual::Converted { actual: e, .. } => f(*e, u),
             Actual::Individual(parts) => {
-                for (_, e) in parts.iter() {
+                for (_, e, _) in parts.iter() {
                     f(*e, u);
                 }
             }

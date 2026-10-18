@@ -122,14 +122,18 @@ pub struct Arg {
     pub actual: Actual,
 }
 
+/// One part of an individual association: its path, actual and formal part.
+pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId);
+
 #[derive(Clone)]
 pub enum Actual {
     Expr(ExprId),
     /// The formal's default.
     Default,
     Open,
-    /// Sub-element association: one entry per sub-element path.
-    Individual(Box<[(Box<[LspStep]>, ExprId)]>),
+    /// Sub-element association: one entry per sub-element path, with its actual and the
+    /// formal part as a name of the formal (`x(0)` in `x(0) => tl`).
+    Individual(Box<[IndividualPart]>),
     Converted {
         formal_conv: Option<DeclId>,
         actual_conv: Option<DeclId>,

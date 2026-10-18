@@ -1220,7 +1220,7 @@ impl Db {
                 errs.0 = true;
                 continue;
             }
-            out.push((steps.into_boxed_slice(), id));
+            out.push((steps.into_boxed_slice(), id, fe));
         }
         errs.finish(Actual::Individual(out.into()))
     }

@@ -1165,7 +1165,7 @@ pub enum Actual {
     Expr(ExprId),
     Default,                                     // the formal's default
     Open,
-    Individual(Box<[(Box<[LspStep]>, ExprId)]>), // sub-element association
+    Individual(Box<[(Box<[LspStep]>, ExprId, ExprId)]>), // sub-element association: path, actual, formal part
     Converted { formal_conv: Option<DeclId>, actual_conv: Option<DeclId>, actual: ExprId },
     Subtype(SubtypeId),     // actual of a generic type in an instance's generic map
     Subprogram(DeclId),     // actual of a generic subprogram in an instance's generic map

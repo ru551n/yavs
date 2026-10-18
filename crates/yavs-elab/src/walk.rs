@@ -65,7 +65,7 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
             Actual::Expr(e) => A::Expr(*e),
             Actual::Default => A::Default,
             Actual::Open => A::Open,
-            Actual::Individual(p) => A::Parts(p.iter().map(|(s, e)| (s.to_vec(), *e)).collect()),
+            Actual::Individual(p) => A::Parts(p.iter().map(|(s, e, _)| (s.to_vec(), *e)).collect()),
             Actual::Subtype(st) => A::Generic(GenericActual::Subtype(*st)),
             Actual::Subprogram(d) => A::Generic(GenericActual::Subprogram(*d)),
             Actual::Package(i) => A::Generic(GenericActual::Package(*i)),

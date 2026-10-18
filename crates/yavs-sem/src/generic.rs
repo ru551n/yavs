@@ -2578,7 +2578,9 @@ impl Db {
                     Actual::Individual(parts) => Actual::Individual(
                         parts
                             .iter()
-                            .map(|(path, e)| (self.r_path(r, path), self.r_expr(r, *e)))
+                            .map(|(path, e, f)| {
+                                (self.r_path(r, path), self.r_expr(r, *e), self.r_expr(r, *f))
+                            })
                             .collect(),
                     ),
                     Actual::Converted {

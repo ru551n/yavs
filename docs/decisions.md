@@ -527,6 +527,21 @@ a note and a help suggesting an access type, as the reference simulators reject 
   IR layout. Not chosen: lowering a thunk per expression, which would need instance data for
   every scope's generics before elaboration has built it. Still E2106: multi-dimensional
   aggregates, composite arguments with composite elements, shifts and other array operators.
+- **Elaboration-time calls with package state** (#77, elab agent, 2026-10-18; LRM 14.4): a
+  function that cannot be lowered alone (it uses package objects, say a shared variable
+  holding a registry) runs in a session program: every run-time package lowered and initialised
+  first (as for the simulation), then the function, against that package state, so each call
+  sees the side effects of those before it. Constants whose initial value calls an impure
+  function are evaluated in declaration order when their region is elaborated (others when
+  first needed), and a package constant with an impure initial value is read from the package
+  data, never evaluated again. The calls are logged with their argument values; building the
+  simulation initialises the packages again and replays the log before any instance data, so
+  the processes see the same state and `build` stays repeatable (rule 4); a replayed call
+  returning another value is an internal error. Not chosen: handing the session's heap and
+  package data to the simulation program, whose type, function and constant-pool ids differ.
+  ponytail: a new function relowers the session and replays the log (O(functions x calls));
+  instance thunks run after all replays, so an impure call in a constant elaboration could not
+  fold sees the elaboration-time calls of later regions first.
 - **Package objects at run time** (#183, elab agent with the lowering agent, 2026-10-18):
   packages outside std with signals, shared variables, files or constants sem did not fold are
   lowered (`Lowerer::package`) before the architectures and initialised once at build time

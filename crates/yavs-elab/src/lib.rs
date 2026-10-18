@@ -11,6 +11,7 @@
 mod build;
 mod eval;
 mod hier;
+mod pkgcall;
 mod sim;
 mod value;
 mod walk;
@@ -121,6 +122,9 @@ pub struct Elaborated {
     pub convs: Vec<eval::ConvFn>,
     /// The IR of the processes, once [`Elaborated::lower`] ran.
     pub ir: Option<Ir>,
+    /// Calls that ran with package state during elaboration, in order: replayed when the
+    /// simulation is built (#77).
+    pub(crate) elab_calls: Vec<pkgcall::Call>,
 }
 
 impl Elaborated {

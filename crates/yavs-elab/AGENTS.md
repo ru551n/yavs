@@ -24,7 +24,8 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `warnings`, `ir`; `signal`, `value`), `codes` |
 | `src/walk.rs` | The elaborator: instances, generics, generates, blocks, binding (configuration declaration, then specification, then default binding), ports, processes, depth-first in statement order |
 | `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls of user functions (`call_values`); `-g` overrides via the yavs-std `'value` parser |
-| `src/value.rs` | Composite values: aggregates, indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; `encode`/`decode` between `Val` and IR memory (arrays and records of scalars) |
+| `src/value.rs` | Composite values: aggregates, indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; `encode`/`decode` between `Val` and IR memory (arrays of scalars, records of scalars and records) |
+| `src/pkgcall.rs` | Elaboration-time calls with package state (#77): `Session` (packages lowered and initialised, calls logged), `Call`, `replay` at build, `init_packages`, `run` |
 | `src/hier.rs` | `Hierarchy`/`Scope`/`ScopeKind` (path names in `Case::Lrm` and original spelling), `NetGraph` (`select`: the one sub-element map; `copies`: equivalent processes of external-name actuals), `Leaf`, `SigObj`, `PortEdge`, `DriverDecl`, `ImplicitKind` |
 | `src/sim.rs` | `Elaborated::lower` (yavs-lower), `Elaborated::build(Config) -> SimControl`, `runtime_diagnostic` (a kernel `SimError` as a coded diagnostic with the VHDL call stack as labels), `Ir`, `instance_of` |
 | `src/build.rs` | `Elaborated::build_with` (kernel `Builder`, repeatable), `leaf_name` |
@@ -55,6 +56,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | Linkage ports are kernel `in` port edges; mode-view ports take each leaf's mode from `Db::port_mode_tree` (`leaf_modes`) | #75; LRM 6.5.2 | `docs/decisions.md` "Elaboration" |
 | Not-yet-supported constructs are `E9999` naming the slice; composite values elab cannot evaluate yet (multi-dimensional aggregates, arrays of composites passed to functions, shifts) `E2106` (`ponytail:` in `eval.rs`) | Fail early | crate docs, #77 |
 | Composite elaboration-time values: structural operations on `Val` here, function calls in yavs-interp through `call_values` | One evaluator for subprogram bodies, no expression thunks needing instance data | `docs/decisions.md` "Elaboration", #77 |
+| Functions using package objects run in a session against the initialised packages; impure constants are evaluated in declaration order; package constants with impure initial values are read from package data; `build` replays the logged calls (`Elaborated::elab_calls`) before any instance data | LRM 14.4: side effects once and in order; rule 4 restart | `docs/decisions.md` "Elaboration", #77 |
 
 Module-local decisions go in this section and ir.md section 4 or `docs/decisions.md`
 "Elaboration" in the same commit (root `AGENTS.md` rule 24).

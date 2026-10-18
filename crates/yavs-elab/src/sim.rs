@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use yavs_diag::Diagnostic;
-use yavs_interp::{
-    Bindings, CallVal, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState,
-};
+use yavs_interp::{CallVal, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState};
 use yavs_kernel::{Config, ErrorKind, SimControl, SimError};
 use yavs_lower::{LowerOptions, Lowerer, UnitIr};
 use yavs_sem::{Db, UnitId};
@@ -40,6 +38,8 @@ pub struct Ir {
     pub foreign: Vec<(yavs_ir::ForeignId, yavs_ffi::ForeignFn)>,
     /// Where the unbound ones were looked for (reported when one is called).
     pub foreign_searched: String,
+    /// The functions of `Elaborated::elab_calls`, for the replay.
+    pub(crate) elab_sigs: HashMap<yavs_sem::DeclId, crate::pkgcall::Sig>,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -143,6 +143,12 @@ impl Elaborated {
         for u in packages {
             l.package(u)?;
         }
+        let mut elab_sigs = HashMap::new();
+        for c in &self.elab_calls {
+            if let std::collections::hash_map::Entry::Vacant(v) = elab_sigs.entry(c.func) {
+                v.insert(crate::pkgcall::sig(&mut l, db, c.func)?);
+            }
+        }
         let mut idx = Vec::new();
         for &a in &archs {
             idx.push(l.architecture(a)?);
@@ -198,6 +204,7 @@ impl Elaborated {
             shared_size: lowered.shared_size,
             foreign: Vec::new(),
             foreign_searched: String::new(),
+            elab_sigs,
         });
         Ok(())
     }
@@ -336,42 +343,33 @@ impl Elaborated {
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), CallVal> = HashMap::new();
         // Package data, created once in order: each initialisation sees the packages before it.
-        let mut packages: Vec<Arc<InstData>> = Vec::new();
-        for p in &ir.packages {
-            let b = Bindings {
-                packages: packages.clone(),
-                sources: ir.sources.clone(),
-                foreign: ir.foreign.clone(),
-                searched: ir.foreign_searched.clone(),
-                ..Default::default()
-            };
-            let rt = Runtime::new(ir.program.clone(), b)?;
-            let mut d =
-                yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(&shared))?;
-            for s in &p.signals {
-                let Some(off) = s.dope else { continue };
-                let o = self
-                    .sigs
-                    .iter()
-                    .find(|((_, x), _)| *x == s.decl)
-                    .map(|(_, &o)| o)
-                    .ok_or_else(|| {
-                        sim_err(format!("package signal `{}` not elaborated", s.name))
-                    })?;
-                write_desc(&ir.program, s, &self.nets.obj(o).shape, off, &mut d.data)?;
-            }
-            packages.push(Arc::new(d));
-        }
-        let rt = Runtime::new(
-            ir.program.clone(),
-            Bindings {
-                packages,
-                sources: ir.sources.clone(),
-                foreign: ir.foreign.clone(),
-                searched: ir.foreign_searched.clone(),
-                ..Default::default()
+        let rt = crate::pkgcall::init_packages(
+            &ir.program,
+            &ir.packages,
+            &ir.sources,
+            &ir.foreign,
+            &ir.foreign_searched,
+            &shared,
+            |p, d| {
+                // Descriptors of the package's array signals.
+                for s in &p.signals {
+                    let Some(off) = s.dope else { continue };
+                    let o = self
+                        .sigs
+                        .iter()
+                        .find(|((_, x), _)| *x == s.decl)
+                        .map(|(_, &o)| o)
+                        .ok_or_else(|| {
+                            sim_err(format!("package signal `{}` not elaborated", s.name))
+                        })?;
+                    write_desc(&ir.program, s, &self.nets.obj(o).shape, off, &mut d.data)?;
+                }
+                Ok(())
             },
         )?;
+        // The side effects of elaboration-time calls on package state, in their order (#77).
+        crate::pkgcall::replay(&rt, &shared, &ir.elab_sigs, &self.elab_calls)
+            .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?;
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         // Instance data of the regions whose resolution functions read it (#164).
         let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
@@ -499,7 +497,17 @@ impl Elaborated {
         let mut known = std::collections::HashSet::new();
         for v in &u.values {
             if let Some(val) = self.value(i, v.decl) {
-                match UnitIr::write_value(&rt.prog, v, val, &mut inst.data) {
+                let w = UnitIr::write_value(&rt.prog, v, val, &mut inst.data).or_else(|m| {
+                    // Records (of scalars and records): marshalled like call arguments.
+                    match crate::value::encode(&rt.prog, v.ty, val) {
+                        Some(CallVal::Composite { data, desc }) => {
+                            UnitIr::write_composite(v.off, &data, &desc, &mut inst.data);
+                            Ok(())
+                        }
+                        _ => Err(m),
+                    }
+                });
+                match w {
                     Ok(()) => {
                         known.insert(v.decl);
                     }
@@ -629,7 +637,7 @@ fn write_desc(
 
 /// Packages outside std with objects that exist at run time: signals, shared variables,
 /// files, or constants sem did not fold (in the declaration or the body).
-fn run_time_packages(db: &Db) -> Vec<UnitId> {
+pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
     use yavs_sem::decl::{DeclKind, ObjClass};
     use yavs_sem::hir::UnitHir;
     let run_time = |scope: yavs_sem::ScopeId| {

@@ -28,7 +28,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
 | record_dict (2019) | 6 | 0 | 0 | none |
 | run | 4 | 1 | 0 | #206 (after #203) |
 | string_ops | 3 | 1 | 11 | #209 |
-| verification_components | 0 | 523 | 4 | #77 (impure calls at elaboration), #204; `tb_axi_stream_protocol_checker` does not analyze (#210) and is left out |
+| verification_components | 0 | 523 | 4 | #204 (impure calls at elaboration now run against package state, #77, but lowering the packages stops at #204); `tb_axi_stream_protocol_checker` does not analyze (#210) and is left out |
 
 The `check`, `dictionary`, `path` and `run` rows were re-measured with the signal-alias fix of #203.
 
@@ -337,9 +337,13 @@ static expression actuals, per-process merged drivers, multiple-source check acr
 hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
 Elaboration-time evaluation folds globally static expressions with `Db::fold_with`, evaluates
 aggregates, indexing, slices, fields, concatenation and composite equality itself, and runs user
-function calls in yavs-interp (the function lowered alone; arrays and records of scalars as
-arguments and results through `call_values`); multi-dimensional aggregates and other array
-operators are still E2106 (#77). Also done: package bodies and generic instance bodies
+function calls in yavs-interp (the function lowered alone; arrays of scalars and records of
+scalars and records as arguments and results through `call_values`). A function that uses
+package objects (impure registries in shared variables) runs against the elaborated packages in
+elaboration order, constants with impure initial values are evaluated in declaration order,
+package constants with impure initial values are read from the package data, and building the
+simulation replays these calls (#77). Multi-dimensional aggregates and other array operators
+are still E2106. Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
 and type conversions in port maps (kernel converters, scalars and arrays of scalars), individual
 association of unconstrained array ports, implicit signals (`'stable`,

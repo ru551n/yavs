@@ -560,6 +560,58 @@ fn interpreted_processes_restart() {
     assert_eq!(first, run(&e));
 }
 
+/// Impure calls during elaboration run against package state in order (#77, LRM 14.4), and
+/// every build replays them, so the processes see their side effects after a restart too.
+#[test]
+fn elaboration_calls_with_package_state_restart() {
+    let src = "package reg is
+        type counter_t is protected
+          impure function bump return natural;
+          impure function count return natural;
+        end protected;
+        impure function next_id return natural;
+        impure function ids return natural;
+      end;
+      package body reg is
+        type counter_t is protected body
+          variable n : natural := 0;
+          impure function bump return natural is begin n := n + 1; return n; end;
+          impure function count return natural is begin return n; end;
+        end protected body;
+        shared variable c : counter_t;
+        impure function next_id return natural is begin return c.bump; end;
+        impure function ids return natural is begin return c.count; end;
+      end;
+      use work.reg.all;
+      entity child is generic (id : natural); end;
+      architecture a of child is
+        signal v : bit_vector(1 to id);
+      begin
+        process begin report \"id=\" & integer'image(v'length); wait; end process;
+      end;
+      use work.reg.all;
+      entity t is end; architecture a of t is
+        constant first : natural := next_id;
+      begin
+        u : entity work.child generic map (id => next_id);
+        process begin report \"ids=\" & integer'image(ids); wait; end process;
+      end;";
+    let (mut db, mut e) = elab("pkgcalls", src, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated| {
+        let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        let mut v = got.lock().expect("lock").clone();
+        v.sort();
+        v
+    };
+    let first = run(&e);
+    assert_eq!(first, ["0 0 id=2", "0 1 ids=2"]);
+    assert_eq!(first, run(&e));
+}
+
 /// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).
 #[test]
 fn bit_and_boolean_use_std_ulogic_codes() {

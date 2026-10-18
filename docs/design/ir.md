@@ -440,6 +440,9 @@ The interpreter also runs `FuncKind::Elab` and `Thunk` functions without a kerne
 "signal read during elaboration" diagnostic). Generic actuals, generate ranges, port-map
 expressions, constant declarations, subtype descriptors and signal initial values are all
 computed this way, so elaboration and simulation share one evaluator (rule 4, rule 5).
+Calls that use package state run against the elaborated packages, in elaboration order, and
+are replayed when the simulation is built (yavs-elab `pkgcall.rs`, `docs/decisions.md`
+"Elaboration", #77).
 
 ## 4. Elaboration (`yavs-elab`)
 

@@ -55,6 +55,7 @@ const PASS: &[&str] = &[
     "force/force_in",
     "force/force_out_port",
     "generics/composite_eval",
+    "generics/elab_calls",
     "generics/for_generate",
     "generics/generic_map",
     "generics/if_case_generate",

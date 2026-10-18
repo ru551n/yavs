@@ -4,7 +4,9 @@
 //! generic and constant values; aggregates, indexing, slices, fields, concatenation,
 //! composite equality and logical operators on BIT and BOOLEAN arrays are evaluated in
 //! `crate::value`; calls of user functions run in yavs-interp after lowering the function
-//! alone (ir.md 3.6), with arrays of scalars and records of scalars marshalled through `yavs_interp::call_values` (#77).
+//! alone (ir.md 3.6), with arrays of scalars and records of scalars and records marshalled
+//! through `yavs_interp::call_values` (#77); functions that use package objects run against the
+//! elaborated packages (`crate::pkgcall`).
 //! ponytail: multi-dimensional aggregates, arrays of composites passed to functions, shifts
 //! and other predefined operators on arrays are still E2106.
 
@@ -37,7 +39,9 @@ pub struct Model {
     pub(crate) pkg: HashMap<DeclId, Val>,
     /// User functions lowered for elaboration-time calls (ir.md 3.6): `None` when lowering
     /// failed (the reason is reported at the call).
-    pub(crate) funcs: HashMap<DeclId, Result<Lowered1, Box<Diagnostic>>>,
+    pub(crate) funcs: HashMap<DeclId, Result<Lowered1, crate::pkgcall::Fail>>,
+    /// Package state for calls of functions that use package objects (#77).
+    pub(crate) session: crate::pkgcall::Session,
     /// Package scopes by package unit, library scopes by library.
     pub(crate) pkg_scopes: HashMap<yavs_sem::UnitId, ScopeId>,
     pub(crate) lib_scopes: HashMap<yavs_sem::LibId, ScopeId>,
@@ -275,8 +279,12 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
     };
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {
-            let l = lower_one(db, f, at)?;
-            Some((l.rt, l.func, l.ret))
+            let l = lower_one(db, f).map_err(|e| match e {
+                crate::pkgcall::Fail::Lower(why) => not_callable(db, f, at, &why),
+                crate::pkgcall::Fail::Unsupported(w) => err(codes::INTERNAL, at, w, "here"),
+                crate::pkgcall::Fail::Runtime(w) => err(codes::INTERNAL, at, w, "here"),
+            })?;
+            Some((l.rt, l.sig.func, l.sig.ret))
         }
         _ => None,
     };
@@ -290,10 +298,7 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
 /// A function lowered on its own into a program, for `yavs_interp::call`.
 pub(crate) struct Lowered1 {
     rt: std::sync::Arc<yavs_interp::Runtime>,
-    func: yavs_ir::FuncId,
-    /// IR types of the parameters and of the result (for marshalling values).
-    params: Vec<yavs_ir::TyId>,
-    ret: Option<yavs_ir::TyId>,
+    sig: crate::pkgcall::Sig,
 }
 
 pub(crate) type R<T> = Result<T, Box<Diagnostic>>;
@@ -456,7 +461,7 @@ impl Model {
                 .with_primary(ex.span, "called during elaboration")
                 .with_note(
                     "elaboration-time calls take and return scalars, arrays of scalars and \
-                     records of scalars",
+                     records of scalars and records",
                 ),
             )
         };
@@ -478,56 +483,25 @@ impl Model {
         if sp.ret.is_none() {
             return Err(not_scalar("not a function"));
         }
-        let l = match self
+        let failed = |f: crate::pkgcall::Fail| match f {
+            crate::pkgcall::Fail::Unsupported(w) => not_scalar(w),
+            crate::pkgcall::Fail::Runtime(msg) => err(
+                codes::EVAL_FAILED,
+                ex.span,
+                format!("evaluation fails during elaboration: {msg}"),
+                "in this call",
+            ),
+            crate::pkgcall::Fail::Lower(why) => not_callable(db, callee, ex.span, &why),
+        };
+        match self
             .funcs
             .entry(callee)
-            .or_insert_with(|| lower_one(db, callee, ex.span))
+            .or_insert_with(|| lower_one(db, callee))
         {
-            Ok(l) => l,
-            Err(d) => {
-                let mut d = d.clone();
-                if let Some(p) = &mut d.primary {
-                    p.span = ex.span;
-                }
-                return Err(d);
-            }
-        };
-        let prog = l.rt.prog.clone();
-        let mut cvs = Vec::with_capacity(vals.len());
-        for (v, &t) in vals.iter().zip(&l.params) {
-            cvs.push(
-                crate::value::encode(&prog, t, v)
-                    .ok_or_else(|| not_scalar("an argument value of this type"))?,
-            );
-        }
-        let ret = l.ret.ok_or_else(|| not_scalar("not a function"))?;
-        let composite = prog
-            .types
-            .get(ret)
-            .is_some_and(|t| t.scalar_size().is_none());
-        let r = yavs_interp::call_values(
-            l.rt.clone(),
-            l.func,
-            std::sync::Arc::new(yavs_interp::InstData::default()),
-            &cvs,
-            composite.then_some(ret),
-        );
-        match r {
-            Ok(Some(v)) => crate::value::decode(&prog, ret, &v)
-                .ok_or_else(|| not_scalar("a result of this type")),
-            Ok(None) => Err(not_scalar("no result")),
-            Err(e) => {
-                let msg = match &e.kind {
-                    yavs_kernel::ErrorKind::Runtime(m) => m.clone(),
-                    k => k.to_string(),
-                };
-                Err(err(
-                    codes::EVAL_FAILED,
-                    ex.span,
-                    format!("evaluation fails during elaboration: {msg}"),
-                    "in this call",
-                ))
-            }
+            Ok(l) => crate::pkgcall::run(&l.rt, &l.sig, &vals, None).map_err(failed),
+            // A function that uses package objects (shared variables, say) runs against the
+            // elaborated packages, in elaboration order (LRM 14.4).
+            Err(_) => self.session.call(db, callee, vals).map_err(failed),
         }
     }
 
@@ -558,7 +532,38 @@ impl Model {
                 );
                 if in_pkg {
                     Self::check_body_elaborated(db, init, decl.scope)?;
-                    let v = self.eval(db, init, None)?;
+                    // An impure initial value ran when its package was elaborated: read
+                    // the value from the package data, never call it again (#77).
+                    let v = if calls_impure(db, init) {
+                        self.session.package_const(db, d).map_err(|f| match f {
+                            crate::pkgcall::Fail::Runtime(m) => err(
+                                codes::EVAL_FAILED,
+                                span,
+                                format!("evaluation fails during elaboration: {m}"),
+                                "while reading this package constant",
+                            ),
+                            crate::pkgcall::Fail::Lower(m) => err(
+                                codes::NOT_EVALUATED,
+                                span,
+                                format!(
+                                    "`{}` cannot be read during elaboration yet: {m}",
+                                    decl.name
+                                ),
+                                "read during elaboration",
+                            ),
+                            crate::pkgcall::Fail::Unsupported(w) => err(
+                                codes::NOT_EVALUATED,
+                                span,
+                                format!(
+                                    "`{}` cannot be read during elaboration yet: {w}",
+                                    decl.name
+                                ),
+                                "read during elaboration",
+                            ),
+                        })?
+                    } else {
+                        self.eval(db, init, None)?
+                    };
                     let v = self.as_subtype(db, o.subtype, v, None, decl.span)?;
                     self.pkg.insert(d, v.clone());
                     Ok(v)
@@ -629,64 +634,34 @@ impl Model {
     /// package, whose body (in the package body) is not elaborated yet. NVC and Questa
     /// report it; fail early with both spans.
     pub(crate) fn check_body_elaborated(db: &Db, e: ExprId, pkg: yavs_sem::ScopeId) -> R<()> {
-        let mut stack = vec![e];
-        while let Some(e) = stack.pop() {
-            let ex = &db.exprs[e];
-            match &ex.kind {
-                ExprKind::Call { callee, args, .. } => {
-                    let cd = &db.decls[*callee];
-                    let user = cd.kind.subprogram().is_some_and(|s| {
-                        !matches!(
-                            s.body,
-                            yavs_sem::decl::Body::Implicit(_) | yavs_sem::decl::Body::Native(_)
-                        )
-                    });
-                    if user && cd.scope == pkg && db.scopes[pkg].kind == SemScope::Package {
-                        return Err(Box::new(
-                            Diagnostic::error(
-                                codes::BODY_NOT_ELABORATED,
-                                format!(
-                                    "subprogram `{}` is called before its body is elaborated",
-                                    cd.name
-                                ),
-                            )
-                            .with_primary(ex.span, "called while its package is elaborated")
-                            .with_secondary(cd.span, "declared here; its body is in the package body")
-                            .with_note(
-                                "the package declaration is elaborated before its body (LRM 14.4.2)",
-                            )
-                            .with_help("move the constant into the package body, or the function into another package"),
-                        ));
-                    }
-                    for a in args.iter() {
-                        if let yavs_sem::hir::Actual::Expr(x) = a.actual {
-                            stack.push(x);
-                        }
-                    }
-                }
-                ExprKind::Index { prefix, indices } => {
-                    stack.push(*prefix);
-                    stack.extend(indices.iter().copied());
-                }
-                ExprKind::Field { prefix, .. }
-                | ExprKind::Deref { prefix }
-                | ExprKind::Slice { prefix, .. } => stack.push(*prefix),
-                ExprKind::Qualified { operand, .. }
-                | ExprKind::Conv { operand, .. }
-                | ExprKind::ImplicitConv { operand } => stack.push(*operand),
-                ExprKind::Aggregate { assocs, .. } => {
-                    stack.extend(assocs.iter().map(|a| a.value));
-                }
-                ExprKind::Conditional { alts } => {
-                    for (v, c) in alts.iter() {
-                        stack.push(*v);
-                        stack.extend(*c);
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        let Some((at, callee)) = find_call(db, e, &mut |c| {
+            let cd = &db.decls[c];
+            let user = cd.kind.subprogram().is_some_and(|s| {
+                !matches!(
+                    s.body,
+                    yavs_sem::decl::Body::Implicit(_) | yavs_sem::decl::Body::Native(_)
+                )
+            });
+            user && cd.scope == pkg && db.scopes[pkg].kind == SemScope::Package
+        }) else {
+            return Ok(());
+        };
+        let cd = &db.decls[callee];
+        Err(Box::new(
+            Diagnostic::error(
+                codes::BODY_NOT_ELABORATED,
+                format!(
+                    "subprogram `{}` is called before its body is elaborated",
+                    cd.name
+                ),
+            )
+            .with_primary(db.exprs[at].span, "called while its package is elaborated")
+            .with_secondary(cd.span, "declared here; its body is in the package body")
+            .with_note("the package declaration is elaborated before its body (LRM 14.4.2)")
+            .with_help(
+                "move the constant into the package body, or the function into another package",
+            ),
+        ))
     }
 
     /// Bounds of dimension `dim` of an attribute prefix (`s'range`, `t'length`).
@@ -974,44 +949,32 @@ impl Model {
     }
 }
 
-/// Lower `f` (and what it calls) into its own program, for elaboration-time calls.
-fn lower_one(db: &Db, f: DeclId, at: Span) -> Result<Lowered1, Box<Diagnostic>> {
-    let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
-    let sp = db.decls[f].kind.subprogram();
-    let lowered = l.subprogram(f).and_then(|func| {
-        let mut params = Vec::new();
-        for p in sp.map(|s| &s.params[..]).unwrap_or(&[]) {
-            params.push(l.ty(db.base(p.subtype))?);
-        }
-        let ret = match sp.and_then(|s| s.ret) {
-            Some(r) => Some(l.ty(db.base(r))?),
-            None => None,
-        };
-        l.finish().map(|lw| (func, params, ret, lw))
-    });
-    let (func, params, ret, lw) = lowered.map_err(|ds| {
-        let first = ds.into_iter().next().map(|d| d.message).unwrap_or_default();
-        Box::new(
-            Diagnostic::error(
-                codes::NOT_EVALUATED,
-                format!(
-                    "`{}` cannot be called during elaboration yet",
-                    db.decls[f].name
-                ),
-            )
-            .with_primary(at, "called during elaboration")
-            .with_secondary(db.decls[f].span, "declared here")
-            .with_note(format!("lowering it failed: {first}")),
+/// `f` could not be lowered for a call during elaboration.
+fn not_callable(db: &Db, f: DeclId, at: Span, why: &str) -> Box<Diagnostic> {
+    Box::new(
+        Diagnostic::error(
+            codes::NOT_EVALUATED,
+            format!(
+                "`{}` cannot be called during elaboration yet",
+                db.decls[f].name
+            ),
         )
+        .with_primary(at, "called during elaboration")
+        .with_secondary(db.decls[f].span, "declared here")
+        .with_note(format!("lowering it failed: {why}")),
+    )
+}
+
+/// Lower `f` (and what it calls) into its own program, for elaboration-time calls.
+fn lower_one(db: &Db, f: DeclId) -> Result<Lowered1, crate::pkgcall::Fail> {
+    let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
+    let lowered = crate::pkgcall::sig(&mut l, db, f).and_then(|s| l.finish().map(|lw| (s, lw)));
+    let (sig, lw) = lowered.map_err(|ds| {
+        crate::pkgcall::Fail::Lower(ds.into_iter().next().map(|d| d.message).unwrap_or_default())
     })?;
     let rt = yavs_interp::Runtime::new(std::sync::Arc::new(lw.program), Default::default())
-        .map_err(|e| err(codes::INTERNAL, at, format!("internal error: {e}"), "here"))?;
-    Ok(Lowered1 {
-        rt,
-        func,
-        params,
-        ret,
-    })
+        .map_err(|e| crate::pkgcall::Fail::Runtime(format!("internal error: {e}")))?;
+    Ok(Lowered1 { rt, sig })
 }
 
 /// Apply an element resolution indication (LRM 6.3) to the element shape `s`:
@@ -1342,4 +1305,60 @@ fn enum_type(db: &Db, lits: &[DeclId]) -> yavs_std::types::EnumType {
             })
             .collect(),
     }
+}
+
+/// The first call in expression `e` (outermost first) whose callee satisfies `p`: the call
+/// expression and the callee.
+pub(crate) fn find_call(
+    db: &Db,
+    e: ExprId,
+    p: &mut dyn FnMut(DeclId) -> bool,
+) -> Option<(ExprId, DeclId)> {
+    let mut stack = vec![e];
+    while let Some(e) = stack.pop() {
+        match &db.exprs[e].kind {
+            ExprKind::Call { callee, args, .. } => {
+                if p(*callee) {
+                    return Some((e, *callee));
+                }
+                for a in args.iter() {
+                    if let yavs_sem::hir::Actual::Expr(x) = a.actual {
+                        stack.push(x);
+                    }
+                }
+            }
+            ExprKind::Index { prefix, indices } => {
+                stack.push(*prefix);
+                stack.extend(indices.iter().copied());
+            }
+            ExprKind::Field { prefix, .. }
+            | ExprKind::Deref { prefix }
+            | ExprKind::Slice { prefix, .. } => stack.push(*prefix),
+            ExprKind::Qualified { operand, .. }
+            | ExprKind::Conv { operand, .. }
+            | ExprKind::ImplicitConv { operand } => stack.push(*operand),
+            ExprKind::Aggregate { assocs, .. } => {
+                stack.extend(assocs.iter().map(|a| a.value));
+            }
+            ExprKind::Conditional { alts } => {
+                for (v, c) in alts.iter() {
+                    stack.push(*v);
+                    stack.extend(*c);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether expression `e` calls an impure function.
+pub(crate) fn calls_impure(db: &Db, e: ExprId) -> bool {
+    find_call(db, e, &mut |c| {
+        matches!(
+            db.decls[c].kind.subprogram().map(|s| &s.kind),
+            Some(yavs_sem::decl::SubprogramKind::Function { pure: false })
+        )
+    })
+    .is_some()
 }

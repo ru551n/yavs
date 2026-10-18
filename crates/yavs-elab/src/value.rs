@@ -116,16 +116,10 @@ pub(crate) fn encode(prog: &Program, ty: TyId, v: &Val) -> Option<CallVal> {
             let (data, desc) = yavs_lower::encode_array(prog, ty, v)?;
             Some(CallVal::Composite { data, desc })
         }
-        (Ty::Record { fields }, Val::Record(vs)) if vs.len() == fields.len() => {
+        (Ty::Record { .. }, Val::Record(_)) => {
             let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
             let mut data = vec![0u8; l.size as usize];
-            for ((f, x), off) in fields.iter().zip(vs.iter()).zip(&l.offsets) {
-                let n = prog.types.get(f.ty)?.scalar_size()? as usize;
-                let c = scalar_cell(x)?;
-                let off = *off as usize;
-                data.get_mut(off..off + n)?
-                    .copy_from_slice(&c.to_le_bytes()[..n]);
-            }
+            put_record(prog, ty, v, &mut data)?;
             Some(CallVal::Composite {
                 data,
                 desc: Vec::new(),
@@ -133,6 +127,47 @@ pub(crate) fn encode(prog: &Program, ty: TyId, v: &Val) -> Option<CallVal> {
         }
         _ => None,
     }
+}
+
+/// Write record value `v` of IR type `ty` (fields scalars or records) into `data`.
+fn put_record(prog: &Program, ty: TyId, v: &Val, data: &mut [u8]) -> Option<()> {
+    let (Ty::Record { fields }, Val::Record(vs)) = (prog.types.get(ty)?, v) else {
+        return None;
+    };
+    if vs.len() != fields.len() {
+        return None;
+    }
+    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
+    for ((f, x), off) in fields.iter().zip(vs.iter()).zip(&l.offsets) {
+        let off = *off as usize;
+        match prog.types.get(f.ty)?.scalar_size() {
+            Some(n) => {
+                let c = scalar_cell(x)?;
+                data.get_mut(off..off + n as usize)?
+                    .copy_from_slice(&c.to_le_bytes()[..n as usize]);
+            }
+            None => put_record(prog, f.ty, x, data.get_mut(off..)?)?,
+        }
+    }
+    Some(())
+}
+
+/// The record value of IR type `ty` (fields scalars or records) in `data`.
+fn get_record(prog: &Program, ty: TyId, data: &[u8]) -> Option<Val> {
+    let Ty::Record { fields } = prog.types.get(ty)? else {
+        return None;
+    };
+    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[]).ok()?;
+    let mut vs = Vec::with_capacity(fields.len());
+    for (f, off) in fields.iter().zip(&l.offsets) {
+        let ft = prog.types.get(f.ty)?;
+        let off = *off as usize;
+        vs.push(match ft.scalar_size() {
+            Some(n) => scalar_val(ft, read(data, off, n as usize)?)?,
+            None => get_record(prog, f.ty, data.get(off..)?)?,
+        });
+    }
+    Some(Val::Record(vs.into()))
 }
 
 /// The value of a call result of IR type `ty` (the inverse of [`encode`]).
@@ -188,16 +223,7 @@ pub(crate) fn decode(prog: &Program, ty: TyId, r: &CallVal) -> Option<Val> {
             }
             Some(make(&bounds, xs))
         }
-        Ty::Record { fields } => {
-            let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, desc).ok()?;
-            let mut vs = Vec::with_capacity(fields.len());
-            for (f, off) in fields.iter().zip(&l.offsets) {
-                let ft = prog.types.get(f.ty)?;
-                let n = ft.scalar_size()? as usize;
-                vs.push(scalar_val(ft, read(data, *off as usize, n)?)?);
-            }
-            Some(Val::Record(vs.into()))
-        }
+        Ty::Record { .. } if desc.is_empty() => get_record(prog, ty, data),
         _ => None,
     }
 }

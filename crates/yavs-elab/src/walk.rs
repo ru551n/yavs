@@ -406,6 +406,7 @@ pub(crate) fn elaborate(
         sigs: e.m.sigs,
         warnings: e.warnings,
         ir: None,
+        elab_calls: std::mem::take(&mut e.m.session.log),
     })
 }
 
@@ -806,6 +807,15 @@ impl Elab<'_> {
                 }
                 (ObjClass::Signal, ObjRole::ImplicitSignal) => {
                     self.implicit_signal(s, d)?;
+                }
+                // A constant whose initial value calls an impure function is evaluated here,
+                // in declaration order, so its side effects on package state happen once and
+                // in order (LRM 14.4.2); other constants are evaluated when first needed.
+                (ObjClass::Constant, ObjRole::Plain)
+                    if o.default.is_some_and(|e| crate::eval::calls_impure(db, e)) =>
+                {
+                    let span = decl.span;
+                    self.m.value_of(db, d, Some(s), span)?;
                 }
                 _ => {}
             }

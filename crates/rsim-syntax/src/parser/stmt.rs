@@ -172,7 +172,7 @@ impl Parser<'_> {
                 let e = if self.at(Tok::Semi) {
                     None
                 } else {
-                    Some(self.cond_expr()?)
+                    Some(self.return_value()?)
                 };
                 self.semi()?;
                 SeqStmtKind::Return(e)
@@ -199,7 +199,7 @@ impl Parser<'_> {
             Tok::Kw(Kw::With) => {
                 let (target, expr, matching) = self.with_header()?;
                 if self.eat(Tok::Assign) {
-                    let alts = self.selected_alts(|p| p.var_value())?;
+                    let alts = self.selected_alts(|p| p.expr())?;
                     SeqStmtKind::VariableAssign {
                         target,
                         rhs: Rhs::Selected {
@@ -445,7 +445,7 @@ impl Parser<'_> {
         let guarded = concurrent && self.eat_kw(Kw::Guarded);
         let kind = if !concurrent && self.eat_kw(Kw::Force) {
             let mode = self.force_mode();
-            let rhs = self.conditional(|p| p.expr())?;
+            let rhs = self.conditional(|p| p.var_value())?;
             SignalAssignKind::Force { mode, rhs }
         } else if !concurrent && self.eat_kw(Kw::Release) {
             SignalAssignKind::Release {

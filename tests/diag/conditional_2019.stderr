@@ -1,0 +1,10 @@
+error[E0002]: a conditional expression cannot be the operand of a qualified expression
+ --> conditional_2019.vhd:6:38
+  |
+6 |   constant b : integer := integer'(1 when g else 2);
+  |                                      ^^^^ `when` is not allowed here
+  |
+  = help: add parentheses: `T'((a when c else b))`
+
+error: aborting due to 1 previous error
+

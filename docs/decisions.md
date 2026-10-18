@@ -189,10 +189,15 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **2019 closing keywords:** 2019 makes only `end component` optional (LCS-2016-055a); every
   other ending keeps the 2008 rule. NVC, GHDL and Questa 2025.3 reject a bare `end;` for every
   other construct (`docs/design/lrm-checks.md` P1); rsim gives E0002 with a help naming the rule.
-- **2019 conditional expressions** (`a when c else b`) are parsed in initial values, interface
-  defaults, `return`, association actuals and variable assignments, the places the NVC 2019 tests
-  use. `unaffected` is accepted as a 2019 variable assignment value. A `generic map` after a name
-  is part of the name (a call of an uninstantiated subprogram) only inside expressions.
+- **2019 conditional expressions** (`a when c else b`, `docs/design/lrm-checks.md` P2): bare in
+  constant, signal and variable initial values, interface defaults (U-5, permissive), association
+  actuals (also after `inertial`) and `return`, plus anywhere as the 2019 primary
+  `( conditional_expression )` (VI#385). The operand of a qualified expression is not a primary,
+  so `T'(a when c else b)` is an error with a help to write `T'((a when c else b))`. `unaffected`
+  and a final `when c` without `else` only in simple variable and force assignments and `return`;
+  selected variable assignments take plain expressions. Not yet parsed: the plain `return when c;`.
+  A `generic map` after a name is part of the name (a call of an uninstantiated subprogram) only
+  inside expressions.
 - **Strict where tools differ:** `abs x ** 2`, chained relations (`a > b = c`) and mixed logical
   operators without parentheses are errors, as in the LRM grammar. `10ns` (no space before the
   unit) is accepted with warning W0003, because it is common in real code.

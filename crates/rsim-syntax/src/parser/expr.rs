@@ -124,10 +124,36 @@ impl Parser<'_> {
         })
     }
 
-    /// In VHDL-2019, an expression with optional `when c else e` branches.
+    /// A VHDL-2019 `conditional_expression`: `e { when c else e }`. Used for
+    /// initial values, interface defaults and association actuals.
     pub(super) fn cond_expr(&mut self) -> PResult<Expr> {
         let first = self.expr()?;
-        if self.std < crate::Std::Vhdl2019 || !self.at_kw(Kw::When) {
+        if self.std < crate::Std::Vhdl2019 {
+            return Ok(first);
+        }
+        self.cond_rest(first, false, Self::expr)
+    }
+
+    /// The value of a `return`: in VHDL-2019 a
+    /// `conditional_or_unaffected_expression` (values may be `unaffected`, a
+    /// final `when c` needs no `else`).
+    pub(super) fn return_value(&mut self) -> PResult<Expr> {
+        let first = self.var_value()?;
+        if self.std < crate::Std::Vhdl2019 {
+            return Ok(first);
+        }
+        self.cond_rest(first, true, Self::var_value)
+    }
+
+    /// The `when c else e` branches after `first`, if any. `trailing` allows a
+    /// last `when c` without `else`.
+    fn cond_rest(
+        &mut self,
+        first: Expr,
+        trailing: bool,
+        value: fn(&mut Self) -> PResult<Expr>,
+    ) -> PResult<Expr> {
+        if !self.at_kw(Kw::When) {
             return Ok(first);
         }
         let start = first.span;
@@ -137,12 +163,15 @@ impl Parser<'_> {
             let c = self.expr()?;
             branches.push((v, Some(c)));
             if !self.eat_kw(Kw::Else) {
+                if !trailing {
+                    return Err(self.expected("`else`"));
+                }
                 return Ok(Expr {
                     kind: ExprKind::Conditional(branches),
                     span: self.span_from(start),
                 });
             }
-            v = self.expr()?;
+            v = value(self)?;
         }
         branches.push((v, None));
         Ok(Expr {
@@ -151,11 +180,12 @@ impl Parser<'_> {
         })
     }
 
-    /// A variable assignment value: an expression, or `unaffected` in VHDL-2019.
+    /// An assignment or `return` value: an expression, or `unaffected` in
+    /// VHDL-2019.
     pub(super) fn var_value(&mut self) -> PResult<Expr> {
         if self.at_kw(Kw::Unaffected) {
             let span = self.bump_span();
-            self.require_2019(span, "`unaffected` in a variable assignment");
+            self.require_2019(span, "`unaffected` as an assignment or return value");
             return Ok(Expr {
                 kind: ExprKind::Unaffected,
                 span,
@@ -353,7 +383,7 @@ impl Parser<'_> {
     /// `type_mark ' ( ... )`, positioned at the tick.
     fn qualified(&mut self, type_mark: Name) -> PResult<Expr> {
         self.expect(Tok::Tick)?;
-        let operand = self.paren_or_aggregate()?;
+        let operand = self.paren_inner(false)?;
         let span = type_mark.span.to(operand.span);
         Ok(Expr {
             kind: ExprKind::Qualified {
@@ -364,12 +394,42 @@ impl Parser<'_> {
         })
     }
 
-    /// `( expr )` or an aggregate.
+    /// `( expr )`, a 2019 `( conditional_expression )`, or an aggregate.
     pub(super) fn paren_or_aggregate(&mut self) -> PResult<Expr> {
+        self.paren_inner(true)
+    }
+
+    /// As `paren_or_aggregate`; `cond` is false for the operand of a
+    /// qualified expression, which the 2019 grammar does not let be a
+    /// conditional expression (VI#385).
+    fn paren_inner(&mut self, cond: bool) -> PResult<Expr> {
         let start = self.expect(Tok::LParen)?;
         let mut elems = Vec::new();
         loop {
             elems.push(self.element_assoc()?);
+            if elems.len() == 1 && elems[0].choices.is_empty() && self.at_kw(Kw::When) {
+                let when = self.span();
+                if !cond {
+                    self.report(
+                        Diagnostic::error(
+                            codes::SYNTAX,
+                            "a conditional expression cannot be the operand of a qualified \
+                             expression",
+                        )
+                        .with_primary(when, "`when` is not allowed here")
+                        .with_help("add parentheses: `T'((a when c else b))`"),
+                    );
+                    return Err(Recover);
+                }
+                self.require_2019(when, "a conditional expression");
+                let first = elems.pop().map(|e| e.value).ok_or(Recover)?;
+                let e = self.cond_rest(first, false, Self::expr)?;
+                self.expect(Tok::RParen)?;
+                return Ok(Expr {
+                    kind: ExprKind::Paren(Box::new(e)),
+                    span: self.span_from(start),
+                });
+            }
             if !self.eat(Tok::Comma) {
                 break;
             }
@@ -783,7 +843,7 @@ impl Parser<'_> {
             return Ok(Actual::Open(self.bump_span()));
         }
         if self.eat_kw(Kw::Inertial) {
-            return Ok(Actual::Inertial(self.expr()?));
+            return Ok(Actual::Inertial(self.cond_expr()?));
         }
         let e = self.cond_expr()?;
         // `resolved std_logic` as a generic type actual.

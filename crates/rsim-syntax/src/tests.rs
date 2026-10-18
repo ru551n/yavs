@@ -717,6 +717,46 @@ fn vhdl2019_relaxations() {
 }
 
 #[test]
+fn vhdl2019_conditional_expression_positions() {
+    // lrm-checks.md P2: the LRM positions, plus interface defaults (U-5).
+    for src in [
+        pkg("constant c : integer := 1 when g else 2;"),
+        pkg("signal s : integer := (1 when g else 2);"),
+        pkg("function f (x : integer := 1 when g else 2) return integer;"),
+        pkg("function f (x : integer := (1 when g else 2)) return integer;"),
+        "entity e is generic (h : integer := 1 when g else 2); end;".to_string(),
+        seq("v := 1 when g else unaffected;"),
+        seq("s <= force 1 when g else unaffected;"),
+        seq("pr(1 when g else 2, x => 3 when g else 4);"),
+        seq("v := 3 + (1 when g else 2);"),
+        seq("v := integer'((1 when g else 2));"),
+        seq("if (a when g else b) then end if;"),
+        "architecture a of e is begin u: entity work.s port map (p => inertial 1 when g else 2); end;"
+            .to_string(),
+        "package body p is function f return integer is begin return 1 when g else 2; end; end;"
+            .to_string(),
+        "package body p is function f return integer is begin return 1 when g; return 2; end; end;"
+            .to_string(),
+    ] {
+        ok19(&src);
+    }
+    // Not allowed: the operand of a qualified expression, a missing `else`
+    // outside assignments and `return`, `unaffected` in initial values or
+    // selected variable assignments.
+    let e = errors_std(&seq("v := integer'(1 when g else 2);"), Std::Vhdl2019);
+    assert!(e[0].contains("qualified expression"), "{e:?}");
+    for src in [
+        pkg("constant c : integer := 1 when g;"),
+        pkg("constant c : integer := 1 when g else unaffected;"),
+        seq("with x select v := unaffected when 1, 2 when others;"),
+    ] {
+        errors_std(&src, Std::Vhdl2019);
+    }
+    let e = errors(&seq("v := (1 when g else 2);"));
+    assert!(e.iter().any(|m| m.ends_with("requires VHDL-2019")), "{e:?}");
+}
+
+#[test]
 fn vhdl2019_only_end_component_optional() {
     // LCS-2016-055a: only `end component` may drop its keyword (lrm-checks.md P1).
     for src in [

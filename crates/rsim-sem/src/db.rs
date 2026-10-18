@@ -42,7 +42,8 @@ pub struct WellKnown {
     pub delay_length: Option<SubtypeId>,
     pub file_open_kind: Option<TypeId>,
     pub file_open_status: Option<TypeId>,
-    pub direction: Option<TypeId>,
+    /// 2019 `RANGE_DIRECTION` (LRM 16.3; `lib` renames the package's `DIRECTION`).
+    pub range_direction: Option<TypeId>,
     /// The `std.standard` package scope.
     pub standard: Option<ScopeId>,
 }

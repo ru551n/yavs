@@ -1349,7 +1349,7 @@ impl Db {
             "string" => w.string = Some(ty),
             "file_open_kind" => w.file_open_kind = Some(ty),
             "file_open_status" => w.file_open_status = Some(ty),
-            "direction" => w.direction = Some(ty),
+            "range_direction" => w.range_direction = Some(ty),
             _ => {}
         }
         self.flush_pending_implicit();

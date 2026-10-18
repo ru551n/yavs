@@ -362,6 +362,25 @@ pub(crate) fn elaborate(
     if let Err(d) = r {
         e.errors.push(*d);
     }
+    // Every signal of a loaded package exists, read or not (#183); driven ones already do.
+    if e.errors.is_empty() {
+        let sigs: Vec<(DeclId, Span)> = e
+            .db
+            .units
+            .iter()
+            .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
+            .flat_map(|(_, u)| e.db.scopes[u.scope].order.iter().copied())
+            .filter(|&d| {
+                matches!(&e.db.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal)
+            })
+            .map(|d| (d, e.db.decls[d].span))
+            .collect();
+        for (d, at) in sigs {
+            if let Err(x) = e.m.signal_or_package(e.db, ScopeId(0), d, at) {
+                e.errors.push(*x);
+            }
+        }
+    }
     if e.errors.is_empty() {
         e.check_sources();
     }

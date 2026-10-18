@@ -54,6 +54,8 @@ const PASS: &[&str] = &[
     "hierarchy/incremental_binding",
     "hierarchy/instance_path_names",
     "hierarchy/nested_instances",
+    "hierarchy/package_shared",
+    "hierarchy/package_signal",
     "hierarchy/port_modes_conversion",
     "postponed/postponed_basic",
     "postponed/postponed_wait",

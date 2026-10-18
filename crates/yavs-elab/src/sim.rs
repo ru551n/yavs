@@ -24,6 +24,8 @@ pub struct Ir {
     pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
     /// `'path_name`/`'instance_name` strings per (region, named entity, instance?).
     pub names: HashMap<(ScopeId, yavs_sem::DeclId, bool), String>,
+    /// Packages with run-time objects, in initialisation order (#183).
+    pub packages: Vec<yavs_lower::PackageIr>,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -99,6 +101,13 @@ impl Elaborated {
             return Ok(());
         }
         let mut l = Lowerer::new(db, LowerOptions::default());
+        // Package objects first (#183), in analysis order, which puts a package after those
+        // its declaration uses (LRM 14.4.2).
+        // ponytail: a body using a package analyzed after its declaration is initialised too
+        // early; order by the dependency graph if a design needs it.
+        for u in run_time_packages(db) {
+            l.package(u)?;
+        }
         let mut idx = Vec::new();
         for &a in &archs {
             idx.push(l.architecture(a)?);
@@ -138,6 +147,7 @@ impl Elaborated {
             resolvers,
             res_regions,
             names,
+            packages: lowered.packages,
         });
         Ok(())
     }
@@ -248,11 +258,28 @@ impl Elaborated {
                 "the design has processes but was not lowered".into(),
             ));
         };
-        let rt = Runtime::new(ir.program.clone(), Bindings::default())?;
-        let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         let shared = Arc::new(Mutex::new(SharedState::new(Vec::new())));
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), u64> = HashMap::new();
+        // Package data, created once in order: each initialisation sees the packages before it.
+        let mut packages: Vec<Arc<InstData>> = Vec::new();
+        for p in &ir.packages {
+            let b = Bindings {
+                packages: packages.clone(),
+                ..Default::default()
+            };
+            let rt = Runtime::new(ir.program.clone(), b)?;
+            let d = yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(&shared))?;
+            packages.push(Arc::new(d));
+        }
+        let rt = Runtime::new(
+            ir.program.clone(),
+            Bindings {
+                packages,
+                ..Default::default()
+            },
+        )?;
+        let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         // Instance data of the regions whose resolution functions read it (#164).
         let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
         for (&leaf, &region) in &ir.res_regions {
@@ -459,4 +486,36 @@ impl Elaborated {
         }
         Ok(inst)
     }
+}
+
+/// Packages outside std with objects that exist at run time: signals, shared variables,
+/// files, or constants sem did not fold (in the declaration or the body).
+fn run_time_packages(db: &Db) -> Vec<UnitId> {
+    use yavs_sem::decl::{DeclKind, ObjClass};
+    use yavs_sem::hir::UnitHir;
+    let run_time = |scope: yavs_sem::ScopeId| {
+        db.scopes[scope]
+            .order
+            .iter()
+            .any(|&d| match &db.decls[d].kind {
+                DeclKind::Object(o) => match o.class {
+                    ObjClass::Constant => o.default.is_some_and(|e| db.exprs[e].value.is_none()),
+                    _ => true,
+                },
+                _ => false,
+            })
+    };
+    db.units
+        .iter()
+        .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
+        .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
+        .filter(|&(id, u)| {
+            run_time(u.scope)
+                || db.units.iter().any(|(_, b)| {
+                    matches!(b.hir, UnitHir::PackageBody { package } if package == id)
+                        && run_time(b.scope)
+                })
+        })
+        .map(|(id, _)| id)
+        .collect()
 }

@@ -253,7 +253,10 @@ arguments and results through `call_values`); multi-dimensional aggregates and o
 operators are still E2106 (#77). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
 and scalar type conversions in port maps (kernel converters), implicit signals (`'stable`,
-`'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`),
+`'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`, every
+signal of a loaded package, visible from every region), package data initialised once in
+analysis order with `yavs_interp::init_package` (shared variables, constants computed once,
+#183),
 external signal names bound in elaboration order (E2117), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its

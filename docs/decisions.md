@@ -439,6 +439,12 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
   IR layout. Not chosen: lowering a thunk per expression, which would need instance data for
   every scope's generics before elaboration has built it. Still E2106: multi-dimensional
   aggregates, composite arguments with composite elements, shifts and other array operators.
+- **Package objects at run time** (#183, elab agent with the lowering agent, 2026-10-18):
+  packages outside std with signals, shared variables, files or constants sem did not fold are
+  lowered (`Lowerer::package`) before the architectures and initialised once at build time
+  (`yavs_interp::init_package`), in analysis order (a package after those its declaration uses;
+  ponytail: a body using a later-analyzed package would need dependency order), sharing the
+  processes' `SharedState`. Every signal of a loaded package is elaborated, driven or not.
 - **Package constant calling a function of its own package** whose body is not elaborated yet
   (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.
 

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:package_signal:_p0	ro=0101 s=000100100
+diag	note	0	0	:package_signal:_p1	seen 000100100
+diag	note	0	1	:package_signal:_p1	seen 000000000
+diag	note	1000000	0	:package_signal:_p0	s=000000000
+diag	note	1000000	1	:package_signal:_p1	seen 111100001
+diag	note	2000000	0	:package_signal:_p0	s=111100001

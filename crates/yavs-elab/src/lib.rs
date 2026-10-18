@@ -132,7 +132,13 @@ impl Elaborated {
             }
             cur = self.hier.scope(s).parent;
         }
-        None
+        // A package signal is visible from every region (#183).
+        self.sigs
+            .iter()
+            .find(|((s, x), _)| {
+                *x == d && matches!(self.hier.scope(*s).kind, ScopeKind::Package { .. })
+            })
+            .map(|(_, &o)| o)
     }
 
     /// The value of generic or constant `d` seen from `scope`, if elaboration computed it.

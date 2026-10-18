@@ -32,7 +32,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt; sem08: corpus false positives #167-#170 |
 | `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6; semalias: alias negative suite #46 |
 | `external.rs` | external names (6.1) | S6 | owner: s6 |
-| `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6; protacc: #212 method profile check (small, in `decl.rs` `subprogram_spec`) |
+| `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6; protacc: #212 method profile check (small, in `decl.rs` `subprogram_spec`); semprot: protected and `--relaxed` negative suite #52 (wiring in `decl.rs` `object_decl`, `stmt.rs` variable assignment, `resolve.rs` operator errors) |
 | `alloc.rs` | allocators, dereference (`.all`, implicit), incomplete type uses, `'designated_subtype` (2.6, 3.7) | S6 | owner: alloc |
 | `view.rs` | mode views, `'converse` (6.7) | S7 | owner: s6 |
 | `rev.rs` | mixed 2008/2019 designs: `since` of std/ieee declarations, `E1007`, `W1008` (0.1) | S7 | owner: semrev (#50) |

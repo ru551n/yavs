@@ -32,8 +32,16 @@ def header(path):
 
 def run(cmd, cwd):
     full = ['timeout', '60', 'systemd-run', '--user', '--scope', '-q', '-p', 'MemoryMax=1G'] + cmd
-    p = subprocess.run(full, cwd=cwd, capture_output=True, text=True)
-    return p.returncode, p.stdout + p.stderr
+    env = dict(os.environ)
+    rt = '/run/user/%d' % os.getuid()
+    if 'XDG_RUNTIME_DIR' not in env and os.path.isdir(rt):
+        env['XDG_RUNTIME_DIR'] = rt  # systemd-run --user needs the user bus; a scrubbed environment lacks it
+    p = subprocess.run(full, cwd=cwd, capture_output=True, text=True, env=env)
+    out = p.stdout + p.stderr
+    if p.returncode and out.startswith('Failed to '):
+        # a wrapper failure must not look like a rejection by the tool
+        sys.exit('check_ref.py: systemd-run failed: ' + out.strip())
+    return p.returncode, out
 
 
 def one(path):

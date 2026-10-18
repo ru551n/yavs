@@ -273,9 +273,20 @@ impl Elaborated {
     /// The kernel model with interpreter processes (after [`Elaborated::lower`]). Can be
     /// called again for an in-process restart.
     pub fn build(&self, cfg: Config) -> Result<SimControl, SimError> {
+        self.build_runtime(cfg).map(|(s, _)| s)
+    }
+
+    /// [`Elaborated::build`], plus the interpreter runtime of the processes (none for a design
+    /// without them): the CLI reads the VHDL assert counts from it at the end of the run.
+    pub fn build_runtime(
+        &self,
+        cfg: Config,
+    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
         let Some(ir) = &self.ir else {
             if self.procs.is_empty() {
-                return self.build_with(cfg, |_, _| Err(sim_err("no IR".into())));
+                return self
+                    .build_with(cfg, |_, _| Err(sim_err("no IR".into())))
+                    .map(|s| (s, None));
             }
             return Err(sim_err(
                 "the design has processes but was not lowered".into(),
@@ -407,6 +418,7 @@ impl Elaborated {
             },
             res,
         )
+        .map(|s| (s, Some(rt)))
     }
 
     /// Instance data of instance `i`: constants from their thunks, the signal table.

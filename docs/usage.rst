@@ -39,7 +39,8 @@ otherwise.
 
 * ``--exit-severity=failure`` (the default): a report of that severity or higher stops the
   simulation with exit status 1. An ``error`` report below it is printed, the run continues,
-  and the exit status is 1 at the end.
+  and the exit status is 1 at the end, unless ``ClearVhdlAssert`` (VHDL-2019 ``std.env``)
+  cleared the assert counts since.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
 

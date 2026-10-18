@@ -399,8 +399,8 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
     (`tests/corpus/env/assert_count_cycles` is `ref=hand`).
   - As NVC: report statements count too; a disabled severity is neither shown nor counted; the
     no-argument `GetVhdlAssertCount`/`IsVhdlAssertFailed` cover warning, error and failure;
-    the read severity starts at ERROR. NVC's exit status follows the counts
-    (`ClearVhdlAssert` clears it), yavs's does not yet (#191).
+    the read severity starts at ERROR. The exit status follows the error and failure counts
+    at the end of the run, so `ClearVhdlAssert` clears a pending exit 1, as NVC (#191).
   - `SetVhdlAssertFormat` with a non-empty format is a "not implemented" runtime error; the
     format stays the default and `GetVhdlAssertFormat` returns "".
   - Call path elements are innermost first, names upper case, the line of the calling
@@ -544,7 +544,7 @@ a note and a help suggesting an access type, as NVC, GHDL and Questa reject it. 
 
 `yavs run` defaults to `--exit-severity=failure`, like NVC, GHDL and Questa. A report or assert of
 severity ERROR is printed and the simulation continues; the run exits 1 at the end if any ERROR or
-higher was reported. FAILURE stops the simulation at once. yavs's own runtime errors (bound,
+higher was reported and not cleared by `ClearVhdlAssert` (the std.env assert counts, #191). FAILURE stops the simulation at once. yavs's own runtime errors (bound,
 overflow, null access, delta limit, internal) still stop immediately, per the error motto.
 `--exit-severity=error|warning|note` lowers the threshold. VUnit passes its own setting.
 Reports go to stdout in NVC's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),

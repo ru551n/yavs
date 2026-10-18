@@ -471,6 +471,47 @@ fn elab_and_run() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// The exit status follows the std.env assert counts: `ClearVhdlAssert` after an error report
+/// gives exit 0 (#191).
+#[test]
+fn run_exit_after_clear_vhdl_assert() {
+    let tmp = tempdir("clear");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "use std.env.all; entity t is generic (CLEAR : boolean := true); end;\n\
+         architecture a of t is begin process begin report \"bad\" severity error;\n\
+           if CLEAR then ClearVhdlAssert; end if; wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let o = run(&["analyze", "--std=2019", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = run(&["run", &lib, "t"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).contains("** Error: 0fs+0: bad"));
+    let o = run(&["run", &lib, "t", "-gCLEAR=false"]);
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// One `yavs analyze` process per file, as VUnit runs it (`tools/corpus/run.py`): units of
 /// earlier calls load from the manifests of every mapped library, including the work library,
 /// whatever the case of their names; a failed file is not recorded, so its dependents fail

@@ -37,6 +37,7 @@ const PASS: &[&str] = &[
     "delta/delta_order",
     "delta/event_attrs",
     "delta/signal_update_order",
+    "env/assert_clear_exit",
     "env/assert_count_cycles",
     "env/assert_count",
     "env/call_path",
@@ -252,13 +253,18 @@ fn simulate(file: &Path) -> Result<String, String> {
             n.strip_suffix(':').unwrap_or(&n).to_string()
         })
         .collect();
-    let mut sim = e.build(Config::default()).map_err(|e| e.to_string())?;
+    let (mut sim, rt) = e
+        .build_runtime(Config::default())
+        .map_err(|e| e.to_string())?;
     let reps = Arc::new(Mutex::new(Vec::new()));
     let output = Arc::new(Mutex::new(Vec::new()));
     sim.subscribe(Box::new(Reports(reps.clone(), output.clone())));
     let status = sim.run_until(stop);
     let mut out = String::new();
-    let mut code = 0;
+    // The exit status follows the VHDL assert counts, as `yavs run` (#191).
+    let mut code = i32::from(rt.is_some_and(|rt| {
+        rt.assert_count(Severity::Error) + rt.assert_count(Severity::Failure) > 0
+    }));
     for (sev, t, d, p, m) in reps.lock().unwrap().iter() {
         let s = match sev {
             Severity::Note => "note",
@@ -266,9 +272,6 @@ fn simulate(file: &Path) -> Result<String, String> {
             Severity::Error => "error",
             Severity::Failure => "failure",
         };
-        if matches!(sev, Severity::Error | Severity::Failure) {
-            code = 1;
-        }
         writeln!(out, "diag\t{s}\t{t}\t{d}\t{}\t{}", names[*p], escape(m)).unwrap();
     }
     match status {

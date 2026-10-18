@@ -204,7 +204,9 @@ VUnit passes everything after `run`/`elab` in a response file (Conventions).
   report at or above LEVEL stops the simulation at the end of the current delta
   and gives exit 1. Default `failure` (user decision 2026-10-18, as NVC, GHDL and
   Questa): an `error` report is printed and the simulation continues, and the run
-  still exits 1 at the end because an `error` (or higher) was reported. yavs's own
+  still exits 1 at the end because an `error` (or higher) was reported, unless
+  `ClearVhdlAssert` (2019 `std.env`) cleared the assert counts since: the status
+  follows the error and failure counts at the end of the run, as NVC. yavs's own
   runtime errors (bound check, overflow, null access, delta limit, internal) stop
   at once whatever the level. VUnit passes its `vhdl_assert_stop_level` sim option.
 - `--ieee-warnings=off`: suppress the warnings raised inside `ieee` packages

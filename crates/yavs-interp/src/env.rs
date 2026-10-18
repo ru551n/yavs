@@ -338,6 +338,16 @@ impl Asserts {
         r
     }
 
+    /// The counts per severity with every logged change applied (the end of the run).
+    pub(crate) fn counts(&self) -> [u64; 4] {
+        let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = g.base.clone();
+        for &op in g.logs.values().flatten() {
+            st.apply(op);
+        }
+        st.counts
+    }
+
     /// A report or assertion violation of severity `s`: false when that severity is disabled
     /// (not shown, not counted, as NVC).
     pub(crate) fn report(&self, ctx: &Ctx<'_>, s: Severity) -> bool {

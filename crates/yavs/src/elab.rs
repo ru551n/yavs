@@ -13,8 +13,6 @@ use yavs_lib::{Libraries, UnitKind, UnitRef};
 use yavs_sem::{Db, LangRev, Options};
 
 use std::io::Write;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use yavs_kernel::{EndReason, RunStatus};
 
@@ -287,7 +285,7 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
             }
         },
     };
-    let mut sim = match e.build(cfg) {
+    let (mut sim, rt) = match e.build_runtime(cfg) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.
         Err(err) => {
@@ -303,11 +301,7 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
             n.strip_suffix(':').unwrap_or(&n).to_string()
         })
         .collect();
-    let errors = Arc::new(AtomicBool::new(false));
-    sim.subscribe(Box::new(Printer {
-        names,
-        errors: errors.clone(),
-    }));
+    sim.subscribe(Box::new(Printer { names }));
     let r = sim.run_until(stop);
     let mut o = std::io::stdout().lock();
     let code = match r {
@@ -334,13 +328,15 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
     };
     let _ = o.flush();
     drop(o);
-    // A report of severity error or failure fails the run even below `--exit-severity`
-    // (NVC does the same; VUnit only looks at zero or non-zero).
-    let code = if code == 0 && errors.load(Ordering::Relaxed) {
-        1
-    } else {
-        code
-    };
+    // A report of severity error or failure fails the run even below `--exit-severity`, unless
+    // ClearVhdlAssert cleared the counts since: the status follows the VHDL assert counts of
+    // std.env (NVC does the same; VUnit only looks at zero or non-zero).
+    let failed = rt.is_some_and(|rt| {
+        rt.assert_count(yavs_kernel::Severity::Error)
+            + rt.assert_count(yavs_kernel::Severity::Failure)
+            > 0
+    });
+    let code = if code == 0 && failed { 1 } else { code };
     out.finish(code)
 }
 
@@ -348,7 +344,6 @@ pub fn run(a: RunArgs, format: MessageFormat, color: bool) -> ExitCode {
 /// tools/difftest parses it).
 struct Printer {
     names: Vec<String>,
-    errors: Arc<AtomicBool>,
 }
 
 impl yavs_kernel::Observer for Printer {
@@ -359,12 +354,6 @@ impl yavs_kernel::Observer for Printer {
             yavs_kernel::Severity::Error => "Error",
             yavs_kernel::Severity::Failure => "Failure",
         };
-        if matches!(
-            r.severity,
-            yavs_kernel::Severity::Error | yavs_kernel::Severity::Failure
-        ) {
-            self.errors.store(true, Ordering::Relaxed);
-        }
         let name = self
             .names
             .get(r.process.0 as usize)

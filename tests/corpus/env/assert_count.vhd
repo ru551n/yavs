@@ -1,8 +1,8 @@
 -- difftest: top=assert_count std=2019
 -- VHDL assert state of std.env (LRM 2019 16.5): counts per severity (report statements
 -- count too, as NVC), IsVhdlAssertFailed, SetVhdlAssertEnable hides and stops counting a
--- severity, ClearVhdlAssert, the default format and read severity. No error reports: NVC
--- derives its exit status from the counts (ClearVhdlAssert clears it), yavs does not (#191).
+-- severity, ClearVhdlAssert, the default format and read severity. The exit status after
+-- ClearVhdlAssert is env/assert_clear_exit.
 use std.env.all;
 entity assert_count is end entity;
 

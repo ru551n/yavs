@@ -211,6 +211,12 @@ impl Runtime {
         }))
     }
 
+    /// The VHDL assert count of severity `s` (`GetVhdlAssertCount(s)`) as it stands now:
+    /// the CLI's exit status follows the error and failure counts at the end of the run.
+    pub fn assert_count(&self, s: yavs_kernel::Severity) -> u64 {
+        self.asserts.counts()[s as usize]
+    }
+
     /// Coverage counter values.
     pub fn coverage(&self) -> Vec<u64> {
         self.cov.iter().map(|c| c.load(Ordering::Relaxed)).collect()

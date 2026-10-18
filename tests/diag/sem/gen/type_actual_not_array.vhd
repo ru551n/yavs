@@ -1,0 +1,7 @@
+-- rsim-test: std=2019
+-- expect: E1503 7:43 `integer` is not an array type
+-- LRM 6.5.3
+package g is
+  generic (type t is array (natural range <>) of bit);
+end package;
+package i is new work.g generic map (t => integer);

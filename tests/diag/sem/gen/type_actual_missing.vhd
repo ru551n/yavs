@@ -1,0 +1,8 @@
+-- rsim-test: std=2008
+-- expect: E1502 8:25 generic type `t` has no actual
+-- LRM 6.5.3
+package g is
+  generic (type t);
+  constant k : integer := 1;
+end package;
+package i is new work.g generic map (n => 1);

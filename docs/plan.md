@@ -75,6 +75,14 @@ What the research found locally:
 - `--threads 1` must give identical results. That is the determinism check. `--shuffle` randomizes the serial order to expose testbenches that depend on process order (UVVM-style shared variables, NVC #614).
 - **There is no prior art to copy.** NVC tried work-queue parallelism in 2022 and went back to a serial run queue in 2023, and GHDL is serial. So `--threads` defaults to 1 until the differential suites pass at N threads, and the GC/heap safepoints are designed together with the thread pool (NVC #1649 was a deadlock between GC and threads).
 
+## Error-handling motto: fail early, fail clearly
+Every error is reported through `rsim-diag` in the rustc format: code, spans, labels, notes and help, and for runtime errors the VHDL stacktrace with instance path and time. Concretely:
+- **Never continue past a failed stage.** If analysis has errors, there is no elaboration. If elaboration has errors, there is no simulation. Inside one stage, independent errors may be listed together the way rustc does, but no guessed value is ever carried into the next stage.
+- **No silent fallbacks.** Don't use `unwrap_or(default)` on anything that comes from the design, the user or the environment. A missing library, unit, file, generic, plugin or VHPI symbol is an error that names what is missing and where rsim looked.
+- **Runtime errors stop the simulation at once** (bound check, overflow, null access, delta limit, assertion at or above `--exit-severity`), with a clear exit code. Nothing is clamped or wrapped.
+- **Internal invariants are checked.** A broken invariant becomes an internal compiler error rendered at the span being processed, with "this is a bug in rsim" and a report hint. It is never undefined behaviour or a bare panic message.
+- **External tools and plugins:** non-zero exit codes and error statuses are propagated and never swallowed.
+
 ## Design rules from the GHDL and NVC issue trackers
 Both simulators kept running into these bug classes; issue numbers are in brackets.
 1. **Constraints are runtime data on every composite.** Partially constrained types, constraints known only at runtime, and records with unconstrained fields are the largest crash class in both trackers (GHDL #641/#1224/#2422, NVC #1589/#1543/#1576). There is one type/subtype representation, and no "maybe static" path.

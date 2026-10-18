@@ -25,38 +25,38 @@ pub use hier::{
 use rsim_diag::Diagnostic;
 use rsim_sem::{Db, StmtId, UnitId};
 
-/// Diagnostic codes of elaboration (`E2000`-`E2199`, `W2000`-`W2199`).
+/// Diagnostic codes of elaboration (`E2100`-`E2199`, `W2100`-`W2199`).
 pub mod codes {
     /// The top-level unit named on the command line does not exist or is not elaboratable.
-    pub const TOP_NOT_FOUND: &str = "E2001";
+    pub const TOP_NOT_FOUND: &str = "E2101";
     /// An entity has no architecture to elaborate.
-    pub const NO_ARCHITECTURE: &str = "E2002";
+    pub const NO_ARCHITECTURE: &str = "E2102";
     /// A generic has no value: no actual, no override, no default.
-    pub const GENERIC_NO_VALUE: &str = "E2003";
+    pub const GENERIC_NO_VALUE: &str = "E2103";
     /// A `-gNAME=VALUE` text is not a value of the generic's type.
-    pub const BAD_OVERRIDE: &str = "E2004";
+    pub const BAD_OVERRIDE: &str = "E2104";
     /// `-gNAME=VALUE` for a generic the top level does not have.
-    pub const UNKNOWN_OVERRIDE: &str = "W2005";
+    pub const UNKNOWN_OVERRIDE: &str = "W2105";
     /// An expression that has to be evaluated during elaboration cannot be.
-    pub const NOT_EVALUATED: &str = "E2006";
+    pub const NOT_EVALUATED: &str = "E2106";
     /// Evaluation during elaboration fails (overflow, division by zero, out of range).
-    pub const EVAL_FAILED: &str = "E2007";
+    pub const EVAL_FAILED: &str = "E2107";
     /// A component instance is not bound to an entity (LRM 7.3.3): it stays open.
-    pub const UNBOUND: &str = "W2008";
+    pub const UNBOUND: &str = "W2108";
     /// Instances nested deeper than the limit (recursive instantiation).
-    pub const TOO_DEEP: &str = "E2009";
+    pub const TOO_DEEP: &str = "E2109";
     /// A port actual does not match its formal (shape, length).
-    pub const PORT_MISMATCH: &str = "E2010";
+    pub const PORT_MISMATCH: &str = "E2110";
     /// A port of an unconstrained subtype has nothing to take its bounds from.
-    pub const PORT_UNCONSTRAINED: &str = "E2011";
+    pub const PORT_UNCONSTRAINED: &str = "E2111";
     /// Several sources for an unresolved signal (LRM 14.7.2).
-    pub const MULTIPLE_SOURCES: &str = "E2012";
+    pub const MULTIPLE_SOURCES: &str = "E2112";
     /// A static name selects elements outside its prefix.
-    pub const BAD_NAME: &str = "E2013";
+    pub const BAD_NAME: &str = "E2113";
     /// A subprogram is called before its body is elaborated (LRM 14.4.2).
-    pub const BODY_NOT_ELABORATED: &str = "E2014";
+    pub const BODY_NOT_ELABORATED: &str = "E2114";
     /// A generic value is outside the generic's subtype.
-    pub const GENERIC_RANGE: &str = "E2015";
+    pub const GENERIC_RANGE: &str = "E2115";
     /// Not implemented yet in rsim (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in rsim").

@@ -339,7 +339,7 @@ resolution both readings give the same number. Applies to the M3 runtime that bu
   signals (two port edges per port, uncollapsed); it is not part of path names, the bound entity
   instance carries the label.
 - **Interim evaluator:** globally static expressions are folded with sem's static folder over
-  generic and constant values (`Db::fold_with`); everything else is E2006 until rsim-interp runs
+  generic and constant values (`Db::fold_with`); everything else is E2106 until rsim-interp runs
   elaboration code (ir.md 3.6).
 - **Package constant calling a function of its own package** whose body is not elaborated yet
-  (LRM 14.4.2): E2014 with both spans, as NVC and Questa do.
+  (LRM 14.4.2): E2114 with both spans, as NVC and Questa do.

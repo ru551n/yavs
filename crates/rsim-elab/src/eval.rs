@@ -2,7 +2,7 @@
 //!
 //! ponytail: globally static expressions are folded with sem's static folder
 //! (`Db::fold_with`) over generic and constant values; anything else (user function calls,
-//! aggregates) reports E2006 until rsim-interp evaluates elaboration code (ir.md 3.6).
+//! aggregates) reports E2106 until rsim-interp evaluates elaboration code (ir.md 3.6).
 
 use std::collections::HashMap;
 

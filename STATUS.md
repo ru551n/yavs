@@ -192,7 +192,7 @@ of arrays, `std_ulogic`/`bit`/`boolean` as bit-planes), the sub-element map
 static expression actuals, per-process merged drivers, multiple-source check across the
 hierarchy, LRM 14.4.2 body-before-call check, `Elaborated::build_with` into the kernel.
 Elaboration-time evaluation folds globally static expressions with `Db::fold_with`; function
-calls and aggregates wait for rsim-interp (E2006). Not yet: conversion functions and
+calls and aggregates wait for rsim-interp (E2106). Not yet: conversion functions and
 non-static expression actuals in port maps, implicit signals, guarded blocks and signals,
 package signals, external names, user resolution functions, generic types and subprograms.
 

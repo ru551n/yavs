@@ -16,7 +16,8 @@
 //! | `E0001`-`E0099`, `W0001`-`W0099` | `rsim-syntax`: lexing, conditional analysis, parsing (`rsim_syntax::codes`) |
 //! | `E0100`-`E0199`, `W0100`-`W0199` | `rsim` command line: reading files, arguments |
 //! | `E1000`-`E1999`, `W1000`-`W1999` | `rsim-sem` (planned, see `docs/design/sem.md` section 8) |
-//! | `E2000`-`E2199`, `W2000`-`W2199` | `rsim-elab`: elaboration (`rsim_elab::codes`) |
+//! | `E2000`-`E2099` | `rsim-lower`: HIR to IR lowering |
+//! | `E2100`-`E2199`, `W2100`-`W2199` | `rsim-elab`: elaboration (`rsim_elab::codes`) |
 //! | `E0900`-`E0999`, `W0900`-`W0999` | `rsim-vhpi` (E0901, E0902, W0903, W0904 in use) |
 //! | `L0000`-`L0099` | `rsim-lib`: library manifests and closure queries |
 //! | `E9999` | internal compiler error in any stage ("this is a bug in rsim") |

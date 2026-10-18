@@ -313,10 +313,10 @@ fn elab_and_run() {
     std::fs::write(&rsp, format!("{lib}\ntop\n-gN=4\n-gnope=1\n")).expect("rsp");
     let (code, err, _) = rsim(&["elab", &format!("@{}", rsp.display())]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.contains("warning[W2005]"), "{err}");
+    assert!(err.contains("warning[W2105]"), "{err}");
     let (code, err, _) = rsim(&["elab", &lib, "top", "-gN=0"]);
     assert_eq!(code, 2);
-    assert!(err.contains("error[E2004]"), "{err}");
+    assert!(err.contains("error[E2104]"), "{err}");
     let (code, err, _) = rsim(&["elab", &lib, "nothing"]);
     assert_eq!(code, 2);
     assert!(err.contains("error[L0031]"), "{err}");

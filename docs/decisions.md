@@ -865,6 +865,12 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **No static musl build:** considered and rejected (user, 2026-10-18). `--load` and VHPI plugins
   need `dlopen` and exported `vhpi_*` symbols, which need a dynamic glibc binary, and glibc 2.17
   already covers nearly all distros. Alpine users install `gcompat`.
+- **Distribution sweep (2026-10-18):** the 0.4.0 Linux archives were run once in 36 distribution
+  images on x86_64 and aarch64 (RHEL-family 7 to 9, Amazon Linux, Debian 8 to 13, Ubuntu 14.04 to
+  24.04, Fedora, openSUSE, Arch, Gentoo, Void, Mageia, Photon, distroless, Alpine with `gcompat`):
+  checksum, `yavs --version`, and analyze plus run of a design using `ieee.numeric_std` and
+  `std.textio` passed in all others. Only plain Alpine (musl, no glibc loader; expected) and
+  `busybox:glibc` (the image has no `libdl`) failed; both are image limitations.
 - **Archive names:** the Rust target triples are kept (`x86_64-unknown-linux-gnu`,
   `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`), without the glibc version, so installers
   that match on target triples find them; OS-arch names such as `linux-arm64` were considered

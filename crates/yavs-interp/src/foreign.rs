@@ -148,7 +148,7 @@ enum Temp {
 }
 
 impl Machine {
-    fn ty(&self, t: TyId) -> R<Ty> {
+    pub(crate) fn ty(&self, t: TyId) -> R<Ty> {
         self.rt
             .prog
             .types
@@ -158,7 +158,7 @@ impl Machine {
     }
 
     /// Data address and per-dimension lengths of the fat pair at `fat`.
-    fn fat(&self, fat: u64, dims: u8) -> R<(u64, Vec<u64>)> {
+    pub(crate) fn fat(&self, fat: u64, dims: u8) -> R<(u64, Vec<u64>)> {
         let data = self.load(fat, Width::B8)?;
         let dope = self.load(add_addr(fat, 8)?, Width::B8)?;
         let mut lens = Vec::with_capacity(dims.into());

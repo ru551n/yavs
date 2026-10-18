@@ -290,6 +290,32 @@ impl TextFile {
         output.writeline(&mut copy)
     }
 
+    /// WRITE on a file of a non-text type: raw bytes.
+    pub fn write_bytes(&mut self, b: &[u8]) -> FResult<()> {
+        self.writer("WRITE")?.write_all(b)?;
+        Ok(())
+    }
+
+    /// READ on a file of a non-text type: exactly `n` bytes; fewer left is an error.
+    pub fn read_bytes(&mut self, n: usize) -> FResult<Vec<u8>> {
+        let r = self.reader("READ")?;
+        let mut v = Vec::new();
+        (&mut *r).take(n as u64).read_to_end(&mut v)?;
+        if v.len() < n {
+            return Err(FileError::EndOfFile);
+        }
+        Ok(v)
+    }
+
+    /// Skip `n` bytes of a file of a non-text type; fewer left is an error.
+    pub fn skip_bytes(&mut self, n: u64) -> FResult<()> {
+        let r = self.reader("READ")?;
+        if io::copy(&mut (&mut *r).take(n), &mut io::sink())? < n {
+            return Err(FileError::EndOfFile);
+        }
+        Ok(())
+    }
+
     /// FLUSH.
     pub fn flush(&mut self) -> FResult<()> {
         match self.inner.as_mut().ok_or(FileError::NotOpen)? {

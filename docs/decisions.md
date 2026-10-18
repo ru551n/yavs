@@ -716,3 +716,24 @@ which tools/difftest parses.
   aarch64 under qemu-user (same test, `QEMU_LD_PREFIX` set for the child process), Windows
   x86_64 GNU under wine by hand (a MinGW DLL; the test itself cannot spawn the compiler from
   inside wine).
+
+## Binary files (yavs-interp `binfile.rs`, #79, 2026-10-18)
+
+`read` and `write` on `file of T` (LRM 5.5.2) are implemented for `T` a scalar type or an array of
+scalars; the on-disk format is implementation-defined, so it is fixed here (yavs, no user ruling).
+
+- **Scalars:** little-endian in the fewest whole bytes the type's range needs, unsigned when the
+  range has no negative value, else two's complement (`character` and small enumerations 1 byte,
+  `integer` 4, `real` and `time` 8). Enumerations of more than 256 literals use 4 bytes. This is
+  byte for byte what the reference simulator writes, so files of scalars are exchangeable.
+- **Arrays:** a `u32` element count (little-endian, all dimensions flattened), then the elements
+  in the scalar format; `bit`/`boolean` elements are 0/1 and `std_ulogic` elements their position.
+  The reference simulator writes no count, which makes the end of an unconstrained array
+  unrecoverable (a read takes whatever follows); LRM 5.5.2 needs the length, so yavs stores it,
+  for constrained element types too (the interpreter cannot tell them apart). Files of arrays are
+  therefore not exchangeable with that simulator.
+- **READ of an array:** the unconstrained form (with `LENGTH`) takes `min(stored, VALUE'LENGTH)`
+  elements, skips the rest of the record and sets `LENGTH` to the number taken; the constrained
+  form is a runtime error when the stored count differs. A value outside the type's range, or
+  reading past the end of the file, is a runtime error.
+- Records and arrays of composites are not implemented (runtime error naming #79).

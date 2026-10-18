@@ -28,6 +28,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
 | `src/implicit.rs` | `yavs.implicit.<family>.<type>[.<form>]` operations |
 | `src/textio.rs` | std.textio and TEXT file natives, `FILE_INPUT`/`FILE_OUTPUT`, std.env glue |
+| `src/binfile.rs` | `read`/`write` on files of scalars and arrays of scalars (on-disk format: decisions.md "Binary files") |
 | `src/env.rs` | 2019 std.env: call paths (`Sources`), the VHDL assert state (`Asserts`, cycle-deterministic), time_record |
 | `src/foreign.rs` | VHPIDIRECT marshalling (scalars, arrays, records, access, copy-back) |
 | `src/reflect.rs` | `std.reflection`: mirror objects and the 123 mirror methods; a test checks every NATIVE.md reflection row is implemented |

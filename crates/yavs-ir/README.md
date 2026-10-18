@@ -53,7 +53,8 @@ textual dump.
 - Exact instruction operand shapes for records with runtime layouts and `Elab*` instructions
   (their semantics belong to `yavs-elab`).
 - `InstData` gains child instances and package links when elaboration needs them.
-- Binary (non-TEXT) file `read`/`write` and the PSL natives are not implemented (runtime error
+- Binary (non-TEXT) file `read`/`write` handle scalars and arrays of scalars; records and
+  arrays of composites, and the PSL natives, are not implemented (runtime error
   naming the symbol); `SetVhdlAssertFormat` accepts only the empty (default) format.
 - Call paths need `Bindings::sources` (`yavs_interp::Sources::of(program, source_map)`;
   yavs-elab passes it); without it they are a runtime error.

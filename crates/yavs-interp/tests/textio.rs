@@ -592,3 +592,147 @@ fn long_line(n: i64) -> std::time::Duration {
     assert_eq!(r, Some((n * (n - 1) / 2) as u64));
     t.elapsed()
 }
+
+fn ints(vals: &[i64]) -> ConstData {
+    ConstData::Bytes(vals.iter().flat_map(|v| v.to_le_bytes()).collect())
+}
+
+/// Files of an unconstrained integer array: a read into a shorter object takes what fits,
+/// reports it in LENGTH and skips the rest of that record, so the next read starts at the next
+/// array; a read into a constrained object of another length is an error (docs/decisions.md
+/// "Binary files").
+#[test]
+fn binary_array_round_trip() {
+    let path = scratch("binary_array.bin");
+    let _ = std::fs::remove_file(&path);
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let arr = pb.ty(Ty::Array {
+        elem: int,
+        elem_desc: None,
+        dims: 1,
+    });
+    let file = pb.ty(Ty::File { elem: arr });
+    let (a3, a2) = (pb.konst(ints(&[7, 8, 9])), pb.konst(ints(&[5, 6])));
+    let open = |fb: &mut FuncBuilder<'_>, f: u32, kind: i64| {
+        stmt(fb, StmtKind::Call);
+        let (fa, name, k) = (
+            fb.addr(AddrSpace::Frame, f),
+            fat_str(fb, path.as_bytes()),
+            fb.int(kind),
+        );
+        native(
+            fb,
+            "yavs.implicit.file_open.arr",
+            Some(file),
+            &[fa, name, k],
+            false,
+        );
+    };
+    let f = pb.declare("f", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(f);
+        let (cell, buf, len) = (fb.slot(4, 4), fb.slot(16, 8), fb.slot(8, 8));
+        open(&mut fb, cell, 1);
+        for (c, n) in [(a3, 2), (a2, 1)] {
+            stmt(&mut fb, StmtKind::Call);
+            let (fa, data) = (
+                fb.addr(AddrSpace::Frame, cell),
+                fb.addr(AddrSpace::Const(c), 0),
+            );
+            let v = fat_of(&mut fb, data, 0, n, false);
+            native(
+                &mut fb,
+                "yavs.implicit.write.arr",
+                Some(file),
+                &[fa, v],
+                false,
+            );
+        }
+        stmt(&mut fb, StmtKind::Call);
+        let fa = fb.addr(AddrSpace::Frame, cell);
+        native(
+            &mut fb,
+            "yavs.implicit.file_close.arr",
+            Some(file),
+            &[fa],
+            false,
+        );
+        open(&mut fb, cell, 0);
+        let mut acc = fb.int(0);
+        for _ in 0..2 {
+            stmt(&mut fb, StmtKind::Call);
+            let (fa, ba, la) = (
+                fb.addr(AddrSpace::Frame, cell),
+                fb.addr(AddrSpace::Frame, buf),
+                fb.addr(AddrSpace::Frame, len),
+            );
+            let v = fat_of(&mut fb, ba, 0, 1, false);
+            native(
+                &mut fb,
+                "yavs.implicit.read.arr",
+                Some(file),
+                &[fa, v, la],
+                false,
+            );
+            // The 3-element array is cut to 2; the 2-element array fits.
+            for r in [
+                load(&mut fb, AddrSpace::Frame, len, Width::B8),
+                load(&mut fb, AddrSpace::Frame, buf, Width::B8),
+                load(&mut fb, AddrSpace::Frame, buf + 8, Width::B8),
+            ] {
+                let ten = fb.int(10);
+                let s = bin(&mut fb, IntOp::Mul, acc, ten);
+                acc = bin(&mut fb, IntOp::Add, s, r);
+            }
+        }
+        stmt(&mut fb, StmtKind::Call);
+        let fa = fb.addr(AddrSpace::Frame, cell);
+        let eof = native(
+            &mut fb,
+            "yavs.implicit.endfile.arr",
+            Some(file),
+            &[fa],
+            true,
+        )
+        .unwrap();
+        let k = fb.int(1_000_000_000);
+        let eof = bin(&mut fb, IntOp::Mul, eof, k);
+        let r = bin(&mut fb, IntOp::Add, acc, eof);
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    // Reads the first record (3 elements) into a constrained object of 2.
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    {
+        let mut fb = pb.define(g);
+        let (cell, buf) = (fb.slot(4, 4), fb.slot(16, 8));
+        open(&mut fb, cell, 0);
+        stmt(&mut fb, StmtKind::Call);
+        let (fa, ba) = (
+            fb.addr(AddrSpace::Frame, cell),
+            fb.addr(AddrSpace::Frame, buf),
+        );
+        let v = fat_of(&mut fb, ba, 0, 1, false);
+        native(
+            &mut fb,
+            "yavs.implicit.read.arr",
+            Some(file),
+            &[fa, v],
+            false,
+        );
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    let prog = Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    let inst = Arc::new(InstData::default());
+    let r = yavs_interp::call(rt.clone(), f, inst.clone(), &[]).unwrap();
+    // len 2, 7, 8, then len 2, 5, 6; endfile true.
+    assert_eq!(r, Some(1_000_000_000 + 278256));
+    let e = yavs_interp::call(rt, g, inst, &[]).unwrap_err();
+    let ErrorKind::Runtime(m) = &e.kind else {
+        panic!("{e}")
+    };
+    assert!(m.contains("3 elements") && m.contains("2 elements"), "{m}");
+}

@@ -291,7 +291,11 @@ impl Machine {
 
     // ---- files ----
 
-    fn with_file<T>(&mut self, cell: u64, f: impl FnOnce(&mut FileSlot) -> R<T>) -> R<T> {
+    pub(crate) fn with_file<T>(
+        &mut self,
+        cell: u64,
+        f: impl FnOnce(&mut FileSlot) -> R<T>,
+    ) -> R<T> {
         let c = self.load(cell, Width::B4)?;
         let rt = self.rt.clone();
         let mut files = rt
@@ -380,6 +384,8 @@ pub(crate) fn lookup(symbol: &str, family: Option<&str>) -> Option<Native> {
     let f: Native = match (symbol, family) {
         (_, Some("file_open")) => file_open,
         (_, Some("file_close")) => file_close,
+        (_, Some("read")) => crate::binfile::read,
+        (_, Some("write")) => crate::binfile::write,
         (_, Some("endfile")) => endfile,
         (_, Some("flush")) => flush,
         (_, Some("file_state")) => file_state,
@@ -484,7 +490,7 @@ fn file_close(
     Ok(None)
 }
 
-fn text<T>(
+pub(crate) fn text<T>(
     m: &mut Machine,
     cell: u64,
     f: impl FnOnce(&mut TextFile) -> Result<T, FileError>,

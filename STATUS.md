@@ -20,7 +20,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner.
 |---|---|---|---|---|
 | check | 7 | 127 | 123 | signal aliases #203 |
 | com | 0 | 135 | 10 | protected body initialiser #204 (fixed, not re-measured) |
-| data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files #79 |
+| data_types | 151 | 31 | 28 | #205, process-local names #207, `TIME'low` #208 (fixed, not re-measured), binary files of scalars and scalar arrays done (#79, not re-measured) |
 | dictionary | 0 | 8 | 0 | #203 |
 | logging | 112 | 1 | 0 | #207 |
 | path | 0 | 2 | 0 | #203 |
@@ -278,7 +278,7 @@ tests (conditional line breakpoint with hit count, step over, step in with frame
 global step across processes, signal breakpoint and process table), verifier and layout tests.
 Also 5 foreign marshalling tests, 5 textio/file/env tests and a protected-type test.
 Not done: `Elab*` instructions (yavs-elab), records with runtime layouts beyond `LayoutOf`,
-binary file read/write, the PSL natives, `SetVhdlAssertFormat` with a non-empty format.
+binary file read/write of records and arrays of composites, the PSL natives, `SetVhdlAssertFormat` with a non-empty format.
 
 std.reflection (`yavs-interp/src/reflect.rs`, `yavs-lower/src/reflect.rs`): all 123 mirror
 methods and `'reflect` (value and subtype mirrors, built from the value and its descriptor;

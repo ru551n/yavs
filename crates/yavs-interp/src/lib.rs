@@ -12,6 +12,7 @@
 //! Every runtime error is a kernel `SimError` whose `trace` is the VHDL call stack as
 //! `StmtId`s, innermost first. Broken invariants are `ErrorKind::Internal`.
 
+mod binfile;
 mod debug;
 mod env;
 mod exec;

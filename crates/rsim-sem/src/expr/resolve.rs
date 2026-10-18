@@ -40,6 +40,7 @@ impl Db {
         required: bool,
     ) -> ExprId {
         let saved = std::mem::take(&mut self.memo);
+        let saved_names = std::mem::take(&mut self.name_memo);
         let saved_overflow = std::mem::take(&mut self.overflow);
         let saved_top = self.top_context.take();
         let mut top = e;
@@ -65,6 +66,7 @@ impl Db {
             self.report(d);
         }
         self.memo = saved;
+        self.name_memo = saved_names;
         id
     }
 
@@ -398,6 +400,7 @@ impl Db {
                 NameRes::Missing(_)
                     | NameRes::Conflict(..)
                     | NameRes::Unsupported(..)
+                    | NameRes::NotInRegion(..)
                     | NameRes::Error
             ) {
                 self.report_name(scope, r);

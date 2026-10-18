@@ -292,7 +292,10 @@ impl Db {
 
     /// Discrete types a range bound may have (for `l to r` without a type mark).
     pub(crate) fn discrete_cands(&mut self, scope: ScopeId, e: &ast::Expr) -> Vec<TypeId> {
-        self.memo.clear();
+        let saved = (
+            std::mem::take(&mut self.memo),
+            std::mem::take(&mut self.name_memo),
+        );
         let c = self.cands(scope, e);
         let out = match c {
             CandSet::Types(is) => is
@@ -302,7 +305,7 @@ impl Db {
                 .collect(),
             CandSet::Class(_) => Vec::new(),
         };
-        self.memo.clear();
+        (self.memo, self.name_memo) = saved;
         out
     }
 }

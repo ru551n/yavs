@@ -105,6 +105,8 @@ pub struct Db {
     pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
+    /// The same for name nodes.
+    pub(crate) name_memo: HashMap<usize, crate::expr::CandSet>,
     /// Units that depend on a failed unit: undeclared names in them are cascades (8.2).
     pub(crate) tainted: HashSet<UnitId>,
     /// The subtype the next complete context's top expression is resolved for
@@ -204,6 +206,7 @@ impl Db {
             stack: Vec::new(),
             undeclared: HashSet::new(),
             memo: HashMap::new(),
+            name_memo: HashMap::new(),
             pending_implicit: Vec::new(),
             validated: Default::default(),
             overflow: Vec::new(),

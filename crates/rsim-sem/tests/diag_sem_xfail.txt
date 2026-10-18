@@ -32,7 +32,6 @@ attr/image_on_array_2008.vhd
 attr/length_on_scalar.vhd
 attr/pos_on_array_type.vhd
 attr/range_on_scalar_object.vhd
-attr/simple_name_ok.vhd
 attr/stable_negative_time.vhd
 attr/succ_on_real.vhd
 attr/unknown_help_typo.vhd

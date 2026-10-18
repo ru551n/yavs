@@ -52,7 +52,16 @@ pub enum Via {
     Object,
     Call(DeclId),
     EnumLit(DeclId),
+    /// Attribute of a type mark.
     Attr,
+    /// Attribute of an object or value whose type is the payload.
+    AttrOf(TypeId),
+    /// Indexed name of a prefix of this array type.
+    Index(TypeId),
+    /// Slice of a prefix of this array type.
+    Slice(TypeId),
+    /// Element `.1` of a prefix of record type `.0`.
+    Field(TypeId, u32),
     Literal,
     Other,
 }

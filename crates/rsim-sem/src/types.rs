@@ -900,8 +900,26 @@ impl Db {
                 ))
             }
             ast::DiscreteRange::Range(ast::Range::Name(n)) => {
-                if let ast::NameKind::Attribute { .. } = &n.kind {
-                    return Err(self.unsupported(n.span, "range attributes", "S3"));
+                if let Some(r) = self.range_attr(scope, n) {
+                    let (rc, t) = r?;
+                    if let Some(w) = want
+                        && w != t
+                        && w != self.poison.ty
+                        && t != self.poison.ty
+                    {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::TYPE_MISMATCH,
+                                format!(
+                                    "expected a range of `{}`, found one of `{}`",
+                                    self.type_name(w),
+                                    self.type_name(t)
+                                ),
+                            )
+                            .with_primary(n.span, "wrong index type"),
+                        ));
+                    }
+                    return Ok((rc, t));
                 }
                 let st = self.discrete_type_mark(scope, n)?;
                 let t = self.base(st);
@@ -1224,8 +1242,140 @@ impl Db {
                     right: rr,
                 })
             }
-            ast::Range::Name(n) => Err(self.unsupported(n.span, "range attributes", "S3")),
+            ast::Range::Name(n) => match self.range_attr(scope, n) {
+                Some(r) => {
+                    let (rc, t) = r?;
+                    if t != base && t != self.poison.ty && base != self.poison.ty {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::TYPE_MISMATCH,
+                                format!(
+                                    "expected a range of `{}`, found one of `{}`",
+                                    self.type_name(base),
+                                    self.type_name(t)
+                                ),
+                            )
+                            .with_primary(n.span, "wrong type"),
+                        ));
+                    }
+                    Ok(rc)
+                }
+                None => {
+                    let st = self.type_mark(scope, n)?;
+                    Ok(RangeC::Attr {
+                        prefix: AttrPrefix::Subtype(st),
+                        reverse: false,
+                        dim: 1,
+                    })
+                }
+            },
         }
+    }
+
+    /// `a'range`, `t'reverse_range(2)` (16.2): `None` when `n` is not a range attribute.
+    pub(crate) fn range_attr(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Option<Result<(RangeC, TypeId), Reported>> {
+        let (prefix, attr, dim_arg) = match &n.kind {
+            ast::NameKind::Attribute { prefix, attr } => (prefix.as_ref(), *attr, None),
+            ast::NameKind::Apply { prefix, args } => match (&prefix.kind, args.as_slice()) {
+                (
+                    ast::NameKind::Attribute { prefix, attr },
+                    [
+                        ast::AssocElem {
+                            formal: None,
+                            actual: ast::Actual::Expr(x),
+                            ..
+                        },
+                    ],
+                ) => (prefix.as_ref(), *attr, Some(x)),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let reverse = match attr.key.as_str() {
+            "range" => false,
+            "reverse_range" => true,
+            _ => return None,
+        };
+        Some(self.range_attr_inner(scope, prefix, reverse, dim_arg, n.span))
+    }
+
+    fn range_attr_inner(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        reverse: bool,
+        dim_arg: Option<&ast::Expr>,
+        span: Span,
+    ) -> Result<(RangeC, TypeId), Reported> {
+        let dim = match dim_arg {
+            None => 1,
+            Some(x) => {
+                let e = self.static_expr(scope, x, Expected::Any);
+                match self.value(e).and_then(|v| v.as_int()) {
+                    Some(d) if d >= 1 => d as u32,
+                    _ if self.is_poison_expr(e) => return Err(Reported),
+                    _ => return Err(self.error(
+                        Diagnostic::error(diag::NOT_STATIC, "the dimension of a range attribute must be a locally static positive integer")
+                            .with_primary(x.span, "not a static dimension"),
+                    )),
+                }
+            }
+        };
+        let (aprefix, t) = if let Some(st) = self.quiet_type_mark(scope, prefix) {
+            (AttrPrefix::Subtype(st), self.base(st))
+        } else {
+            let ts = self.prefix_types(scope, prefix).map_err(|_| Reported)?;
+            let arrays: Vec<TypeId> = ts
+                .into_iter()
+                .filter(|&t| matches!(self.types[t].kind, TypeKind::Array { .. }))
+                .collect();
+            let [t] = arrays.as_slice() else {
+                return Err(self.error(
+                    Diagnostic::error(diag::NOT_AN_OBJECT, "the prefix of `'range` must be an array object or an array or scalar type mark")
+                        .with_primary(prefix.span, "not an array"),
+                ));
+            };
+            let p = self.resolve_prefix(scope, prefix, *t);
+            (AttrPrefix::Expr(p), *t)
+        };
+        let index = match &self.types[t].kind {
+            TypeKind::Array { indexes, .. } => match indexes.get(dim as usize - 1) {
+                Some(&i) => self.base(i),
+                None => {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::ATTR_DIMENSION,
+                            format!("the array has {} dimension(s), not {dim}", indexes.len()),
+                        )
+                        .with_primary(span, "no such dimension"),
+                    ));
+                }
+            },
+            // Permissive (2019 allows `T'range` of a scalar subtype): its own range.
+            k if k.is_scalar() => t,
+            TypeKind::Error => t,
+            _ => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_AN_OBJECT,
+                        "`'range` needs an array or scalar prefix",
+                    )
+                    .with_primary(prefix.span, "not an array"),
+                ));
+            }
+        };
+        Ok((
+            RangeC::Attr {
+                prefix: aprefix,
+                reverse,
+                dim,
+            },
+            index,
+        ))
     }
 
     /// A name that must denote a type or subtype.

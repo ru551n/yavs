@@ -23,7 +23,7 @@
 //!   component instantiation without maps.
 //!
 //! Identifiers keep their original spelling next to a case-folded lookup key
-//! (see [`ast::Ident`]). PSL is not supported: it is reported and skipped.
+//! (see [`ast::Ident`]). PSL is skipped with a warning (`W0004`).
 
 pub mod ast;
 pub mod directive;
@@ -65,8 +65,7 @@ pub mod codes {
     pub const END_NAME: &str = "E0003";
     /// A VHDL-2019 construct used in VHDL-2008 mode.
     pub const NEEDS_2019: &str = "E0004";
-    /// PSL, which yavs does not support.
-    pub const PSL: &str = "E0005";
+    // E0005 (PSL is not supported) is retired: PSL is skipped with W0004. Never reuse it.
     /// Nesting beyond the parser's limit.
     pub const TOO_DEEP: &str = "E0006";
     /// Malformed conditional analysis directive.
@@ -85,6 +84,8 @@ pub mod codes {
     pub const UNKNOWN_DIRECTIVE: &str = "W0002";
     /// A number directly followed by an identifier, as in `10ns`.
     pub const NO_SEPARATOR: &str = "W0003";
+    /// PSL declarations and directives in a design unit, skipped.
+    pub const PSL_SKIPPED: &str = "W0004";
 }
 
 #[derive(Clone, Debug, Default)]

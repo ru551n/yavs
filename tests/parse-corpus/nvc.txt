@@ -906,15 +906,15 @@ PASS 2008 nvc/test/regress/protected7.vhd
 PASS 2008 nvc/test/regress/protected8.vhd
 PASS 2019 nvc/test/regress/protected9.vhd
 PASS 2008 nvc/test/regress/psl1.vhd
-FAIL 2008 nvc/test/regress/psl10.vhd  # E0005 PSL is not supported
-FAIL 2008 nvc/test/regress/psl11.vhd  # E0005 PSL is not supported
-FAIL 2008 nvc/test/regress/psl12.vhd  # E0005 PSL is not supported
+PASS 2008 nvc/test/regress/psl10.vhd
+PASS 2008 nvc/test/regress/psl11.vhd
+PASS 2008 nvc/test/regress/psl12.vhd
 PASS 2008 nvc/test/regress/psl13.vhd
 PASS 2008 nvc/test/regress/psl14.vhd
 PASS 2008 nvc/test/regress/psl15.vhd
 PASS 2008 nvc/test/regress/psl16.vhd
 PASS 2008 nvc/test/regress/psl17.vhd
-FAIL 2008 nvc/test/regress/psl18.vhd  # E0005 PSL is not supported
+PASS 2008 nvc/test/regress/psl18.vhd
 PASS 2008 nvc/test/regress/psl19.vhd
 PASS 2008 nvc/test/regress/psl2.vhd
 PASS 2008 nvc/test/regress/psl20.vhd
@@ -922,13 +922,13 @@ PASS 2008 nvc/test/regress/psl21.vhd
 PASS 2008 nvc/test/regress/psl22.vhd
 PASS 2008 nvc/test/regress/psl23.vhd
 PASS 2008 nvc/test/regress/psl24.vhd
-FAIL 2008 nvc/test/regress/psl3.vhd  # E0005 PSL is not supported
+PASS 2008 nvc/test/regress/psl3.vhd
 PASS 2008 nvc/test/regress/psl4.vhd
 PASS 2008 nvc/test/regress/psl5.vhd
 PASS 2008 nvc/test/regress/psl6.vhd
 PASS 2008 nvc/test/regress/psl7.vhd
 PASS 2008 nvc/test/regress/psl8.vhd
-FAIL 2008 nvc/test/regress/psl9.vhd  # E0005 PSL is not supported
+PASS 2008 nvc/test/regress/psl9.vhd
 PASS 2008 nvc/test/regress/ram1.vhd
 PASS 2008 nvc/test/regress/rand1.vhd
 PASS 2008 nvc/test/regress/range1.vhd
@@ -1211,7 +1211,7 @@ PASS 2008 nvc/test/parse/array.vhd
 PASS 2008 nvc/test/parse/attr.vhd
 PASS 2008 nvc/test/parse/badprimary.vhd
 PASS 2008 nvc/test/parse/based.vhd
-FAIL 2008 nvc/test/parse/basic_identifier.vhd  # E0001 unexpected character
+FAIL 2008 nvc/test/parse/basic_identifier.vhd  # E0001 unexpected character `_` (U+005F)
 FAIL 2008 nvc/test/parse/bitstring.vhd  # E0001 unterminated string literal
 PASS 2008 nvc/test/parse/block.vhd
 PASS 2008 nvc/test/parse/comp.vhd
@@ -1242,7 +1242,7 @@ FAIL 2008 nvc/test/parse/expr.vhd  # E0002 expected expression, found `+`
 FAIL 2008 nvc/test/parse/extended.vhd  # E0001 unterminated extended identifier
 PASS 2008 nvc/test/parse/external.vhd
 PASS 2008 nvc/test/parse/func.vhd
-FAIL 2008 nvc/test/parse/fuzzing.vhd  # E0001 unexpected character
+FAIL 2008 nvc/test/parse/fuzzing.vhd  # E0001 unexpected character `#` (U+0023)
 PASS 2008 nvc/test/parse/generate.vhd
 PASS 2008 nvc/test/parse/gensub.vhd
 PASS 2008 nvc/test/parse/group.vhd
@@ -1334,7 +1334,7 @@ PASS 2008 nvc/test/parse/issue893.vhd
 PASS 2008 nvc/test/parse/issue905.vhd
 PASS 2008 nvc/test/parse/issue917.vhd
 FAIL 2008 nvc/test/parse/issue942.vhd  # E0002 expected identifier, found `)`
-FAIL 2008 nvc/test/parse/issue952.vhd  # E0005 PSL is not supported
+FAIL 2008 nvc/test/parse/issue952.vhd  # E0002 expected expression, found `>`
 PASS 2008 nvc/test/parse/issue956.vhd
 PASS 2008 nvc/test/parse/issue961.vhd
 PASS 2008 nvc/test/parse/issue977.vhd

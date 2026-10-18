@@ -53,6 +53,7 @@ impl Parser<'_> {
 
     fn design_unit(&mut self) -> PResult<Option<DesignUnit>> {
         let start = self.span();
+        self.psl_warned = false;
         let mut context = Vec::new();
         loop {
             match self.peek() {
@@ -82,9 +83,7 @@ impl Parser<'_> {
             Tok::Kw(Kw::Configuration) => LibraryUnit::Configuration(self.configuration()?),
             Tok::Kw(Kw::Context) => LibraryUnit::Context(self.context_decl()?),
             Tok::Kw(Kw::Vunit | Kw::Vmode | Kw::Vprop) => {
-                let span = self.span();
-                self.psl_unsupported(span);
-                self.skip_braces();
+                self.psl_skip_unit();
                 return Ok(None);
             }
             Tok::Eof if context.is_empty() => return Ok(None),
@@ -98,17 +97,15 @@ impl Parser<'_> {
     }
 
     /// Skip a PSL verification unit up to its closing `}`.
-    fn skip_braces(&mut self) {
-        while !matches!(self.peek(), Tok::LBrace | Tok::Eof) {
-            self.bump();
-        }
+    fn psl_skip_unit(&mut self) {
+        self.psl_warn();
         let mut depth = 0u32;
         loop {
             match self.peek() {
                 Tok::Eof => return,
                 Tok::LBrace => depth += 1,
                 Tok::RBrace => {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
                         self.bump();
                         return;

@@ -155,12 +155,12 @@ impl Parser<'_> {
             }
             Tok::Kw(Kw::For) => Decl::ConfigSpec(self.config_spec()?),
             Tok::Kw(Kw::View) => Decl::View(self.view_decl()?),
-            _ => {
+            Tok::Kw(Kw::Property | Kw::Sequence | Kw::Default) => {
                 // PSL `property`, `sequence`, `default clock`.
-                self.psl_unsupported(start);
-                self.sync();
+                self.psl_skip();
                 return Ok(None);
             }
+            _ => return Err(self.expected("a declaration")),
         }))
     }
 
@@ -1180,9 +1180,19 @@ impl Parser<'_> {
             } else if self.eat_kw(Kw::Open) {
                 EntityAspect::Open
             } else if self.at_kw(Kw::Vunit) {
-                let span = self.span();
-                self.psl_unsupported(span);
-                return Err(Recover);
+                // `use vunit a, b`: a PSL binding, skipped.
+                self.psl_warn();
+                self.bump();
+                self.name()?;
+                while self.eat(Tok::Comma) {
+                    self.name()?;
+                }
+                return Ok(BindingIndication {
+                    entity_aspect: None,
+                    generic_map: None,
+                    port_map: None,
+                    span: self.span_from(start),
+                });
             } else {
                 return Err(self.expected("`entity`, `configuration` or `open`"));
             })

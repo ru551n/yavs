@@ -158,4 +158,4 @@ Other open source simulators kept running into these bug classes.
 - **Both tiers on every suite** (from M6). JIT-only and interpreter-only runs must give identical output.
 
 ## Out of scope (add when needed)
-Verilog and mixed-language designs, PSL, SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (existing language servers already cover that), SDF and VITAL timing, macOS (avoid gratuitously Unix-only code), an incremental compilation cache, and a speed target.
+Verilog and mixed-language designs, PSL (skipped with a warning, user 2026-10-18), SystemC, VHDL-93-only semantic quirks, distributed simulation, a full LSP (existing language servers already cover that), SDF and VITAL timing, macOS (avoid gratuitously Unix-only code), an incremental compilation cache, and a speed target.

@@ -826,14 +826,60 @@ fn conditional_analysis() {
     }
 }
 
+fn psl_warnings(src: &str) -> Vec<String> {
+    let p = parse_std(src, Std::Vhdl2008);
+    assert!(
+        p.design.is_some(),
+        "PSL must not be an error: {:?}",
+        p.diags
+    );
+    p.diags.iter().map(|d| d.code.to_string()).collect()
+}
+
 #[test]
-fn psl_is_reported_and_skipped() {
-    let e = errors("vunit v (e) { assert always a; }\nentity e is end;");
-    assert_eq!(e, ["PSL is not supported"]);
-    let e = errors(&conc("assume always a;\ns <= '1';"));
-    assert_eq!(e, ["PSL is not supported"]);
-    let e = errors(&pkg("property p is always a;\nconstant c : integer := 1;"));
-    assert_eq!(e, ["PSL is not supported"]);
+fn psl_is_skipped_with_one_warning_per_unit() {
+    // Every PSL form is skipped and the rest of the file still parses.
+    let forms = [
+        "default clock is rising_edge(clk);",
+        "property p is always (a -> next b);",
+        "sequence s is {a; b[*2]; c};",
+        "property q (boolean x) is always {x; x} |=> x;",
+        "assert always (a -> next[1](b));",
+        "assert never {a; b};",
+        "l: assume always a;",
+        "cover {a; b};",
+        "restrict {a[*]; b};",
+        "assume_guarantee always a;",
+        "restrict_guarantee {a};",
+        "fairness a;",
+        "assert always a report \"x\" severity error;",
+        "one: assert (always (a -> next [2] (b))) async_abort areset;",
+        "assert always (a -> next (not a or (b before_ a)));",
+        "assert {a; b} |-> {c};",
+        "assert eventually! a;",
+    ];
+    for f in forms {
+        let src = conc(&format!("{f}\ns <= '1';"));
+        assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
+        let p = parse_std(&src, Std::Vhdl2008);
+        let LibraryUnit::Architecture(a) = &p.design.unwrap().units[0].unit else {
+            panic!()
+        };
+        assert_eq!(a.stmts.len(), 1, "{f}: the assignment survives");
+    }
+    // Declaration forms, in a package.
+    for f in &forms[..4] {
+        let w = psl_warnings(&pkg(&format!("{f}\nconstant c : integer := 1;")));
+        assert_eq!(w, ["W0004"], "{f}");
+    }
+    // Several constructs in one unit still give one warning.
+    let src = conc("default clock is rising_edge(clk);\nassert always a;\ncover {a};");
+    assert_eq!(psl_warnings(&src), ["W0004"]);
+    // Two units, two warnings.
+    let src = "vunit v (e) { assert always a; }\nvmode m (e) { assume always {a; b}; }\nvprop p (e) { }\nentity e is end;";
+    assert_eq!(psl_warnings(src), ["W0004", "W0004", "W0004"]);
+    // A plain VHDL assertion is not PSL, even on a signal named `always`.
+    assert!(psl_warnings(&conc("assert always;\nassert a report \"x\";")).is_empty());
 }
 
 // Error recovery.

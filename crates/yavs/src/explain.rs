@@ -22,7 +22,7 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0004",
         "A VHDL-2019 construct was used in a VHDL-2008 file. Analyze with `--std=2019` or rewrite it.",
     ),
-    ("E0005", "PSL is not supported by yavs."),
+    // E0005 (PSL is not supported) is retired: PSL is skipped with W0004. Never reuse it.
     (
         "E0006",
         "Constructs are nested deeper than the parser's limit.",
@@ -54,6 +54,10 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "W0003",
         "A number is directly followed by an identifier, as in `10ns`; write a space between them.",
+    ),
+    (
+        "W0004",
+        "A design unit contains PSL (IEEE 1850): default clock, property and sequence declarations, assert/assume/cover/restrict directives or vunit/vmode/vprop units. yavs does not run PSL; the constructs are skipped, so no property is checked and the simulation is unaffected. One warning is given per design unit. Use `-Werror=W0004` to make it an error, or `-Wno-W0004` to silence it.",
     ),
     // yavs command line
     (

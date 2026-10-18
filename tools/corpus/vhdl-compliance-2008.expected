@@ -164,7 +164,7 @@ PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_matching_operator_lt.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_matching_operator_ne.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_min_max.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_numeric_std_unsigned.vhd
-FAIL vhdl_2008 vhdl-compliance/vhdl_2008/tb_psl.vhd
+PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_psl.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_read_out_port.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_sensitivity_all.vhd
 PASS vhdl_2008 vhdl-compliance/vhdl_2008/tb_top_generic_subtype.vhd

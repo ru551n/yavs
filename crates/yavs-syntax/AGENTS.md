@@ -43,7 +43,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Strict on `abs x ** 2`, chained relations, mixed logical operators; `10ns` accepted with `W0003` | LRM grammar; common real code | `docs/decisions.md` "Parser" |
 | Encoding: `auto` (UTF-8 if valid else Latin-1), `latin1`, `utf8` (`E0010`); non-Latin-1 char in literal/identifier `E0009`; spans are file byte offsets | User decision | `docs/decisions.md` "Parser", source encoding |
 | A type mark takes no parentheses except the dimension of 2019 `A'INDEX(n)` (`NameKind::Apply` on the attribute) | The index subtype is scalar, so no index constraint can follow; #174 | `src/parser/expr.rs` `type_mark` |
-| PSL is `E0005` and skipped | Out of scope | `docs/plan.md` "Out of scope", #138 |
+| PSL is skipped with one `W0004` per design unit (`E0005` retired, never reuse); the skip ends at the `;` outside `()`, `[]`, `{}` (`sync`), a `vunit`/`vmode`/`vprop` at its closing `}`; a concurrent `assert`/`cover` counts as PSL by its first property token (`at_psl_directive`) | User decision 2026-10-18: do not fail designs that merely carry assertions yavs cannot run | `docs/decisions.md` "Parser", #138 |
 | No VHDL-93 mode: 93 code using 2008 reserved words is an expected corpus failure | Plan scope | `docs/decisions.md` "Parser", corpus lists |
 
 Module-local decisions go in this section in the same commit; LRM readings go to
@@ -78,12 +78,11 @@ cargo run -p yavs -- parse --std 2019 --dump-ast f.vhd   # inspect the tree
   (first line `-- yavs: --std 2019` for 2019). Corpus list changes in `tests/parse-corpus/` must
   be explained in the commit.
 - Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0010, W0001 to
-  W0003), plus `E9999` for internal errors.
+  W0004), plus `E9999` for internal errors.
 
 ## 6. Coordination
 
 - `yavs-sem` is the only real consumer of AST details; check its `CONTRIBUTING.md` for requests
   addressed to the parser.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:syntax`): #138
-  PSL reported as unsupported; #87 periodic fuzz and parse-corpus gate; #29 generic map on variable declarations (2019 generic
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:syntax`): #87 periodic fuzz and parse-corpus gate; #29 generic map on variable declarations (2019 generic
   protected types).

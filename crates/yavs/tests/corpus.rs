@@ -12,8 +12,7 @@
 //!
 //! Any difference (a new failure, a new pass, a file added or gone) fails the
 //! test. `YAVS_BLESS=1` rewrites the lists from the current results. In the
-//! zero-error corpora (VUnit, OSVVM, rust_hdl's libraries) the only failures
-//! allowed are PSL.
+//! zero-error corpora (VUnit, OSVVM, rust_hdl's libraries) no failure is allowed.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -28,7 +27,7 @@ struct Corpus {
     name: &'static str,
     /// Directories relative to `YAVS_CORPUS`, and whether to recurse.
     dirs: &'static [(&'static str, bool)],
-    /// Only PSL may fail.
+    /// No file may fail.
     zero_errors: bool,
 }
 
@@ -302,7 +301,6 @@ fn external() {
             }
             if corpus.zero_errors
                 && let Some(e) = &outcome.error
-                && !e.contains("PSL")
             {
                 hard.push(format!("{rel}: must parse without errors: {e}"));
             }

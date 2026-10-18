@@ -113,7 +113,8 @@ An installed binary finds `lib/` next to itself (#43).
 
 Hand-written lexer, conditional analysis on the token stream and recursive-descent parser for
 VHDL-2008 and VHDL-2019 into an owned AST (`yavs parse [--std 2008|2019] files...`). Diagnostics
-go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/`).
+go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/`). PSL is skipped
+with one `W0004` warning per design unit (#138); the PSL does not run.
 
 Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
 `YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus` compares them with the
@@ -126,9 +127,9 @@ updates the lists). Plain `cargo test --workspace` still parses `lib/` and runs 
 | External test runner library (`vunit`) | 194 | 194 | none |
 | External verification library (`osvvm`) | 36 | 36 | none |
 | Third-party parser library sources (std, ieee2008, synopsys, vital2000) | 37 | 37 | none |
-| Reference simulator regression and parse tests | 1401 | 1360 | 41: tests of invalid syntax (most of them), PSL, VHDL-87 syntax, `abs x ** 2`, one `` `if `` that needs `--define` |
+| Reference simulator regression and parse tests | 1401 | 1366 | 35: tests of invalid syntax (most of them), VHDL-87 syntax, `abs x ** 2`, one `` `if `` that needs `--define` |
 | Conformance suite `vhdl-93` | 3782 | 3244 | 538: 533 in `non_compliant/analyzer_failure`, 2 other non-compliant, 2 broken book excerpts, 1 VHDL-93 file using `default` |
-| Second reference simulator testsuite | 3216 | 2973 | 243: `analyze_failure` tests and fuzz crashers, PSL, 93 code using 2008 reserved words |
+| Second reference simulator testsuite | 3216 | 3009 | 207: `analyze_failure` tests and fuzz crashers, 93 code using 2008 reserved words |
 
 Throughput on the `vunit` corpus (read, decode, lex, preprocess and parse; release build, one
 thread, Intel Core Ultra 9 275HX, warm cache): about 5,600 files/s and 60 MB/s (best of three: 5,769 files/s, 62.4 MB/s).

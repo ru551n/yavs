@@ -287,8 +287,18 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   E0009 naming it (U+XXXX) with a help line pointing at `--encoding=latin1`; comments may contain
   anything. Spans are always byte offsets into the file on disk; `SourceMap` keeps the bytes of a
   Latin-1 file and maps offsets when rendering.
-- **PSL** is out of scope: PSL declarations, directives and verification units get E0005 and are
-  skipped (to `;`, or to the closing `}` of a `vunit`).
+- **PSL is skipped with a warning (user, 2026-10-18, #138):** PSL declarations (`default clock`,
+  `property`, `sequence`), directives (`assert`/`assume`/`assume_guarantee`/`cover`/`restrict`/
+  `restrict_guarantee`/`fairness` with a PSL property) and verification units (`vunit`, `vmode`,
+  `vprop`, `use vunit` in a binding) are skipped and give one `W0004` warning per design unit
+  (`-Werror` or `-Werror=W0004` makes it an error). A statement or declaration is skipped to its
+  `;` outside parentheses, brackets and braces, a verification unit to its closing `}`, so the
+  rest of the file is analyzed, elaborated and simulated; the PSL itself never runs. A concurrent
+  `assert`/`cover` is PSL when its property starts with `{`, `strong` or a PSL operator word
+  (`always`, `never`, `eventually`, `forall`, `next*`) followed by something other than `;`,
+  `report` or `severity`. `-- psl` comments stay plain comments. `E0005` ("PSL is not
+  supported") is retired and never reused. Supporting a subset is the optional enhancement
+  tracked in a separate issue.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993

@@ -41,6 +41,8 @@ pub(crate) struct Parser<'a> {
     lex_errors: Vec<u32>,
     depth: u32,
     fuel: u64,
+    /// The current design unit already got its PSL warning.
+    psl_warned: bool,
 }
 
 pub(crate) fn parse(
@@ -67,6 +69,7 @@ pub(crate) fn parse(
         lex_errors,
         depth: 0,
         fuel,
+        psl_warned: false,
     };
     p.design_file()
 }
@@ -224,12 +227,62 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn psl_unsupported(&mut self, span: Span) {
-        self.report(
-            Diagnostic::error(codes::PSL, "PSL is not supported")
-                .with_primary(span, "PSL starts here")
-                .with_note("yavs does not implement PSL (IEEE 1850); this construct is skipped"),
-        );
+    /// Skip the PSL construct that starts at the current token, up to and
+    /// including its `;` (outside parentheses, brackets and braces), and warn
+    /// once per design unit.
+    fn psl_skip(&mut self) {
+        self.psl_warn();
+        self.sync();
+    }
+
+    /// The once-per-design-unit PSL warning at the current token.
+    fn psl_warn(&mut self) {
+        if !self.psl_warned {
+            self.psl_warned = true;
+            let span = self.span();
+            self.diags.push(
+                Diagnostic::warning(codes::PSL_SKIPPED, "PSL is skipped")
+                    .with_primary(span, "PSL starts here")
+                    .with_note(
+                        "yavs does not run PSL (IEEE 1850): PSL declarations and directives \
+                         are ignored, so no property is checked",
+                    ),
+            );
+        }
+    }
+
+    /// Is the `assert` at the current token a PSL directive? A VHDL assertion
+    /// has no `{`, `next` or `strong` in it and no PSL operator word; the scan
+    /// runs to the `;`. A lone `assert always;` (a signal named like an
+    /// operator) stays a VHDL assertion.
+    fn at_psl_directive(&mut self) -> bool {
+        let last = self.eof_index();
+        let mut i = self.pos + 1;
+        while i < last {
+            let t = self.toks[i];
+            match t.kind {
+                Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
+                Tok::LBrace | Tok::Kw(Kw::Next | Kw::Strong) => return true,
+                Tok::Ident => {
+                    let w = self.text(t).to_ascii_lowercase();
+                    if matches!(w.as_str(), "always" | "never" | "eventually" | "forall")
+                        || w.starts_with("next_")
+                    {
+                        let alone = i == self.pos + 1
+                            && matches!(
+                                self.toks[i + 1].kind,
+                                Tok::Semi | Tok::Kw(Kw::Report | Kw::Severity)
+                            );
+                        if !alone {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     /// Report an internal compiler error at `span`.
@@ -270,15 +323,15 @@ impl<'a> Parser<'a> {
 
     // Recovery.
 
-    /// Skip to just after the next `;` at bracket depth zero, stopping
+    /// Skip to just after the next `;` at bracket (and PSL brace) depth zero, stopping
     /// before `end`, `begin` or end of file.
     fn sync(&mut self) {
         let mut depth = 0u32;
         loop {
             match self.peek() {
                 Tok::Eof => return,
-                Tok::LParen | Tok::LBracket => depth += 1,
-                Tok::RParen | Tok::RBracket => depth = depth.saturating_sub(1),
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
                 Tok::Semi if depth == 0 => {
                     self.bump();
                     return;

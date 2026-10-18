@@ -89,7 +89,7 @@ PASS 2008 ghdl/testsuite/gna/bug0120/print1.vhdl
 PASS 2008 ghdl/testsuite/gna/bug0120/print4.vhdl
 PASS 2008 ghdl/testsuite/gna/bug0120/proc1.vhdl
 PASS 2008 ghdl/testsuite/gna/bug0120/proc2.vhdl
-FAIL 2008 ghdl/testsuite/gna/bug0122/tab1.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/bug0122/tab1.vhdl  # E0001 unexpected character `_` (U+005F)
 PASS 2008 ghdl/testsuite/gna/bug0123/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/bug0124/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/bug0124/repro2.vhdl
@@ -382,7 +382,7 @@ PASS 2008 ghdl/testsuite/gna/bug050/tsltextio.vhdl
 PASS 2008 ghdl/testsuite/gna/bug050/tunsigned.vhdl
 PASS 2008 ghdl/testsuite/gna/bug051/tb.vhdl
 PASS 2008 ghdl/testsuite/gna/bug051/tb1.vhdl
-FAIL 2008 ghdl/testsuite/gna/bug051/tb2.vhdl  # E0002 expected `;`, found `{`
+PASS 2008 ghdl/testsuite/gna/bug051/tb2.vhdl
 PASS 2008 ghdl/testsuite/gna/bug052/tb.vhdl
 PASS 2008 ghdl/testsuite/gna/bug052/tb_simple.vhdl
 PASS 2008 ghdl/testsuite/gna/bug052/tb_simple1.vhdl
@@ -422,7 +422,7 @@ PASS 2008 ghdl/testsuite/gna/bug061/dictp.vhdl
 PASS 2008 ghdl/testsuite/gna/bug061/dictp08.vhdl
 PASS 2008 ghdl/testsuite/gna/bug061/test_dict.vhdl
 PASS 2008 ghdl/testsuite/gna/bug062/ex.vhdl
-FAIL 2008 ghdl/testsuite/gna/bug063/dff.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/bug063/dff.vhdl  # E0001 unexpected character `‘` (U+2018)
 FAIL 2008 ghdl/testsuite/gna/bug064/repro.vhdl  # E0002 expected `;`, found `(`
 PASS 2008 ghdl/testsuite/gna/bug065/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/bug066/repro.vhdl
@@ -488,10 +488,10 @@ FAIL 2008 ghdl/testsuite/gna/bug090/crash10.vhdl  # E0001 unterminated string li
 FAIL 2008 ghdl/testsuite/gna/bug090/crash11.vhdl  # E0002 expected name, found `.`
 FAIL 2008 ghdl/testsuite/gna/bug090/crash12.vhdl  # E0002 expected identifier, character, operator or `all` after `.`, found `null`
 FAIL 2008 ghdl/testsuite/gna/bug090/crash13.vhdl  # E0001 unterminated extended identifier
-FAIL 2008 ghdl/testsuite/gna/bug090/crash14.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/bug090/crash14.vhdl  # E0001 unexpected character `#` (U+0023)
 FAIL 2008 ghdl/testsuite/gna/bug090/crash2.vhdl  # E0002 expected expression, found `after`
 FAIL 2008 ghdl/testsuite/gna/bug090/crash3.vhdl  # E0002 expected declaration, found identifier
-FAIL 2008 ghdl/testsuite/gna/bug090/crash4.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/bug090/crash4.vhdl  # E0001 unexpected character `` (U+0080)
 FAIL 2008 ghdl/testsuite/gna/bug090/crash5.vhdl  # E0002 expected `;`, found `{`
 FAIL 2008 ghdl/testsuite/gna/bug090/crash6.vhdl  # E0001 unterminated string literal
 FAIL 2008 ghdl/testsuite/gna/bug090/crash7.vhdl  # E0002 expected expression, found `severity`
@@ -713,8 +713,8 @@ PASS 2008 ghdl/testsuite/gna/issue1274/repro4.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1287/myentity.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1287/myentity2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1288/issue.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue1292/psl_next_event_e.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1295/psl_next_event_a.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1292/psl_next_event_e.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1295/psl_next_event_a.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1300/icache.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1300/wishbone_types.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1300/wishbone_types_err2.vhdl
@@ -726,7 +726,7 @@ PASS 2008 ghdl/testsuite/gna/issue1346/memory_map.vhd
 PASS 2008 ghdl/testsuite/gna/issue1346/memory_map_pkg.vhd
 PASS 2008 ghdl/testsuite/gna/issue1346/wb_pkg.vhd
 PASS 2008 ghdl/testsuite/gna/issue1346/wb_rst_pkg.vhd
-FAIL 2008 ghdl/testsuite/gna/issue1347/issue.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1347/issue.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1354/mwe.vhdl
 PASS 2008 ghdl/testsuite/gna/issue136/arch.vhdl
 PASS 2008 ghdl/testsuite/gna/issue136/ent.vhdl
@@ -862,7 +862,7 @@ PASS 2008 ghdl/testsuite/gna/issue1528/ent3.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1528/ent4.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1528/uattr3.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1528/uattr4.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue1530/t.vhd  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1530/t.vhd
 PASS 2008 ghdl/testsuite/gna/issue1538/cfuncs.vhd
 PASS 2008 ghdl/testsuite/gna/issue1538/tb.vhd
 PASS 2008 ghdl/testsuite/gna/issue1549/ent.vhdl
@@ -908,8 +908,8 @@ PASS 2008 ghdl/testsuite/gna/issue1637/show_bug.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1639/ap.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1640/test.vhdl
 FAIL 2008 ghdl/testsuite/gna/issue1646/test.vhdl  # E0002 expected `;`, found `(`
-FAIL 2008 ghdl/testsuite/gna/issue1654/issue.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1654/issue2.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1654/issue.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1654/issue2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1655/absenc_master.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1655/absenc_master_endat.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1655/absenc_pkg.vhdl
@@ -955,12 +955,12 @@ FAIL 2008 ghdl/testsuite/gna/issue1704/orig.vhdl  # E0002 expected design unit, 
 PASS 2008 ghdl/testsuite/gna/issue1704/repro1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1704/repro2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1704/repro3.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue1708/ex1.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1708/ex2.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1708/ex3.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1708/ex4.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1708/ex5.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1708/tb_top.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1708/ex1.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1708/ex2.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1708/ex3.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1708/ex4.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1708/ex5.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1708/tb_top.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1715/mwe-repro.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1715/mwe.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1717/package.vhdl
@@ -974,8 +974,8 @@ PASS 2008 ghdl/testsuite/gna/issue1721/top5.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1723/my_pkg.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1723/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1724/const_test.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue1724/const_test_vunit.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1724/const_test_vunit2.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1724/const_test_vunit.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1724/const_test_vunit2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1726/orig.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1726/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1727/ent.vhdl
@@ -1020,8 +1020,8 @@ FAIL 2008 ghdl/testsuite/gna/issue1823/entity4.vhdl  # E0002 expected a componen
 PASS 2008 ghdl/testsuite/gna/issue1823/entity_1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1824/entity_1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1831/sipo.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue1832/issue.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue1832/psl.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue1832/issue.vhdl
+PASS 2008 ghdl/testsuite/gna/issue1832/psl.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1833/test.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1834/repro1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue1834/tb.vhdl
@@ -1138,7 +1138,7 @@ FAIL 2008 ghdl/testsuite/gna/issue2070/crash1.vhdl  # E0001 unterminated string 
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash10.vhdl  # E0001 unterminated string literal
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash11.vhdl  # E0001 unterminated string literal
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash12.vhdl  # E0002 expected identifier, found `restrict`
-FAIL 2008 ghdl/testsuite/gna/issue2070/crash13.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/issue2070/crash13.vhdl  # E0001 unexpected character `¦` (U+00A6)
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash14.vhdl  # E0002 expected identifier, found `package`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash15.vhdl  # E0001 unterminated string literal
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash16.vhdl  # E0001 unterminated string literal
@@ -1151,7 +1151,7 @@ FAIL 2008 ghdl/testsuite/gna/issue2070/crash21.vhdl  # E0002 expected identifier
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash22.vhdl  # E0002 expected identifier, found `if`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash23.vhdl  # E0002 expected name, found `is`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash23_1.vhdl  # E0002 expected `;`, found `is`
-FAIL 2008 ghdl/testsuite/gna/issue2070/crash24.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/issue2070/crash24.vhdl  # E0001 unexpected character ` ` (U+0000)
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash25.vhdl  # E0002 expected identifier, found `function`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash26.vhdl  # E0002 expected identifier, found `package`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash27.vhdl  # E0002 expected identifier, found `if`
@@ -1163,7 +1163,7 @@ FAIL 2008 ghdl/testsuite/gna/issue2070/crash3.vhdl  # E0002 expected identifier,
 PASS 2008 ghdl/testsuite/gna/issue2070/crash30.vhdl
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash31.vhdl  # E0002 expected identifier, found `function`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash32.vhdl  # E0002 expected identifier, found `function`
-FAIL 2008 ghdl/testsuite/gna/issue2070/crash33.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/issue2070/crash33.vhdl  # E0001 unexpected character `` (U+008A)
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash34.vhdl  # E0002 expected identifier, found `function`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash35.vhdl  # E0002 expected identifier, found `function`
 FAIL 2008 ghdl/testsuite/gna/issue2070/crash36.vhdl  # E0002 expected identifier, found `function`
@@ -1232,7 +1232,7 @@ PASS 2008 ghdl/testsuite/gna/issue2104/e2d.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2104/e3.vhdl
 FAIL 2008 ghdl/testsuite/gna/issue2110/conf1.vhdl  # E0001 unterminated string literal
 FAIL 2008 ghdl/testsuite/gna/issue2110/psl1.vhdl  # E0002 expected identifier, found `begin`
-FAIL 2008 ghdl/testsuite/gna/issue2110/psl2.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/issue2110/psl2.vhdl  # E0001 unexpected character `` (U+0003)
 FAIL 2008 ghdl/testsuite/gna/issue2110/retid.vhdl  # E0002 expected identifier, found `function`
 PASS 2008 ghdl/testsuite/gna/issue2112/abc.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2112/abc_tb.vhdl
@@ -1339,16 +1339,16 @@ PASS 2008 ghdl/testsuite/gna/issue2150/e4.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2152/e.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2152/e1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2152/e2.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2153/issue.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue2153/issue.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2155/closely_related_arrays.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2155/e.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2155/err.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2156/tb_to_string_overloading.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2156/timing_pkg.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2156/timing_pkg2.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2157/issue.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2157/repro.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2157/repro2.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue2157/issue.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2157/repro.vhdl
+FAIL 2008 ghdl/testsuite/gna/issue2157/repro2.vhdl  # E0002 expected name, found `report`
 PASS 2008 ghdl/testsuite/gna/issue2157/trepro.vhdl
 PASS 2008 ghdl/testsuite/gna/issue216/repro1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue216/repro2.vhdl
@@ -1467,11 +1467,11 @@ PASS 2008 ghdl/testsuite/gna/issue2326/generic_package.vhdl
 PASS 2008 ghdl/testsuite/gna/issue233/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/issue233/test.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2333/empty.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2336/crash.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2336/repro.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2336/test_issue.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2336/test_issue_err1.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2336/test_issue_ok.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue2336/crash.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2336/repro.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2336/test_issue.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2336/test_issue_err1.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2336/test_issue_ok.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2337/repro2_tb.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2337/repro_tb.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2344/ent1.vhdl
@@ -1731,9 +1731,9 @@ PASS 2008 ghdl/testsuite/gna/issue2569/pkg.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2569/top.vhdl
 PASS 2008 ghdl/testsuite/gna/issue257/minimum_tb.vhdl
 PASS 2008 ghdl/testsuite/gna/issue257/minimum_tb2.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2570/test.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2570/test1.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2570/test2.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue2570/test.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2570/test1.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2570/test2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2571/test1.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2571/test2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2571/test3.vhdl
@@ -1826,15 +1826,15 @@ PASS 2008 ghdl/testsuite/gna/issue2657/tb.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2657/tb2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2666/ent.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2666/ent2.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2669/ex_async.vhdl  # E0002 expected expression, found `>`
-FAIL 2008 ghdl/testsuite/gna/issue2669/ex_sync.vhdl  # E0002 expected expression, found `>`
-FAIL 2008 ghdl/testsuite/gna/issue2669/foo.vhdl  # E0002 expected `;`, found identifier
+PASS 2008 ghdl/testsuite/gna/issue2669/ex_async.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2669/ex_sync.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2669/foo.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2670/ent.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2670/repro1.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2673/past_ent.vhdl  # E0002 expected `)`, found identifier
+PASS 2008 ghdl/testsuite/gna/issue2673/past_ent.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2676/testcase.vhdl
 PASS 2008 ghdl/testsuite/gna/issue268/repro.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2684/foo.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue2684/foo.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2686/test.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2686/tst_arr.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2686/tst_rec.vhdl
@@ -1882,8 +1882,8 @@ PASS 2008 ghdl/testsuite/gna/issue2736/mwe.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2736/mwe2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2736/mwe3.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2736/mwe4.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2737/ent-orig.vhdl  # E0005 PSL is not supported
-FAIL 2008 ghdl/testsuite/gna/issue2737/ent.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue2737/ent-orig.vhdl
+PASS 2008 ghdl/testsuite/gna/issue2737/ent.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2739/mwe.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2744/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2744/repro1.vhdl
@@ -1898,7 +1898,7 @@ PASS 2008 ghdl/testsuite/gna/issue2768/bad_inter2.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2768/bad_inter3.vhdl
 FAIL 2008 ghdl/testsuite/gna/issue2768/many_parent.vhdl  # E0002 expected identifier, found `function`
 FAIL 2008 ghdl/testsuite/gna/issue2768/missing_id.vhdl  # E0002 expected identifier, found `function`
-FAIL 2008 ghdl/testsuite/gna/issue2773/repro1.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/issue2773/repro1.vhdl  # E0001 unexpected character `` (U+0080)
 FAIL 2008 ghdl/testsuite/gna/issue2773/repro2.vhdl  # E0002 a generate statement must have a label
 FAIL 2008 ghdl/testsuite/gna/issue2773/repro3.vhdl  # E0002 a generate statement must have a label
 PASS 2008 ghdl/testsuite/gna/issue2778/bug.vhdl
@@ -2914,7 +2914,7 @@ PASS 2008 ghdl/testsuite/gna/issue776/main.vhdl
 PASS 2008 ghdl/testsuite/gna/issue776/my_top.vhdl
 PASS 2008 ghdl/testsuite/gna/issue777/a.vhdl
 PASS 2008 ghdl/testsuite/gna/issue777/tb.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue779/tvm_pkg.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/issue779/tvm_pkg.vhdl  # E0001 unexpected character `_` (U+005F)
 PASS 2008 ghdl/testsuite/gna/issue780/ent.vhdl
 PASS 2008 ghdl/testsuite/gna/issue780/pkg.vhdl
 PASS 2008 ghdl/testsuite/gna/issue786/ent.vhdl
@@ -3009,7 +3009,7 @@ PASS 2008 ghdl/testsuite/gna/issue918/ent.vhdl
 PASS 2008 ghdl/testsuite/gna/issue922/dut.vhdl
 PASS 2008 ghdl/testsuite/gna/issue961/tb.vhdl
 PASS 2008 ghdl/testsuite/gna/issue98/test_load.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue983/test.vhdl  # E0005 PSL is not supported
+PASS 2008 ghdl/testsuite/gna/issue983/test.vhdl
 PASS 2008 ghdl/testsuite/gna/issue984/const_pkg.vhd
 PASS 2008 ghdl/testsuite/gna/issue984/generic_check.vhd
 PASS 2008 ghdl/testsuite/gna/issue984/tester.vhd
@@ -3105,9 +3105,9 @@ PASS 2008 ghdl/testsuite/gna/ticket32/repro.vhdl
 PASS 2008 ghdl/testsuite/gna/ticket32/simulation.vhdl
 PASS 2008 ghdl/testsuite/gna/ticket35/ascii7.vhdl
 PASS 2008 ghdl/testsuite/gna/ticket35/latin1.vhdl
-FAIL 2008 ghdl/testsuite/gna/ticket35/utf16be.vhdl  # E0001 unexpected character
-FAIL 2008 ghdl/testsuite/gna/ticket35/utf16le.vhdl  # E0001 unexpected character
-FAIL 2008 ghdl/testsuite/gna/ticket35/utf8.vhdl  # E0001 unexpected character
+FAIL 2008 ghdl/testsuite/gna/ticket35/utf16be.vhdl  # E0001 unexpected character ` ` (U+0000)
+FAIL 2008 ghdl/testsuite/gna/ticket35/utf16le.vhdl  # E0001 unexpected character ` ` (U+0000)
+FAIL 2008 ghdl/testsuite/gna/ticket35/utf8.vhdl  # E0001 unexpected character `﻿` (U+FEFF)
 PASS 2008 ghdl/testsuite/gna/ticket37/dispgen.vhdl
 PASS 2008 ghdl/testsuite/gna/ticket37/genbool.vhdl
 PASS 2008 ghdl/testsuite/gna/ticket37/genchar.vhdl

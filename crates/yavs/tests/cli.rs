@@ -112,6 +112,21 @@ const CASES: &[Case] = &[
         code: 1,
     },
     Case {
+        name: "psl_skipped",
+        args: &["analyze", "--work=work:$TMP/lib", "psl_run.vhd"],
+        code: 0,
+    },
+    Case {
+        name: "psl_werror",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "-Werror=W0004",
+            "psl_run.vhd",
+        ],
+        code: 1,
+    },
+    Case {
         name: "warn_deny_code",
         args: &[
             "analyze",
@@ -246,6 +261,29 @@ fn snapshots() {
         }
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// A design with PSL elaborates and runs; the PSL is skipped (#138), so `assert always false`
+/// does not fail the run.
+#[test]
+fn psl_run() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("psl_run");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("run")
+    };
+    assert!(yavs(&["analyze", &lib, "psl_run.vhd"]).status.success());
+    let o = yavs(&["run", &lib, "psl_run"]);
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert_eq!(o.status.code(), Some(0));
+    let out = String::from_utf8(o.stdout).expect("utf-8");
+    assert!(out.contains("design with PSL ran"), "{out}");
 }
 
 /// A runtime error is a rustc-style diagnostic on stderr (#84): the kernel's code, the failing

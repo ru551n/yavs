@@ -1,18 +1,16 @@
-error[E0005]: PSL is not supported
- --> psl.vhd:4:3
+warning[W0004]: PSL is skipped
+ --> psl.vhd:3:3
   |
-4 |   assume always req -> next ack;
-  |   ^^^^^^ PSL starts here
+3 |   default clock is rising_edge(clk);
+  |   ^^^^^^^ PSL starts here
   |
-  = note: yavs does not implement PSL (IEEE 1850); this construct is skipped
+  = note: yavs does not run PSL (IEEE 1850): PSL declarations and directives are ignored, so no property is checked
 
-error[E0005]: PSL is not supported
- --> psl.vhd:8:1
+warning[W0004]: PSL is skipped
+ --> psl.vhd:9:1
   |
-8 | vunit check (e) {
+9 | vunit check (e) {
   | ^^^^^ PSL starts here
   |
-  = note: yavs does not implement PSL (IEEE 1850); this construct is skipped
-
-error: aborting due to 2 previous errors
+  = note: yavs does not run PSL (IEEE 1850): PSL declarations and directives are ignored, so no property is checked
 

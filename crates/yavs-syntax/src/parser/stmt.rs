@@ -53,7 +53,7 @@ impl Parser<'_> {
         self.nested(|p| {
             let start = p.span();
             let label = p.label();
-            let kind = p.seq_stmt_kind(label.as_ref(), start)?;
+            let kind = p.seq_stmt_kind(label.as_ref())?;
             Ok(SeqStmt {
                 label,
                 kind,
@@ -62,7 +62,7 @@ impl Parser<'_> {
         })
     }
 
-    fn seq_stmt_kind(&mut self, label: Option<&Ident>, start: Span) -> PResult<SeqStmtKind> {
+    fn seq_stmt_kind(&mut self, label: Option<&Ident>) -> PResult<SeqStmtKind> {
         Ok(match self.peek() {
             Tok::Kw(Kw::Wait) => {
                 self.bump();
@@ -214,10 +214,6 @@ impl Parser<'_> {
                         self.selected_signal_rhs(target, expr, matching, false)?,
                     )
                 }
-            }
-            t if is_psl_start(t) => {
-                self.psl_unsupported(start);
-                return Err(Recover);
             }
             _ => {
                 let target = self.target()?;
@@ -533,7 +529,7 @@ impl Parser<'_> {
             let start = p.span();
             let label = p.label();
             let postponed = p.eat_kw(Kw::Postponed);
-            let Some(kind) = p.conc_stmt_kind(label.as_ref(), postponed, start)? else {
+            let Some(kind) = p.conc_stmt_kind(label.as_ref(), postponed)? else {
                 return Ok(None);
             };
             Ok(Some(ConcStmt {
@@ -560,13 +556,16 @@ impl Parser<'_> {
         &mut self,
         label: Option<&Ident>,
         postponed: bool,
-        start: Span,
     ) -> PResult<Option<ConcStmtKind>> {
         Ok(Some(match self.peek() {
             Tok::Kw(Kw::Process) => ConcStmtKind::Process(self.process(label, postponed)?),
             Tok::Kw(Kw::Block) => {
                 self.need_label(label, "a block statement");
                 ConcStmtKind::Block(self.block(label)?)
+            }
+            Tok::Kw(Kw::Assert) if self.at_psl_directive() => {
+                self.psl_skip();
+                return Ok(None);
             }
             Tok::Kw(Kw::Assert) => {
                 let a = self.assertion()?;
@@ -658,8 +657,7 @@ impl Parser<'_> {
                 ConcStmtKind::Instance(self.instance_rest(InstantiatedUnit::Component(name))?)
             }
             t if is_psl_start(t) => {
-                self.psl_unsupported(start);
-                self.sync();
+                self.psl_skip();
                 return Ok(None);
             }
             _ => {

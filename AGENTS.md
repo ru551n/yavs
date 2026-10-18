@@ -13,6 +13,7 @@ to, and those documents win over your memory.
 | `docs/plan.md` | Binding plan: decisions, the 15 design rules, milestones, error motto, LRM policy |
 | `docs/decisions.md` | Decisions made since the plan, by area; append yours here |
 | `STATUS.md` | What exists and works, per crate and milestone |
+| `<module>/AGENTS.md` | Per-module guide (every crate, `lib/`, `tools/`, `tests/`, `fuzz/`): boundaries, map, binding decisions, pitfalls, commands, open issues (rule 23) |
 
 | When you touch | Also read |
 |---|---|
@@ -129,6 +130,24 @@ to, and those documents win over your memory.
     Reference it in your commits, and close it with `Fixes #N` in the commit that completes it
     (or `gh issue close N --comment "<commit>: <what was done>"` if work was spread over several
     commits). Things you find but don't fix become new issues, not just notes in a report.
+
+### Documentation and decisions
+23. **Before working in a module, read its `AGENTS.md`; when your change makes it stale, update it
+    in the same commit.** Each module directory also has a one-line `CLAUDE.md` (`@AGENTS.md`).
+24. **Every design decision is stored in the applicable place, in the same commit as the change
+    that makes it:**
+    - project-wide or cross-crate decisions: `docs/decisions.md` (and `docs/plan.md` if it changes
+      the plan);
+    - decisions local to one module: that module's `AGENTS.md` "Design decisions" section (plus its
+      design doc section if one exists, e.g. `docs/design/sem.md`, `ir.md`, a crate `DESIGN.md`);
+    - LRM interpretations: `docs/design/lrm-checks.md` (policy, rule 2: a clear LRM wins; where it
+      is unclear, be permissive and match the existing simulators);
+    - CLI or VUnit-facing behaviour: `docs/cli-contract.md`.
+
+    Each entry gives the decision, a one-line rationale, and who decided it (`user, YYYY-MM-DD`
+    for user rulings). Decisions that need the user get a GitHub issue labelled `decision`, and
+    are recorded once answered. A decision that exists only in a commit message, an agent report
+    or a chat is not recorded.
 
 ## 4. Common commands
 

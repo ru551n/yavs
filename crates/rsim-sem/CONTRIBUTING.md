@@ -21,7 +21,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `implicit.rs` | implicitly declared operations per type (2.10) | S2 | free |
 | `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead |
 | `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | M1 lead |
-| `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | free |
+| `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | owner: literal |
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | free |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | free |
@@ -34,7 +34,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `protected.rs` | protected types and bodies (6.6) | S6 | free |
 | `view.rs` | mode views, `'converse` (6.7) | S7 | free |
 | `hir.rs` | HIR node shapes M2 consumes (section 7) | all | shapes fixed; changes need a note in sem.md |
-| `validate.rs` | HIR invariants (7.3) | S2 onward | free |
+| `validate.rs` | HIR invariants (7.3) | S2 onward | owner: literal |
 | `diag.rs` | codes (8.1) and `--explain` texts | all | add codes additively |
 | `suggest.rs` | did-you-mean (8.3) | S1 | done |
 

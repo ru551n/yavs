@@ -331,6 +331,7 @@ impl Db {
                 let designated = self.subtype_indication(scope, si);
                 self.incomplete_ok = false;
                 let designated = designated?;
+                self.check_designated_type(designated, si.span)?;
                 self.new_type(
                     decl,
                     name,
@@ -1518,7 +1519,8 @@ impl Db {
             (AttrPrefix::Subtype(st), self.base(st))
         } else {
             let ts = self.prefix_types(scope, prefix).map_err(|_| Reported)?;
-            let arrays: Vec<TypeId> = ts
+            let arrays: Vec<TypeId> = self
+                .with_designated(ts)
                 .into_iter()
                 .filter(|&t| matches!(self.types[t].kind, TypeKind::Array { .. }))
                 .collect();
@@ -1653,6 +1655,7 @@ impl Db {
         };
         match what {
             "subtype" => Ok(st),
+            "designated_subtype" => self.designated_subtype_attr(st, attr),
             "base" => {
                 let t = self.base(st);
                 Ok(self.types[t].base_subtype)

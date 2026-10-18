@@ -77,7 +77,11 @@ impl Db {
         match &n.kind {
             ast::NameKind::Selected { prefix, suffix } => {
                 let Some(key) = suffix_key(suffix) else {
-                    return NameRes::Unsupported(n.span, "`.all`", "S6");
+                    // `p.all` (alloc.rs): a value when the prefix is one.
+                    return match self.classify(scope, prefix) {
+                        NameRes::One(_) | NameRes::Overloads(_) | NameRes::Value => NameRes::Value,
+                        other => other,
+                    };
                 };
                 match self.classify(scope, prefix) {
                     NameRes::One(d) => {
@@ -241,14 +245,19 @@ impl Db {
         prefix: &ast::Name,
         suffix: &ast::Suffix,
     ) -> CandSet {
-        let Some(key) = suffix_key(suffix) else {
-            return CandSet::Types(Vec::new());
-        };
         let Ok(ts) = self.prefix_types(scope, prefix) else {
             return self.poison_cands();
         };
+        let Some(key) = suffix_key(suffix) else {
+            // `.all`
+            let is = ts
+                .into_iter()
+                .filter_map(|t| Some(Interp::new(self.base(self.designated(t)?), Via::Deref(t))))
+                .collect();
+            return CandSet::Types(is);
+        };
         let mut out = Vec::new();
-        for t in ts {
+        for t in self.with_designated(ts) {
             for d in self.method_decls(t, key) {
                 if let Some(i) = self.value_interp(d, 0) {
                     out.push(Interp {
@@ -366,7 +375,7 @@ impl Db {
                 let e = self.entity(d);
                 if let Some(t) = self.object_type(d) {
                     let subtype = self.object_subtype(d);
-                    return Ok(vec![(
+                    let mut out = vec![(
                         attr::Prefix {
                             form: PrefixForm::Object {
                                 signal: self.decl_is_signal(d),
@@ -377,7 +386,19 @@ impl Db {
                             }),
                         },
                         PSrc::Object(d, t),
-                    )]);
+                    )];
+                    // An access object is appropriate for its designated type (8.1).
+                    if let Some(des) = self.designated(t) {
+                        out.push((
+                            attr::Prefix {
+                                form: PrefixForm::Object { signal: false },
+                                subtype: Some(des),
+                                fully_constrained: false,
+                            },
+                            PSrc::Value(self.base(des)),
+                        ));
+                    }
+                    return Ok(out);
                 }
                 if matches!(self.decls[e].kind, DeclKind::View(_)) {
                     return Ok(vec![(
@@ -409,7 +430,8 @@ impl Db {
                     return Err(NameRes::Error);
                 };
                 let signal = self.ast_root_signal(scope, prefix);
-                Ok(ts
+                Ok(self
+                    .with_designated(ts)
                     .into_iter()
                     .map(|t| self.value_prefix(t, signal))
                     .collect())
@@ -587,7 +609,7 @@ impl Db {
                 let Ok(ts) = self.prefix_types(scope, prefix) else {
                     return self.poison_cands();
                 };
-                for t in ts {
+                for t in self.with_designated(ts) {
                     if let Some(x) = self.index_interp(scope, t, args, slice) {
                         out.push(x);
                     }
@@ -703,13 +725,17 @@ impl Db {
         };
         let mut best: Vec<Interp> = Vec::new();
         for i in is {
-            if (i.ty == t || i.ty == self.poison.ty) && !best.iter().any(|b| b.via == i.via) {
+            // An access value is appropriate for its designated type (8.1, alloc.rs).
+            let fits = i.ty == t
+                || i.ty == self.poison.ty
+                || self.designated(i.ty).is_some_and(|d| self.base(d) == t);
+            if fits && !best.iter().any(|b| b.via == i.via) {
                 best.push(i);
             }
         }
         best.sort_by_key(|i| i.convs);
-        match best.as_slice() {
-            [] => self.poison_expr(),
+        let id = match best.as_slice() {
+            [] => return self.poison_expr(),
             [i] => self.build_name(scope, n, *i, n.span),
             [i, j, ..] if i.convs < j.convs => self.build_name(scope, n, *i, n.span),
             _ => {
@@ -721,9 +747,10 @@ impl Db {
                         )
                         .with_help("use a selected name or qualify the value"),
                 );
-                self.poison_expr()
+                return self.poison_expr();
             }
-        }
+        };
+        self.deref_to(id, t)
     }
 
     /// Build the HIR of name `n` for the chosen interpretation.
@@ -777,6 +804,10 @@ impl Db {
                     stat,
                     value: None,
                 })
+            }
+            (ast::NameKind::Selected { prefix, .. }, Via::Deref(t)) => {
+                let p = self.resolve_prefix(scope, prefix, t);
+                self.deref(p, span)
             }
             (_, Via::Call(d)) => self.build_call(scope, d, &[], span, None),
             (_, Via::EnumLit(d)) => {

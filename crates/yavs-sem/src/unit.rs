@@ -78,7 +78,14 @@ impl Db {
             file_rev: rev,
         });
         let before = self.error_count();
+        // The memos are keyed by AST node address: entries must not outlive this unit's
+        // AST, or a later allocation at the same address reads stale candidates.
+        let memos = (
+            std::mem::take(&mut self.memo),
+            std::mem::take(&mut self.name_memo),
+        );
         let r = self.unit_body(unit, &ast);
+        (self.memo, self.name_memo) = memos;
         self.stack.pop();
         let ok = r.is_ok() && self.error_count() == before;
         self.libs[lib].units.insert(

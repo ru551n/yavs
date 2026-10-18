@@ -12,6 +12,19 @@
   comments so `lib/SHA256SUMS` stays valid. A library directory that still has the old
   manifest name fails with L0004 and asks to re-analyze: there is no reader for old names.
 
+## Release trigger and first release (user, 2026-10-18)
+
+When yavs simulates a VUnit testbench end to end (issue #110: `run.py --simulator yavs` passes a
+minimal VUnit testbench on the real binary), CI is added (#134) together with a release workflow
+(#165), and the first release is cut. Rationale: a release is only useful once the first
+milestone users care about works.
+
+- Release workflow: triggered by a `v*` tag; builds `yavs` for Linux x86_64, Linux aarch64 and
+  Windows x86_64 (with `yavs.lib` for VHPI plugins and `lib/` std/ieee sources), runs the CI
+  checks on the tagged commit first, and attaches archives plus SHA256SUMS to a GitHub release.
+- First release: `v0.1.0` (the workspace version), marked pre-release, notes listing what works
+  and the known gaps. Once the trigger is met, the user's request counts as approval to publish it.
+
 ## Waveform writer: wavefst (yavs-wave)
 
 - **Choice:** the `wavefst` crate (0.4.0, MIT) for FST output, with `default-features = false`,

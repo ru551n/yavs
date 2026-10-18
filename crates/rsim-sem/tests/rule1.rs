@@ -1164,11 +1164,12 @@ fn ghdl_2422_formal_conversion_on_unconstrained_port() {
 
 /// GHDL #2179: `others` for an element of an unconstrained record port is an error (all
 /// three reference simulators agree); `s2 : s1'subtype` of a static subtype is that subtype.
-/// The two `E1325` on lines 14 and 15 are finding F3.
 #[test]
 fn ghdl_2179_others_for_record_port_element() {
-    let errs = errors("g2179", &[("work", GHDL_2179)]);
-    assert!(errs.contains(&("E1325".into(), 16)), "{errs:?}");
+    assert_eq!(
+        errors("g2179", &[("work", GHDL_2179)]),
+        [("E1325".into(), 16)]
+    );
     let decls_only = GHDL_2179
         .replace("  s1.elem <= (others => '0');\n", "")
         .replace("  s2.elem <= (others => '0');\n", "")
@@ -1288,9 +1289,9 @@ fn f2_record_aggregate_uses_context_constraint() {
     analyze("f2", &[("work", RECORDS), ("work", RECORD_AGG_CONTEXT)]);
 }
 
-/// F3: a selected element of a record object takes the record constraint of its prefix.
+/// F3 (fixed by f1582e5, #150): a selected element of a record object takes the record
+/// constraint of its prefix.
 #[test]
-#[ignore = "finding F3 (#102): selected record elements drop the prefix's record constraint"]
 fn f3_selected_element_keeps_record_constraint() {
     let db = analyze("f3", &[("work", RECORDS), ("work", FIELD_OTHERS)]);
     assert_eq!(
@@ -1336,12 +1337,18 @@ fn f5_constrained_generic_type_actual() {
     assert_eq!(map, ["STD_ULOGIC_VECTOR(7 downto 0) [Full]"]);
 }
 
-/// F6: an alias of a record element (GHDL #641's `alias AxiData is Axi.Data`).
+/// F6 (fixed by 260729c): an alias of a record element (GHDL #641's `alias AxiData is
+/// Axi.Data`); `'subtype` of it reads the bounds from the alias at run time.
 #[test]
-#[ignore = "finding F6 (#108): alias of a selected object name ends in an internal error"]
 fn f6_alias_of_record_element() {
     let db = analyze("f6", &[("work", GHDL_641), ("work", GHDL_641_ALIAS)]);
-    assert!(dump(&db, "data1").contains("from-object"));
+    check(
+        &db,
+        &[(
+            "data1",
+            "Plain Signal: (resolved) STD_ULOGIC_VECTOR from-object(axi_data, depth 0) [Full], bounds from Subtype",
+        )],
+    );
 }
 
 /// F7: after instantiation, `BoundsFrom` and the fully-constrained check follow the actual.

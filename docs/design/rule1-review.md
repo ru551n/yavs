@@ -11,7 +11,7 @@ value is only a cache; `x'subtype`/`x'element` of an object that is not fully co
 
 The M1 lead had pinned this on numeric_std (`tests/stdlib.rs` `numeric_std_subtypes_rule_1`,
 `numeric_std_body_rule_1`). This review covers the composite cases numeric_std does not have.
-Every case below is a test in `crates/rsim-sem/tests/rule1.rs`: 12 shape tests and 7 finding
+Every case below is a test in `crates/rsim-sem/tests/rule1.rs`: 14 shape tests and 5 ignored finding
 tests on VHDL written fresh for the review, plus 4 tests on real code with `--features corpus`. Tests marked `ignore` assert the correct
 shape for a finding and name its issue.
 
@@ -70,10 +70,11 @@ Record aggregates have `AggBounds::Record`: each element value carries its own b
 `(data => (W - 1 downto 0 => '0'), ...)` keeps `{W - 1}` as an expression; a static one is
 folded. NVC, GHDL, Questa: all accept. Test `records_with_unconstrained_elements`.
 
-Not right yet: `s_full.data` has the subtype `std_ulogic_vector` unconstrained (finding F3), and
-an element value of a record aggregate is resolved in the element's declared subtype instead of
-the context's record constraint (F2), so `payload => (others => '0')` in an `outer_full_t`
-context and `s_full.data <= (others => '0')` are rejected with E1325.
+A selected element takes the prefix's record constraint: `s_full.data` is
+`std_ulogic_vector(7 downto 0) [Full]`, `v_full.keep := p_part.keep` is `(0 to 0)` on both sides
+(F3, fixed on main by f1582e5 while this review ran). Not right yet: an element value of a record
+aggregate is resolved in the element's declared subtype instead of the context's record
+constraint (F2), so `payload => (others => '0')` in an `outer_full_t` context is E1325.
 
 ## 2. Arrays of unconstrained arrays
 
@@ -177,14 +178,14 @@ the cloned objects keep the generic's `BoundsFrom` (F7).
 | Issue | Situation | rsim | NVC | GHDL | Questa |
 |---|---|---|---|---|---|
 | GHDL #641 | `axi : inout bus_rec_t` (unconstrained elements); `signal address : std_logic_vector(axi.address'range)`; `signal data2 : axi.data'subtype` | `{axi.address'range(1)}` and `from-object(axi.data)`, both `[Full]` (`ghdl_641_subtype_of_record_port_element`) | ok | ok | ok |
-| GHDL #641 alias | `alias axi_data is axi.data; signal data1 : axi_data'subtype;` | internal error (F6) | ok | ok | ok |
+| GHDL #641 alias | `alias axi_data is axi.data; signal data1 : axi_data'subtype;` | `from-object(axi_data)` `[Full]` (F6: an internal error until 260729c landed during this review; `f6_alias_of_record_element`) | ok | ok | ok |
 | GHDL #1224 | `constant m : mat_t(0 to 1) := ("UX01Z", "WLH-0")`, loops over `m'range` and `m(i)'range` | `mat_t(0 to 1) [Partial]` from Initializer; loop `j` ranges over `{m(i)'range(1)}` (`ghdl_1224_element_bounds_from_initial_value`) | ok, runs | ok, runs | ok, runs |
 | GHDL #2422 | `port map (std_logic_vector(o) => sig)`, `o : out unsigned` | accepted: `Actual::Converted` with the conversion to `STD_LOGIC_VECTOR`, `o` bounds from Actual (`ghdl_2422_formal_conversion_on_unconstrained_port`); F8 | analysis ok, elaboration fails | rejects | rejects (vcom-1189) |
-| GHDL #2179 | `p.elem <= (others => '0')` for `p : out rec` (unconstrained element); `s1.elem`, `s2 : s1'subtype` | `p.elem`: E1325 (right, all three agree); `s2` is `rec(elem(3 downto 0)) [Full]`; `s1.elem`/`s2.elem` are wrongly E1325 (F3) (`ghdl_2179_others_for_record_port_element`) | rejects line 16 only | rejects line 16 only | rejects line 16 only |
+| GHDL #2179 | `p.elem <= (others => '0')` for `p : out rec` (unconstrained element); `s1.elem`, `s2 : s1'subtype` | `p.elem`: E1325 (right, all three agree); `s2` is `rec(elem(3 downto 0)) [Full]`; `s1.elem`, `s2.elem` accepted since F3 was fixed (`ghdl_2179_others_for_record_port_element`) | rejects line 16 only | rejects line 16 only | rejects line 16 only |
 | NVC #1589 | `(x => '0', inner => c_inner, others => (others => '1'))` over `slv(5 downto 0)`, `slv(9 downto 0)`, `slv(31 downto 0)` | accepted, **folded wrong**: `b` and `c` get 6 bits (F1) | elaboration fails: "value length 6 does not match field B length 10" | run fails: bound check failure | ok |
 | NVC #1543 | `alias ram_un is << signal .outer1543.u.ram : ram_t >>`, `ram_un'element'length` | E9999 "aliases of external names is not implemented yet" (S6, #19): explicit, no guessed bounds (`nvc_1543_external_name_alias_is_reported_not_implemented`) | ok, runs | ok, runs | ok, runs |
 | NVC #1576 | `subtype container_c_t is container_t(data(0 to cap - 1)(7 downto 0)); container := new container_c_t;` | `container_t(data(0 to 3)(7 downto 0)) [Full]` (`cap - 1` folded from a locally static constant), `NewInit::Subtype` of it (`nvc_1576_allocator_of_constrained_record`) | ok, runs | ok, runs | ok, runs |
-| NVC #1463 | `sig : in rec_arr_t(0 to 1)(data(0 to 1))` | `rec_arr_t(0 to 1)(data(0 to 1)) [Full]`; `sig(0)` is `my_rec_t(data(0 to 1)) [Full]`; `sig(0).data` drops it (F3) (`nvc_1463_array_of_records_constrained_in_port`) | ok | ok | ok |
+| NVC #1463 | `sig : in rec_arr_t(0 to 1)(data(0 to 1))` | `rec_arr_t(0 to 1)(data(0 to 1)) [Full]`; `sig(0)` is `my_rec_t(data(0 to 1)) [Full]`, `sig(0).data` keeps `(0 to 1)` since F3 was fixed (`nvc_1463_array_of_records_constrained_in_port`) | ok | ok | ok |
 
 M2: for #1576 the allocator's designated object gets the full subtype's descriptor and the
 access value's `.all` is `container_t` unconstrained, so lowering must take the bounds from the
@@ -211,10 +212,10 @@ not analyze in rsim yet for unrelated reasons (missing units, #60 and the UVVM c
 |---|---|---|---|
 | F1 | A record aggregate association covering several elements (`others`) is resolved and folded once, in the first element's subtype: silent wrong value, the NVC #1589 bug (NVC and GHDL still fail it, Questa is right). | `expr/aggregate.rs` `record_agg` | #98 |
 | F2 | Record aggregate element values are resolved in the element's declared subtype, not the context's record constraint: `payload => (others => '0')` in an `outer_full_t` context is E1325 (all three accept). | `expr/aggregate.rs` `record_agg` | #100 |
-| F3 | A selected element (`s.data`, `sig(0).data`, `ptr.data`) has the element's declared subtype; the prefix's record constraint is dropped. False E1325 on `s.data <= (others => '0')` (GHDL #2179 lines 14 and 15), no static `s.data'length`, needless `FromObject`. Arrays do this right (`element_subtype`). | `expr/names.rs` `Via::Field`, deref | #102 |
+| F3 | A selected element (`s.data`, `sig(0).data`) had the element's declared subtype, dropping the prefix's record constraint: false E1325 on `s.data <= (others => '0')` (GHDL #2179 lines 14 and 15). **Fixed on main by f1582e5 (#150) during the review**; `f3_selected_element_keeps_record_constraint` now passes. | `expr/names.rs` `Db::field_subtype` | #102 (closed) |
 | F4 | Attributes of attribute prefixes: `'element'range` (E1361), `'element'length`, `T'base'high` (E9999). | `attr.rs`, `types.rs` range attributes | #104 |
 | F5 | A constrained generic type actual `t => std_ulogic_vector(7 downto 0)` is E1104. | `generic.rs` type actuals | #106 |
-| F6 | `alias d is axi.data` ends in an internal error (selected object names fall through `report_name`, #18). | `decl.rs` `alias_decl` | #108 |
+| F6 | `alias d is axi.data` ended in an internal error. **Fixed on main by 260729c during the review**; `f6_alias_of_record_element` now passes. | `decl.rs` `alias_decl` | #108 (closed) |
 | F7 | Instances copy `BoundsFrom` from the generic, where a generic type counts as fully constrained: wrong `BoundsFrom` in instances (53 in OSVVM ScoreboardPkg_slv), and `signal s : t` instantiated with `std_ulogic_vector` is accepted (NVC, Questa reject). This is the "maybe static" path rule 1 forbids. | `generic.rs` `r_object`; `constrainedness` of `TypeKind::Generic` | #109 |
 | F8 | A type conversion on an unconstrained formal (GHDL #2422) is accepted, but rule 1 has no representation for bounds that flow back from the actual through the conversion. GHDL and Questa reject, NVC crashes at elaboration. Needs a decision: reject, or define the bounds as the actual's. | `unit.rs` port maps | #111 (decision) |
 
@@ -231,9 +232,9 @@ constraint, bounds as expressions with a folded cache, `FromObject` for run-time
 `BoundsFrom` on every object cover records with unconstrained elements, arrays of unconstrained
 arrays, partial constraints at any depth, interface objects, function results, allocators and the
 reproducers from both trackers, and none of the cases needs a second, static path. The defects
-are in the code that derives subtypes for names and aggregates, not in the model: F1 (a silent
-wrong value, fix before M2 lowers record aggregates), F3 and F2 (the subtype of a record element
-must apply the prefix's or the context's record constraint, one shared helper next to
-`element_subtype`), and F7 (recompute `BoundsFrom` and the fully constrained check after generic
-substitution) should land before M2 relies on these subtypes; F4 to F6 are missing features that
-fail clearly or, for F6, with an internal error; F8 is yours to decide.
+are in the code that derives subtypes for aggregates and instances, not in the model: F1 (a
+silent wrong value, fix before M2 lowers record aggregates), F2 (record aggregate elements must use
+the context's record constraint, which `Db::field_subtype` from the F3 fix already computes) and
+F7 (recompute `BoundsFrom` and the fully constrained check after generic substitution) should land
+before M2 relies on these subtypes; F4 and F5 are missing features that fail clearly; F3 and F6
+were fixed on main while the review ran; F8 is yours to decide.

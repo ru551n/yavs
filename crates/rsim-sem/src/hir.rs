@@ -164,10 +164,13 @@ pub enum NewInit {
 // ---------------------------------------------------------------------------
 // Longest static prefixes (6.9)
 
+#[derive(Clone, Debug)]
 pub struct Lsp {
     pub root: ObjRoot,
     pub path: Box<[LspStep]>,
     pub stat: Staticness,
+    /// The name it was computed from (driver and sensitivity diagnostics).
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,6 +180,7 @@ pub enum ObjRoot {
     ImplicitSignal(DeclId),
 }
 
+#[derive(Clone, Debug)]
 pub enum LspStep {
     Field(u32),
     Index(Box<[ExprId]>),
@@ -185,7 +189,7 @@ pub enum LspStep {
 
 /// Drivers and `all` sensitivity of a process or of a concurrent statement's
 /// equivalent process (M2 builds the process, rule 3).
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ProcessInfo {
     pub drivers: Vec<Lsp>,
     /// For `process (all)`: the signals read (11.3).

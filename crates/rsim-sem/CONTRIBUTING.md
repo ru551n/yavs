@@ -105,8 +105,6 @@ they need calls from the analyzers that own the constructs:
   from a protected object (E1100 missing, E1105 private); `match_signature` for signatures in
   attribute specifications, generic subprogram actuals and `use`; `view_ref` for view names
   (`'converse` sets `converse: true`).
-- **stmt.rs**: `check_external_target` for external-name targets; `check_view_drive` for signal
-  targets rooted at a view port (with the target's LSP path).
 - **types.rs** (ruling U-2): incomplete types are allowed in method profiles of a protected type
   declaration in both 2008 and 2019 (`Db::protected_of_region` / `ScopeKind::Protected` tells the
   region).
@@ -157,13 +155,32 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
   `Expected::Type`; pass the context *subtype* (an `others` needs the constrained one), and
   `aggregate::no_context` (E1320) for `Expected::Any`. Nested aggregates in elements are handled
   inside, with the element subtype as context.
-- **stmt.rs** (case statements, case generates, selected assignments): `resolve_choices` per
-  alternative with the case expression's base type, then `check_case(db, expr_subtype, matching,
-  alts, span)` gives the `ChoiceSet`s. Elab calls `recheck_case` with its `ConstEval` when an
-  `intervals` is `None` (Q3).
 - **expr/names.rs**: describe the prefix as `attr::Prefix` and use `attr::select` (E1621, E1007
   revision gates), `result_subtype`, `param_type`, `staticness` instead of the ad hoc table;
   implicit signal attributes through `attr::implicit_signal`; user attributes `x'a` through
   `attr::user_value`.
 - **decl.rs**: `attribute a : t;` through `attr::declare_attribute`; specifications through
   `attr::specify` (value resolved with `attr::spec_subtype`, signature callback for overloads).
+
+### stmt -> lead (expr, decl, unit)
+
+`stmt.rs` reaches other modules through the `st_*` hooks at its bottom. Wired: `st_expr`
+(`expr`), `st_name` (`name_cands` + `build_name`), `st_discrete_range` (`discrete_range`),
+`st_decls` (`decls_in`), `st_case_choices` (aggregate.rs `resolve_choices` + `check_case`),
+`st_lookup_guard` (`lookup`), labels and parameters through `declare`. Still `E9999`, wanted:
+
+| Hook | Wanted | Owner |
+|---|---|---|
+| `st_proc_call(scope, &ast::Name)` | procedure call: overload with procedure result, `hir::Call` | expr |
+| `st_interfaces(scope, &[InterfaceDecl], role, span)` | block generics/ports | decl |
+| `st_assoc(scope, formals, &[AssocElem], span)` | generic/port map, complete in formal order | expr |
+| `st_inst_target(scope, &InstantiatedUnit)` | component / entity(arch) / configuration of an instance | unit |
+
+- unit.rs: call `db.analyze_conc_stmts(scope, &arch.stmts, false)` for architectures and
+  `(scope, &entity.stmts, true)` for entity statement parts (passive check, E1813); it also runs
+  the multiple-source check (E1812).
+- Loop parameters must have `stat: None` and generate parameters `Globally` on their `Obj`
+  expressions: the longest static prefix depends on it (lsp.rs, NVC #856).
+- `seq_stmts(scope, stmts)` (decl.rs's hook) is implemented; nested bodies inherit `wait` and
+  driver rules through `Db::stmt_owners`, so analyze bodies declared in a process while it is open
+  (they are: `st_decls` runs inside the process).

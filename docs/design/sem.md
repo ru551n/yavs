@@ -1043,7 +1043,7 @@ type.
 ### 6.9 Longest static prefixes, drivers and `all` (8.1, 11.3, 14.7.2)
 
 ```rust
-pub struct Lsp { pub root: ObjRoot, pub path: Box<[LspStep]>, pub stat: Staticness }
+pub struct Lsp { pub root: ObjRoot, pub path: Box<[LspStep]>, pub stat: Staticness, pub span: Span }
 pub enum ObjRoot { Decl(DeclId), External(ExternalId), ImplicitSignal(DeclId) }
 pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC) }
 ```
@@ -1058,6 +1058,20 @@ pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC) }
 - Concurrent statements get the same information for their equivalent processes. Sem does not
   build the equivalent processes; M2 does (rule 3).
 - A signal driven from a subprogram outside any process must be a parameter (`E1810`).
+- `span` is the name the prefix was computed from, for driver and sensitivity diagnostics. A slice
+  followed by an index or slice at the same array level is stored as the later step alone
+  (`s(1 to 2)(2)` is `s(2)`), so steps of two prefixes of one signal line up level by level.
+- `wait until c` without `on`: sem stores the signals read by `c` (10.2) in `Wait::on`.
+- Concurrent statements store their equivalent process's sensitivity (11.4 to 11.6: signals read
+  by the waveforms, conditions, selector, `GUARD`; actuals of `in`/`inout` formals) in
+  `ProcessInfo::reads_all`.
+- Multiple sources (`E1812`, 14.7.2, 6.4.2.3): sem checks one architecture's concurrent part
+  (blocks included, generate bodies not: whether they exist is elab's) for two sources whose
+  prefixes overlap on locally static values and whose overlapping part is unresolved; the error
+  names both. Everything else (generates, globally static indices, ports driven from outside) is
+  elab's, which builds the full map. NVC and GHDL report the same cases at elaboration.
+- `return e` in a function where `e` is a 2019 conditional expression without a final `else` is
+  the conditional return (10.14): when no condition holds, execution continues.
 
 ## 7. Typed HIR (what M2 consumes)
 
@@ -1148,7 +1162,7 @@ Sem takes `E1xxx` / `W1xxx`:
 | E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |
 | E16xx | names, aliases, attributes, signatures | E1601 external name class misuse, E1610 alias of a non-static name, E1611 alias needs a signature, E1620 implicit signal attribute in subprogram, E1621 unknown attribute, E1622 entity class mismatch, E1623 attribute dimension argument out of range for the prefix, E1630 signature matches nothing |
 | E17xx | configurations, binding, components | E1700 instantiated name is not a component, entity or configuration, E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity |
-| E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1820 case coverage/duplicates, E1830 pure function side effect |
+| E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1803 sensitivity name not static, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1812 unresolved signal with multiple sources, E1813 entity statement not passive, E1820 case coverage/duplicates, E1830 pure function side effect |
 | E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
 | W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1404 static index out of range in possibly dead code, W1501 unused generic, W1703 default binding ambiguity (GHDL #66), W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
 

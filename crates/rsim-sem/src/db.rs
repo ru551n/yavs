@@ -118,6 +118,8 @@ pub struct Db {
     pub(crate) pending_implicit: Vec<crate::implicit::Pending>,
     /// How much of the arenas `validate` already checked.
     pub(crate) validated: crate::validate::Mark,
+    /// Processes and subprograms whose statements are being analyzed, innermost last (stmt.rs).
+    pub(crate) stmt_owners: Vec<crate::stmt::Owner>,
     diags: Vec<Diagnostic>,
     errors: usize,
 }
@@ -207,6 +209,7 @@ impl Db {
             context_subtype: None,
             top_context: None,
             tainted: HashSet::new(),
+            stmt_owners: Vec::new(),
             diags: Vec::new(),
             errors: 0,
         }

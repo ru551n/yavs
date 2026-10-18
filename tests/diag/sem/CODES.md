@@ -100,6 +100,8 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 | E1802 | `return` misplaced | 8.1 |
 | E1810 | signal driven from outside a process | 8.1 |
 | E1811 | `next`/`exit` misplaced or unknown label | 8.1 |
+| E1812 | unresolved signal with multiple sources (defined in `rsim-sem::diag`, not in 8.1) | 6.9 |
+| E1813 | entity statement not passive (defined in `rsim-sem::diag`, not in 8.1) | 6.9 |
 | E1820 | case coverage / duplicates | 8.1 |
 | E1830 | pure function purity | 8.1 |
 | E1901 | view element missing or duplicate (see proposed table) | 8.1 |

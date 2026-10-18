@@ -37,6 +37,10 @@ NVC (the primary reference). Every file NVC does not agree with is listed here.
 | `unit/configuration_label_wrong_component` | accepts | rejects @13 | NVC accepts at analysis (checks at elaboration); GHDL rejects. |
 | `unit/configuration_rebinding` | accepts | rejects @16 | NVC accepts at analysis (checks at elaboration); GHDL rejects. |
 | `use/conflict_constant_vs_literal` | accepts | rejects @9 | NVC accepts a use-clause clash between a constant and an enumeration literal (LRM 12.4: both invisible); GHDL rejects. |
+| `drv/multiple_sources_loop_index` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_overlapping_slice` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_record_element` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
+| `drv/multiple_sources_two_processes` | accepts | accepts | Both reject at elaboration (NVC `-e -r`: "unresolved signal has multiple sources"; GHDL `--elab-run`: "too many drivers"), same signal. rsim reports at analysis what holds for every elaboration of the architecture (sources outside generates with locally static prefixes); the rest is elab's. Checked by hand, not by `check_ref.py`. |
 | `v2019/generic_class_array_elem_mismatch` | accepts | rejects @5,6 | NVC does not check this 2019 rule at analysis; GHDL rejects (but for lack of 2019 syntax support, so no real second opinion). |
 | `v2019/private_variable_not_protected` | accepts | rejects @5,6,8,9 | NVC does not check this 2019 rule at analysis; GHDL rejects (but for lack of 2019 syntax support, so no real second opinion). |
 
@@ -162,7 +166,7 @@ GHDL as second opinion: files where GHDL disagrees but NVC agrees.
 | `user_attribute_unknown_use` | E1621 @7 | rejects @7 | rejects @7 |
 | `user_attribute_value_type` | E1300 @7 | rejects @7 | rejects @7 |
 
-### drv (11)
+### drv (19)
 
 | File | Expected | NVC | GHDL |
 |---|---|---|---|
@@ -177,6 +181,14 @@ GHDL as second opinion: files where GHDL disagrees but NVC agrees.
 | `signal_assign_in_procedure_not_param` | E1810 @9 | rejects @9 | rejects @9 |
 | `signal_assign_in_procedure_param_ok` | none | accepts | accepts |
 | `stable_attr_in_subprogram` | E1620 @10 | rejects @10 | accepts |
+| `entity_process_not_passive` | E1813 @7 | rejects @7 | rejects @7 |
+| `multiple_sources_elements_ok` | none | accepts | accepts |
+| `multiple_sources_generate_ok` | none | accepts | accepts |
+| `multiple_sources_loop_index` | E1812 @9 | accepts (rejects at elab) | accepts (rejects at elab @9) |
+| `multiple_sources_overlapping_slice` | E1812 @9 | accepts (rejects at elab) | accepts (rejects at elab @9) |
+| `multiple_sources_record_element` | E1812 @10 | accepts (rejects at elab) | accepts (rejects at elab @10) |
+| `multiple_sources_resolved_ok` | none | accepts | accepts |
+| `multiple_sources_two_processes` | E1812 @9 | accepts (rejects at elab) | accepts (rejects at elab @6) |
 
 ### expr (42)
 

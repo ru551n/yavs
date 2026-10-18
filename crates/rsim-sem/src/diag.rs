@@ -100,7 +100,10 @@ codes! {
     // E18xx statements, processes, drivers
     BAD_WAIT = "E1801", "`wait` is not allowed in a process with a sensitivity list or in a function.";
     BAD_RETURN = "E1802", "`return` is only allowed in a subprogram, with a value exactly in functions.";
+    SENSITIVITY_NOT_STATIC = "E1803", "A name in a sensitivity list or `wait on` clause must be a static signal name: every index and slice in it must be static.";
     DRIVER_OUTSIDE_PROCESS = "E1810", "A subprogram declared outside a process drives a signal that is not one of its parameters.";
+    MULTIPLE_SOURCES = "E1812", "A signal (or sub-element) whose subtype is not resolved has more than one source: two processes, concurrent assignments or `out` port associations drive it. Drive it from one place or give it a resolved subtype such as `std_logic`.";
+    NOT_PASSIVE = "E1813", "Statements in an entity statement part must be passive: they may not assign signals or call procedures that do.";
     NEXT_OUTSIDE_LOOP = "E1811", "`next` and `exit` must be inside a loop, and a label must name an enclosing loop.";
     CASE_COVERAGE = "E1820", "Case choices must cover every value exactly once.";
     PURE_SIDE_EFFECT = "E1830", "A pure function reads or writes something outside itself, or calls an impure function.";

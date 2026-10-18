@@ -202,3 +202,10 @@ From cli (`rsim analyze`):
   `load_source`. Request: an `encoding` field in `rsim_sem::Options` (default `Auto`) passed to
   `load_source`, and its diagnostic reported through `Db::error`. The CLI only pre-checks
   `--encoding=utf8`; `--encoding=latin1` is accepted but has no effect on `analyze` until then.
+- **loader.rs** a `--map`ped library without `rsim-lib.toml` is an empty library (cli-contract
+  section 3), but loading it reports `L0001 library not found`. Request: treat a missing manifest
+  as an empty library, so the use is `E1002`/`E1004` (unit not found), not `L0001`.
+- **std/ieee as work**: `tools/corpus/rsim-lib-*` analyzes lib/std and lib/ieee themselves with
+  `--work=std:...`, which the CLI rejects (E0102, contract: rsim resolves them). The stdlib corpus
+  needs a bootstrap mode from the sem owners (a `Db` mode that analyzes std.standard as work)
+  before the CLI can offer one.

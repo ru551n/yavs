@@ -365,8 +365,8 @@ subprograms and packages (yavs-sem `Db::instantiate_entity` clones the entity an
 once per distinct map of those actuals, with its own mangled identity; generic constants stay
 instance data; #75), `others` in a configuration after component configurations naming
 specification-bound instances. Not yet: conversions of record ports, non-static expression
-actuals (#74, needs yavs-lower DESIGN.md request 7), defaults (`is <>`) of entity generic
-subprograms, configuration specifications inside an entity with generic types.
+actuals (#74, needs yavs-lower DESIGN.md request 7), configuration specifications inside an
+entity with generic types.
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data

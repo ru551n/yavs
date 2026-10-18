@@ -124,16 +124,6 @@ impl Db {
                     map.packages.insert(f, i);
                 }
                 (DeclKind::Error, _) => failed = true,
-                (DeclKind::GenericSubprogram(_), None) => {
-                    // ponytail: `is <>` defaults of entity generic subprograms are not
-                    // resolved at analysis yet, so no actual reaches here.
-                    failed = true;
-                    self.unsupported(
-                        span,
-                        "a default for a generic subprogram of a design entity",
-                        "S4",
-                    );
-                }
                 _ => {
                     failed = true;
                     self.ice(span, "generic actual of the wrong kind");

@@ -303,6 +303,6 @@ Corpus groups `tests/corpus/hierarchy` and `generics` (difftest) stop in analysi
 - **generic** (#75, done): entities with generic types, subprograms or packages.
   `Db::instantiate_entity(entity, arch, actuals, at)` (`generic/entity.rs`) clones the entity
   and architecture once per distinct map of those actuals (generic constants stay generics of
-  the clone); elab calls it per instance. Open: `is <>` defaults of entity generic
-  subprograms (no actual reaches elab, `E9999`), configuration specifications inside such an
-  architecture (`E9999`).
+  the clone); elab calls it per instance. Defaults of entity generic subprograms are
+  resolved at the instance (`binding.rs` `subprogram_default`, `E1504`). Open: configuration
+  specifications inside such an architecture (`E9999`).

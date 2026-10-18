@@ -580,7 +580,7 @@ impl Db {
             let actual = match m {
                 // After an association error a missing actual is likely a cascade.
                 Assoc::None if errs.0 => None,
-                Assoc::None => errs.keep(self.missing_actual(f, at)),
+                Assoc::None => errs.keep(self.missing_actual(scope, f, at)),
                 Assoc::Whole { idx, conv, span } => {
                     errs.keep(self.actual(scope, f, &assocs[idx].actual, conv, span))
                 }
@@ -743,9 +743,23 @@ impl Db {
         }
     }
 
-    fn missing_actual(&mut self, f: DeclId, at: Span) -> Result<Actual, Reported> {
-        let DeclKind::Object(o) = &self.decls[f].kind else {
-            return Err(Reported);
+    fn missing_actual(&mut self, scope: ScopeId, f: DeclId, at: Span) -> Result<Actual, Reported> {
+        let o = match &self.decls[f].kind {
+            DeclKind::Object(o) => o,
+            DeclKind::GenericSubprogram(_) => return self.subprogram_default(scope, f, at),
+            DeclKind::Error => return Err(Reported),
+            _ => {
+                let name = self.decls[f].name;
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::MISSING_GENERIC,
+                        format!("generic `{name}` has no actual"),
+                    )
+                    .with_primary(at, format!("`{name}` is not associated"))
+                    .with_secondary(self.decls[f].span, "declared here")
+                    .with_help(format!("add `generic map ({name} => ...)`")),
+                ));
+            }
         };
         if o.default.is_some() {
             return Ok(Actual::Default);
@@ -981,8 +995,40 @@ impl Db {
         Ok(Actual::Subtype(st))
     }
 
+    /// The default of generic subprogram `f` without an actual (6.5.6.2): `is <>` is the
+    /// subprogram of the formal's designator visible at the instance, `is name` the one
+    /// `name` denoted at the formal's declaration (L11), each with a conforming profile.
+    fn subprogram_default(
+        &mut self,
+        scope: ScopeId,
+        f: DeclId,
+        at: Span,
+    ) -> Result<Actual, Reported> {
+        let name = self.decls[f].name;
+        let cands = match self.generic.defaults.get(&f).cloned() {
+            Some(crate::generic::SubpDefault::Box) => match self.lookup(scope, name.key()) {
+                Visible::One(d) => vec![d],
+                Visible::Overloads(ds) => ds,
+                _ => Vec::new(),
+            },
+            Some(crate::generic::SubpDefault::Name { cands, .. }) => cands,
+            None => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::MISSING_GENERIC,
+                        format!("generic `{name}` has no actual and no default"),
+                    )
+                    .with_primary(at, format!("`{name}` is not associated"))
+                    .with_secondary(self.decls[f].span, "declared here without a default")
+                    .with_help(format!("add `generic map ({name} => ...)`")),
+                ));
+            }
+        };
+        self.fit_subprogram(f, cands, at, None)
+    }
+
     /// `img => ii`: a subprogram whose profile is the formal's with the instance's type
-    /// actuals substituted (6.5.7.2; `is <>` defaults are not resolved here).
+    /// actuals substituted (6.5.7.2).
     fn subprogram_actual(
         &mut self,
         scope: ScopeId,
@@ -1003,6 +1049,24 @@ impl Db {
                 .with_primary(at, "not a subprogram name"),
             ));
         };
+        let cands = match self.classify(scope, n) {
+            crate::expr::names::NameRes::One(d) => vec![d],
+            crate::expr::names::NameRes::Overloads(ds) => ds,
+            other => return Err(self.report_name(scope, other, n.span, "a function name")),
+        };
+        let text = self.source_text(n.span);
+        self.fit_subprogram(f, cands, n.span, Some(&text))
+    }
+
+    /// The one candidate whose profile is generic subprogram `f`'s, with the instance's
+    /// type actuals substituted; `actual`: the actual's text, `None` for the default.
+    fn fit_subprogram(
+        &mut self,
+        f: DeclId,
+        cands: Vec<DeclId>,
+        span: Span,
+        actual: Option<&str>,
+    ) -> Result<Actual, Reported> {
         let subst = |db: &Db, st: SubtypeId| {
             let t = db.base(st);
             db.inst_types
@@ -1016,11 +1080,6 @@ impl Db {
         let want: Vec<crate::ids::TypeId> =
             fs.params.iter().map(|p| subst(self, p.subtype)).collect();
         let want_ret = fs.ret.map(|r| subst(self, r));
-        let cands = match self.classify(scope, n) {
-            crate::expr::names::NameRes::One(d) => vec![d],
-            crate::expr::names::NameRes::Overloads(ds) => ds,
-            other => return Err(self.report_name(scope, other, n.span, "a function name")),
-        };
         let fits: Vec<DeclId> = cands
             .into_iter()
             .map(|d| self.entity(d))
@@ -1039,16 +1098,24 @@ impl Db {
         match fits.as_slice() {
             [d] => Ok(Actual::Subprogram(*d)),
             _ => Err(self.error(
-                Diagnostic::error(
-                    diag::TYPE_MISMATCH,
-                    format!(
-                        "no single visible `{}` matches generic subprogram `{}`",
-                        self.source_text(n.span),
-                        self.decls[f].name
+                match actual {
+                    Some(text) => Diagnostic::error(
+                        diag::TYPE_MISMATCH,
+                        format!(
+                            "no single visible `{text}` matches generic subprogram `{}`",
+                            self.decls[f].name
+                        ),
                     ),
-                )
+                    None => Diagnostic::error(
+                        diag::GENERIC_DEFAULT,
+                        format!(
+                            "no single visible subprogram for the default of generic subprogram `{}`",
+                            self.decls[f].name
+                        ),
+                    ),
+                }
                 .with_primary(
-                    n.span,
+                    span,
                     if fits.is_empty() {
                         "no subprogram with this profile"
                     } else {

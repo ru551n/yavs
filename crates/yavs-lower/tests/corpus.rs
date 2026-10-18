@@ -61,6 +61,7 @@ const PASS: &[&str] = &[
     "generics/generic_entities_2019",
     "generics/generic_entity_locals_2019",
     "generics/generic_map",
+    "generics/generic_subprogram_default_2019",
     "generics/generic_types_2019",
     "generics/if_case_generate",
     "generics/package_generics",

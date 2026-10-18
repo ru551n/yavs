@@ -184,15 +184,12 @@ impl Machine {
     fn alloc_in(&mut self, cell: u64, kind: Obj, data: Vec<u8>) -> R<u64> {
         self.heap_for(cell)?
             .alloc(kind, data)
-            .map_err(|_| Fault::Runtime("heap object limit (16M objects per heap) exceeded".into()))
+            .map_err(|_| heap_full())
     }
 
     /// A string object `[1 to len][bytes]` in the heap that suits `cell`.
     pub(crate) fn new_line(&mut self, cell: u64, s: &[u8]) -> R<u64> {
-        let mut obj: Vec<u8> = [1i64, s.len() as i64, 0]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
+        let mut obj = line_desc(s.len()).to_vec();
         obj.extend_from_slice(s);
         self.alloc_in(cell, Obj::Bytes, obj)
     }
@@ -233,27 +230,55 @@ impl Machine {
 
     /// The string designated by the line variable at `cell`; `None` for null.
     pub(crate) fn line_get(&mut self, cell: u64) -> R<Option<Vec<u8>>> {
+        Ok(self.line_ref(cell)?.map(<[u8]>::to_vec))
+    }
+
+    /// [`Machine::line_get`] without the copy.
+    fn line_ref(&mut self, cell: u64) -> R<Option<&[u8]>> {
         let h = self.load(cell, Width::B8)?;
         if h == 0 {
             return Ok(None);
         }
         let (hp, _) = self.heap_of(h)?;
-        let i = hp
-            .resolve(h)
-            .map_err(|_| Fault::Runtime("line designates an object that was deallocated".into()))?;
+        let i = hp.resolve(h).map_err(|_| deallocated_line())?;
         let d = hp.data(i).ok_or_else(|| ice("heap object vanished"))?;
-        let w = |k: usize| {
-            let mut a = [0; 8];
-            a.copy_from_slice(&d[k * 8..k * 8 + 8]);
-            i64::from_le_bytes(a)
+        let n = line_len(d)?;
+        d.get(24..24 + n).map(Some).ok_or_else(line_short)
+    }
+
+    /// Replace the line at `cell` (null is empty) by a new object `1 to len` holding its
+    /// bytes without the first `drop` and with `tail` appended, deallocating the old one: as
+    /// [`Machine::line_get`] then [`Machine::line_set`], but the bytes move to the new object
+    /// instead of being copied, so N READs or WRITEs on one line are O(N) (#196).
+    fn line_edit(&mut self, cell: u64, drop: usize, tail: &[u8]) -> R<()> {
+        let h = self.load(cell, Width::B8)?;
+        let (mut v, mut start) = if h == 0 {
+            (line_desc(0).to_vec(), 0)
+        } else {
+            self.heap_of(h)?.0.take(h).map_err(|e| match e {
+                HeapError::Stale => deallocated_line(),
+                e => ice(format!("line: {e:?}")),
+            })?
         };
-        if d.len() < 24 {
-            return Err(ice("line object without descriptor"));
+        let n = line_len(v.get(start..).unwrap_or_default())?;
+        if drop > n || v.len() < start + 24 + n {
+            return Err(line_short());
         }
-        let n = yavs_ir::dim_len(w(0), w(1), w(2) == 1).ok_or_else(|| ice("line length"))?;
-        d.get(24..24 + n as usize)
-            .map(|b| Some(b.to_vec()))
-            .ok_or_else(|| ice("line object shorter than its descriptor"))
+        v.truncate(start + 24 + n);
+        start += drop;
+        v.extend_from_slice(tail);
+        // Compact once the dropped prefix is the larger half: amortized O(1) per byte.
+        if start > v.len() - start {
+            v.drain(..start);
+            start = 0;
+        }
+        let n = v.len() - start - 24;
+        v[start..start + 24].copy_from_slice(&line_desc(n));
+        let nh = self
+            .heap_for(cell)?
+            .alloc_from(Obj::Bytes, v, start)
+            .map_err(|_| heap_full())?;
+        self.store(cell, Width::B8, nh)
     }
 
     /// Replace the line at `cell` by a new object holding `s`, deallocating the old one.
@@ -654,19 +679,30 @@ fn justify(
     m.ret_string(&s).map(Some)
 }
 
-/// READ: parse from a copy of the line; on success store the value and the rest of the line.
+/// Parse from the front of the line at `cell` (null is empty) without copying it; the parsed
+/// value and the number of bytes consumed.
+fn parse_line<T>(m: &mut Machine, cell: u64, parse: impl FnOnce(&mut &[u8]) -> T) -> R<(T, usize)> {
+    let line = m.line_ref(cell)?.unwrap_or_default();
+    let mut rest = line;
+    let v = parse(&mut rest);
+    Ok((v, line.len() - rest.len()))
+}
+
+/// READ: parse from the line; on success store the value and drop what was read from the line.
 /// The GOOD form (one more argument) reports failure in GOOD, the other form is an error.
-fn read_with(
+fn read_with<T>(
     m: &mut Machine,
     a: Args<'_>,
-    f: impl FnOnce(&mut Machine, &mut Vec<u8>, u64) -> R<Result<(), yavs_std::error::ConvError>>,
+    parse: impl FnOnce(&mut &[u8]) -> Result<T, yavs_std::error::ConvError>,
+    store: impl FnOnce(&mut Machine, T) -> R<()>,
 ) -> R<Option<u64>> {
-    let (cell, dst) = (arg(a, 0)?, arg(a, 1)?);
+    let cell = arg(a, 0)?;
     let good = a.get(2).copied();
-    let mut line = m.line_get(cell)?.unwrap_or_default();
-    let ok = match f(m, &mut line, dst)? {
-        Ok(()) => {
-            m.line_set(cell, &line)?;
+    let (v, k) = parse_line(m, cell, parse)?;
+    let ok = match v {
+        Ok(v) => {
+            store(m, v)?;
+            m.line_edit(cell, k, b"")?;
             true
         }
         Err(e) if good.is_some() => {
@@ -685,27 +721,19 @@ fn read_scalar(
     m: &mut Machine,
     a: Args<'_>,
     w: Width,
-    f: impl FnOnce(&mut Vec<u8>, yavs_std::types::Revision) -> Result<u64, yavs_std::error::ConvError>,
+    f: impl FnOnce(&mut &[u8], yavs_std::types::Revision) -> Result<u64, yavs_std::error::ConvError>,
 ) -> R<Option<u64>> {
-    let rev = m.rt.revision;
-    read_with(m, a, |m, l, dst| match f(l, rev) {
-        Ok(v) => m.store(dst, w, v).map(Ok),
-        Err(e) => Ok(Err(e)),
-    })
+    let (rev, dst) = (m.rt.revision, arg(a, 1)?);
+    read_with(m, a, |l| f(l, rev), |m, v| m.store(dst, w, v))
 }
 
 fn read_bits(
     m: &mut Machine,
     a: Args<'_>,
-    f: fn(&mut Vec<u8>, usize) -> Result<Vec<bool>, yavs_std::error::ConvError>,
+    f: fn(&mut &[u8], usize) -> Result<Vec<bool>, yavs_std::error::ConvError>,
 ) -> R<Option<u64>> {
-    read_with(m, a, |m, l, fat| {
-        let (data, n) = m.fat1(fat)?;
-        match f(l, n as usize) {
-            Ok(b) => m.put_bits(data, &b).map(Ok),
-            Err(e) => Ok(Err(e)),
-        }
-    })
+    let (data, n) = m.fat1(arg(a, 1)?)?;
+    read_with(m, a, |l| f(l, n as usize), |m, b| m.put_bits(data, &b))
 }
 
 macro_rules! natives {
@@ -724,9 +752,11 @@ fn write_with(
     f: impl FnOnce(&mut Machine, &mut Vec<u8>) -> R<()>,
 ) -> R<Option<u64>> {
     let cell = arg(a, 0)?;
-    let mut line = m.line_get(cell)?.unwrap_or_default();
-    f(m, &mut line)?;
-    m.line_set(cell, &line)?;
+    // A deallocated line is an error before anything is formatted.
+    m.line_ref(cell)?;
+    let mut tail = Vec::new();
+    f(m, &mut tail)?;
+    m.line_edit(cell, 0, &tail)?;
     Ok(None)
 }
 
@@ -746,13 +776,8 @@ natives! {
         read_scalar(m, a, Width::B8, |l, _| tio::read_physical(l, &time_type(), Bounds::I64).map(|v| v as u64))
     }
     read_string(m, ctx, a) {
-        read_with(m, a, |m, l, fat| {
-            let (data, n) = m.fat1(fat)?;
-            match tio::read_string(l, n as usize) {
-                Ok(b) => m.put(data, &b).map(Ok),
-                Err(e) => Ok(Err(e)),
-            }
-        })
+        let (data, n) = m.fat1(arg(a, 1)?)?;
+        read_with(m, a, |l| tio::read_string(l, n as usize), |m, b| m.put(data, &b))
     }
     read_bit_vector(m, ctx, a) { read_bits(m, a, tio::read_bit_vector) }
     hread(m, ctx, a) { read_bits(m, a, tio::hread) }
@@ -760,11 +785,10 @@ natives! {
     sread(m, ctx, a) {
         let cell = arg(a, 0)?;
         let (data, n) = m.fat1(arg(a, 1)?)?;
-        let mut line = m.line_get(cell)?.unwrap_or_default();
-        let s = tio::sread(&mut line, n as usize);
+        let (s, k) = parse_line(m, cell, |l| tio::sread(l, n as usize))?;
         m.put(data, &s)?;
         m.store(arg(a, 2)?, Width::B8, s.len() as u64)?;
-        m.line_set(cell, &line)?;
+        m.line_edit(cell, k, b"")?;
         Ok(None)
     }
     write_bit(m, ctx, a) {
@@ -819,4 +843,35 @@ fn write_bits(
         f(l, &bits, sd, w);
         Ok(())
     })
+}
+
+fn deallocated_line() -> Fault {
+    Fault::Runtime("line designates an object that was deallocated".into())
+}
+
+fn line_short() -> Fault {
+    ice("line object shorter than its descriptor")
+}
+
+fn heap_full() -> Fault {
+    Fault::Runtime("heap object limit (16M objects per heap) exceeded".into())
+}
+
+/// The descriptor `1 to n` of a line object.
+fn line_desc(n: usize) -> [u8; 24] {
+    let mut d = [0; 24];
+    d[..8].copy_from_slice(&1i64.to_le_bytes());
+    d[8..16].copy_from_slice(&(n as i64).to_le_bytes());
+    d
+}
+
+/// The length of a line object `[descriptor][bytes]` from its descriptor.
+fn line_len(d: &[u8]) -> R<usize> {
+    let Some(w) = d.get(..24).map(|h| h.as_chunks::<8>().0) else {
+        return Err(ice("line object without descriptor"));
+    };
+    let w = |k: usize| i64::from_le_bytes(w[k]);
+    yavs_ir::dim_len(w(0), w(1), w(2) == 1)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| ice("line length"))
 }

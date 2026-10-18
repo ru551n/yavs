@@ -46,6 +46,8 @@ struct Slot {
     generation: u32,
     ty: Obj,
     data: Option<Vec<u8>>,
+    /// The object is `data[start..]`: a READ drops a line's prefix in O(1) (#196).
+    start: usize,
 }
 
 pub struct Heap {
@@ -82,6 +84,11 @@ impl Heap {
     }
 
     pub fn alloc(&mut self, ty: Obj, data: Vec<u8>) -> Result<u64, HeapError> {
+        self.alloc_from(ty, data, 0)
+    }
+
+    /// Allocate the object `data[start..]`.
+    pub fn alloc_from(&mut self, ty: Obj, data: Vec<u8>, start: usize) -> Result<u64, HeapError> {
         self.since_gc = self.since_gc.saturating_add(data.len() as u64 + 32);
         let index = match self.free.pop() {
             Some(i) => i,
@@ -94,6 +101,7 @@ impl Heap {
                     generation: 0,
                     ty: Obj::Bytes,
                     data: None,
+                    start: 0,
                 });
                 i
             }
@@ -102,6 +110,7 @@ impl Heap {
         s.generation = s.generation.wrapping_add(1).max(1);
         s.ty = ty;
         s.data = Some(data);
+        s.start = start;
         Ok(pack(self.tag, index, s.generation))
     }
 
@@ -121,10 +130,19 @@ impl Heap {
     }
 
     pub fn free(&mut self, h: u64) -> Result<(), HeapError> {
+        self.take(h).map(drop)
+    }
+
+    /// Deallocate like [`Heap::free`] but hand back the object's bytes as `(data, start)`
+    /// (the object was `data[start..]`), so a native can move them to a new object without a
+    /// copy (textio READ and WRITE, #196).
+    pub fn take(&mut self, h: u64) -> Result<(Vec<u8>, usize), HeapError> {
         let i = self.resolve(h)?;
+        let s = &mut self.slots[i as usize];
+        let out = (s.data.take().unwrap_or_default(), s.start);
         self.release(i);
         self.quarantine.push(i);
-        Ok(())
+        Ok(out)
     }
 
     fn release(&mut self, i: u32) {
@@ -150,7 +168,8 @@ impl Heap {
     }
 
     pub fn data(&self, index: u32) -> Option<&[u8]> {
-        self.slots.get(index as usize)?.data.as_deref()
+        let s = self.slots.get(index as usize)?;
+        s.data.as_deref()?.get(s.start..)
     }
 
     pub fn kind(&self, index: u32) -> Option<Obj> {
@@ -159,7 +178,8 @@ impl Heap {
     }
 
     pub fn data_mut(&mut self, index: u32) -> Option<&mut [u8]> {
-        self.slots.get_mut(index as usize)?.data.as_deref_mut()
+        let s = self.slots.get_mut(index as usize)?;
+        s.data.as_deref_mut()?.get_mut(s.start..)
     }
 
     /// Mark from `roots` and from the objects in `pinned` (sorted slot indices that addresses
@@ -181,8 +201,8 @@ impl Heap {
             if std::mem::replace(&mut mark[i as usize], true) {
                 continue;
             }
+            let Some(data) = self.data(i) else { continue };
             let s = &self.slots[i as usize];
-            let Some(data) = &s.data else { continue };
             let ok = match s.ty {
                 Obj::Typed(t) => object_handles(prog, t, data, &mut work),
                 Obj::Bytes => true,

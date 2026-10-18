@@ -111,11 +111,11 @@ fn e<T>(r: Result<T, impl std::fmt::Display>) -> Result<T, String> {
 }
 
 /// `g=... v=... rest=...` of a READ case.
-fn read_case(line: &[u8], f: impl FnOnce(&mut Vec<u8>) -> Out) -> Out {
-    let mut l = line.to_vec();
+fn read_case(line: &[u8], f: impl FnOnce(&mut &[u8]) -> Out) -> Out {
+    let mut l = line;
     Ok(match f(&mut l) {
-        Ok(v) => cat(&[b"g=true v=", &v, b" rest=", &l]),
-        Err(_) => cat(&[b"g=false rest=", &l]),
+        Ok(v) => cat(&[b"g=true v=", &v, b" rest=", l]),
+        Err(_) => cat(&[b"g=false rest=", l]),
     })
 }
 
@@ -237,7 +237,8 @@ fn eval(rev: Revision, func: &str, a: &[&str]) -> Out {
             });
         }
         "sread" => {
-            let mut l = unescape(a[0]);
+            let line = unescape(a[0]);
+            let mut l = &line[..];
             let v = textio::sread(&mut l, int(a[1]) as usize);
             cat(&[
                 b"n=",
@@ -245,16 +246,17 @@ fn eval(rev: Revision, func: &str, a: &[&str]) -> Out {
                 b" v=",
                 &v,
                 b" rest=",
-                &l,
+                l,
             ])
         }
         "read_int_seq" => {
-            let mut l = unescape(a[0]);
+            let line = unescape(a[0]);
+            let mut l = &line[..];
             let mut parts = Vec::new();
             for _ in 0..4 {
                 parts.push(e(textio::read_integer(&mut l, ib))?.to_string());
             }
-            cat(&[parts.join(",").as_bytes(), b" rest=", &l])
+            cat(&[parts.join(",").as_bytes(), b" rest=", l])
         }
         "write_int" => {
             ws(&|l| textio::write_integer(l, int(a[0]), side(a[1]), int(a[2]) as usize))?

@@ -34,7 +34,7 @@ proptest! {
         prop_assert_eq!(integer_value(&integer_image(x), Bounds::I64), Ok(x));
         let mut l = Vec::new();
         textio::write_integer(&mut l, x, Side::Left, 3);
-        prop_assert_eq!(textio::read_integer(&mut l, Bounds::I64), Ok(x));
+        prop_assert_eq!(textio::read_integer(&mut &l[..], Bounds::I64), Ok(x));
     }
 
     #[test]
@@ -42,8 +42,7 @@ proptest! {
         let s = real_to_string_digits(x, 0).unwrap();
         let back = real_value(&s, RealBounds::REAL).unwrap();
         prop_assert_eq!(back.to_bits(), x.to_bits());
-        let mut l = s.clone();
-        prop_assert_eq!(textio::read_real(&mut l, RealBounds::REAL).unwrap().to_bits(), x.to_bits());
+        prop_assert_eq!(textio::read_real(&mut &s[..], RealBounds::REAL).unwrap().to_bits(), x.to_bits());
     }
 
     #[test]
@@ -62,7 +61,7 @@ proptest! {
         prop_assert_eq!(physical_value(&s, &ty, Bounds::I64), Ok(exact));
         let mut l = Vec::new();
         textio::write_physical(&mut l, exact, &ty, Side::Right, 0, unit).unwrap();
-        prop_assert_eq!(textio::read_physical(&mut l, &ty, Bounds::I64), Ok(exact));
+        prop_assert_eq!(textio::read_physical(&mut &l[..], &ty, Bounds::I64), Ok(exact));
     }
 
     #[test]
@@ -81,6 +80,7 @@ proptest! {
         textio::write_character(&mut l, b' ', Side::Right, 0);
         textio::owrite(&mut l, &bits, Side::Right, 0);
         textio::write_bit_vector(&mut l, &bits, Side::Right, n + 2);
+        let mut l = &l[..];
         prop_assert_eq!(textio::hread(&mut l, n), Ok(bits.clone()));
         prop_assert_eq!(textio::oread(&mut l, n), Ok(bits.clone()));
         prop_assert_eq!(textio::read_bit_vector(&mut l, n), Ok(bits.clone()));
@@ -95,13 +95,13 @@ proptest! {
         let _ = physical_value(&s, &ty, Bounds::I64);
         let _ = enum_value(&s, &character_type());
         let _ = real_to_string_format(1.5, &s);
-        let _ = textio::read_integer(&mut s.clone(), Bounds::I32);
-        let _ = textio::read_real(&mut s.clone(), RealBounds::REAL);
-        let _ = textio::read_physical(&mut s.clone(), &ty, Bounds::I64);
-        let _ = textio::read_boolean(&mut s.clone());
-        let _ = textio::hread(&mut s.clone(), 7);
-        let _ = textio::oread(&mut s.clone(), 7);
-        let _ = textio::sread(&mut s.clone(), 5);
+        let _ = textio::read_integer(&mut &s[..], Bounds::I32);
+        let _ = textio::read_real(&mut &s[..], RealBounds::REAL);
+        let _ = textio::read_physical(&mut &s[..], &ty, Bounds::I64);
+        let _ = textio::read_boolean(&mut &s[..]);
+        let _ = textio::hread(&mut &s[..], 7);
+        let _ = textio::oread(&mut &s[..], 7);
+        let _ = textio::sread(&mut &s[..], 5);
     }
 }
 

@@ -517,3 +517,78 @@ fn bit_vectors() {
     let r = yavs_interp::call(rt, f, Arc::new(InstData::default()), &[]).unwrap();
     assert_eq!(r, Some(1000 + u64::from(b'C')));
 }
+
+/// N WRITEs and then N READs on one line take linear time: each call used to copy and
+/// reallocate the whole line (#196). Timed as a ratio so the machine's speed cancels out.
+#[test]
+fn long_line_is_linear() {
+    let (t1, t8) = (long_line(25_000), long_line(200_000));
+    // Linear is about 8 times, quadratic was about 40.
+    assert!(
+        t8 < t1 * 20 + std::time::Duration::from_millis(500),
+        "{t1:?} then {t8:?}"
+    );
+}
+
+/// The time `long_line_is_linear` takes for `n` values.
+fn long_line(n: i64) -> std::time::Duration {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(f);
+        let (l, i, v, sum) = (fb.slot(8, 8), fb.slot(8, 8), fb.slot(8, 8), fb.slot(8, 8));
+        stmt(&mut fb, StmtKind::Return);
+        let (wr, rd, done) = (fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::Br { to: wr });
+        // for i in 0 to N - 1: write(l, i, right, 8)
+        fb.at(wr);
+        let la = fb.addr(AddrSpace::Frame, l);
+        let x = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+        let (r, w) = (fb.int(0), fb.int(8));
+        native(
+            &mut fb,
+            "yavs.textio.write.line_integer_side_width",
+            None,
+            &[la, x, r, w],
+            false,
+        );
+        let one = fb.int(1);
+        let x = bin(&mut fb, IntOp::Add, x, one);
+        store(&mut fb, AddrSpace::Frame, i, x, Width::B8);
+        let n = fb.int(n);
+        let c = cmp(&mut fb, CmpOp::Lt, x, n);
+        fb.emit(Inst::CondBr { c, t: wr, f: rd });
+        // N times: read(l, v); sum := sum + v
+        fb.at(rd);
+        let la = fb.addr(AddrSpace::Frame, l);
+        let va = fb.addr(AddrSpace::Frame, v);
+        native(
+            &mut fb,
+            "yavs.textio.read.line_integer",
+            None,
+            &[la, va],
+            false,
+        );
+        let x = load(&mut fb, AddrSpace::Frame, v, Width::B8);
+        let s = load(&mut fb, AddrSpace::Frame, sum, Width::B8);
+        let s = bin(&mut fb, IntOp::Add, s, x);
+        store(&mut fb, AddrSpace::Frame, sum, s, Width::B8);
+        let k = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+        let one = fb.int(1);
+        let k = bin(&mut fb, IntOp::Sub, k, one);
+        store(&mut fb, AddrSpace::Frame, i, k, Width::B8);
+        let z = fb.int(0);
+        let c = cmp(&mut fb, CmpOp::Gt, k, z);
+        fb.emit(Inst::CondBr { c, t: rd, f: done });
+        fb.at(done);
+        let s = load(&mut fb, AddrSpace::Frame, sum, Width::B8);
+        fb.emit(Inst::Ret { v: Some(s) });
+        fb.finish();
+    }
+    let prog = Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    let t = std::time::Instant::now();
+    let r = yavs_interp::call(rt, f, Arc::new(InstData::default()), &[]).unwrap();
+    assert_eq!(r, Some((n * (n - 1) / 2) as u64));
+    t.elapsed()
+}

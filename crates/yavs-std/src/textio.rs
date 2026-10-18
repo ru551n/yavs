@@ -1,7 +1,7 @@
 //! std.textio READ and WRITE as operations on a line buffer.
 //!
-//! A LINE is a `Vec<u8>` (Latin-1). READ consumes from the front of the
-//! line; WRITE appends. The access-type plumbing (null lines, deallocation)
+//! A LINE is Latin-1 bytes. READ consumes from the front of the line (a
+//! slice it advances); WRITE appends to a `Vec<u8>`. The access-type plumbing (null lines, deallocation)
 //! belongs to the runtime.
 //!
 //! Every READ returns `Result`: the GOOD form of the procedure maps `Err` to
@@ -126,10 +126,8 @@ fn err(what: What, l: &[u8], at: usize, expected: &'static str) -> ConvError {
 }
 
 /// Consume `n` bytes from the front of the line.
-fn consume(line: &mut Vec<u8>, n: usize) {
-    // ponytail: one memmove of the rest per read; the interpreter glue copies and
-    // reallocates the whole line per call anyway, which dominates (#196).
-    line.drain(..n);
+fn consume(line: &mut &[u8], n: usize) {
+    *line = &line[n..];
 }
 
 fn digits_end(l: &[u8], i: usize) -> usize {
@@ -197,7 +195,7 @@ fn read_number(l: &[u8], what: What, allow_real: bool) -> R<(bool, Abstract, usi
 }
 
 /// `read(l, integer)`.
-pub fn read_integer(line: &mut Vec<u8>, bounds: Bounds) -> R<i64> {
+pub fn read_integer(line: &mut &[u8], bounds: Bounds) -> R<i64> {
     let (neg, lit, end) = read_number(line, What::Integer, false)?;
     let span = skip(line)..end;
     let v = lit
@@ -220,7 +218,7 @@ pub fn read_integer(line: &mut Vec<u8>, bounds: Bounds) -> R<i64> {
 }
 
 /// `read(l, real)`. An integer such as `1` or `1e5` is accepted.
-pub fn read_real(line: &mut Vec<u8>, bounds: RealBounds) -> R<f64> {
+pub fn read_real(line: &mut &[u8], bounds: RealBounds) -> R<f64> {
     let (neg, lit, end) = read_number(line, What::Real, true)?;
     let span = skip(line)..end;
     let v = lit.to_f64();
@@ -246,7 +244,7 @@ pub fn read_real(line: &mut Vec<u8>, bounds: RealBounds) -> R<f64> {
 /// `read(l, time)` (any physical type): a number, optional whitespace and
 /// a unit. The unit is the longest unit name that prefixes the remaining
 /// text, case-insensitively, so `"5 nsx"` reads 5 ns and leaves `x`.
-pub fn read_physical(line: &mut Vec<u8>, ty: &PhysicalType, bounds: Bounds) -> R<i64> {
+pub fn read_physical(line: &mut &[u8], ty: &PhysicalType, bounds: Bounds) -> R<i64> {
     let what = What::Physical;
     let (neg, lit, end) = read_number(line, what, true)?;
     let span_start = skip(line);
@@ -296,7 +294,7 @@ pub fn read_physical(line: &mut Vec<u8>, ty: &PhysicalType, bounds: Bounds) -> R
 }
 
 /// `read(l, boolean)`: `true` or `false` in any case.
-pub fn read_boolean(line: &mut Vec<u8>) -> R<bool> {
+pub fn read_boolean(line: &mut &[u8]) -> R<bool> {
     let i = skip(line);
     let rest = &line[i..];
     for (word, v) in [(&b"true"[..], true), (&b"false"[..], false)] {
@@ -309,7 +307,7 @@ pub fn read_boolean(line: &mut Vec<u8>) -> R<bool> {
 }
 
 /// `read(l, bit)`.
-pub fn read_bit(line: &mut Vec<u8>) -> R<bool> {
+pub fn read_bit(line: &mut &[u8]) -> R<bool> {
     let i = skip(line);
     match line.get(i) {
         Some(&c @ (b'0' | b'1')) => {
@@ -321,7 +319,7 @@ pub fn read_bit(line: &mut Vec<u8>) -> R<bool> {
 }
 
 /// `read(l, character)`: the next character, whitespace included.
-pub fn read_character(line: &mut Vec<u8>) -> R<u8> {
+pub fn read_character(line: &mut &[u8]) -> R<u8> {
     match line.first() {
         Some(&c) => {
             consume(line, 1);
@@ -341,7 +339,7 @@ pub fn read_character(line: &mut Vec<u8>) -> R<u8> {
 
 /// `read(l, string)` for a string of length `n`: exactly the next `n`
 /// characters, whitespace included.
-pub fn read_string(line: &mut Vec<u8>, n: usize) -> R<Vec<u8>> {
+pub fn read_string(line: &mut &[u8], n: usize) -> R<Vec<u8>> {
     if line.len() < n {
         return Err(ConvError::new(
             What::String,
@@ -360,7 +358,7 @@ pub fn read_string(line: &mut Vec<u8>, n: usize) -> R<Vec<u8>> {
 
 /// `sread(l, value, strlen)`: skip whitespace, then read up to `n`
 /// non-whitespace characters. Never fails; the result may be shorter.
-pub fn sread(line: &mut Vec<u8>, n: usize) -> Vec<u8> {
+pub fn sread(line: &mut &[u8], n: usize) -> Vec<u8> {
     if n == 0 {
         return Vec::new();
     }
@@ -373,7 +371,7 @@ pub fn sread(line: &mut Vec<u8>, n: usize) -> Vec<u8> {
 
 /// `read(l, bit_vector)` (and BREAD) of length `n`: `n` binary digits
 /// after leading whitespace, without underscores.
-pub fn read_bit_vector(line: &mut Vec<u8>, n: usize) -> R<Vec<bool>> {
+pub fn read_bit_vector(line: &mut &[u8], n: usize) -> R<Vec<bool>> {
     if n == 0 {
         return Ok(Vec::new());
     }
@@ -400,7 +398,7 @@ pub fn read_bit_vector(line: &mut Vec<u8>, n: usize) -> R<Vec<bool>> {
     Ok(v)
 }
 
-fn read_radix(line: &mut Vec<u8>, n: usize, bits_per: usize) -> R<Vec<bool>> {
+fn read_radix(line: &mut &[u8], n: usize, bits_per: usize) -> R<Vec<bool>> {
     if n == 0 {
         return Ok(Vec::new());
     }
@@ -451,12 +449,12 @@ fn read_radix(line: &mut Vec<u8>, n: usize, bits_per: usize) -> R<Vec<bool>> {
 
 /// `hread(l, bit_vector)` of length `n`: `ceil(n/4)` hex digits, single
 /// underscores allowed between digits; the unused high bits must be zero.
-pub fn hread(line: &mut Vec<u8>, n: usize) -> R<Vec<bool>> {
+pub fn hread(line: &mut &[u8], n: usize) -> R<Vec<bool>> {
     read_radix(line, n, 4)
 }
 
 /// `oread(l, bit_vector)` of length `n`.
-pub fn oread(line: &mut Vec<u8>, n: usize) -> R<Vec<bool>> {
+pub fn oread(line: &mut &[u8], n: usize) -> R<Vec<bool>> {
     read_radix(line, n, 3)
 }
 
@@ -466,13 +464,13 @@ mod tests {
 
     #[test]
     fn failure_leaves_line() {
-        let mut l = b"  1.5e".to_vec();
+        let mut l: &[u8] = b"  1.5e";
         assert!(read_real(&mut l, RealBounds::REAL).is_err());
         assert_eq!(l, b"  1.5e");
-        let mut l = b"A__5".to_vec();
+        let mut l: &[u8] = b"A__5";
         assert!(hread(&mut l, 8).is_err());
         assert_eq!(l, b"A__5");
-        let mut l = b"3F".to_vec();
+        let mut l: &[u8] = b"3F";
         let e = hread(&mut l, 5).unwrap_err();
         assert_eq!(e.kind, ErrorKind::DoesNotFit);
     }

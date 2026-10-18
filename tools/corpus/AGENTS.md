@@ -64,4 +64,4 @@ tools/corpus/report.sh                                        # RESULTS.md
 ## 6. Coordination
 
 - Open issues (snapshot 2026-10-18): #62 refresh `RESULTS.md`; #63 gate in CI; corpus false
-  positives and bugs #55 to #61, #157; #115 OSVVM and UVVM own suites; #112 VUnit test suites.
+  positives and bugs #59, #61, #157 (#55 to #58, #60 closed as stale 2026-10-18); #115 OSVVM and UVVM own suites; #112 VUnit test suites.

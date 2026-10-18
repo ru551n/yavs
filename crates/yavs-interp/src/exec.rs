@@ -113,6 +113,10 @@ pub(crate) struct Frame {
     pub ret: Option<Reg>,
     /// Temporary-area top when the frame was entered.
     pub temp_base: usize,
+    /// Inside a method of a protected object in the shared heap (or something it calls):
+    /// allocators allocate in the shared heap too, so the object's variables never point into
+    /// a process's private heap (#184).
+    pub shared_alloc: bool,
 }
 
 enum Flow {
@@ -366,6 +370,7 @@ impl Machine {
             link,
             ret: None,
             temp_base: self.temp.len(),
+            shared_alloc: self.frames.last().is_some_and(|f| f.shared_alloc),
         })
     }
 
@@ -1598,9 +1603,15 @@ impl Machine {
                 dst,
             } => {
                 self.shared()?;
-                let mut cells = vec![self.r(obj)];
+                let h = self.r(obj);
+                let mut cells = vec![h];
                 cells.extend(self.arg_cells(f, args, prog.func(func), 1)?);
-                return self.call(prog, func, &cells, dst);
+                let flow = self.call(prog, func, &cells, dst)?;
+                if let Flow::Call(mut fr) = flow {
+                    fr.shared_alloc |= heap::tag_of(h) == heap::SHARED;
+                    return Ok(Flow::Call(fr));
+                }
+                return Ok(flow);
             }
             Inst::CallNative { native, args, dst } => {
                 let n = prog
@@ -1643,6 +1654,7 @@ impl Machine {
                 shared,
             } => {
                 let data = self.rd(self.r(init), self.r(size))?.to_vec();
+                let shared = shared || self.frames.last().is_some_and(|f| f.shared_alloc);
                 let r = if shared {
                     let sh = self.shared_mut()?;
                     sh.heap

@@ -212,7 +212,9 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   per field path, holding that field of every array element (struct of arrays).
   `Fx::comp_select` turns a name (fields, indices, a final slice) into one kernel range per
   leaf with the rule of `yavs_elab::NetGraph::select`; `leaf_walk` copies a leaf's elements
-  between a leaf buffer and the composite value (#200).
+  between a leaf buffer and the composite value (#200). The whole signal's descriptor is the
+  instance-data slot `Cx::sig_dopes` (`SignalIr::dope` of the first leaf entry), written by
+  the elaborator from the signal's shape (#215).
 - Signals of arrays of arrays without records are one instance signal of all their scalars;
   `Fx::sig_steps` selects a name's range by the same walk (`walk_steps`) with that one leaf
   (#89). A subtype-alias path (`LspStep::Rebase`) over one is E2001.

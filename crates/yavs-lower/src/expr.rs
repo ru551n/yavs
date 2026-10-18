@@ -924,8 +924,13 @@ impl<'a> Fx<'a, '_> {
         let db = self.db;
         let st = ty::obj_subtype(db, d).ok_or(Failed)?;
         let root_t = db.base(st);
-        let Some(root) = self.desc_of(st, None, span)? else {
-            return Err(self.cx.unsupported(span, "unconstrained composite signals"));
+        // The descriptor the elaborator wrote (bounds from the initial value or the actual).
+        let root = match self.cx.sig_dopes.get(&d).copied() {
+            Some((space, off)) => self.addr(space, off),
+            None => match self.desc_of(st, None, span)? {
+                Some(r) => r,
+                None => return Err(self.cx.ice(span, "composite signal without a descriptor")),
+            },
         };
         let what = db.decls[d].name.to_string();
         let w = self.walk_steps(root_t, root, steps, &what, span)?;

@@ -918,8 +918,9 @@ impl Db {
         res
     }
 
-    /// Structural equality with folded indices (driver deduplication).
-    fn same_lsp(&self, a: &Lsp, b: &Lsp) -> bool {
+    /// Structural equality with folded indices (driver deduplication; lowering finds a
+    /// target's driver with it).
+    pub fn same_lsp(&self, a: &Lsp, b: &Lsp) -> bool {
         a.path.len() == b.path.len()
             && self.overlap(a, b) == Overlap::Yes
             && a.path.iter().zip(b.path.iter()).all(|(x, y)| match (x, y) {

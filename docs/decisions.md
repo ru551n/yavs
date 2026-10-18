@@ -569,8 +569,8 @@ a note and a help suggesting an access type, as the reference simulators reject 
   descriptor lives in package data (`PackageIr::signals[..].dope`), written by the elaborator
   after the package's initialisation. Ports are interface declarations, not signal
   declarations: the LCS does not cover them, an unconstrained port still takes its bounds from
-  its actual (an open one with a default takes the default's bounds, #218). Not yet: record signals
-  whose fields take bounds this way (lowering, #215).
+  its actual (an open one with a default takes the default's bounds, #218). Record signals
+  whose fields take bounds this way have a descriptor slot too (#215, below).
 - **Linkage ports and mode views** (#75, elab agent, 2026-10-18): a linkage port is an
   uncollapsed port edge with the kernel mode `in` (VHDL code cannot read or update it, LRM
   6.5.2, so it never drives its actual). A port with a 2019 mode view takes each record leaf's
@@ -755,6 +755,13 @@ which tools/difftest parses.
   Reading any name below such a signal reads the whole signal and then selects (ponytail:
   read only the selected ranges if large memories of records need it); driving a part copies
   each leaf's elements of every waveform value into one transaction per leaf.
+  The descriptor of such a signal's whole type, when the type needs one, is a slot in instance
+  data written by the elaborator from the signal's shape (`SignalIr::dope` on its first leaf
+  entry, with the IR type it describes), so bounds from the initial value, a partially
+  constrained subtype or a port's actual reach every name below it (#215, rule 1).
+- **A target's driver slot** is the `ProcessInfo::drivers` entry with the same prefix, compared
+  structurally with folded indices (`Db::same_lsp`, sem's deduplication), so a static element
+  assigned twice in one process finds the one entry sem kept (#215).
 - **Arrays of arrays without records** (#89) stay one kernel signal of all their scalars, row
   major (logic mirrored). Every name of indices and slices below such a signal (`m(i)`,
   `m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`), as target, actual, alias or sensitivity, selects

@@ -105,11 +105,13 @@ pub struct SignalIr {
     /// signal that is one kernel signal). A record signal has one entry per leaf, in leaf
     /// order (docs/decisions.md "Elaboration": one leaf per field).
     pub path: Vec<u32>,
-    /// An array signal's descriptor in instance data (`Ty::desc_size` bytes at this offset),
-    /// written by the elaborator from the signal's bounds in each instance: ports take their
-    /// actual's bounds. In `PackageIr::signals` the offset is in package data (written once
-    /// after the package's initialisation); the package entries of `UnitIr::signals` have none.
-    pub dope: Option<u32>,
+    /// The descriptor of the signal's whole type (`Ty::desc_size` of the second element
+    /// bytes at the offset in instance data), written by the elaborator from the signal's
+    /// bounds in each instance: ports take their actual's bounds. Array signals have one, and
+    /// signals with records whose type needs a descriptor have it on their first leaf entry.
+    /// In `PackageIr::signals` the offset is in package data (written once after the
+    /// package's initialisation); the package entries of `UnitIr::signals` have none.
+    pub dope: Option<(u32, TyId)>,
 }
 
 /// A generic or constant in instance data.

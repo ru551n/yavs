@@ -104,7 +104,7 @@ An installed binary finds `lib/` next to itself (#43).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`
   sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
-  architecture. Initializer-bound signals elaborate and run (#187, records with such fields: #215); elab
+  architecture. Initializer-bound signals elaborate and run (#187; records and arrays of records with such fields, #215); elab
   reports variable ports unsupported (#188).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
@@ -170,7 +170,8 @@ composites, multi-dimensional aggregates, composite constants, access types (`ne
 that call the body's methods (#204), file objects and textio,
 `force`/`release` of scalar signals, signals of arrays of records and of records with
 array-of-record fields (struct of arrays; whole, element, field, bit and slice targets,
-element sensitivity, resolution as a whole, #200), shared protected variables (created through `call_shared`),
+element sensitivity, resolution as a whole, #200; field and element bounds from the initial
+value, a partially constrained subtype or a port's actual, #215), shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`). Difftest: access 3/3,
 composite 6/6, force 3/3, protected 5/5, resolution 4/5, textio 2/3 at 1 and 4 threads.
 

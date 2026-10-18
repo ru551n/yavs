@@ -976,7 +976,19 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
     match o.class {
         ObjClass::Signal if ty::has_record(db, db.base(o.subtype)) => {
             // One kernel signal per leaf (field), in leaf order; an array of records has one
-            // per field over all its elements.
+            // per field over all its elements. The descriptor of the whole signal is in
+            // instance data (bounds from the initial value or the actual, rule 1).
+            let whole = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
+            let mut dope = if yavs_ir::Ty::needs_desc(pb.types(), whole) {
+                let Some(size) = yavs_ir::Ty::desc_size(pb.types(), whole) else {
+                    return Err(cx.ice(decl.span, "composite type without a descriptor size"));
+                };
+                let off = cx.inst_alloc(size as u32);
+                cx.sig_dopes.insert(d, (Space::Inst, off));
+                Some((off, whole))
+            } else {
+                None
+            };
             let mut out = Vec::new();
             for (path, st) in ty::leaves(db, o.subtype) {
                 let t = ty::lower(db, cx, pb, db.base(st), decl.span)?;
@@ -987,7 +999,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     ty: t,
                     init: None,
                     path: path.clone(),
-                    dope: None,
+                    dope: dope.take(),
                 });
                 out.push(crate::RecLeaf { path, st, sig });
             }
@@ -1003,7 +1015,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 };
                 let off = cx.inst_alloc(size as u32);
                 cx.sig_dopes.insert(d, (Space::Inst, off));
-                Some(off)
+                Some((off, t))
             } else {
                 None
             };
@@ -1408,7 +1420,7 @@ impl Fx<'_, '_> {
                         .ok_or_else(|| self.cx.ice(span, "array type without a descriptor size"))?;
                     let off = alloc(n as u32);
                     self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
-                    Some(off)
+                    Some((off, ty))
                 } else {
                     None
                 };

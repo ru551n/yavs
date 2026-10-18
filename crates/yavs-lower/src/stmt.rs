@@ -747,7 +747,9 @@ impl Fx<'_, '_> {
                     && format!("{:?}", l.path) == format!("{:?}", &lsp.path[..l.path.len()])
             })
         };
-        match exact.or_else(prefix) {
+        // The same prefix written again (`s(1) <= ..` twice): sem kept the first one.
+        let same = || self.drivers.iter().position(|l| self.db.same_lsp(l, lsp));
+        match exact.or_else(same).or_else(prefix) {
             Some(k) => Ok(self.driver_base.get(k).copied().unwrap_or(k as u32)),
             None => Err(self
                 .cx

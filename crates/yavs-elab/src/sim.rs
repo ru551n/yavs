@@ -582,7 +582,7 @@ impl Elaborated {
                 continue;
             };
             if let Some(off) = s.dope {
-                // The array's descriptor in this instance (ports: the actual's bounds).
+                // The signal's descriptor in this instance (ports: the actual's bounds).
                 write_desc(&rt.prog, s, &self.nets.obj(o).shape, off, &mut inst.data)?;
             }
             // The leaf the entry names (a record signal has one entry per field leaf).
@@ -605,33 +605,67 @@ impl Elaborated {
     }
 }
 
-/// Write the descriptor of array signal `s` of shape `shape` at `off` of `data`.
+/// Write the descriptor of signal `s` of shape `shape` at `off` of `data`: the IR
+/// descriptor layout of its type `ty` (`Ty::desc_size`): an array's dimensions, then its
+/// element's descriptor unless the type fixes it; a record's fields without a fixed one.
 fn write_desc(
     prog: &yavs_ir::Program,
     s: &yavs_lower::SignalIr,
     shape: &crate::hier::Shape,
-    off: u32,
+    (off, ty): (u32, yavs_ir::TyId),
     data: &mut [u8],
 ) -> Result<(), SimError> {
-    let mut desc = Vec::new();
-    let mut shape = shape;
-    while let crate::hier::Shape::Array { dims, elem, .. } = shape {
-        for b in dims {
-            let dir = i64::from(b.dir == yavs_sem::hir::Direction::Downto);
-            for x in [b.left, b.right, dir] {
-                desc.extend_from_slice(&x.to_le_bytes());
+    use crate::hier::Shape;
+    fn go(
+        types: &yavs_ir::IdVec<yavs_ir::TyId, yavs_ir::Ty>,
+        ty: yavs_ir::TyId,
+        shape: &Shape,
+        out: &mut Vec<u8>,
+    ) -> Option<()> {
+        match (types.get(ty)?, shape) {
+            (
+                yavs_ir::Ty::Array {
+                    elem, elem_desc, ..
+                },
+                Shape::Array { dims, elem: es, .. },
+            ) => {
+                for b in dims {
+                    let dir = i64::from(b.dir == yavs_sem::hir::Direction::Downto);
+                    for x in [b.left, b.right, dir] {
+                        out.extend_from_slice(&x.to_le_bytes());
+                    }
+                }
+                if elem_desc.is_none() {
+                    go(types, *elem, es, out)?;
+                }
             }
+            (yavs_ir::Ty::Record { fields }, Shape::Record { fields: fs, .. }) => {
+                for (f, (_, fs)) in fields.iter().zip(fs) {
+                    if f.desc.is_none() {
+                        go(types, f.ty, fs, out)?;
+                    }
+                }
+            }
+            (yavs_ir::Ty::Array { .. } | yavs_ir::Ty::Record { .. }, _) => return None,
+            _ => {}
         }
-        shape = elem;
+        Some(())
     }
-    let n = yavs_ir::Ty::desc_size(&prog.types, s.ty)
+    let mut desc = Vec::new();
+    go(&prog.types, ty, shape, &mut desc).ok_or_else(|| {
+        sim_err(format!(
+            "shape of signal `{}` does not match its type",
+            s.name
+        ))
+    })?;
+    let n = yavs_ir::Ty::desc_size(&prog.types, ty)
         .ok_or_else(|| sim_err(format!("no descriptor size for `{}`", s.name)))?
         as usize;
     let at = off as usize;
-    if desc.len() < n || data.len() < at + n {
+    if desc.len() != n || data.len() < at + n {
         return Err(sim_err(format!("descriptor of signal `{}`", s.name)));
     }
-    data[at..at + n].copy_from_slice(&desc[..n]);
+    data[at..at + n].copy_from_slice(&desc);
     Ok(())
 }
 

@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	1	:signal_composite_bounds:main	r.v = 1011 r.v'left = 0 r.n = 5 r4.v = 0000
+diag	note	0	1	:signal_composite_bounds:main	p(1) = 10 q'element'length = 4 m(2)(1) = 4
+diag	note	0	1	:signal_composite_bounds:main	cs(2).w = 11 o = 4 c2(1).w'length = 2 o2 = 0
+diag	note	1000000	0	:signal_composite_bounds:main	r.v = 0110 r.n = 7 r4.v = 0100
+diag	note	1000000	0	:signal_composite_bounds:main	p = 111100 q = 000110100101
+diag	note	1000000	0	:signal_composite_bounds:main	m = 8964
+diag	note	1000000	0	:signal_composite_bounds:main	cs(2).w = 01 o = 6 o2 = 2 events = 1
+diag	note	2000000	0	:signal_composite_bounds:main	q = 111110110101 events = 2

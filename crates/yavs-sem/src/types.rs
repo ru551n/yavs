@@ -1136,7 +1136,7 @@ impl Db {
                 let cands = match self.classify(scope, n) {
                     crate::expr::names::NameRes::Overloads(ds) => ds,
                     crate::expr::names::NameRes::One(d) => vec![d],
-                    other => return Err(self.report_name(scope, other)),
+                    other => return Err(self.report_name(scope, other, n.span, "a function name")),
                 };
                 let fs: Vec<DeclId> = cands
                     .into_iter()
@@ -1525,7 +1525,7 @@ impl Db {
             use crate::expr::names::NameRes;
             let r = self.classify(scope, prefix);
             if !matches!(r, NameRes::One(_) | NameRes::Overloads(_) | NameRes::Value) {
-                return Err(self.report_name(scope, r));
+                return Err(self.report_name(scope, r, prefix.span, "a name"));
             }
         }
         Ok(ts)

@@ -626,7 +626,7 @@ impl Db {
             NameRes::Value => {
                 return Err(self.unsupported(name.span, "aliases of selected object names", "S3"));
             }
-            other => return Err(self.report_name(scope, other)),
+            other => return Err(self.report_name(scope, other, name.span, "an aliased name")),
         };
         let sig = match sig {
             Some(s) => Some(self.signature_of(scope, s)?),

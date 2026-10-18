@@ -561,7 +561,7 @@ impl Db {
                     | NameRes::Uninstantiated(..)
                     | NameRes::Error
             ) {
-                self.report_name(scope, r);
+                self.report_name(scope, r, base.span, "a name");
                 return;
             }
             if let Some(g) = self.uninstantiated_of(&r) {
@@ -1025,7 +1025,9 @@ impl Db {
                     }
                     owners.iter().map(|o| o.0).collect()
                 }
-                other => return Err(self.report_name(scope, other)),
+                other => {
+                    return Err(self.report_name(scope, other, prefix.span, "a procedure name"));
+                }
             };
             let procs: Vec<crate::ids::DeclId> = ds
                 .iter()

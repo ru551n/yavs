@@ -1019,7 +1019,7 @@ impl Db {
         let cands = match self.classify(scope, n) {
             crate::expr::names::NameRes::One(d) => vec![d],
             crate::expr::names::NameRes::Overloads(ds) => ds,
-            other => return Err(self.report_name(scope, other)),
+            other => return Err(self.report_name(scope, other, n.span, "a function name")),
         };
         let fits: Vec<DeclId> = cands
             .into_iter()

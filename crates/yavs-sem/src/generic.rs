@@ -432,7 +432,14 @@ impl Db {
                         let cands = match self.classify(scope, n) {
                             NameRes::One(x) => vec![x],
                             NameRes::Overloads(xs) => xs,
-                            other => return Err(self.report_name(scope, other)),
+                            other => {
+                                return Err(self.report_name(
+                                    scope,
+                                    other,
+                                    n.span,
+                                    "a subprogram name",
+                                ));
+                            }
                         };
                         self.generic.defaults.insert(
                             d,
@@ -533,7 +540,9 @@ impl Db {
                     NameRes::Overloads(ds) => {
                         Want::Subprogram(ds.into_iter().map(|d| self.entity(d)).collect())
                     }
-                    other => return Err(self.report_name(scope, other)),
+                    other => {
+                        return Err(self.report_name(scope, other, n.span, "a subprogram name"));
+                    }
                 },
                 (_, other) => {
                     return Err(self.unsupported(
@@ -828,7 +837,7 @@ impl Db {
         let cands = match self.classify(scope, name) {
             NameRes::One(d) => vec![d],
             NameRes::Overloads(ds) => ds,
-            other => return Err(self.report_name(scope, other)),
+            other => return Err(self.report_name(scope, other, name.span, "a subprogram name")),
         };
         let want_fn = matches!(x.kind, ast::SubprogramKind::Function(_));
         let cands: Vec<DeclId> = cands
@@ -1554,7 +1563,9 @@ impl Db {
                 let cands = match self.classify(scope, n) {
                     NameRes::One(d) => vec![d],
                     NameRes::Overloads(ds) => ds,
-                    other => return Err(self.report_name(scope, other)),
+                    other => {
+                        return Err(self.report_name(scope, other, n.span, "a subprogram name"));
+                    }
                 };
                 let ok: Vec<DeclId> = cands
                     .iter()

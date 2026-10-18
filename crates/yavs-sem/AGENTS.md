@@ -82,6 +82,8 @@ Module-local decisions go in this section and in the matching sem.md section, LR
 - **No orphan HIR nodes, no unresolved calls.** `validate.rs` runs in debug builds and every
   corpus test; a poison left behind without a diagnostic becomes an ICE there (fuzz found
   three, #25, #18).
+- **`report_name`** never returns without a diagnostic: pass it the name's span and what the
+  caller needed; `One`/`Overloads` are the caller's to handle (reaching it is an ICE).
 - **Fail early.** Any error means `Err(Reported)`; never hand a partial HIR to elab. Never
   `unwrap_or(default)` on design data; `expect` only for yavs's own invariants.
 - **Determinism.** Diagnostics order must not depend on hash-map iteration; snapshots and the
@@ -123,7 +125,7 @@ cd fuzz && cargo +nightly fuzz run sem                            # see fuzz/AGE
   changes in another owner's module are small, additive, own commit, or a Request in
   `CONTRIBUTING.md` "Requests" (sections per requesting area, including "Requests from elab").
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:sem`):
-  false positives #23, #38, #157; bugs #18, #25, #27, #36, #41, #154,
+  false positives #23, #38, #157; bugs #25, #27, #36, #41, #154,
   #155; features #19, #22, #24, #28, #29, #30, #31, #32, #33, #34, #35; negative-suite xfail
   groups #45 to #54; driver-analysis perf #42; names/units leftovers #44;
   external verification library suites #115. Older unlabeled ones: #1, #2, #3 (sem false positives found by the

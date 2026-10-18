@@ -216,8 +216,16 @@ impl Db {
             })
     }
 
-    /// Report why a name has no usable interpretation.
-    pub(crate) fn report_name(&mut self, scope: ScopeId, r: NameRes) -> Reported {
+    /// Report why a name has no usable interpretation. `span` is the name's, `what` says what
+    /// the caller needed ("a function name"). `One` and `Overloads` are usable names: a caller
+    /// reaching this with one has a bug (ICE). `Value` is an object part where `what` was needed.
+    pub(crate) fn report_name(
+        &mut self,
+        scope: ScopeId,
+        r: NameRes,
+        span: Span,
+        what: &str,
+    ) -> Reported {
         match r {
             NameRes::Missing(i) => self.undeclared(scope, i),
             NameRes::Conflict(i, c) => self.conflict(i, &c),
@@ -225,7 +233,13 @@ impl Db {
             NameRes::NotInRegion(s, span, key) => self.not_in_region(s, span, key),
             NameRes::Error => Reported,
             NameRes::Uninstantiated(d, span) => self.uninstantiated(d, span),
-            NameRes::One(_) | NameRes::Overloads(_) | NameRes::Value => Reported,
+            NameRes::Value => self.error(
+                Diagnostic::error(diag::TYPE_MISMATCH, format!("expected {what}"))
+                    .with_primary(span, format!("not {what}")),
+            ),
+            NameRes::One(_) | NameRes::Overloads(_) => {
+                self.ice(span, "a usable name reached report_name")
+            }
         }
     }
 
@@ -1310,7 +1324,7 @@ impl Db {
                 let d = match self.classify(scope, prefix) {
                     NameRes::One(d) => d,
                     NameRes::Overloads(ds) => ds[0],
-                    r => return Expr::poison_reported(self, scope, r),
+                    r => return Expr::poison_reported(self, scope, r, prefix.span),
                 };
                 let stat = if a == PredefAttr::SimpleName {
                     Staticness::Locally
@@ -1479,7 +1493,7 @@ impl Db {
         let ps = match self.attr_prefixes(scope, prefix) {
             Ok(ps) => ps,
             Err(r) => {
-                self.report_name(scope, r);
+                self.report_name(scope, r, prefix.span, "a name with attributes");
                 return true;
             }
         };
@@ -1672,8 +1686,8 @@ impl Db {
 }
 
 impl Expr {
-    fn poison_reported(db: &mut Db, scope: ScopeId, r: NameRes) -> ExprId {
-        db.report_name(scope, r);
+    fn poison_reported(db: &mut Db, scope: ScopeId, r: NameRes, span: Span) -> ExprId {
+        db.report_name(scope, r, span, "a named entity");
         db.poison.expr
     }
 

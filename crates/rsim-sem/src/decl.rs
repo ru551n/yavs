@@ -638,15 +638,27 @@ impl Db {
         if s.return_ident.is_some() {
             return Err(self.unsupported(s.span, "named return values", "S7"));
         }
-        let mangled =
-            rsim_syntax::Symbol::intern(&self.mangle_subprogram(scope, &name, &params, ret));
+        let mangled = rsim_syntax::Symbol::intern(&crate::mangle::subprogram(
+            self,
+            scope,
+            &name,
+            &params.iter().map(|p| p.subtype).collect::<Vec<_>>(),
+            ret,
+        ));
+        // std packages have no bodies: their bodiless subprograms are natives (NATIVE.md section 1).
+        let body = match self.std_package_of(scope) {
+            Some((pkg, pt)) => Body::Native(rsim_syntax::Symbol::intern(
+                &crate::mangle::native_symbol(&pkg, pt.as_deref(), s),
+            )),
+            None => Body::Pending,
+        };
         self.decls[decl].kind = DeclKind::Subprogram(Subprogram {
             kind,
             params: params.into(),
             ret,
             generics: None,
             scope: Some(pscope),
-            body: Body::Pending,
+            body,
             mangled,
         });
         Ok(decl)
@@ -722,56 +734,25 @@ impl Db {
         Ok(out)
     }
 
-    /// `<region>.<name>(<param types>)<ret>` (sem.md 5.3), by mangled base type names.
-    // ponytail: interim until mangle.rs (owner: implicit) provides the full scheme.
-    fn mangle_subprogram(
-        &self,
-        scope: ScopeId,
-        name: &Designator,
-        params: &[Param],
-        ret: Option<SubtypeId>,
-    ) -> String {
-        let region = self.region_path(scope);
-        let tys: Vec<String> = params
-            .iter()
-            .map(|p| self.type_path(self.base(p.subtype)))
-            .collect();
-        let mut s = format!("{region}.{name}({})", tys.join(","));
-        if let Some(r) = ret {
-            s += &self.type_path(self.base(r));
-        }
-        s
-    }
-
-    /// `lib.unit[.nested]` of a region, by its owners.
-    pub(crate) fn region_path(&self, scope: ScopeId) -> String {
-        let mut parts = Vec::new();
-        let mut cur = Some(scope);
-        while let Some(s) = cur {
-            if let Some(o) = self.scopes[s].owner {
-                match self.decls[o].kind {
-                    DeclKind::Unit(u) => {
-                        let unit = &self.units[u];
-                        parts.push(unit.name.key.to_string());
-                        parts.push(self.libs[unit.lib].name.key.to_string());
-                        break;
-                    }
-                    _ => parts.push(self.decls[o].name.key().to_string()),
-                }
+    /// `(package, protected type)` when `scope` is the declaration of a package of
+    /// library `std` or of a protected type in one.
+    fn std_package_of(&self, scope: ScopeId) -> Option<(String, Option<String>)> {
+        let (pkg_scope, pt) = match self.scopes[scope].kind {
+            crate::scope::ScopeKind::Package => (scope, None),
+            crate::scope::ScopeKind::Protected => {
+                let owner = self.scopes[scope].owner?;
+                (
+                    self.scopes[scope].parent?,
+                    Some(self.decls[owner].name.key().to_string()),
+                )
             }
-            cur = self.scopes[s].parent;
-        }
-        parts.reverse();
-        parts.join(".")
-    }
-
-    fn type_path(&self, t: TypeId) -> String {
-        let td = &self.types[t];
-        format!(
-            "{}.{}",
-            self.region_path(self.decls[td.decl].scope),
-            td.name.key
-        )
+            _ => return None,
+        };
+        let DeclKind::Unit(u) = self.decls[self.scopes[pkg_scope].owner?].kind else {
+            return None;
+        };
+        let unit = &self.units[u];
+        (self.libs[unit.lib].name.key.as_str() == "std").then(|| (unit.name.key.to_string(), pt))
     }
 }
 

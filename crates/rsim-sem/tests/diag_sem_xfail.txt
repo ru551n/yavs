@@ -140,7 +140,6 @@ hom/incomplete_type_twice.vhd
 hom/port_vs_generic.vhd
 hom/procedure_differs_only_in_mode.vhd
 hom/process_label_twice.vhd
-hom/record_element_twice.vhd
 hom/shadow_in_subprogram_ok.vhd
 hom/signal_and_variable_same_name.vhd
 hom/subprogram_body_twice.vhd
@@ -149,7 +148,6 @@ lit/physical_unit_unknown.vhd
 lit/string_char_not_in_element_type_std_logic.vhd
 lit/string_char_not_in_type.vhd
 lit/string_lit_for_non_char_array.vhd
-mix/env_2008_names_ok.vhd
 mix/env_2019_unit_used_via_selected_name.vhd
 mix/env_localtime_call_in_2008_file.vhd
 mix/env_tool_name_in_2008_file.vhd
@@ -159,7 +157,6 @@ mix/integer_range_attribute_2008.vhd
 mix/natural_high_in_2008_file.vhd
 mix/natural_range_in_2008_file.vhd
 mix/reflection_library_unit_in_2008_file.vhd
-mix/valid_2008_unchanged_ok.vhd
 ovl/ambiguous_aggregate_unqualified.vhd
 ovl/ambiguous_call_by_return_type.vhd
 ovl/ambiguous_character_literal.vhd
@@ -231,7 +228,6 @@ typ/access_to_unconstrained_new.vhd
 typ/array_index_not_discrete.vhd
 typ/bad_resolution_function_result.vhd
 typ/constant_unconstrained_needs_value.vhd
-typ/constraint_on_record_with_index.vhd
 typ/dimension_constrained_twice.vhd
 typ/dimension_constrained_twice_subtype.vhd
 typ/enum_range_constraint_wrong_type.vhd
@@ -239,7 +235,6 @@ typ/file_of_access.vhd
 typ/file_of_file.vhd
 typ/file_of_protected.vhd
 typ/file_of_record_with_access.vhd
-typ/incomplete_access_ok.vhd
 typ/incomplete_not_completed.vhd
 typ/incomplete_used_as_object.vhd
 typ/index_type_mismatch.vhd

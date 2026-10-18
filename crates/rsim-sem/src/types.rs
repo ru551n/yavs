@@ -344,8 +344,8 @@ impl Db {
                     td.span,
                 )
             }
-            ast::TypeDef::Record { .. } => {
-                return Err(self.unsupported(td.span, "record types", "S3"));
+            ast::TypeDef::Record { elements, .. } => {
+                self.record_type(scope, decl, name, elements, td.span)?
             }
             ast::TypeDef::Protected(pt) => {
                 return self.protected_decl(scope, decl, name, pt, td.span);
@@ -370,8 +370,8 @@ impl Db {
             let (fs, bs) = (self.types[old].first_subtype, self.types[old].base_subtype);
             self.subtypes[fs].base = old;
             self.subtypes[bs].base = old;
-            self.declare_implicit_ops(old, scope);
             self.register_well_known_type(scope, name, old);
+            self.declare_implicit_ops(old, scope);
             return Ok(());
         }
         self.decls[decl].kind = DeclKind::Type(ty);
@@ -386,8 +386,8 @@ impl Db {
                 self.declare(scope, l);
             }
         }
-        self.declare_implicit_ops(ty, scope);
         self.register_well_known_type(scope, name, ty);
+        self.declare_implicit_ops(ty, scope);
         Ok(())
     }
 
@@ -460,6 +460,80 @@ impl Db {
         self.check_protected_body_items(b)?;
         self.decls_in(bscope, &b.decls);
         self.check_protected_complete(t, span)
+    }
+
+    /// `type R is record ... end record;` (5.3.3). Element names are reachable only by selection.
+    fn record_type(
+        &mut self,
+        scope: ScopeId,
+        decl: DeclId,
+        name: Ident,
+        elements: &[ast::ElementDecl],
+        span: Span,
+    ) -> Result<TypeId, Reported> {
+        let ty = self.types.next_id();
+        let mut elems: Vec<RecordElem> = Vec::new();
+        let mut failed = false;
+        for e in elements {
+            let st = match self.subtype_indication(scope, &e.subtype) {
+                Ok(st) => st,
+                Err(_) => {
+                    failed = true;
+                    self.poison.subtype
+                }
+            };
+            if self
+                .check_not_protected("record element", st, e.subtype.span)
+                .is_err()
+            {
+                failed = true;
+            }
+            for &n in &e.names {
+                if let Some(prev) = elems.iter().find(|x| x.name.key == n.key) {
+                    let prev = prev.name.span;
+                    self.report(
+                        Diagnostic::error(
+                            diag::REDECLARED,
+                            format!("record element `{}` is declared twice", n.text),
+                        )
+                        .with_primary(n.span, "redeclared here")
+                        .with_secondary(prev, "first declared here"),
+                    );
+                    failed = true;
+                    continue;
+                }
+                elems.push(RecordElem {
+                    name: n,
+                    subtype: st,
+                });
+            }
+        }
+        if failed {
+            return Err(Reported);
+        }
+        let got = self.new_type(
+            decl,
+            name,
+            false,
+            TypeKind::Record {
+                elems: elems.into(),
+            },
+            Constraint::None,
+            span,
+        );
+        debug_assert_eq!(got, ty);
+        Ok(got)
+    }
+
+    /// The index of record element `key` of record type `t`.
+    pub fn record_elem(&self, t: TypeId, key: Symbol) -> Option<u32> {
+        match &self.types[t].kind {
+            TypeKind::Record { elems } => elems
+                .iter()
+                .position(|e| e.name.key == key)
+                .map(|i| i as u32),
+            _ => None,
+        }
     }
 
     fn enum_type(
@@ -1277,6 +1351,3 @@ fn resolution_span(r: &ast::Resolution) -> Span {
         ast::Resolution::Record(v) => v.first().map_or(Span::default(), |(i, _)| i.span),
     }
 }
-
-#[allow(dead_code)]
-fn _symbol(_: Symbol) {}

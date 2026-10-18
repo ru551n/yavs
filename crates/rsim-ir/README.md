@@ -32,3 +32,29 @@ textual dump.
   files and `Elab*` instructions (their semantics belong to `rsim-elab`).
 - `InstData` gains child instances and package links when elaboration needs them.
 - Foreign arrays/records/access marshalling (scalars and scalar `out` work).
+
+## Requests
+
+From `rsim-lower` (2026-10-18), found running `tests/corpus/{scalar,arith,process,report}`
+through lowering and the interpreter (`crates/rsim-lower/tests/corpus.rs`):
+
+1. **Thunks with a value.** The verifier rejects `Ret { v: Some(_) }` in a `FuncKind::Thunk`,
+   but a thunk evaluates an expression. Lowering uses parameterless `Function`s until thunks may
+   return their cell.
+2. **`rsim.attr.value`** is accepted by `Runtime::new` but not implemented (`scalar/*_attrs`).
+   Lowering passes the string as the address of a fat pair `[data, dope]`, `NativeRef::ty` = the
+   prefix's base type.
+3. **Report at the stop severity.** A `failure` report is committed but the process keeps
+   running to its next suspension, so `report/failure_exit` prints a report NVC never reaches.
+4. **NVC-compatible check texts** (difftest is strict for rsim): range checks read
+   `value 101 outside of PCT range 0 to 100 for variable P` (subtype name, then the object),
+   real to integer `value 3e10 outside of INTEGER range ...`, integer overflow
+   `result of 2147483647 + 1 cannot be represented as INTEGER`, division `division by zero`.
+   The overflow text needs the operands and the type in the instruction: a checked `Bin` with a
+   result range (or a `CheckKind::Overflow` taking `a`, `b` and the op) would do. Lowering emits
+   `Bin` then `Check { Range }` against the base type today.
+5. **Range checks on reals**: `Check` compares i64 only, so real subtype constraints are not
+   checked yet.
+6. **`to_ostring`/`to_hstring` symbols**: sem names them `rsim.implicit.to_hstring.<type>`,
+   NATIVE.md lists them under the `to_string` family, so `Runtime::new` rejects the program
+   (`scalar/string_attrs`). One of the two needs to change (sem's `mangle.rs` or NATIVE.md).

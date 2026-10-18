@@ -473,9 +473,27 @@ impl Db {
     /// 9.2.9: a condition of a type other than BOOLEAN goes through a visible `??`.
     fn implicit_condition(&mut self, scope: ScopeId, e: &ast::Expr, is: &[Interp]) -> ExprId {
         let boolean = self.well_known.boolean;
-        let mut found = Vec::new();
-        if let Visible::Overloads(ds) = self.lookup(scope, operator_key("??")) {
-            for d in ds {
+        let mut found: Vec<(DeclId, TypeId)> = Vec::new();
+        let key = operator_key("??");
+        let visible = match self.lookup(scope, key) {
+            Visible::Overloads(ds) => ds,
+            _ => Vec::new(),
+        };
+        // 9.2.9 does not say where the `??` comes from. Permissive (lrm-checks.md L53): when
+        // none is visible, take the one declared next to the condition's type, so
+        // `use ieee.std_logic_1164.std_ulogic` alone is enough.
+        let beside: Vec<DeclId> = is
+            .iter()
+            .flat_map(|i| {
+                let sc = self.decls[self.types[i.ty].decl].scope;
+                self.scopes[sc].names.get(&key).cloned().unwrap_or_default()
+            })
+            .collect();
+        for pass in [visible, beside] {
+            if !found.is_empty() {
+                break;
+            }
+            for d in pass {
                 let Some(s) = self.decls[self.entity(d)].kind.subprogram() else {
                     continue;
                 };
@@ -486,7 +504,7 @@ impl Db {
                 if is
                     .iter()
                     .any(|i| self.cost(i, Expected::Type(pt)).is_some())
-                    && !found.iter().any(|(_, t)| *t == pt)
+                    && !found.iter().any(|(f, _)| self.entity(*f) == self.entity(d))
                 {
                     found.push((d, pt));
                 }
@@ -734,7 +752,7 @@ impl Db {
                     }
                 }
                 if let NameRes::Overloads(ds) = self.classify(scope, prefix) {
-                    self.no_function(prefix, args, &ds);
+                    self.no_function(scope, prefix, args, &ds);
                     return;
                 }
                 self.report(
@@ -796,13 +814,42 @@ impl Db {
             Expected::Composite => "a composite type".into(),
             Expected::Any => "a value".into(),
         };
-        self.report(
-            Diagnostic::error(
-                diag::TYPE_MISMATCH,
-                format!("expected {want}, found {}", found.join(" or ")),
-            )
-            .with_primary(e.span, format!("expected {want}")),
+        let mut d = Diagnostic::error(
+            diag::TYPE_MISMATCH,
+            format!("expected {want}, found {}", found.join(" or ")),
+        )
+        .with_primary(e.span, format!("expected {want}"));
+        if let ([i], Expected::Type(t)) = (is, exp)
+            && let Some(h) = self.conversion_hint(i.ty, t)
+        {
+            d = d.with_help(h);
+        }
+        self.report(d);
+    }
+
+    /// 8.3: how to turn a value of type `from` into the expected type `to`: a type
+    /// conversion between closely related types (9.3.6), `to_unsigned`/`to_signed` from an
+    /// integer.
+    fn conversion_hint(&self, from: TypeId, to: TypeId) -> Option<String> {
+        // ponytail: keyed on the numeric_std/numeric_bit names like `vector_integer_hint`;
+        // `UNRESOLVED_UNSIGNED` is shown as the subtype `unsigned` users write.
+        let name = self.type_name(to);
+        let lower = name.to_ascii_lowercase();
+        let mark = match lower.strip_prefix("unresolved_") {
+            Some(m) => m.to_string(),
+            None if name == name.to_ascii_uppercase() => lower.clone(),
+            None => name,
+        };
+        let integer = matches!(
+            self.types[from].kind,
+            TypeKind::Integer | TypeKind::UniversalInteger
         );
+        if integer && matches!(mark.as_str(), "unsigned" | "signed") {
+            return Some(format!("use `to_{mark}(x, n)` to convert"));
+        }
+        let composite = |t: TypeId| matches!(self.types[t].kind, TypeKind::Array { .. });
+        (composite(from) && self.closely_related(from, to))
+            .then(|| format!("use `{mark}(x)` to convert"))
     }
 
     /// Calls that are ambiguous only between implicit operations and explicit
@@ -1165,7 +1212,7 @@ impl Db {
                     }
                 }
                 if let [p] = one[..]
-                    && let Some(r) = self.assoc_mismatch(p, args, callee_span)
+                    && let Some(r) = self.assoc_mismatch(scope, p, args, callee_span)
                 {
                     return Err(r);
                 }
@@ -1290,7 +1337,13 @@ impl Db {
 
     /// `f(args)` matching no overload `ds` of `f` (E1301), or the association error
     /// of the only function `f` (E1100, E1301, E1310, E1311).
-    fn no_function(&mut self, prefix: &ast::Name, args: &[ast::AssocElem], ds: &[DeclId]) {
+    fn no_function(
+        &mut self,
+        scope: ScopeId,
+        prefix: &ast::Name,
+        args: &[ast::AssocElem],
+        ds: &[DeclId],
+    ) {
         let mut fns: Vec<DeclId> = Vec::new();
         for &d in ds {
             let e = self.entity(d);
@@ -1307,7 +1360,7 @@ impl Db {
             return;
         }
         if let [f] = fns[..]
-            && self.assoc_mismatch(f, args, prefix.span).is_some()
+            && self.assoc_mismatch(scope, f, args, prefix.span).is_some()
         {
             return;
         }
@@ -1337,6 +1390,7 @@ impl Db {
     /// why. `None` when it fits, so only the argument types are wrong.
     fn assoc_mismatch(
         &mut self,
+        scope: ScopeId,
         d: DeclId,
         args: &[ast::AssocElem],
         callee: Span,
@@ -1357,14 +1411,43 @@ impl Db {
         let d = match assoc_map(&keys, args) {
             Ok(map) => {
                 // No actual, or `open` (6.5.6.2), for a formal without a default.
-                let (p, m) = s.params.iter().zip(&map).find(|(p, m)| {
+                let missing = s.params.iter().zip(&map).find(|(p, m)| {
                     p.default.is_none()
                         && match m {
                             Slot::None => true,
                             Slot::Whole(a) => matches!(args[*a].actual, ast::Actual::Open(_)),
                             Slot::Parts(_) => false,
                         }
-                })?;
+                });
+                let Some((p, m)) = missing else {
+                    // Only an actual's type is wrong: report it at that actual (E1300).
+                    let typed: Vec<(TypeId, usize)> = s
+                        .params
+                        .iter()
+                        .zip(&map)
+                        .filter_map(|(p, m)| match m {
+                            Slot::Whole(a) => Some((self.base(p.subtype), *a)),
+                            _ => None,
+                        })
+                        .collect();
+                    for (ft, a) in typed {
+                        let ast::Actual::Expr(x) = &args[a].actual else {
+                            continue;
+                        };
+                        // Only a name of an object has one fixed type to blame; an overloaded
+                        // literal or call in the actual stays E1301 at the callee.
+                        let c = self.cands(scope, x);
+                        let fixed = matches!(&c, CandSet::Types(is) if !is.is_empty()
+                            && is.iter().all(|i| matches!(i.via,
+                                Via::Object | Via::Index(_) | Via::Slice(_) | Via::Field(..)
+                                | Via::Deref(_))));
+                        if fixed && self.best_cost(&c, Expected::Type(ft)).is_none() {
+                            self.resolve(scope, x, Expected::Type(ft));
+                            return Some(crate::Reported);
+                        }
+                    }
+                    return None;
+                };
                 let how = if *m != Slot::None {
                     "is open"
                 } else {

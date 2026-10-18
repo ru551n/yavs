@@ -1052,8 +1052,14 @@ impl Db {
                     b.contains(&ui.unwrap_or(self.poison.ty)),
                 ) {
                     ([t], [u], _, _) if t == u => Some(*t),
-                    ([t], [], _, true) => Some(*t),
-                    ([], [t], true, _) => Some(*t),
+                    // Only to an integer type (9.3.6 implicit conversion); else the universal
+                    // bound makes the range `integer` and the other bound is the mismatch.
+                    ([t], [], _, true) | ([], [t], true, _)
+                        if matches!(self.types[*t].kind, TypeKind::Integer) =>
+                    {
+                        Some(*t)
+                    }
+                    ([_], [], _, true) | ([], [_], true, _) => self.well_known.integer,
                     _ if both.len() > 1 => None,
                     _ => None,
                 }

@@ -61,6 +61,12 @@ An installed binary finds `lib/` next to itself (#43).
   `std.reflection`) gets `E1007` and does not see such declarations through use clauses;
   `'left`/`'right`/`'high`/`'low` of an INTEGER subtype whose bound differs (64-bit INTEGER) get
   `W1008` once per construct.
+- Expression typing and conversions (#48): type conversions between types that are not closely
+  related (`E1350`, 9.3.6), actuals of the wrong class for variable, signal and file parameters
+  (`E1360`), an object actual of the wrong type for the only candidate (`E1300` at the actual),
+  a universal bound against a non-integer one (`E1300` at that bound), ambiguous `??` (`E1341`),
+  `??` found next to the condition's type when none is visible (L53), and conversion helps
+  (`unsigned(x)`, `to_unsigned(x, n)`) on type mismatches.
 - Object types: constants, signals, generics, ports and constant or signal parameters of an access
   or file type (or containing one) are `E1223` (#198; constant parameters are legal in 2019; 2008 protected method profiles too, #212); protected ones `E1905`.
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms

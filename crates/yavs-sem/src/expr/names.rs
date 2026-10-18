@@ -1323,6 +1323,8 @@ impl Db {
         let formals: Vec<(Symbol, SubtypeId)> =
             s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
         let decls: Vec<Option<DeclId>> = s.params.iter().map(|p| p.decl).collect();
+        let classes: Vec<(crate::decl::ObjClass, crate::hir::Mode, Ident)> =
+            s.params.iter().map(|p| (p.class, p.mode, p.name)).collect();
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
         let mut hargs = Vec::with_capacity(formals.len());
@@ -1352,6 +1354,10 @@ impl Db {
                     ast::Actual::Expr(x) => {
                         let id = self.resolve_in(scope, x, *ft);
                         stat = stat.min(self.exprs[id].stat);
+                        let (class, mode, name) = &classes[k];
+                        if !self.check_actual_class(*class, mode, *name, id) {
+                            return None;
+                        }
                         Actual::Expr(id)
                     }
                     ast::Actual::Open(_) => Actual::Open,
@@ -1369,6 +1375,82 @@ impl Db {
             });
         }
         Some((e, hargs.into(), stat))
+    }
+
+    /// 4.2.2.1 (E1360): the actual of a variable, signal or file parameter is a name of an
+    /// object of that class; a constant parameter takes any expression. `false` when reported.
+    fn check_actual_class(
+        &mut self,
+        class: crate::decl::ObjClass,
+        mode: &crate::hir::Mode,
+        formal: Ident,
+        id: ExprId,
+    ) -> bool {
+        use crate::decl::ObjClass as C;
+        use crate::hir::ObjRoot;
+        use crate::lsp::NameRoot;
+        if class == C::Constant || self.is_poison_expr(id) {
+            return true;
+        }
+        // A type conversion of an object name is still that object (6.5.7.1).
+        let mut e = id;
+        while let ExprKind::Conv { operand, .. } = self.exprs[e].kind {
+            e = operand;
+        }
+        let (actual, name) = match self.name_root(e) {
+            None => (None, None),
+            Some(NameRoot::Deref) => (Some(C::Variable), None),
+            Some(NameRoot::Obj(ObjRoot::ImplicitSignal(d))) => (Some(C::Signal), Some(d)),
+            Some(NameRoot::Obj(ObjRoot::External(x))) => (
+                Some(match self.externals[x].class {
+                    ast::ExternalClass::Constant => C::Constant,
+                    ast::ExternalClass::Signal => C::Signal,
+                    ast::ExternalClass::Variable => C::Variable,
+                }),
+                None,
+            ),
+            Some(NameRoot::Obj(ObjRoot::Decl(d))) => match &self.decls[d].kind {
+                DeclKind::Object(o) => (Some(o.class), Some(d)),
+                DeclKind::Error => return true,
+                _ => (None, None),
+            },
+        };
+        let fits = matches!(
+            (class, actual),
+            (C::Variable, Some(C::Variable | C::SharedVariable))
+                | (C::Signal, Some(C::Signal))
+                | (C::File, Some(C::File))
+        );
+        if fits {
+            return true;
+        }
+        let word = |c: C| match c {
+            C::Constant => "constant",
+            C::Signal => "signal",
+            C::Variable => "variable",
+            C::SharedVariable => "shared variable",
+            C::File => "file",
+        };
+        let target = match (class, mode) {
+            (C::Variable, crate::hir::Mode::Out) => "`out` parameter".to_string(),
+            (C::Variable, crate::hir::Mode::Inout) => "`inout` parameter".to_string(),
+            _ => format!("{} parameter", word(class)),
+        };
+        let what = match (actual, name) {
+            (Some(c), Some(d)) => format!("{} `{}`", word(c), self.decls[d].name),
+            (Some(c), None) => word(c).to_string(),
+            (None, _) => "an expression".to_string(),
+        };
+        let span = self.exprs[id].span;
+        self.report(
+            Diagnostic::error(
+                diag::CLASS_MISUSE,
+                format!("{what} cannot be the actual for {target} `{}`", formal.text),
+            )
+            .with_primary(span, format!("not a {}", word(class)))
+            .with_help(format!("pass the name of a {}", word(class))),
+        );
+        false
     }
 
     fn build_conversion(
@@ -1389,6 +1471,24 @@ impl Db {
             return Expr::poison_of(self, span, "a type conversion takes one operand");
         };
         let operand = self.resolve(scope, x, Expected::Any);
+        let from = self.base(self.exprs[operand].subtype);
+        let to = self.base(st);
+        if !self.is_poison_expr(operand) && !self.closely_related(from, to) {
+            let (f, t) = (self.type_name(from), self.type_name(to));
+            self.report(
+                Diagnostic::error(
+                    diag::BAD_CONVERSION,
+                    format!("cannot convert `{f}` to `{t}`"),
+                )
+                .with_primary(span, "these types are not closely related")
+                .with_note(
+                    "9.3.6: only abstract numeric types, array types with the same \
+                     dimensionality and closely related element types, and (2019) records with \
+                     the same element names convert to each other",
+                ),
+            );
+            return self.poison.expr;
+        }
         let stat = self.exprs[operand].stat;
         let id = self.add_expr(Expr {
             kind: ExprKind::Conv { to: st, operand },
@@ -1401,6 +1501,49 @@ impl Db {
             self.fold_into(id);
         }
         id
+    }
+
+    /// 9.3.6: a type is closely related to itself; abstract numeric types to each other;
+    /// array types with the same dimensionality and closely related element types; in 2019
+    /// record types with the same element names whose types are closely related.
+    /// Incomplete, generic and poison types are not checked here.
+    pub(crate) fn closely_related(&self, a: TypeId, b: TypeId) -> bool {
+        use crate::types::TypeKind as K;
+        let numeric = |k: &K| {
+            matches!(
+                k,
+                K::Integer | K::Floating | K::UniversalInteger | K::UniversalReal
+            )
+        };
+        let (ka, kb) = (&self.types[a].kind, &self.types[b].kind);
+        match (ka, kb) {
+            _ if a == b => true,
+            (K::Error | K::Incomplete { .. } | K::Generic { .. }, _)
+            | (_, K::Error | K::Incomplete { .. } | K::Generic { .. }) => true,
+            (
+                K::Array {
+                    indexes: ia,
+                    elem: ea,
+                },
+                K::Array {
+                    indexes: ib,
+                    elem: eb,
+                },
+            ) => ia.len() == ib.len() && self.closely_related(self.base(*ea), self.base(*eb)),
+            // 2019 (LCS-2016-075): records with the same element names, closely related types.
+            (K::Record { elems: ra }, K::Record { elems: rb })
+                if self.file_rev() >= crate::LangRev::Vhdl2019 =>
+            {
+                ra.len() == rb.len()
+                    && ra.iter().all(|x| {
+                        rb.iter().any(|y| {
+                            x.name.key == y.name.key
+                                && self.closely_related(self.base(x.subtype), self.base(y.subtype))
+                        })
+                    })
+            }
+            _ => numeric(ka) && numeric(kb),
+        }
     }
 
     /// Predefined attributes: of a type mark (`T'high`, `T'pos(x)`, ...) or of

@@ -1,15 +1,4 @@
 # Files of tests/diag/sem expected to fail until their slice lands (see diag_sem.rs).
-expr/condition_ambiguous_ops.vhd
-expr/condition_std_logic_type_only_ok.vhd
-expr/conversion_array_different_elements.vhd
-expr/conversion_integer_to_array.vhd
-expr/conversion_unrelated.vhd
-expr/mismatch_help_integer_to_vector.vhd
-expr/mismatch_help_vector_to_unsigned.vhd
-expr/mismatch_in_subprogram_arg_label.vhd
-expr/out_parameter_actual_constant.vhd
-expr/signal_param_actual_variable.vhd
-expr/type_mismatch_in_range.vhd
 prot/assign_protected_variable.vhd
 prot/body_method_missing.vhd
 prot/equality_on_protected.vhd

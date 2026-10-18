@@ -1356,3 +1356,29 @@ fn top_level_generic_type_has_no_actual() {
     let got: Vec<&str> = errs.iter().map(|d| d.code).collect();
     assert_eq!(got, [codes::GENERIC_NO_VALUE]);
 }
+
+/// `others` in a configuration leaves out the instances earlier component configurations
+/// name, so it may bind an instance next to one a specification binds (#75).
+#[test]
+fn configuration_others_after_incremental_binding() {
+    let src = "entity inv is generic (W : natural := 1); end;
+      architecture rtl of inv is signal s : bit_vector(W - 1 downto 0); begin end;
+      entity top is end;
+      architecture t of top is
+        component inv is generic (W : natural := 1); end component;
+        for u2 : inv use entity work.inv(rtl) generic map (W => 7);
+      begin
+        u1 : inv;
+        u2 : inv;
+        u3 : inv;
+      end;
+      configuration cfg of top is
+        for t
+          for u2 : inv generic map (W => 5); end for;
+          for others : inv use entity work.inv(rtl) generic map (W => 2); end for;
+        end for;
+      end;";
+    let (_, e) = elab("others_cfg", src, "cfg", &[]);
+    let lens: Vec<u32> = e.nets.leaves.iter().map(|l| l.ty.len).collect();
+    assert_eq!(lens, [2, 5, 2]);
+}

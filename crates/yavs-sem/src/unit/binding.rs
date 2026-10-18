@@ -14,7 +14,7 @@ use crate::hir::{
     Actual, Arg, Binding, BlockConfig, BlockTarget, ComponentConfig, ConfigItem, EntityAspect,
     ExprKind, GenSelect, InstTarget, InstanceSel, Mode, ObjRoot, StmtKind, UnitHir,
 };
-use crate::ids::{DeclId, LibId, ScopeId, SubtypeId, UnitId};
+use crate::ids::{DeclId, LibId, ScopeId, StmtId, SubtypeId, UnitId};
 use crate::loader::{LibSource, UnitKey, UnitKind, UnitSlot};
 use crate::scope::{ScopeKind, UseItem, Visible};
 
@@ -1575,7 +1575,20 @@ impl Db {
                     }
                 }
                 ast::ConfigItem::Component(c) => {
-                    if let Some(c) = errs.keep(self.component_config(scope, regions, named_in, c)) {
+                    // Instances named by earlier component configurations (for `others`).
+                    let named: Vec<StmtId> = out
+                        .iter()
+                        .filter_map(|it| match it {
+                            ConfigItem::Component(ComponentConfig {
+                                instances: InstanceSel::Labels(ls),
+                                ..
+                            }) => Some(ls.iter().copied()),
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect();
+                    let c = self.component_config(scope, regions, named_in, &named, c);
+                    if let Some(c) = errs.keep(c) {
                         out.push(ConfigItem::Component(c));
                     }
                 }
@@ -1710,6 +1723,7 @@ impl Db {
         scope: ScopeId,
         regions: &[ScopeId],
         named_in: ScopeId,
+        named: &[StmtId],
         c: &ast::ComponentConfig,
     ) -> Result<ComponentConfig, Reported> {
         let comp = self.component_of_spec(scope, &c.spec)?;
@@ -1717,7 +1731,7 @@ impl Db {
             self.instance_sel(regions, &Labels::of(&c.spec.instances), comp, named_in)?;
         // An earlier configuration specification of the same instances (7.3.2.?):
         // incremental binding may add maps but not rebind.
-        let spec = self.spec_for(regions, &instances, comp);
+        let spec = self.spec_for(regions, &instances, named, comp);
         let bound = spec.as_ref().and_then(|a| match a {
             Some(EntityAspect::Entity { unit, .. }) => Some(*unit),
             _ => None,
@@ -1793,6 +1807,7 @@ impl Db {
         &self,
         regions: &[ScopeId],
         sel: &InstanceSel,
+        named: &[StmtId],
         comp: DeclId,
     ) -> Option<Option<EntityAspect>> {
         for r in regions {
@@ -1803,6 +1818,10 @@ impl Db {
                 let covers = match (&s.instances, sel) {
                     (InstanceSel::Labels(a), InstanceSel::Labels(b)) => {
                         a.iter().any(|x| b.contains(x))
+                    }
+                    // `others` leaves out the instances earlier component configurations name.
+                    (InstanceSel::Labels(a), InstanceSel::Others) => {
+                        a.iter().any(|x| !named.contains(x))
                     }
                     _ => true,
                 };

@@ -466,6 +466,11 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   with no binding indication): accepted, the default binding (7.3.3) supplies the entity. LRM
   3.4.3 does not say whether an implicit binding makes the instance "fully bound"; the third reference simulator accepts,
   the reference simulators reject, so the permissive reading applies. With no entity to bind it is `E1704`.
+- **`others` in a component configuration** (7.3.1) leaves out the instances that earlier
+  component configurations of the same block configuration name, so `for others : c use entity
+  ...` next to `for u2 : c ... end for;` does not rebind a `u2` bound by a configuration
+  specification (`E1702` only when an instance it covers is spec-bound). The second reference
+  simulator agrees; the reference simulator checks only at elaboration (#75).
 
 ## Reflection: TIME values in mirrors (user, 2026-10-18)
 

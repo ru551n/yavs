@@ -1199,17 +1199,30 @@ impl Db {
         o: &ast::InterfaceObject,
         kind: SubprogramKind,
     ) -> Result<Vec<Param>, crate::Reported> {
+        // `signal p : view v [of t]` (2019 4.2.2.3): the view gives the element modes.
+        let mut view_subtype = None;
         let mode = match &o.mode {
             None | Some(ast::Mode::In) => Mode::In,
             Some(ast::Mode::Out) => Mode::Out,
             Some(ast::Mode::Inout) => Mode::Inout,
             Some(ast::Mode::Buffer) => Mode::Buffer,
             Some(ast::Mode::Linkage) => Mode::Linkage,
-            Some(ast::Mode::View { .. }) => {
-                return Err(self.unsupported(o.span, "mode views", "S7"));
+            Some(ast::Mode::View { name, array }) => {
+                let r = self.view_name(pscope, name)?;
+                let st = match &o.subtype {
+                    Some(ast::IncompleteSubtype::Subtype(si)) => {
+                        Some(self.subtype_indication(pscope, si)?)
+                    }
+                    None => None,
+                    _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
+                };
+                let (m, st) = self.view_port(o.class, r, *array, st, o.span)?;
+                view_subtype = Some(st);
+                m
             }
         };
         let class = match o.class {
+            _ if view_subtype.is_some() => ObjClass::Signal,
             Some(ast::InterfaceClass::Constant) => ObjClass::Constant,
             Some(ast::InterfaceClass::Signal) => ObjClass::Signal,
             Some(ast::InterfaceClass::Variable) => ObjClass::Variable,
@@ -1218,8 +1231,11 @@ impl Db {
             None => ObjClass::Variable,
         };
         let _ = kind;
-        let subtype = match &o.subtype {
-            Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(pscope, si)?,
+        let subtype = match (&o.subtype, view_subtype) {
+            (_, Some(st)) => st,
+            (Some(ast::IncompleteSubtype::Subtype(si)), None) => {
+                self.subtype_indication(pscope, si)?
+            }
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
         let default = o

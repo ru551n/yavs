@@ -116,9 +116,10 @@ pub enum LogicKind { StdULogic, Bit, Boolean }       // gets the rsim-logic fast
 | Value | In memory | Notes |
 |---|---|---|
 | integer, physical | `i64` | ranges checked by `Check` (1.5); 2008 INTEGER is 32-bit by its range only |
-| enum | `u8` / `u32` | std_ulogic is the rsim-logic code (`StdULogic as u8`) |
+| enum | `u8` / `u32` | a scalar std_ulogic is the bare rsim-logic code (`StdULogic as u8`, decisions.md) |
+| logic array | bit-planes (below) | arrays whose scalar leaf is a `LogicKind` enum |
 | real | `f64` | |
-| array | elements contiguous, row major | bounds in a **dope**: `[left, right, dir]` per dimension, `i64` each |
+| other array | elements contiguous, row major | bounds in a **dope**: `[left, right, dir]` per dimension, `i64` each |
 | unconstrained array object/param | `{data: Addr, dope: Addr}` (fat) | the only array form passed to subprograms |
 | record | fields at offsets from a `Layout` | offsets are runtime data when a field is unconstrained |
 | access | `Handle` (heap, 1.6) | `null` = 0 |
@@ -133,11 +134,22 @@ Constant aggregates (rule 12) are stored as `ConstData::{Bytes, Repeat{elem, n},
 and materialized by `CopyConst`, which expands runs straight into the destination; a 64K
 `others => x` initialiser is 1 element in the pool.
 
-**Logic vector storage:** M2 stores arrays of a `LogicKind` enum as 1 byte per element, which is
-what the kernel's `SignalType { elem_size, len }` already stores and what FST/VHPI read.
-`Layout` has a `packing: Packing::{Bytes, Planes}` field; only load/store/slice/copy instructions
-look at it, so moving logic arrays to the bit-plane `LogicVec` (decisions.md) is local to those
-instructions plus a kernel signal type. See open question Q1.
+**Logic arrays are bit-planes everywhere** (decisions.md): variables, constants, heap objects,
+signals (the kernel stores logic leaves as rsim-logic planes, K7) and temporaries.
+
+| Aspect | Rule |
+|---|---|
+| Format | rsim-logic `Planes`: block `i` = elements `64i..64i+63` as `[u64; 4]` (plane 0 = code bit 0); element 0 is the rightmost element. `bit` and `boolean` arrays use the same blocks (only planes 0 and 1 vary) so one code path serves all `LogicKind`s |
+| Nesting | an array of logic arrays (memories, `array (0 to 1023) of std_logic_vector(7 downto 0)`, 2-D logic arrays) is **one** plane vector over all elements, rows contiguous; a row is an element range, not a padded block |
+| In records | a logic-array field is its own plane vector at its field offset, padded to whole 32-byte blocks |
+| Size | `ceil(n / 64) * 32` bytes (`LayoutOf` computes it; `u64`) |
+| Element access | `LGet{dst, base, idx}` / `LSet{base, idx, v}`: block `idx / 64`, bit `idx % 64` in each plane; `Index` on a logic array lowers to these |
+| Slices, concatenation, aggregates | `LCopy{dst, dst_off, src, src_off, n}`: word-wise copy with funnel shifts (64 elements per step, any alignment); `Copy` when both ends are block aligned |
+| Operators | `LogicOp`/`LNum` call rsim-logic bit-parallel ops (`and`..`xnor`, `not`, `to_x01`, `resolve`, `match_eq`, shifts, `add_num`, `cmp_num`); 0/1-only values take the `BitVec` word path |
+| Parameters | in-mode: by reference when block aligned, else `LCopy` into a temp; out/inout of an unaligned slice: copy-in/copy-out (LRM 6.5.6.2 allows either) |
+| Constants | `ConstData::Runs` expand per block (`others => '0'` is a block fill) |
+| Transpose | only at the edges, per changed element range, 64 elements per step: waves (`value_change` range to one char per element for `WaveWriter::change`), VHPI `vhpi_get_value`/`put_value` (`vhpiLogicVecVal`, `vhpiEnumVecVal`), DAP display, foreign calls (1.7), `'image`/`to_string` |
+
 
 ### 1.4 Addresses and frames
 
@@ -167,11 +179,11 @@ has a `StmtId` in `Func.loc`.
 | memory | `Load{dst, addr, w}`, `Store{addr, src, w}`, `Copy{dst, src, bytes}`, `Fill{dst, elem, n, size}`, `Index{dst, base, dope, idx...}` (bounds-checked), `Field{dst, base, layout, n}` |
 | int (checked, rule 7) | `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Mod`/`Pow`/`Neg`/`Abs` on i64: overflow and zero divisors raise `Runtime` through `rsim_std::arith`; never wrap |
 | real | `FAdd`..`FPow`, `FCmp`, `IToF`, `FToI` (checked round per LRM, `real_to_int`) |
-| compare/logic | `Cmp{op, dst, a, b}`, `And/Or/Xor/Not` on booleans, `LogicOp{op, dst, a, b, n}` on logic arrays via rsim-logic tables |
+| compare/logic | `Cmp{op, dst, a, b}`, `And/Or/Xor/Not` on booleans, `LogicOp{op, dst, a, b, n}`, `LNum{op, dst, a, b, signed}` on logic arrays via rsim-logic (bit-planes, 1.3); `LGet`/`LSet`/`LCopy` element and slice access |
 | checks | `Check{kind: Range\|Index\|Length\|Null\|Discrete, v, lo, hi, what: CheckMsgId}`; `lo/hi` are regs, so runtime bounds and static bounds use one instruction |
 | subtypes | `MakeDope{dst, dims...}`, `DopeLen{dst, dope, dim}`, `LayoutOf{dst, desc}`, `SubtypeCheck{value, desc}` (composite conversion and constraint checks) |
 | control | `Br{blk}`, `CondBr{c, t, f}`, `Case{v, table: CaseTableId, default}` (ranges and choices as sorted table), `Ret`, `Unreachable` |
-| calls | `Call{func, args}` (VHDL), `CallNative{id, args}` (NATIVE.md symbols and implicit families), `CallForeign{id, args}` (VHPIDIRECT), `CallIndirect{func_reg, args}` (subprogram generics), `CallProt{func, obj, args}` (protected method: takes the instance lock, 3.5) |
+| calls | `Call{func, args}` (VHDL), `CallNative{id, args}` (NATIVE.md symbols and implicit families), `CallForeign{id, args}` (VHPIDIRECT, 1.7), `CallIndirect{func_reg, args}` (subprogram generics), `CallProt{func, obj, args}` (protected method: takes the instance lock, 3.5) |
 | heap | `New{dst, ty, init}`, `Free{handle}` (`deallocate`), `Deref{dst, handle}` (null check included) |
 | signal read | `SigVal{dst, inst_sig, offset, len}` builds a signal reference; `SigRead{dst_addr, sig}` (effective value), `SigReadScalar{dst, sig}`, `SigDriving{dst_addr, driver_slot}` (`'driving_value`, out-port read) |
 | attributes | `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
@@ -210,6 +222,56 @@ Lowering of the main statement forms:
   writes to `OUTPUT` go through `Ctx::output` (buffered, committed in elaboration order); writes
   to user files are buffered the same way under a per-file stream id (kernel ask K6).
 
+### 1.7 Foreign subprograms (VHPIDIRECT), no libffi
+
+Few dependencies: rsim calls C through **its own trampolines**, one per ABI, in a small crate
+`rsim-ffi` (the only `unsafe` besides `rsim-vhpi`; `forbid(unsafe_code)` elsewhere).
+
+```rust
+pub enum CArg { I64(i64), F64(f64), Ptr(*mut u8) }      // the whole C type set
+pub enum CRet { Void, I32, U8, I64, F64 }               // declared result kind
+struct CallFrame { int: [u64; 8], float: [f64; 8], stack: *const u64, nstack: usize, func: usize }
+struct RetPair { i: u64, f: f64 }                       // rax/x0 and xmm0/d0 after the call
+pub unsafe fn call(func: *const (), args: &[CArg], ret: CRet) -> CRetVal;  // classify + trampoline
+```
+
+- **Classification is Rust, the stub is asm.** `call` assigns arguments to registers and stack
+  slots per ABI into a `CallFrame`; a per-target stub (`#[unsafe(naked)]` + `naked_asm!`, stable
+  since Rust 1.88; `core::arch::global_asm!` if a target needs it) loads the registers, copies the
+  stack slots below a 16-byte aligned `sp`, calls `func`, and stores both result registers.
+
+| ABI (target) | Integer/pointer regs | Float regs | Stack and rules |
+|---|---|---|---|
+| SysV x86_64 (Linux x86_64) | rdi rsi rdx rcx r8 r9 | xmm0-xmm7, independent counters | rest in order, 8-byte slots; `al` = float regs used; `rsp` 16-aligned at the call |
+| AAPCS64 (Linux aarch64) | x0-x7 | d0-d7, independent counters | rest in order, 8-byte slots; `sp` 16-aligned |
+| Win64 (Windows x86_64) | rcx rdx r8 r9 **by position** | xmm0-xmm3 by the same position | 32-byte shadow space, then args 5+ in 8-byte slots; `rsp` 16-aligned |
+
+- **VHDL to C mapping** (checked at elaboration; anything else is an error naming the subprogram
+  and parameter, fail early):
+
+| VHDL | C | Passing |
+|---|---|---|
+| `integer` (2008, 32-bit range) / 2019 64-bit integer | `int32_t` / `int64_t` | value, sign-extended to 64 bits |
+| enumeration up to 256 literals (`boolean`, `character`, `bit`, `std_ulogic`) | `uint8_t` | value, zero-extended |
+| physical (`time`) | `int64_t` | value (in resolution units, as stored) |
+| `real` | `double` | value |
+| constrained array | element pointer | marshalled into a C-layout temp (`int32_t`/`uint8_t`/`double` elements, logic arrays transposed from planes to one code byte per element), copied back for `out`/`inout` |
+| unconstrained array | pointer to `struct { void *data; int64_t left, right; uint8_t dir; }` per dimension | same marshalling; the struct is rsim's own documented convention |
+| record of the scalar kinds above | pointer to a C struct with natural alignment | marshalled both ways |
+| scalar `out`/`inout` | pointer to a C-typed temp | written back after the call |
+| function result | `void`, `int32_t`, `uint8_t`, `int64_t`, `double` | the interpreter narrows `RetPair.i` by `CRet` (sign/zero extension), then range-checks |
+
+- Not supported (elaboration error): composite results, struct-by-value, varargs, access-typed
+  parameters, callbacks from C into VHDL (VHPI covers that).
+- Symbols: `attribute foreign of f : function is "VHPIDIRECT [lib] symbol"`; looked up in
+  `--load` libraries (reusing `rsim-vhpi`'s plugin loader), then in the executable. A missing
+  symbol is an elaboration error that lists every library searched.
+- **Tests on all three ABIs** without a C compiler: Rust `extern "C" fn` callees with mixed
+  signatures (interleaved int/float, more arguments than registers to force stack slots,
+  `int32_t`/`uint8_t` results with garbage upper bits, pointer write-back), run in CI on Linux
+  x86_64, Linux aarch64 and Windows x86_64. The LLVM tier calls foreign functions directly with
+  the same mapping.
+
 ## 2. Processes, subprograms, suspension, shared code
 
 - **One `Func` per process or subprogram per design unit**, shared by every instance. Generics
@@ -237,7 +299,7 @@ Lowering of the main statement forms:
 
 - `Inst` is a Rust `enum` with `#[repr(u8)]`-sized tag and inline operands (8 to 16 bytes); a
   `match` loop over `code[pc]` with a local `pc`, `regs` and `slots` (rustc compiles it to a jump
-  table). No threaded code, no `unsafe` in M2.
+  table). No threaded code, no `unsafe` (foreign calls are the one exception, isolated in `rsim-ffi`, 1.7).
 - Two loop instances: `exec::<false>` (fast: `Stmt` is a nop, no hook checks) and
   `exec::<true>` (debug: `Stmt` calls the debugger hook). The process switches loops when a
   debugger is attached.
@@ -269,7 +331,7 @@ impl rsim_kernel::Process for InterpProcess {
 
 | Instruction | Kernel call |
 |---|---|
-| `SigRead`, `SigReadScalar` | `ctx.value(SigRef)` then copy/decode |
+| `SigRead`, `SigReadScalar` | `ctx.value(SigRef)` then copy; logic leaves arrive as planes and are copied with `LCopy` (no transpose) |
 | `SigAttr` | `ctx.event/active/last_event/last_active/last_value` |
 | `Drive` | `ctx.assign(drivers[slot], target, waveform, DelayMode)` |
 | `Force`/`Release` | `ctx.force/release(r, ForceMode::Effective\|Driving)` |
@@ -450,8 +512,8 @@ requires identical canonical output.
 | Consumer | Uses | From |
 |---|---|---|
 | CLI, DAP, VHPI | `SimControl` only (run_for, run_until, step_delta, pause, force, deposit, value, driving_value) | kernel |
-| waves (`rsim-wave`) | `Observer::value_change(SignalId, Range)`; `HierarchyBuilder` filled from `Elaborated.hier` + `nets.leaves` (record fields as scopes, logic arrays as `SigType::Vector`, enum names from `Ty::Enum` literals, original spelling); wave `SignalId` = `LeafId` | elab, kernel bus |
-| VHPI (M5) | object model built from `hier`, `nets`, `Program.types` (records, arrays, generics, generates native, rule 9); handle = generational id over `ObjId`/`ScopeId`; values decoded with `Layout`; `vhpi_put_value` = `SimControl::force/deposit` through `SubElemMap`; callbacks = `Observer` | elab, kernel |
+| waves (`rsim-wave`) | `Observer::value_change(SignalId, Range)`; `HierarchyBuilder` filled from `Elaborated.hier` + `nets.leaves` (record fields as scopes, logic arrays as `SigType::Vector`, values transposed from planes per changed range, enum names from `Ty::Enum` literals, original spelling); wave `SignalId` = `LeafId` | elab, kernel bus |
+| VHPI (M5) | object model built from `hier`, `nets`, `Program.types` (records, arrays, generics, generates native, rule 9); handle = generational id over `ObjId`/`ScopeId`; values decoded with `Layout` (logic arrays transposed from planes); `vhpi_put_value` = `SimControl::force/deposit` through `SubElemMap`; callbacks = `Observer` | elab, kernel |
 | coverage (M9) | `Program.cov` items (path + span hash) and the counter array; toggle via `Observer` | ir, interp |
 | DAP (M8) | `Debugger` hook, `FrameView`, `Program.stmts` for stack frames, `hier` for the hierarchy view | interp, elab |
 
@@ -468,7 +530,7 @@ translation table is needed between elab ids and kernel ids.
 | K4 | `Ctx::driving(DriverId)` and null transactions (`disconnect`) | guarded signals, M3 |
 | K5 | Null-range signals (`len == 0`) accepted as empty | null arrays as signals, M3 |
 | K6 | Buffered writes to user files (stream ids beyond `OUTPUT`) | textio, M3 |
-| K7 | A `SignalType` for bit-plane logic vectors, if Q1 picks planes | M3 |
+| K7 | Logic leaves stored as rsim-logic planes (`SignalType` variant), element `Range` copies, resolution and events on planes | slice 2 (in progress, kernel agent) |
 
 ## 7. M2 implementation order
 
@@ -478,7 +540,7 @@ against NVC at `--threads 1` and `--threads 4` (`tools/difftest/difftest.py --ca
 
 | Slice | Content | Turns green |
 |---|---|---|
-| 1 | `rsim-ir` core: types for scalars and 1-D arrays with dope, frames, checked int/real/time ops, `Check`, control flow, `Report`, `Call`/`CallNative` for `'image`/`to_string`/implicit families on scalars; interpreter fast loop; elab of a single top entity with no ports; processes with `wait for`/`wait`; runtime stacktraces | `report/`, `arith/`, `scalar/` |
+| 1 | `rsim-ir` core: types for scalars and 1-D arrays with dope, frames, checked int/real/time ops, bit-plane logic arrays (`LGet/LSet/LCopy`), `Check`, control flow, `Report`, `Call`/`CallNative` for `'image`/`to_string`/implicit families on scalars; interpreter fast loop; elab of a single top entity with no ports; processes with `wait for`/`wait`; runtime stacktraces | `report/`, `arith/`, `scalar/` |
 | 2 | Signals: `SigRead`, `Drive` (transport, inertial, reject), `WaitOn`, `wait until` lowering, sensitivity lists, concurrent statements as implicit processes, attributes `'event/'active/'last_*`, postponed processes, `std.env` natives | `delta/`, `sigassign/` (minus `stable_quiet` until K2), `process/`, `postponed/`, `env/` |
 | 3 | Hierarchy: entity/component instances, generics (`-g` and generic maps through the interpreter), for/if/case generates, configurations, package generics, collapsed ports only, stable paths (`'path_name`) | `generics/`, `hierarchy/` (minus conversions) |
 | 4 | Ports uncollapsed (K1), conversion functions, expression actuals, `force`/`release`, K2 implicit signals, collapse as a pass with both-way difftest | `force/`, rest of `hierarchy/` and `sigassign/` |
@@ -494,14 +556,14 @@ with `--threads 1` and `--threads 4`, with and without `--collapse-ports`; the I
 on every lowered unit in debug builds; runtime-error diag snapshots exist for overflow, index,
 range, division by zero and the delta limit.
 
-## 8. Open questions (with recommendations)
+## 8. Decisions (user answers to the open questions)
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 |---|---|---|
-| Q1 | Logic arrays in memory and in kernel signals: bytes (kernel today) or bit-planes (decisions.md)? | Bytes in M2 (only scalars and small vectors in the M2 groups). In M3 measure a VUnit/OSVVM run with `Packing::Planes` for variables and signals behind the layout flag; switch only if it wins on real designs, since planes make every element-addressed signal op (kernel `Range` copies, resolution, VHPI, FST) a transpose. |
-| Q2 | Port collapsing default | Off in M2 (reference semantics), the difftest runs both; turn on by default in M3 once both modes have been identical over the M2 and M3 groups. |
-| Q3 | Protected types under `--threads N` | M2/M3: all protected callers serial (zero locking code). After M4, per-instance mutexes with a fixed acquisition order by instance id plus a deadlock check that reports both processes; only if VUnit benchmarks show serial processes are the bottleneck. |
-| Q4 | Generic types: shared code with runtime descriptors, or specialise per actual? | Shared (one representation, rule 1); let the LLVM tier specialise hot instances later. |
-| Q5 | VHPIDIRECT calls: dynamic C ABI calls need either `libffi` (new dependency) or per-signature trampolines | `libffi` crate (MIT/Apache) in M3; LLVM-generated trampolines are an M6 option. Windows needs it too, so check libffi's MSVC build early. |
-| Q6 | Tier-up counter thresholds | 1000 resumptions / calls, settable by `--jit-threshold`; tune with M6 benchmarks. |
-| Q7 | Kernel asks K1 to K7 | Assign to the kernel agent before slice 4; K1 and K2 are on the M2 critical path. |
+| Q1 | Logic array layout | Bit-planes everywhere now, signals included (1.3, K7). Transposes only at waves, VHPI, DAP, foreign calls and string conversion. |
+| Q2 | Port collapsing default | Off in M2; every difftest group runs collapsed and uncollapsed. |
+| Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
+| Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
+| Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `rsim-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
+| Q6 | Tier-up threshold | After 1000 resumptions/calls, `--jit-threshold`. |
+| Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |

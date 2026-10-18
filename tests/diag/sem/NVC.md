@@ -20,6 +20,7 @@ NVC (the primary reference). Every file NVC does not agree with is listed here.
 | `unit/block_config_of_default_bound_instance_ok` | rejects @15 | rejects @15 | LRM 3.4.3 is silent on whether a default binding counts for a block configuration; Questa accepts, so permissive (`docs/decisions.md`). |
 | `agg/others_with_other_choice_same_assoc` | accepts | rejects @5 | NVC bug/leniency: accepts `others` combined with another choice in one association (LRM 9.3.3.3 forbids); GHDL rejects. |
 | `attr/attribute_spec_overloaded_ok` | rejects @8 | accepts | LRM 7.2 is clear: an overloaded entity tag without a signature decorates every matching declaration. GHDL and Questa accept; NVC is stricter than the LRM. |
+| `gen/formal_package_map_mismatch` | accepts | rejects @14 | LRM 6.5.7.2 is clear: the actual instance must match the formal package's generic map. Questa rejects ("Actual values for generic 'n' don't match"); NVC does not check; GHDL rejects as unsupported. |
 | `gen/unused_generic_warning` | accepts | accepts | rsim-only warning (W1501); NVC and GHDL do not warn. |
 | `hom/interface_param_twice` | accepts | rejects @5 | NVC bug: accepts two parameters with one name in a subprogram declaration; GHDL rejects. |
 | `mix/integer_high_in_2008_file` | accepts | accepts | rsim-only W1008: needs the mixed-revision design (2008 file in a 2019 design); NVC analyzes one standard at a time and accepts the 2008 file silently. |
@@ -276,6 +277,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 |---|---|---|---|
 | `actual_formal_twice` | E1310 @7 | rejects @7 | rejects @7 |
 | `actual_type_mismatch` | E1300 @7 | rejects @7 | rejects @5,7 |
+| `formal_package_map_mismatch` | E1503 @14 | accepts | rejects @14 |
 | `call_uninstantiated_generic_subprogram` | E1505 @14 | rejects @14 | rejects |
 | `generic_default_type_mismatch` | E1300 @5 | rejects @5 | rejects @5 |
 | `generic_discrete_has_pos_ok` | none | accepts | rejects @5,6,7 |

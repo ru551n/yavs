@@ -477,3 +477,34 @@ package gi is new work.g generic map (u => bit);
         db.well_known.bit.expect("BIT")
     );
 }
+
+#[test]
+fn formal_package_with_a_generic_map() {
+    let pre = "
+package a is
+  generic (n : integer := 1; type t);
+  constant c : integer := n;
+  subtype s is t;
+end package;
+package b is
+  generic (package p is new work.a generic map (n => 3, t => bit));
+  constant k : integer := p.c;
+end package;
+";
+    let e = |rest: &str| codes(&analyze(LangRev::Vhdl2008, &format!("{pre}{rest}")));
+    assert!(
+        e("package x is new work.a generic map (n => 3, t => bit);
+           package y is new work.b generic map (p => work.x);")
+        .is_empty()
+    );
+    assert_eq!(
+        e("package x is new work.a generic map (n => 4, t => bit);
+           package y is new work.b generic map (p => work.x);"),
+        ["E1503"]
+    );
+    assert_eq!(
+        e("package x is new work.a generic map (n => 3, t => integer);
+           package y is new work.b generic map (p => work.x);"),
+        ["E1503"]
+    );
+}

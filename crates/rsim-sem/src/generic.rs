@@ -122,6 +122,16 @@ pub struct GenericState {
     /// Generic constants, types and packages of packages and subprograms not yet
     /// looked up (`W1501`; `Db::lookup` removes them).
     pub(crate) unused: HashSet<DeclId>,
+    /// The actuals a formal package with a generic map requires of its actual instance.
+    pub(crate) wants: HashMap<InstId, Vec<(DeclId, Want)>>,
+}
+
+/// One association of a formal package's generic map (6.5.6.3).
+#[derive(Clone, Debug)]
+pub(crate) enum Want {
+    Const(ExprId),
+    Type(SubtypeId),
+    Subprogram(Vec<DeclId>),
 }
 
 /// Original to clone ids of one instance (5.1).
@@ -384,16 +394,24 @@ impl Db {
             }
             ast::InterfaceDecl::Package(p) => {
                 let g = self.generic_package_of(scope, &p.package)?;
-                if let ast::InterfacePackageMap::Assoc(_) = p.generic_map {
-                    return Err(self.unsupported(
-                        p.span,
-                        "formal generic packages with a partial generic map",
-                        "S4",
-                    ));
-                }
-                let gscope = match self.decls[g].kind {
-                    DeclKind::Unit(u) => self.units[u].scope,
-                    _ => return Err(self.ice(p.span, "generic package is not a unit")),
+                let DeclKind::Unit(u) = self.decls[g].kind else {
+                    return Err(self.ice(p.span, "generic package is not a unit"));
+                };
+                let gscope = self.units[u].scope;
+                let wants = match &p.generic_map {
+                    ast::InterfacePackageMap::Assoc(assocs) => {
+                        let Some(formals) = self.generic.lists.get(&gscope).cloned() else {
+                            return Err(self.ice(p.span, "generic package without generics"));
+                        };
+                        let what = format!("package `{}`", self.decls[g].name);
+                        let (actuals, ok) = self.associate(&what, &formals, assocs);
+                        let wants = self.formal_package_wants(scope, &formals, &actuals);
+                        if !ok {
+                            return Err(Reported);
+                        }
+                        wants?
+                    }
+                    _ => Vec::new(),
                 };
                 let decl = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
                 let mangled = Symbol::intern(&crate::mangle::region(self, gscope));
@@ -406,11 +424,130 @@ impl Db {
                     mangled,
                 });
                 self.generic.maps.insert(inst, Remap::default());
+                if !wants.is_empty() {
+                    self.generic.wants.insert(inst, wants);
+                }
                 self.decls[decl].kind = DeclKind::GenericPackage(inst);
                 self.declare(scope, decl);
                 Ok(vec![decl])
             }
         }
+    }
+
+    /// Analyze the actuals of a formal package's generic map where it is declared.
+    /// ponytail: inside the generic the formal package stays opaque (its generics
+    /// do not take these values); they are only checked against the actual instance.
+    fn formal_package_wants(
+        &mut self,
+        scope: ScopeId,
+        formals: &[DeclId],
+        actuals: &[Option<&ast::AssocElem>],
+    ) -> Result<Vec<(DeclId, Want)>, Reported> {
+        use crate::expr::names::NameRes;
+        let mut out = Vec::new();
+        for (&f, a) in formals.iter().zip(actuals) {
+            let Some(a) = a else { continue };
+            let want = match (&self.decls[f].kind, &a.actual) {
+                (_, ast::Actual::Open(_)) => continue,
+                (DeclKind::Object(o), ast::Actual::Expr(e)) => {
+                    let st = o.subtype;
+                    if matches!(self.types[self.base(st)].kind, TypeKind::Generic { .. }) {
+                        // The type is another generic of the same package: not checked.
+                        continue;
+                    }
+                    Want::Const(self.expr_in_subtype(scope, e, st))
+                }
+                (DeclKind::GenericType(_), ast::Actual::Subtype(si)) => {
+                    Want::Type(self.subtype_indication(scope, si)?)
+                }
+                (
+                    DeclKind::GenericType(_),
+                    ast::Actual::Expr(ast::Expr {
+                        kind: ast::ExprKind::Name(n),
+                        ..
+                    }),
+                ) => Want::Type(self.type_mark(scope, n)?),
+                (
+                    DeclKind::GenericSubprogram(_),
+                    ast::Actual::Expr(ast::Expr {
+                        kind: ast::ExprKind::Name(n),
+                        ..
+                    }),
+                ) => match self.classify(scope, n) {
+                    NameRes::One(d) => Want::Subprogram(vec![self.entity(d)]),
+                    NameRes::Overloads(ds) => {
+                        Want::Subprogram(ds.into_iter().map(|d| self.entity(d)).collect())
+                    }
+                    other => return Err(self.report_name(scope, other)),
+                },
+                (_, other) => {
+                    return Err(self.unsupported(
+                        actual_span(other),
+                        "this actual in the generic map of a formal package",
+                        "S4",
+                    ));
+                }
+            };
+            out.push((f, want));
+        }
+        Ok(out)
+    }
+
+    /// `E1503` when actual instance `i` was not instantiated with what formal
+    /// package `fi` requires (6.5.7.2). Non-static values are not compared.
+    fn check_wants(
+        &mut self,
+        r: &mut Remap,
+        fi: InstId,
+        i: InstId,
+        span: Span,
+    ) -> Result<(), Reported> {
+        let Some(wants) = self.generic.wants.get(&fi).cloned() else {
+            return Ok(());
+        };
+        let iname = self.decls[self.insts[i].site].name;
+        for (f, want) in wants {
+            let fname = self.decls[f].name;
+            let bad = match want {
+                Want::Const(e) => {
+                    let e = self.r_expr(r, e);
+                    let Some(&got) = self.insts[i].map.consts.get(&f) else {
+                        continue;
+                    };
+                    matches!((self.value(e), self.value(got)), (Some(a), Some(b)) if a != b)
+                }
+                Want::Type(st) => {
+                    let st = self.r_subtype(r, st);
+                    let t = match self.decls[f].kind {
+                        DeclKind::GenericType(t) => t,
+                        _ => continue,
+                    };
+                    let Some(&got) = self.insts[i].map.types.get(&t) else {
+                        continue;
+                    };
+                    self.base(st) != self.base(got)
+                }
+                Want::Subprogram(cands) => {
+                    let Some(&got) = self.insts[i].map.subprograms.get(&f) else {
+                        continue;
+                    };
+                    let cands: Vec<DeclId> = cands.into_iter().map(|d| self.r_decl(r, d)).collect();
+                    !cands.contains(&self.entity(got))
+                }
+            };
+            if bad {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::GENERIC_CLASS,
+                        format!("`{iname}` was not instantiated with the `{fname}` the formal package requires"),
+                    )
+                    .with_primary(span, format!("`{fname}` differs"))
+                    .with_secondary(self.decls[self.insts[fi].site].span, "formal package declared here")
+                    .with_note("LRM 6.5.7.2: the actual of a formal package with a generic map must match its actuals"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Generic constants (6.5.6.2: class constant, mode `in`).
@@ -1506,6 +1643,7 @@ impl Db {
                 .with_secondary(self.decls[f].span, "generic package declared here"),
             ));
         };
+        self.check_wants(r, fi, i, n.span)?;
         if let Some(m) = self.generic.maps.get(&i) {
             r.merge(&m.clone());
         }

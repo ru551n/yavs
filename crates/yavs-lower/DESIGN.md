@@ -260,6 +260,19 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
    guarded assignments of the block (`Disconnect` when GUARD is false). `bus`/`register`
    signals are guarded in the kernel by elab (`Builder::guard`, disconnection time 0 until
    disconnection specifications reach the HIR).
+7. **Expression actuals of ports** (#74, LRM 6.5.6.3; open, yavs-elab 2026-10-18): an
+   association `f => expr` (or `f => inertial expr`) whose actual is not a static signal name
+   is a port driven by an equivalent process `f <= expr` in the instantiating region. NVC
+   treats an external name actual the same way (one delta later, `hierarchy/external_port_actual`).
+   Elab will create the formal's signal object (bounds from its subtype, or from the
+   expression's subtype when the formal is unconstrained) and one process instance in the
+   instantiating region with one driver slot, the formal. Lowering would need, in the
+   instantiating architecture's `UnitIr`, a list such as `actuals: Vec<ActualIr { stmt,
+   formal: u16, process: ProcessIr }>` (the instance statement, the formal's index in the HIR
+   association list, a process sensitive to the expression's signals that runs once at
+   initialisation, LRM 11.3), and the formal as a `SignalIr` of that unit keyed by the formal's
+   `DeclId` so elab maps it to the formal's object. Until then elab reports E9999 naming
+   "non-static expressions as port actuals".
 
 ## Requests from yavs-interp
 

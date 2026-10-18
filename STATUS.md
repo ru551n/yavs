@@ -257,7 +257,8 @@ function calls in yavs-interp (the function lowered alone; arrays and records of
 arguments and results through `call_values`); multi-dimensional aggregates and other array
 operators are still E2106 (#77). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
-and scalar type conversions in port maps (kernel converters), implicit signals (`'stable`,
+and type conversions in port maps (kernel converters, scalars and arrays of scalars), individual
+association of unconstrained array ports, implicit signals (`'stable`,
 `'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`, every
 signal of a loaded package, visible from every region), package data initialised once in
 analysis order with `yavs_interp::init_package` (shared variables, constants computed once,
@@ -265,8 +266,8 @@ analysis order with `yavs_interp::init_package` (shared variables, constants com
 external signal names bound in elaboration order (E2117), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
-instance's data; in a block, generate or subprogram it is E9999, #164). Not yet: composite conversions, non-static expression
-actuals (#74), generic types, subprograms and packages on entities, linkage ports, mode views
+instance's data; in a block, generate or subprogram it is E9999, #164). Not yet: conversions of record ports, non-static expression
+actuals (#74, needs yavs-lower DESIGN.md request 7), generic types, subprograms and packages on entities, linkage ports, mode views
 (#75).
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and

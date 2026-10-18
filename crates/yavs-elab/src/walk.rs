@@ -900,7 +900,7 @@ impl Elab<'_> {
                         "M3",
                     ));
                 };
-                let (fty, aty) = (shape.ty(), ashape.ty());
+                let fshape = shape.clone();
                 let fo = self
                     .m
                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
@@ -908,7 +908,11 @@ impl Elab<'_> {
                 let db: &Db = self.db;
                 // `actual_conv(actual)` feeds an `in`/`inout` formal, `formal_conv(formal)`
                 // its actual.
-                let idx = |m: &mut crate::Model, f: Option<DeclId>, from, to| -> R<Option<u32>> {
+                let idx = |m: &mut crate::Model,
+                           f: Option<DeclId>,
+                           from: &Shape,
+                           to: &Shape|
+                 -> R<Option<u32>> {
                     match f {
                         None => Ok(None),
                         Some(f) => {
@@ -918,8 +922,8 @@ impl Elab<'_> {
                         }
                     }
                 };
-                let to_formal = idx(&mut self.m, *actual_conv, aty, fty)?;
-                let to_actual = idx(&mut self.m, *formal_conv, fty, aty)?;
+                let to_formal = idx(&mut self.m, *actual_conv, &ashape, &fshape)?;
+                let to_actual = idx(&mut self.m, *formal_conv, &fshape, &ashape)?;
                 let ([f], [a]) = (fl.as_slice(), al.as_slice()) else {
                     return Err(unsupported(aspan, "conversions of composite ports", "M3"));
                 };
@@ -933,12 +937,9 @@ impl Elab<'_> {
                 return Ok(());
             }
             (A::Parts(parts), Some(sc)) => {
-                let Some(shape) = own else {
-                    return Err(unsupported(
-                        span,
-                        "individual association of an unconstrained port",
-                        "M3",
-                    ));
+                let shape = match own {
+                    Some(sh) => sh,
+                    None => self.m.parts_shape(self.db, s, subtype, parts, sc, span)?,
                 };
                 let fo = self
                     .m
@@ -2148,6 +2149,55 @@ impl Model {
         };
         let sels = self.steps(db, &l.path, scope, l.span)?;
         Ok((o, sels))
+    }
+
+    /// The shape of an unconstrained array port associated individually: per dimension, the
+    /// lowest to the highest index named, in the direction of the index subtype (as NVC does).
+    fn parts_shape(
+        &mut self,
+        db: &Db,
+        s: ScopeId,
+        st: yavs_sem::SubtypeId,
+        parts: &[(Vec<LspStep>, ExprId)],
+        sc: ScopeId,
+        span: Span,
+    ) -> R<Shape> {
+        let ty = db.base(st);
+        let yavs_sem::types::TypeKind::Array { indexes, elem } = &db.types[ty].kind else {
+            return Err(unsupported(span, "individual association of this unconstrained port", "M3"));
+        };
+        let mut lh: Vec<Option<(i64, i64)>> = vec![None; indexes.len()];
+        for (steps, e) in parts {
+            let espan = db.exprs[*e].span;
+            let Some(first) = self.steps(db, &steps[..1.min(steps.len())], sc, espan)?.pop() else {
+                return Err(Box::new(ice(espan, "empty sub-element path")));
+            };
+            let ranges: Vec<(i64, i64)> = match first {
+                Sel::Index(xs) => xs.iter().map(|&x| (x, x)).collect(),
+                Sel::Slice(b) if !b.is_empty() => vec![b.low_high()],
+                Sel::Slice(_) => continue,
+                Sel::Field(_) => return Err(Box::new(ice(espan, "field of an array port"))),
+            };
+            for (d, (lo, hi)) in ranges.into_iter().enumerate() {
+                let cur = &mut lh[d];
+                *cur = Some(cur.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+            }
+        }
+        let mut dims = Vec::with_capacity(indexes.len());
+        for (d, &ix) in indexes.iter().enumerate() {
+            let dir = self.scalar_bounds(db, ix, Some(s), span)?.dir;
+            let Some((lo, hi)) = lh[d] else {
+                return Err(unsupported(span, "an individually associated port with only null slices", "M3"));
+            };
+            dims.push(match dir {
+                yavs_sem::types::Direction::To => crate::hier::Bounds { left: lo, dir, right: hi },
+                yavs_sem::types::Direction::Downto => crate::hier::Bounds { left: hi, dir, right: lo },
+            });
+        }
+        let Some(es) = self.shape(db, *elem, Some(s), span)? else {
+            return Err(unsupported(span, "individual association of a port with unconstrained elements", "M3"));
+        };
+        Ok(Shape::Array { ty, dims, elem: Box::new(es) })
     }
 
     fn steps(&mut self, db: &Db, path: &[LspStep], scope: ScopeId, span: Span) -> R<Vec<Sel>> {

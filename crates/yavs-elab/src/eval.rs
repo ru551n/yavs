@@ -61,36 +61,124 @@ pub enum Class {
     Enum,
 }
 
-/// A conversion of a port association (LRM 6.5.7.1): a function of one scalar, run in
-/// yavs-interp, or a type conversion between scalar types.
+/// A conversion of a port association (LRM 6.5.7.1): a function of one value, run in
+/// yavs-interp, or a type conversion. Scalars and arrays of scalars (one kernel leaf each).
 #[derive(Clone)]
 pub struct ConvFn {
-    pub(crate) func: Option<(std::sync::Arc<yavs_interp::Runtime>, yavs_ir::FuncId)>,
-    pub from: Enc,
-    pub to: Enc,
+    /// The function and the IR type of its result.
+    pub(crate) func: Option<(
+        std::sync::Arc<yavs_interp::Runtime>,
+        yavs_ir::FuncId,
+        Option<yavs_ir::TyId>,
+    )>,
+    pub from: Side,
+    pub to: Side,
+}
+
+/// One end of a conversion: a scalar, or an array leaf with its bounds as an IR descriptor.
+#[derive(Clone, Debug)]
+pub enum Side {
+    Scalar(Enc),
+    Array { elem: Elem, len: u64, desc: Vec<u8> },
 }
 
 impl ConvFn {
-    /// Convert a one-element kernel value.
+    /// Convert a kernel leaf value.
     pub fn apply(&self, v: &Value) -> Result<Value, String> {
-        let c = decode(&self.from, v)?;
-        let r = match &self.func {
-            Some((rt, f)) => yavs_interp::call(rt.clone(), *f, Default::default(), &[c])
-                .map_err(|e| e.to_string())?
-                .ok_or("the conversion function returned no value")?,
-            None => match (self.from.class, self.to.class) {
-                (Class::Int, Class::Real) => (c as i64 as f64).to_bits(),
-                (Class::Real, Class::Int) => {
-                    let r = f64::from_bits(c).round();
-                    if !(-9.2e18..9.2e18).contains(&r) {
-                        return Err(format!("{r} is outside the integer range"));
-                    }
-                    r as i64 as u64
-                }
-                _ => c,
+        let arg = match &self.from {
+            Side::Scalar(e) => yavs_interp::CallVal::Cell(decode(e, v)?),
+            Side::Array { desc, .. } => yavs_interp::CallVal::Composite {
+                data: value_bytes(v),
+                desc: desc.clone(),
             },
         };
-        Ok(encode_cell(&self.to, r))
+        let r = match &self.func {
+            Some((rt, f, ret)) => {
+                let ret = match self.to {
+                    Side::Array { .. } => *ret,
+                    Side::Scalar(_) => None,
+                };
+                yavs_interp::call_values(rt.clone(), *f, Default::default(), &[arg], ret)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("the conversion function returned no value")?
+            }
+            None => match (&self.from, &self.to, arg) {
+                (Side::Scalar(a), Side::Scalar(b), yavs_interp::CallVal::Cell(c)) => {
+                    yavs_interp::CallVal::Cell(match (a.class, b.class) {
+                        (Class::Int, Class::Real) => (c as i64 as f64).to_bits(),
+                        (Class::Real, Class::Int) => {
+                            let r = f64::from_bits(c).round();
+                            if !(-9.2e18..9.2e18).contains(&r) {
+                                return Err(format!("{r} is outside the integer range"));
+                            }
+                            r as i64 as u64
+                        }
+                        _ => c,
+                    })
+                }
+                // Closely related arrays of the same element: the elements unchanged.
+                (Side::Array { elem: a, .. }, Side::Array { elem: b, .. }, _) if a == b => {
+                    return Ok(v.clone());
+                }
+                _ => return Err("this type conversion of a port is not implemented yet".into()),
+            },
+        };
+        match (&self.to, r) {
+            (Side::Scalar(e), yavs_interp::CallVal::Cell(c)) => Ok(encode_cell(e, c)),
+            (Side::Array { elem, len, .. }, yavs_interp::CallVal::Composite { data, desc }) => {
+                let n: u64 = desc
+                    .chunks_exact(24)
+                    .map(|d| {
+                        let w = |k: usize| i64::from_le_bytes(d[k..k + 8].try_into().unwrap_or([0; 8]));
+                        crate::hier::Bounds {
+                            left: w(0),
+                            dir: if w(16) == 0 { Direction::To } else { Direction::Downto },
+                            right: w(8),
+                        }
+                        .len()
+                    })
+                    .product();
+                if n != *len {
+                    return Err(format!(
+                        "the conversion result has {n} elements, the port {len}"
+                    ));
+                }
+                Ok(match elem {
+                    Elem::Logic => {
+                        let blocks: Vec<yavs_logic::Block> = data
+                            .chunks_exact(32)
+                            .map(|c| {
+                                std::array::from_fn(|k| {
+                                    u64::from_le_bytes(c[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]))
+                                })
+                            })
+                            .collect();
+                        if blocks.len() != (n as usize).div_ceil(64) {
+                            return Err("conversion result of the wrong size".into());
+                        }
+                        Value::Logic(LogicVec::from_repr(yavs_logic::Planes::from_blocks(
+                            n as usize, blocks,
+                        )))
+                    }
+                    Elem::Bytes(w) if data.len() as u64 == n * u64::from(*w) => Value::Bytes(data),
+                    Elem::Bytes(_) => return Err("conversion result of the wrong size".into()),
+                })
+            }
+            _ => Err("the conversion result does not fit the port".into()),
+        }
+    }
+}
+
+/// A kernel value as IR memory: the bytes, or the bit-plane blocks of a logic value.
+fn value_bytes(v: &Value) -> Vec<u8> {
+    match v {
+        Value::Bytes(b) => b.clone(),
+        Value::Logic(l) => l
+            .repr()
+            .blocks()
+            .iter()
+            .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+            .collect(),
     }
 }
 
@@ -109,7 +197,7 @@ fn decode(e: &Enc, v: &Value) -> Result<u64, String> {
             w[..b.len()].copy_from_slice(b);
             Ok(u64::from_le_bytes(w))
         }
-        _ => Err("conversion of a composite value is not implemented yet".into()),
+        _ => Err("a port conversion got a value of the wrong shape".into()),
     }
 }
 
@@ -122,6 +210,32 @@ fn encode_cell(e: &Enc, c: u64) -> Value {
             }))
         }
         Elem::Bytes(n) => Value::Bytes(c.to_le_bytes()[..n as usize].to_vec()),
+    }
+}
+
+/// The conversion end of a signal of shape `s`: a scalar or an array of scalars.
+fn side_of(db: &Db, s: &Shape) -> Option<Side> {
+    match s {
+        Shape::Scalar { ty, .. } => enc_of(db, *ty).map(Side::Scalar),
+        Shape::Array { dims, elem, .. } => {
+            let Shape::Scalar { elem: e, .. } = **elem else {
+                return None;
+            };
+            let desc = dims
+                .iter()
+                .flat_map(|b| {
+                    [b.left, b.right, i64::from(b.dir == Direction::Downto)]
+                        .into_iter()
+                        .flat_map(|x| x.to_le_bytes())
+                })
+                .collect();
+            Some(Side::Array {
+                elem: e,
+                len: s.len(),
+                desc,
+            })
+        }
+        Shape::Record { .. } => None,
     }
 }
 
@@ -141,20 +255,20 @@ pub(crate) fn enc_of(db: &Db, t: TypeId) -> Option<Enc> {
     })
 }
 
-/// A conversion `f` (a function or a type) from scalar type `from` to `to`.
-pub(crate) fn conv_fn(db: &Db, f: DeclId, from: TypeId, to: TypeId, at: Span) -> R<ConvFn> {
-    let (Some(fe), Some(te)) = (enc_of(db, from), enc_of(db, to)) else {
+/// A conversion `f` (a function or a type) from a signal of shape `from` to one of `to`.
+pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) -> R<ConvFn> {
+    let (Some(fe), Some(te)) = (side_of(db, from), side_of(db, to)) else {
         return Err(err(
             codes::NOT_IMPLEMENTED,
             at,
-            "conversions of composite ports are not implemented yet",
+            "conversions of record ports and arrays of composites are not implemented yet",
             "conversion",
         ));
     };
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {
             let l = lower_one(db, f, at)?;
-            Some((l.rt, l.func))
+            Some((l.rt, l.func, l.ret))
         }
         _ => None,
     };

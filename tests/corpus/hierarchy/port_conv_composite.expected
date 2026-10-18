@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	0	:port_conv_composite:_p0	x=00000110 b=0110
+diag	note	2000000	0	:port_conv_composite:_p0	x=00001000 b=1000
+diag	note	3000000	0	:port_conv_composite:_p0	x=00001010 b=1010

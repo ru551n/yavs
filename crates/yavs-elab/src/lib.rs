@@ -18,7 +18,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
-pub use eval::{Class, ConvFn, Enc, Model, Val, elem_of};
+pub use eval::{Class, ConvFn, Enc, Model, Side, Val, elem_of};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
     ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,

@@ -478,3 +478,15 @@ fn ports_and_generics_class_and_mode() {
     );
     assert_eq!(r.codes(), vec![("E1360", 2), ("E1360", 3)]);
 }
+
+#[test]
+fn architecture_of_an_entity_in_another_library() {
+    let r = run(
+        "arch_other_lib",
+        &[
+            ("other", "entity e is end entity;"),
+            ("work", "library other;\narchitecture a of other.e is begin end architecture;"),
+        ],
+    );
+    assert_eq!(r.codes(), vec![("E1004", 2)]);
+}

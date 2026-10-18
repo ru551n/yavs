@@ -96,6 +96,11 @@ impl Db {
         use ast::LibraryUnit as L;
         let lib = self.units[unit].lib;
         let name = self.units[unit].name;
+        if let L::Architecture(a) = &ast.unit
+            && let Some(l) = a.entity_lib
+        {
+            self.arch_entity_lib(lib, l, a.entity, &ast.context)?;
+        }
         // Secondary units start from their primary's region.
         let primary = match &ast.unit {
             L::Architecture(a) => Some((a.entity, UnitKind::Entity)),

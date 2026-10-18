@@ -306,6 +306,55 @@ impl Db {
         }
     }
 
+    /// `l` in `architecture a of l.e` (3.3.1): a library named in the context
+    /// clause (or `work`) that is the architecture's own library.
+    pub(super) fn arch_entity_lib(
+        &mut self,
+        lib: LibId,
+        l: Ident,
+        entity: Ident,
+        context: &[ast::ContextItem],
+    ) -> Result<(), Reported> {
+        let is_work = l.key.as_str() == "work";
+        // ponytail: library clauses reached through `context c;` are not seen here.
+        let named = context.iter().any(|c| {
+            matches!(c, ast::ContextItem::Library { names, .. } if names.iter().any(|n| n.key == l.key))
+        });
+        if !is_work && !named {
+            return Err(self.error(
+                Diagnostic::error(diag::NOT_DECLARED, format!("`{}` is not declared", l.text))
+                    .with_primary(l.span, "not a visible library name")
+                    .with_help(format!("add `library {};` before the architecture", l.text)),
+            ));
+        }
+        if is_work {
+            return Ok(());
+        }
+        let pl = self.library(l)?;
+        if pl == lib {
+            return Ok(());
+        }
+        let lname = self.libs[pl].name.text;
+        if !self.has_entity(pl, entity.key) {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::UNIT_NOT_FOUND,
+                    format!("design unit `{}` not found in library `{lname}`", entity.text),
+                )
+                .with_primary(l.span.to(entity.span), "no entity with this name"),
+            ));
+        }
+        let own = self.libs[lib].name.text;
+        Err(self.error(
+            Diagnostic::error(
+                diag::NO_PRIMARY,
+                format!("entity `{}` is in library `{lname}`, not in `{own}`", entity.text),
+            )
+            .with_primary(l.span.to(entity.span), "entity of another library")
+            .with_note("an architecture and its entity reside in the same library (LRM 3.3.1)"),
+        ))
+    }
+
     /// Whether `lib` has an entity named `key`, without analyzing it.
     fn has_entity(&self, lib: LibId, key: Symbol) -> bool {
         let pk = UnitKey::Primary(key);

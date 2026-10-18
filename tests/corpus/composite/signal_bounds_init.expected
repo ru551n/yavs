@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:signal_bounds_init:main	s = 10ZX t = 111 f = 11111 arr(1) = 10 pk = 1100 str = hello
+diag	note	1000000	0	:signal_bounds_init:main	s = 0101 t = 010 f = 11001 pk = 0011 str = world
+diag	note	1500000	0	:signal_bounds_init:blk:_p0	blk: b'length = 6 b = 000000
+diag	note	2000000	0	:signal_bounds_init:gen(1):_p0	gen 1: g = 1
+diag	note	4000000	0	:signal_bounds_init:gen(2):_p0	gen 2: g = 11

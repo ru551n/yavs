@@ -533,6 +533,16 @@ a note and a help suggesting an access type, as the reference simulators reject 
   (`yavs_interp::init_package`), in analysis order (a package after those its declaration uses;
   ponytail: a body using a later-analyzed package would need dependency order), sharing the
   processes' `SharedState`. Every signal of a loaded package is elaborated, driven or not.
+- **2019 signals with bounds from the initial value** (#187, elab agent, 2026-10-18; LRM
+  6.4.2.3, LCS-2016-019): the elaborator evaluates the initial value first and fills every
+  bound the subtype leaves open from it (`Model::shape_init`), element bounds from the first
+  element and record element bounds per field, so the signal's shape is the value's, as for
+  constants. Architecture, block, generate and package signals; a package array signal's
+  descriptor lives in package data (`PackageIr::signals[..].dope`), written by the elaborator
+  after the package's initialisation. Ports are interface declarations, not signal
+  declarations: the LCS does not cover them, an unconstrained port still takes its bounds from
+  its actual (an open one with a default is a separate question, #218). Not yet: record signals
+  whose fields take bounds this way (lowering, #215).
 - **Linkage ports and mode views** (#75, elab agent, 2026-10-18): a linkage port is an
   uncollapsed port edge with the kernel mode `in` (VHDL code cannot read or update it, LRM
   6.5.2, so it never drives its actual). A port with a 2019 mode view takes each record leaf's

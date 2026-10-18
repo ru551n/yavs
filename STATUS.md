@@ -92,7 +92,8 @@ An installed binary finds `lib/` next to itself (#43).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`
   sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
-  architecture. Elab reports initializer-bound signals and variable ports unsupported (#187, #188).
+  architecture. Initializer-bound signals elaborate and run (#187, records with such fields: #215); elab
+  reports variable ports unsupported (#188).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 

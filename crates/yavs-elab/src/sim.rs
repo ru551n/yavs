@@ -346,7 +346,20 @@ impl Elaborated {
                 ..Default::default()
             };
             let rt = Runtime::new(ir.program.clone(), b)?;
-            let d = yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(&shared))?;
+            let mut d =
+                yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(&shared))?;
+            for s in &p.signals {
+                let Some(off) = s.dope else { continue };
+                let o = self
+                    .sigs
+                    .iter()
+                    .find(|((_, x), _)| *x == s.decl)
+                    .map(|(_, &o)| o)
+                    .ok_or_else(|| {
+                        sim_err(format!("package signal `{}` not elaborated", s.name))
+                    })?;
+                write_desc(&ir.program, s, &self.nets.obj(o).shape, off, &mut d.data)?;
+            }
             packages.push(Arc::new(d));
         }
         let rt = Runtime::new(
@@ -562,25 +575,7 @@ impl Elaborated {
             };
             if let Some(off) = s.dope {
                 // The array's descriptor in this instance (ports: the actual's bounds).
-                let mut desc = Vec::new();
-                let mut shape = &self.nets.obj(o).shape;
-                while let crate::hier::Shape::Array { dims, elem, .. } = shape {
-                    for b in dims {
-                        let dir = i64::from(b.dir == yavs_sem::hir::Direction::Downto);
-                        for x in [b.left, b.right, dir] {
-                            desc.extend_from_slice(&x.to_le_bytes());
-                        }
-                    }
-                    shape = elem;
-                }
-                let n = yavs_ir::Ty::desc_size(&rt.prog.types, s.ty)
-                    .ok_or_else(|| sim_err(format!("no descriptor size for `{}`", s.name)))?
-                    as usize;
-                let at = off as usize;
-                if desc.len() < n || inst.data.len() < at + n {
-                    return Err(sim_err(format!("descriptor of signal `{}`", s.name)));
-                }
-                inst.data[at..at + n].copy_from_slice(&desc[..n]);
+                write_desc(&rt.prog, s, &self.nets.obj(o).shape, off, &mut inst.data)?;
             }
             // The leaf the entry names (a record signal has one entry per field leaf).
             let (a, b) = self.nets.obj(o).leaves;
@@ -600,6 +595,36 @@ impl Elaborated {
         }
         Ok(inst)
     }
+}
+
+/// Write the descriptor of array signal `s` of shape `shape` at `off` of `data`.
+fn write_desc(
+    prog: &yavs_ir::Program,
+    s: &yavs_lower::SignalIr,
+    shape: &crate::hier::Shape,
+    off: u32,
+    data: &mut [u8],
+) -> Result<(), SimError> {
+    let mut desc = Vec::new();
+    let mut shape = shape;
+    while let crate::hier::Shape::Array { dims, elem, .. } = shape {
+        for b in dims {
+            let dir = i64::from(b.dir == yavs_sem::hir::Direction::Downto);
+            for x in [b.left, b.right, dir] {
+                desc.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        shape = elem;
+    }
+    let n = yavs_ir::Ty::desc_size(&prog.types, s.ty)
+        .ok_or_else(|| sim_err(format!("no descriptor size for `{}`", s.name)))?
+        as usize;
+    let at = off as usize;
+    if desc.len() < n || data.len() < at + n {
+        return Err(sim_err(format!("descriptor of signal `{}`", s.name)));
+    }
+    data[at..at + n].copy_from_slice(&desc[..n]);
+    Ok(())
 }
 
 /// Packages outside std with objects that exist at run time: signals, shared variables,

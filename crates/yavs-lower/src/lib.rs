@@ -107,7 +107,8 @@ pub struct SignalIr {
     pub path: Vec<u32>,
     /// An array signal's descriptor in instance data (`Ty::desc_size` bytes at this offset),
     /// written by the elaborator from the signal's bounds in each instance: ports take their
-    /// actual's bounds.
+    /// actual's bounds. In `PackageIr::signals` the offset is in package data (written once
+    /// after the package's initialisation); the package entries of `UnitIr::signals` have none.
     pub dope: Option<u32>,
 }
 
@@ -291,8 +292,9 @@ pub(crate) struct Cx {
     /// `'path_name`/`'instance_name` slots its code reads.
     pub inst_size: u32,
     pub names: Vec<InstName>,
-    /// Instance-data descriptor offsets of array signals (`SignalIr::dope`).
-    pub sig_dopes: HashMap<DeclId, u32>,
+    /// Descriptor slots of array signals (`SignalIr::dope`): instance data, or package data
+    /// for package signals.
+    pub sig_dopes: HashMap<DeclId, (Space, u32)>,
     /// Signals of packages: the first entries of every unit's signal table.
     pub pkg_sigs: Vec<SignalIr>,
     /// The entity and architecture regions of the architecture being lowered.

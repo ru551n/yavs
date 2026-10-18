@@ -640,8 +640,8 @@ impl<'a> Fx<'a, '_> {
         if !ty::is_array(self.db, self.db.base(o.subtype)) {
             return Ok(None);
         }
-        if let Some(&off) = self.cx.sig_dopes.get(&d) {
-            return Ok(Some(self.addr(Space::Inst, off)));
+        if let Some(&(space, off)) = self.cx.sig_dopes.get(&d) {
+            return Ok(Some(self.addr(space, off)));
         }
         if let Some(Obj::SignalRef { space, off, out }) = self.cx.objs.get(&d).copied() {
             // An array signal parameter: the actual's descriptor follows the reference (and

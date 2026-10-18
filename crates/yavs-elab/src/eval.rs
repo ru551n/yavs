@@ -817,8 +817,21 @@ impl Model {
         scope: Option<ScopeId>,
         span: Span,
     ) -> R<Option<Shape>> {
+        self.shape_init(db, st, None, scope, span)
+    }
+
+    /// The shape of an object of subtype `st` with initial value `init`: bounds the subtype
+    /// leaves open, element bounds included, come from the value (2019 signals, LRM 6.4.2.3).
+    pub fn shape_init(
+        &mut self,
+        db: &Db,
+        st: SubtypeId,
+        init: Option<&Val>,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<Option<Shape>> {
         let c = db.subtypes[st].constraint.clone();
-        self.shape_c(db, st, &c, scope, span)
+        self.shape_c(db, st, &c, init, scope, span)
     }
 
     fn shape_c(
@@ -826,6 +839,7 @@ impl Model {
         db: &Db,
         st: SubtypeId,
         c: &Constraint,
+        init: Option<&Val>,
         scope: Option<ScopeId>,
         span: Span,
     ) -> R<Option<Shape>> {
@@ -865,15 +879,34 @@ impl Model {
                         _ => (None, Constraint::None),
                     },
                 );
-                let Some(dims) = dims else { return Ok(None) };
-                let mut ds = Vec::with_capacity(dims.len());
-                for d in dims.iter() {
-                    ds.push(self.range(db, d, scope, span)?);
-                }
+                let arr = match init {
+                    Some(Val::Array(a)) => Some(a),
+                    _ => None,
+                };
+                let ds = match (dims, arr) {
+                    (Some(dims), _) => {
+                        let mut ds = Vec::with_capacity(dims.len());
+                        for d in dims.iter() {
+                            ds.push(self.range(db, d, scope, span)?);
+                        }
+                        ds
+                    }
+                    (None, Some(a)) => a
+                        .bounds
+                        .iter()
+                        .map(|&(left, dir, right)| Bounds { left, dir, right })
+                        .collect(),
+                    (None, None) => return Ok(None),
+                };
+                // Every element has the element subtype's bounds: the first one gives them.
+                let ev = arr.and_then(|a| match &a.elems {
+                    Elems::Runs(r) => r.first().map(|(_, v)| v),
+                    Elems::Bytes(_) => None,
+                });
                 let es = if matches!(ec, Constraint::None) {
-                    self.shape(db, elem, scope, span)?
+                    self.shape_init(db, elem, ev, scope, span)?
                 } else {
-                    self.shape_c(db, elem, &ec, scope, span)?
+                    self.shape_c(db, elem, &ec, ev, scope, span)?
                 };
                 let Some(mut es) = es else { return Ok(None) };
                 if let Some(Resolution::Element(r)) = &db.subtypes[st].resolution
@@ -903,9 +936,13 @@ impl Model {
                             .map(|(_, c)| c.clone()),
                         _ => None,
                     };
+                    let fv = match init {
+                        Some(Val::Record(vs)) => vs.get(i),
+                        _ => None,
+                    };
                     let s = match fc {
-                        Some(fc) => self.shape_c(db, f.subtype, &fc, scope, span)?,
-                        None => self.shape(db, f.subtype, scope, span)?,
+                        Some(fc) => self.shape_c(db, f.subtype, &fc, fv, scope, span)?,
+                        None => self.shape_init(db, f.subtype, fv, scope, span)?,
                     };
                     let Some(s) = s else { return Ok(None) };
                     fields.push((f.name, s));

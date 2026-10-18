@@ -32,6 +32,7 @@ const PASS: &[&str] = &[
     "composite/arrays_aggregates",
     "composite/constant_bounds",
     "composite/records",
+    "composite/signal_bounds_init",
     "composite/slv_register",
     "composite/strings_ops",
     "composite/unconstrained_records",

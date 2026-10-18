@@ -81,7 +81,8 @@ a call into your module in a small commit.
   architectures): package data `AddrSpace::Pkg(index)` written once by its `init` thunk under
   `yavs_interp::init_package` (constants that are not locally static, composites of static
   layout in place, composites with run-time bounds in package data appended by `PkgAlloc`; shared protected variables); package signals are the first entries of every
-  unit's signal table; package files live in the shared variables area
+  unit's signal table (an array one's descriptor is in package data, `PackageIr::signals`
+  `dope`, written by the elaborator after `init`); package files live in the shared variables area
   (`Lowered::shared_size`).
 - `UnitIr` per architecture: `values` (generics, generate parameters and constants that are not
   locally static: the elaborator writes its value with `UnitIr::write_value`; arrays go after

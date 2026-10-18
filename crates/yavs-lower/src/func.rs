@@ -1002,7 +1002,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     return Err(cx.ice(decl.span, "array type without a descriptor size"));
                 };
                 let off = cx.inst_alloc(size as u32);
-                cx.sig_dopes.insert(d, off);
+                cx.sig_dopes.insert(d, (Space::Inst, off));
                 Some(off)
             } else {
                 None
@@ -1400,7 +1400,19 @@ impl Fx<'_, '_> {
                     dope: None,
                 };
                 self.cx.pkg_sigs.push(s.clone());
-                signals.push(s);
+                // An array signal's descriptor lives in package data, written by the
+                // elaborator from the signal's bounds (a 2019 signal may take them from its
+                // initial value, LRM 6.4.2.3).
+                let dope = if ty::is_array(db, t) {
+                    let n = yavs_ir::Ty::desc_size(self.fb.program().types(), ty)
+                        .ok_or_else(|| self.cx.ice(span, "array type without a descriptor size"))?;
+                    let off = alloc(n as u32);
+                    self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
+                    Some(off)
+                } else {
+                    None
+                };
+                signals.push(SignalIr { dope, ..s });
                 self.cx.objs.insert(d, Obj::Signal { sig });
                 Ok(())
             }

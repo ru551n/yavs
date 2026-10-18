@@ -1161,3 +1161,36 @@ fn nested_composite_resolution_fails_early() {
         [codes::NOT_IMPLEMENTED]
     );
 }
+
+/// 2019 signals of unconstrained subtypes take their bounds from the initial value, element
+/// and record element bounds included (LRM 6.4.2.3, #187).
+#[test]
+fn signal_bounds_from_the_initial_value() {
+    let src = "
+      entity t is end;
+      architecture a of t is
+        type bv_array is array (natural range <>) of bit_vector;
+        type rec is record v : bit_vector; n : integer; end record;
+        signal s : bit_vector := (3 to 5 => '1');
+        signal m : bv_array := (\"01\", \"10\", \"11\");
+        signal r : rec := (v => \"1011\", n => 5);
+      begin
+      end;";
+    let mut db = analyze_rev("sigbounds", src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let dims = |sh: &crate::Shape| match sh {
+        crate::Shape::Array { dims, .. } => dims.iter().map(|b| (b.left, b.right)).collect(),
+        _ => Vec::new(),
+    };
+    assert_eq!(dims(&e.nets.objs[0].shape), [(3, 5)]);
+    let crate::Shape::Array { elem, .. } = &e.nets.objs[1].shape else {
+        panic!("array")
+    };
+    assert_eq!(dims(&e.nets.objs[1].shape), [(0, 2)]);
+    assert_eq!(dims(elem), [(0, 1)]);
+    let crate::Shape::Record { fields, .. } = &e.nets.objs[2].shape else {
+        panic!("record")
+    };
+    assert_eq!(dims(&fields[0].1), [(0, 3)]);
+}

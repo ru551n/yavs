@@ -762,17 +762,20 @@ impl Elab<'_> {
             match (o.class, &o.role) {
                 (ObjClass::Signal, ObjRole::Plain) => {
                     let span = decl.span;
-                    let Some(shape) = self.m.shape(db, o.subtype, Some(s), span)? else {
-                        return Err(unconstrained_signal(o, span));
+                    let init = match o.default {
+                        Some(e) => Some(self.m.eval(db, e, Some(s))?),
+                        None => None,
+                    };
+                    let Some(shape) =
+                        self.m
+                            .shape_init(db, o.subtype, init.as_ref(), Some(s), span)?
+                    else {
+                        return Err(unconstrained_signal(span));
                     };
                     let guard = o.signal_kind.map(|k| match k {
                         yavs_syntax::ast::SignalKind::Bus => GuardKind::Bus,
                         yavs_syntax::ast::SignalKind::Register => GuardKind::Register,
                     });
-                    let init = match o.default {
-                        Some(e) => Some(self.m.eval(db, e, Some(s))?),
-                        None => None,
-                    };
                     let obj = self.m.add_obj(
                         self.db,
                         s,
@@ -2270,15 +2273,15 @@ impl Model {
         if let Some(&obj) = self.sigs.get(&(ps, d)) {
             return Ok(Some(obj));
         }
-        let Some(shape) = self.shape(db, o.subtype, None, decl.span)? else {
-            return Err(unconstrained_signal(o, at));
-        };
         if o.signal_kind.is_some() {
             return Err(unsupported(decl.span, "guarded signals in packages", "M3"));
         }
         let init = match o.default {
             Some(e) => Some(self.eval(db, e, None)?),
             None => None,
+        };
+        let Some(shape) = self.shape_init(db, o.subtype, init.as_ref(), None, decl.span)? else {
+            return Err(unconstrained_signal(at));
         };
         let obj = self.add_obj(db, ps, d, ObjKind::Signal, shape, init.as_ref(), decl.span)?;
         Ok(Some(obj))
@@ -2550,18 +2553,10 @@ fn external_root(db: &Db, mut e: ExprId) -> bool {
     }
 }
 
-/// A signal whose subtype is not fully constrained: a 2019 signal takes its bounds from
-/// its initial value (sem accepts it, #175); anything else is a bug.
-fn unconstrained_signal(o: &yavs_sem::decl::Object, span: Span) -> Box<Diagnostic> {
-    if o.bounds == yavs_sem::types::BoundsFrom::Initializer {
-        unsupported(
-            span,
-            "signals that take their bounds from the initial value (2019)",
-            "M3",
-        )
-    } else {
-        Box::new(ice(span, "signal of an unconstrained subtype"))
-    }
+/// A signal whose subtype is not fully constrained and whose initial value does not give
+/// the missing bounds: sem rejects it, so this is a bug.
+fn unconstrained_signal(span: Span) -> Box<Diagnostic> {
+    Box::new(ice(span, "signal of an unconstrained subtype"))
 }
 
 /// The kernel mode of a simple port mode. A linkage port takes the actual's value like an

@@ -736,7 +736,11 @@ pub(crate) mod fixture {
             Designator::operator(op),
             params,
             Some(ret),
-            Body::Implicit(ImplicitOp { family, ty }),
+            Body::Implicit(ImplicitOp {
+                family,
+                ty,
+                form: crate::implicit::Form::Plain,
+            }),
         );
         db.decls[d].implicit = true;
         d

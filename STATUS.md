@@ -80,14 +80,18 @@ subtype indications as generate specifications.
 
 ## lower (`crates/yavs-lower`, M2)
 
-HIR to IR for top-level architectures without ports or generics: scalar expressions, arrays of
-scalars with runtime descriptors (bit-planes for logic arrays), subprograms, processes and
-concurrent assert/assignment/call, all wait forms, signal assignments to whole scalar signals.
-`tests/corpus.rs` runs `tests/corpus/{scalar,arith,process,report}` through sem, lowering, the
-verifier, the interpreter and the kernel (a stand-in elaborator): 27 of 36 match NVC exactly (delta, sigassign, postponed, env included).
-The rest wait on: `'value` native, NVC check texts, failure stopping the process, NVC's process
-order within a cycle (`multi_process_order`), sem `ExprKind::Error` in two files, array signals,
-non-static aggregates (math_real). Design and conventions: `crates/yavs-lower/DESIGN.md`.
+HIR to IR for every architecture the elaborator instantiates: generics, ports (unconstrained
+array ports take the actual's bounds), blocks (guarded ones with their guard process), generates
+(one instance data per region), processes and concurrent statements; scalar and array
+expressions with runtime descriptors (bit-planes for logic arrays), aggregates, conversions,
+attributes including 'path_name/'instance_name, 'driving/'driving_value and signal attributes
+of elements and slices; all sequential statements including case over arrays and matching
+case, aggregate targets, every wait form; subprograms with signal parameters of every mode
+(arrays too, `DriveSlot` for out/inout), copy-out of logic elements and slices; package
+objects at run time (`Lowerer::package`: constants evaluated once, shared protected variables,
+package signals and files). `tests/corpus.rs` runs every corpus group plus
+`crates/yavs-lower/tests/vhdl/run` (blessed from NVC) through yavs-elab and the kernel; VUnit's
+minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
 composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
 `deallocate`), process-local protected objects (`CallProt`), file objects and textio,

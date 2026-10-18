@@ -68,12 +68,21 @@ a call into your module in a small commit.
 ## Contract with yavs-interp and yavs-elab
 
 - Calls: one cell per scalar `in` parameter (8-byte slot); the address of the actual for a scalar
-  `out`/`inout` variable; two cells (data, dope) per array parameter. A constrained formal gets
+  `out`/`inout` variable (a frame temporary written back after the call for logic elements and
+  slices); two cells (data, dope) per array parameter. Signal parameters: the signal reference
+  (two cells), then the caller's driver slot for `out`/`inout`, then the actual's descriptor for
+  arrays; assignments to an `out` signal parameter use `DriveSlot`. A constrained formal gets
   the formal's descriptor after a length check. A function's array result is the address of a
   fat pair `[data, dope]` in temporary memory (the dope copied out of the callee's frame).
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image`, `'value` `yavs.attr.value`
   (taking the string as a fat pair address). Array arguments to natives are fat pair addresses.
+- `PackageIr` per package with run-time objects (`Lowerer::package`, before the
+  architectures): package data `AddrSpace::Pkg(index)` written once by its `init` thunk under
+  `yavs_interp::init_package` (constants that are not locally static, composites of static
+  layout in place; shared protected variables); package signals are the first entries of every
+  unit's signal table; package files live in the shared variables area
+  (`Lowered::shared_size`).
 - `UnitIr` per architecture: `values` (generics, generate parameters and constants that are not
   locally static: the elaborator writes its value with `UnitIr::write_value`; arrays go after
   the fixed part, their element and descriptor offsets in the slot), `consts` (thunks for scalar

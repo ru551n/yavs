@@ -1268,7 +1268,6 @@ fn out_parameter_others_is_an_error() {
 /// F1 (NVC #1589): one `others` value shared by elements of different widths is resolved
 /// and folded once, for the first element: `b` and `c` get 6 bits.
 #[test]
-#[ignore = "finding F1 (#98): record aggregate `others` value shared across element subtypes"]
 fn f1_record_others_resolved_per_element() {
     let db = analyze("n1589", &[("work", NVC_1589)]);
     let DeclKind::Object(o) = &db.decls[decls(&db, "c_r")[0]].kind else {
@@ -1284,7 +1283,6 @@ fn f1_record_others_resolved_per_element() {
 /// F2: record aggregate element values are resolved in the element subtype the
 /// context's record constraint gives.
 #[test]
-#[ignore = "finding F2 (#100): record aggregate elements ignore the context's record constraint"]
 fn f2_record_aggregate_uses_context_constraint() {
     analyze("f2", &[("work", RECORDS), ("work", RECORD_AGG_CONTEXT)]);
 }
@@ -1320,7 +1318,6 @@ fn f4_attribute_of_attribute() {
 
 /// F5: a constrained subtype indication as generic type actual.
 #[test]
-#[ignore = "finding F5 (#106): `t => std_ulogic_vector(7 downto 0)` is rejected with E1104"]
 fn f5_constrained_generic_type_actual() {
     let gen_pkg = ATTRIBUTES.split("library ieee").next().expect("gen_pkg");
     let db = analyze(

@@ -1406,20 +1406,32 @@ fn record_agg(
     let mut stat = Staticness::Locally;
     let mut failed = None;
     for (ai, a) in assocs.iter().enumerate() {
-        let first = covers[ai][0] as usize;
-        match sub_value(db, r, elems[first].1, &a.value) {
-            Ok(v) => {
-                stat = stat.min(db.exprs[v].stat);
-                for &i in &covers[ai] {
-                    values[i as usize] = db.value(v).cloned();
-                }
-                out.push(AggAssoc {
-                    choices: covers[ai].iter().map(|&i| Choice::Element(i)).collect(),
-                    value: v,
-                    slice_piece: false,
-                });
+        // Each element's subtype has the context's record constraint on it (6.3). A value
+        // shared by elements of different subtypes (`others => (others => '0')` for
+        // vectors of different widths) is resolved once per subtype (9.3.3.2).
+        let mut groups: Vec<(SubtypeId, Vec<u32>)> = Vec::new();
+        for &i in &covers[ai] {
+            let st = db.field_subtype(ctx, i);
+            match groups.iter().position(|(g, _)| *g == st) {
+                Some(k) => groups[k].1.push(i),
+                None => groups.push((st, vec![i])),
             }
-            Err(e) => failed = Some(e),
+        }
+        for (st, group) in groups {
+            match sub_value(db, r, st, &a.value) {
+                Ok(v) => {
+                    stat = stat.min(db.exprs[v].stat);
+                    for &i in &group {
+                        values[i as usize] = db.value(v).cloned();
+                    }
+                    out.push(AggAssoc {
+                        choices: group.iter().map(|&i| Choice::Element(i)).collect(),
+                        value: v,
+                        slice_piece: false,
+                    });
+                }
+                Err(e) => failed = Some(e),
+            }
         }
     }
     if let Some(e) = failed {

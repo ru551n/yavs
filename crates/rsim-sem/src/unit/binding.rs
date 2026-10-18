@@ -339,7 +339,10 @@ impl Db {
             return Err(self.error(
                 Diagnostic::error(
                     diag::UNIT_NOT_FOUND,
-                    format!("design unit `{}` not found in library `{lname}`", entity.text),
+                    format!(
+                        "design unit `{}` not found in library `{lname}`",
+                        entity.text
+                    ),
                 )
                 .with_primary(l.span.to(entity.span), "no entity with this name"),
             ));
@@ -348,7 +351,10 @@ impl Db {
         Err(self.error(
             Diagnostic::error(
                 diag::NO_PRIMARY,
-                format!("entity `{}` is in library `{lname}`, not in `{own}`", entity.text),
+                format!(
+                    "entity `{}` is in library `{lname}`, not in `{own}`",
+                    entity.text
+                ),
             )
             .with_primary(l.span.to(entity.span), "entity of another library")
             .with_note("an architecture and its entity reside in the same library (LRM 3.3.1)"),
@@ -958,6 +964,16 @@ impl Db {
         c: &ast::ConfigSpec,
     ) -> Result<(), Reported> {
         let comp = self.component_of_spec(scope, &c.spec)?;
+        if c.binding.entity_aspect.is_none() {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NO_ENTITY_BOUND,
+                    "a configuration specification needs an entity aspect",
+                )
+                .with_primary(c.binding.span, "no `use entity`, `use configuration` or `use open`")
+                .with_note("a binding indication in a configuration specification is primary (LRM 7.3.2.1)"),
+            ));
+        }
         let binding = self.binding_indication(scope, comp, &c.binding, None)?;
         let Some(cx) = self.cur() else {
             return Err(self.ice(c.span, "configuration specification outside a design unit"));
@@ -1141,7 +1157,15 @@ impl Db {
                         .with_primary(b.span, "maps given here"),
                     ));
                 }
-                return Err(self.unsupported(b.span, "maps in a binding without an entity", "S5"));
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NO_ENTITY_BOUND,
+                        "this binding adds maps, but no configuration specification binds the instance to an entity",
+                    )
+                    .with_primary(b.span, "no primary binding")
+                    .with_note("an incremental binding indication refines a primary binding (LRM 7.3.2.1)")
+                    .with_help("add `use entity lib.name` here, or bind it with a configuration specification"),
+                ));
             }
             return Ok(Binding {
                 aspect,
@@ -1401,15 +1425,20 @@ impl Db {
                         }
                         Some(GenSelect::Index(id))
                     }
-                    Some(_) => {
-                        // ponytail: generate ranges in block configurations
-                        // (`for g(1 to 3)`) are not resolved yet.
+                    Some(ast::Actual::Range(r)) => {
+                        let st = self.formal_subtype(*param).unwrap_or(self.poison.subtype);
+                        let base = self.base(st);
+                        Some(GenSelect::Range(self.range(scope, r, base)?))
+                    }
+                    Some(ast::Actual::Subtype(si)) => {
+                        // ponytail: `for g(natural range 1 to 3)`; add with a RangeC of a subtype.
                         return Err(self.unsupported(
-                            b.spec.span,
-                            "generate ranges in block configurations",
+                            si.span,
+                            "subtype indications as generate specifications",
                             "S5",
                         ));
                     }
+                    Some(_) => return Err(self.not_block(b.spec.span, named_in)),
                 };
                 (BlockTarget::Generate { stmt, select }, vec![s])
             }
@@ -1520,11 +1549,25 @@ impl Db {
                     Some(EntityAspect::Entity { unit, .. }) => Some(*unit),
                     _ => bound,
                 };
+                // Without an explicit binding the default binding applies (3.4.3, 7.3.3);
+                // NVC and GHDL reject this, Questa accepts (permissive, decisions.md).
+                let e = match e {
+                    Some(e) => Some(e),
+                    None if binding.is_none() => {
+                        let region = regions.first().copied().unwrap_or(scope);
+                        self.default_binding(region, comp).map(|(e, _)| e)
+                    }
+                    None => None,
+                };
                 let Some(e) = e else {
-                    return Err(self.unsupported(
-                        bc.span,
-                        "a block configuration of a default-bound instance",
-                        "S5",
+                    let cn = self.decls[comp].name;
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::NO_ENTITY_BOUND,
+                            format!("no entity is bound to component `{cn}`, so it has no architecture to configure"),
+                        )
+                        .with_primary(bc.span, "block configuration of an unbound instance")
+                        .with_help(format!("bind it with `use entity lib.{cn}` or analyze an entity `{cn}`")),
                     ));
                 };
                 Some(self.arch_block_config(&[scope], e, bc)?)

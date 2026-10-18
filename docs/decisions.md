@@ -288,3 +288,16 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   require `--threads 1`. API in docs/design/ir.md 3.4.
 - **Verifier** is one linear walk; register liveness across suspension is checked within a
   block only (cross-block needs dataflow, LLVM tier).
+
+## Design units and binding (rsim-sem, S5)
+
+- **Default binding (Q4, 7.3.3):** an entity made directly visible by a use clause wins over the
+  one in the design unit's library (`W1703` when both exist); the architecture is the last one in
+  manifest or analysis order. `Db::default_binding(scope, component)` with the instance's
+  `StmtKind::Instance::scope`.
+- **Selected entity names:** `architecture a of lib.e` is accepted (LRM 3.3.1 gives a name; NVC,
+  GHDL and Questa accept it); `lib` must be a visible library name and the architecture's own.
+- **Block configuration of a default-bound instance** (`for u : c  for rtl end for;  end for;`
+  with no binding indication): accepted, the default binding (7.3.3) supplies the entity. LRM
+  3.4.3 does not say whether an implicit binding makes the instance "fully bound"; Questa accepts,
+  NVC and GHDL reject, so the permissive reading applies. With no entity to bind it is `E1704`.

@@ -97,6 +97,7 @@ codes! {
     NOT_AN_INSTANCE = "E1701", "The label is not an instance of the named component.";
     REBINDING = "E1702", "An instance already bound by a configuration specification cannot be bound again.";
     BINDING_MISMATCH = "E1703", "A port or generic of the component has no match in the bound entity.";
+    NO_ENTITY_BOUND = "E1704", "The binding names no entity where one is needed: a configuration specification without an entity aspect, maps without a primary binding, or a block configuration of an instance with no entity.";
     // E18xx statements, processes, drivers
     BAD_WAIT = "E1801", "`wait` is not allowed in a process with a sensitivity list or in a function.";
     BAD_RETURN = "E1802", "`return` is only allowed in a subprogram, with a value exactly in functions.";

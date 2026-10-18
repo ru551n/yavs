@@ -239,13 +239,15 @@ From cli (`rsim analyze`):
 - Entities, architectures, configuration
   specifications (`config_spec`; stored in `Db::config_specs` by region once the statement
   part is analyzed) and configuration declarations (`UnitHir::Configuration`) are analyzed.
-- `Db::default_binding(scope, component)` is the 7.3.3 rule for elab (Q4): directly visible
+- `Db::default_binding(scope, component)` is the 7.3.3 rule for elab (Q4), with `scope` from
+  `StmtKind::Instance::scope`: directly visible
   entity first (`W1703` at the instance when `work` has a different one), last architecture in
   manifest or analysis order.
 - `Unit::refs` are manifest dependencies on units not loaded during analysis (an instance's
   named architecture, the default-bound entity of a component); `unit_record` adds them.
 - Generic types, subprograms and packages on entities, components and blocks report `E9999`
-  (S4, generic); mode view ports report `E9999` (S7).
+  (S4, generic); mode view ports report `E9999` (S7); a subtype indication as a generate
+  specification (`for g(natural range 1 to 2)`) reports `E9999`.
 - An entity and its architecture are one region (12.1): `declare` in an architecture checks the
   entity's names (`E1101`).
 

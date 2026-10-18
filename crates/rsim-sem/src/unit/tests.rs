@@ -485,7 +485,10 @@ fn architecture_of_an_entity_in_another_library() {
         "arch_other_lib",
         &[
             ("other", "entity e is end entity;"),
-            ("work", "library other;\narchitecture a of other.e is begin end architecture;"),
+            (
+                "work",
+                "library other;\narchitecture a of other.e is begin end architecture;",
+            ),
         ],
     );
     assert_eq!(r.codes(), vec![("E1004", 2)]);

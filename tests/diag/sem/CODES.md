@@ -96,6 +96,7 @@ Every `-- expect:` code in `tests/diag/sem/**` is listed here. "sem.md 8.1" mean
 | E1701 | label is not an instance of the component | 8.1 |
 | E1702 | rebinding | 8.1 |
 | E1703 | component/entity port or generic mismatch | 8.1 |
+| E1704 | binding without an entity where one is needed | 8.1 |
 | E1801 | `wait` misplaced | 8.1 |
 | E1802 | `return` misplaced | 8.1 |
 | E1810 | signal driven from outside a process | 8.1 |

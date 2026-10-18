@@ -164,7 +164,10 @@ fn architecture_of_selected_entity_name() {
     let LibraryUnit::Architecture(a) = &d.units[0].unit else {
         panic!()
     };
-    assert_eq!(a.entity_lib.map(|l| l.text.to_string()).as_deref(), Some("work"));
+    assert_eq!(
+        a.entity_lib.map(|l| l.text.to_string()).as_deref(),
+        Some("work")
+    );
     assert_eq!(a.entity.text.as_str(), "e");
 }
 

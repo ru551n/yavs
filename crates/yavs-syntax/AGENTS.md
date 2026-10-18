@@ -38,7 +38,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Global mutex interner, leaked strings | Never contended; symbols valid on runtime threads | `docs/decisions.md` "Parser" |
 | `parse_file` returns the tree only when there was no error; recovery inside a file lists independent errors; cascades at the same or a lexically bad token are dropped | Fail early, no guessed AST | `docs/decisions.md` "Parser"; error motto |
 | Conditional analysis in 2008 files too; unknown directives warn `W0002`; `TOOL_VENDOR`/`TOOL_NAME` = `yavs` | Harmless, 2008 allows tool directives | `docs/decisions.md` "Parser" |
-| 2019 makes only `end component` optional; other bare `end;` is `E0002` with a help | LRM, matches NVC/GHDL/Questa | `docs/design/lrm-checks.md` P1 |
+| 2019 makes only `end component` optional; other bare `end;` is `E0002` with a help | LRM, matches the reference simulators | `docs/design/lrm-checks.md` P1 |
 | Where 2019 conditional expressions are allowed | Permissive per LRM policy | `docs/design/lrm-checks.md` P2, `docs/decisions.md` "Parser" |
 | Strict on `abs x ** 2`, chained relations, mixed logical operators; `10ns` accepted with `W0003` | LRM grammar; common real code | `docs/decisions.md` "Parser" |
 | Encoding: `auto` (UTF-8 if valid else Latin-1), `latin1`, `utf8` (`E0010`); non-Latin-1 char in literal/identifier `E0009`; spans are file byte offsets | User decision | `docs/decisions.md` "Parser", source encoding |

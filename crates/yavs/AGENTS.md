@@ -6,9 +6,9 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 - The `yavs` executable: `parse`, `analyze`, `elab`, `run`. Parses options (clap), expands `@file`
   response files, maps libraries, drives the stages in order and stops at the first failed one,
-  renders diagnostics, maps outcomes to exit codes, prints reports in NVC's format.
+  renders diagnostics, maps outcomes to exit codes, prints reports in the reference simulator's format.
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
-  CLI only wires them. VUnit depends on its behaviour through `docs/cli-contract.md`.
+  CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
   `yavs-kernel`, `clap`. Not yet wired: `yavs-vhpi` (M5), `yavs-wave` (M7), `yavs-llvm` (M6),
   `yavs-ffi` via `--load` (M3). Nothing depends on this crate.
@@ -31,25 +31,25 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Decision | Why | Source |
 |---|---|---|
 | Stop at the first failed stage; never exit 0 after an error | Error motto | `docs/plan.md` "Error-handling motto", `docs/cli-contract.md` 0 |
-| Exit codes: analyze 0/1 (file error)/2 (usage)/3 (ICE); run 0, 1 (failure, report at/above `--exit-severity`, error reported), 2 (usage, analysis or elab error), 3 (internal) | VUnit reads only zero/non-zero, humans need the class | `docs/cli-contract.md` 4, 5 |
+| Exit codes: analyze 0/1 (file error)/2 (usage)/3 (ICE); run 0, 1 (failure, report at/above `--exit-severity`, error reported), 2 (usage, analysis or elab error), 3 (internal) | The test runner reads only zero/non-zero, humans need the class | `docs/cli-contract.md` 4, 5 |
 | `--exit-severity` default `failure`; an `error` report still makes the run exit 1 at the end, unless `ClearVhdlAssert` cleared the std.env assert counts (#191) | Like the reference simulators (user, 2026-10-18) | `docs/decisions.md` "Runtime: default exit severity" |
 | `std`/`ieee` are provided by yavs; mapping them is `E0102` (except `analyze --bootstrap`) | One std/ieee per design | `docs/cli-contract.md` 3 |
-| Design revision = newest standard in the closure unless `--std` is given | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "VUnit integration", `docs/design/sem.md` 0.1 |
-| `--threads` defaults to 1 | Each yavs under VUnit `-p N` | `docs/plan.md` "VUnit integration" |
-| `@file` response files from the start | VUnit on Windows | `docs/plan.md` "VUnit integration" |
+| Design revision = newest standard in the closure unless `--std` is given | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "Test-runner integration", `docs/design/sem.md` 0.1 |
+| `--threads` defaults to 1 | Each yavs under a test runner's parallel option (`-p N`) | `docs/plan.md` "Test-runner integration" |
+| `@file` response files from the start | Test runners on Windows | `docs/plan.md` "Test-runner integration" |
 | `--encoding=auto` default | User decision | `docs/decisions.md` "Parser", source encoding |
-| Reports on stdout as `** Note: <fs>fs+<delta>: msg` then `    Process <path>` | tools/difftest parses NVC's format | `docs/decisions.md` "Runtime: default exit severity", `docs/cli-contract.md` 5 |
+| Reports on stdout as `** Note: <fs>fs+<delta>: msg` then `    Process <path>` | tools/difftest parses the reference simulator's format | `docs/decisions.md` "Runtime: default exit severity", `docs/cli-contract.md` 5 |
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
-| A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and VUnit users need the VHDL location | `docs/cli-contract.md` 5 |
+| A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and test runner users need the VHDL location | `docs/cli-contract.md` 5 |
 | Unimplemented flags (`--wave`, `--load`, `--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
-Module-local decisions go in this section in the same commit; CLI or VUnit-facing behaviour goes
+Module-local decisions go in this section in the same commit; CLI or test-runner-facing behaviour goes
 into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
 
 ## 4. Invariants and pitfalls
 
-- `docs/cli-contract.md` is a contract with VUnit (`~/git/vunit` `sim_if/yavs.py`). Change it and
+- `docs/cli-contract.md` is a contract with external test runners. Change it and
   the code together, deliberately; `tests/cli.rs` pins the observable part.
 - A panic in `analyze` is caught and reported as an `E9999` ICE with the file name (exit 3); `elab`
   and `run` are wrapped by `guard` in `main.rs` (no file name). The panic hook is silenced in `main`.
@@ -86,6 +86,6 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
 - The difftest (`tools/difftest`) and the corpus report (`tools/corpus/report.sh`) drive this
   binary; output format changes break their parsers.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:cli`): #64 wire
-  lowering, interpreter and kernel into `yavs run`; #95 `--load`; #110 VUnit SimulatorInterface;
+  lowering, interpreter and kernel into `yavs run`; #95 `--load`; #110 test runner simulator interface;
   #116 `--wave`; #135 native Windows build; #22 bootstrap mode; #20
   `--encoding` in analyze.

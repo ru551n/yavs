@@ -41,18 +41,18 @@ the IR plugs in, error handling, open questions); read it before editing.
 | Effects (report, assert, textio `OUTPUT`, `stop`/`finish`, force) are committed in elaboration (`ProcId`) order | `--threads 1` and `N` byte-identical | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3 |
 | Processes touching non-protected shared variables, protected types or disk files are `serial` through M3 (user decision; files: #82); serial is `ProcFlags::serial` or `Process::serial` | No locks needed yet; the process knows what it touches | `docs/decisions.md` "Kernel round 2" (Protected types), "Kernel round 3", DESIGN.md |
 | No kernel user-file streams (K6 dropped): the interpreter reads and writes disk files directly | Write, close, reopen-for-read in one delta; serial callers keep it deterministic | `docs/decisions.md` "Kernel round 3" |
-| `--shuffle` permutes execution order with a seeded splitmix64, commit order fixed | Expose order-dependent testbenches (NVC #614) | `docs/plan.md`, DESIGN.md |
+| `--shuffle` permutes execution order with a seeded splitmix64, commit order fixed | Expose order-dependent testbenches | `docs/plan.md`, DESIGN.md |
 | `SimControl` is the only way to drive simulation (CLI, DAP, VHPI) | GUI-ready design | `docs/plan.md` "Designed for the GUI" |
 | Per-element flat event arrays over whole signals, no per-scalar objects | Rule 2 | `docs/plan.md` rule 2, `docs/decisions.md` "Kernel crate and process interface" |
 | Logic signals stored as bit-planes, everything else as bytes (K7); BIT/BOOLEAN implicit signals too ('0'/'1' codes, #185) | User, 2026-10-18 | `docs/decisions.md` "Kernel round 2", "Packed logic vectors", "Kernel round 3" |
 | A composite resolved as a whole keeps its per-field leaves (logic on planes) and is resolved as one group, not stored as one byte leaf (#83) | Bit-planes everywhere (user, 2026-10-18) | `docs/decisions.md` "Kernel round 3", DESIGN.md "Segments" |
 | Uncollapsed ports, conversions in the update phase without an extra delta (K1) | Rule 3 | `docs/plan.md` rule 3, `docs/decisions.md` "Kernel round 2" |
 | Forces and deposits queued and applied next cycle | VHDL-2008 force semantics | `docs/decisions.md` "Kernel crate and process interface" |
-| Delta numbering: init is delta 0 at 0 fs; default delta limit 10000; delays truncated to the resolution | Clear, NVC-compatible report times | same |
+| Delta numbering: init is delta 0 at 0 fs; default delta limit 10000; delays truncated to the resolution | Clear, reference-simulator-compatible report times | same |
 | Exit status: 101 internal (also a caught panic in process code), 1 otherwise; `Idle` is terminal like `stop`/`finish` | Error motto | same; DESIGN.md "Error handling" |
 | `SimError` is boxed and latches | Hot-path `Result` one word | `docs/decisions.md` "Kernel round 2" |
 | Time is checked i64 fs with a runtime resolution | Rule 7 | `docs/plan.md` rule 7 |
-| GC safepoint: the commit phase (no `Ctx` exists) | NVC #1649 deadlock | DESIGN.md "Parallel evaluation" |
+| GC safepoint: the commit phase (no `Ctx` exists) | A deadlock class seen in other simulators | DESIGN.md "Parallel evaluation" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
 rule 24).
@@ -98,4 +98,4 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
   `docs/design/ir.md` sections 3.2 and 6 describe the seam.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #103
   update/commit phases are single-threaded.
-  Questions on report order vs NVC: #11, #12.
+  Questions on report order vs the reference simulator: #11, #12.

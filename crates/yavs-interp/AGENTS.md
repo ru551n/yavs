@@ -11,8 +11,8 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
   stack, waits inside procedures), `call`/`call_shared` run code without a kernel (elaboration
   time), natives (std.standard, textio, files, env, implicit operations, `'image`/`'value`,
   `std.reflection`), VHPIDIRECT foreign calls with marshalling, generational heaps with
-  precise-root GC, protected objects, and Riviera/Questa-style debug hooks.
-- **The interpreter is the semantic reference** (rule 5): the LLVM tier must match it exactly.
+  precise-root GC, protected objects, and debug hooks in the style of commercial simulators.
+- **The interpreter is the semantic reference** (rule 5): the JIT tier must match it exactly.
 - Does not: lower HIR, build the hierarchy, schedule processes (kernel), or format values itself
   where `yavs-std` has the function (it marshals and calls `yavs-std`).
 - Depends on: `yavs-ir`, `yavs-kernel`, `yavs-logic`, `yavs-std`, `yavs-ffi`, `yavs-diag`.
@@ -23,7 +23,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`, `sources`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState`, `InterpProcess` (`new`, `with_debug`), `proc_flags`, `call`, `call_shared`, `call_values` (composite arguments and results as data and descriptor bytes, `CallVal`), `resolve` |
-| `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with NVC-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
+| `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with reference-simulator-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
 | `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
 | `src/implicit.rs` | `yavs.implicit.<family>.<type>[.<form>]` operations |
@@ -46,12 +46,12 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | Deallocated heap slots are quarantined until a suspension finds no address to them in the frames and temporaries; such addresses also keep objects alive in a collection | Addresses have no generation (#81) | `docs/decisions.md` "IR and interpreter" |
 | Disk files written directly by the owning process, every caller of a file native serial; `STD_OUTPUT` through `Ctx::output` | Write/close/reopen in one delta; `--threads` independent; ordered with `report` (orchestrator, 2026-10-18; serial: #82) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes", "Kernel round 3" |
 | BIT/BOOLEAN elements of logic arrays use std_ulogic codes '0'/'1' (2/3); scalar BIT/BOOLEAN are positions 0/1 | Shared plane ops | same; `src/implicit.rs` docs |
-| Foreign arrays as C-layout copies left to right, logic elements one code byte, records as aligned structs, access as pointer; copy-back range-checked | NVC convention plus yavs additions | `docs/decisions.md` "IR and interpreter" |
-| Debugging like Riviera-PRO/Questa: conditional line breakpoints with hit counts, step in/over/out, global step, signal breakpoints, process table; stops inside a process need `--threads 1` | User requirement | `docs/decisions.md` "IR and interpreter", ir.md 3.4 |
-| Reflection: TIME mirror values in resolution-limit units; unit indices 1-based; element/literal indices 0-based; names upper case; case-insensitive lookups (user, 2026-10-18) | VUnit `record_dict_pkg`, NVC | `docs/decisions.md` "Reflection: ..." (two sections) |
+| Foreign arrays as C-layout copies left to right, logic elements one code byte, records as aligned structs, access as pointer; copy-back range-checked | The reference simulator convention plus yavs additions | `docs/decisions.md` "IR and interpreter" |
+| Debugging like the reference simulators: conditional line breakpoints with hit counts, step in/over/out, global step, signal breakpoints, process table; stops inside a process need `--threads 1` | User requirement | `docs/decisions.md` "IR and interpreter", ir.md 3.4 |
+| Reflection: TIME mirror values in resolution-limit units; unit indices 1-based; element/literal indices 0-based; names upper case; case-insensitive lookups (user, 2026-10-18) | The test runner `record_dict_pkg`, the reference simulator | `docs/decisions.md` "Reflection: ..." (two sections) |
 | textio READ/WRITE move the line's bytes to the new object (`Heap::take`, `alloc_from`) instead of copying; a READ drops the consumed prefix through the object's front offset, compacted once it is the larger half. The handle, deallocation and renumbering `1 to len` stay as before | N reads or writes on one line are O(N) (#196) | `src/textio.rs` `line_edit`, `src/heap.rs` |
 | Assert state: each process sees the state at the start of its cycle plus its own changes; changes merge in process order at the next cycle | Rule 3 with parallel processes (#99) | `docs/decisions.md` "IR and interpreter" |
-| Check and overflow texts match NVC (`value 101 outside of PCT range 0 to 100 for variable P`, ...) | Strict difftest | `crates/yavs-ir/README.md` Requests answer 4 |
+| Check and overflow texts match the reference simulator (`value 101 outside of PCT range 0 to 100 for variable P`, ...) | Strict difftest | `crates/yavs-ir/README.md` Requests answer 4 |
 | Runtime errors stop at once (bound, overflow, null, delta limit); a report at the stop severity ends the process | Error motto; exit severity (user, 2026-10-18) | `docs/plan.md` "Error-handling motto", `docs/decisions.md` "Runtime: default exit severity" |
 
 Module-local decisions go in this section and ir.md section 9 in the same commit (root
@@ -78,13 +78,13 @@ Module-local decisions go in this section and ir.md section 9 in the same commit
 ```sh
 CARGO_BUILD_JOBS=6 cargo test -p yavs-interp
 cargo test -p yavs-ir -p yavs-interp -p yavs-lower -p yavs-elab   # after IR or API changes
-python3 tools/difftest/difftest.py --candidate yavs              # end to end against NVC refs
+python3 tools/difftest/difftest.py --candidate yavs              # end to end against reference-simulator refs
 ```
 
 - A new native: row in `lib/NATIVE.md` (see `lib/AGENTS.md`), implementation in `native.rs` /
   `implicit.rs` / `textio.rs` / `env.rs` / `reflect.rs`, a test in `tests/`.
 - No codes of its own: runtime errors are kernel `SimError`s with `ErrorKind::Runtime` (`E3009`)
-  or `Internal` (`E9999`); the message text is what the user sees, so keep it NVC-compatible.
+  or `Internal` (`E9999`); the message text is what the user sees, so keep it reference-simulator-compatible.
 
 ## 6. Coordination
 

@@ -6,8 +6,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 - Calls C functions whose signature is known only at run time (VHPIDIRECT `foreign`
   subprograms) **without libffi**: argument classification in plain Rust per target ABI, plus a
-  small asm trampoline per target. Also the VHDL to C type mapping in NVC's convention, so C
-  code written for NVC works unchanged.
+  small asm trampoline per target. Also the VHDL to C type mapping in the reference simulator's convention, so C
+  code written for the reference simulator works unchanged.
 - Targets: x86_64 Linux (SysV), x86_64 Windows (Win64), aarch64 Linux (AAPCS64). Any other target
   is a compile error.
 - Does not: marshal VHDL values (bit-planes to bytes, records, copy-back: `yavs-interp`
@@ -33,7 +33,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|---|
 | Own per-ABI trampolines (SysV, AArch64, Win64), no libffi | Minimal dependencies, no manual install | `docs/plan.md` architecture `yavs-rt`, ir.md 1.7 |
 | `unsafe` denied crate-wide, allowed only in `sys` (crate opts out of the workspace `forbid`) | Root `AGENTS.md` rule 11 | `Cargo.toml` comment |
-| NVC's VHDL to C type convention | Existing VHPIDIRECT C code works | `src/vhdl.rs`; `docs/plan.md` "Foreign subprograms" |
+| The reference simulator's VHDL to C type convention | Existing VHPIDIRECT C code works | `src/vhdl.rs`; `docs/plan.md` "Foreign subprograms" |
 | More than 64 arguments is an error, never a crash | Fail early | `MAX_ARGS` |
 | Typed Rust callees bind without `unsafe` (`ForeignFn::from_fn`); real symbols are bound by the elaborator, the one unsafe step | Safe tests and natives | `docs/decisions.md` "IR and interpreter" (Foreign calls) |
 | All three platforms tier 1: test aarch64 under qemu-user, Windows under wine | Plan platforms | `docs/plan.md` "Platforms"; STATUS.md "ffi" |

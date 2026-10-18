@@ -14,7 +14,7 @@ The codes are the `std_ulogic` positions (`U X 0 1 Z W L H -` = 0..8), so a code
 
 ## Results
 
-`cargo bench -p yavs-logic`, Intel Core Ultra 9 275HX, rustc 1.99, median ns per call, nibbles / planes.
+`cargo bench -p yavs-logic`, Intel Core Ultra 9 275HX, Rust 1.99, median ns per call, nibbles / planes.
 Random operands over all nine values (add/compare: only 0/1).
 
 | op | 1 | 8 | 32 | 64 | 1024 | 65536 |

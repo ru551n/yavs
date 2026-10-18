@@ -1,79 +1,78 @@
-# What cocotb needs from yavs
+# What the Python testbench framework needs from yavs
 
-Read from cocotb `master` at `ae55ced` (2026-10-15), shallow clone in
-`~/.cache/rsim-vhpi/cocotb`. Paths below are relative to the cocotb repo.
+Read from the `master` branch of a widely used Python testbench framework over VHPI at `ae55ced`
+(2026-10-15), shallow clone in `~/.cache/rsim-vhpi/cocotb`. File names below are relative to that
+framework's repository and are named by role ("bootstrap library", "VHPI implementation").
 
-## How cocotb starts under a VHPI simulator
+## How the Python testbench framework starts under a VHPI simulator
 
-1. The simulator loads `libcocotb_bootstrap.so` (`cocotb_bootstrap.dll` on
-   Windows, from `cocotb-config --lib-entry vhpi <sim>`). That library exports
-   `vhpi_startup_routines[] = { cocotb_bootstrap_entry, NULL }`
-   (`src/cocotb/share/lib/gpi/bootstrapper.cpp`), so a simulator that calls
-   `vhpi_startup_routines` needs no entry name. Only Riviera/Active-HDL get
-   `lib:cocotb_bootstrap_entry` (see `lib_entry` in `src/cocotb_tools/config.py`).
-2. `cocotb_bootstrap_entry` reads `COCOTB_BOOTSTRAP` (entries separated by `:`
+1. The simulator loads the framework's bootstrap library (a `.so`, or a `.dll` on
+   Windows, whose path comes from the framework's config tool via `--lib-entry vhpi <sim>`).
+   That library exports `vhpi_startup_routines[] = { bootstrap_entry, NULL }`, so a simulator
+   that calls `vhpi_startup_routines` needs no entry name. Only some simulators get
+   `lib:bootstrap_entry` (the framework's `lib_entry` table).
+2. `bootstrap_entry` reads the `COCOTB_BOOTSTRAP` environment variable (entries separated by `:`
    on Linux and `;` on Windows, each `library[,function]`) and loads libgpi,
    libpython and the PyGPI module in that order. The makefiles and the Python
    runner set it.
 3. libgpi loads the implementations listed in `GPI_IMPL`
    (`path/libgpi_impl_<sim>_vhpi.so:gpi_impl_<sim>_vhpi_entry`) with
-   `dlopen(RTLD_LAZY | RTLD_GLOBAL)` (`src/cocotb/share/lib/gpi/dynload.cpp`).
-4. The VHPI implementation (`src/cocotb/share/lib/gpi/vhpi/*.cpp`) calls
-   `vhpi_*` directly. It includes cocotb's vendored IEEE header
-   (`src/cocotb/_vendor/vhpi/vhpi_user.h`) plus `vhpi_user_ext.h`, never the
+   `dlopen(RTLD_LAZY | RTLD_GLOBAL)`.
+4. The framework's VHPI implementation calls `vhpi_*` directly. It includes its own
+   vendored IEEE header (`vhpi_user.h`) plus `vhpi_user_ext.h`, never the
    simulator's header.
 
-## Symbols cocotb's VHPI layer uses
+## Symbols the Python testbench framework's VHPI layer uses
 
 `vhpi_check_error`, `vhpi_control`, `vhpi_get`, `vhpi_get_phys`,
 `vhpi_get_str`, `vhpi_get_time`, `vhpi_get_value`, `vhpi_handle`,
 `vhpi_handle_by_index`, `vhpi_handle_by_name`, `vhpi_iterator`,
 `vhpi_put_value`, `vhpi_register_cb`, `vhpi_release_handle`, `vhpi_remove_cb`,
 `vhpi_scan`. No data symbols (`vhpiFS` and friends are unused). This is the
-same list as `src/cocotb/share/def/nvcvhpi.def`. yavs exports these and the
+same list as the framework's `.def` file for the primary reference simulator. yavs exports these and the
 rest of the standard set (`src/exports.txt`); only the stub subset works
 before M5.
 
-Behaviour cocotb relies on, for M5:
+Behaviour the Python testbench framework relies on, for M5:
 - `vhpi_control(vhpiFinish, vhpiDiagTimeLoc)`: one extra `int` argument
   (`vhpiDiagT` from `vhpi_user_ext.h`). yavs accepts and ignores it.
 - `vhpi_register_cb` with `vhpiReturnCb`, and `vhpi_remove_cb` on callbacks
   that already fired or were disabled (rule 9: keep those cheap).
 - `vhpi_get_phys(vhpiResolutionLimitP, NULL)` for the time precision.
-- `vhpiCaseNameP` with the original spelling. NVC returned upper-case names,
-  so cocotb compares names case-insensitively under `#ifdef NVC`
-  (`compare_names` in `VhpiImpl.cpp`). yavs keeps the original spelling
+- `vhpiCaseNameP` with the original spelling. The primary reference simulator returned upper-case names,
+  so the framework compares names case-insensitively under a compile-time define for that
+  simulator (`compare_names`). yavs keeps the original spelling
   (rule 8), so it can be built without that define.
-- Generate labels: cocotb expects `label(index)` unless built with `ALDEC`
+- Generate labels: the Python testbench framework expects `label(index)` unless built with the define for a commercial simulator
   (`label__index`). yavs should use the `(index)` form.
 
 ## Linux
 
 - `yavs` exports the `vhpi_*` symbols from the executable (dynamic list,
-  see `docs/decisions.md`). cocotb's VHPI library is linked with
+  see `docs/decisions.md`). The Python testbench framework's VHPI library is linked with
   `-Wl,--allow-shlib-undefined` and resolves them from the process at load
   time. Nothing to link, no library naming constraint on yavs's side.
-- The existing `libgpi_impl_nvc_vhpi.so` would already load under yavs: it
-  only adds the NVC name workarounds. A dedicated `gpi_impl_yavs_vhpi` is
-  still the right target (no `NVC` define).
+- The framework's existing VHPI implementation library for the primary reference simulator
+  would already load under yavs: it only adds that simulator's name workarounds. A dedicated
+  `gpi_impl_yavs_vhpi` is still the right target (no simulator define).
 
 ## Windows
 
-- cocotb links each VHPI implementation DLL against an import library it
-  builds itself from a `.def` file in `src/cocotb/share/def/` (`lib /def:`
-  with MSVC, `dlltool -d` with MinGW; `CMakeLists.txt`, the `WIN32` block).
-  NVC is the precedent for an executable: `nvcvhpi.def` starts with
-  `LIBRARY "nvc.exe"`. (Riviera's `aldec.def` names a DLL, `aldecpli.dll`.)
-- So cocotb does not need yavs's shipped `yavs.lib`; it needs an `yavs.def`
+- The Python testbench framework links each VHPI implementation DLL against an import library it
+  builds itself from a `.def` file (`lib /def:`
+  with MSVC, `dlltool -d` with MinGW; the `WIN32` block of its CMake file).
+  The primary reference simulator is the precedent for an executable: its `.def` starts with
+  `LIBRARY "<simulator>.exe"`. (A commercial simulator's `.def` names a DLL instead.)
+- So the Python testbench framework does not need yavs's shipped `yavs.lib`; it needs an `yavs.def`
   with `LIBRARY "yavs.exe"` and the export list above. Our generated
   `exports.def` plus that line is exactly it. `yavs.lib` serves plugins that
-  are not built by cocotb.
+  are not built by the framework.
 - The import names `yavs.exe`, so the loader binds to the running
   executable only if it is called `yavs.exe`. A renamed binary breaks VHPI
   plugins; document it next to the install instructions.
-- Other precedents (from the rust-vhpi README, see below): NVC ships its
-  import library as `$PREFIX/lib/nvc/libnvcimp.a`, the same idea as our
-  `yavs.lib`. rust-vhpi's `vhpi-shim` (the `dynamic` feature) avoids import
+- Other precedents (from the README of a Rust VHPI plugin crate, see below): the primary reference simulator ships its
+  import library under its install prefix, the same idea as our
+  `yavs.lib`. That crate's shim (the `dynamic` feature) avoids import
   libraries altogether: it resolves every `vhpi_*` at run time with
   `GetProcAddress(GetModuleHandleA(NULL), name)`, i.e. from the export
   table of the main executable. That works with yavs as is and does not
@@ -82,27 +81,26 @@ Behaviour cocotb relies on, for M5:
 
 ## Changes to propose upstream (M5)
 
-1. `src/cocotb/share/def/yavsvhpi.def`: `LIBRARY "yavs.exe"` plus the
+1. A `yavsvhpi.def` file: `LIBRARY "yavs.exe"` plus the
    `EXPORTS` list.
-2. `CMakeLists.txt`: `add_vhpi_library(YAVS YAVS EXTRA_LIBS ${YAVS_EXTRA_LIBS})`
+2. The CMake file: `add_vhpi_library(YAVS YAVS EXTRA_LIBS ${YAVS_EXTRA_LIBS})`
    with `yavsvhpi` on `WIN32`, and `yavsvhpi` in the two import-library loops.
-3. `src/cocotb_tools/config.py`: add `"yavs"` to `supported_sims`; no entry
+3. The config module: add `"yavs"` to `supported_sims`; no entry
    function needed.
-4. `src/cocotb_tools/makefiles/simulators/Makefile.yavs`, modelled on
-   `Makefile.nvc`:
+4. A `Makefile.yavs` simulator makefile, modelled on the one of the primary reference simulator:
    - analyse: `yavs analyze --work $(LIB):$(SIM_BUILD)/$(LIB) $(VHDL_SOURCES_$(LIB))`
      per library, then the top library.
    - run: `GPI_IMPL=$(shell $(PYTHON_BIN) -m cocotb_tools.config --gpi-impl yavs vhpi) $(COCOTB_ENV)`
      `yavs run ... $(COCOTB_TOPLEVEL) --vhpi=$(shell $(PYTHON_BIN) -m cocotb_tools.config --lib-entry vhpi yavs) $(SIM_ARGS)`.
-   - VHDL only, like NVC: refuse `VERILOG_SOURCES`.
-5. `src/cocotb_tools/runner.py`: an `Yavs` runner like `Nvc` (`_build_command`
+   - VHDL only, like the primary reference simulator: refuse `VERILOG_SOURCES`.
+5. The framework's Python runner module: a `Yavs` runner like the one for the primary reference simulator (`_build_command`
    with `yavs analyze`, `_test_command` with `yavs run --vhpi=...`, and
    `GPI_IMPL` set in `_set_env_test`). Add it to the simulator table.
-6. cocotb's CI matrix entry for yavs on Linux and Windows.
+6. The framework's CI matrix entry for yavs on Linux and Windows.
 
-## rust-vhpi as a second conformance client (M5)
+## A Rust VHPI plugin crate as a second conformance client (M5)
 
-[rust-vhpi](https://crates.io/crates/vhpi) (MIT OR Apache-2.0, by NVC's
+The `vhpi` crate family on crates.io (MIT OR Apache-2.0, by the primary reference simulator's
 author; read-only clone in `~/.cache/rust-vhpi/repo`, commit `65484e3`) is
 the plugin side of VHPI in Rust: `vhpi-sys` (bindings to the IEEE header we
 vendor), `vhpi` 0.6.0 (safe wrapper), `vhpi-shim`, and cdylib plugins with
@@ -120,12 +118,12 @@ It is not a dependency yet: every plugin needs iterators and values, which
 the stub model lacks, and a Rust plugin has to be its own cdylib crate. The
 M5 plan:
 
-1. A test (or `scripts/vhpi-conformance.sh`) that builds the rust-vhpi
-   plugins from a pinned checkout, runs each with its testbench on NVC
+1. A test (or `scripts/vhpi-conformance.sh`) that builds the crate's
+   plugins from a pinned checkout, runs each with its testbench on the primary reference simulator
    (`nvc -a ... -e tb -r --load lib.so`) and on yavs (`yavs run tb --vhpi=lib.so`),
    and diffs stdout after normalising the tool name and version. The
    assertion plugins must report all checkpoints passed on both.
 2. The `scripts/run_*.sh` marker lists are the pass criteria to copy.
 3. On Windows, run the same plugins built with the `dynamic` feature
    (`vhpi-shim`), which exercises yavs.exe's export table directly.
-4. Track pass counts per plugin in `STATUS.md` next to cocotb's regression.
+4. Track pass counts per plugin in `STATUS.md` next to the framework's regression.

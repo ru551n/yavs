@@ -47,7 +47,7 @@ through the orchestrator.
 ## Conventions
 
 - **Fail early, fail clearly.** Every problem is a `yavs_diag::Diagnostic` reported through
-  `Db::report`/`Db::error`, in the rustc format: code, primary span, labels, notes, help. Never
+  `Db::report`/`Db::error`, with a code, primary span, labels, notes and help. Never
   `unwrap_or(default)` on anything that comes from the design. A construct a later slice will
   handle reports `Db::unsupported(span, what, "S<n>")` (code `E9999`, says which slice): never a
   silent default, never `todo!()`.
@@ -99,7 +99,7 @@ From sem robustness (fuzzing, `fuzz/fuzz_targets/sem.rs`):
   `report_name` should end in `Db::ice` for them with the span, so the next one is loud and has a
   location.
 - **lead** (decl.rs): aliases of indexed and sliced object names (`alias a : t is v(3)`) are
-  `E9999` (S3), selected ones (`alias a : t is rec.f`) too; the corpus (OSVVM `TbUtilPkg`) needs both.
+  `E9999` (S3), selected ones (`alias a : t is rec.f`) too; the corpus (an external verification library's utility package) needs both.
 
 From s6 (alias/external/protected/view). The S6/S7 checks exist as `Db` methods with unit tests;
 they need calls from the analyzers that own the constructs:
@@ -186,7 +186,7 @@ From names (attr):
   reports E1361 from the discrete-range path; `tests/diag/sem/attr/range_on_scalar_object.vhd`
   wants E1621 at the attribute (`attr::select` gives it). Route range attributes through
   `attr::select` there. The same path rejects legal `'range` of indexed and selected object
-  names with E1361 (hdl-modules: `input_ports_m2s(0).w.data'range` in
+  names with E1361 (an external library: `input_ports_m2s(0).w.data'range` in
   axi_lite_simple_write_crossbar.vhd:66, `addrs(0)'range` in addr_pkg.vhd:101,
   `base_addresses'range` of a generic in axi_lite_mux.vhd:57); names.rs `attr_prefixes` describes
   such prefixes already.
@@ -207,7 +207,7 @@ From names (attr):
   instantiates when `c` is not a subprogram; entities and architectures run
   `analyze_conc_stmts`.
 - Loop parameters must have `stat: None` and generate parameters `Globally` on their `Obj`
-  expressions: the longest static prefix depends on it (lsp.rs, NVC #856).
+  expressions: the longest static prefix depends on it (lsp.rs).
 - `seq_stmts(scope, stmts)` (decl.rs's hook) is implemented; nested bodies inherit `wait` and
   driver rules through `Db::stmt_owners`, so analyze bodies declared in a process while it is open
   (they are: `st_decls` runs inside the process).
@@ -225,20 +225,20 @@ From names (attr):
 
 From reflect (reflect.rs):
 
-- **generic**: `to_dict generic (type record_t) parameter (value : record_t)` (VUnit
-  record_dict_pkg) needs generic subprogram declarations, bodies and `function f is new f generic
+- **generic**: `to_dict generic (type record_t) parameter (value : record_t)` (an external test runner's
+  reflection package) needs generic subprogram declarations, bodies and `function f is new f generic
   map (record_t => t)` instances overloaded under one name. `value'reflect` is an ordinary
   `ExprKind::Attr` with `AttrPrefix::Expr`; the instance clone must remap that prefix (and with it
   the reflected subtype) like any other attribute, nothing reflection-specific.
 - **M3 (runtime)**: open question for the user: the unit of `PHYSICAL_VALUE_MIRROR.value`.
-  record_dict_pkg multiplies it by `std.env.resolution_limit` (Riviera-PRO); NVC returns fs.
+  record_dict_pkg multiplies it by `std.env.resolution_limit` (a commercial simulator); the reference simulator returns fs.
 
 From alloc (alloc.rs):
 
 - **expr/resolve.rs** `proc_call` replaces the call expression with `ExprKind::Error` after taking
   its arguments; the debug HIR validation reports that as an internal error for every procedure
   call statement (so `deallocate(p)` cannot have a negative-suite test yet).
-- **U-2**: NVC, GHDL and Questa 2026.1 all reject incomplete types in protected method profiles in
+- **U-2**: the reference simulators 2026.1 all reject incomplete types in protected method profiles in
   user code (`tests/diag/sem/NVC.md`); done: the ruling is limited to `std`.
 - ponytail: allocators do not filter overloads by designated type (`f(new integer)` with `f`
   overloaded on two access types is `E1302`), as `null` is.
@@ -308,7 +308,7 @@ Corpus groups `tests/corpus/hierarchy` and `generics` (difftest) stop in analysi
   "this name does not denote a value" at `a` (the architecture's own name hides the port).
   `hierarchy/component_binding.vhd`, `hierarchy/nested_instances.vhd`.
 - **stmt/aggregate**: `o <= (others => '1')` for a port `o` of an unconstrained subtype (bounds
-  from the actual at elaboration, 9.3.3.3; NVC accepts): E1325. `generics/generic_map.vhd`. The
+  from the actual at elaboration, 9.3.3.3; the reference simulator accepts): E1325. `generics/generic_map.vhd`. The
   same E1325 for a concurrent assignment to a constrained `std_logic_vector` signal,
   `s <= (others => 'Z');`.
 - **generic**: `generics/generic_types_2019.vhd`: generic subprogram `img` of a generic type `t`

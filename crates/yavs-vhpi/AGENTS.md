@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-vhpi`.
 The ABI and export decisions are in `docs/decisions.md` "VHPI ABI and symbol export"; what
-cocotb needs (startup, symbol list, Linux and Windows linking, upstream changes) is in
+the Python testbench framework needs (startup, symbol list, Linux and Windows linking, upstream changes) is in
 `crates/yavs-vhpi/COCOTB.md`.
 
 ## 1. Purpose and boundaries
@@ -38,15 +38,15 @@ cocotb needs (startup, symbol list, Linux and Windows linking, upstream changes)
 
 | Decision | Why | Source |
 |---|---|---|
-| VHPI is mandatory (cocotb) and uses no separate DLL: the executable exports `vhpi_*`; no import library is built or shipped, plugins bring their own (user, 2026-10-18) | Plugins build against the exports themselves | `docs/plan.md` "Decisions" / "Platforms" |
+| VHPI is mandatory (Python testbench frameworks) and uses no separate DLL: the executable exports `vhpi_*`; no import library is built or shipped, plugins bring their own (user, 2026-10-18) | Plugins build against the exports themselves | `docs/plan.md` "Decisions" / "Platforms" |
 | Header is the official IEEE file, unchanged; Rust side hand-written, checked against it by a test | Names and layouts are fixed by the standard; no libclang on Windows | `docs/decisions.md` "VHPI ABI and symbol export" |
 | Linux exports exactly `src/exports.txt` via `-Wl,--dynamic-list`; plugins loaded `RTLD_NOW | RTLD_GLOBAL` | Missing symbols fail at load, naming them | same |
 | Windows: `.def` plus import libraries from `lib.exe`, `llvm-dlltool` or MinGW `dlltool` | Same symbol set as Linux | same; COCOTB.md "Windows" |
 | One process-wide state behind a mutex never held while plugin code runs | VHPI has no context argument | same |
 | Handles are `(index, generation)` packed into the pointer value; never NULL, never dereferenced; 64-bit only | Rule 9 | `docs/plan.md` rule 9 |
-| Disabled callbacks that are never removed must stay cheap | cocotb never removes them (NVC #1114) | rule 9, #123 |
-| Records, arrays, generics and generates are native in the object model | Not a Verilog-shaped shim (GHDL #237) | rule 9 |
-| Plugin load failures are hard errors before simulation (`E0901`, `E0902`); misuse `W0903` every time; unimplemented calls `W0904` once per message; failed lookups only via `vhpi_check_error` | Fail early without breaking cocotb probing | `docs/decisions.md` "VHPI ABI" |
+| Disabled callbacks that are never removed must stay cheap | Python testbench frameworks never remove them | rule 9, #123 |
+| Records, arrays, generics and generates are native in the object model | Not a Verilog-shaped shim | rule 9 |
+| Plugin load failures are hard errors before simulation (`E0901`, `E0902`); misuse `W0903` every time; unimplemented calls `W0904` once per message; failed lookups only via `vhpi_check_error` | Fail early without breaking Python testbench framework probing | `docs/decisions.md` "VHPI ABI" |
 | `unsafe` allowed crate-wide in `Cargo.toml` but confined to `abi.rs`, `plugin.rs`, `shim.c` | Root `AGENTS.md` rule 11 | `Cargo.toml`, crate docs |
 | Logic values cross the boundary as std_ulogic codes (the `vhpiEnumT` value); BIT/BOOLEAN translated at the boundary | One encoding | `crates/yavs-logic/LAYOUT.md`, `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes" |
 
@@ -75,7 +75,7 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 
 ## 6. Coordination
 
-- cocotb itself is not installed; installing it needs the user's approval (#122).
+- The Python testbench framework itself is not installed; installing it needs the user's approval (#122).
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
-  object model over `SimControl` and the event bus; #122 cocotb regression (install needs
+  object model over `SimControl` and the event bus; #122 Python testbench framework regression (install needs
   approval); #123 disabled callbacks stay cheap; #124 Windows MSVC path never run.

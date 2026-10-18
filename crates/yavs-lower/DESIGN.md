@@ -271,7 +271,7 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
    disconnection specifications reach the HIR).
 7. **Expression actuals of ports** (#74, LRM 6.5.6.3; open, yavs-elab 2026-10-18): an
    association `f => expr` (or `f => inertial expr`) whose actual is not a static signal name
-   is a port driven by an equivalent process `f <= expr` in the instantiating region. NVC
+   is a port driven by an equivalent process `f <= expr` in the instantiating region. The reference simulator
    treats an external name actual the same way (one delta later, `hierarchy/external_port_actual`).
    Elab will create the formal's signal object (bounds from its subtype, or from the
    expression's subtype when the formal is unconstrained) and one process instance in the
@@ -290,7 +290,7 @@ From yavs-interp (2026-10-18, #163), the implicit natives (`yavs-interp/src/impl
 1. **Null concatenation bounds.** The inline `&` takes `S'LEFT` as the left bound also when
    both operands are null arrays; LRM 2008 9.2.5 says the result is then the right operand.
    `x & y` with `x : bit_vector(5 to 4)` and `y : bit_vector(9 downto 10)` gives `0 to -1`,
-   the LRM wants `9 downto 10` (NVC 1.23 fails on this case, so a corpus test needs
+   the LRM wants `9 downto 10` (the reference simulator 1.23 fails on this case, so a corpus test needs
    `ref=hand`). The native `yavs.implicit.cat.*` already implements the rule.
 2. **Native fallback contracts**, for any call that goes to the implicit natives instead of
    being inlined: `cat` takes three more cells after its operands (`S'LEFT`, `S'RIGHT`, the

@@ -35,7 +35,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 | std_logic family and bit written as characters with the VHDL data type set; other enums as bit vectors with an FST enum table (original spelling); integers/time two's complement; reals doubles; vector bounds in the name (`data[7:0]`, left first) | Viewers show `U`, `X`, direction kept | same, "FST mapping" |
 | Records and arrays are scopes with one signal per sub-element | Rule 11 (same sub-element events as everything else) | `docs/plan.md` rule 11 |
 | Include/exclude globs, size cap for arrays and memories, enum names in metadata | Rule 11 | `docs/plan.md` rule 11 |
-| Flushed on the next time advance after `flush_interval` or `block_change_limit`; header patched each time; SIGINT only sets a flag and the kernel stops between time steps and calls `finish` | A killed run is readable (GHDL #2617, NVC #959) | `docs/decisions.md` "Durability" |
+| Flushed on the next time advance after `flush_interval` or `block_change_limit`; header patched each time; SIGINT only sets a flag and the kernel stops between time steps and calls `finish` | A killed run is readable | `docs/decisions.md` "Durability" |
 | Waves come in through the event bus as a subscriber (M7) | Plan "Designed for the GUI" | `docs/plan.md` |
 | Identifiers keep original spelling in the file; matching is case-insensitive | Rule 8 | `docs/plan.md` rule 8, `src/select.rs` |
 

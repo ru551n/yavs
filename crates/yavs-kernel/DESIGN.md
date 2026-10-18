@@ -128,7 +128,7 @@ suspends (docs/design/ir.md 1.6). Protected-type locks are never held across a s
 
 ## How the IR plugs in
 
-The interpreter and the LLVM tier implement:
+The interpreter and the JIT tier implement:
 
 ```rust
 pub trait Process: Send {

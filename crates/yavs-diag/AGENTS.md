@@ -5,7 +5,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 ## 1. Purpose and boundaries
 
 - One diagnostics model for every stage (`Diagnostic`, `Label`, `Severity`, `Span`, `SourceMap`)
-  and one renderer (`render`) in three formats: rustc-style human (via `annotate-snippets`),
+  and one renderer (`render`) in three formats: human (via `annotate-snippets`),
   `short` (one line), `json` (one object per line).
 - Owns the **code registry** (the table in the crate docs of `src/lib.rs`).
 - Does not: decide codes for other crates (each stage defines its `pub const`s next to the code
@@ -31,12 +31,12 @@ Everything is in `src/lib.rs` (about 530 lines).
 
 | Decision | Why | Source |
 |---|---|---|
-| rustc-format diagnostics: code, primary span, labels, notes, help | Error motto: fail early, fail clearly | `docs/plan.md` "Error-handling motto", architecture table |
+| Diagnostics with code, primary span, labels, notes, help | Error motto: fail early, fail clearly | `docs/plan.md` "Error-handling motto", architecture table |
 | Every code is stable, unique, never reused; one range per stage | `-W`/`-Werror` per code, `--explain` | `docs/plan.md` design rule 13; root `AGENTS.md` rule 5 |
 | An empty code is only for summary lines ("aborting due to N previous errors") | Not a real diagnostic | crate docs |
 | Spans are byte offsets into the file on disk, also for Latin-1 files | `--encoding=auto|latin1|utf8` (user decision) | `docs/decisions.md` "Parser", source encoding |
 | Colour off when stderr is not a TTY or `NO_COLOR` is set; `--color` overrides | plan architecture table | `ColorChoice::use_color` |
-| JSON shape is rustc-compatible (`level`, `children`, `rendered`); the contract won over the old `severity`/`notes`/`help` (#158) | Editors, DAP and VUnit can reuse rustc JSON handling | `docs/cli-contract.md` section 0 |
+| JSON shape follows the common compiler shape (`level`, `children`, `rendered`); the contract won over the old `severity`/`notes`/`help` (#158) | Editors, DAP and test runners can reuse standard compiler JSON handling | `docs/cli-contract.md` section 0 |
 
 Module-local decisions go here, in this section, in the same commit (root `AGENTS.md` rule 24).
 
@@ -47,7 +47,7 @@ Module-local decisions go here, in this section, in the same commit (root `AGENT
 - Snapshot output is part of review: any change in human or JSON text changes
   `tests/diag/*.stderr`, `tests/cli/*.stderr` and `crates/yavs-sem` snapshots. Bless and read the
   diff (`YAVS_BLESS=1`).
-- The JSON keys are rustc-compatible (#158, `docs/cli-contract.md` section 0): `level`, `code` (plain
+- The JSON keys follow the common compiler shape (#158, `docs/cli-contract.md` section 0): `level`, `code` (plain
   string), `message`, `spans[]` (`file`, `byte_start`, `byte_end`, `line_start`, `column_start`,
   `line_end`, `column_end`, `primary`, `label`), `children[]` (notes then help, each `{level,
   message, spans:[], children:[], rendered:null}`), `rendered` (human text, no colour). Change

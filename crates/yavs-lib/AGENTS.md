@@ -32,14 +32,14 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | No incremental compilation cache; `elab`/`run` re-parse and re-analyze from source; analysis is on demand over the closure only | Keeps UNISIM-size libraries cheap without a cache | `docs/plan.md` "Decisions", architecture table `yavs-lib` |
 | `_YAVS_LIB` locked with `std::fs::File::lock`/`lock_shared` (flock / LockFileEx) | Parallel `yavs analyze` into one library is safe | `docs/plan.md` rule 14 |
 | `analyze` takes the exclusive lock while updating; each write is temp file plus atomic rename | Readers never see a half-written manifest | rule 14 |
-| `elab`/`run` take the shared lock only while reading; `run` never writes into library dirs | A long simulation never blocks compilation (NVC #507) | rule 14 |
-| Read-only libraries never fail: lock opened read-only, or no locking at all if it cannot be opened | Bazel sandboxes (NVC #651) | rule 14 |
+| `elab`/`run` take the shared lock only while reading; `run` never writes into library dirs | A long simulation never blocks compilation | rule 14 |
+| Read-only libraries never fail: lock opened read-only, or no locking at all if it cannot be opened | Sandboxed build systems | rule 14 |
 | A lock wait longer than a few seconds prints a note naming the library | User feedback | rule 14 |
-| Standard recorded per file (manifest format 2) | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "VUnit integration", `docs/design/sem.md` 0.1 |
+| Standard recorded per file (manifest format 2) | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "Test-runner integration", `docs/design/sem.md` 0.1 |
 | Pre-rename manifest name fails with `L0004` asking to re-analyze; no reader for old names | Rename to yavs (user, 2026-10-18) | `docs/decisions.md` "Project name" |
 | Names folded with `fold` (ASCII lower case; extended identifiers keep case) | Rule 8 lookup keys | `docs/plan.md` rule 8 |
 
-Module-local decisions go in this section in the same commit; library behaviour visible to VUnit
+Module-local decisions go in this section in the same commit; library behaviour visible to external test runners
 goes into `docs/cli-contract.md` section 3 (root `AGENTS.md` rule 24).
 
 ## 4. Invariants and pitfalls
@@ -73,6 +73,6 @@ YAVS_LOG=debug cargo run -p yavs -- elab ...     # show lock-free reads
 - The manifest format is read by every `yavs` binary in parallel worktrees; bump `FORMAT` and
   fail clearly on the old one rather than reading both.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:lib`): #21 a
-  `--map`ped library without a manifest must be empty, not L0001; #60 E1004 for OSVVM AXI4; #61 UNISIM/vendor libraries missing;
+  `--map`ped library without a manifest must be empty, not L0001; #60 E1004 for an external AXI4 library; #61 UNISIM/vendor libraries missing;
   #94 numeric_std, fixed and float from source; #117 to #119
   Synopsys, VITAL, vendor primitives (M4b).

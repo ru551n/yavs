@@ -32,11 +32,11 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 
 | Decision | Why | Source |
 |---|---|---|
-| The interpreter is the semantic reference: every suite must give identical output LLVM-only and interpreter-only | Rule 5 (GHDL #1829, NVC #1688) | `docs/plan.md` rule 5, "Verification" |
+| The interpreter is the semantic reference: every suite must give identical output LLVM-only and interpreter-only | Rule 5 | `docs/plan.md` rule 5, "Verification" |
 | LLVM 21 pinned (`llvm-sys =211.1.1`, `strict-versioning`, `prefer-dynamic`), optional feature; LLVM is an approved manual dependency | Rule 5; root `AGENTS.md` rule 9 | `docs/decisions.md` "LLVM bindings" |
 | Raw llvm-sys, no inkwell | inkwell lacks ORC LLJIT | same |
 | ORC LLJIT, no hand-written object loader; host functions as absolute symbols, nothing looked up in the process | Rule 5 | same |
-| Portable CPU: `x86-64-v2` or `generic` aarch64, never the host CPU; `default<O2>` | Rule 5 (NVC #887/#1311) | same |
+| Portable CPU: `x86-64-v2` or `generic` aarch64, never the host CPU; `default<O2>` | Rule 5 | same |
 | One `LLVMContext` per module (`LLVMOrcCreateNewThreadSafeContextFromLLVMContext`) | LLVM 21 removed `ThreadSafeContextGetContext` | same |
 | Runtime errors call a Rust `extern "C"` callback and return a status; no unwinding through JIT frames | Win64 has no unwind info for them | same; WINDOWS.md |
 | Shared `libLLVM-21.so` on Linux; static libs from the release tarball on Windows | Link memory; llvm-sys refuses dynamic on Windows | same |
@@ -71,4 +71,4 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
 
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
   lower IR to LLVM 21 with tiering and background compilation; #126 decision: O2 threshold of 40k
-  instructions; #127 Windows LLVM unverified; #128 LLVM tier and CI on aarch64. Epic: #144 (M6).
+  instructions; #127 Windows LLVM unverified; #128 JIT tier and CI on aarch64. Epic: #144 (M6).

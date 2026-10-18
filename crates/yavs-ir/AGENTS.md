@@ -38,10 +38,10 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | Constraints are runtime descriptors on every composite; static ones are pool constants | Rule 1 | `docs/plan.md` rule 1, ir.md 1.3 |
 | Registers are untyped u64 cells; addresses `[space:3 | index:29 | offset:32]` over eight spaces; out-of-object access is an ICE | Memory model | `docs/decisions.md` "IR and interpreter (M2)", ir.md 1.4 |
 | Logic arrays are bit-planes; BIT/BOOLEAN elements use the std_ulogic codes of '0'/'1' | Shared plane ops (orchestrator, 2026-10-18) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes" |
-| Constant aggregates are compact (`ConstData` run-length / `others`) | Rule 12 (GHDL #49) | `docs/plan.md` rule 12 |
+| Constant aggregates are compact (`ConstData` run-length / `others`) | Rule 12 | `docs/plan.md` rule 12 |
 | Natives named by `lib/NATIVE.md` symbol; `'image` is `yavs.attr.image` | One symbol table | `docs/decisions.md` "IR and interpreter", `lib/NATIVE.md` |
 | Foreign calls without libffi through `yavs-ffi`; arrays as C-layout copies, records as aligned structs | ir.md 1.7 | `docs/decisions.md` "IR and interpreter" (Foreign arrays) |
-| Verifier checks register liveness across suspension within a block only | Cross-block needs dataflow (LLVM tier) | `docs/decisions.md` "IR and interpreter" |
+| Verifier checks register liveness across suspension within a block only | Cross-block needs dataflow (JIT tier) | `docs/decisions.md` "IR and interpreter" |
 | Time resolution is a runtime setting (`Bindings::resolution`), never baked into IR | Rule 7 | `docs/plan.md` rule 7 |
 | Coverage items identified by hierarchical path plus span hash (`CovInfo`); instrumentation is ordinary IR | Rule 10 | `docs/plan.md` rule 10 |
 

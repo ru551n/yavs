@@ -70,8 +70,8 @@ through lowering and the interpreter (`crates/yavs-lower/tests/corpus.rs`):
    Lowering passes the string as the address of a fat pair `[data, dope]`, `NativeRef::ty` = the
    prefix's base type.
 3. **Report at the stop severity.** A `failure` report is committed but the process keeps
-   running to its next suspension, so `report/failure_exit` prints a report NVC never reaches.
-4. **NVC-compatible check texts** (difftest is strict for yavs): range checks read
+   running to its next suspension, so `report/failure_exit` prints a report the reference simulator never reaches.
+4. **reference-simulator-compatible check texts** (difftest is strict for yavs): range checks read
    `value 101 outside of PCT range 0 to 100 for variable P` (subtype name, then the object),
    real to integer `value 30000000000 outside of INTEGER range ...`, integer overflow
    `result of 2147483647 + 1 cannot be represented as INTEGER`, division `division by zero`.
@@ -105,7 +105,7 @@ From yavs-elab (2026-10-18):
 
 1. **`std.env.finish`/`stop` end the process at once.** Like 3: after
    `finish(3)` the process runs on to its next `wait`, so `env/finish_status` and
-   `env/finish_in_function_call_order` print a report NVC never reaches.
+   `env/finish_in_function_call_order` print a report the reference simulator never reaches.
 
 More requests from `yavs-lower` (2026-10-18):
 

@@ -23,8 +23,6 @@ alias/for_label_ok.vhd
 alias/object_alias_non_static.vhd
 alias/subprogram_needs_signature.vhd
 alias/subtype_mismatch.vhd
-attr/attribute_of_others_ok.vhd
-attr/attribute_spec_overloaded_ok.vhd
 attr/dimension_arg_on_scalar_type.vhd
 attr/event_on_constant.vhd
 attr/high_on_function.vhd
@@ -38,9 +36,7 @@ attr/unknown_help_typo.vhd
 attr/user_attribute_class_mismatch.vhd
 attr/user_attribute_ok.vhd
 attr/user_attribute_spec_twice.vhd
-attr/user_attribute_undeclared.vhd
 attr/user_attribute_unknown_entity.vhd
-attr/user_attribute_value_type.vhd
 drv/delayed_attr_in_subprogram.vhd
 drv/entity_process_not_passive.vhd
 drv/event_attr_in_subprogram_ok.vhd

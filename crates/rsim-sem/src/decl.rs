@@ -342,22 +342,15 @@ impl Db {
             }
             D::Attribute(a) => {
                 let ty = self.type_mark(scope, &a.type_mark)?;
-                let decl = self.new_decl(
-                    scope,
-                    Designator::Ident(a.name),
-                    DeclKind::Attribute { ty },
-                    a.span,
-                );
-                self.declare(scope, decl);
-                Ok(())
+                crate::attr::declare_attribute(self, scope, a.name, ty, a.span).map(|_| ())
             }
+            D::AttributeSpec(sp) => self.attribute_spec(scope, sp),
             D::Use(u) => {
                 self.use_clause(scope, u);
                 Ok(())
             }
             D::SubprogramBody(b) => self.subprogram_body(scope, b),
             D::Alias(a) => self.alias_decl(scope, a),
-            D::AttributeSpec(a) => Err(self.unsupported(a.span, "attribute specifications", "S6")),
             D::Component(c) => Err(self.unsupported(c.span, "component declarations", "S5")),
             D::SubprogramInstance(x) => {
                 Err(self.unsupported(x.span, "subprogram instantiation", "S4"))
@@ -494,6 +487,50 @@ impl Db {
             None => None,
         };
         Ok(crate::alias::Signature::new(self, &params, ret, s.span))
+    }
+
+    /// `attribute a of names : class is value;` (7.2), through `attr.rs`.
+    fn attribute_spec(
+        &mut self,
+        scope: ScopeId,
+        sp: &ast::AttributeSpec,
+    ) -> Result<(), crate::Reported> {
+        let attr = match self.lookup(scope, sp.attr.key) {
+            crate::scope::Visible::One(d)
+                if matches!(self.decls[self.entity(d)].kind, DeclKind::Attribute { .. }) =>
+            {
+                d
+            }
+            crate::scope::Visible::One(d) if matches!(self.decls[d].kind, DeclKind::Error) => {
+                return Err(crate::Reported);
+            }
+            crate::scope::Visible::None => return Err(self.undeclared(scope, sp.attr)),
+            crate::scope::Visible::Hidden(c) => return Err(self.conflict(sp.attr, &c)),
+            _ => {
+                return Err(self.error(
+                    rsim_diag::Diagnostic::error(
+                        crate::diag::UNKNOWN_ATTRIBUTE,
+                        format!("`{}` is not an attribute", sp.attr.text),
+                    )
+                    .with_primary(
+                        sp.attr.span,
+                        "expected the name of an attribute declaration",
+                    ),
+                ));
+            }
+        };
+        let Some(st) = crate::attr::spec_subtype(self, attr) else {
+            return Err(crate::Reported);
+        };
+        let value = self.expr_in_subtype(scope, &sp.value, st);
+        if self.is_poison_expr(value) {
+            return Err(crate::Reported);
+        }
+        let mut sig = |db: &mut Db, cands: &[DeclId], s: &ast::Signature| {
+            let s = db.signature_of(scope, s)?;
+            db.match_signature(cands, &s)
+        };
+        crate::attr::specify(self, scope, sp, attr, value, &mut sig).map(|_| ())
     }
 
     /// `file f : t open k is "name";` (6.4.2.5).

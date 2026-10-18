@@ -741,6 +741,8 @@ impl Db {
                             },
                         )
                     }
+                    // Loop parameters are not static; generate parameters are globally static (8.1, NVC #856).
+                    (_, crate::decl::ObjRole::LoopParam, _) => (Staticness::None, None),
                     (crate::decl::ObjClass::Constant, _, _) => (Staticness::Globally, None),
                     _ => (Staticness::None, None),
                 };

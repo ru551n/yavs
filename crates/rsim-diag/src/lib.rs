@@ -5,6 +5,23 @@
 //! lines. [`render`] turns one into text in one of three [`MessageFormat`]s:
 //! rustc-style snippets (via `annotate-snippets`), one line per diagnostic, or
 //! one JSON object per line.
+//!
+//! # Code registry
+//!
+//! Every diagnostic code is unique across rsim. Each stage owns a range and
+//! defines its codes as `pub const`s next to the code that reports them.
+//!
+//! | Range | Owner |
+//! |---|---|
+//! | `E0001`-`E0099`, `W0001`-`W0099` | `rsim-syntax`: lexing, conditional analysis, parsing (`rsim_syntax::codes`) |
+//! | `E0100`-`E0199`, `W0100`-`W0199` | `rsim` command line: reading files, arguments |
+//! | `E1000`-`E1999`, `W1000`-`W1999` | `rsim-sem` (planned, see `docs/design/sem.md` section 8) |
+//! | `E0900`-`E0999`, `W0900`-`W0999` | `rsim-vhpi` (E0901, E0902, W0903, W0904 in use) |
+//! | `L0000`-`L0099` | `rsim-lib`: library manifests and closure queries |
+//! | `E9999` | internal compiler error in any stage ("this is a bug in rsim") |
+//!
+//! A code is never reused for a different meaning. An empty code is only for
+//! summary lines such as "aborting due to 2 previous errors".
 
 use std::fmt::Write as _;
 use std::io::IsTerminal;
@@ -117,7 +134,8 @@ pub struct Label {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,
-    /// Stable code, for `--explain` and per-code suppression.
+    /// Stable code, for `--explain` and per-code suppression; empty for
+    /// summary lines such as "aborting due to 2 previous errors".
     pub code: &'static str,
     pub message: String,
     pub primary: Option<Label>,
@@ -227,11 +245,11 @@ fn level(severity: Severity) -> Level<'static> {
 }
 
 fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
-    let mut group = Group::with_title(
-        level(diag.severity)
-            .primary_title(diag.message.as_str())
-            .id(diag.code),
-    );
+    let mut title = level(diag.severity).primary_title(diag.message.as_str());
+    if !diag.code.is_empty() {
+        title = title.id(diag.code);
+    }
+    let mut group = Group::with_title(title);
     // One snippet per file, primary file first.
     let mut files: Vec<FileId> = Vec::new();
     for l in diag.primary.iter().chain(&diag.secondary) {
@@ -241,9 +259,32 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
     }
     for file in files {
         let src = sources.get(file);
-        let mut snippet = Snippet::source(src.text.as_str()).path(src.path.as_str());
+        // Hand over only the annotated lines, not the whole file.
+        let labels = || {
+            diag.primary
+                .iter()
+                .chain(&diag.secondary)
+                .filter(move |l| l.span.file == file)
+        };
         let len = src.text.len();
-        let clamp = |s: Span| (s.start as usize).min(len)..(s.end as usize).min(len);
+        let lo = labels()
+            .map(|l| l.span.start as usize)
+            .min()
+            .unwrap_or(0)
+            .min(len);
+        let hi = labels()
+            .map(|l| l.span.end as usize)
+            .max()
+            .unwrap_or(0)
+            .clamp(lo, len);
+        let lo = src.text[..lo].rfind('\n').map_or(0, |i| i + 1);
+        let hi = src.text[hi..].find('\n').map_or(len, |i| hi + i);
+        let (first_line, _) = src.line_col(lo as u32);
+        let mut snippet = Snippet::source(&src.text[lo..hi])
+            .line_start(first_line)
+            .path(src.path.as_str());
+        let clamp =
+            |s: Span| (s.start as usize).clamp(lo, hi) - lo..(s.end as usize).clamp(lo, hi) - lo;
         for l in diag.primary.iter().filter(|l| l.span.file == file) {
             snippet = snippet.annotation(
                 AnnotationKind::Primary

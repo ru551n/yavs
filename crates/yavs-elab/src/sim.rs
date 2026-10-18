@@ -143,6 +143,11 @@ impl Elaborated {
         for u in packages {
             l.package(u)?;
         }
+        for p in &self.procs {
+            if let Some(a) = &p.actual {
+                l.port_actual(a.expr, a.formal);
+            }
+        }
         let mut elab_sigs = HashMap::new();
         for c in &self.elab_calls {
             if let std::collections::hash_map::Entry::Vacant(v) = elab_sigs.entry(c.func) {
@@ -362,7 +367,13 @@ impl Elaborated {
                         .ok_or_else(|| {
                             sim_err(format!("package signal `{}` not elaborated", s.name))
                         })?;
-                    write_desc(&ir.program, s, &self.nets.obj(o).shape, off, &mut d.data)?;
+                    write_desc(
+                        &ir.program,
+                        &s.name,
+                        &self.nets.obj(o).shape,
+                        off,
+                        &mut d.data,
+                    )?;
                 }
                 Ok(())
             },
@@ -433,10 +444,13 @@ impl Elaborated {
                         d
                     }
                 };
+                if let Some(a) = &p.actual {
+                    return self.actual_process(&rt, u, a, p, ds, inst);
+                }
                 let pir = u
                     .processes
                     .iter()
-                    .find(|x| x.stmt == p.stmt)
+                    .find(|x| x.stmt == p.stmt && x.actual.is_none())
                     .ok_or_else(|| {
                         sim_err(format!(
                             "{}: processes inside generates and blocks are not lowered yet",
@@ -478,6 +492,54 @@ impl Elaborated {
             res,
         )
         .map(|s| (s, Some(rt)))
+    }
+
+    /// The equivalent process of an expression actual (`ProcInst::actual`): the region's
+    /// instance data plus the formal as one more signal, which driver slot 0 drives, and the
+    /// formal's descriptor for the array check.
+    fn actual_process(
+        &self,
+        rt: &Arc<Runtime>,
+        u: &UnitIr,
+        pa: &crate::PortActual,
+        p: &crate::ProcInst,
+        ds: &[yavs_kernel::DriverId],
+        inst: Arc<InstData>,
+    ) -> Result<Box<dyn yavs_kernel::Process>, SimError> {
+        let path = || self.hier.path_name(p.scope, crate::Case::Original);
+        let (pir, a) = u
+            .processes
+            .iter()
+            .find_map(|x| {
+                x.actual
+                    .as_ref()
+                    .filter(|a| a.expr == pa.expr)
+                    .map(|a| (x, a))
+            })
+            .ok_or_else(|| sim_err(format!("{}: port actual not lowered", path())))?;
+        let lsps = p.lsps.concat();
+        let ([(_, leaf, range)], [id]) = (lsps.as_slice(), ds) else {
+            return Err(sim_err(format!(
+                "{}: port actual drives more than one signal",
+                path()
+            )));
+        };
+        let mut inst = (*inst).clone();
+        if let Some(off) = a.dope {
+            write_desc(&rt.prog, &path(), &pa.shape, (off, a.ty), &mut inst.data)?;
+        }
+        let sig = inst.sigs.len() as u32;
+        inst.sigs.push(InstSig {
+            signal: yavs_kernel::SignalId(leaf.0),
+            ty: self.nets.leaf(*leaf).ty,
+        });
+        let drivers = vec![ProcDriver {
+            id: *id,
+            sig,
+            range: *range,
+        }];
+        let proc = InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)?;
+        Ok(Box::new(proc))
     }
 
     /// Instance data of instance `i`: constants from their thunks, the signal table.
@@ -583,7 +645,13 @@ impl Elaborated {
             };
             if let Some(off) = s.dope {
                 // The signal's descriptor in this instance (ports: the actual's bounds).
-                write_desc(&rt.prog, s, &self.nets.obj(o).shape, off, &mut inst.data)?;
+                write_desc(
+                    &rt.prog,
+                    &s.name,
+                    &self.nets.obj(o).shape,
+                    off,
+                    &mut inst.data,
+                )?;
             }
             // The leaf the entry names (a record signal has one entry per field leaf).
             let (a, b) = self.nets.obj(o).leaves;
@@ -610,7 +678,7 @@ impl Elaborated {
 /// element's descriptor unless the type fixes it; a record's fields without a fixed one.
 fn write_desc(
     prog: &yavs_ir::Program,
-    s: &yavs_lower::SignalIr,
+    name: &str,
     shape: &crate::hier::Shape,
     (off, ty): (u32, yavs_ir::TyId),
     data: &mut [u8],
@@ -652,18 +720,13 @@ fn write_desc(
         Some(())
     }
     let mut desc = Vec::new();
-    go(&prog.types, ty, shape, &mut desc).ok_or_else(|| {
-        sim_err(format!(
-            "shape of signal `{}` does not match its type",
-            s.name
-        ))
-    })?;
+    go(&prog.types, ty, shape, &mut desc)
+        .ok_or_else(|| sim_err(format!("shape of signal `{name}` does not match its type")))?;
     let n = yavs_ir::Ty::desc_size(&prog.types, ty)
-        .ok_or_else(|| sim_err(format!("no descriptor size for `{}`", s.name)))?
-        as usize;
+        .ok_or_else(|| sim_err(format!("no descriptor size for `{name}`")))? as usize;
     let at = off as usize;
     if desc.len() != n || data.len() < at + n {
-        return Err(sim_err(format!("descriptor of signal `{}`", s.name)));
+        return Err(sim_err(format!("descriptor of signal `{name}`")));
     }
     data[at..at + n].copy_from_slice(&desc);
     Ok(())

@@ -302,7 +302,12 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
    guarded assignments of the block (`Disconnect` when GUARD is false). `bus`/`register`
    signals are guarded in the kernel by elab (`Builder::guard`, disconnection time 0 until
    disconnection specifications reach the HIR).
-7. **Expression actuals of ports** (#74, LRM 6.5.6.3; open, yavs-elab 2026-10-18): an
+7. **Expression actuals of ports** (#74, LRM 6.5.6.3; answered 2026-10-18: elab calls
+   `Lowerer::port_actual(expr, formal subtype)` before lowering the instantiating
+   architecture, which then lists one `ProcessIr` with `actual: Some(PortActual)` per such
+   actual of its instance and block port maps: no driver slots of its own, it drives slot 0
+   with `target: None`, and an array value is checked against the descriptor elab writes at
+   `PortActual::dope`. The original request follows.) An
    association `f => expr` (or `f => inertial expr`) whose actual is not a static signal name
    is a port driven by an equivalent process `f <= expr` in the instantiating region. An
    external name actual is treated the same way (one delta later, #186); elab builds that

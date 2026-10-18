@@ -105,6 +105,17 @@ pub struct ProcInst {
     /// For each longest static prefix of the statement's `ProcessInfo::drivers`, in order:
     /// the driver indices and kernel ranges it covers.
     pub lsps: Vec<Vec<(usize, LeafId, yavs_kernel::Range)>>,
+    /// The equivalent process of a port's expression actual (LRM 6.5.6.3).
+    pub actual: Option<PortActual>,
+}
+
+/// The equivalent process `formal <= expr` of a port's expression actual: its one driver is
+/// the formal, or the formal's part of shape `shape`; `formal` is the formal's subtype when
+/// the whole formal is associated.
+pub struct PortActual {
+    pub expr: yavs_sem::ExprId,
+    pub formal: Option<yavs_sem::SubtypeId>,
+    pub shape: Shape,
 }
 
 pub struct Elaborated {

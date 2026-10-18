@@ -508,6 +508,86 @@ impl Fx<'_, '_> {
         Ok(())
     }
 
+    /// `formal <= e` through driver slot 0, which covers the formal (or its sub-element):
+    /// an array value is checked against the formal's descriptor at `dope` in instance data,
+    /// a scalar against `formal`'s range when that is static.
+    pub fn drive_actual(
+        &mut self,
+        e: ExprId,
+        formal: Option<yavs_sem::SubtypeId>,
+        dope: Option<u32>,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let st = db.exprs[e].subtype;
+        let tid = self.ty(db.base(st), span)?;
+        let what = "port actual".to_string();
+        let wave = match dope {
+            Some(off) => {
+                let want = self.addr(Space::Inst, off);
+                let val = self.expr(e)?;
+                let (data, vd) = self.arr(val, span)?;
+                let dims = ty::array_of(db, db.base(st)).map_or(1, |x| x.1);
+                let m = self.msg(&what, Dir::To);
+                self.emit(Inst::SubtypeCheck {
+                    dope: vd,
+                    want,
+                    dims,
+                    what: m,
+                });
+                let (size, _) = self.layout(tid, want);
+                let fifteen = self.int(15);
+                let r = self.bin(IntOp::Add, size, fifteen);
+                let wave = self.alloc(r);
+                let z = self.int(0);
+                self.store(wave, z, Width::B8);
+                let va = self.offset(wave, 8);
+                self.emit(Inst::Copy {
+                    dst: va,
+                    src: data,
+                    bytes: size,
+                });
+                wave
+            }
+            None => {
+                let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_some();
+                let (_, _, vw) = self.scalar(st, span)?;
+                let r = self.scalar_expr(e)?;
+                // ponytail: a formal subtype with bounds from the instance's generics is not
+                // checked here (they are not in this region's data).
+                if let Some(f) = formal.filter(|&f| db.static_bounds(f).is_some()) {
+                    self.check_scalar(r, Some(st), f, &what, span)?;
+                }
+                let wave = self.alloc_n(8 + 32);
+                let z = self.int(0);
+                self.store(wave, z, Width::B8);
+                let va = self.offset(wave, 8);
+                if logic {
+                    let bias = self.code_bias(tid);
+                    let r = self.enc(r, bias);
+                    self.emit(Inst::LSet {
+                        base: va,
+                        idx: z,
+                        v: r,
+                    });
+                } else {
+                    self.store(va, r, vw);
+                }
+                wave
+            }
+        };
+        let n = self.int(1);
+        self.emit(Inst::Drive {
+            driver: 0,
+            target: None,
+            wave,
+            n,
+            mode: DriveMode::Inertial,
+            reject: None,
+        });
+        Ok(())
+    }
+
     fn report(
         &mut self,
         msg: Option<ExprId>,
@@ -1481,6 +1561,19 @@ impl Fx<'_, '_> {
             ExprKind::Attr { args, .. } => {
                 for &a in args.iter() {
                     self.signals_in(a, out);
+                }
+            }
+            ExprKind::Aggregate { assocs, .. } => {
+                for a in assocs.iter() {
+                    self.signals_in(a.value, out);
+                }
+            }
+            ExprKind::Conditional { alts } => {
+                for &(v, c) in alts.iter() {
+                    self.signals_in(v, out);
+                    if let Some(c) = c {
+                        self.signals_in(c, out);
+                    }
                 }
             }
             _ => {}

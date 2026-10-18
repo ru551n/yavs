@@ -31,7 +31,7 @@ use yavs_ir::{
 };
 use yavs_sem::decl::DeclKind;
 use yavs_sem::hir::UnitHir;
-use yavs_sem::{Db, DeclId, ScopeId, StmtId, TypeId, UnitId};
+use yavs_sem::{Db, DeclId, ExprId, ScopeId, StmtId, SubtypeId, TypeId, UnitId};
 
 pub use ty::{encode_array, signal_elem};
 
@@ -203,6 +203,22 @@ pub struct ProcessIr {
     /// Driver slots, one per `ProcessInfo::drivers` entry in order: the instance signal it
     /// drives (the elaborator gives each slot the entry's kernel range).
     pub drivers: Vec<u32>,
+    /// The equivalent process of a port's expression actual, `stmt` being the instance or
+    /// block statement ([`Lowerer::port_actual`]).
+    pub actual: Option<PortActual>,
+}
+
+/// The equivalent process `formal <= expr` of a port associated with a non-static expression
+/// (LRM 6.5.6.3), sensitive to the expression's signals. It has no driver slots of its own:
+/// the elaborator gives it one, slot 0, for the formal (or the formal's sub-element).
+#[derive(Clone, Debug)]
+pub struct PortActual {
+    pub expr: ExprId,
+    /// The IR type of the formal (the expression's type).
+    pub ty: TyId,
+    /// For an array: instance data where the elaborator writes the formal's descriptor
+    /// (`Ty::desc_size` bytes), against which the value is checked.
+    pub dope: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -306,6 +322,9 @@ pub(crate) struct Cx {
     pub shared_size: u32,
     /// The leaves of record signals, in leaf order.
     pub rec_leaves: HashMap<DeclId, Vec<RecLeaf>>,
+    /// Port actuals that get an equivalent process ([`Lowerer::port_actual`]), with the
+    /// formal's subtype for the scalar range check.
+    pub actuals: HashMap<ExprId, Option<SubtypeId>>,
 }
 
 /// One kernel signal of a record signal.
@@ -389,6 +408,7 @@ impl<'a> Lowerer<'a> {
                 arch_scopes: Vec::new(),
                 shared_size: 0,
                 rec_leaves: HashMap::new(),
+                actuals: HashMap::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -406,6 +426,13 @@ impl<'a> Lowerer<'a> {
             }
             _ => Err(std::mem::take(&mut self.cx.diags)),
         }
+    }
+
+    /// Give the port actual `expr`, found in a port map of an architecture lowered after this
+    /// call, an equivalent process ([`PortActual`]); `formal` is the formal's subtype when the
+    /// whole formal is associated (its range is checked).
+    pub fn port_actual(&mut self, expr: ExprId, formal: Option<SubtypeId>) {
+        self.cx.actuals.insert(expr, formal);
     }
 
     /// Lower the run-time objects of package `unit` (and of its body, when analyzed): call it

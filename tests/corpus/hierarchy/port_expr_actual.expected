@@ -1,0 +1,19 @@
+exit	0
+diag	note	0	0	:port_expr_actual:m1:_p0	m10 n=-1 v=1010 @0 fs
+diag	note	0	0	:port_expr_actual:m2:_p0	m20 n=2 v=1010 @0 fs
+diag	note	0	0	:port_expr_actual:m3:_p0	m30 n=1 v=1110 @0 fs
+diag	note	0	0	:port_expr_actual:g(1):m:_p0	g1 n=-1 v=1010 @0 fs
+diag	note	0	0	:port_expr_actual:g(2):m:_p0	g2 n=-1 v=1010 @0 fs
+diag	note	0	1	:port_expr_actual:m1:_p0	m10 n=2 v=0001 @0 fs
+diag	note	0	1	:port_expr_actual:m2:_p0	m20 n=2 v=1100 @0 fs
+diag	note	0	1	:port_expr_actual:m3:_p0	m30 n=1 v=1111 @0 fs
+diag	note	0	1	:port_expr_actual:g(1):m:_p0	g1 n=1 v=1010 @0 fs
+diag	note	0	1	:port_expr_actual:g(2):m:_p0	g2 n=2 v=1010 @0 fs
+diag	note	1000000	1	:port_expr_actual:m2:_p0	m20 n=10 v=1100 @1000000 fs
+diag	note	1000000	2	:port_expr_actual:m1:_p0	m10 n=6 v=0001 @1000000 fs
+diag	note	1000000	2	:port_expr_actual:g(1):m:_p0	g1 n=5 v=1010 @1000000 fs
+diag	note	1000000	2	:port_expr_actual:g(2):m:_p0	g2 n=10 v=1010 @1000000 fs
+diag	note	2000000	1	:port_expr_actual:m3:_p0	m30 n=10 v=0011 @2000000 fs
+diag	note	2000000	2	:port_expr_actual:m1:_p0	m10 n=15 v=0100 @2000000 fs
+diag	note	2000000	2	:port_expr_actual:m2:_p0	m20 n=10 v=0011 @2000000 fs
+diag	note	2000000	2	:port_expr_actual:m3:_p0	m30 n=10 v=0000 @2000000 fs

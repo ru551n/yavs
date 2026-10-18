@@ -899,15 +899,19 @@ fn region(
     for &s in stmts {
         let st = &db.stmts[s];
         match &st.kind {
-            HStmt::Instance { .. } => {}
+            HStmt::Instance { port_map, .. } => {
+                ok &= actuals(db, pb, cx, ir, s, port_map).is_ok();
+            }
             HStmt::Block {
                 scope,
                 guard,
                 generics,
                 ports,
+                port_map,
                 body,
                 ..
             } => {
+                ok &= actuals(db, pb, cx, ir, s, port_map).is_ok();
                 // Block generics and ports are values and signals of the block's region.
                 for &d in generics.iter().chain(ports.iter()) {
                     ok &= inst_object(db, pb, cx, ir, d).is_ok();
@@ -1275,6 +1279,91 @@ fn process(
         label,
         postponed,
         drivers: sigs,
+        actual: None,
+    });
+    Ok(())
+}
+
+/// The equivalent processes `formal <= expr` of the expression actuals of port map `map` of
+/// statement `s` that the elaborator asked for (`Cx::actuals`, LRM 6.5.6.3).
+fn actuals(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    ir: &mut UnitIr,
+    s: StmtId,
+    map: &[hir::Arg],
+) -> R<()> {
+    let mut exprs = Vec::new();
+    for a in map {
+        match &a.actual {
+            hir::Actual::Expr(e) => exprs.push(*e),
+            hir::Actual::Individual(parts) => exprs.extend(parts.iter().map(|(_, e, _)| *e)),
+            _ => {}
+        }
+    }
+    let mut ok = true;
+    for e in exprs {
+        if let Some(&formal) = cx.actuals.get(&e) {
+            ok &= actual_process(db, pb, cx, ir, s, e, formal).is_ok();
+        }
+    }
+    if ok { Ok(()) } else { Err(Failed) }
+}
+
+fn actual_process(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    ir: &mut UnitIr,
+    s: StmtId,
+    e: yavs_sem::ExprId,
+    formal: Option<SubtypeId>,
+) -> R<()> {
+    let span = db.exprs[e].span;
+    let base = db.base(db.exprs[e].subtype);
+    if ty::has_record(db, base) {
+        return Err(cx.unsupported(span, "record expressions as port actuals"));
+    }
+    let t = ty::lower(db, cx, pb, base, span)?;
+    let dope = if ty::is_array(db, base) {
+        let Some(size) = yavs_ir::Ty::desc_size(pb.types(), t) else {
+            return Err(cx.ice(span, "array type without a descriptor size"));
+        };
+        Some(cx.inst_alloc(size as u32))
+    } else {
+        None
+    };
+    let name = "_actual".to_string();
+    let f = pb.declare(&name, FuncKind::Process, None);
+    let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name);
+    fx.fb.flag(FuncFlags::IMPLICIT);
+    fx.stmt_start(StmtKind::Process, span);
+    let top = fx.block();
+    fx.jump(top);
+    fx.at(top);
+    fx.stmt_start(StmtKind::SigAssign, span);
+    let r = fx.drive_actual(e, formal, dope, span);
+    fx.stmt_start(StmtKind::Implicit, span);
+    let mut sens = Vec::new();
+    fx.signals_in(e, &mut sens);
+    let w = fx
+        .wait_on(&sens)
+        .map(|()| fx.emit(Inst::Suspend { resume: 0 }));
+    fx.jump(top);
+    fx.end(span);
+    r.and(w)?;
+    ir.processes.push(ProcessIr {
+        stmt: s,
+        func: f,
+        label: None,
+        postponed: false,
+        drivers: Vec::new(),
+        actual: Some(crate::PortActual {
+            expr: e,
+            ty: t,
+            dope,
+        }),
     });
     Ok(())
 }
@@ -1330,6 +1419,7 @@ fn guard_process(
         label: Some("_guard".into()),
         postponed: false,
         drivers: vec![sig],
+        actual: None,
     });
     Ok(())
 }

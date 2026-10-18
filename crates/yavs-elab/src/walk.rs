@@ -131,6 +131,8 @@ pub(crate) struct Elab<'d> {
     errors: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
     cfg: ElabConfig,
+    /// The statement being elaborated: the instance or block whose port map is elaborated.
+    stmt: Option<StmtId>,
 }
 
 pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<Diagnostic>> {
@@ -339,6 +341,7 @@ pub(crate) fn elaborate(
         errors: Vec::new(),
         warnings: Vec::new(),
         cfg: cfg.clone(),
+        stmt: None,
     };
     let name = e.db.units[top.entity].name;
     let cfgp = top.config.map(|u| CfgPath {
@@ -940,24 +943,39 @@ impl Elab<'_> {
             (A::Expr(e), Some(sc)) => match self.m.name_ref(self.db, *e, sc)? {
                 Some(n) => Some((n, db.exprs[*e].span)),
                 None => {
-                    // 2008 expression actual: a static value is the port's value.
-                    let v = self.m.eval(db, *e, Some(sc)).map_err(|d| {
-                        if d.code == codes::NOT_EVALUATED {
-                            unsupported(
-                                db.exprs[*e].span,
-                                "non-static expressions as port actuals",
-                                "slice 4 (implicit processes, yavs-lower)",
-                            )
-                        } else {
-                            d
-                        }
-                    })?;
                     if mode != PortMode::In {
                         return Err(Box::new(ice(
                             db.exprs[*e].span,
                             "expression actual of a non-in port",
                         )));
                     }
+                    // 2008 expression actual: a static value is the port's value; any other
+                    // drives the port through an equivalent process (LRM 6.5.6.3).
+                    let v = match self.m.eval(db, *e, Some(sc)) {
+                        Ok(v) => v,
+                        Err(d) if d.code == codes::NOT_EVALUATED => {
+                            let espan = db.exprs[*e].span;
+                            let shape = match own {
+                                Some(sh) => sh,
+                                None => self
+                                    .m
+                                    .shape(db, db.exprs[*e].subtype, Some(sc), espan)?
+                                    .ok_or_else(|| {
+                                        unsupported(
+                                            espan,
+                                            "a non-static expression actual of an unconstrained \
+                                             subtype for an unconstrained port",
+                                            "M3",
+                                        )
+                                    })?,
+                            };
+                            let fo =
+                                self.m
+                                    .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
+                            return self.actual_process(s, sc, fo, Vec::new(), *e, Some(subtype));
+                        }
+                        Err(d) => return Err(d),
+                    };
                     let Some(shape) = own else {
                         return Err(unsupported(
                             db.exprs[*e].span,
@@ -1045,16 +1063,24 @@ impl Elab<'_> {
                 for (steps, e) in parts {
                     let espan = self.db.exprs[*e].span;
                     let fsels = self.m.steps(self.db, None, steps, sc, espan)?;
-                    let (fl, _) = self.m.select(fo, &fsels, espan)?;
+                    let (fl, fshape) = self.m.select(fo, &fsels, espan)?;
                     let Some((ao, asels)) = self.m.name_ref(self.db, *e, sc)? else {
-                        return Err(unsupported(
-                            espan,
-                            "expression actuals in individual associations",
-                            "slice 4",
-                        ));
+                        if mode != PortMode::In {
+                            return Err(Box::new(ice(espan, "expression actual of a non-in port")));
+                        }
+                        // A static value is the part's initial value; any other expression
+                        // drives the part through an equivalent process (LRM 6.5.6.3).
+                        match self.m.eval(self.db, *e, Some(sc)) {
+                            Ok(v) => self.m.part_init(self.db, &fl, &fshape, &v, espan)?,
+                            Err(d) if d.code == codes::NOT_EVALUATED => {
+                                self.actual_process(s, sc, fo, fsels, *e, None)?
+                            }
+                            Err(d) => return Err(d),
+                        }
+                        continue;
                     };
                     let (al, _) = self.m.select(ao, &asels, espan)?;
-                    let modes = self.m.leaf_modes(db, fo, hmode, span)?;
+                    let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
                     self.m.edges(&fl, &al, &modes, espan)?;
                 }
                 return Ok(());
@@ -1100,6 +1126,50 @@ impl Elab<'_> {
         self.m.edges(&fl, &al, &modes, aspan)
     }
 
+    /// The equivalent process `formal <= e` of an expression actual (LRM 6.5.6.3) in the
+    /// instantiating region `region`: it drives part `fsels` of formal `fo` of instance (or
+    /// block) `s`, one delta after the expression changes. Lowered by yavs-lower
+    /// (`Lowerer::port_actual`, `formal` for the range check of a whole formal).
+    fn actual_process(
+        &mut self,
+        s: ScopeId,
+        region: ScopeId,
+        fo: ObjId,
+        fsels: Vec<Sel>,
+        e: ExprId,
+        formal: Option<yavs_sem::SubtypeId>,
+    ) -> R<()> {
+        let span = self.db.exprs[e].span;
+        let shape = self.m.select(fo, &fsels, span)?.1;
+        if matches!(self.m.hier.scope(region).kind, ScopeKind::Component { .. }) {
+            return Err(unsupported(
+                span,
+                "non-static expression actuals in a binding indication",
+                "M3",
+            ));
+        }
+        let Some(st) = self.stmt else {
+            return Err(Box::new(ice(span, "port map outside a statement")));
+        };
+        let n = Symbol::intern(&format!(
+            "{}.{}'actual",
+            self.m.hier.scope(s).name.text,
+            self.m.nets.obj(fo).name.text
+        ));
+        let name = Ident {
+            text: n,
+            key: n,
+            span,
+        };
+        self.process_refs(region, st, name, false, vec![(fo, fsels, span)])?;
+        self.procs.last_mut().expect("just added").actual = Some(crate::PortActual {
+            expr: e,
+            formal,
+            shape,
+        });
+        Ok(())
+    }
+
     // -- statements ---------------------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
@@ -1129,6 +1199,7 @@ impl Elab<'_> {
         counter: &mut u32,
         depth: u32,
     ) -> R<()> {
+        self.stmt = Some(st);
         let db: &Db = self.db;
         let stmt = &db.stmts[st];
         let (label, span) = (stmt.label, stmt.span);
@@ -1808,6 +1879,7 @@ impl Elab<'_> {
             postponed,
             drivers,
             lsps,
+            actual: None,
         });
         Ok(())
     }
@@ -1955,6 +2027,46 @@ impl Model {
                 }),
             },
         }
+    }
+
+    /// Write the static value `v` of shape `shape` into the initial values of the leaf parts
+    /// `parts` (a formal's part associated with a static expression).
+    fn part_init(
+        &mut self,
+        db: &Db,
+        parts: &[(LeafId, Range)],
+        shape: &Shape,
+        v: &Val,
+        at: Span,
+    ) -> R<()> {
+        let vals = leaf_values(db, shape, Some(v)).map_err(|m| {
+            Box::new(
+                Diagnostic::error(codes::EVAL_FAILED, format!("actual does not fit: {m}"))
+                    .with_primary(at, "here"),
+            )
+        })?;
+        for (&(l, r), part) in parts.iter().zip(vals) {
+            let (off, n) = (r.offset as usize, r.len as usize);
+            match (&mut self.nets.leaves[l.index()].init, part) {
+                (yavs_kernel::Value::Bytes(d), yavs_kernel::Value::Bytes(p)) if n > 0 => {
+                    let es = p.len() / n;
+                    d[off * es..(off + n) * es].copy_from_slice(&p);
+                }
+                (yavs_kernel::Value::Logic(d), yavs_kernel::Value::Logic(p)) => {
+                    let old = d.clone();
+                    *d = yavs_kernel::LogicVec::from_fn(old.len(), |i| {
+                        if (off..off + n).contains(&i) {
+                            p.get(i - off)
+                        } else {
+                            old.get(i)
+                        }
+                    });
+                }
+                (yavs_kernel::Value::Bytes(_), yavs_kernel::Value::Bytes(_)) => {}
+                _ => return Err(Box::new(ice(at, "initial value of another element kind"))),
+            }
+        }
+        Ok(())
     }
 
     /// Create a signal object in `s` with its leaves.

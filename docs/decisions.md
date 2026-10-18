@@ -612,6 +612,21 @@ a note and a help suggesting an access type, as the reference simulators reject 
   differ). Only whole `in` associations; `out`/`inout`, individual and converted
   associations with an external actual stay port edges. Not chosen: the formal as
   `actual'delayed(0 ns)`, which has the right event delta but starts at the actual's value.
+- **Expression actuals of ports** (#74, elab agent, 2026-10-18; LRM 6.5.6.3, 6.5.7.1): an `in`
+  port (or a part of one in an individual association) associated with an expression that is
+  not a signal name gets the expression's value as its initial value when the expression is
+  globally static. Otherwise it is driven by the equivalent process `formal <= expr` of the
+  instantiating region, an ordinary IR process (yavs-lower `PortActual`, flag `IMPLICIT`)
+  sensitive to the expression's signals, with one driver, the formal's part; the formal keeps
+  its own initial value until delta 1, as for #186 and the reference simulator. The process
+  runs with its region's instance data plus the formal as one more signal and, for an array,
+  the formal's descriptor, against which the value is checked. A conversion function is only
+  the syntax `name(signal)`: an operator such as `not s` is an expression actual (sem). Not
+  yet (E9999 or E2001): `inertial` actuals that are signal names (the HIR does not keep the
+  reserved word, they stay port edges), record-typed expression actuals, a non-static actual
+  of an unconstrained subtype for an unconstrained formal, expression actuals in a
+  configuration's port map, and the range check of a scalar formal whose subtype bounds
+  depend on the instance's generics.
 
 - **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
   14.3.5, `docs/design/lrm-checks.md` L59): accepted in 2008 and 2019; the port takes the

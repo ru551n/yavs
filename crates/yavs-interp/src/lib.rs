@@ -17,6 +17,7 @@ mod exec;
 mod foreign;
 mod heap;
 mod native;
+mod reflect;
 mod textio;
 
 use std::sync::atomic::{AtomicU64, Ordering};

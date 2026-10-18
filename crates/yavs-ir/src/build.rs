@@ -6,8 +6,8 @@ use crate::verify::{VerifyError, verify};
 use crate::{
     AddrSpace, Block, BlockId, CaseTable, CaseTableId, CheckMsg, CheckMsgId, ConstData, ConstId,
     CovInfo, CovItem, ForeignId, ForeignRef, Func, FuncFlags, FuncId, FuncKind, IdVec, Inst, Local,
-    Mode, NativeId, NativeRef, Param, ParamClass, Program, Reg, RegTy, Regs, RootKind, StmtId,
-    StmtInfo, StmtKind, Ty, TyId, Width,
+    Mode, NativeId, NativeRef, Param, ParamClass, Program, Refl, ReflId, Reg, RegTy, Regs,
+    RootKind, StmtId, StmtInfo, StmtKind, Ty, TyId, Width,
 };
 
 #[derive(Default)]
@@ -60,6 +60,18 @@ impl ProgramBuilder {
 
     pub fn cov(&mut self, c: CovInfo) -> CovItem {
         self.prog.cov.push(c)
+    }
+
+    pub fn reflect(&mut self, r: Refl) -> ReflId {
+        self.prog.reflect.push(r)
+    }
+
+    /// Replace a reflection entry (a placeholder pushed before its element subtypes, so
+    /// recursive types through access values terminate).
+    pub fn reflect_set(&mut self, id: ReflId, r: Refl) {
+        if let Some(e) = self.prog.reflect.get_mut(id) {
+            *e = r;
+        }
     }
 
     pub fn types(&self) -> &IdVec<TyId, Ty> {

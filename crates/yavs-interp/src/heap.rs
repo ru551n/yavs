@@ -33,6 +33,8 @@ pub enum Obj {
     Bytes,
     /// `[descriptor: 24 bytes][handles]` (a `line_vector` made by a native).
     Handles,
+    /// A `std.reflection` mirror (`crate::reflect`).
+    Mirror,
 }
 
 struct Slot {
@@ -154,6 +156,7 @@ impl Heap {
             let ok = match s.ty {
                 Obj::Typed(t) => object_handles(prog, t, data, &mut work),
                 Obj::Bytes => true,
+                Obj::Mirror => crate::reflect::mirror_handles(prog, data, &mut work),
                 Obj::Handles => {
                     let mut at = 24;
                     while let Some(h) = read_u64(data, at) {

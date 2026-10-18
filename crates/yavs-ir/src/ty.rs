@@ -21,7 +21,7 @@
 
 use std::fmt;
 
-use crate::{ConstData, ConstId, IdVec, TyId};
+use crate::{ConstData, ConstId, IdVec, ReflId, TyId};
 
 /// Bytes of one dimension in an array descriptor.
 pub const DOPE_DIM_BYTES: u64 = 24;
@@ -82,6 +82,60 @@ pub enum Ty {
     Protected {
         state: TyId,
     },
+}
+
+/// A subtype as `std.reflection` sees it (LRM 2019 16.11): what a mirror needs beyond the
+/// value's [`Ty`]. Constraints of composites come from the descriptor at run time; scalar
+/// ranges are static. `name` is the subtype's simple name, upper case (as NVC reports it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refl {
+    pub name: String,
+    pub kind: ReflKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReflKind {
+    Enum {
+        ty: TyId,
+        left: i64,
+        right: i64,
+        downto: bool,
+    },
+    Int {
+        left: i64,
+        right: i64,
+        downto: bool,
+    },
+    Float {
+        left: f64,
+        right: f64,
+        downto: bool,
+    },
+    /// `time`: values are reported in units of `std.env.resolution_limit` (docs/decisions.md).
+    Physical {
+        ty: TyId,
+        left: i64,
+        right: i64,
+        downto: bool,
+        time: bool,
+    },
+    Array {
+        ty: TyId,
+        index: Vec<ReflId>,
+        elem: ReflId,
+    },
+    /// Element names upper case, in declaration order.
+    Record {
+        ty: TyId,
+        elems: Vec<(String, ReflId)>,
+    },
+    Access {
+        designated: ReflId,
+    },
+    File {
+        designated: ReflId,
+    },
+    Protected,
 }
 
 /// The layout of a fully constrained value.

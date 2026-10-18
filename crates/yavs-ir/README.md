@@ -38,6 +38,10 @@ textual dump.
 
 ## Changes
 
+- `Program.reflect` (`Refl`, `ReflKind`, `ReflId`): subtype descriptions for `std.reflection`
+  mirrors, built by `ProgramBuilder::reflect` / `reflect_set`; `yavs.attr.reflect` takes
+  `(refl, is_value, v)` (yavs-interp `reflect.rs`).
+
 - `ForeignArg` gained `Array { ty, lengths, copy_back }`, `Record { ty, copy_back }` and
   `Access` (still `Copy`); an exhaustive `match` on it needs the new arms.
 - `Bindings` gained `revision` and `resolution` (and implements `Default` by hand).
@@ -49,7 +53,7 @@ textual dump.
   (their semantics belong to `yavs-elab`).
 - `InstData` gains child instances and package links when elaboration needs them.
 - Binary (non-TEXT) file `read`/`write`, the 2019 `time_record`, call-path, assert-count and
-  PSL natives, and `std.reflection` are not implemented (runtime error naming the symbol).
+  and PSL natives are not implemented (runtime error naming the symbol).
 
 ## Requests
 

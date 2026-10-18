@@ -325,6 +325,9 @@ impl Machine {
                 _ => 0,
             },
             Some(Obj::Bytes | Obj::Handles) => 24,
+            Some(Obj::Mirror) => {
+                return rt_err("a std.reflection mirror cannot be passed to a foreign subprogram");
+            }
             None => 0,
         };
         let d = heap

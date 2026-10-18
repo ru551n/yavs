@@ -11,6 +11,7 @@
 
 mod expr;
 mod func;
+mod reflect;
 mod stmt;
 mod ty;
 
@@ -130,6 +131,8 @@ pub(crate) struct Cx {
     /// Function and depth of each subprogram or process region.
     pub scope_func: HashMap<ScopeId, (FuncId, u8)>,
     pub objs: HashMap<DeclId, Obj>,
+    /// `std.reflection` entries per subtype (`reflect.rs`).
+    pub refl: HashMap<yavs_sem::SubtypeId, yavs_ir::ReflId>,
 }
 
 impl Cx {
@@ -187,6 +190,7 @@ impl<'a> Lowerer<'a> {
                 queue: Vec::new(),
                 scope_func: HashMap::new(),
                 objs: HashMap::new(),
+                refl: HashMap::new(),
             },
             units: Vec::new(),
         }

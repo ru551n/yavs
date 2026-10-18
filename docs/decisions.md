@@ -352,6 +352,25 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 `std.env.resolution_limit`, as Riviera-PRO does (NVC returns femtoseconds). The LRM is unclear,
 and VUnit's `record_dict_pkg` (PR #1239) relies on this reading. With the default femtosecond
 resolution both readings give the same number. Applies to the M3 runtime that builds mirrors.
+`PHYSICAL_VALUE_MIRROR.unit_index` is then the index of the unit equal to the resolution limit
+(the primary unit for other physical types).
+
+## Reflection: names, indices and case (user and yavs-interp, 2026-10-18)
+
+- **Physical unit indices are 1-based** (`unit_name(1)` is the primary unit), as NVC; the LRM
+  does not say (user).
+- **A physical mirror's `image`** uses NVC's unit case: `5000000 FS` (user). Other `image`
+  results are the type's `'image`.
+- `simple_name`, `element_name` and `unit_name` are upper case, as NVC returns them (LRM silent;
+  VUnit's `record_dict_pkg` accepts any case). Enumeration literals, element and unit names are
+  looked up case-insensitively (NVC compares `enumeration_literal(name)` case-sensitively; the
+  permissive reading accepts both spellings).
+- Record element indices and `enumeration_literal(idx)` count from 0 (the element / literal
+  position within the subtype), as NVC.
+- `array_value_mirror.get` takes LRM indices (`get(left - i)` on a `downto` array is element `i`
+  from the left); NVC 1.23 normalises some indices differently (`tests/corpus/reflect/multidim`
+  is `ref=hand`).
+- A conversion to the wrong class (`value_mirror.to_record` of an integer) is a runtime error.
 ## Incomplete types in protected method profiles (user, 2026-10-18; amends U-2)
 
 Allowed only in units of library `std` (`std.reflection` needs it). In user code it is `E1220` with

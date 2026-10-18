@@ -25,7 +25,7 @@ pub use program::{
     FuncFlags, FuncKind, Local, Mode, NativeRef, Param, ParamClass, Program, RootKind, StmtInfo,
     StmtKind,
 };
-pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Ty, dim_len};
+pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;
 pub use yavs_kernel::StmtId;
 
@@ -65,7 +65,7 @@ macro_rules! ids {
 
 ids! {
     FuncId "f", BlockId "b", TyId "t", ConstId "c", NativeId "n", ForeignId "x",
-    CheckMsgId "m", CaseTableId "case", CovItem "cov",
+    CheckMsgId "m", CaseTableId "case", CovItem "cov", ReflId "r",
 }
 
 impl Id for StmtId {

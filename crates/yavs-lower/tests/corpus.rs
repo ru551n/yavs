@@ -61,6 +61,9 @@ const PASS: &[&str] = &[
     "env/stop_status",
     "env/stop_time_limit",
     "run/sig_params",
+    "reflect/arrays",
+    "reflect/multidim",
+    "reflect/scalars",
 ];
 
 const GROUPS: &[&str] = &[
@@ -73,6 +76,7 @@ const GROUPS: &[&str] = &[
     "postponed",
     "env",
     "run",
+    "reflect",
 ];
 
 fn corpus() -> PathBuf {

@@ -109,6 +109,8 @@ enum Inner {
 pub struct TextFile {
     kind: FileOpenKind,
     inner: Option<Inner>,
+    /// The external name it was opened with (`file_value_mirror.get_file_logical_name`).
+    name: Vec<u8>,
 }
 
 impl fmt::Debug for TextFile {
@@ -131,14 +133,14 @@ impl TextFile {
     pub fn open(name: &[u8], kind: FileOpenKind) -> Result<TextFile, FileOpenStatus> {
         if name == STD_INPUT {
             return match kind {
-                FileOpenKind::Read => Ok(Self::from_reader(Box::new(io::stdin()))),
+                FileOpenKind::Read => Ok(Self::from_reader(Box::new(io::stdin())).named(name)),
                 _ => Err(FileOpenStatus::ModeError),
             };
         }
         if name == STD_OUTPUT {
             return match kind {
                 FileOpenKind::Write | FileOpenKind::Append => {
-                    Ok(Self::from_writer(Box::new(io::stdout()), kind))
+                    Ok(Self::from_writer(Box::new(io::stdout()), kind).named(name))
                 }
                 _ => Err(FileOpenStatus::ModeError),
             };
@@ -165,6 +167,7 @@ impl TextFile {
         Ok(TextFile {
             kind,
             inner: Some(inner),
+            name: name.to_vec(),
         })
     }
 
@@ -173,6 +176,7 @@ impl TextFile {
         TextFile {
             kind: FileOpenKind::Read,
             inner: Some(Inner::Source(BufReader::new(r))),
+            name: Vec::new(),
         }
     }
 
@@ -181,7 +185,19 @@ impl TextFile {
         TextFile {
             kind,
             inner: Some(Inner::Sink(w)),
+            name: Vec::new(),
         }
+    }
+
+    /// The same file with external name `name`.
+    pub fn named(mut self, name: &[u8]) -> TextFile {
+        self.name = name.to_vec();
+        self
+    }
+
+    /// The external name given to FILE_OPEN (empty for a stream made by the runtime).
+    pub fn logical_name(&self) -> &[u8] {
+        &self.name
     }
 
     /// FILE_CLOSE: flushes and closes. Closing a closed file does nothing.

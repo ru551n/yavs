@@ -61,6 +61,9 @@ fn known() -> &'static Known {
 /// The implementation of `symbol`: `Ok(None)` when NATIVE.md defines it but yavs does not
 /// implement it yet, `Err` when it is not a native symbol at all.
 pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
+    if let Some(f) = crate::reflect::lookup(symbol) {
+        return Ok(Some(f));
+    }
     let k = known();
     let family = symbol
         .strip_prefix("yavs.implicit.")

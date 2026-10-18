@@ -5,7 +5,7 @@ use yavs_ffi::{CType, Signature};
 
 use crate::{
     BlockId, CaseTableId, CheckMsgId, ConstId, CovItem, ForeignId, FuncId, IdVec, Inst, NativeId,
-    Reg, RegTy, StmtId, Ty, TyId, Width,
+    Refl, ReflId, Reg, RegTy, StmtId, Ty, TyId, Width,
 };
 
 /// A whole lowered design: immutable and `Send + Sync` once built.
@@ -21,6 +21,8 @@ pub struct Program {
     pub cov: IdVec<CovItem, CovInfo>,
     pub checks: IdVec<CheckMsgId, CheckMsg>,
     pub cases: IdVec<CaseTableId, CaseTable>,
+    /// Subtype descriptions for `std.reflection` mirrors (`yavs.attr.reflect`).
+    pub reflect: IdVec<ReflId, Refl>,
 }
 
 impl Program {

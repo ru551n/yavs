@@ -985,6 +985,9 @@ impl Fx<'_, '_> {
         let Some(sp) = decl.kind.subprogram() else {
             return Err(self.cx.ice(span, "call of a non-subprogram"));
         };
+        if let (Some(o), Body::Native(sym)) = (method, &sp.body) {
+            return self.native_method(sp, sym.as_str(), o, args, span);
+        }
         if method.is_some() {
             return Err(self
                 .cx
@@ -1042,7 +1045,7 @@ impl Fx<'_, '_> {
         V::A(data, dope)
     }
 
-    fn make_fat(&mut self, data: Reg, dope: Reg) -> Reg {
+    pub(crate) fn make_fat(&mut self, data: Reg, dope: Reg) -> Reg {
         let fat = self.alloc_n(16);
         self.store(fat, data, Width::B8);
         let d = self.offset(fat, 8);
@@ -1052,7 +1055,13 @@ impl Fx<'_, '_> {
 
     /// Argument cells in formal order (DESIGN.md "Subprograms"); natives take arrays as the
     /// address of a fat pair.
-    fn cells(&mut self, sp: &Subprogram, args: &[Arg], span: Span, native: bool) -> R<Vec<Reg>> {
+    pub(crate) fn cells(
+        &mut self,
+        sp: &Subprogram,
+        args: &[Arg],
+        span: Span,
+        native: bool,
+    ) -> R<Vec<Reg>> {
         let db = self.db;
         let mut cells = Vec::new();
         for a in args {
@@ -1124,7 +1133,7 @@ impl Fx<'_, '_> {
         Ok(cells)
     }
 
-    fn native(
+    pub(crate) fn native(
         &mut self,
         sym: &str,
         ty: Option<TyId>,
@@ -1730,6 +1739,9 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<V> {
         use PredefAttr::*;
+        if attr == Reflect {
+            return self.reflect_attr(prefix, span);
+        }
         let db = self.db;
         let dim = |fx: &Fx<'_, '_>| -> u8 {
             args.first()

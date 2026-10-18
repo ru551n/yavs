@@ -46,7 +46,9 @@ pub(crate) enum FileSlot {
 impl FileSlot {
     pub(crate) fn preopened() -> Vec<FileSlot> {
         vec![
-            FileSlot::Text(TextFile::from_reader(Box::new(std::io::stdin()))),
+            FileSlot::Text(
+                TextFile::from_reader(Box::new(std::io::stdin())).named(yavs_std::file::STD_INPUT),
+            ),
             FileSlot::Output { open: true },
         ]
     }
@@ -57,6 +59,27 @@ impl FileSlot {
             FileSlot::Output { open } => *open,
         }
     }
+}
+
+/// External name and FILE_OPEN_KIND position of the open file in a file cell (`value` is the
+/// cell's content), for `std.reflection` file mirrors.
+pub(crate) fn file_info(m: &Machine, value: u64) -> R<(Vec<u8>, u64)> {
+    let files =
+        m.rt.files
+            .lock()
+            .map_err(|_| ice("file table lock poisoned"))?;
+    let slot = value
+        .checked_sub(1)
+        .and_then(|i| files.get(i as usize))
+        .ok_or_else(|| Fault::Runtime(FileError::NotOpen.to_string()))?;
+    Ok(match slot {
+        FileSlot::Text(f) => {
+            let kind = f.mode().map_err(file_err)?;
+            (f.logical_name().to_vec(), kind as u64)
+        }
+        FileSlot::Output { open: true } => (STD_OUTPUT.to_vec(), FileOpenKind::Write as u64),
+        FileSlot::Output { open: false } => return Err(file_err(FileError::NotOpen)),
+    })
 }
 
 type Args<'a> = &'a [u64];

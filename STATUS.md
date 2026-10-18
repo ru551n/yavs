@@ -209,8 +209,15 @@ tests (conditional line breakpoint with hit count, step over, step in with frame
 global step across processes, signal breakpoint and process table), verifier and layout tests.
 Also 5 foreign marshalling tests, 4 textio/file/env tests and a protected-type test.
 Not done: `Elab*` instructions (yavs-elab), records with runtime layouts beyond `LayoutOf`,
-binary file read/write, the 2019 time_record, call-path, assert-count and PSL natives,
-std.reflection.
+binary file read/write, the 2019 time_record, call-path, assert-count and PSL natives.
+
+std.reflection (`yavs-interp/src/reflect.rs`, `yavs-lower/src/reflect.rs`): all 123 mirror
+methods and `'reflect` (value and subtype mirrors, built from the value and its descriptor;
+private-heap mirror objects traced by the GC). End to end through `yavs run` for integer,
+floating, physical (TIME in resolution-limit units), enumeration and array mirrors
+(`tests/corpus/reflect`, 3/3 against NVC, one `ref=hand`). Record, access, file and protected
+mirrors are implemented in the runtime (unit-tested element extraction) and wait on the
+lowering of those types and of mirror variables (lower2).
 
 ## elab (`crates/yavs-elab`, M2)
 

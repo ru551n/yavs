@@ -14,3 +14,11 @@ rsim-syntax.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Builds tests/hdl_modules.rs (needs the corpus from tools/fetch-corpus.sh).
+corpus = []
+
+[[test]]
+name = "hdl_modules"
+required-features = ["corpus"]

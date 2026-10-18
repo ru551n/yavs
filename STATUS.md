@@ -277,4 +277,12 @@ Open: marshalling VHDL values (bit-planes to bytes, records, copy-back) belongs 
 
 ## difftest (yavs candidate)
 
-`python3 tools/difftest/difftest.py --candidate yavs` drives `yavs analyze` + `yavs run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md` (0/75 until `yavs run` simulates processes).
+`python3 tools/difftest/difftest.py --candidate yavs` drives `yavs analyze`, `yavs elab` and
+`yavs run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md`: 69 of 78 at 1 thread,
+4 threads (identical to 1) and 4 threads shuffled. `std.env.stop`/`finish` end the calling
+process at once; check messages print reals as `%.15g`; runtime errors are coded diagnostics
+(`E3001`-`E3010`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
+as `fatal` events. Normalisations for NVC's free choices (default assert message without a
+path, per-test `ignore=order`) are in `docs/decisions.md`. The 9 failures wait for sem (#1, #3)
+and lowering (out signal parameters, `'stable`, `'path_name`, guarded blocks, instantiated
+package bodies #101).

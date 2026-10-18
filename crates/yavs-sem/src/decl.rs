@@ -829,7 +829,7 @@ impl Db {
         let spec = regions.iter().find_map(|&r| {
             let entity = self.scopes[r].kind == crate::scope::ScopeKind::Entity;
             self.scopes[r].names.get(&key)?.iter().copied().find(|&d| {
-                matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.profile(d) == profile
+                matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending | Body::Foreign(_)) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.profile(d) == profile
             })
         });
         let pscope = match &self.decls[new].kind {
@@ -857,9 +857,12 @@ impl Db {
             self.report_unused_generics(&g);
         }
         // The body's own declaration (not declared when it completes a spec) gets the
-        // body too, so no subprogram is left pending (validate, 7.3).
+        // body too, so no subprogram is left pending (validate, 7.3). A `'FOREIGN` spec keeps
+        // its foreign body: the VHDL body is a placeholder, as in NVC and GHDL.
         for d in [target, new] {
-            if let DeclKind::Subprogram(s) = &mut self.decls[d].kind {
+            if let DeclKind::Subprogram(s) = &mut self.decls[d].kind
+                && !matches!(s.body, Body::Foreign(_))
+            {
                 s.body = Body::Hir {
                     scope: pscope,
                     stmts: stmts.clone(),

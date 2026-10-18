@@ -1,0 +1,1880 @@
+//! The dispatch loop (ir.md 3.1, 3.2): frames on a heap stack, memory spaces, and the
+//! instruction semantics.
+//!
+//! Register and operand indices are checked by the verifier, so they are indexed directly;
+//! a violation panics, which the kernel turns into an internal error. Everything that
+//! depends on data (addresses, sizes, indices, handles) is checked here and becomes a
+//! runtime error or an ICE, never a panic.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use rsim_ffi::{Arg, CType, Ret};
+use rsim_ir::{
+    AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, ConstData, Dir, DriveMode, FOp, FUnOp,
+    ForceKind, ForeignArg, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp, LNumOp, LOp, LayoutError,
+    ParamClass, PhysOp, Program, Reg, StmtId, Ty, Width,
+};
+use rsim_kernel::{
+    Ctx, DelayMode, Elem, ErrorKind, ForceMode, LogicVec, Severity, SigRef, SimError, StreamId,
+    Time, Value, ValueRef,
+};
+use rsim_logic::Planes;
+use rsim_std::arith;
+
+use crate::debug::{DebugSession, FrameView, ProcState, StepMode, Stop, StopReason};
+use crate::heap::{self, Heap, HeapError};
+use crate::{InstData, ProcDriver, Runtime, SharedState};
+
+/// An execution failure before it becomes a `SimError` with a trace.
+#[derive(Debug)]
+pub(crate) enum Fault {
+    Runtime(String),
+    Internal(String),
+    Kernel(SimError),
+}
+
+pub(crate) type R<T> = Result<T, Fault>;
+
+pub(crate) fn rt_err<T>(m: impl Into<String>) -> R<T> {
+    Err(Fault::Runtime(m.into()))
+}
+
+pub(crate) fn ice(m: impl Into<String>) -> Fault {
+    Fault::Internal(m.into())
+}
+
+impl From<SimError> for Fault {
+    fn from(e: SimError) -> Fault {
+        Fault::Kernel(e)
+    }
+}
+
+pub(crate) enum Outcome {
+    Suspended,
+    Returned(Option<u64>),
+}
+
+// Address spaces as stored in the top 3 bits of an address.
+const FRAME: u8 = 0;
+const INST: u8 = 1;
+const PKG: u8 = 2;
+const CONST: u8 = 3;
+const HEAP: u8 = 4;
+const TEMP: u8 = 5;
+const SHARED: u8 = 6;
+const SHARED_HEAP: u8 = 7;
+
+const SPACE_NAMES: [&str; 8] = [
+    "frame",
+    "instance",
+    "package",
+    "constant",
+    "heap",
+    "temporary",
+    "shared",
+    "shared heap",
+];
+
+/// `[space: 3 | index: 29 | offset: 32]`.
+pub(crate) fn mk_addr(space: u8, index: u32, off: u64) -> R<u64> {
+    if off > u64::from(u32::MAX) {
+        return rt_err("object larger than 4 GiB");
+    }
+    if index >= 1 << 29 {
+        return Err(ice(format!("address index {index} too large")));
+    }
+    Ok(u64::from(space) << 61 | u64::from(index) << 32 | off)
+}
+
+fn split(a: u64) -> (u8, u32, u64) {
+    (
+        (a >> 61) as u8,
+        ((a >> 32) & ((1 << 29) - 1)) as u32,
+        a & 0xffff_ffff,
+    )
+}
+
+fn add_addr(a: u64, delta: u64) -> R<u64> {
+    let (s, i, o) = split(a);
+    match o.checked_add(delta) {
+        Some(o) => mk_addr(s, i, o),
+        None => rt_err("object larger than 4 GiB"),
+    }
+}
+
+pub(crate) struct Frame {
+    pub func: FuncId,
+    pub pc: u32,
+    pub slots: Vec<u8>,
+    pub regs: Vec<u64>,
+    /// Static link: index of the lexically enclosing frame.
+    pub link: Option<u32>,
+    /// Caller register receiving the result.
+    pub ret: Option<Reg>,
+    /// Temporary-area top when the frame was entered.
+    pub temp_base: usize,
+}
+
+enum Flow {
+    Next,
+    Jump(rsim_ir::BlockId),
+    Call(Frame),
+    Ret(Option<u64>),
+    Suspend,
+}
+
+struct Dbg {
+    session: Arc<DebugSession>,
+    index: usize,
+    mode: StepMode,
+    fuel: u32,
+}
+
+#[derive(Default)]
+struct Waits {
+    sens: Vec<SigRef>,
+    timeout: Option<Time>,
+    stmt: Option<StmtId>,
+}
+
+pub(crate) struct Machine {
+    pub rt: Arc<Runtime>,
+    pub inst: Arc<InstData>,
+    pub drivers: Vec<ProcDriver>,
+    pub frames: Vec<Frame>,
+    pub heap: Heap,
+    pub temp: Vec<u8>,
+    pub sh: Option<SharedState>,
+    pub entry: FuncId,
+    dbg: Option<Dbg>,
+    waits: Waits,
+}
+
+fn sev(v: u64) -> R<Severity> {
+    Ok(match v {
+        0 => Severity::Note,
+        1 => Severity::Warning,
+        2 => Severity::Error,
+        3 => Severity::Failure,
+        _ => return Err(ice(format!("severity {v}"))),
+    })
+}
+
+fn to_time(v: i64) -> R<Time> {
+    Time::from_vhdl(v).map_err(|_| Fault::Runtime(format!("negative time value {v} fs")))
+}
+
+fn arith_r(r: Result<i64, arith::ArithError>) -> R<u64> {
+    r.map(|v| v as u64)
+        .map_err(|e| Fault::Runtime(e.to_string()))
+}
+
+fn real_ok(x: f64, what: &str) -> R<u64> {
+    if x.is_finite() {
+        Ok(x.to_bits())
+    } else {
+        rt_err(format!("real {what} result {x} is out of range"))
+    }
+}
+
+pub(crate) fn value_size(elem: Elem, len: u32) -> u64 {
+    match elem {
+        Elem::Bytes(es) => u64::from(es) * u64::from(len),
+        Elem::Logic => u64::from(len).div_ceil(64) * 32,
+    }
+}
+
+fn blocks_of(bytes: &[u8]) -> Vec<[u64; 4]> {
+    bytes
+        .as_chunks::<32>()
+        .0
+        .iter()
+        .map(|c| {
+            let w = |k: usize| {
+                let mut a = [0; 8];
+                a.copy_from_slice(&c[k * 8..k * 8 + 8]);
+                u64::from_le_bytes(a)
+            };
+            [w(0), w(1), w(2), w(3)]
+        })
+        .collect()
+}
+
+fn bytes_of(blocks: &[[u64; 4]]) -> Vec<u8> {
+    blocks
+        .iter()
+        .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+        .collect()
+}
+
+fn get_bits(words: &[[u64; 4]], start: u64, m: u64, p: usize) -> u64 {
+    let (w, s) = ((start / 64) as usize, start % 64);
+    let mut v = words.get(w).map_or(0, |b| b[p]) >> s;
+    if s > 0 {
+        v |= words.get(w + 1).map_or(0, |b| b[p]) << (64 - s);
+    }
+    if m < 64 { v & ((1 << m) - 1) } else { v }
+}
+
+fn set_bits(words: &mut [[u64; 4]], start: u64, m: u64, p: usize, v: u64) {
+    let mask = if m < 64 { (1u64 << m) - 1 } else { !0 };
+    let (w, s) = ((start / 64) as usize, start % 64);
+    if let Some(b) = words.get_mut(w) {
+        b[p] = b[p] & !(mask << s) | (v & mask) << s;
+    }
+    if s > 0
+        && s + m > 64
+        && let Some(b) = words.get_mut(w + 1)
+    {
+        let hm = mask >> (64 - s);
+        b[p] = b[p] & !hm | (v >> (64 - s)) & hm;
+    }
+}
+
+fn cmp(op: CmpOp, o: std::cmp::Ordering) -> bool {
+    use std::cmp::Ordering::*;
+    match op {
+        CmpOp::Eq => o == Equal,
+        CmpOp::Ne => o != Equal,
+        CmpOp::Lt => o == Less,
+        CmpOp::Le => o != Greater,
+        CmpOp::Gt => o == Greater,
+        CmpOp::Ge => o != Less,
+    }
+}
+
+fn bounds(lo: i64, hi: i64, dir: Dir) -> String {
+    match dir {
+        Dir::To => format!("{lo} to {hi}"),
+        Dir::Downto => format!("{hi} downto {lo}"),
+    }
+}
+
+impl Machine {
+    pub(crate) fn new(
+        rt: Arc<Runtime>,
+        inst: Arc<InstData>,
+        drivers: Vec<ProcDriver>,
+        entry: FuncId,
+    ) -> Machine {
+        Machine {
+            rt,
+            inst,
+            drivers,
+            frames: Vec::new(),
+            heap: Heap::new(heap::PRIVATE),
+            temp: Vec::new(),
+            sh: None,
+            entry,
+            dbg: None,
+            waits: Waits::default(),
+        }
+    }
+
+    pub(crate) fn attach(&mut self, session: Arc<DebugSession>, index: usize) {
+        self.dbg = Some(Dbg {
+            session,
+            index,
+            mode: StepMode::Run,
+            fuel: 0,
+        });
+    }
+
+    /// Push the frame of `func` with `args` (one cell per parameter, two for a signal).
+    pub(crate) fn enter(&mut self, func: FuncId, args: &[u64]) -> R<()> {
+        let rt = self.rt.clone();
+        let f = rt
+            .prog
+            .func(func)
+            .ok_or_else(|| ice(format!("no function {func}")))?;
+        let mut fr = self.frame_for(f, func, None)?;
+        let mut k = 0;
+        for p in &f.params {
+            let n = if p.class == ParamClass::Signal { 2 } else { 1 };
+            let cells = args
+                .get(k..k + n)
+                .ok_or_else(|| Fault::Runtime(format!("missing argument {}", p.name)))?;
+            store_cells(&mut fr.slots, p.slot, p.width, cells)?;
+            k += n;
+        }
+        self.frames.push(fr);
+        Ok(())
+    }
+
+    fn frame_for(&self, f: &Func, func: FuncId, link: Option<u32>) -> R<Frame> {
+        if self.frames.len() >= self.rt.limits.max_depth as usize {
+            return rt_err(format!(
+                "call depth limit {} exceeded calling `{}` (unbounded recursion?)",
+                self.rt.limits.max_depth, f.name
+            ));
+        }
+        Ok(Frame {
+            func,
+            pc: 0,
+            slots: vec![0; f.frame as usize],
+            regs: vec![0; f.reg_ty.len()],
+            link,
+            ret: None,
+            temp_base: self.temp.len(),
+        })
+    }
+
+    /// The VHDL call stack, innermost first.
+    fn trace(&self) -> Vec<StmtId> {
+        self.frames
+            .iter()
+            .rev()
+            .filter_map(|fr| {
+                let f = self.rt.prog.func(fr.func)?;
+                f.loc.get(fr.pc as usize).copied()
+            })
+            .collect()
+    }
+
+    pub(crate) fn error(&self, f: Fault, ctx: Option<&Ctx<'_>>) -> SimError {
+        let mk = |k: ErrorKind| match ctx {
+            Some(c) => c.error(k),
+            None => SimError::new(k),
+        };
+        let mut e = match f {
+            Fault::Runtime(m) => mk(ErrorKind::Runtime(m)),
+            Fault::Internal(m) => mk(ErrorKind::Internal(format!("interpreter: {m}"))),
+            Fault::Kernel(e) => e,
+        };
+        if e.trace.is_empty() {
+            e.trace = self.trace();
+        }
+        e
+    }
+
+    pub(crate) fn run(&mut self, ctx: Option<&mut Ctx<'_>>, base: usize) -> R<Outcome> {
+        let mut ctx = ctx;
+        if self.dbg.is_some() {
+            self.exec::<true>(&mut ctx, base)
+        } else {
+            self.exec::<false>(&mut ctx, base)
+        }
+    }
+
+    /// GC of the private heap and the debug process table, after a suspension.
+    pub(crate) fn after_suspend(&mut self) {
+        if self.heap.since_gc > self.rt.limits.gc_threshold {
+            self.collect();
+        }
+        if let Some(d) = &self.dbg {
+            let w = std::mem::take(&mut self.waits);
+            d.session.update(d.index, |s| {
+                s.state = ProcState::Waiting;
+                s.sensitivity = w.sens;
+                s.timeout = w.timeout;
+                s.wait = w.stmt;
+            });
+        }
+    }
+
+    pub(crate) fn terminated(&mut self) {
+        if let Some(d) = &self.dbg {
+            d.session.update(d.index, |s| {
+                s.state = ProcState::Terminated;
+                s.sensitivity.clear();
+                s.timeout = None;
+            });
+        }
+    }
+
+    /// Collect the private heap from the frames' root maps (registers are dead at a
+    /// suspension point, ir.md 1.2).
+    pub(crate) fn collect(&mut self) -> bool {
+        let prog = &self.rt.prog;
+        let mut roots = Vec::new();
+        for fr in &self.frames {
+            let Some(f) = prog.func(fr.func) else {
+                return false;
+            };
+            for &(off, kind) in &f.roots {
+                let Some(d) = fr.slots.get(off as usize..) else {
+                    return false;
+                };
+                let ok = match kind {
+                    rsim_ir::RootKind::Handle => {
+                        heap::value_handles_raw(d, &mut roots);
+                        true
+                    }
+                    rsim_ir::RootKind::Composite(t) => heap::value_handles(prog, t, d, &mut roots),
+                };
+                if !ok {
+                    return false;
+                }
+            }
+        }
+        self.heap.collect(prog, &roots)
+    }
+
+    fn top(&mut self) -> &mut Frame {
+        let n = self.frames.len();
+        &mut self.frames[n - 1]
+    }
+
+    fn r(&self, r: Reg) -> u64 {
+        self.frames[self.frames.len() - 1].regs[r.0 as usize]
+    }
+
+    fn ri(&self, r: Reg) -> i64 {
+        self.r(r) as i64
+    }
+
+    fn rf(&self, r: Reg) -> f64 {
+        f64::from_bits(self.r(r))
+    }
+
+    fn set(&mut self, r: Reg, v: u64) {
+        self.top().regs[r.0 as usize] = v;
+    }
+
+    // ---- memory ----
+
+    fn shared(&self) -> R<&SharedState> {
+        self.sh
+            .as_ref()
+            .ok_or_else(|| ice("shared state accessed by a process that is not marked serial"))
+    }
+
+    fn shared_mut(&mut self) -> R<&mut SharedState> {
+        self.sh
+            .as_mut()
+            .ok_or_else(|| ice("shared state accessed by a process that is not marked serial"))
+    }
+
+    fn rd(&self, a: u64, n: u64) -> R<&[u8]> {
+        let (sp, idx, off) = split(a);
+        let mem: &[u8] = match sp {
+            FRAME => {
+                &self
+                    .frames
+                    .get(idx as usize)
+                    .ok_or_else(|| ice(format!("address of dead frame {idx}")))?
+                    .slots
+            }
+            INST => &self.inst.data,
+            PKG => {
+                &self
+                    .rt
+                    .pkgs
+                    .get(idx as usize)
+                    .ok_or_else(|| ice(format!("no package instance {idx}")))?
+                    .data
+            }
+            CONST => match self.rt.prog.consts.get(rsim_ir::ConstId(idx)) {
+                Some(ConstData::Bytes(b)) => b,
+                _ => return Err(ice(format!("constant c{idx} is not addressable bytes"))),
+            },
+            HEAP => self
+                .heap
+                .data(idx)
+                .ok_or_else(|| Fault::Runtime("access to a deallocated object".into()))?,
+            TEMP => &self.temp,
+            SHARED => &self.shared()?.vars,
+            _ => self
+                .shared()?
+                .heap
+                .as_ref()
+                .and_then(|h| h.data(idx))
+                .ok_or_else(|| Fault::Runtime("access to a deallocated object".into()))?,
+        };
+        let end = off.saturating_add(n);
+        mem.get(off as usize..end as usize).ok_or_else(|| {
+            ice(format!(
+                "read of {n} bytes at {off} outside a {} object of {} bytes",
+                SPACE_NAMES[sp as usize],
+                mem.len()
+            ))
+        })
+    }
+
+    fn wr(&mut self, a: u64, n: u64) -> R<&mut [u8]> {
+        let (sp, idx, off) = split(a);
+        let mem: &mut [u8] = match sp {
+            FRAME => {
+                &mut self
+                    .frames
+                    .get_mut(idx as usize)
+                    .ok_or_else(|| ice(format!("address of dead frame {idx}")))?
+                    .slots
+            }
+            HEAP => self
+                .heap
+                .data_mut(idx)
+                .ok_or_else(|| Fault::Runtime("access to a deallocated object".into()))?,
+            TEMP => &mut self.temp,
+            SHARED => &mut self.shared_mut()?.vars,
+            SHARED_HEAP => self
+                .shared_mut()?
+                .heap
+                .as_mut()
+                .and_then(|h| h.data_mut(idx))
+                .ok_or_else(|| Fault::Runtime("access to a deallocated object".into()))?,
+            _ => {
+                return Err(ice(format!(
+                    "write to read-only {} memory",
+                    SPACE_NAMES[sp as usize]
+                )));
+            }
+        };
+        let len = mem.len();
+        let end = off.saturating_add(n);
+        mem.get_mut(off as usize..end as usize).ok_or_else(|| {
+            ice(format!(
+                "write of {n} bytes at {off} outside a {} object of {len} bytes",
+                SPACE_NAMES[sp as usize]
+            ))
+        })
+    }
+
+    fn put(&mut self, a: u64, bytes: &[u8]) -> R<()> {
+        self.wr(a, bytes.len() as u64)?.copy_from_slice(bytes);
+        Ok(())
+    }
+
+    fn load(&self, a: u64, w: Width) -> R<u64> {
+        let n = w.bytes().min(8) as u64;
+        let b = self.rd(a, n)?;
+        let mut x = [0u8; 8];
+        x[..n as usize].copy_from_slice(b);
+        Ok(u64::from_le_bytes(x))
+    }
+
+    fn store(&mut self, a: u64, w: Width, v: u64) -> R<()> {
+        let n = w.bytes().min(8) as usize;
+        self.put(a, &v.to_le_bytes()[..n])
+    }
+
+    pub(crate) fn temp_alloc(&mut self, n: u64) -> R<u64> {
+        let off = (self.temp.len() as u64).next_multiple_of(8);
+        let end = off.saturating_add(n);
+        if end > u64::from(u32::MAX) {
+            return rt_err("temporary memory of one statement exceeds 4 GiB");
+        }
+        self.temp.resize(end as usize, 0);
+        mk_addr(TEMP, 0, off)
+    }
+
+    /// A string result: data, `1 to len` descriptor and the fat pair `[data, dope]`.
+    pub(crate) fn ret_string(&mut self, s: &[u8]) -> R<u64> {
+        let data = self.temp_alloc(s.len() as u64)?;
+        self.put(data, s)?;
+        let dope = self.temp_alloc(24)?;
+        let d: Vec<u8> = [1i64, s.len() as i64, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        self.put(dope, &d)?;
+        let fat = self.temp_alloc(16)?;
+        self.store(fat, Width::B8, data)?;
+        self.store(add_addr(fat, 8)?, Width::B8, dope)?;
+        Ok(fat)
+    }
+
+    fn planes(&self, a: u64, n: u64) -> R<LogicVec> {
+        let b = self.rd(a, n.div_ceil(64) * 32)?;
+        Ok(LogicVec::from_repr(Planes::from_blocks(
+            n as usize,
+            blocks_of(b),
+        )))
+    }
+
+    fn put_planes(&mut self, a: u64, v: &LogicVec) -> R<()> {
+        self.put(a, &bytes_of(v.repr().blocks()))
+    }
+
+    fn put_value(&mut self, a: u64, v: &Value) -> R<()> {
+        match v {
+            Value::Bytes(b) => self.put(a, b),
+            Value::Logic(l) => self.put_planes(a, l),
+        }
+    }
+
+    fn get_value(&self, a: u64, elem: Elem, len: u32) -> R<Value> {
+        Ok(match elem {
+            Elem::Bytes(_) => Value::Bytes(self.rd(a, value_size(elem, len))?.to_vec()),
+            Elem::Logic => Value::Logic(self.planes(a, u64::from(len))?),
+        })
+    }
+
+    fn lcopy(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        let (sb0, sb1) = (soff / 64, (soff + n - 1) / 64);
+        let (db0, db1) = (doff / 64, (doff + n - 1) / 64);
+        let sw = blocks_of(self.rd(add_addr(src, sb0 * 32)?, (sb1 - sb0 + 1) * 32)?);
+        let da = add_addr(dst, db0 * 32)?;
+        let mut dw = blocks_of(self.rd(da, (db1 - db0 + 1) * 32)?);
+        let (s0, d0) = (soff - sb0 * 64, doff - db0 * 64);
+        let mut k = 0;
+        while k < n {
+            let m = (n - k).min(64);
+            for p in 0..4 {
+                let v = get_bits(&sw, s0 + k, m, p);
+                set_bits(&mut dw, d0 + k, m, p, v);
+            }
+            k += m;
+        }
+        self.put(da, &bytes_of(&dw))
+    }
+
+    fn sigref(&self, r: Reg) -> R<(SigRef, rsim_kernel::SignalType)> {
+        let v = self.r(r);
+        let len = self.r(Reg(r.0 + 1)) as u32;
+        let (base, off) = ((v >> 32) as u32, v as u32);
+        let s = self
+            .inst
+            .sigs
+            .get(base as usize)
+            .ok_or_else(|| ice(format!("no instance signal {base}")))?;
+        Ok((s.signal.slice(off, len), s.ty))
+    }
+
+    fn driver(&self, d: u32) -> R<ProcDriver> {
+        self.drivers
+            .get(d as usize)
+            .copied()
+            .ok_or_else(|| ice(format!("no driver slot {d}")))
+    }
+
+    fn driver_ref(&self, d: &ProcDriver) -> R<(SigRef, Elem)> {
+        let s = self
+            .inst
+            .sigs
+            .get(d.sig as usize)
+            .ok_or_else(|| ice(format!("no instance signal {}", d.sig)))?;
+        Ok((s.signal.slice(d.range.offset, d.range.len), s.ty.elem))
+    }
+
+    fn check_msg(&self, m: rsim_ir::CheckMsgId) -> (String, Dir) {
+        match self.rt.prog.checks.get(m) {
+            Some(c) => (c.what.clone(), c.dir),
+            None => (String::from("?"), Dir::To),
+        }
+    }
+
+    fn heap_of(&mut self, h: u64) -> R<(&mut Heap, u8)> {
+        match heap::tag_of(h) {
+            heap::PRIVATE => Ok((&mut self.heap, HEAP)),
+            heap::SHARED => {
+                let sh = self.shared_mut()?;
+                let h = sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED));
+                Ok((h, SHARED_HEAP))
+            }
+            t => Err(ice(format!("access value with heap tag {t}"))),
+        }
+    }
+
+    // ---- dispatch ----
+
+    fn exec<const DEBUG: bool>(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        base: usize,
+    ) -> R<Outcome> {
+        let rt = self.rt.clone();
+        let prog = &rt.prog;
+        loop {
+            let fr = self
+                .frames
+                .last()
+                .ok_or_else(|| ice("no frame to execute"))?;
+            let f = prog
+                .func(fr.func)
+                .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
+            let pc = fr.pc as usize;
+            let inst = *f
+                .code
+                .get(pc)
+                .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
+            if DEBUG {
+                self.debug_tick(prog, f, pc, &inst, ctx)?;
+            }
+            match self.step(prog, f, inst, ctx)? {
+                Flow::Next => self.top().pc += 1,
+                Flow::Jump(b) => {
+                    let blk = f
+                        .blocks
+                        .get(b)
+                        .ok_or_else(|| ice(format!("no block {b}")))?;
+                    self.top().pc = blk.start;
+                }
+                Flow::Call(fr) => self.frames.push(fr),
+                Flow::Ret(v) => {
+                    let done = self
+                        .frames
+                        .pop()
+                        .ok_or_else(|| ice("return without frame"))?;
+                    if self.frames.len() <= base {
+                        return Ok(Outcome::Returned(v));
+                    }
+                    let c = self.top();
+                    if let Some(d) = done.ret {
+                        c.regs[d.0 as usize] =
+                            v.ok_or_else(|| ice("function returned no value"))?;
+                    }
+                    c.pc += 1;
+                }
+                Flow::Suspend => {
+                    self.top().pc += 1;
+                    return Ok(Outcome::Suspended);
+                }
+            }
+        }
+    }
+
+    fn debug_tick(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        pc: usize,
+        inst: &Inst,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<()> {
+        let Some(d) = self.dbg.as_mut() else {
+            return Ok(());
+        };
+        d.fuel = d.fuel.wrapping_add(1);
+        if d.fuel.is_multiple_of(4096) && d.session.pause_pending() {
+            d.mode = StepMode::In;
+        }
+        if !matches!(inst, Inst::Stmt) {
+            return Ok(());
+        }
+        let session = d.session.clone();
+        let index = d.index;
+        let stmt = f.loc[pc];
+        let depth = self.frames.len();
+        let mut reason = None;
+        if session.take_pause() {
+            reason = Some(StopReason::Pause);
+        } else if session.take_global_step() {
+            reason = Some(StopReason::GlobalStep);
+        } else if d.mode.stops(depth) {
+            reason = Some(StopReason::Step);
+        }
+        if reason.is_none()
+            && let Some(bp) = session.line(stmt)
+        {
+            let held = match bp.cond {
+                None => Ok(true),
+                Some(c) => self.eval_cond(c, ctx).map(|v| v != 0),
+            };
+            match held {
+                Ok(true) if bp.hit() => {
+                    reason = Some(StopReason::Breakpoint { hits: bp.hits() });
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    reason = Some(StopReason::ConditionError(self.error(e, None).to_string()))
+                }
+            }
+        }
+        let Some(reason) = reason else {
+            return Ok(());
+        };
+        session.update(index, |s| s.state = ProcState::Running);
+        let c = ctx.as_deref();
+        let stop = Stop {
+            reason,
+            stmt,
+            process: index,
+            now: c.map(|c| c.now()),
+            delta: c.map(|c| c.delta()),
+            frames: FrameView {
+                frames: &self.frames,
+                prog,
+            },
+            ctx: c,
+        };
+        let resume = session.stop(&stop);
+        if resume == crate::Resume::GlobalStep {
+            session.request_global_step();
+        }
+        if let Some(d) = self.dbg.as_mut() {
+            d.mode = StepMode::after(resume, depth);
+        }
+        Ok(())
+    }
+
+    /// Evaluate a breakpoint condition: a function nested in the current frame's function.
+    fn eval_cond(&mut self, c: FuncId, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+        let rt = self.rt.clone();
+        let f = rt
+            .prog
+            .func(c)
+            .ok_or_else(|| ice(format!("no condition function {c}")))?;
+        let link = self.static_link(f, None)?;
+        let fr = self.frame_for(f, c, link)?;
+        let base = self.frames.len();
+        self.frames.push(fr);
+        let r = self.exec::<false>(ctx, base);
+        self.frames.truncate(base);
+        match r? {
+            Outcome::Returned(Some(v)) => Ok(v),
+            _ => Err(ice("breakpoint condition did not return a value")),
+        }
+    }
+
+    fn static_link(&self, callee: &Func, _caller: Option<usize>) -> R<Option<u32>> {
+        let Some(parent) = callee.parent else {
+            return Ok(None);
+        };
+        let mut k = self.frames.len().checked_sub(1);
+        while let Some(i) = k {
+            let fr = &self.frames[i];
+            if fr.func == parent {
+                return Ok(Some(i as u32));
+            }
+            // Search the caller's static chain, then outward along the dynamic stack.
+            k = match fr.link {
+                Some(l) if (l as usize) < i => Some(l as usize),
+                _ => i.checked_sub(1),
+            };
+        }
+        Err(ice(format!(
+            "frame of {parent}, the parent of `{}`, is not on the stack",
+            callee.name
+        )))
+    }
+
+    fn call(&mut self, prog: &Program, func: FuncId, cells: &[u64], dst: Option<Reg>) -> R<Flow> {
+        let f = prog
+            .func(func)
+            .ok_or_else(|| ice(format!("call of missing function {func}")))?;
+        let link = self.static_link(f, None)?;
+        let mut fr = self.frame_for(f, func, link)?;
+        fr.ret = dst;
+        let mut k = 0;
+        for p in &f.params {
+            let n = if p.width == Width::Sig { 2 } else { 1 };
+            let c = cells
+                .get(k..k + n)
+                .ok_or_else(|| ice(format!("missing argument {}", p.name)))?;
+            store_cells(&mut fr.slots, p.slot, p.width, c)?;
+            k += n;
+        }
+        Ok(Flow::Call(fr))
+    }
+
+    /// Argument cells: two for a register that holds a signal reference.
+    fn arg_cells(
+        &self,
+        f: &Func,
+        args: rsim_ir::Regs,
+        callee: Option<&Func>,
+        skip: usize,
+    ) -> R<Vec<u64>> {
+        let regs = f
+            .regs(args)
+            .ok_or_else(|| ice("operand list out of range"))?;
+        let mut out = Vec::with_capacity(regs.len() + 2);
+        for (i, &r) in regs.iter().enumerate() {
+            out.push(self.r(r));
+            let sig = callee
+                .and_then(|c| c.params.get(i + skip))
+                .is_some_and(|p| p.width == Width::Sig);
+            if sig {
+                out.push(self.r(Reg(r.0 + 1)));
+            }
+        }
+        Ok(out)
+    }
+
+    fn step(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        inst: Inst,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Flow> {
+        macro_rules! kc {
+            () => {
+                match ctx.as_deref_mut() {
+                    Some(c) => c,
+                    None => return rt_err("signal or wait operation during elaboration"),
+                }
+            };
+        }
+        match inst {
+            Inst::Const { dst, v } => self.set(dst, v as u64),
+            Inst::ConstF { dst, v } => self.set(dst, v.to_bits()),
+            Inst::Move { dst, src } => {
+                let v = self.r(src);
+                self.set(dst, v);
+            }
+            Inst::AddrOf { dst, space, off } => {
+                let off = u64::from(off);
+                let a = match space {
+                    AddrSpace::Frame => mk_addr(FRAME, self.frames.len() as u32 - 1, off)?,
+                    AddrSpace::Up(d) => {
+                        let mut i = self.frames.len() - 1;
+                        for _ in 0..d {
+                            i = self.frames[i]
+                                .link
+                                .ok_or_else(|| ice("static link missing"))?
+                                as usize;
+                        }
+                        mk_addr(FRAME, i as u32, off)?
+                    }
+                    AddrSpace::Inst => mk_addr(INST, 0, off)?,
+                    AddrSpace::Pkg(p) => mk_addr(PKG, p, off)?,
+                    AddrSpace::Const(c) => mk_addr(CONST, c.0, off)?,
+                    AddrSpace::Shared => mk_addr(SHARED, 0, off)?,
+                };
+                self.set(dst, a);
+            }
+            Inst::CopyConst { dst, c } => {
+                let bytes = expand_const(
+                    prog.consts
+                        .get(c)
+                        .ok_or_else(|| ice(format!("no constant {c}")))?,
+                )?;
+                let a = self.r(dst);
+                self.put(a, &bytes)?;
+            }
+            Inst::Alloc { dst, size } => {
+                let a = self.temp_alloc(self.r(size))?;
+                self.set(dst, a);
+            }
+            Inst::Load { dst, addr, w } => {
+                let a = self.r(addr);
+                if w == Width::Sig {
+                    let lo = self.load(a, Width::B8)?;
+                    let hi = self.load(add_addr(a, 8)?, Width::B8)?;
+                    self.set(dst, lo);
+                    self.set(Reg(dst.0 + 1), hi);
+                } else {
+                    let v = self.load(a, w)?;
+                    self.set(dst, v);
+                }
+            }
+            Inst::Store { addr, src, w } => {
+                let a = self.r(addr);
+                if w == Width::Sig {
+                    let (lo, hi) = (self.r(src), self.r(Reg(src.0 + 1)));
+                    self.store(a, Width::B8, lo)?;
+                    self.store(add_addr(a, 8)?, Width::B8, hi)?;
+                } else {
+                    let v = self.r(src);
+                    self.store(a, w, v)?;
+                }
+            }
+            Inst::Copy { dst, src, bytes } => {
+                let b = self.rd(self.r(src), self.r(bytes))?.to_vec();
+                self.put(self.r(dst), &b)?;
+            }
+            Inst::Fill { dst, elem, n, size } => {
+                let e = self.rd(self.r(elem), u64::from(size))?.to_vec();
+                let n = self.r(n);
+                let total = n
+                    .checked_mul(u64::from(size))
+                    .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
+                let out = self.wr(self.r(dst), total)?;
+                for c in out.chunks_exact_mut(size.max(1) as usize) {
+                    c.copy_from_slice(&e);
+                }
+            }
+            Inst::Pos {
+                dst,
+                dope,
+                dim,
+                idx,
+                what,
+            } => {
+                let d = add_addr(self.r(dope), u64::from(dim) * 24)?;
+                let (l, rr, dir) = (
+                    self.load(d, Width::B8)? as i64,
+                    self.load(add_addr(d, 8)?, Width::B8)? as i64,
+                    self.load(add_addr(d, 16)?, Width::B8)?,
+                );
+                let i = self.ri(idx);
+                let pos = match dir {
+                    0 if l <= i && i <= rr => i - l,
+                    1 if rr <= i && i <= l => l - i,
+                    0 | 1 => {
+                        let (w, _) = self.check_msg(what);
+                        let b = if dir == 0 {
+                            format!("{l} to {rr}")
+                        } else {
+                            format!("{l} downto {rr}")
+                        };
+                        return rt_err(format!("index {i} out of range {b} for {w}"));
+                    }
+                    _ => return Err(ice(format!("direction {dir} in a descriptor"))),
+                };
+                self.set(dst, pos as u64);
+            }
+            Inst::Index {
+                dst,
+                base,
+                pos,
+                stride,
+            } => {
+                let off = self
+                    .r(pos)
+                    .checked_mul(u64::from(stride))
+                    .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
+                let a = add_addr(self.r(base), off)?;
+                self.set(dst, a);
+            }
+            Inst::Field {
+                dst,
+                base,
+                layout,
+                n,
+            } => {
+                let off = self.load(add_addr(self.r(layout), 16 + 8 * u64::from(n))?, Width::B8)?;
+                let a = add_addr(self.r(base), off)?;
+                self.set(dst, a);
+            }
+            Inst::Bin { op, dst, a, b } => {
+                let (x, y) = (self.ri(a), self.ri(b));
+                let v = arith_r(match op {
+                    IntOp::Add => arith::add(x, y),
+                    IntOp::Sub => arith::sub(x, y),
+                    IntOp::Mul => arith::mul(x, y),
+                    IntOp::Div => arith::div(x, y),
+                    IntOp::Rem => arith::rem(x, y),
+                    IntOp::Mod => arith::modulo(x, y),
+                    IntOp::Pow => arith::pow(x, y),
+                })?;
+                self.set(dst, v);
+            }
+            Inst::Un { op, dst, a } => {
+                let x = self.ri(a);
+                let v = arith_r(match op {
+                    IntUnOp::Neg => arith::neg(x),
+                    IntUnOp::Abs => arith::abs(x),
+                })?;
+                self.set(dst, v);
+            }
+            Inst::FBin { op, dst, a, b } => {
+                let x = self.rf(a);
+                let v = match op {
+                    FOp::Add => x + self.rf(b),
+                    FOp::Sub => x - self.rf(b),
+                    FOp::Mul => x * self.rf(b),
+                    FOp::Div => {
+                        let y = self.rf(b);
+                        if y == 0.0 {
+                            return rt_err(format!("division of {x} by zero"));
+                        }
+                        x / y
+                    }
+                    FOp::PowI => match i32::try_from(self.ri(b)) {
+                        Ok(e) => x.powi(e),
+                        Err(_) => x.powf(self.ri(b) as f64),
+                    },
+                    FOp::Pow => x.powf(self.rf(b)),
+                };
+                let v = real_ok(v, "arithmetic")?;
+                self.set(dst, v);
+            }
+            Inst::FUn { op, dst, a } => {
+                let x = self.rf(a);
+                let v = match op {
+                    FUnOp::Neg => -x,
+                    FUnOp::Abs => x.abs(),
+                };
+                self.set(dst, v.to_bits());
+            }
+            Inst::Phys { op, dst, a, b } => {
+                let (x, y) = (self.ri(a), self.rf(b));
+                let v = arith_r(match op {
+                    PhysOp::MulReal => arith::phys_mul_real(x, y),
+                    PhysOp::DivReal => arith::phys_div_real(x, y),
+                })?;
+                self.set(dst, v);
+            }
+            Inst::IToF { dst, src } => {
+                let v = (self.ri(src) as f64).to_bits();
+                self.set(dst, v);
+            }
+            Inst::FToI { dst, src } => {
+                let v = arith_r(arith::real_to_int(arith::Op::Mul, self.rf(src)))?;
+                self.set(dst, v);
+            }
+            Inst::Cmp { op, dst, a, b } => {
+                let v = cmp(op, self.ri(a).cmp(&self.ri(b)));
+                self.set(dst, v.into());
+            }
+            Inst::FCmp { op, dst, a, b } => {
+                let v = self
+                    .rf(a)
+                    .partial_cmp(&self.rf(b))
+                    .is_some_and(|o| cmp(op, o));
+                self.set(dst, v.into());
+            }
+            Inst::Bool { op, dst, a, b } => {
+                let (x, y) = (self.r(a) != 0, self.r(b) != 0);
+                let v = match op {
+                    BoolOp::And => x && y,
+                    BoolOp::Or => x || y,
+                    BoolOp::Xor => x != y,
+                    BoolOp::Not => !x,
+                };
+                self.set(dst, v.into());
+            }
+            Inst::LogicOp { op, dst, a, b, n } => {
+                let n = self.r(n);
+                let x = self.planes(self.r(a), n)?;
+                let unary = matches!(op, LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01);
+                let y = if unary {
+                    x.clone()
+                } else {
+                    self.planes(self.r(b), n)?
+                };
+                let v = match op {
+                    LOp::And => x.and(&y),
+                    LOp::Or => x.or(&y),
+                    LOp::Nand => x.nand(&y),
+                    LOp::Nor => x.nor(&y),
+                    LOp::Xor => x.xor(&y),
+                    LOp::Xnor => x.xnor(&y),
+                    LOp::Not => x.not(),
+                    LOp::ToX01 => x.to_x01(),
+                    LOp::ToX01Z => x.to_x01z(),
+                    LOp::ToUx01 => x.to_ux01(),
+                    LOp::Resolve => LogicVec::resolve(&[&x, &y]),
+                };
+                self.put_planes(self.r(dst), &v)?;
+            }
+            Inst::LNum {
+                op,
+                dst,
+                a,
+                b,
+                n,
+                signed,
+            } => {
+                let n = self.r(n);
+                let x = self.planes(self.r(a), n)?;
+                let y = self.planes(self.r(b), n)?;
+                match op {
+                    LNumOp::Add | LNumOp::Sub => {
+                        let v = x.add_num(&y, signed, op == LNumOp::Sub);
+                        self.put_planes(self.r(dst), &v)?;
+                    }
+                    LNumOp::Cmp(c) => {
+                        let v = x.cmp_num(&y, signed).is_some_and(|o| cmp(c, o));
+                        self.set(dst, v.into());
+                    }
+                }
+            }
+            Inst::LEq { dst, a, b, n } => {
+                let n = self.r(n);
+                let v = self.planes(self.r(a), n)? == self.planes(self.r(b), n)?;
+                self.set(dst, v.into());
+            }
+            Inst::LGet { dst, base, idx } => {
+                let i = self.r(idx);
+                let b = blocks_of(self.rd(add_addr(self.r(base), i / 64 * 32)?, 32)?);
+                let code = (0..4).fold(0u64, |c, p| c | (b[0][p] >> (i % 64) & 1) << p);
+                self.set(dst, code);
+            }
+            Inst::LSet { base, idx, v } => {
+                let i = self.r(idx);
+                let code = self.r(v);
+                if code > 8 {
+                    return Err(ice(format!("std_ulogic code {code}")));
+                }
+                let a = add_addr(self.r(base), i / 64 * 32)?;
+                let mut b = blocks_of(self.rd(a, 32)?);
+                for p in 0..4 {
+                    set_bits(&mut b, i % 64, 1, p, code >> p & 1);
+                }
+                self.put(a, &bytes_of(&b))?;
+            }
+            Inst::LCopy {
+                dst,
+                dst_off,
+                src,
+                src_off,
+                n,
+            } => {
+                let (d, doff, s, soff, n) = (
+                    self.r(dst),
+                    self.r(dst_off),
+                    self.r(src),
+                    self.r(src_off),
+                    self.r(n),
+                );
+                self.lcopy(d, doff, s, soff, n)?;
+            }
+            Inst::Check {
+                kind,
+                v,
+                lo,
+                hi,
+                what,
+            } => {
+                let x = self.ri(v);
+                let (w, dir) = self.check_msg(what);
+                match kind {
+                    CheckKind::Range | CheckKind::Index => {
+                        let (l, h) = (self.ri(lo), self.ri(hi));
+                        if x < l || x > h {
+                            let k = if kind == CheckKind::Index {
+                                "index"
+                            } else {
+                                "value"
+                            };
+                            return rt_err(format!(
+                                "{k} {x} out of range {} for {w}",
+                                bounds(l, h, dir)
+                            ));
+                        }
+                    }
+                    CheckKind::Length => {
+                        let l = self.ri(lo);
+                        if x != l {
+                            return rt_err(format!("length {x} does not match length {l} of {w}"));
+                        }
+                    }
+                    CheckKind::Null => {
+                        if x == 0 {
+                            return rt_err(format!("null access value: {w}"));
+                        }
+                    }
+                }
+            }
+            Inst::MakeDope { at, parts } => {
+                let regs = f.regs(parts).ok_or_else(|| ice("operand list"))?;
+                let mut out = Vec::with_capacity(regs.len() * 8);
+                for &r in regs {
+                    out.extend_from_slice(&self.r(r).to_le_bytes());
+                }
+                self.put(self.r(at), &out)?;
+            }
+            Inst::DopeLen { dst, dope, dim } => {
+                let d = add_addr(self.r(dope), u64::from(dim) * 24)?;
+                let (l, rr, dir) = (
+                    self.load(d, Width::B8)? as i64,
+                    self.load(add_addr(d, 8)?, Width::B8)? as i64,
+                    self.load(add_addr(d, 16)?, Width::B8)?,
+                );
+                let n = rsim_ir::dim_len(l, rr, dir == 1)
+                    .filter(|&n| n <= i64::MAX as u64)
+                    .ok_or_else(|| Fault::Runtime(format!("range {l} .. {rr} too long")))?;
+                self.set(dst, n);
+            }
+            Inst::LayoutOf { dst, ty, desc } => {
+                let dsz = Ty::desc_size(&prog.types, ty)
+                    .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?;
+                let d = self.rd(self.r(desc), dsz)?.to_vec();
+                let (l, _) =
+                    Ty::layout(&prog.types, &prog.consts, ty, &d).map_err(|e| match e {
+                        LayoutError::TooLarge => Fault::Runtime(e.to_string()),
+                        LayoutError::Malformed(_) => ice(e.to_string()),
+                    })?;
+                let mut words = vec![l.size, l.align];
+                if l.offsets.is_empty() {
+                    words.extend([l.stride, l.count]);
+                } else {
+                    words.extend(&l.offsets);
+                }
+                let a = self.temp_alloc(words.len() as u64 * 8)?;
+                let b: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                self.put(a, &b)?;
+                self.set(dst, a);
+            }
+            Inst::SubtypeCheck {
+                dope,
+                want,
+                dims,
+                what,
+            } => {
+                for k in 0..u64::from(dims) {
+                    let len = |m: &Machine, base: u64| -> R<u64> {
+                        let d = add_addr(base, k * 24)?;
+                        let l = m.load(d, Width::B8)? as i64;
+                        let r = m.load(add_addr(d, 8)?, Width::B8)? as i64;
+                        let dir = m.load(add_addr(d, 16)?, Width::B8)?;
+                        rsim_ir::dim_len(l, r, dir == 1)
+                            .ok_or_else(|| Fault::Runtime("range too long".into()))
+                    };
+                    let (a, b) = (len(self, self.r(dope))?, len(self, self.r(want))?);
+                    if a != b {
+                        let (w, _) = self.check_msg(what);
+                        return rt_err(format!(
+                            "length {a} of dimension {} does not match length {b} of {w}",
+                            k + 1
+                        ));
+                    }
+                }
+            }
+            Inst::Br { to } => return Ok(Flow::Jump(to)),
+            Inst::CondBr { c, t, f } => {
+                return Ok(Flow::Jump(if self.r(c) != 0 { t } else { f }));
+            }
+            Inst::Case { v, table } => {
+                let t = prog
+                    .cases
+                    .get(table)
+                    .ok_or_else(|| ice(format!("no case table {table}")))?;
+                let x = self.ri(v);
+                let i = t.arms.partition_point(|a| a.1 < x);
+                let to = match t.arms.get(i) {
+                    Some(&(lo, _, b)) if lo <= x => b,
+                    _ => t.default,
+                };
+                return Ok(Flow::Jump(to));
+            }
+            Inst::Ret { v } => return Ok(Flow::Ret(v.map(|r| self.r(r)))),
+            Inst::Unreachable { what } => {
+                let (w, _) = self.check_msg(what);
+                return rt_err(w);
+            }
+            Inst::Call { func, args, dst } => {
+                let cells = self.arg_cells(f, args, prog.func(func), 0)?;
+                return self.call(prog, func, &cells, dst);
+            }
+            Inst::CallIndirect { func, args, dst } => {
+                let id = FuncId(self.r(func) as u32);
+                let c = prog
+                    .func(id)
+                    .ok_or_else(|| ice(format!("indirect call of missing function {id}")))?;
+                if c.kind == FuncKind::Process || c.kind == FuncKind::Elab {
+                    return Err(ice(format!("indirect call of {:?} {id}", c.kind)));
+                }
+                let cells = self.arg_cells(f, args, Some(c), 0)?;
+                return self.call(prog, id, &cells, dst);
+            }
+            Inst::CallProt {
+                func,
+                obj,
+                args,
+                dst,
+            } => {
+                self.shared()?;
+                let mut cells = vec![self.r(obj)];
+                cells.extend(self.arg_cells(f, args, prog.func(func), 1)?);
+                return self.call(prog, func, &cells, dst);
+            }
+            Inst::CallNative { native, args, dst } => {
+                let n = prog
+                    .natives
+                    .get(native)
+                    .ok_or_else(|| ice(format!("no native {native}")))?;
+                let Some(fun) = self.rt.natives.get(native.0 as usize).copied().flatten() else {
+                    return rt_err(format!(
+                        "native subprogram `{}` is not implemented in rsim yet",
+                        n.symbol
+                    ));
+                };
+                let cells = self.arg_cells(f, args, None, 0)?;
+                let v = fun(self, ctx, n.ty, &cells)?;
+                if let Some(d) = dst {
+                    let v =
+                        v.ok_or_else(|| ice(format!("native `{}` returned no value", n.symbol)))?;
+                    self.set(d, v);
+                }
+            }
+            Inst::CallForeign { foreign, args, dst } => {
+                let v = self.foreign(prog, f, foreign, args)?;
+                if let Some(d) = dst {
+                    self.set(d, v);
+                }
+            }
+            Inst::New {
+                dst,
+                ty,
+                init,
+                size,
+                shared,
+            } => {
+                let data = self.rd(self.r(init), self.r(size))?.to_vec();
+                let r = if shared {
+                    let sh = self.shared_mut()?;
+                    sh.heap
+                        .get_or_insert_with(|| Heap::new(heap::SHARED))
+                        .alloc(ty, data)
+                } else {
+                    self.heap.alloc(ty, data)
+                };
+                let h = r.map_err(|_| {
+                    Fault::Runtime("heap object limit (16M objects per heap) exceeded".into())
+                })?;
+                self.set(dst, h);
+            }
+            Inst::Free { ptr } => {
+                let a = self.r(ptr);
+                let h = self.load(a, Width::B8)?;
+                if h != 0 {
+                    let (hp, _) = self.heap_of(h)?;
+                    match hp.free(h) {
+                        Ok(()) => {}
+                        Err(HeapError::Stale) => {
+                            return rt_err(
+                                "deallocate of an access value whose object was already \
+                                 deallocated",
+                            );
+                        }
+                        Err(e) => return Err(ice(format!("deallocate: {e:?}"))),
+                    }
+                    self.store(a, Width::B8, 0)?;
+                }
+            }
+            Inst::Deref { dst, handle, what } => {
+                let h = self.r(handle);
+                let (w, _) = self.check_msg(what);
+                if h == 0 {
+                    return rt_err(format!("null access value dereferenced: {w}"));
+                }
+                let (hp, space) = self.heap_of(h)?;
+                let i = match hp.resolve(h) {
+                    Ok(i) => i,
+                    Err(HeapError::Stale) => {
+                        return rt_err(format!(
+                            "access value designates an object that was deallocated: {w}"
+                        ));
+                    }
+                    Err(e) => return Err(ice(format!("dereference: {e:?}"))),
+                };
+                let a = mk_addr(space, i, 0)?;
+                self.set(dst, a);
+            }
+            Inst::SigVal {
+                dst,
+                sig,
+                offset,
+                len,
+            } => {
+                let (o, l) = (self.ri(offset), self.ri(len));
+                let (Ok(o), Ok(l)) = (u32::try_from(o), u32::try_from(l)) else {
+                    return rt_err(format!("signal element range {o} + {l} out of bounds"));
+                };
+                if self.inst.sigs.get(sig as usize).is_none() {
+                    return Err(ice(format!("no instance signal {sig}")));
+                }
+                self.set(dst, u64::from(sig) << 32 | u64::from(o));
+                self.set(Reg(dst.0 + 1), u64::from(l));
+            }
+            Inst::SigRead { dst, sig } => {
+                let (sr, ty) = self.sigref(sig)?;
+                let c = kc!();
+                let v = match ty.elem {
+                    Elem::Bytes(_) => Value::Bytes(c.value(sr)?.to_vec()),
+                    Elem::Logic => Value::Logic(c.logic(sr)?),
+                };
+                self.put_value(self.r(dst), &v)?;
+            }
+            Inst::SigReadScalar { dst, sig } => {
+                let (sr, ty) = self.sigref(sig)?;
+                let c = kc!();
+                let v = match ty.elem {
+                    Elem::Bytes(es) if es <= 8 => {
+                        let b = c.value(sr)?;
+                        let mut a = [0u8; 8];
+                        let n = b.len().min(8);
+                        a[..n].copy_from_slice(&b[..n]);
+                        u64::from_le_bytes(a)
+                    }
+                    Elem::Logic => {
+                        let l = c.logic(sr)?;
+                        if l.is_empty() {
+                            return Err(ice("scalar read of a null signal range"));
+                        }
+                        l.get(0) as u64
+                    }
+                    Elem::Bytes(es) => {
+                        return Err(ice(format!("scalar read of a {es}-byte element")));
+                    }
+                };
+                self.set(dst, v);
+            }
+            Inst::SigLastValue { dst, sig } => {
+                let (sr, _) = self.sigref(sig)?;
+                let v = kc!().last_value(sr)?;
+                self.put_value(self.r(dst), &v)?;
+            }
+            Inst::SigAttr { dst, kind, sig } => {
+                let (sr, _) = self.sigref(sig)?;
+                let c = kc!();
+                let v = match kind {
+                    AttrKind::Event => u64::from(c.event(sr)?),
+                    AttrKind::Active => u64::from(c.active(sr)?),
+                    AttrKind::LastEvent => c.last_event(sr)?.as_fs(),
+                    AttrKind::LastActive => c.last_active(sr)?.as_fs(),
+                };
+                self.set(dst, v);
+            }
+            Inst::Driving { dst, driver } => {
+                let d = self.driver(driver)?;
+                let v = kc!().driving(d.id)?;
+                self.set(dst, v.into());
+            }
+            Inst::DrivingValue { dst, driver } => {
+                let d = self.driver(driver)?;
+                let v = kc!().driving_value(d.id)?;
+                self.put_value(self.r(dst), &v)?;
+            }
+            Inst::Drive {
+                driver,
+                target,
+                wave,
+                n,
+                mode,
+                reject,
+            } => {
+                let d = self.driver(driver)?;
+                let (sr, elem) = match target {
+                    Some(t) => {
+                        let (sr, ty) = self.sigref(t)?;
+                        (sr, ty.elem)
+                    }
+                    None => self.driver_ref(&d)?,
+                };
+                let len = sr.range.map_or(0, |r| r.len);
+                let vsize = value_size(elem, len);
+                let stride = 8 + vsize.next_multiple_of(8);
+                let w = self.r(wave);
+                let mut items = Vec::new();
+                for k in 0..self.r(n) {
+                    let at = add_addr(w, k * stride)?;
+                    let t = to_time(self.load(at, Width::B8)? as i64)?;
+                    items.push((t, self.get_value(add_addr(at, 8)?, elem, len)?));
+                }
+                let refs: Vec<(Time, ValueRef<'_>)> =
+                    items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
+                let mode = match mode {
+                    DriveMode::Transport => DelayMode::Transport,
+                    DriveMode::Inertial => DelayMode::Inertial {
+                        reject: match reject {
+                            Some(r) => Some(to_time(self.ri(r))?),
+                            None => None,
+                        },
+                    },
+                };
+                let range = target.map(|_| sr.range).unwrap_or(None);
+                kc!().assign(d.id, range, &refs, mode)?;
+            }
+            Inst::Disconnect {
+                driver,
+                target,
+                after,
+                mode,
+            } => {
+                let d = self.driver(driver)?;
+                let range = match target {
+                    Some(t) => self.sigref(t)?.0.range,
+                    None => None,
+                };
+                let after = match after {
+                    Some(a) => Some(to_time(self.ri(a))?),
+                    None => None,
+                };
+                let mode = match mode {
+                    DriveMode::Transport => DelayMode::Transport,
+                    DriveMode::Inertial => DelayMode::INERTIAL,
+                };
+                kc!().disconnect(d.id, range, after, mode)?;
+            }
+            Inst::Force { sig, kind, value } => {
+                let (sr, ty) = self.sigref(sig)?;
+                let len = sr.range.map_or(0, |r| r.len);
+                let v = self.get_value(self.r(value), ty.elem, len)?;
+                let m = force_mode(kind);
+                kc!().force(sr, m, &v)?;
+            }
+            Inst::Release { sig, kind } => {
+                let (sr, _) = self.sigref(sig)?;
+                kc!().release(sr, force_mode(kind))?;
+            }
+            Inst::WaitOn { sig } => {
+                let (sr, _) = self.sigref(sig)?;
+                kc!().wait_on(sr)?;
+                if self.dbg.is_some() {
+                    self.waits.sens.push(sr);
+                }
+            }
+            Inst::WaitFor { t } => {
+                let t = to_time(self.ri(t))?;
+                let c = kc!();
+                c.wait_for(t)?;
+                let deadline = c.after(t)?;
+                if self.dbg.is_some() {
+                    self.waits.timeout = Some(deadline);
+                }
+            }
+            Inst::WaitAt { t } => {
+                let t = to_time(self.ri(t))?;
+                kc!().wait_at(t)?;
+                if self.dbg.is_some() {
+                    self.waits.timeout = Some(t);
+                }
+            }
+            Inst::Suspend { .. } => {
+                if let Some(fr) = self.frames.iter().find(|fr| {
+                    prog.func(fr.func).is_some_and(|g| {
+                        g.kind != FuncKind::Process && g.kind != FuncKind::Procedure
+                    })
+                }) {
+                    return Err(ice(format!(
+                        "wait inside {}, which cannot suspend",
+                        fr.func
+                    )));
+                }
+                if ctx.is_none() {
+                    return rt_err("wait statement executed during elaboration");
+                }
+                if self.dbg.is_some() {
+                    let fr = &self.frames[self.frames.len() - 1];
+                    self.waits.stmt = f.loc.get(fr.pc as usize).copied();
+                }
+                return Ok(Flow::Suspend);
+            }
+            Inst::TimedOut { dst } => {
+                let v = kc!().timed_out();
+                self.set(dst, v.into());
+            }
+            Inst::Now { dst } => {
+                let v = kc!().now().as_fs();
+                self.set(dst, v);
+            }
+            Inst::Delta { dst } => {
+                let v = kc!().delta();
+                self.set(dst, v.into());
+            }
+            Inst::Report { msg, len, severity } => {
+                let s = sev(self.r(severity))?;
+                let text: String = self
+                    .rd(self.r(msg), self.r(len))?
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect();
+                match ctx.as_deref_mut() {
+                    Some(c) => c.report(s, text),
+                    None => return rt_err(format!("report during elaboration: {text}")),
+                }
+            }
+            Inst::Output { addr, len } => {
+                let b = self.rd(self.r(addr), self.r(len))?.to_vec();
+                kc!().output(StreamId::OUTPUT, &b);
+            }
+            Inst::Cover { item } => {
+                let i = self.inst.cov_base as usize + item.0 as usize;
+                self.rt
+                    .cov
+                    .get(i)
+                    .ok_or_else(|| ice(format!("no coverage counter {i}")))?
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Inst::Stmt => {
+                let base = self.frames[self.frames.len() - 1].temp_base;
+                self.temp.truncate(base);
+            }
+            Inst::Elab { op, .. } => {
+                return rt_err(format!(
+                    "elaboration instruction {op:?} needs rsim-elab (not implemented yet)"
+                ));
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    fn foreign(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        id: rsim_ir::ForeignId,
+        args: rsim_ir::Regs,
+    ) -> R<u64> {
+        let x = prog
+            .foreign
+            .get(id)
+            .ok_or_else(|| ice(format!("no foreign subprogram {id}")))?;
+        let rt = self.rt.clone();
+        let fun = rt
+            .foreign
+            .get(id.0 as usize)
+            .and_then(|f| f.as_ref())
+            .ok_or_else(|| ice(format!("foreign `{}` is not bound", x.name)))?;
+        let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();
+        let mut temps: Vec<Box<[u64; 1]>> = Vec::new();
+        let mut cargs = Vec::with_capacity(regs.len());
+        for (k, (a, &r)) in x.args.iter().zip(&regs).enumerate() {
+            let v = self.r(r);
+            let arg = match *a {
+                ForeignArg::Value(ct) => to_c(ct, v, &x.name, k)?,
+                ForeignArg::ScalarRef(ct, w) => {
+                    let cur = self.load(v, w)?;
+                    let bits = match to_c(ct, cur, &x.name, k)? {
+                        Arg::F32(f) => u64::from(f.to_bits()),
+                        a => arg_bits(a),
+                    };
+                    let mut b = Box::new([bits]);
+                    let p = b.as_mut_ptr().cast::<std::ffi::c_void>();
+                    temps.push(b);
+                    Arg::Ptr(p)
+                }
+            };
+            cargs.push(arg);
+        }
+        let ret = fun.call(&cargs).map_err(|e| {
+            Fault::Runtime(format!("foreign call of `{}` ({}): {e}", x.name, x.symbol))
+        })?;
+        let mut ti = 0;
+        for (a, &r) in x.args.iter().zip(&regs) {
+            if let ForeignArg::ScalarRef(ct, w) = *a {
+                let bits = temps[ti][0];
+                ti += 1;
+                let v = from_c_bits(ct, bits);
+                self.store(self.r(r), w, v)?;
+            }
+        }
+        Ok(match ret {
+            Ret::Void => 0,
+            Ret::I8(v) => v as i64 as u64,
+            Ret::I16(v) => v as i64 as u64,
+            Ret::I32(v) => v as i64 as u64,
+            Ret::I64(v) => v as u64,
+            Ret::U8(v) => v.into(),
+            Ret::U16(v) => v.into(),
+            Ret::U32(v) => v.into(),
+            Ret::F32(v) => f64::from(v).to_bits(),
+            Ret::F64(v) => v.to_bits(),
+            Ret::Ptr(p) => p as usize as u64,
+        })
+    }
+}
+
+fn force_mode(k: ForceKind) -> ForceMode {
+    match k {
+        ForceKind::In => ForceMode::Effective,
+        ForceKind::Out => ForceMode::Driving,
+    }
+}
+
+fn arg_bits(a: Arg) -> u64 {
+    match a {
+        Arg::I8(v) => v as u8 as u64,
+        Arg::I16(v) => v as u16 as u64,
+        Arg::I32(v) => v as u32 as u64,
+        Arg::I64(v) => v as u64,
+        Arg::U8(v) => v.into(),
+        Arg::U16(v) => v.into(),
+        Arg::U32(v) => v.into(),
+        Arg::F32(v) => v.to_bits().into(),
+        Arg::F64(v) => v.to_bits(),
+        Arg::Ptr(p) => p as usize as u64,
+    }
+}
+
+/// A C temp's bits back to a VHDL cell (sign-extended integers, f64 reals).
+fn from_c_bits(ct: CType, b: u64) -> u64 {
+    match ct {
+        CType::I8 => b as i8 as i64 as u64,
+        CType::I16 => b as i16 as i64 as u64,
+        CType::I32 => b as i32 as i64 as u64,
+        CType::I64 | CType::Ptr => b,
+        CType::U8 => b & 0xff,
+        CType::U16 => b & 0xffff,
+        CType::U32 => b & 0xffff_ffff,
+        CType::F32 => f64::from(f32::from_bits(b as u32)).to_bits(),
+        CType::F64 => b,
+    }
+}
+
+fn to_c(ct: CType, v: u64, name: &str, k: usize) -> R<Arg> {
+    let i = v as i64;
+    let range = || {
+        Fault::Runtime(format!(
+            "argument {} of foreign `{name}`: {i} does not fit C type {ct}",
+            k + 1
+        ))
+    };
+    Ok(match ct {
+        CType::I8 => Arg::I8(i8::try_from(i).map_err(|_| range())?),
+        CType::I16 => Arg::I16(i16::try_from(i).map_err(|_| range())?),
+        CType::I32 => Arg::I32(i32::try_from(i).map_err(|_| range())?),
+        CType::I64 => Arg::I64(i),
+        CType::U8 => Arg::U8(u8::try_from(i).map_err(|_| range())?),
+        CType::U16 => Arg::U16(u16::try_from(i).map_err(|_| range())?),
+        CType::U32 => Arg::U32(u32::try_from(i).map_err(|_| range())?),
+        CType::F32 => Arg::F32(f64::from_bits(v) as f32),
+        CType::F64 => Arg::F64(f64::from_bits(v)),
+        CType::Ptr => {
+            return rt_err(format!(
+                "argument {} of foreign `{name}`: passing access values and arrays to C is \
+                 not implemented yet",
+                k + 1
+            ));
+        }
+    })
+}
+
+fn store_cells(slots: &mut [u8], slot: u32, w: Width, cells: &[u64]) -> R<()> {
+    let mut bytes = Vec::with_capacity(16);
+    for c in cells {
+        bytes.extend_from_slice(&c.to_le_bytes());
+    }
+    let n = w.bytes() as usize;
+    let dst = slots
+        .get_mut(slot as usize..slot as usize + n)
+        .ok_or_else(|| ice(format!("parameter slot {slot} outside the frame")))?;
+    let src = bytes
+        .get(..n)
+        .ok_or_else(|| ice("too few argument cells"))?;
+    dst.copy_from_slice(src);
+    Ok(())
+}
+
+/// Expand compact constant data (rule 12) into bytes.
+fn expand_const(c: &ConstData) -> R<Vec<u8>> {
+    let too_big = || Fault::Runtime("constant larger than 4 GiB".into());
+    Ok(match c {
+        ConstData::Bytes(b) => b.clone(),
+        ConstData::Repeat { elem, n } => {
+            let total = (elem.len() as u64).checked_mul(*n).ok_or_else(too_big)?;
+            if total > u64::from(u32::MAX) {
+                return Err(too_big());
+            }
+            elem.repeat(*n as usize)
+        }
+        ConstData::Runs(runs) => {
+            let mut out = Vec::new();
+            for (n, e) in runs {
+                if (out.len() as u64).saturating_add(n.saturating_mul(e.len() as u64))
+                    > u64::from(u32::MAX)
+                {
+                    return Err(too_big());
+                }
+                for _ in 0..*n {
+                    out.extend_from_slice(e);
+                }
+            }
+            out
+        }
+        ConstData::Logic(runs) => {
+            let total: u64 = runs.iter().map(|r| r.0).fold(0, u64::saturating_add);
+            if total > u64::from(u32::MAX) {
+                return Err(too_big());
+            }
+            let mut blocks = vec![[0u64; 4]; total.div_ceil(64) as usize];
+            let mut at = 0u64;
+            for &(n, code) in runs {
+                if code > 8 {
+                    return Err(ice(format!("std_ulogic code {code} in a constant")));
+                }
+                let mut k = 0;
+                while k < n {
+                    let m = (n - k).min(64 - (at + k) % 64);
+                    for p in 0..4 {
+                        let v = if code >> p & 1 == 1 { !0 } else { 0 };
+                        set_bits(&mut blocks, at + k, m, p, v);
+                    }
+                    k += m;
+                }
+                at += n;
+            }
+            bytes_of(&blocks)
+        }
+    })
+}

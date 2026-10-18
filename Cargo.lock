@@ -1027,6 +1027,27 @@ name = "rsim-ffi"
 version = "0.1.0"
 
 [[package]]
+name = "rsim-interp"
+version = "0.1.0"
+dependencies = [
+ "rsim-diag",
+ "rsim-ffi",
+ "rsim-ir",
+ "rsim-kernel",
+ "rsim-logic",
+ "rsim-std",
+]
+
+[[package]]
+name = "rsim-ir"
+version = "0.1.0"
+dependencies = [
+ "rsim-diag",
+ "rsim-ffi",
+ "rsim-kernel",
+]
+
+[[package]]
 name = "rsim-kernel"
 version = "0.1.0"
 dependencies = [

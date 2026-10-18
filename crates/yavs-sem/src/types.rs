@@ -1527,7 +1527,7 @@ impl Db {
         Some(self.range_attr_inner(scope, prefix, reverse, dim_arg, n.span))
     }
 
-    fn range_attr_inner(
+    pub(crate) fn range_attr_inner(
         &mut self,
         scope: ScopeId,
         prefix: &ast::Name,
@@ -1609,8 +1609,20 @@ impl Db {
         scope: ScopeId,
         n: &ast::Name,
     ) -> Result<SubtypeId, Reported> {
-        if let ast::NameKind::Attribute { prefix, attr } = &n.kind {
-            return self.attribute_type_mark(scope, prefix, *attr);
+        match &n.kind {
+            ast::NameKind::Attribute { prefix, attr } => {
+                return self.attribute_type_mark(scope, prefix, *attr);
+            }
+            // 2019 `A'INDEX(n)`, the only type mark with a parameter.
+            ast::NameKind::Apply { prefix, args } => {
+                if let ast::NameKind::Attribute { prefix, attr } = &prefix.kind
+                    && attr.key.as_str() == "index"
+                    && let [ast::AssocElem { formal: None, actual: ast::Actual::Expr(x), .. }] = args.as_slice()
+                {
+                    return self.index_type_mark(scope, prefix, Some(x), n.span);
+                }
+            }
+            _ => {}
         }
         let d = self.expanded_name_decl(scope, n)?;
         match self.decls[self.entity(d)].kind {
@@ -1646,6 +1658,11 @@ impl Db {
         attr: Ident,
     ) -> Result<SubtypeId, Reported> {
         let what = attr.key.as_str();
+        match what {
+            "index" => return self.index_type_mark(scope, prefix, None, attr.span),
+            "record" => return self.range_record_type_mark(scope, prefix, attr),
+            _ => {}
+        }
         let st = if let Some(st) = self.quiet_type_mark(scope, prefix) {
             st
         } else if matches!(what, "subtype" | "element") {

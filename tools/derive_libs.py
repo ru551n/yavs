@@ -11,7 +11,7 @@ import sys
 
 src, out = sys.argv[1:3]
 NOTE = (
-    "-- rsim: derived from the IEEE VASG 1076-2019 package source by\n"  # rename: keep, matches lib/SHA256SUMS
+    "-- yavs: derived from the IEEE VASG 1076-2019 package source by\n"
     "-- tools/derive_libs.py (see lib/SOURCES.md for the exact edits).\n"
 )
 

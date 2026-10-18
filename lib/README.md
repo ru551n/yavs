@@ -13,7 +13,7 @@ Select the directory by language revision: `lib/std/2008`, `lib/std/2019`, `lib/
 | `SOURCES.md` | origin, pinned commit, licence check and edits for each file |
 | `UPSTREAM.sha256`, `SHA256SUMS` | hashes of the upstream files and of the vendored files |
 
-`lib/synopsys` (clean-room `std_logic_arith` and friends) is separate and not described here.
+`lib/synopsys/test/` holds black-box testbenches for the deferred Synopsys packages (M4b).
 
 ## Licensing
 

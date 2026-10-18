@@ -108,3 +108,8 @@ Other facts the consumer must know:
 | `ieee/2019/std_logic_1164-body.vhdl` | `ieee/std_logic_1164-body.vhdl` | 6534fe4842c11331 | verbatim | Apache-2.0 |
 | `ieee/2019/std_logic_1164.vhdl` | `ieee/std_logic_1164.vhdl` | 2a34c7d7b2c8ba21 | verbatim | Apache-2.0 |
 | `ieee/2019/std_logic_textio.vhdl` | `ieee/std_logic_textio.vhdl` | 526a2e1e0a05f35a | verbatim | Apache-2.0 |
+
+## Upstream license files
+
+`lib/LICENSE` (Apache-2.0) and `lib/AUTHORS.md` are copied unchanged from the same upstream pin
+(`dc691c8`), because the IEEE file headers refer to them.

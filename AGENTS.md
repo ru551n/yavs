@@ -107,8 +107,10 @@ to, and those documents win over your memory.
 17. **Current phase: push straight to `main`** (no branches, no PRs, no CI yet). Rebase on
     `origin/main` first; push only with no rebase in progress and a clean tree. If the push is
     rejected, rebase again and re-run the checks.
-18. **Commit messages:** imperative subject, a body that says why, and end with the
-    `Co-Authored-By:` trailer you were given. No session links. No em dashes anywhere (code,
+18. **Commit messages:** imperative subject and a body that says why. No `Co-Authored-By`
+    trailer (user rule), and commit as the GitHub noreply address
+    `1427336+ru551n@users.noreply.github.com` (set by `git config user.email` in this repo). No
+    session links. No em dashes anywhere (code,
     comments, docs, commits): use a colon, full stop or comma.
 19. **Worktrees:** parallel agents each use their own git worktree. Never edit another agent's
     worktree. Never use bare `git stash` (the stash is shared across worktrees).
@@ -121,7 +123,7 @@ to, and those documents win over your memory.
     force-pushing, publishing, contacting external services beyond read-only fetches.
 
 ### Issues
-22. **Work is tracked as GitHub issues** on `ru551n/yavs` (private). Before starting, find the
+22. **Work is tracked as GitHub issues** on `ru551n/yavs`. Before starting, find the
     issue for your task (`gh issue list -R ru551n/yavs --search ...`); if none exists, create one
     with the labels described in its template (milestone `M<n>`, crate `crate:<name>`, kind).
     Reference it in your commits, and close it with `Fixes #N` in the commit that completes it

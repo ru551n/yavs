@@ -16,7 +16,7 @@
 -- implied.  See the License for the specific language governing
 -- permissions and limitations under the License.
 --
--- rsim: derived from the IEEE VASG 1076-2019 package source by
+-- yavs: derived from the IEEE VASG 1076-2019 package source by
 -- tools/derive_libs.py (see lib/SOURCES.md for the exact edits).
 --
 --   Title     :  ENV package (1076-2008 content)

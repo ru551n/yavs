@@ -14,6 +14,9 @@ impl Process for Boxed {
     fn run(&mut self, ctx: &mut yavs_kernel::Ctx<'_>) -> Result<(), SimError> {
         self.0.run(ctx)
     }
+    fn serial(&self) -> bool {
+        self.0.serial()
+    }
 }
 
 fn usage(m: String) -> SimError {

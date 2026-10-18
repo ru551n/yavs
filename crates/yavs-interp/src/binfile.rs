@@ -27,11 +27,14 @@ impl Sc {
         Some(match *t {
             Ty::Int { lo, hi } | Ty::Physical { lo, hi, .. } => {
                 let (disk, signed) = if lo >= 0 {
-                    let d = match hi {
-                        ..=0xff => 1,
-                        ..=0xffff => 2,
-                        ..=0xffff_ffff => 4,
-                        _ => 8,
+                    let d = if hi <= 0xff {
+                        1
+                    } else if hi <= 0xffff {
+                        2
+                    } else if hi <= 0xffff_ffff {
+                        4
+                    } else {
+                        8
                     };
                     (d, false)
                 } else if lo >= -0x80 && hi <= 0x7f {
@@ -112,12 +115,12 @@ impl Machine {
         if let Some(s) = Sc::of(&t) {
             return Ok(Elem::Scalar(s));
         }
-        if let Ty::Array { elem: e, dims, .. } = t {
-            if let Some(s) = Sc::of(&self.ty(e)?) {
-                let logic = Ty::logic_leaf(&self.rt.prog.types, elem)
-                    .map(|k| k != yavs_ir::LogicKind::StdULogic);
-                return Ok(Elem::Array(dims, s, logic));
-            }
+        if let Ty::Array { elem: e, dims, .. } = t
+            && let Some(s) = Sc::of(&self.ty(e)?)
+        {
+            let logic = Ty::logic_leaf(&self.rt.prog.types, elem)
+                .map(|k| k != yavs_ir::LogicKind::StdULogic);
+            return Ok(Elem::Array(dims, s, logic));
         }
         rt_err("binary files of records or arrays of composites are not implemented yet (#79)")
     }

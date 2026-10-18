@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use yavs_diag::Diagnostic;
-use yavs_interp::{Bindings, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState};
+use yavs_interp::{
+    Bindings, CallVal, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState,
+};
 use yavs_kernel::{Config, ErrorKind, SimControl, SimError};
 use yavs_lower::{LowerOptions, Lowerer, UnitIr};
 use yavs_sem::{Db, UnitId};
@@ -310,7 +312,7 @@ impl Elaborated {
             ir.shared_size as usize
         ])));
         // Cells of instance-level constants and shared variables, computed once per instance.
-        let mut once: HashMap<(ScopeId, yavs_sem::DeclId), u64> = HashMap::new();
+        let mut once: HashMap<(ScopeId, yavs_sem::DeclId), CallVal> = HashMap::new();
         // Package data, created once in order: each initialisation sees the packages before it.
         let mut packages: Vec<Arc<InstData>> = Vec::new();
         for p in &ir.packages {
@@ -448,7 +450,7 @@ impl Elaborated {
         u: &UnitIr,
         i: ScopeId,
         shared: &Arc<Mutex<SharedState>>,
-        once: &mut HashMap<(ScopeId, yavs_sem::DeclId), u64>,
+        once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
     ) -> Result<InstData, SimError> {
         let mut inst = InstData {
             data: vec![0; u.inst_size as usize],
@@ -458,9 +460,17 @@ impl Elaborated {
         let mut known = std::collections::HashSet::new();
         for v in &u.values {
             if let Some(val) = self.value(i, v.decl) {
-                UnitIr::write_value(&rt.prog, v, val, &mut inst.data)
-                    .map_err(|m| sim_err(format!("instance data: {m}")))?;
-                known.insert(v.decl);
+                match UnitIr::write_value(&rt.prog, v, val, &mut inst.data) {
+                    Ok(()) => {
+                        known.insert(v.decl);
+                    }
+                    // A composite value with no encoding here comes from its thunk instead.
+                    Err(_)
+                        if u.consts
+                            .iter()
+                            .any(|c| c.decl == v.decl && c.comp.is_some()) => {}
+                    Err(m) => return Err(sim_err(format!("instance data: {m}"))),
+                }
             }
             // ponytail: a value without an elaborated value here belongs to a nested region
             // (a generate parameter, say) that processes of this region never read; values of
@@ -479,7 +489,7 @@ impl Elaborated {
             // the instance (#190): its thunk runs once per instance.
             let key = (self.instance_of(i), c.decl);
             let cached = if c.instance_level {
-                once.get(&key).copied()
+                once.get(&key).cloned()
             } else {
                 None
             };
@@ -488,22 +498,31 @@ impl Elaborated {
                 None => {
                     // With the shared state: a shared protected variable's thunk creates its
                     // object.
-                    let v = yavs_interp::call_shared(
+                    let v = yavs_interp::call_values_shared(
                         rt.clone(),
                         c.init,
                         Arc::new(inst.clone()),
                         &[],
+                        c.comp,
                         Some(shared),
                     )?
                     .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))?;
                     if c.instance_level {
-                        once.insert(key, v);
+                        once.insert(key, v.clone());
                     }
                     v
                 }
             };
-            let n = c.w.bytes() as usize;
-            inst.data[c.off as usize..c.off as usize + n].copy_from_slice(&v.to_le_bytes()[..n]);
+            match v {
+                CallVal::Cell(v) => {
+                    let n = c.w.bytes() as usize;
+                    inst.data[c.off as usize..c.off as usize + n]
+                        .copy_from_slice(&v.to_le_bytes()[..n]);
+                }
+                CallVal::Composite { data, desc } => {
+                    UnitIr::write_composite(c.off, &data, &desc, &mut inst.data);
+                }
+            }
         }
         for s in &u.signals {
             let Some(o) = self.signal(i, s.decl) else {

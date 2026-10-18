@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:package_const_once:p1	p1 pkg1 pkg1 pkg1body2 4
+diag	note	0	0	:package_const_once:p1	p1 arch3 arch3 4 5
+diag	note	1000000	0	:package_const_once:p2	p2 pkg1 pkg1body2 arch3 9
+diag	note	1000000	0	:package_const_once:p2	calls so far 5

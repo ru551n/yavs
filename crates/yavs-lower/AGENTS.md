@@ -64,7 +64,6 @@ rule 24).
 - `tests/corpus.rs` writes its library to a fixed `temp_dir()/yavs-lower-work`, which collides
   between worktrees and parallel runs (#160); until fixed, do not run two of them at once.
 - A shared `CARGO_TARGET_DIR` can link another worktree's crates into the test binary (#7).
-- Package constants are re-evaluated at each use (#73).
 
 ## 5. How to work here
 
@@ -89,7 +88,6 @@ tools/difftest/report.sh                                        # rewrite tests/
   lowering into `yavs run`; #67 array signals, sub-elements, aggregate targets, signal out
   parameters; #68 guarded assignments, null waveforms, force/release, implicit signal
   attributes; #69 matching case, case over arrays, non-static choices; #70 expression gaps; #71
-  foreign, generic and instantiated subprograms, open actuals; #72 remaining attributes; #73
-  package constants re-evaluated; #89 composite arrays and aggregates; #93 external names;
+  foreign, generic and instantiated subprograms, open actuals; #72 remaining attributes; #89 composite arrays and aggregates; #93 external names;
   #101 package generics; #160 fixed scratch dir in `tests/corpus.rs`. Older unlabeled: #5, #8,
   #9, #13 to #17.

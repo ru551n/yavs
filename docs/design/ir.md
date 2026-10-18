@@ -622,6 +622,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 |---|---|
 | bounds-checked `Index{..idx..}` | split: `Pos{dst, dope, dim, idx, what}` (checked position from the left, message from the dope's own direction) then `Index{dst, base, pos, stride}`; logic arrays index from the right, so lowering computes `len - 1 - pos` for `LGet`/`LSet` |
 | temporaries | `Alloc{dst, size}` (added) bumps the per-process temp area; `Stmt` resets it to the current frame's base. `Ret` does not reset, so a callee's result in temp memory lives until the caller's next statement |
+| package data of run-time size | `PkgAlloc{dst, size}` (added, #73) appends zeroed bytes to the data of the package being initialised (package initialisation thunks only, an ICE elsewhere), for constants whose bounds are known only at run time |
 | `Stmt{id}` | `Stmt` has no operand: its statement is `Func::loc[pc]` |
 | address spaces | `Up(d)` is only an `AddrOf` operand (it yields a frame address). Added `Shared` (shared variables, serial processes only). Runtime addresses use 8 spaces: frame, instance, package, constant, heap, temp, shared, shared heap; the heap tag is the space |
 | `Ty` | `Enum` keeps literal names (for `'image`), `Physical {lo, hi, units}` is its own variant, `Array.elem_desc` / `Field.desc` hold static constraints as pool constants, `Protected {state: TyId}` names the record of its variables (units are elab's) |

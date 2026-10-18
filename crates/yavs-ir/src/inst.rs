@@ -239,6 +239,13 @@ pub enum Inst {
         dst: Reg,
         size: Reg,
     },
+    /// `size` bytes of zeroed memory appended to the data of the package being initialised,
+    /// live as long as the package (package initialisation thunks only): constants whose
+    /// size is known only at run time.
+    PkgAlloc {
+        dst: Reg,
+        size: Reg,
+    },
     // memory
     Load {
         dst: Reg,
@@ -678,7 +685,7 @@ impl Inst {
             }
             Inst::AddrOf { dst, .. } => d(dst, p),
             Inst::CopyConst { dst, .. } => f(dst, Use, p),
-            Inst::Alloc { dst, size } => {
+            Inst::Alloc { dst, size } | Inst::PkgAlloc { dst, size } => {
                 d(dst, p);
                 f(size, Use, i);
             }

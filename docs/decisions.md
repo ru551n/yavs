@@ -625,9 +625,9 @@ which tools/difftest parses.
   (`InstConst::instance_level`) are computed once per instance and shared by all its regions
   (#190).
 - **Instance values:** generics, generate parameters and non-static constants are written by
-  the elaborator from its folded values (`UnitIr::write_value`); scalar constants it cannot
-  fold run a thunk. Locally static constants have no slot. Composite constants of an
-  architecture are re-evaluated at each use until elaboration folds them all (#73).
+  the elaborator from its folded values (`UnitIr::write_value`); constants it cannot
+  fold run a thunk once per region (a composite's returns its fat pair, appended to the
+  instance data by yavs-elab, #73). Locally static constants have no slot.
 - **Driver slots** are one per `ProcessInfo::drivers` entry, in order; a target picks the entry
   with the same root and path.
 - **GUARD:** sem keeps a guarded block's condition as the GUARD signal's default; lowering
@@ -663,8 +663,9 @@ which tools/difftest parses.
   writable only there). A declaration constant calling a function of its own package never
   reaches the thunk: yavs-elab rejects it first with E2114 (#197, see "Elaboration").
   Package signals take the first indices of every unit's signal table.
-  Composite package constants whose bounds are known only at run time are still re-evaluated
-  at each use (ponytail).
+  Composite package constants whose bounds are known only at run time are evaluated there
+  too, their elements in package data appended by `PkgAlloc` (#73): every constant is
+  evaluated once, so an impure initialiser's side effects happen once.
 - **Allocators of shared objects (#184):** allocators in the initialisers of a shared protected
   object and of package objects, and allocators executed inside a method of a protected object
   in the shared heap (or anything it calls), allocate in the shared heap, so shared state never

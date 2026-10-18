@@ -332,6 +332,7 @@ pub(crate) fn shared_var(
         name,
         off,
         w: Width::B8,
+        comp: None,
         init,
         instance_level: cx.arch_scopes.contains(&decl.scope),
     });

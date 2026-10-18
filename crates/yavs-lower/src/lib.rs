@@ -80,6 +80,9 @@ pub struct InstConst {
     pub name: String,
     pub off: u32,
     pub w: Width,
+    /// A composite constant's IR type: the thunk returns the address of its fat pair
+    /// `[data, desc]`, written like a composite [`InstValue`] (`w` unused).
+    pub comp: Option<TyId>,
     /// `FuncKind::Thunk` returning the value.
     pub init: FuncId,
     /// Declared in the entity or architecture itself (not in a block or generate): one value
@@ -164,17 +167,24 @@ impl UnitIr {
         }
         let (elems, dope) = ty::encode_array(prog, iv.ty, v)
             .ok_or_else(|| format!("`{}`: value does not fit its array type", iv.name))?;
+        Self::write_composite(iv.off, &elems, &dope, data);
+        Ok(())
+    }
+
+    /// Append a composite's elements and descriptor to `data` and write their offsets into
+    /// the slot at `off` (an `InstValue` of composite type, which `data` must cover).
+    pub fn write_composite(off: u32, elems: &[u8], desc: &[u8], data: &mut Vec<u8>) {
+        let off = off as usize;
         let mut put = |bytes: &[u8]| {
             let at = data.len().next_multiple_of(8);
             data.resize(at, 0);
             data.extend_from_slice(bytes);
             at as u64
         };
-        let e = put(&elems);
-        let d = put(&dope);
+        let e = put(elems);
+        let d = put(desc);
         data[off..off + 8].copy_from_slice(&e.to_le_bytes());
         data[off + 8..off + 16].copy_from_slice(&d.to_le_bytes());
-        Ok(())
     }
 }
 

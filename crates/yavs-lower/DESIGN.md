@@ -80,7 +80,7 @@ a call into your module in a small commit.
 - `PackageIr` per package with run-time objects (`Lowerer::package`, before the
   architectures): package data `AddrSpace::Pkg(index)` written once by its `init` thunk under
   `yavs_interp::init_package` (constants that are not locally static, composites of static
-  layout in place; shared protected variables); package signals are the first entries of every
+  layout in place, composites with run-time bounds in package data appended by `PkgAlloc`; shared protected variables); package signals are the first entries of every
   unit's signal table; package files live in the shared variables area
   (`Lowered::shared_size`).
 - `UnitIr` per architecture: `values` (generics, generate parameters and constants that are not
@@ -218,8 +218,8 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   buffer, `in` otherwise (LRM 10.5.2.1).
 - Shared variables of a protected type in an architecture: an instance cell with the object's
   handle; its thunk creates the object in the shared heap (yavs-elab runs instance thunks with
-  `call_shared`). Composite constants of an architecture are re-evaluated at each use, like
-  package constants (#73).
+  `call_shared`). Composite constants of an architecture elaboration did not fold are
+  computed once per region by a thunk returning their fat pair (`InstConst::comp`, #73).
 - User resolution functions: yavs-elab lowers them (`Ir::resolvers`) and the kernel resolver
   calls `yavs_interp::resolve` (driving values as an array `0 to n - 1`); bit-plane leaves
   are not handled yet.

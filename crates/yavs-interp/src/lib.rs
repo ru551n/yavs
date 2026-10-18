@@ -444,8 +444,30 @@ pub fn call_values(
     args: &[CallVal],
     ret: Option<yavs_ir::TyId>,
 ) -> Result<Option<CallVal>, SimError> {
+    call_values_shared(rt, func, inst, args, ret, None)
+}
+
+/// [`call_values`] with access to the shared state (see [`call_shared`]), for the thunks of
+/// composite constants whose initialisers call protected methods.
+pub fn call_values_shared(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[CallVal],
+    ret: Option<yavs_ir::TyId>,
+    shared: Option<&Arc<Mutex<SharedState>>>,
+) -> Result<Option<CallVal>, SimError> {
     let prog = rt.prog.clone();
     let mut m = Machine::new(rt, inst, Vec::new(), func);
+    let mut guard = match shared {
+        Some(s) => Some(s.lock().map_err(|_| {
+            SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
+        })?),
+        None => None,
+    };
+    if let Some(g) = guard.as_mut() {
+        m.sh = Some(std::mem::take(&mut **g));
+    }
     let r = (|| {
         let mut cells = Vec::with_capacity(args.len() * 2);
         for a in args {
@@ -482,6 +504,9 @@ pub fn call_values(
         let data = m.rd(data, l.size)?.to_vec();
         Ok(Some(CallVal::Composite { data, desc }))
     })();
+    if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
+        **g = st;
+    }
     r.map_err(|e| m.error(e, None))
 }
 

@@ -129,8 +129,9 @@ attributes including 'path_name/'instance_name, 'driving/'driving_value and sign
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
 (arrays too, `DriveSlot` for out/inout), copy-out of logic elements and slices; package
-objects at run time (`Lowerer::package`: constants evaluated once, shared protected variables,
-package signals and files). `tests/corpus.rs` runs every corpus group plus
+objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
+bounds too, shared protected variables, package signals and files); composite architecture
+constants evaluated once per region (#73). `tests/corpus.rs` runs every corpus group plus
 `crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of

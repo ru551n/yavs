@@ -378,8 +378,8 @@ impl Fx<'_, '_> {
                     let c = self.deferred_completion(d).ok_or(Failed)?;
                     self.read_obj(c, span)
                 }
-                // A constant without run-time data (locally static, or a composite whose
-                // bounds are known only at run time, ponytail) is evaluated from its initialiser.
+                // A constant without run-time data (locally static) is evaluated from its
+                // folded initialiser.
                 DeclKind::Object(o)
                     if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some() =>
                 {

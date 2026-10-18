@@ -1143,6 +1143,20 @@ impl Machine {
                 let a = self.temp_alloc(self.r(size))?;
                 self.set(dst, a);
             }
+            Inst::PkgAlloc { dst, size } => {
+                let n = self.r(size);
+                let Some((p, data)) = self.pkg_init.as_mut() else {
+                    return Err(ice("package allocation outside a package initialisation"));
+                };
+                let off = (data.len() as u64).next_multiple_of(8);
+                let end = off.saturating_add(n);
+                if end > u64::from(u32::MAX) {
+                    return rt_err("package data exceeds 4 GiB");
+                }
+                data.resize(end as usize, 0);
+                let a = mk_addr(PKG, *p, off)?;
+                self.set(dst, a);
+            }
             Inst::Load { dst, addr, w } => {
                 let a = self.r(addr);
                 if w == Width::Sig {

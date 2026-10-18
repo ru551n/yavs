@@ -952,18 +952,6 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
         return Ok(());
     };
     let name = decl.name.to_string();
-    if o.class == ObjClass::Constant
-        && o.role != ObjRole::Generic
-        && matches!(
-            db.types[db.base(o.subtype)].kind,
-            yavs_sem::types::TypeKind::Array { .. } | yavs_sem::types::TypeKind::Record { .. }
-        )
-    {
-        // ponytail: like a package constant, a composite constant of an architecture is
-        // re-evaluated from its initialiser at each use (`read_obj`); instance data once
-        // elaboration folds every composite constant (#73).
-        return Ok(());
-    }
     let array = ty::is_array(db, db.base(o.subtype));
     match o.class {
         ObjClass::Signal if ty::is_record(db, db.base(o.subtype)) => {
@@ -1049,15 +1037,41 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 return Ok(());
             }
             let t = ty::lower(db, cx, pb, db.base(o.subtype), decl.span)?;
-            let off = cx.inst_alloc(if array { 16 } else { 8 });
+            let comp = matches!(
+                db.types[db.base(o.subtype)].kind,
+                yavs_sem::types::TypeKind::Array { .. } | yavs_sem::types::TypeKind::Record { .. }
+            );
+            let off = cx.inst_alloc(if comp { 16 } else { 8 });
             ir.values.push(InstValue {
                 decl: d,
                 name: name.clone(),
                 off,
                 ty: t,
             });
-            if array {
+            if comp {
                 cx.objs.insert(d, Obj::InstArray { off });
+                // A composite constant elaboration did not fold is computed once per region
+                // by a thunk returning the address of its fat pair (#73).
+                if let (Some(def), false) = (o.default, given) {
+                    let (st, span) = (o.subtype, decl.span);
+                    let init = thunk(db, pb, cx, &name, span, |fx| {
+                        let (data, desc, _) = fx.const_comp(d, st, def, span)?;
+                        let fat = fx.alloc_n(16);
+                        fx.store(fat, data, Width::B8);
+                        let dp = fx.offset(fat, 8);
+                        fx.store(dp, desc, Width::B8);
+                        Ok(fat)
+                    })?;
+                    ir.consts.push(InstConst {
+                        decl: d,
+                        name,
+                        off,
+                        w: Width::B8,
+                        comp: Some(t),
+                        init,
+                        instance_level: cx.arch_scopes.contains(&decl.scope),
+                    });
+                }
                 return Ok(());
             }
             let w = pb.types().get(t).map_or(Width::B8, ty::width);
@@ -1083,6 +1097,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     name,
                     off,
                     w,
+                    comp: None,
                     init,
                     instance_level: cx.arch_scopes.contains(&decl.scope),
                 });
@@ -1379,9 +1394,37 @@ impl Fx<'_, '_> {
                 if self.is_comp(t) {
                     let tid = self.ty(t, span)?;
                     let Some(desc) = self.static_desc(o.subtype, def) else {
-                        // ponytail: bounds known only at run time: the constant is still
-                        // re-evaluated at each use (`read_obj`); a heap object in package data
-                        // when such constants need evaluating once.
+                        // Bounds known only at run time: the elements go to package data
+                        // appended at initialisation, the fat pair and descriptor in place.
+                        let n = yavs_ir::Ty::desc_size(self.fb.program().types(), tid)
+                            .ok_or_else(|| self.cx.ice(span, "composite without a descriptor"))?;
+                        let (data, vdesc, bytes) = self.const_comp(d, o.subtype, def, span)?;
+                        let off = alloc(16 + n as u32);
+                        let slot = self.addr(Space::Pkg(p), off);
+                        let dst = self.reg(RegTy::Ptr);
+                        self.emit(Inst::PkgAlloc { dst, size: bytes });
+                        self.emit(Inst::Copy {
+                            dst,
+                            src: data,
+                            bytes,
+                        });
+                        self.store(slot, dst, Width::B8);
+                        let ds = self.offset(slot, 16);
+                        let nb = self.int(n as i64);
+                        self.emit(Inst::Copy {
+                            dst: ds,
+                            src: vdesc,
+                            bytes: nb,
+                        });
+                        let dp = self.offset(slot, 8);
+                        self.store(dp, ds, Width::B8);
+                        self.cx.objs.insert(
+                            d,
+                            Obj::Array {
+                                space: Space::Pkg(p),
+                                off,
+                            },
+                        );
                         return Ok(());
                     };
                     let lsize = match self.fb.program().layout(tid, &desc) {
@@ -1495,6 +1538,28 @@ impl Fx<'_, '_> {
     /// The descriptor of a composite subtype when it is known at lowering: none needed (a
     /// record of constrained fields), or static index bounds (from the subtype, else from a
     /// folded initial value).
+    /// The value of composite constant `d` (subtype `st`, initialiser `def`) converted to its
+    /// subtype: elements, descriptor and the elements' size in bytes.
+    pub(crate) fn const_comp(
+        &mut self,
+        d: DeclId,
+        st: SubtypeId,
+        def: yavs_sem::ExprId,
+        span: Span,
+    ) -> R<(Reg, Reg, Reg)> {
+        let db = self.db;
+        let t = db.base(st);
+        let tid = self.ty(t, span)?;
+        let v = self.expr(def)?;
+        let (data, vd) = self.arr(v, span)?;
+        let Some(desc) = self.desc_of(st, Some(vd), span)? else {
+            return Err(self.cx.ice(span, "unconstrained constant without bounds"));
+        };
+        self.check_desc(t, tid, vd, desc, &ty::obj_desc(db, d), span)?;
+        let (size, _) = self.layout(tid, desc);
+        Ok((data, desc, size))
+    }
+
     fn static_desc(&mut self, st: SubtypeId, def: yavs_sem::ExprId) -> Option<Vec<u8>> {
         let db = self.db;
         let tid = ty::lower(

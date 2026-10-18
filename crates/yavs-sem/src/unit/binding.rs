@@ -1262,11 +1262,16 @@ impl Db {
         spans: &[Span],
     ) -> Result<(), Reported> {
         use crate::hir::{Direction, LspStep, RangeC};
-        let DeclKind::Object(o) = &self.decls[f].kind else { return Ok(()) };
+        let DeclKind::Object(o) = &self.decls[f].kind else {
+            return Ok(());
+        };
         let unconstrained = matches!(
             self.subtypes[o.subtype].constraint,
             crate::types::Constraint::None | crate::types::Constraint::Array { dims: None, .. }
-        ) && matches!(self.types[self.base(o.subtype)].kind, crate::types::TypeKind::Array { .. });
+        ) && matches!(
+            self.types[self.base(o.subtype)].kind,
+            crate::types::TypeKind::Array { .. }
+        );
         if !unconstrained {
             return Ok(());
         }
@@ -1275,7 +1280,9 @@ impl Db {
         for ((steps, ..), &sp) in out.iter().zip(spans) {
             let (lo, hi) = match steps.first() {
                 Some(LspStep::Index(ix)) if ix.len() == 1 => {
-                    let Some(v) = self.value(ix[0]).and_then(|c| c.as_int()) else { return Ok(()) };
+                    let Some(v) = self.value(ix[0]).and_then(|c| c.as_int()) else {
+                        return Ok(());
+                    };
                     (v, v)
                 }
                 Some(LspStep::Slice(RangeC::Explicit { left, dir, right })) => {
@@ -1285,7 +1292,11 @@ impl Db {
                     ) else {
                         return Ok(());
                     };
-                    if *dir == Direction::To { (l, r) } else { (r, l) }
+                    if *dir == Direction::To {
+                        (l, r)
+                    } else {
+                        (r, l)
+                    }
                 }
                 _ => return Ok(()),
             };
@@ -1304,16 +1315,24 @@ impl Db {
                         format!("indices {n} to {} of the formal have no actual", lo - 1)
                     };
                     return Err(self.error(
-                        Diagnostic::error(diag::MISSING_ACTUAL, "gap in the individually associated formal")
-                            .with_primary(sp, "elements of the formal are skipped before this one")
-                            .with_note(what),
+                        Diagnostic::error(
+                            diag::MISSING_ACTUAL,
+                            "gap in the individually associated formal",
+                        )
+                        .with_primary(sp, "elements of the formal are skipped before this one")
+                        .with_note(what),
                     ));
                 }
                 if lo < n && whole {
                     return Err(self.error(
-                        Diagnostic::error(diag::FORMAL_TWICE, "element of the formal is associated twice")
-                            .with_primary(sp, "overlaps an earlier association")
-                            .with_note(format!("index {lo} of the formal is associated more than once")),
+                        Diagnostic::error(
+                            diag::FORMAL_TWICE,
+                            "element of the formal is associated twice",
+                        )
+                        .with_primary(sp, "overlaps an earlier association")
+                        .with_note(format!(
+                            "index {lo} of the formal is associated more than once"
+                        )),
                     ));
                 }
             }

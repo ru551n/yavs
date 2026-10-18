@@ -72,6 +72,7 @@ const PASS: &[&str] = &[
     "report/error_then_end",
     "report/failure_exit",
     "report/message_forms",
+    "resolution/arch_resolution",
     "resolution/bus_guarded",
     "resolution/custom_resolution",
     "resolution/resolved_record_port",

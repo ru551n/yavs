@@ -59,7 +59,7 @@ impl Elaborated {
         cfg: Config,
         make: impl FnMut(&ProcInst, &[DriverId]) -> Result<Box<dyn Process>, SimError>,
     ) -> Result<SimControl, SimError> {
-        self.build_res(cfg, make, |_| {
+        self.build_res(cfg, make, |_, _| {
             Err(usage(
                 "user resolution functions need the lowered program (Elaborated::build)".into(),
             ))
@@ -72,7 +72,7 @@ impl Elaborated {
         &self,
         cfg: Config,
         mut make: impl FnMut(&ProcInst, &[DriverId]) -> Result<Box<dyn Process>, SimError>,
-        res: impl Fn(yavs_sem::DeclId) -> Result<yavs_kernel::Resolver, SimError>,
+        res: impl Fn(yavs_sem::DeclId, crate::LeafId) -> Result<yavs_kernel::Resolver, SimError>,
     ) -> Result<SimControl, SimError> {
         let mut b = Builder::new();
         for (i, leaf) in self.nets.leaves.iter().enumerate() {
@@ -99,9 +99,12 @@ impl Elaborated {
                          is not implemented yet (M3)"
                     )));
                 }
-                (Some(LeafRes::Func(d)), None) => {
-                    b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::Func(res(*d)?))
-                }
+                (Some(LeafRes::Func(d)), None) => b.resolved_signal(
+                    &name,
+                    leaf.ty,
+                    &leaf.init,
+                    Resolution::Func(res(*d, crate::LeafId(i as u32))?),
+                ),
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
             if let Some(g) = leaf.guard {

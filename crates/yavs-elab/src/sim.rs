@@ -19,6 +19,9 @@ pub struct Ir {
     pub units: HashMap<UnitId, UnitIr>,
     /// The function of each user resolution function of a signal.
     pub resolvers: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
+    /// Leaves resolved by a function declared in an entity or architecture: the instance
+    /// whose data the function reads (its constants and generics, #164).
+    pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
     /// `'path_name`/`'instance_name` strings per (region, named entity, instance?).
     pub names: HashMap<(ScopeId, yavs_sem::DeclId, bool), String>,
 }
@@ -75,6 +78,23 @@ impl Elaborated {
                 archs.push(arch);
             }
         }
+        // A resolution function declared in an entity or architecture reads that instance's
+        // data, so its architecture is lowered even when it owns no process.
+        let mut res_regions = std::collections::BTreeMap::new();
+        for (k, leaf) in self.nets.leaves.iter().enumerate() {
+            let Some(crate::hier::LeafRes::Func(d)) = leaf.resolution else {
+                continue;
+            };
+            let Some(region) = self.res_region(db, d, self.nets.obj(leaf.obj).scope)? else {
+                continue;
+            };
+            if let ScopeKind::Instance { arch, .. } = self.hier.scope(region).kind
+                && !archs.contains(&arch)
+            {
+                archs.push(arch);
+            }
+            res_regions.insert(crate::LeafId(k as u32), region);
+        }
         if archs.is_empty() {
             return Ok(());
         }
@@ -116,9 +136,59 @@ impl Elaborated {
             program: Arc::new(lowered.program),
             units,
             resolvers,
+            res_regions,
             names,
         });
         Ok(())
+    }
+
+    /// The instance whose data resolution function `d` reads when it resolves a signal
+    /// declared in `obj_scope`: `None` for a function declared in a package (no instance
+    /// data). Functions declared in blocks, generates or subprograms are not supported yet.
+    fn res_region(
+        &self,
+        db: &Db,
+        d: yavs_sem::DeclId,
+        obj_scope: ScopeId,
+    ) -> Result<Option<ScopeId>, Vec<Diagnostic>> {
+        use yavs_sem::scope::ScopeKind as S;
+        let ds = db.decls[d].scope;
+        match db.scopes[ds].kind {
+            S::Package | S::PackageBody => return Ok(None),
+            S::Entity | S::Architecture => {}
+            _ => {
+                return Err(vec![
+                    Diagnostic::error(
+                        crate::codes::NOT_IMPLEMENTED,
+                        format!(
+                            "resolution function `{}` declared in a block, generate or \
+                             subprogram is not implemented yet",
+                            db.decls[d].name
+                        ),
+                    )
+                    .with_primary(db.decls[d].span, "declared here")
+                    .with_note("declare it in the architecture or a package (#164)"),
+                ]);
+            }
+        }
+        let i = self.instance_of(obj_scope);
+        match self.hier.scope(i).kind {
+            ScopeKind::Instance { entity, arch }
+                if db.units[arch].scope == ds || db.units[entity].scope == ds =>
+            {
+                Ok(Some(i))
+            }
+            _ => Err(vec![
+                Diagnostic::error(
+                    crate::codes::INTERNAL,
+                    format!(
+                        "internal error: no instance declares resolution function `{}`",
+                        db.decls[d].name
+                    ),
+                )
+                .with_primary(db.decls[d].span, "this is a bug in yavs"),
+            ]),
+        }
     }
 
     /// `'path_name` (or `'instance_name`) of named entity `d` seen from `region` (LRM 16.2.5,
@@ -181,19 +251,39 @@ impl Elaborated {
         let rt = Runtime::new(ir.program.clone(), Bindings::default())?;
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         let shared = Arc::new(Mutex::new(SharedState::new(Vec::new())));
-        let res = |d: yavs_sem::DeclId| -> Result<yavs_kernel::Resolver, SimError> {
-            let f = *ir
-                .resolvers
-                .get(&d)
-                .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
-            let rt = rt.clone();
-            Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
-                // ponytail: no instance data, so a resolution function declared in an
-                // architecture cannot read its constants; per-instance resolvers if needed.
-                yavs_interp::resolve(rt.clone(), f, Arc::new(InstData::default()), vals, out)
-                    .map_err(|e| e.to_string())
-            }))
-        };
+        // Instance data of the regions whose resolution functions read it (#164).
+        let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
+        for (&leaf, &region) in &ir.res_regions {
+            let d = match insts.get(&region) {
+                Some(d) => d.clone(),
+                None => {
+                    let ScopeKind::Instance { arch, .. } = self.hier.scope(region).kind else {
+                        return Err(sim_err("resolution region is not an instance".into()));
+                    };
+                    let u = ir
+                        .units
+                        .get(&arch)
+                        .ok_or_else(|| sim_err("architecture not lowered".into()))?;
+                    let d = Arc::new(self.inst_data(&rt, u, region, &shared)?);
+                    insts.insert(region, d.clone());
+                    d
+                }
+            };
+            res_inst.insert(leaf, d);
+        }
+        let res =
+            |d: yavs_sem::DeclId, leaf: crate::LeafId| -> Result<yavs_kernel::Resolver, SimError> {
+                let f = *ir
+                    .resolvers
+                    .get(&d)
+                    .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
+                let rt = rt.clone();
+                let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
+                Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
+                    yavs_interp::resolve(rt.clone(), f, inst.clone(), vals, out)
+                        .map_err(|e| e.to_string())
+                }))
+            };
         self.build_res(
             cfg,
             |p, ds| {

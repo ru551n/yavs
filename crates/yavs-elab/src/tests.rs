@@ -983,3 +983,28 @@ fn nested_element_resolution() {
     ));
     assert!(e.nets.leaves[1].resolution.is_none());
 }
+
+#[test]
+fn resolution_function_in_a_block_fails_early() {
+    let src = "
+      entity t is end;
+      architecture a of t is
+      begin
+        b : block
+          type iv is array (natural range <>) of integer;
+          function r(v : iv) return integer is begin return v(v'low); end;
+          subtype ri is r integer;
+          signal s : ri := 0;
+        begin
+          s <= 1;
+        end block;
+      end;";
+    let (mut db, mut e) = elab("res_block", src, "t", &[]);
+    let codes: Vec<_> = e
+        .lower(&mut db)
+        .expect_err("not implemented")
+        .into_iter()
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(codes, [codes::NOT_IMPLEMENTED]);
+}

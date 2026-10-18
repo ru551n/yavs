@@ -254,7 +254,8 @@ and scalar type conversions in port maps (kernel converters), implicit signals (
 `'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`),
 external signal names bound in elaboration order (E2117), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
-resolution, user resolution functions. Not yet: composite conversions, non-static expression
+resolution, user resolution functions (one declared in an entity or architecture reads its
+instance's data; in a block, generate or subprogram it is E9999, #164). Not yet: composite conversions, non-static expression
 actuals (#74), generic types, subprograms and packages on entities, linkage ports, mode views
 (#75).
 

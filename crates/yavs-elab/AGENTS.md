@@ -44,6 +44,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | Ids in deterministic depth-first order; kernel `SignalId` = `LeafId`, `ProcId` = process index | Deterministic commit order | `src/hier.rs` docs |
 | Package constant calling a function of its own package before its body is elaborated: `E2114` with both spans | LRM 14.4.2, NVC and Questa | `docs/decisions.md` "Elaboration" |
 | Default binding, selected entity names, block configuration of a default-bound instance | Permissive per LRM policy | `docs/decisions.md` "Design units and binding" |
+| A user resolution function declared in an entity or architecture runs with that instance's `InstData` (`Ir::res_regions`, its architecture lowered even without processes); declared in a block, generate or subprogram: E9999 | #164: it reads the region's constants and generics | this file |
 | Not-yet-supported constructs are `E9999` naming the slice; composite elaboration-time values `E2106` (`ponytail:` in `eval.rs`) | Fail early | crate docs, #77 |
 
 Module-local decisions go in this section and ir.md section 4 or `docs/decisions.md`
@@ -85,5 +86,5 @@ python3 tools/difftest/difftest.py --candidate yavs
   guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
   non-static actuals in port maps; #75 generic types, subprograms and packages, binding without
   entity aspect; #76 package signals, external names, user resolution, nested resolution; #77
-  composite values at elaboration (E2106); #93 external names; #101 package generics. Older
+  composite values at elaboration (E2106); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
   unlabeled: #6 remaining elaboration features.

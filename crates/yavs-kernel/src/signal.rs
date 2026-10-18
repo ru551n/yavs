@@ -83,7 +83,9 @@ impl From<SignalId> for SigRef {
 /// A user resolution function over one segment of a resolved signal, one byte per element
 /// (logic signals pass `std_ulogic` codes). `sources[i]` holds the values of the i-th
 /// connected source (drivers in creation order, then ports); `out` receives the resolved
-/// values. An `Err` stops the simulation.
+/// values. An `Err` stops the simulation. For a composite resolved as a whole
+/// (`Builder::resolved_composite`) each value is the concatenation of all its leaves, in
+/// leaf order, a logic leaf one code byte per element, a byte leaf its bytes.
 pub type Resolver = Arc<dyn Fn(&[&[u8]], &mut [u8]) -> Result<(), String> + Send + Sync>;
 
 /// How a resolved signal combines its sources.
@@ -156,6 +158,8 @@ pub(crate) struct Signal {
     pub segments: Vec<Segment>,
     pub resolution: Option<Resolution>,
     pub guard: Option<GuardKind>,
+    /// Index into the kernel's composite groups: resolved together with other leaves.
+    pub group: Option<u32>,
     /// Disconnection time from a disconnection specification (default 0).
     pub disconnect: Time,
     pub force_eff: Option<Box<Layer>>,
@@ -195,6 +199,7 @@ impl Signal {
             segments: Vec::new(),
             resolution,
             guard: None,
+            group: None,
             disconnect: Time::ZERO,
             force_eff: None,
             force_drv: None,
@@ -249,8 +254,12 @@ impl Signal {
             .collect();
     }
 
-    /// Recompute the driving value of `r` from the sources.
+    /// Recompute the driving value of `r` from the sources. A leaf of a composite group is
+    /// resolved by the kernel with its group (`SimControl::resolve_group`).
     pub fn compute_driving(&mut self, r: Range) -> Result<(), ErrorKind> {
+        if self.group.is_some() {
+            return Ok(());
+        }
         for seg in &self.segments {
             let Some(part) = seg.range.intersect(r) else {
                 continue;

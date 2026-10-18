@@ -45,6 +45,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | `SimControl` is the only way to drive simulation (CLI, DAP, VHPI) | GUI-ready design | `docs/plan.md` "Designed for the GUI" |
 | Per-element flat event arrays over whole signals, no per-scalar objects | Rule 2 | `docs/plan.md` rule 2, `docs/decisions.md` "Kernel crate and process interface" |
 | Logic signals stored as bit-planes, everything else as bytes (K7); BIT/BOOLEAN implicit signals too ('0'/'1' codes, #185) | User, 2026-10-18 | `docs/decisions.md` "Kernel round 2", "Packed logic vectors", "Kernel round 3" |
+| A composite resolved as a whole keeps its per-field leaves (logic on planes) and is resolved as one group, not stored as one byte leaf (#83) | Bit-planes everywhere (user, 2026-10-18) | `docs/decisions.md` "Kernel round 3", DESIGN.md "Segments" |
 | Uncollapsed ports, conversions in the update phase without an extra delta (K1) | Rule 3 | `docs/plan.md` rule 3, `docs/decisions.md` "Kernel round 2" |
 | Forces and deposits queued and applied next cycle | VHDL-2008 force semantics | `docs/decisions.md` "Kernel crate and process interface" |
 | Delta numbering: init is delta 0 at 0 fs; default delta limit 10000; delays truncated to the resolution | Clear, NVC-compatible report times | same |
@@ -68,7 +69,11 @@ rule 24).
   are serial (`Process::serial`); only textio `OUTPUT` goes through `Ctx::output`, ordered with
   `report`. A process that is serial in the IR but built without the flag runs in parallel and
   breaks determinism silently, so `Builder::process` ORs in `Process::serial` (#107).
-- Records resolved as a whole composite are one byte leaf: logic fields inside are bytes (#83).
+- A composite resolved as a whole is its usual leaves joined by `Builder::resolved_composite`
+  (#83): logic leaves stay on planes, and the resolver sees each source as the concatenation of
+  its leaves (leaf order, one code byte per logic element). The leaves must share their sources
+  (same owners in the same order, each over the whole leaf) and port level; `build` refuses
+  anything else, guarded composites included.
 - A new `ErrorKind` needs its own code in `ErrorKind::code` (registry range `E3000`-`E3099`) and
   an entry in the yavs-diag registry table if it opens a new sub-range.
 
@@ -91,7 +96,6 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 
 - Kernel API changes ripple into `yavs-interp` (process), `yavs-elab` (builder) and the CLI;
   `docs/design/ir.md` sections 3.2 and 6 describe the seam.
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #83
-  records resolved as a whole store logic fields as bytes; #103 update/commit phases are
-  single-threaded.
+- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:kernel`): #103
+  update/commit phases are single-threaded.
   Questions on report order vs NVC: #11, #12.

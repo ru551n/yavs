@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use common::*;
 use yavs_kernel::*;
+use yavs_logic::StdULogic;
 
 const NONE: ProcFlags = ProcFlags {
     postponed: false,
@@ -796,5 +797,77 @@ fn process_panic_and_resolution_failure_become_errors() {
             signal: "r".into(),
             message: "conflict".into()
         }
+    );
+}
+
+/// A record `(a : std_ulogic_vector(2 downto 0); n : integer)` resolved as a whole (#83): the
+/// logic leaf stays on bit-planes, the resolver sees whole records (3 code bytes, then 4).
+fn composite(only_n: bool) -> Result<(SimControl, SignalId, SignalId), SimError> {
+    let mut b = Builder::new();
+    let a = b.signal("r.a", SignalType::logic(3), &LogicVec::new(3, StdULogic::U));
+    let n = b.signal("r.n", SignalType::bytes(4, 1), &[0; 4]);
+    let one = StdULogic::One as u8;
+    b.resolved_composite(
+        &[a, n],
+        Arc::new(move |srcs: &[&[u8]], out: &mut [u8]| {
+            // a: '1' where any source has '1', else '0'; n: the sum.
+            for k in 0..3 {
+                let any = srcs.iter().any(|s| s[k] == one);
+                out[k] = if any { one } else { StdULogic::Zero as u8 };
+            }
+            let sum: i32 = srcs
+                .iter()
+                .map(|s| i32::from_le_bytes(s[3..7].try_into().unwrap()))
+                .sum();
+            out[3..7].copy_from_slice(&sum.to_le_bytes());
+            Ok(())
+        }),
+    );
+    for (k, (bits, val)) in [("100", 3i32), ("001", 4)].into_iter().enumerate() {
+        let only = only_n && k == 1;
+        let da = (!only).then(|| b.driver(a));
+        let dn = b.driver(n);
+        let ds: Vec<DriverId> = da.into_iter().chain([dn]).collect();
+        b.process(
+            &format!("p{k}"),
+            ProcFlags::default(),
+            &ds,
+            p(move |c| {
+                let at = ns(k as u64 + 1);
+                if let Some(da) = da {
+                    let l: LogicVec = bits.parse().unwrap();
+                    c.assign(da, None, &[(at, &l)], DelayMode::Transport)?;
+                }
+                c.assign(dn, None, &[(at, &val.to_le_bytes())], DelayMode::Transport)?;
+                Ok(())
+            }),
+        );
+    }
+    Ok((b.build(Config::default())?, a, n))
+}
+
+#[test]
+fn composite_resolved_as_a_whole() {
+    let (mut sim, a, n) = composite(false).unwrap();
+    let get = |sim: &SimControl| {
+        let Value::Logic(l) = sim.value(a).unwrap() else {
+            panic!("logic leaf not on planes")
+        };
+        let n = i32::from_le_bytes(v(sim, n).try_into().unwrap());
+        (l.to_string(), n)
+    };
+    // Initialisation resolves the drivers' initial values (U, 0): '0' and 0.
+    assert_eq!(get(&sim), ("000".into(), 0));
+    sim.run_until(ns(1)).unwrap();
+    assert_eq!(get(&sim), ("100".into(), 3));
+    sim.run_until(ns(3)).unwrap();
+    assert_eq!(get(&sim), ("101".into(), 7));
+
+    let Err(e) = composite(true) else {
+        panic!("a process driving only r.n must be refused")
+    };
+    assert!(
+        matches!(&e.kind, ErrorKind::Usage(m) if m.contains("does not share the sources")),
+        "{e:?}"
     );
 }

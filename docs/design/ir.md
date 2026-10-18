@@ -505,8 +505,11 @@ pub struct SubElemMap;                    // (ObjId, &[Sel]) <-> Vec<(LeafId, Ra
 - **Leaves:** a signal is split into kernel signals by its resolution unit. A scalar or an array
   of scalars (resolved per element or not) is one leaf; a record is one leaf per field
   (recursively, arrays of records become one leaf per field, struct of arrays); a type resolved
-  as a whole composite (`resolved_record_port`) is one leaf whose element is the whole composite
-  value. Storage and event tracking are therefore per contiguous vector, never per scalar.
+  as a whole composite (`resolved_record_port`) keeps these leaves, joined for resolution by
+  `Builder::resolved_composite`: its resolver gets each source as the leaves' values
+  concatenated in leaf order (logic leaves one code byte per element), which the elaborator's
+  wrapper rearranges into the IR's composite layout (#83; bit-planes everywhere). Storage and
+  event tracking are therefore per contiguous vector, never per scalar.
 - **Element order** (implemented in `yavs_elab::NetGraph::select`): a leaf's elements are row
   major, leftmost first; logic leaves mirror it (kernel offset `n - 1 - p`), since yavs-logic's
   element 0 is the rightmost.

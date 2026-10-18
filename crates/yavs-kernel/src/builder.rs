@@ -59,6 +59,7 @@ pub struct Builder {
     procs: Vec<ProcDecl>,
     ports: Vec<PortEdge>,
     implicits: Vec<Implicit>,
+    groups: Vec<Vec<u32>>,
     error: Option<SimError>,
 }
 
@@ -132,6 +133,31 @@ impl Builder {
         self.signals
             .push(Signal::new(name.to_string(), ty, init, res));
         SignalId(self.signals.len() as u32 - 1)
+    }
+
+    /// Resolve the unresolved signals `leaves` together with `f`, as one composite resolved as
+    /// a whole (a record or array subtype with a resolution function, LRM 4.6). Each leaf keeps
+    /// its own storage, so logic leaves stay on bit-planes; `f` sees whole composite values
+    /// (see [`Resolver`](crate::Resolver)). Every leaf must get the same sources, each covering
+    /// the whole leaf, in the same order (checked by `build`), and none may be guarded.
+    pub fn resolved_composite(&mut self, leaves: &[SignalId], f: crate::Resolver) {
+        let g = self.groups.len() as u32;
+        if leaves.is_empty() {
+            return self.usage("a resolved composite needs at least one leaf".into());
+        }
+        for &l in leaves {
+            let Some((l, _)) = self.chk(l.into()) else {
+                return;
+            };
+            let s = &mut self.signals[l.0 as usize];
+            if s.resolution.is_some() || s.group.is_some() {
+                let msg = format!("signal {} is already resolved", s.name);
+                return self.usage(msg);
+            }
+            s.resolution = Some(Resolution::Func(f.clone()));
+            s.group = Some(g);
+        }
+        self.groups.push(leaves.iter().map(|l| l.0).collect());
     }
 
     /// Make a resolved signal guarded (`bus` or `register`) with the disconnection time of
@@ -368,6 +394,7 @@ impl Builder {
         for s in &mut self.signals {
             s.build_segments();
         }
+        self.check_groups(&infos).map_err(usage)?;
         let mut slots = Vec::new();
         let mut procs = Vec::new();
         for p in self.procs {
@@ -393,9 +420,41 @@ impl Builder {
             infos,
             self.ports,
             self.implicits,
+            self.groups,
             slots,
             procs,
         )
+    }
+}
+
+impl Builder {
+    /// The leaves of each resolved composite share their sources: same owners in the same
+    /// order (a process driver or a port), each over the whole leaf, and the same port level.
+    fn check_groups(&self, infos: &[DriverInfo]) -> Result<(), String> {
+        let owner = |s: u32, slot: usize| {
+            infos
+                .iter()
+                .find(|d| d.signal.0 == s && d.slot as usize == slot)
+                .map(|d| d.owner)
+        };
+        for leaves in &self.groups {
+            let lead = &self.signals[leaves[0] as usize];
+            for &l in leaves {
+                let s = &self.signals[l as usize];
+                let bad = s.guard.is_some()
+                    || s.level != lead.level
+                    || s.drivers.len() != lead.drivers.len()
+                    || s.drivers.iter().any(|d| d.range != s.full())
+                    || (0..s.drivers.len()).any(|i| owner(l, i) != owner(leaves[0], i));
+                if bad {
+                    return Err(format!(
+                        "resolved composite {}: leaf {} does not share the sources of the                          composite (a guarded or partly driven composite is not implemented)",
+                        lead.name, s.name
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -14,7 +14,7 @@ use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
     check_ref, make_op,
 };
-use crate::signal::{ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn};
+use crate::signal::{ForceMode, Range, Resolution, SigRef, Signal, SignalId, Waiter, apply_txn};
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
@@ -259,6 +259,8 @@ pub struct SimControl {
     /// Per signal: edges where it is the actual of an `in`/`inout` port.
     ports_down: Vec<Vec<u32>>,
     implicits: Vec<Implicit>,
+    /// Leaves of each composite resolved as a whole (`Builder::resolved_composite`).
+    groups: Vec<Vec<u32>>,
     slots: Vec<Mutex<Slot>>,
     procs: Vec<ProcMeta>,
     names: Vec<String>,
@@ -308,6 +310,7 @@ impl SimControl {
         drivers: Vec<DriverInfo>,
         ports: Vec<PortEdge>,
         implicits: Vec<Implicit>,
+        groups: Vec<Vec<u32>>,
         slots: Vec<Mutex<Slot>>,
         procs: Vec<ProcMeta>,
     ) -> Result<SimControl, SimError> {
@@ -345,6 +348,7 @@ impl SimControl {
             ports_up,
             ports_down,
             implicits,
+            groups,
             slots,
             procs,
             queue: BinaryHeap::new(),
@@ -376,6 +380,12 @@ impl SimControl {
         for &s in &order {
             let full = self.signals[s as usize].full();
             self.signals[s as usize].compute_driving(full)?;
+            if let Some(g) = self.signals[s as usize].group
+                && self.groups[g as usize].iter().min() == Some(&s)
+            {
+                // Leaves share one level and are settled in id order: the first resolves all.
+                self.resolve_group(g)?;
+            }
             self.push_up(s, false)?;
         }
         order.sort_by_key(|&s| (self.signals[s as usize].level, s));
@@ -833,6 +843,9 @@ impl SimControl {
 
         // Driving values bottom-up: formals before the actuals they feed.
         while let Some((_, Reverse(s))) = up.pop() {
+            if let Some(g) = self.signals[s as usize].group {
+                self.update_group(g, cycle, &mut up)?;
+            }
             let sig = &mut self.signals[s as usize];
             let mut dirty = std::mem::take(&mut sig.dirty);
             for r in dirty.drain(..) {
@@ -876,6 +889,77 @@ impl SimControl {
             }
         }
         self.update_implicit(&due)
+    }
+
+    /// The first leaf of a composite group popped with any leaf dirty resolves the whole
+    /// composite, before any leaf applies its forces and deposits; all leaves then continue
+    /// through the worklists (they share one level, checked at build).
+    fn update_group(
+        &mut self,
+        g: u32,
+        cycle: u64,
+        up: &mut BinaryHeap<(u32, Reverse<u32>)>,
+    ) -> Result<(), ErrorKind> {
+        let leaves = &self.groups[g as usize];
+        if leaves
+            .iter()
+            .all(|&l| self.signals[l as usize].dirty.is_empty())
+        {
+            return Ok(());
+        }
+        self.resolve_group(g)?;
+        for &l in &self.groups[g as usize] {
+            let sig = &mut self.signals[l as usize];
+            sig.dirty.clear();
+            sig.eff_dirty.push(sig.full());
+            if sig.queued_up != cycle {
+                sig.queued_up = cycle;
+                up.push((sig.level, Reverse(l)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Driving values of all leaves of composite group `g` from one call of its resolver.
+    fn resolve_group(&mut self, g: u32) -> Result<(), ErrorKind> {
+        let leaves = &self.groups[g as usize];
+        let lead = &self.signals[leaves[0] as usize];
+        let Some(Resolution::Func(f)) = &lead.resolution else {
+            return Err(ErrorKind::Internal(format!(
+                "composite {} has no resolver",
+                lead.name
+            )));
+        };
+        let concat = |pick: &dyn Fn(&Signal) -> &Buf| -> Vec<u8> {
+            leaves
+                .iter()
+                .flat_map(|&l| {
+                    let s = &self.signals[l as usize];
+                    pick(s).codes(0, s.ty.len as usize)
+                })
+                .collect()
+        };
+        let srcs: Vec<Vec<u8>> = (0..lead.drivers.len())
+            .map(|i| concat(&|s| &s.drivers[i].value))
+            .collect();
+        let views: Vec<&[u8]> = srcs.iter().map(Vec::as_slice).collect();
+        let mut out = concat(&|s| &s.driving);
+        f(&views, &mut out).map_err(|message| ErrorKind::Resolution {
+            signal: lead.name.clone(),
+            message,
+        })?;
+        let mut at = 0;
+        for &l in leaves {
+            let s = &mut self.signals[l as usize];
+            let n = s.ty.len as usize
+                * match s.ty.elem {
+                    Elem::Logic => 1,
+                    Elem::Bytes(es) => es as usize,
+                };
+            s.driving.set_codes(0, &out[at..at + n]);
+            at += n;
+        }
+        Ok(())
     }
 
     /// 14.7.5.3 c: `'transaction`, `'stable`, `'quiet` and `'delayed`, in creation order (an

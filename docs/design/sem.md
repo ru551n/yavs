@@ -503,7 +503,7 @@ pub enum Body {
     Instance(InstId),                     // instantiated subprogram
     Interface,                            // formal generic subprogram
 }
-pub struct ImplicitOp { pub family: Family, pub ty: TypeId }   // native `rsim.implicit.<family>.<type>`
+pub struct ImplicitOp { pub family: Family, pub ty: TypeId, pub form: Form }   // native `rsim.implicit.<family>.<type>[.<form>]`
 ```
 
 Which families each type gets (from NATIVE.md section 2, with the LRM type-class rules):
@@ -524,10 +524,14 @@ Which families each type gets (from NATIVE.md section 2, with the LRM type-class
 | BOOLEAN, BIT signals | `rising_edge`, `falling_edge` (2008, `std.standard` lists them) |
 | scalar types (2019) | an anonymous range record type (`LEFT`, `RIGHT` of the type, `DIRECTION`), created eagerly with every scalar type and reached through `R'RECORD`; the names `<T>_RANGE_RECORD` only for the `std.standard` types that `standard.vhdl` lists (U-3) [L7] |
 
-The native symbol for an implicit op is `rsim.implicit.<family>.<type mangled>`. For explicit
+The native symbol for an implicit op is `rsim.implicit.<family>.<type mangled>[.<form>]`; `form` tells
+apart the overloads one type has in one family (`&` array-element `as`, element-array `sa`,
+element-element `ss`; reductions `reduce`; physical `*` `/` by INTEGER/REAL `pi pr ip rp`, P/P `pp`;
+`file_open` with status `status`, the 2019 function `function`; `to_string` `digits format unit`).
+For explicit
 bodiless std subprograms sem computes the NATIVE.md symbol (`rsim.<package>.[<pt>.]<name>.<param
 types>[.r_<ret>]`) by the same rule as `tools/gen_native_md.py`; a test asserts that analyzing
-std in both revisions yields exactly the 234 symbols of NATIVE.md section 1, and that every
+std in both revisions yields exactly the 235 symbols of NATIVE.md section 1, and that every
 bodiless subprogram outside std is an error (`E1230`, missing body) unless it has `'FOREIGN`.
 
 Cost: about 30 decls per array type and 20 per scalar type; fine. Instances (5.2) clone them.

@@ -110,3 +110,18 @@ they need calls from the analyzers that own the constructs:
 - **types.rs** (ruling U-2): incomplete types are allowed in method profiles of a protected type
   declaration in both 2008 and 2019 (`Db::protected_of_region` / `ScopeKind::Protected` tells the
   region).
+
+From implicit (implicit.rs, mangle.rs):
+
+- implicit: type declaration analysis should call `Db::declare_implicit_ops(ty, scope, span)`
+  right after `declare` of each full type declaration (and after setting the matching
+  `well_known` field in `std.standard`); for `universal_integer`/`universal_real`, call it in
+  `begin_standard` with the standard scope once their `TypeDef`s exist. Operations naming a type
+  not declared yet wait in `pending_implicit` and are created when it appears.
+- implicit: `TypeDef::base_subtype` of a constrained array type (`type a is array (0 to 7) of
+  bit`) must be an unconstrained subtype of the anonymous base: implicit operators use it for
+  their operands and results (`a & a` is not `0 to 7`).
+- implicit: explicit bodiless std subprograms get `Body::Native(mangle::native_symbol(pkg,
+  protected_type, spec))`; `tests/native_symbols.rs` pins the rule against NATIVE.md (235 rows).
+- implicit: range records (2019 `R'RECORD`, U-3) are not created yet; they need the U-3 decision
+  on the `DIRECTION` name and belong with attribute analysis.

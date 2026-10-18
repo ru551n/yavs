@@ -932,7 +932,8 @@ are stable text built from declaration paths:
 | declaration in a region | `<region>.<name>` (`work.tb.arch.p1.counter`, unlabelled process: `_p<n>` by statement order) |
 | overloaded subprogram | `<region>.<name>(<param type>,...)[<ret type>]` with each type by its mangled base type name (`ieee.numeric_std."+"(ieee.numeric_std.unsigned,ieee.numeric_std.unsigned)ieee.numeric_std.unsigned`) |
 | package instance unit | `<lib>.<inst>` (`ieee.fixed_pkg`) |
-| local package/subprogram instance | `<region>.<inst>` |
+| local package instance | `<region>.<inst>` |
+| subprogram instance | as an overloaded subprogram, with the instantiated profile (`<region>.<inst>(<param type>,...)[<ret type>]`), so instances under one name stay distinct |
 | a declaration inside an instance | `<instance mangled>.<name>` |
 | implicit op | `<region of type>.<op>(<types>)`, native link `yavs.implicit.<family>.<type>` |
 

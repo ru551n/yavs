@@ -44,6 +44,9 @@ An installed binary finds `lib/` next to itself (#43).
 ## sem (`crates/yavs-sem`, M1)
 
 - A negated abstract literal at the i64 minimum (`-9223372036854775808`, `-9223372036854775808 fs`) folds to `i64::MIN` (L50, #214); `std.standard` writes TIME's lower bound as that literal.
+- Instances of one generic subprogram declared under one name (`function f is new f generic map (...)`)
+  overload by their instantiated profiles, next to ordinary overloads and across use clauses (#28):
+  `tests/diag/sem/gen/subprogram_instances_*`, difftest `generics/subprog_instance_overload` (2008, 2019).
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

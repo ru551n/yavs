@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:subprog_instance_overload_2019:_p0	FIRST,SECOND A,B,C not a record

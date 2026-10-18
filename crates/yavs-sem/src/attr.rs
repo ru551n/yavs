@@ -1429,10 +1429,11 @@ impl Db {
         &mut self,
         scope: ScopeId,
         prefix: &ast::Name,
+        attr: Ident,
         dim: Option<&ast::Expr>,
         span: Span,
     ) -> Result<SubtypeId, Reported> {
-        let (range, _) = self.range_attr_inner(scope, prefix, false, dim, span)?;
+        let (range, _) = self.range_attr_inner(scope, prefix, attr, false, dim, span)?;
         let crate::types::RangeC::Attr {
             prefix: aprefix,
             dim,

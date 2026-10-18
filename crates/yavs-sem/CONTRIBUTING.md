@@ -17,7 +17,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170; ctxlib: context-reference libraries (#36); semuse: use clauses and visibility #54 |
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead; semuse: use clauses and visibility #54 |
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead |
-| `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1) |
+| `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1); semdrv: range attribute prefix diagnostics #47 |
 | `implicit.rs` | implicitly declared operations per type (2.10) | S2 | owner: implicit |
 | `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead; semtyping: expression typing, conversions, conditions, parameter class checks #48 |
 | `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | owner: names (core by M1 lead: classify, name_cands, build_name, calls, index/slice/field, attributes); sem08: corpus false positives #167-#170; semuse: expanded names into constructs #54; semtyping: type conversions (9.3.6) #48 |
@@ -177,17 +177,6 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
   user attributes `x'a` through `attr::user_value`; decl.rs through `declare_attribute` and
   `specify` (lead). Open: `attr::implicit_signal` is not called yet (`'delayed` and friends are
   plain `ExprKind::Attr` nodes).
-
-From names (attr):
-
-- **types.rs** (lead): `'range` of a scalar object (`bit_vector(a'range)`, `a : integer`)
-  reports E1361 from the discrete-range path; `tests/diag/sem/attr/range_on_scalar_object.vhd`
-  wants E1621 at the attribute (`attr::select` gives it). Route range attributes through
-  `attr::select` there. The same path rejects legal `'range` of indexed and selected object
-  names with E1361 (an external library: `input_ports_m2s(0).w.data'range` in
-  axi_lite_simple_write_crossbar.vhd:66, `addrs(0)'range` in addr_pkg.vhd:101,
-  `base_addresses'range` of a generic in axi_lite_mux.vhd:57); names.rs `attr_prefixes` describes
-  such prefixes already.
 
 ### stmt -> lead (expr, decl, unit)
 

@@ -1561,13 +1561,14 @@ impl Db {
             "reverse_range" => true,
             _ => return None,
         };
-        Some(self.range_attr_inner(scope, prefix, reverse, dim_arg, n.span))
+        Some(self.range_attr_inner(scope, prefix, attr, reverse, dim_arg, n.span))
     }
 
     pub(crate) fn range_attr_inner(
         &mut self,
         scope: ScopeId,
         prefix: &ast::Name,
+        attr: Ident,
         reverse: bool,
         dim_arg: Option<&ast::Expr>,
         span: Span,
@@ -1596,6 +1597,11 @@ impl Db {
                 .filter(|&t| matches!(self.types[t].kind, TypeKind::Array { .. }))
                 .collect();
             let [t] = arrays.as_slice() else {
+                // A prefix that cannot take the attribute at all (`a'range` of a scalar
+                // object) is E1621 at the attribute, like every other attribute.
+                if self.report_attr(scope, prefix, attr) {
+                    return Err(Reported);
+                }
                 return Err(self.error(
                     Diagnostic::error(diag::NOT_AN_OBJECT, "the prefix of `'range` must be an array object or an array or scalar type mark")
                         .with_primary(prefix.span, "not an array"),
@@ -1662,7 +1668,7 @@ impl Db {
                         },
                     ] = args.as_slice()
                 {
-                    return self.index_type_mark(scope, prefix, Some(x), n.span);
+                    return self.index_type_mark(scope, prefix, *attr, Some(x), n.span);
                 }
             }
             _ => {}
@@ -1702,7 +1708,7 @@ impl Db {
     ) -> Result<SubtypeId, Reported> {
         let what = attr.key.as_str();
         match what {
-            "index" => return self.index_type_mark(scope, prefix, None, attr.span),
+            "index" => return self.index_type_mark(scope, prefix, attr, None, attr.span),
             "record" => return self.range_record_type_mark(scope, prefix, attr),
             _ => {}
         }

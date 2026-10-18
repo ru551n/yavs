@@ -3,8 +3,6 @@ alias/enum_literal_needs_signature.vhd
 alias/object_alias_non_static.vhd
 alias/subprogram_needs_signature.vhd
 alias/subtype_mismatch.vhd
-attr/range_on_scalar_object.vhd
-drv/event_attr_on_variable.vhd
 expr/condition_ambiguous_ops.vhd
 expr/condition_std_logic_type_only_ok.vhd
 expr/conversion_array_different_elements.vhd

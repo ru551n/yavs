@@ -1,8 +1,8 @@
 error[E1002]: design unit `nothing` not found in library `other`
- --> emptylib.vhd:2:5
+ --> emptylib.vhd:2:11
   |
 2 | use other.nothing.all;
-  |     ^^^^^^^^^^^^^ needed here
+  |           ^^^^^^^ needed here
   |
   = note: the library has only the units of the files analyzed in this run
   = help: analyze the file that defines it first, or check the name

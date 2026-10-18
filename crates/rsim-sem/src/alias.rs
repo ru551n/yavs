@@ -8,7 +8,7 @@
 //! visible in its region (`scope.rs`), so redeclaration checks stay in one
 //! place.
 //!
-//! Lookup is transparent: [`Db::alias_target`] follows nonobject aliases to
+//! Lookup is transparent: [`Db::entity`] follows nonobject aliases to
 //! the entity, and [`Db::describe_decl`] names the alias spelling the user
 //! wrote.
 
@@ -46,28 +46,10 @@ impl Signature {
     }
 }
 
-/// The parameter and result type profile of a subprogram or of the function
-/// equivalent to an enumeration literal (4.5.3).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Profile {
-    pub params: Vec<TypeId>,
-    /// `Some` for functions and enumeration literals, `None` for procedures.
-    pub ret: Option<TypeId>,
-}
-
 impl Db {
-    /// Follow nonobject aliases to the entity they denote.
-    pub fn alias_target(&self, mut d: DeclId) -> DeclId {
-        // Alias chains are acyclic: an alias can only name an earlier declaration.
-        while let DeclKind::Alias(Alias::NonObject { target }) = self.decls[d].kind {
-            d = target;
-        }
-        d
-    }
-
     /// `` `str_write` (alias of `write`) `` for aliases, `` `write` `` otherwise.
     pub fn describe_decl(&self, d: DeclId) -> String {
-        let t = self.alias_target(d);
+        let t = self.entity(d);
         if t == d {
             format!("`{}`", self.decls[d].name)
         } else {
@@ -75,21 +57,6 @@ impl Db {
                 "`{}` (alias of `{}`)",
                 self.decls[d].name, self.decls[t].name
             )
-        }
-    }
-
-    /// The profile of a subprogram or enumeration literal, through aliases.
-    pub fn profile(&self, d: DeclId) -> Option<Profile> {
-        match &self.decls[self.alias_target(d)].kind {
-            DeclKind::Subprogram(s) | DeclKind::GenericSubprogram(s) => Some(Profile {
-                params: s.params.iter().map(|p| self.base(p.subtype)).collect(),
-                ret: s.ret.map(|r| self.base(r)),
-            }),
-            DeclKind::EnumLit { ty, .. } => Some(Profile {
-                params: Vec::new(),
-                ret: Some(*ty),
-            }),
-            _ => None,
         }
     }
 
@@ -157,9 +124,7 @@ impl Db {
         let mut hits: Vec<DeclId> = Vec::new();
         for &c in cands {
             if self.signature_matches(c, sig)
-                && !hits
-                    .iter()
-                    .any(|&h| self.alias_target(h) == self.alias_target(c))
+                && !hits.iter().any(|&h| self.entity(h) == self.entity(c))
             {
                 hits.push(c);
             }
@@ -183,7 +148,7 @@ impl Db {
             }
             _ => {
                 let d = Diagnostic::error(
-                    diag::SIGNATURE_MANY,
+                    diag::AMBIGUOUS,
                     format!(
                         "signature {} matches more than one declaration of {name}",
                         self.display_signature(sig)
@@ -240,17 +205,15 @@ impl Db {
         if cands.iter().any(|&c| self.is_poison(c)) {
             return Err(Reported);
         }
-        if let Some(st) = &ast.subtype {
+        if ast.subtype.is_some() {
+            // A subtype indication makes this an object alias (6.6.2) of a non-object.
             return Err(self.error(
                 Diagnostic::error(
-                    diag::BAD_ALIAS,
-                    format!(
-                        "an alias of {} cannot have a subtype indication",
-                        self.describe_decl(first)
-                    ),
+                    diag::ALIAS_NOT_STATIC,
+                    format!("{} is not an object", self.describe_decl(first)),
                 )
-                .with_primary(st.span, "only object aliases take a subtype indication")
-                .with_note("LRM 6.6.3: a nonobject alias denotes a type, subprogram, literal, unit or other named entity"),
+                .with_primary(ast.name.span, "not an object")
+                .with_note("LRM 6.6: only an object alias takes a subtype indication"),
             ));
         }
         let target = match sig {
@@ -258,10 +221,7 @@ impl Db {
             None => {
                 let mut distinct: Vec<DeclId> = Vec::new();
                 for &c in cands {
-                    if !distinct
-                        .iter()
-                        .any(|&h| self.alias_target(h) == self.alias_target(c))
-                    {
+                    if !distinct.iter().any(|&h| self.entity(h) == self.entity(c)) {
                         distinct.push(c);
                     }
                 }
@@ -292,7 +252,7 @@ impl Db {
             since: LangRev::Vhdl2008,
         });
         let mut out = vec![alias];
-        let base = match self.decls[self.alias_target(target)].kind {
+        let base = match self.decls[self.entity(target)].kind {
             DeclKind::Type(t) | DeclKind::GenericType(t) => Some(t),
             DeclKind::Subtype(s) => Some(self.base(s)),
             _ => None,
@@ -340,7 +300,7 @@ impl Db {
         target: DeclId,
         ast: &ast::AliasDecl,
     ) -> Result<(), Reported> {
-        let t = self.alias_target(target);
+        let t = self.entity(target);
         let bad = |db: &mut Db, msg: String, label: &str| {
             Err(db.error(
                 Diagnostic::error(diag::BAD_ALIAS, msg)
@@ -617,6 +577,7 @@ pub(crate) mod fixture {
             anonymous: false,
             kind,
             first_subtype: st,
+            base_subtype: st,
         });
         (ty, st)
     }
@@ -831,7 +792,9 @@ pub(crate) mod fixture {
             std,
             defines: Vec::new(),
         };
-        let parsed = rsim_syntax::parse_file(rsim_diag::FileId(0), src, &opts);
+        let mut sm = rsim_diag::SourceMap::default();
+        let f = sm.add("t.vhd", src);
+        let parsed = rsim_syntax::parse_file(f, sm.get(f), &opts);
         assert!(parsed.diags.is_empty(), "{:?}", parsed.diags);
         let unit = parsed
             .design
@@ -949,7 +912,7 @@ mod tests {
             DeclKind::Alias(Alias::NonObject { target: f1 }),
         );
         assert_eq!(db.match_signature(&[f1, a], &sig), Ok(f1));
-        assert_eq!(codes(&db), [diag::SIGNATURE_NONE, diag::SIGNATURE_MANY]);
+        assert_eq!(codes(&db), [diag::SIGNATURE_NONE, diag::AMBIGUOUS]);
         assert_eq!(db.describe_decl(a), "`g` (alias of `h`)");
     }
 
@@ -991,7 +954,7 @@ mod tests {
             .nonobject_alias(s, &alias_ast(id("g"), None), &[f1], None)
             .unwrap();
         assert_eq!(g.len(), 1);
-        assert_eq!(db.alias_target(g[0]), f1);
+        assert_eq!(db.entity(g[0]), f1);
     }
 
     #[test]
@@ -1047,7 +1010,15 @@ mod tests {
                 .is_err()
         );
         let _ = bit;
-        assert_eq!(codes(&db), [diag::BAD_ALIAS; 4]);
+        assert_eq!(
+            codes(&db),
+            [
+                diag::BAD_ALIAS,
+                diag::BAD_ALIAS,
+                diag::BAD_ALIAS,
+                diag::ALIAS_NOT_STATIC
+            ]
+        );
     }
 
     #[test]
@@ -1070,7 +1041,7 @@ mod tests {
         let out = db
             .nonobject_alias(s, &alias_ast(id("st"), None), &[tdecl], None)
             .unwrap();
-        let targets: Vec<DeclId> = out.iter().map(|&d| db.alias_target(d)).collect();
+        let targets: Vec<DeclId> = out.iter().map(|&d| db.entity(d)).collect();
         let idle = db.scopes[s].names[&Symbol::intern("idle")][0];
         let run = db.scopes[s].names[&Symbol::intern("run")][0];
         assert_eq!(targets, [tdecl, idle, run, eq]);

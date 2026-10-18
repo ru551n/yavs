@@ -995,8 +995,9 @@ and result) is unique among homographs, so there is no code for it.
 - Body: bodies for every declared method (`E1230` for missing), plus any declarations.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.
-- Restrictions: no signals, ports, files of protected type; no `=`; function methods are impure
-  unless declared pure; shared variables must be of a protected type (6.4.2.4, `E1904`,
+- Restrictions: no signals, ports, files of protected type; no `=`; function methods follow the
+  normal rule, pure unless declared `impure` (LRM 4.2.1; NVC rejects a pure method reading the
+  body's variables, `E1830`); shared variables must be of a protected type (6.4.2.4, `E1904`,
   `--relaxed` makes it `W1904`, R1 in 8.4). Parameters of protected type are class variable.
 - Incomplete types as method return types, 2.6.
 
@@ -1009,8 +1010,8 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 
 - `view v of r_t is a, b : in; c : out; d : view w; end view;` every element of `r_t` exactly once
   (`E1901` missing/duplicate); `d : view w` requires `w`'s record subtype to match the element's.
-- `v'converse` is a view with `in`/`out` swapped, `inout` unchanged and `buffer` becoming `in`
-  (GHDL; NVC keeps `buffer`; no LRM text found, U-4) [L16], nested views conversed recursively. Sem materializes it as a `ViewDef`
+- `v'converse` is a view with `in`/`out` swapped, `inout` and `buffer` unchanged (user ruling
+  U-4, as NVC; GHDL maps `buffer` to `in`) [L16], nested views conversed recursively. Sem materializes it as a `ViewDef`
   on first use.
 - Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
   per element the effective mode. Port association checks per element (an `in` element is not

@@ -216,7 +216,7 @@ impl Db {
         };
         let ok = match a {
             Alias::NonObject { target } => {
-                let t = self.alias_target(*target);
+                let t = self.entity(*target);
                 self.is_poison(t) || self.method_of(t).is_some()
             }
             Alias::Object { .. } => false,
@@ -236,7 +236,7 @@ impl Db {
 
     /// The protected type a subprogram is a method of.
     pub fn method_of(&self, d: DeclId) -> Option<TypeId> {
-        let d = self.alias_target(d);
+        let d = self.entity(d);
         self.decls[d].kind.subprogram()?;
         self.protected_of_region(self.decls[d].scope)
     }
@@ -420,7 +420,7 @@ impl Db {
         if found.is_empty() {
             return Err(self.error(
                 Diagnostic::error(
-                    diag::NOT_SELECTABLE,
+                    diag::NOT_DECLARED,
                     format!(
                         "protected type `{}` has no method `{}`",
                         self.type_name(t),
@@ -644,7 +644,7 @@ mod tests {
             codes(&db),
             [
                 diag::PRIVATE,
-                diag::NOT_SELECTABLE,
+                diag::NOT_DECLARED,
                 diag::MISSING_BODY,
                 diag::REDECLARED,
                 diag::MISSING_BODY,

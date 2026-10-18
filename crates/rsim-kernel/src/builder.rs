@@ -1,21 +1,46 @@
 //! Elaboration-free model construction.
 
-use std::sync::Mutex;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{ErrorKind, SimError};
-use crate::kernel::{Config, ProcMeta, SimControl, Slot};
+use crate::kernel::{Config, Implicit, ImplicitKind, PortEdge, ProcMeta, SimControl, Slot};
 use crate::process::{DriverInfo, ProcId, ProcState, Process, check_ref};
 use crate::signal::{
-    DriverId, DriverSlot, Range, Resolver, SigRef, Signal, SignalId, SignalType, Waveform,
+    DriverId, DriverSlot, GuardKind, Range, Resolution, SigRef, Signal, SignalId, Waveform,
 };
+use crate::time::Time;
+use crate::value::{Buf, Elem, SignalType, Value, ValueRef};
 
 /// Process attributes fixed at elaboration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProcFlags {
     /// `postponed process`.
     pub postponed: bool,
-    /// Touches non-protected shared variables: never runs concurrently.
+    /// Never runs concurrently: touches non-protected shared variables or (through M3) calls
+    /// a protected type.
     pub serial: bool,
+}
+
+/// Port mode of a formal (LRM 6.5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PortMode {
+    In,
+    Out,
+    Inout,
+    Buffer,
+}
+
+/// A conversion function or type conversion in a port association, run in the update phase.
+/// It receives the whole source range and must return the whole target range.
+pub type Converter = Arc<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
+
+/// Conversions of one association: actual to formal (`in`, `inout`) and formal to actual
+/// (`out`, `inout`, `buffer`).
+#[derive(Clone, Default)]
+pub struct PortConv {
+    pub to_formal: Option<Converter>,
+    pub to_actual: Option<Converter>,
 }
 
 struct ProcDecl {
@@ -25,13 +50,15 @@ struct ProcDecl {
     drivers: Vec<DriverId>,
 }
 
-/// Builds a model: signals, drivers and processes, in elaboration order.
-/// Errors are deferred to [`Builder::build`].
+/// Builds a model: signals, drivers, ports, implicit signals and processes, in elaboration
+/// order. Errors are deferred to [`Builder::build`].
 #[derive(Default)]
 pub struct Builder {
     signals: Vec<Signal>,
     drivers: Vec<(SignalId, Range, Option<ProcId>)>,
     procs: Vec<ProcDecl>,
+    ports: Vec<PortEdge>,
+    implicits: Vec<Implicit>,
     error: Option<SimError>,
 }
 
@@ -40,81 +67,163 @@ impl Builder {
         Builder::default()
     }
 
-    fn fail(&mut self, msg: String) {
-        self.error
-            .get_or_insert(SimError::new(ErrorKind::Usage(msg)));
+    fn fail(&mut self, kind: ErrorKind) {
+        self.error.get_or_insert(SimError::new(kind));
+    }
+
+    fn usage(&mut self, msg: String) {
+        self.fail(ErrorKind::Usage(msg));
+    }
+
+    /// A checked reference, recording an error (and returning `None`) if it is invalid.
+    fn chk(&mut self, r: SigRef) -> Option<(SignalId, Range)> {
+        match check_ref(&self.signals, r) {
+            Ok((_, range)) => Some((r.signal, range)),
+            Err(k) => {
+                self.fail(k);
+                None
+            }
+        }
     }
 
     /// An unresolved signal with initial value `init`.
-    pub fn signal(&mut self, name: &str, ty: SignalType, init: &[u8]) -> SignalId {
-        self.add_signal(name, ty, init, None)
-    }
-
-    /// A resolved signal; `resolver` runs over every driven segment.
-    pub fn resolved_signal(
+    pub fn signal<'v>(
         &mut self,
         name: &str,
         ty: SignalType,
-        init: &[u8],
-        resolver: Resolver,
+        init: impl Into<ValueRef<'v>>,
     ) -> SignalId {
-        self.add_signal(name, ty, init, Some(resolver))
+        self.add_signal(name, ty, init.into(), None)
+    }
+
+    /// A resolved signal.
+    pub fn resolved_signal<'v>(
+        &mut self,
+        name: &str,
+        ty: SignalType,
+        init: impl Into<ValueRef<'v>>,
+        resolution: Resolution,
+    ) -> SignalId {
+        if matches!(resolution, Resolution::StdLogic) && ty.elem != Elem::Logic {
+            self.usage(format!(
+                "signal {name}: std_logic resolution needs a logic signal"
+            ));
+        }
+        self.add_signal(name, ty, init.into(), Some(resolution))
     }
 
     fn add_signal(
         &mut self,
         name: &str,
         ty: SignalType,
-        init: &[u8],
-        res: Option<Resolver>,
+        init: ValueRef<'_>,
+        res: Option<Resolution>,
     ) -> SignalId {
-        let size = ty.elem_size.checked_mul(ty.len).map(|n| n as usize);
-        if ty.elem_size == 0 || ty.len == 0 || size != Some(init.len()) {
-            self.fail(format!(
-                "signal {name}: initial value of {} bytes does not match type {ty:?}",
-                init.len()
-            ));
-        }
+        let n = ty.len as usize;
+        let init = if ty.elem == Elem::Bytes(0) {
+            self.usage(format!("signal {name}: element size 0"));
+            Buf::zeroed(Elem::Bytes(1), n)
+        } else {
+            Buf::from_ref(ty.elem, n, init).unwrap_or_else(|m| {
+                self.usage(format!("signal {name}: initial value: {m}"));
+                Buf::zeroed(ty.elem, n)
+            })
+        };
         self.signals
             .push(Signal::new(name.to_string(), ty, init, res));
         SignalId(self.signals.len() as u32 - 1)
     }
 
-    /// The implicit `s'transaction` signal: one byte, toggling 0/1 in every
-    /// cycle in which `s` is active.
-    pub fn transaction_signal(&mut self, s: SignalId) -> SignalId {
-        let name = match check_ref(&self.signals, s.into()) {
-            Ok((sig, _)) => format!("{}'transaction", sig.name),
-            Err(k) => {
-                self.error.get_or_insert(SimError::new(k));
-                format!("<invalid {}>'transaction", s.0)
-            }
+    /// Make a resolved signal guarded (`bus` or `register`) with the disconnection time of
+    /// its disconnection specification (0 if none).
+    pub fn guard(&mut self, s: SignalId, kind: GuardKind, disconnect: Time) {
+        let Some((s, _)) = self.chk(s.into()) else {
+            return;
         };
-        let t = self.signal(
-            &name,
-            SignalType {
-                elem_size: 1,
-                len: 1,
-            },
-            &[0],
-        );
-        if let Some(sig) = self.signals.get_mut(s.0 as usize) {
-            sig.transaction = Some(t);
+        let sig = &mut self.signals[s.0 as usize];
+        if sig.resolution.is_none() {
+            let msg = format!("guarded signal {} must be resolved", sig.name);
+            self.usage(msg);
+            return;
         }
-        t
+        sig.guard = Some(kind);
+        sig.disconnect = disconnect;
+    }
+
+    fn implicit(&mut self, r: SigRef, kind: ImplicitKind) -> SignalId {
+        let Some((src, range)) = self.chk(r) else {
+            return self.signal("<invalid implicit>", SignalType::bytes(1, 1), &[0]);
+        };
+        let s = &self.signals[src.0 as usize];
+        let mut name = s.name.clone();
+        if range != s.full() {
+            name += &format!("[{}+{}]", range.offset, range.len);
+        }
+        let (attr, ty, init) = match kind {
+            ImplicitKind::Transaction => (
+                "transaction".to_string(),
+                SignalType::bytes(1, 1),
+                Value::Bytes(vec![0]),
+            ),
+            ImplicitKind::Stable(t) => (
+                format!("stable({t})"),
+                SignalType::bytes(1, 1),
+                Value::Bytes(vec![1]),
+            ),
+            ImplicitKind::Quiet(t) => (
+                format!("quiet({t})"),
+                SignalType::bytes(1, 1),
+                Value::Bytes(vec![1]),
+            ),
+            ImplicitKind::Delayed(t) => (
+                format!("delayed({t})"),
+                SignalType {
+                    elem: s.ty.elem,
+                    len: range.len,
+                },
+                s.cur
+                    .extract(range.offset as usize, range.len as usize)
+                    .to_value(),
+            ),
+        };
+        let sig = self.signal(&format!("{name}'{attr}"), ty, &init);
+        self.implicits.push(Implicit {
+            sig,
+            src,
+            range,
+            kind,
+            rise_at: None,
+            delayed: VecDeque::new(),
+        });
+        sig
+    }
+
+    /// `s'transaction`: one byte toggling 0/1 in every cycle in which `s` is active.
+    pub fn transaction_signal(&mut self, s: impl Into<SigRef>) -> SignalId {
+        self.implicit(s.into(), ImplicitKind::Transaction)
+    }
+
+    /// `s'stable(t)`: a boolean (one byte), FALSE from an event on `s` until `t` after it.
+    pub fn stable_signal(&mut self, s: impl Into<SigRef>, t: Time) -> SignalId {
+        self.implicit(s.into(), ImplicitKind::Stable(t))
+    }
+
+    /// `s'quiet(t)`: like `'stable`, but on activity instead of events.
+    pub fn quiet_signal(&mut self, s: impl Into<SigRef>, t: Time) -> SignalId {
+        self.implicit(s.into(), ImplicitKind::Quiet(t))
+    }
+
+    /// `s'delayed(t)`: the value of `s`, transport-delayed by `t`.
+    pub fn delayed_signal(&mut self, s: impl Into<SigRef>, t: Time) -> SignalId {
+        self.implicit(s.into(), ImplicitKind::Delayed(t))
     }
 
     /// A driver for `target`, to be owned by the next process that lists it.
     pub fn driver(&mut self, target: impl Into<SigRef>) -> DriverId {
-        let target = target.into();
-        let range = match check_ref(&self.signals, target) {
-            Ok((_, range)) => range,
-            Err(k) => {
-                self.error.get_or_insert(SimError::new(k));
-                Range::new(0, 0)
-            }
-        };
-        self.drivers.push((target.signal, range, None));
+        let (s, range) = self
+            .chk(target.into())
+            .unwrap_or((SignalId(0), Range::new(0, 0)));
+        self.drivers.push((s, range, None));
         DriverId(self.drivers.len() as u32 - 1)
     }
 
@@ -129,8 +238,10 @@ impl Builder {
         let pid = ProcId(self.procs.len() as u32);
         for d in drivers {
             match self.drivers.get_mut(d.0 as usize).map(|d| &mut d.2) {
-                None => self.fail(format!("process {name}: no driver {}", d.0)),
-                Some(Some(_)) => self.fail(format!("process {name}: driver {} already owned", d.0)),
+                None => self.usage(format!("process {name}: no driver {}", d.0)),
+                Some(Some(_)) => {
+                    self.usage(format!("process {name}: driver {} already owned", d.0))
+                }
                 Some(owner) => *owner = Some(pid),
             }
         }
@@ -143,13 +254,56 @@ impl Builder {
         pid
     }
 
+    /// An uncollapsed port association between a formal and an actual (rule 3). Driving
+    /// values flow up from `out`/`inout`/`buffer` formals and effective values down to
+    /// `in`/`inout` formals in the update phase, without a delta.
+    pub fn port(
+        &mut self,
+        formal: impl Into<SigRef>,
+        actual: impl Into<SigRef>,
+        mode: PortMode,
+        conv: PortConv,
+    ) {
+        let (Some((f, fr)), Some((a, ar))) = (self.chk(formal.into()), self.chk(actual.into()))
+        else {
+            return;
+        };
+        let (fs, as_) = (&self.signals[f.0 as usize], &self.signals[a.0 as usize]);
+        let needs = match mode {
+            PortMode::In => conv.to_formal.is_none(),
+            PortMode::Out | PortMode::Buffer => conv.to_actual.is_none(),
+            PortMode::Inout => conv.to_formal.is_none() || conv.to_actual.is_none(),
+        };
+        if needs && (fs.ty.elem != as_.ty.elem || fr.len != ar.len) {
+            let msg = format!(
+                "port {} -> {}: types differ and no conversion is given",
+                fs.name, as_.name
+            );
+            self.usage(msg);
+            return;
+        }
+        if f == a {
+            self.usage(format!("port {} is associated with itself", fs.name));
+            return;
+        }
+        self.ports.push(PortEdge {
+            formal: f,
+            frange: fr,
+            actual: a,
+            arange: ar,
+            mode,
+            conv,
+            slot: None,
+        });
+    }
+
     pub fn build(mut self, cfg: Config) -> Result<SimControl, SimError> {
         if let Some(e) = self.error {
             return Err(e);
         }
+        let usage = |m: String| SimError::new(ErrorKind::Usage(m));
         let mut infos = Vec::with_capacity(self.drivers.len());
         for (i, &(sig, range, owner)) in self.drivers.iter().enumerate() {
-            let usage = |m: String| SimError::new(ErrorKind::Usage(m));
             let owner = owner.ok_or_else(|| usage(format!("driver {i} has no process")))?;
             let local = self.procs[owner.0 as usize]
                 .drivers
@@ -159,13 +313,6 @@ impl Builder {
                 SimError::new(ErrorKind::Internal(format!("driver {i} not in its owner")))
             })?;
             let s = &mut self.signals[sig.0 as usize];
-            if s.resolver.is_none() && s.drivers.iter().any(|d| d.range.overlaps(range)) {
-                return Err(usage(format!(
-                    "unresolved signal {} has several drivers",
-                    s.name
-                )));
-            }
-            let value = s.cur[s.bytes(range)].to_vec();
             infos.push(DriverInfo {
                 owner,
                 local: local as u32,
@@ -173,13 +320,54 @@ impl Builder {
                 range,
                 slot: s.drivers.len() as u32,
             });
-            s.drivers.push(DriverSlot { range, value });
+            add_source(s, range).map_err(usage)?;
+        }
+        for p in &mut self.ports {
+            let f = &self.signals[p.formal.0 as usize];
+            if matches!(p.mode, PortMode::In)
+                && f.drivers.iter().any(|d| d.range.overlaps(p.frange))
+            {
+                return Err(usage(format!("in-port {} has a driver", f.name)));
+            }
+            if matches!(p.mode, PortMode::In | PortMode::Inout) {
+                let f = &mut self.signals[p.formal.0 as usize];
+                let l = Signal::layer(&mut f.port_in, &f.cur);
+                crate::value::fill_bits(
+                    &mut l.mask,
+                    p.frange.offset as usize,
+                    p.frange.len as usize,
+                    true,
+                );
+            }
+            if !matches!(p.mode, PortMode::In) {
+                let a = &mut self.signals[p.actual.0 as usize];
+                p.slot = Some(a.drivers.len() as u32);
+                add_source(a, p.arange).map_err(usage)?;
+                if let Some(d) = a.drivers.last_mut() {
+                    d.off = None; // a port source is never disconnected
+                }
+            }
+        }
+        // Port levels: every formal deeper than its actual.
+        let mut changed = true;
+        let mut passes = 0;
+        while changed {
+            changed = false;
+            passes += 1;
+            if passes > self.signals.len() + 1 {
+                return Err(usage("port associations form a cycle".into()));
+            }
+            for p in &self.ports {
+                let want = self.signals[p.actual.0 as usize].level + 1;
+                let f = &mut self.signals[p.formal.0 as usize];
+                if f.level < want {
+                    f.level = want;
+                    changed = true;
+                }
+            }
         }
         for s in &mut self.signals {
             s.build_segments();
-            s.compute_driving(s.full()).map_err(SimError::new)?;
-            s.cur.clone_from(&s.driving);
-            s.last_value.clone_from(&s.driving);
         }
         let mut slots = Vec::new();
         let mut procs = Vec::new();
@@ -200,6 +388,25 @@ impl Builder {
                 ready: false,
             });
         }
-        SimControl::new(cfg, self.signals, infos, slots, procs)
+        SimControl::new(
+            cfg,
+            self.signals,
+            infos,
+            self.ports,
+            self.implicits,
+            slots,
+            procs,
+        )
     }
+}
+
+/// Add a source (driver or out-port) for `range`, checking unresolved signals have one.
+fn add_source(s: &mut Signal, range: Range) -> Result<(), String> {
+    if s.resolution.is_none() && s.drivers.iter().any(|d| d.range.overlaps(range)) {
+        return Err(format!("unresolved signal {} has several sources", s.name));
+    }
+    let value = s.cur.extract(range.offset as usize, range.len as usize);
+    let off = s.guard.map(|_| vec![0; (range.len as usize).div_ceil(64)]);
+    s.drivers.push(DriverSlot { range, value, off });
+    Ok(())
 }

@@ -1,15 +1,14 @@
 //! Signal storage, drivers and projected output waveforms.
 //!
-//! A signal is one contiguous array of `len` elements of `elem_size` bytes.
-//! Values are opaque bytes; the element encoding (packed std_logic, integer,
-//! record) belongs to the caller. Everything that addresses part of a signal
-//! (drivers, events, forces, waiters, value-change events) uses one
-//! [`Range`] of element indices (design rule 2).
+//! A signal is one contiguous array of `len` elements (see [`crate::SignalType`]). Everything
+//! that addresses part of a signal (drivers, events, forces, ports, waiters, value-change
+//! events) uses one [`Range`] of element indices (design rule 2).
 
 use std::sync::Arc;
 
 use crate::error::ErrorKind;
 use crate::time::Time;
+use crate::value::{Buf, SignalType, bits, fill_bits};
 
 /// Stable id of a signal: its index in creation (elaboration) order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,7 +18,7 @@ pub struct SignalId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DriverId(pub u32);
 
-/// A contiguous run of elements: `offset .. offset + len`.
+/// A contiguous run of elements: `offset .. offset + len`. May be empty (null ranges).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Range {
     pub offset: u32,
@@ -35,8 +34,9 @@ impl Range {
         self.offset + self.len
     }
 
+    /// Share at least one element.
     pub const fn overlaps(self, o: Range) -> bool {
-        self.offset < o.end() && o.offset < self.end()
+        self.len > 0 && o.len > 0 && self.offset < o.end() && o.offset < self.end()
     }
 
     pub const fn contains(self, o: Range) -> bool {
@@ -80,45 +80,51 @@ impl From<SignalId> for SigRef {
     }
 }
 
-/// The small type descriptor a signal carries until rsim-logic and the IR
-/// provide real types: element size in bytes and element count.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SignalType {
-    pub elem_size: u32,
-    pub len: u32,
-}
-
-/// A resolution function over one segment of a resolved signal.
-///
-/// `sources[i]` holds the values of driver `i` (in driver creation order) for
-/// the elements being resolved; `out` receives the resolved values. Both have
-/// the same length, a whole number of elements. For an element-resolved type
-/// such as `std_logic_vector` the function resolves element by element; the
-/// kernel batches contiguous elements with the same sources into one call.
-/// An `Err` (a VHDL resolution function that failed) stops the simulation.
+/// A user resolution function over one segment of a resolved signal, one byte per element
+/// (logic signals pass `std_ulogic` codes). `sources[i]` holds the values of the i-th
+/// connected source (drivers in creation order, then ports); `out` receives the resolved
+/// values. An `Err` stops the simulation.
 pub type Resolver = Arc<dyn Fn(&[&[u8]], &mut [u8]) -> Result<(), String> + Send + Sync>;
 
-/// Force mode (LRM 10.5.2.1): `force in` overrides the effective value,
-/// `force out` the driving value.
+/// How a resolved signal combines its sources.
+#[derive(Clone)]
+pub enum Resolution {
+    /// IEEE 1164 `resolved`, plane-wise; logic signals only.
+    StdLogic,
+    Func(Resolver),
+}
+
+/// Kind of a guarded signal (LRM 6.4.2.3): with every driver disconnected, a `bus` resolves
+/// an empty source list, a `register` keeps its value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GuardKind {
+    Bus,
+    Register,
+}
+
+/// Force mode (LRM 10.5.2.1): `force in` overrides the effective value, `force out` the
+/// driving value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ForceMode {
     Effective,
     Driving,
 }
 
-#[derive(Default)]
-pub(crate) struct Forced {
-    pub mask: Vec<bool>,
-    pub value: Vec<u8>,
+/// An override layer over a whole signal: elements whose mask bit is set take `value`.
+pub(crate) struct Layer {
+    pub mask: Vec<u64>,
+    pub value: Buf,
 }
 
 pub(crate) struct DriverSlot {
     pub range: Range,
-    /// Current value of the driver.
-    pub value: Vec<u8>,
+    /// Current value of the driver (or the converted driving value of a port).
+    pub value: Buf,
+    /// Disconnected elements (null transaction), relative to `range`; guarded signals only.
+    pub off: Option<Vec<u64>>,
 }
 
-/// Elements with the same set of drivers.
+/// Elements with the same set of sources.
 pub(crate) struct Segment {
     pub range: Range,
     /// Indices into `Signal::drivers`.
@@ -135,54 +141,72 @@ pub(crate) struct Signal {
     pub name: String,
     pub ty: SignalType,
     /// Effective (current) value.
-    pub cur: Vec<u8>,
-    /// Driving value computed from the drivers or a deposit, before forces.
-    pub driving: Vec<u8>,
-    pub last_value: Vec<u8>,
+    pub cur: Buf,
+    /// Driving value computed from the sources or a deposit, before forces.
+    pub driving: Buf,
+    pub last_value: Buf,
     /// Per element: cycle number of the last event / activity.
     pub event_cycle: Vec<u64>,
     pub active_cycle: Vec<u64>,
     /// Per element: time of the last event / activity, `None` if never.
     pub last_event: Vec<Option<Time>>,
     pub last_active: Vec<Option<Time>>,
+    /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
     pub segments: Vec<Segment>,
-    pub resolver: Option<Resolver>,
-    pub force_eff: Option<Box<Forced>>,
-    pub force_drv: Option<Box<Forced>>,
+    pub resolution: Option<Resolution>,
+    pub guard: Option<GuardKind>,
+    /// Disconnection time from a disconnection specification (default 0).
+    pub disconnect: Time,
+    pub force_eff: Option<Box<Layer>>,
+    pub force_drv: Option<Box<Layer>>,
+    /// Effective value taken from the actual of an `in`/`inout` port.
+    pub port_in: Option<Box<Layer>>,
+    /// Port depth: an actual has a lower level than its formals.
+    pub level: u32,
+    /// Cycle in which the signal was last put on the driving / effective worklist.
+    pub queued_up: u64,
+    pub queued_down: u64,
     pub waiters: Vec<Waiter>,
     /// Waiter count right after the last compaction (see `add_waiter`).
     pub waiters_live: usize,
-    /// Implicit `'transaction` signal of this signal.
-    pub transaction: Option<SignalId>,
     /// Elements changed in the current cycle.
     pub changed: Vec<Range>,
+    /// Ranges whose driving value must be recomputed this cycle.
     pub dirty: Vec<Range>,
+    /// Ranges whose effective value must be recomputed this cycle.
+    pub eff_dirty: Vec<Range>,
 }
 
 impl Signal {
-    pub fn new(name: String, ty: SignalType, init: &[u8], resolver: Option<Resolver>) -> Signal {
+    pub fn new(name: String, ty: SignalType, init: Buf, resolution: Option<Resolution>) -> Signal {
         let n = ty.len as usize;
         Signal {
             name,
             ty,
-            cur: init.to_vec(),
-            driving: init.to_vec(),
-            last_value: init.to_vec(),
+            cur: init.clone(),
+            driving: init.clone(),
+            last_value: init,
             event_cycle: vec![0; n],
             active_cycle: vec![0; n],
             last_event: vec![None; n],
             last_active: vec![None; n],
             drivers: Vec::new(),
             segments: Vec::new(),
-            resolver,
+            resolution,
+            guard: None,
+            disconnect: Time::ZERO,
             force_eff: None,
             force_drv: None,
+            port_in: None,
+            level: 0,
+            queued_up: 0,
+            queued_down: 0,
             waiters: Vec::new(),
             waiters_live: 0,
-            transaction: None,
             changed: Vec::new(),
             dirty: Vec::new(),
+            eff_dirty: Vec::new(),
         }
     }
 
@@ -190,16 +214,21 @@ impl Signal {
         Range::new(0, self.ty.len)
     }
 
-    pub fn bytes(&self, r: Range) -> std::ops::Range<usize> {
-        let es = self.ty.elem_size as usize;
-        r.offset as usize * es..r.end() as usize * es
-    }
-
     pub fn resolve(&self, r: Option<Range>) -> Range {
         r.unwrap_or(self.full())
     }
 
-    /// Partition the signal into segments with identical driver sets.
+    /// The layer for `mode`, created on first use.
+    pub fn layer<'a>(slot: &'a mut Option<Box<Layer>>, proto: &Buf) -> &'a mut Layer {
+        slot.get_or_insert_with(|| {
+            Box::new(Layer {
+                mask: vec![0; proto.len().div_ceil(64)],
+                value: proto.clone(),
+            })
+        })
+    }
+
+    /// Partition the signal into segments with identical source sets.
     pub fn build_segments(&mut self) {
         let mut cuts = vec![0, self.ty.len];
         for d in &self.drivers {
@@ -220,85 +249,132 @@ impl Signal {
             .collect();
     }
 
-    /// Recompute the driving value of `r` from the drivers.
+    /// Recompute the driving value of `r` from the sources.
     pub fn compute_driving(&mut self, r: Range) -> Result<(), ErrorKind> {
-        let es = self.ty.elem_size as usize;
         for seg in &self.segments {
             let Some(part) = seg.range.intersect(r) else {
                 continue;
             };
-            let out_bytes = part.offset as usize * es..part.end() as usize * es;
-            let src = |i: u32| {
-                let d = &self.drivers[i as usize];
-                let off = (part.offset - d.range.offset) as usize * es;
-                &d.value[off..off + part.len as usize * es]
-            };
-            match (&self.resolver, seg.drivers.as_slice()) {
+            match (&self.resolution, seg.drivers.as_slice()) {
                 (_, []) => {}
-                (Some(res), ds) => {
-                    let sources: Vec<&[u8]> = ds.iter().map(|&i| src(i)).collect();
-                    res(&sources, &mut self.driving[out_bytes]).map_err(|message| {
-                        ErrorKind::Resolution {
-                            signal: self.name.clone(),
-                            message,
-                        }
-                    })?;
-                }
+                // The common case: one unguarded source, no allocation.
                 (None, [i]) => {
-                    let v = src(*i);
-                    self.driving[out_bytes].copy_from_slice(v);
+                    let d = &self.drivers[*i as usize];
+                    let rel = (part.offset - d.range.offset) as usize;
+                    self.driving
+                        .copy(part.offset as usize, &d.value, rel, part.len as usize);
                 }
                 (None, _) => {
-                    return Err(ErrorKind::Internal(format!(
-                        "unresolved signal {} has several drivers",
-                        self.name
-                    )));
+                    let msg = format!("unresolved signal {} has several sources", self.name);
+                    return Err(ErrorKind::Internal(msg));
+                }
+                (Some(res), ds) => {
+                    let runs = connected_runs(&self.drivers, self.guard.is_some(), part, ds);
+                    for (run, conn) in runs {
+                        if conn.is_empty() && self.guard == Some(GuardKind::Register) {
+                            continue;
+                        }
+                        let srcs: Vec<(&Buf, usize)> = conn
+                            .iter()
+                            .map(|&i| {
+                                let d = &self.drivers[i as usize];
+                                (&d.value, (run.offset - d.range.offset) as usize)
+                            })
+                            .collect();
+                        let (off, n) = (run.offset as usize, run.len as usize);
+                        match res {
+                            Resolution::StdLogic => self.driving.resolve_std_logic(off, n, &srcs),
+                            Resolution::Func(f) => {
+                                let codes: Vec<Vec<u8>> =
+                                    srcs.iter().map(|(b, o)| b.codes(*o, n)).collect();
+                                let views: Vec<&[u8]> = codes.iter().map(Vec::as_slice).collect();
+                                let mut out = self.driving.codes(off, n);
+                                f(&views, &mut out).map_err(|message| ErrorKind::Resolution {
+                                    signal: self.name.clone(),
+                                    message,
+                                })?;
+                                self.driving.set_codes(off, &out);
+                            }
+                        }
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    /// The effective value of element `e` after forces.
-    fn effective_elem(&self, e: usize) -> &[u8] {
-        let es = self.ty.elem_size as usize;
-        let b = e * es..(e + 1) * es;
-        for f in [&self.force_eff, &self.force_drv].into_iter().flatten() {
-            if f.mask[e] {
-                return &f.value[b];
-            }
+    /// The effective value of `r`: driving value under `force out`, port input and
+    /// `force in`, in increasing priority.
+    pub fn effective_of(&self, r: Range) -> Buf {
+        let mut v = self.driving.extract(r.offset as usize, r.len as usize);
+        for l in [&self.force_drv, &self.port_in, &self.force_eff]
+            .into_iter()
+            .flatten()
+        {
+            v.select(
+                0,
+                &l.value,
+                r.offset as usize,
+                r.len as usize,
+                &l.mask,
+                Some(r.offset as usize),
+            );
         }
-        &self.driving[b]
+        v
     }
 
-    /// The driving value of element `e` after `force out`.
-    pub fn driving_elem(&self, e: usize) -> &[u8] {
-        let es = self.ty.elem_size as usize;
-        let b = e * es..(e + 1) * es;
-        match &self.force_drv {
-            Some(f) if f.mask[e] => &f.value[b],
-            _ => &self.driving[b],
+    /// The driving value of `r` after `force out` (what a port passes to its actual).
+    pub fn driving_of(&self, r: Range) -> Buf {
+        let mut v = self.driving.extract(r.offset as usize, r.len as usize);
+        if let Some(l) = &self.force_drv {
+            v.select(
+                0,
+                &l.value,
+                r.offset as usize,
+                r.len as usize,
+                &l.mask,
+                Some(r.offset as usize),
+            );
         }
+        v
     }
 
-    /// Update the effective value of `r`, recording events.
-    pub fn update_effective(&mut self, r: Range, now: Time, cycle: u64) {
-        let es = self.ty.elem_size as usize;
-        for e in r.elems() {
-            let b = e * es..(e + 1) * es;
-            if self.effective_elem(e) == &self.cur[b.clone()] {
+    /// Update the effective value of `r`, recording events. Returns whether anything changed.
+    pub fn update_effective(&mut self, r: Range, now: Time, cycle: u64) -> bool {
+        let (off, n) = (r.offset as usize, r.len as usize);
+        let layered =
+            self.force_drv.is_some() || self.port_in.is_some() || self.force_eff.is_some();
+        let owned;
+        let (src, soff) = if layered {
+            owned = self.effective_of(r);
+            (&owned, 0)
+        } else {
+            (&self.driving, off)
+        };
+        let mut any = false;
+        for c in (0..n).step_by(64) {
+            let k = (n - c).min(64);
+            let m = self.cur.diff_chunk(off + c, src, soff + c, k);
+            if m == 0 {
                 continue;
             }
-            let new = self.effective_elem(e).to_vec();
-            self.last_value[b.clone()].copy_from_slice(&self.cur[b.clone()]);
-            self.cur[b].copy_from_slice(&new);
-            self.event_cycle[e] = cycle;
-            self.last_event[e] = Some(now);
-            match self.changed.last_mut() {
-                Some(run) if run.end() as usize == e => run.len += 1,
-                _ => self.changed.push(Range::new(e as u32, 1)),
+            any = true;
+            let mut w = m;
+            while w != 0 {
+                let e = off + c + w.trailing_zeros() as usize;
+                w &= w - 1;
+                self.event_cycle[e] = cycle;
+                self.last_event[e] = Some(now);
+                match self.changed.last_mut() {
+                    Some(run) if run.end() as usize == e => run.len += 1,
+                    _ => self.changed.push(Range::new(e as u32, 1)),
+                }
             }
+            self.last_value
+                .select(off + c, &self.cur, off + c, k, &[m], Some(0));
+            self.cur.select(off + c, src, soff + c, k, &[m], Some(0));
         }
+        any
     }
 
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
@@ -308,8 +384,16 @@ impl Signal {
         }
     }
 
-    /// Register a waiter, compacting stale entries so lists of signals that
-    /// rarely change do not grow without bound.
+    pub fn active_in(&self, r: Range, cycle: u64) -> bool {
+        self.active_cycle[r.elems()].contains(&cycle)
+    }
+
+    pub fn event_in(&self, r: Range, cycle: u64) -> bool {
+        self.event_cycle[r.elems()].contains(&cycle)
+    }
+
+    /// Register a waiter, compacting stale entries so lists of signals that rarely change do
+    /// not grow without bound.
     pub fn add_waiter(&mut self, w: Waiter, live: impl Fn(&Waiter) -> bool) {
         if self.waiters.len() >= 2 * self.waiters_live + 16 {
             self.waiters.retain(&live);
@@ -319,14 +403,60 @@ impl Signal {
     }
 }
 
-/// One transaction of a projected output waveform.
+/// Runs of `part` with a constant set of connected sources (all of `sources` when the
+/// signal is not guarded).
+fn connected_runs(
+    drivers: &[DriverSlot],
+    guarded: bool,
+    part: Range,
+    sources: &[u32],
+) -> Vec<(Range, Vec<u32>)> {
+    if !guarded {
+        return vec![(part, sources.to_vec())];
+    }
+    let on = |i: u32, e: usize| {
+        let d = &drivers[i as usize];
+        d.off
+            .as_ref()
+            .is_none_or(|off| bits(off, e - d.range.offset as usize, 1) == 0)
+    };
+    let mut runs: Vec<(Range, Vec<u32>)> = Vec::new();
+    for e in part.elems() {
+        let set: Vec<u32> = sources.iter().copied().filter(|&i| on(i, e)).collect();
+        match runs.last_mut() {
+            Some((r, s)) if *s == set => r.len += 1,
+            _ => runs.push((Range::new(e as u32, 1), set)),
+        }
+    }
+    runs
+}
+
+/// Apply a matured transaction to a driver slot.
+pub(crate) fn apply_txn(d: &mut DriverSlot, t: &Txn) {
+    let rel = (t.range.offset - d.range.offset) as usize;
+    match &t.value {
+        Some(v) => {
+            d.value.copy(rel, v, 0, t.range.len as usize);
+            if let Some(off) = &mut d.off {
+                fill_bits(off, rel, t.range.len as usize, false);
+            }
+        }
+        None => {
+            if let Some(off) = &mut d.off {
+                fill_bits(off, rel, t.range.len as usize, true);
+            }
+        }
+    }
+}
+
+/// One transaction of a projected output waveform; `value: None` is a null transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Txn {
     pub time: Time,
     /// Elements of the signal (not of the driver).
     pub range: Range,
     // ponytail: one heap allocation per transaction; pool per driver if profiles show it.
-    pub value: Vec<u8>,
+    pub value: Option<Buf>,
 }
 
 /// How the first element of a waveform preempts pending transactions.
@@ -349,18 +479,50 @@ pub(crate) struct Waveform {
     pub pending: Vec<Txn>,
 }
 
+/// Per element of `t` (relative), whether its value equals `first` (covering `r`).
+fn same_value(t: &Txn, first: &Option<Buf>, r: Range) -> Vec<u64> {
+    let n = t.range.len as usize;
+    let mut eq = vec![0u64; n.div_ceil(64)];
+    let Some(ov) = t.range.intersect(r) else {
+        return eq;
+    };
+    let (to, fo, k) = (
+        (ov.offset - t.range.offset) as usize,
+        (ov.offset - r.offset) as usize,
+        ov.len as usize,
+    );
+    match (&t.value, first) {
+        (None, None) => fill_bits(&mut eq, to, k, true),
+        (Some(a), Some(b)) => {
+            let d = a.diff(to, b, fo, k);
+            for i in 0..k {
+                if bits(&d, i, 1) == 0 {
+                    eq[(to + i) / 64] |= 1 << ((to + i) % 64);
+                }
+            }
+        }
+        _ => {}
+    }
+    eq
+}
+
 impl Waveform {
-    /// Apply LRM 10.5.2.2 to target elements `r` for a new waveform whose
-    /// first transaction is at `t1`, then insert the new transactions.
-    /// `reject_from` is `t1 - reject` for inertial delay, `None` for transport.
-    pub fn schedule(&mut self, es: usize, r: Range, reject_from: Option<Time>, new: Vec<Txn>) {
+    /// Apply LRM 10.5.2.2 to target elements `r` for a new waveform whose first transaction is
+    /// at `t1`, then insert the new transactions. `reject_from` is `t1 - reject` for inertial
+    /// delay, `None` for transport.
+    pub fn schedule(&mut self, r: Range, reject_from: Option<Time>, new: Vec<Txn>) {
         let t1 = new[0].time;
         let first = &new[0].value;
+        let in_window = |t: &Txn| reject_from.is_some_and(|from| t.time >= from && t.time < t1);
+        let eqs: Vec<Option<Vec<u64>>> = self
+            .pending
+            .iter()
+            .map(|t| (in_window(t) && t.range.overlaps(r)).then(|| same_value(t, first, r)))
+            .collect();
         // Per element, decide which overlapping old transactions to delete.
         // ponytail: O(elements * pending); fine while waveforms stay short.
-        let mut deleted: Vec<Option<Vec<bool>>> = vec![None; self.pending.len()];
+        let mut deleted: Vec<Option<Vec<u64>>> = vec![None; self.pending.len()];
         for e in r.elems() {
-            let new_val = &first[(e - r.offset as usize) * es..][..es];
             let mut chain = true;
             for (i, t) in self.pending.iter().enumerate().rev() {
                 if !t.range.elems().contains(&e) {
@@ -369,14 +531,16 @@ impl Waveform {
                 let k = e - t.range.offset as usize;
                 let delete = if t.time >= t1 {
                     true
-                } else if reject_from.is_some_and(|from| t.time >= from) {
-                    chain &= &t.value[k * es..][..es] == new_val;
+                } else if let Some(eq) = &eqs[i] {
+                    chain &= bits(eq, k, 1) == 1;
                     !chain
                 } else {
                     false
                 };
                 if delete {
-                    deleted[i].get_or_insert_with(|| vec![false; t.range.len as usize])[k] = true;
+                    let mask = deleted[i]
+                        .get_or_insert_with(|| vec![0; (t.range.len as usize).div_ceil(64)]);
+                    fill_bits(mask, k, 1, true);
                 }
             }
         }
@@ -385,7 +549,7 @@ impl Waveform {
             for (t, del) in old.into_iter().zip(deleted) {
                 match del {
                     None => self.pending.push(t),
-                    Some(mask) => split_kept(t, &mask, es, &mut self.pending),
+                    Some(mask) => split_kept(t, &mask, &mut self.pending),
                 }
             }
         }
@@ -403,17 +567,18 @@ impl Waveform {
 }
 
 /// Push the runs of `t` not marked in `mask`.
-fn split_kept(t: Txn, mask: &[bool], es: usize, out: &mut Vec<Txn>) {
+fn split_kept(t: Txn, mask: &[u64], out: &mut Vec<Txn>) {
+    let n = t.range.len as usize;
     let mut start = None;
-    for k in 0..=mask.len() {
-        let keep = k < mask.len() && !mask[k];
+    for k in 0..=n {
+        let keep = k < n && bits(mask, k, 1) == 0;
         match (keep, start) {
             (true, None) => start = Some(k),
             (false, Some(s)) => {
                 out.push(Txn {
                     time: t.time,
                     range: Range::new(t.range.offset + s as u32, (k - s) as u32),
-                    value: t.value[s * es..k * es].to_vec(),
+                    value: t.value.as_ref().map(|v| v.extract(s, k - s)),
                 });
                 start = None;
             }
@@ -425,32 +590,33 @@ fn split_kept(t: Txn, mask: &[bool], es: usize, out: &mut Vec<Txn>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::{Elem, LogicVec};
 
     fn txn(ns: u64, off: u32, v: &[u8]) -> Txn {
+        let value = Some(Buf::from_ref(Elem::Bytes(1), v.len(), v.into()).unwrap());
         Txn {
             time: Time::ns(ns),
             range: Range::new(off, v.len() as u32),
-            value: v.to_vec(),
+            value,
         }
     }
 
     #[test]
     fn transport_deletes_at_or_after() {
         let mut w = Waveform::default();
-        w.schedule(1, Range::new(0, 1), None, vec![txn(10, 0, &[1])]);
-        w.schedule(1, Range::new(0, 1), None, vec![txn(20, 0, &[2])]);
-        w.schedule(1, Range::new(0, 1), None, vec![txn(15, 0, &[3])]);
+        w.schedule(Range::new(0, 1), None, vec![txn(10, 0, &[1])]);
+        w.schedule(Range::new(0, 1), None, vec![txn(20, 0, &[2])]);
+        w.schedule(Range::new(0, 1), None, vec![txn(15, 0, &[3])]);
         assert_eq!(w.pending, vec![txn(10, 0, &[1]), txn(15, 0, &[3])]);
     }
 
     #[test]
     fn inertial_keeps_same_value_chain_per_element() {
-        // Old "00" at 10 ns; new "01" at 20 ns with 20 ns rejection: element 0
-        // keeps its old transaction (same value), element 1 loses it.
+        // Old "00" at 10 ns; new "01" at 20 ns with 20 ns rejection: element 0 keeps its old
+        // transaction (same value), element 1 loses it.
         let mut w = Waveform::default();
         w.pending.push(txn(10, 0, &[0, 0]));
         w.schedule(
-            1,
             Range::new(0, 2),
             Some(Time::ZERO),
             vec![txn(20, 0, &[0, 1])],
@@ -462,12 +628,7 @@ mod tests {
     fn inertial_outside_window_kept() {
         let mut w = Waveform::default();
         w.pending.push(txn(1, 0, &[7]));
-        w.schedule(
-            1,
-            Range::new(0, 1),
-            Some(Time::ns(5)),
-            vec![txn(10, 0, &[1])],
-        );
+        w.schedule(Range::new(0, 1), Some(Time::ns(5)), vec![txn(10, 0, &[1])]);
         assert_eq!(w.pending.len(), 2);
     }
 
@@ -475,10 +636,37 @@ mod tests {
     fn sub_element_assignment_splits_only_its_range() {
         let mut w = Waveform::default();
         w.pending.push(txn(10, 0, &[1, 2, 3, 4]));
-        w.schedule(1, Range::new(1, 2), None, vec![txn(5, 1, &[9, 9])]);
+        w.schedule(Range::new(1, 2), None, vec![txn(5, 1, &[9, 9])]);
         assert_eq!(
             w.pending,
             vec![txn(5, 1, &[9, 9]), txn(10, 0, &[1]), txn(10, 3, &[4])]
         );
+    }
+
+    #[test]
+    fn inertial_on_planes_and_null_transactions() {
+        let lt = |ns, s: &str| {
+            let l: LogicVec = s.parse().unwrap();
+            Txn {
+                time: Time::ns(ns),
+                range: Range::new(0, l.len() as u32),
+                value: Some(Buf::from_ref(Elem::Logic, l.len(), (&l).into()).unwrap()),
+            }
+        };
+        let mut w = Waveform::default();
+        w.pending.push(lt(10, "10"));
+        w.schedule(Range::new(0, 2), Some(Time::ZERO), vec![lt(20, "11")]);
+        // Element 1 ('1' both times) keeps the 10 ns transaction, element 0 does not.
+        assert_eq!(w.pending.len(), 2);
+        assert_eq!(w.pending[0].range, Range::new(1, 1));
+        let null = |ns| Txn {
+            time: Time::ns(ns),
+            range: Range::new(0, 2),
+            value: None,
+        };
+        let mut w = Waveform::default();
+        w.pending.push(null(10));
+        w.schedule(Range::new(0, 2), Some(Time::ZERO), vec![null(20)]);
+        assert_eq!(w.pending, vec![null(10), null(20)]);
     }
 }

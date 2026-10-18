@@ -37,14 +37,7 @@ fn clock(b: &mut Builder) -> SignalId {
 fn clock_and_counter() {
     let mut b = Builder::new();
     let clk = clock(&mut b);
-    let cnt = b.signal(
-        "cnt",
-        SignalType {
-            elem_size: 4,
-            len: 1,
-        },
-        &[0; 4],
-    );
+    let cnt = b.signal("cnt", SignalType::bytes(4, 1), &[0; 4]);
     let d = b.driver(cnt);
     b.process(
         "counter",
@@ -52,7 +45,7 @@ fn clock_and_counter() {
         &[d],
         p(move |c| {
             if c.event(clk)? && c.value(clk)? == [1] {
-                assert_eq!(c.last_value(clk)?, [0]);
+                assert_eq!(c.last_value(clk)?, Value::Bytes(vec![0]));
                 assert_eq!(c.last_event(clk)?, Time::ZERO);
                 c.drive(d, &(u32_of(c.value(cnt)?) + 1).to_le_bytes())?;
             }
@@ -158,30 +151,22 @@ fn reject_limit_above_delay_is_an_error() {
     let err = sim.run_until(ns(10)).unwrap_err();
     assert_eq!(
         err.kind,
-        ErrorKind::InvalidAssign("pulse rejection limit exceeds the delay")
+        ErrorKind::InvalidAssign("pulse rejection limit exceeds the delay".into())
     );
     assert_eq!(err.process, Some((ProcId(0), "bad".into())));
 }
 
 #[test]
 fn resolution_with_several_drivers() {
-    let or: Resolver = Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+    let or = Resolution::Func(Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
         assert_eq!(srcs.len(), 2);
         for (i, o) in out.iter_mut().enumerate() {
             *o = srcs.iter().fold(0, |a, s| a | s[i]);
         }
         Ok(())
-    });
+    }));
     let mut b = Builder::new();
-    let bus = b.resolved_signal(
-        "bus",
-        SignalType {
-            elem_size: 1,
-            len: 4,
-        },
-        &[0; 4],
-        or,
-    );
+    let bus = b.resolved_signal("bus", SignalType::bytes(1, 4), &[0; 4], or);
     let da = b.driver(bus);
     let db = b.driver(bus.slice(0, 2));
     let dc = b.driver(bus.slice(2, 2));
@@ -222,14 +207,7 @@ fn resolution_with_several_drivers() {
 #[test]
 fn unresolved_signal_rejects_overlapping_drivers() {
     let mut b = Builder::new();
-    let s = b.signal(
-        "s",
-        SignalType {
-            elem_size: 1,
-            len: 4,
-        },
-        &[0; 4],
-    );
+    let s = b.signal("s", SignalType::bytes(1, 4), &[0; 4]);
     let d1 = b.driver(s.slice(0, 2));
     let d2 = b.driver(s.slice(2, 2));
     b.process("p1", NONE, &[d1], p(|_| Ok(())));
@@ -436,7 +414,7 @@ fn force_release_and_deposit() {
         sim.run_until(ns(t)).unwrap();
         assert_eq!(
             (v(&sim, s), sim.driving_value(s).unwrap()),
-            (vec![val], vec![drv]),
+            (vec![val], Value::Bytes(vec![drv])),
             "at {t} ns"
         );
     };
@@ -497,14 +475,7 @@ fn zero_delay_oscillation_hits_delta_limit() {
 #[test]
 fn sub_element_sensitivity_and_events() {
     let mut b = Builder::new();
-    let v = b.signal(
-        "v",
-        SignalType {
-            elem_size: 1,
-            len: 4,
-        },
-        &[0; 4],
-    );
+    let v = b.signal("v", SignalType::bytes(1, 4), &[0; 4]);
     let d = b.driver(v);
     b.process(
         "stim",
@@ -615,7 +586,7 @@ fn phases_steps_and_end() {
                     c.wait_for(ns(10))
                 }
                 _ => {
-                    c.output(0, b"bye");
+                    c.output(StreamId::OUTPUT, b"bye");
                     c.finish(3);
                     Ok(())
                 }
@@ -647,7 +618,7 @@ fn phases_steps_and_end() {
             "0 fs +1 LastKnownDelta",
             "0 fs +1 EndOfTimeStep",
             "10 ns +0 NextTimeStep",
-            "10 ns +0 p0 out0: bye",
+            "10 ns +0 p0 out: bye",
             "10 ns +0 LastKnownDelta",
             "10 ns +0 EndOfTimeStep",
             "10 ns +0 EndOfSim",
@@ -814,7 +785,7 @@ fn process_panic_and_resolution_failure_become_errors() {
     );
     assert_eq!(err.exit_status(), 101);
 
-    let fails: Resolver = Arc::new(|_: &[&[u8]], _: &mut [u8]| Err("conflict".into()));
+    let fails = Resolution::Func(Arc::new(|_: &[&[u8]], _: &mut [u8]| Err("conflict".into())));
     let mut b = Builder::new();
     let r = b.resolved_signal("r", BYTE, &[0], fails);
     let d = b.driver(r);

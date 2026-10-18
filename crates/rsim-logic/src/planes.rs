@@ -91,7 +91,33 @@ fn to_ux01(x: B) -> B {
     [!is0(x) & !is_u(x), is0(x) | is1(x), 0, 0]
 }
 
+/// One block: elements `64i..64i+64`, planes 0 to 3 (code bits 0 to 3).
+pub type Block = [u64; 4];
+
 impl Planes {
+    /// The raw blocks, element 0 in bit 0 of block 0. Bits beyond `len` are 0.
+    pub fn blocks(&self) -> &[Block] {
+        &self.b
+    }
+
+    /// Build from raw blocks; `blocks.len()` must be `len.div_ceil(64)`. Bits beyond `len`
+    /// are cleared.
+    pub fn from_blocks(len: usize, blocks: Vec<Block>) -> Self {
+        assert_eq!(
+            blocks.len(),
+            len.div_ceil(64),
+            "block count does not match length"
+        );
+        let mut s = Self { len, b: blocks };
+        s.norm();
+        s
+    }
+
+    /// IEEE 1164 resolution of two blocks, element by element.
+    pub fn resolve_block(x: Block, y: Block) -> Block {
+        resolve(x, y)
+    }
+
     fn mask(&self, bi: usize) -> u64 {
         let r = self.len - bi * 64;
         if r >= 64 { !0 } else { (1u64 << r) - 1 }

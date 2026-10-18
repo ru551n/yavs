@@ -12,6 +12,14 @@ use core::str::FromStr;
 pub struct Logic<R>(R);
 
 impl<R: Repr> Logic<R> {
+    /// Wrap a layout value.
+    pub fn from_repr(r: R) -> Self {
+        Self(r)
+    }
+    /// The layout value.
+    pub fn repr(&self) -> &R {
+        &self.0
+    }
     pub fn new(len: usize, v: StdULogic) -> Self {
         Self(R::new(len, v))
     }

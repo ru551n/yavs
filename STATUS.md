@@ -89,24 +89,35 @@ concurrency test. The standard is stored per file (manifest format 2). The analy
 
 LRM 14.7 cycle against an abstract `Process` trait, tested with hand-written processes: time with
 runtime resolution and checked arithmetic, drivers with transport and inertial (reject limit)
-preemption per element, resolution per driver segment, `'event`/`'active`/`'last_event`/
-`'last_value`/`'last_active`/`'transaction`, force/release/deposit, postponed processes, delta
-limit, parallel evaluation with ordered commit (threads and shuffle invariance tested on 1000
-processes), `SimControl` with run/step, interrupt, value-change bus and phase callbacks. Design in
-`crates/rsim-kernel/DESIGN.md`. Not yet: null transactions/guarded signals, ports, `'stable`,
-`'quiet`, `'delayed`.
+preemption per element, resolution per source segment, `'event`/`'active`/`'last_event`/
+`'last_value`/`'last_active`, force/release/deposit, postponed processes, delta limit, parallel
+evaluation with ordered commit (threads and shuffle invariance tested on 1000+ processes),
+`SimControl` with run/step, interrupt, value-change bus and phase callbacks. Design in
+`crates/rsim-kernel/DESIGN.md`.
 
-Benchmark (`cargo run --release -p rsim-kernel --example bench -- 10000 <work>`): 10000 counters
-on one clock, 10 us simulated (1000 rising edges), 24-core host, 8 worker threads.
+Kernel asks of docs/design/ir.md, all done: K1 uncollapsed ports with conversions in the update
+phase (no extra delta), K2 kernel-maintained `'stable`/`'quiet`/`'delayed`/`'transaction`, K3
+`'driving_value`, K4 `'driving`, null transactions and guarded `bus`/`register` signals with
+disconnection time, K5 null-range signals, K6 buffered user-file streams, K7 bit-plane storage
+for logic signals (bytes for everything else).
 
-| work per activation | threads | events/s | process runs/s |
+Benchmark (`cargo run --release -p rsim-kernel --example bench -- 10000 <work>`), 24-core host
+under load from other agents (runs vary by about 15%), 8 worker threads. "Before" is the byte-only
+kernel of the first round, run back to back with "after".
+
+| case | threads | before | after |
 |---|---|---|---|
-| 0 | 1 | 2.95 M | 5.9 M |
-| 0 | 8 | 3.12 M | 6.3 M |
-| 1000 | 1 | 1.41 M | 2.8 M |
-| 1000 | 8 | 2.51 M | 5.0 M |
+| 10000 counters, work 0 | 1 | 3.3 s (3.0 M events/s) | 3.6 to 3.8 s (2.7 M events/s) |
+| 10000 counters, work 0 | 8 | 3.1 to 3.3 s | 3.2 to 3.8 s |
+| 10000 counters, work 1000 | 1 | 7.1 s (1.41 M events/s) | 7.8 s (1.29 M events/s) |
+| 10000 counters, work 1000 | 8 | 4.3 s (2.35 M events/s) | 4.7 s (2.14 M events/s) |
+| 1024-bit std_logic bus, 4 drivers, 10000 edges | 1 | 0.36 s (28 M resolved elements/s) | 0.115 s (89 M/s) |
+| 1024-bit std_logic bus, 4 drivers, 10000 edges | 8 | 0.82 to 0.87 s | 0.33 to 0.39 s |
 
-With trivial processes the serial update and commit phases dominate, so threads gain little.
+Before, the bus was 1 byte per element with a per-element resolution callback; after, it is
+bit-planes with plane-wise resolution (3x faster). Scalar byte signals pay 10 to 15% for the
+storage enum and the port/implicit machinery. With trivial processes the serial update and
+commit phases dominate, so threads gain little.
 
 ## ffi (`crates/rsim-ffi`)
 

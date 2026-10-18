@@ -9,14 +9,7 @@ use rsim_kernel::*;
 
 fn run(n: usize, work: u32, threads: usize) -> Result<(Stats, f64), SimError> {
     let mut b = Builder::new();
-    let clk = b.signal(
-        "clk",
-        SignalType {
-            elem_size: 1,
-            len: 1,
-        },
-        &[0],
-    );
+    let clk = b.signal("clk", SignalType::bytes(1, 1), &[0]);
     let dclk = b.driver(clk);
     b.process(
         "clkgen",
@@ -29,14 +22,7 @@ fn run(n: usize, work: u32, threads: usize) -> Result<(Stats, f64), SimError> {
         },
     );
     for i in 0..n {
-        let s = b.signal(
-            &format!("cnt{i}"),
-            SignalType {
-                elem_size: 4,
-                len: 1,
-            },
-            &[0; 4],
-        );
+        let s = b.signal(&format!("cnt{i}"), SignalType::bytes(4, 1), &[0; 4]);
         let d = b.driver(s);
         b.process(
             &format!("p{i}"),
@@ -63,6 +49,58 @@ fn run(n: usize, work: u32, threads: usize) -> Result<(Stats, f64), SimError> {
     Ok((sim.stats(), t0.elapsed().as_secs_f64()))
 }
 
+/// A 1024-element std_logic bus with 4 drivers taking turns, resolved per element, for
+/// 10000 rising edges. Logic signals are bit-planes with plane-wise resolution.
+fn run_wide(threads: usize) -> Result<f64, SimError> {
+    use rsim_logic::StdULogic;
+    let mut b = Builder::new();
+    let clk = b.signal("clk", SignalType::bytes(1, 1), &[0]);
+    let dclk = b.driver(clk);
+    b.process(
+        "clkgen",
+        ProcFlags::default(),
+        &[dclk],
+        move |c: &mut Ctx<'_>| -> Result<(), SimError> {
+            let v = c.value(clk)?[0] ^ 1;
+            c.assign(dclk, None, &[(Time::ns(5), &[v])], DelayMode::INERTIAL)?;
+            c.wait_for(Time::ns(5))
+        },
+    );
+    let init = LogicVec::new(1024, StdULogic::U);
+    let bus = b.resolved_signal("bus", SignalType::logic(1024), &init, Resolution::StdLogic);
+    for k in 0..4u32 {
+        let d = b.driver(bus);
+        let mut n = 0u32;
+        let z = LogicVec::new(1024, StdULogic::Z);
+        b.process(
+            &format!("drv{k}"),
+            ProcFlags::default(),
+            &[d],
+            move |c: &mut Ctx<'_>| -> Result<(), SimError> {
+                if c.event(clk)? && c.value(clk)? == [1] {
+                    n += 1;
+                    if n % 4 == k {
+                        let v = LogicVec::from_fn(1024, |i| {
+                            StdULogic::from_bool((i as u32 + n) % 2 == 1)
+                        });
+                        c.drive(d, &v)?;
+                    } else {
+                        c.drive(d, &z)?;
+                    }
+                }
+                c.wait_on(clk)
+            },
+        );
+    }
+    let mut sim = b.build(Config {
+        threads,
+        ..Config::default()
+    })?;
+    let t0 = Instant::now();
+    sim.run_until(Time::ns(100_000))?;
+    Ok(t0.elapsed().as_secs_f64())
+}
+
 fn main() -> Result<(), SimError> {
     let args: Vec<usize> = std::env::args()
         .skip(1)
@@ -79,6 +117,13 @@ fn main() -> Result<(), SimError> {
             "threads {t:2}: {secs:7.3} s  {:10.0} events/s  {:10.0} process runs/s",
             st.events as f64 / secs,
             st.process_runs as f64 / secs
+        );
+    }
+    for t in [1, threads] {
+        let secs = run_wide(t)?;
+        println!(
+            "wide bus 1024 x 4 drivers, threads {t:2}: {secs:7.3} s  {:10.0} resolved elements/s",
+            10_000.0 * 1024.0 / secs
         );
     }
     Ok(())

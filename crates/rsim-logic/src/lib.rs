@@ -14,7 +14,7 @@ mod vec;
 
 pub use bitvec::BitVec;
 pub use nibbles::Nibbles;
-pub use planes::Planes;
+pub use planes::{Block, Planes};
 pub use repr::{BinOp, Repr, UnOp};
 pub use scalar::{ALL, StdULogic};
 pub use vec::Logic;

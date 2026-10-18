@@ -8,10 +8,28 @@ use crate::time::Time;
 pub struct StmtId(pub u32);
 
 /// A kernel or runtime error. It stops the simulation at once and carries
-/// what rsim-diag needs for a runtime diagnostic: the kind, time and delta,
-/// the running process (id and instance path) and the VHDL call stack.
+/// what rsim-diag needs for a runtime diagnostic (see [`ErrorInfo`]). Boxed,
+/// so `Result<_, SimError>` stays one word on the hot paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SimError {
+pub struct SimError(Box<ErrorInfo>);
+
+impl std::ops::Deref for SimError {
+    type Target = ErrorInfo;
+    fn deref(&self) -> &ErrorInfo {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SimError {
+    fn deref_mut(&mut self) -> &mut ErrorInfo {
+        &mut self.0
+    }
+}
+
+/// The kind, time and delta, the running process (id and instance path) and
+/// the VHDL call stack of an error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorInfo {
     pub kind: ErrorKind,
     pub time: Time,
     pub delta: u32,
@@ -32,13 +50,15 @@ pub enum ErrorKind {
     /// A postponed process scheduled a delta cycle (LRM 14.7.5.3).
     PostponedDelta,
     /// A malformed signal assignment.
-    InvalidAssign(&'static str),
+    InvalidAssign(String),
     /// A wait deadline earlier than the current time.
     DeadlineInPast { deadline: Time },
     /// An id or element range that does not exist in this model.
     BadRef(String),
     /// A resolution function failed.
     Resolution { signal: String, message: String },
+    /// A port conversion function failed or returned a value of the wrong size.
+    Conversion { formal: String, message: String },
     /// Raised by process code: bound check, overflow, null access, ...
     Runtime(String),
     /// The model, the configuration or a `SimControl` request is invalid.
@@ -50,21 +70,20 @@ pub enum ErrorKind {
 impl SimError {
     /// An error without process context, at time zero (builder errors).
     pub fn new(kind: ErrorKind) -> SimError {
-        SimError {
+        SimError(Box::new(ErrorInfo {
             kind,
             time: Time::ZERO,
             delta: 0,
             process: None,
             trace: Vec::new(),
-        }
+        }))
     }
 
     pub(crate) fn at(kind: ErrorKind, time: Time, delta: u32) -> SimError {
-        SimError {
-            time,
-            delta,
-            ..SimError::new(kind)
-        }
+        let mut e = SimError::new(kind);
+        e.time = time;
+        e.delta = delta;
+        e
     }
 
     /// Exit status for the CLI: 101 for internal errors (as rustc ICEs), 1
@@ -98,6 +117,9 @@ impl fmt::Display for ErrorKind {
             ErrorKind::BadRef(what) => write!(f, "invalid reference: {what}"),
             ErrorKind::Resolution { signal, message } => {
                 write!(f, "resolution of {signal} failed: {message}")
+            }
+            ErrorKind::Conversion { formal, message } => {
+                write!(f, "conversion for port {formal} failed: {message}")
             }
             ErrorKind::Runtime(msg) | ErrorKind::Usage(msg) => f.write_str(msg),
             ErrorKind::Internal(msg) => write!(

@@ -210,3 +210,25 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (rsim has no 1993
   mode, so 93 code that uses 2008 reserved words is an expected failure). VESTs `vhdl-ams` is
   VHDL-AMS and is not parsed.
+
+## Kernel round 2: K1 to K7 (rsim-kernel)
+
+- **Bit-plane signals:** `SignalType { elem: Bytes(n) | Logic, len }`. Logic signals use
+  rsim-logic's `Block` layout for every buffer (values, drivers, transactions, forces), with
+  chunked shift/mask range ops; byte signals keep plain bytes. rsim-logic gained additive
+  accessors for this: `Planes::blocks`, `Planes::from_blocks`, `Planes::resolve_block`,
+  `Logic::repr`, `Logic::from_repr`.
+- **Ports (K1):** an `out`/`inout`/`buffer` formal is one more source in the actual's source list;
+  an `in`/`inout` formal takes its effective value from a port layer. Driving values propagate
+  bottom-up and effective values top-down by port level inside one update phase. Conversions see
+  and return whole ranges.
+- **Implicit signals (K2):** `'stable`, `'quiet`, `'delayed` and `'transaction` are kernel state
+  updated in step c of the cycle; `'stable(0)` is FALSE for exactly the delta of the event.
+- **Null transactions (K4):** disconnection is per element. A `bus` with no connected source
+  resolves the empty set (`std_logic`: `Z`), a `register` keeps its value; `'driving_value` of a
+  disconnected driver is a runtime error.
+- **User files (K6):** the interpreter opens the file and hands the kernel a writer; writes and
+  close are buffered effects committed in elaboration order, flushed at end of simulation.
+- **Protected types:** callers are `serial` through M3; the kernel needs no further support.
+- **`SimError` is boxed** (`Deref` to `ErrorInfo`) to keep hot-path `Result`s one word; a panic
+  in kernel code becomes an internal error like a panic in process code.

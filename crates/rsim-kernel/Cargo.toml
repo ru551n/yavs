@@ -8,6 +8,7 @@ description = "rsim simulation kernel: the VHDL LRM 14.7 cycle with parallel pro
 
 [dependencies]
 rayon.workspace = true
+rsim-logic.workspace = true
 
 [lints]
 workspace = true

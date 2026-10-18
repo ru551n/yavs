@@ -4,10 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use rsim_kernel::*;
 
-pub const BYTE: SignalType = SignalType {
-    elem_size: 1,
-    len: 1,
-};
+pub const BYTE: SignalType = SignalType::bytes(1, 1);
 
 pub fn ns(n: u64) -> Time {
     Time::ns(n)
@@ -38,10 +35,10 @@ impl Observer for Trace {
     }
 
     fn value_change(&mut self, h: &mut Hook<'_>, s: SignalId, r: Range) {
-        let v = h.value(s.slice(r.offset, r.len)).unwrap().to_vec();
+        let v = h.value(s.slice(r.offset, r.len)).unwrap();
         let name = h.signal_name(s).unwrap();
         self.push(format!(
-            "{} +{} {name}[{}..{}]={v:?}",
+            "{} +{} {name}[{}..{}]={v}",
             h.now(),
             h.delta(),
             r.offset,
@@ -60,9 +57,9 @@ impl Observer for Trace {
         ));
     }
 
-    fn output(&mut self, h: &mut Hook<'_>, p: ProcId, stream: u32, bytes: &[u8]) {
+    fn output(&mut self, h: &mut Hook<'_>, p: ProcId, bytes: &[u8]) {
         self.push(format!(
-            "{} +{} p{} out{stream}: {}",
+            "{} +{} p{} out: {}",
             h.now(),
             h.delta(),
             p.0,
@@ -85,5 +82,9 @@ pub fn p(f: impl FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send + 'static) -
 
 /// Effective value, panicking on a bad reference.
 pub fn v(sim: &SimControl, r: impl Into<SigRef>) -> Vec<u8> {
-    sim.value(r).unwrap().to_vec()
+    sim.value(r)
+        .unwrap()
+        .as_bytes()
+        .expect("byte signal")
+        .to_vec()
 }

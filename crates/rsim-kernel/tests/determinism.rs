@@ -6,12 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use common::*;
 use rsim_kernel::*;
+use rsim_logic::StdULogic;
 
 const N: usize = 1000;
-const WORD: SignalType = SignalType {
-    elem_size: 4,
-    len: 1,
-};
+const WORD: SignalType = SignalType::bytes(4, 1);
 
 fn word(v: &[u8]) -> u32 {
     u32::from_le_bytes(v.try_into().unwrap())
@@ -22,14 +20,7 @@ fn word(v: &[u8]) -> u32 {
 /// 16 drivers, and optionally serial processes sharing a variable.
 fn design(with_serial: bool) -> Builder {
     let mut b = Builder::new();
-    let clk = b.signal(
-        "clk",
-        SignalType {
-            elem_size: 1,
-            len: 1,
-        },
-        &[0],
-    );
+    let clk = b.signal("clk", SignalType::bytes(1, 1), &[0]);
     let dclk = b.driver(clk);
     b.process(
         "clkgen",
@@ -44,21 +35,13 @@ fn design(with_serial: bool) -> Builder {
     let cells: Vec<SignalId> = (0..N)
         .map(|i| b.signal(&format!("cell{i}"), WORD, &(i as u32).to_le_bytes()))
         .collect();
-    let or: Resolver = Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+    let or = Resolution::Func(Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
         for (k, o) in out.iter_mut().enumerate() {
             *o = srcs.iter().fold(0, |a, s| a | s[k]);
         }
         Ok(())
-    });
-    let bus = b.resolved_signal(
-        "bus",
-        SignalType {
-            elem_size: 1,
-            len: 4,
-        },
-        &[0; 4],
-        or,
-    );
+    }));
+    let bus = b.resolved_signal("bus", SignalType::bytes(1, 4), &[0; 4], or);
     for (i, &cell) in cells.iter().enumerate() {
         let left = cells[(i + N - 1) % N];
         let d = b.driver(cell);
@@ -93,6 +76,54 @@ fn design(with_serial: bool) -> Builder {
             }),
         );
     }
+    // A 32-bit logic bus with 16 drivers, seen through an in-port, plus implicit signals.
+    let lbus = b.resolved_signal(
+        "lbus",
+        SignalType::logic(32),
+        &LogicVec::new(32, StdULogic::U),
+        Resolution::StdLogic,
+    );
+    let mon = b.resolved_signal(
+        "top.u.mon",
+        SignalType::logic(32),
+        &LogicVec::new(32, StdULogic::U),
+        Resolution::StdLogic,
+    );
+    b.port(mon, lbus, PortMode::In, PortConv::default());
+    let stable = b.stable_signal(clk, ns(3));
+    b.delayed_signal(cells[7], ns(2));
+    for k in 0..16 {
+        let d = b.driver(lbus.slice(k * 2, 4.min(32 - k * 2)));
+        let src = cells[k as usize * 37];
+        b.process(
+            &format!("top.ldrv{k}"),
+            ProcFlags::default(),
+            &[d],
+            p(move |c| {
+                let w = word(c.value(src)?);
+                let n = 4.min(32 - k * 2) as usize;
+                let v = LogicVec::from_fn(n, |i| match (w >> i) & 3 {
+                    0 => StdULogic::Zero,
+                    1 => StdULogic::One,
+                    2 => StdULogic::Z,
+                    _ => StdULogic::L,
+                });
+                c.drive(d, &v)?;
+                c.wait_on(src)
+            }),
+        );
+    }
+    b.process(
+        "top.u.watch",
+        ProcFlags::default(),
+        &[],
+        p(move |c| {
+            if c.event(mon)? && c.value(stable)? == [0] {
+                c.report(Severity::Note, format!("mon={}", c.logic(mon)?));
+            }
+            c.wait_on(mon)
+        }),
+    );
     if with_serial {
         let shared = Arc::new(Mutex::new(0u64));
         for k in 0..5 {
@@ -131,6 +162,9 @@ fn trace(with_serial: bool, threads: usize, shuffle: Option<u64>) -> Vec<String>
 fn threads_give_identical_traces() {
     let one = trace(true, 1, None);
     assert!(one.len() > 10 * N, "trace too small: {}", one.len());
+    for pat in ["mon=", "lbus[", "top.u.mon[", "clk'stable", "cell7'delayed"] {
+        assert!(one.iter().any(|l| l.contains(pat)), "no {pat} in the trace");
+    }
     assert_eq!(one, trace(true, 8, None));
 }
 

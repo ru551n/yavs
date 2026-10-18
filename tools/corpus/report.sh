@@ -38,7 +38,7 @@ for out in sorted(work.glob("*.out")):
         else:
             key = f"{d[3] or '-'}: " + re.sub(r"`[^`]*`", "`_`", d[4])
         loc = re.search(r"^\s*--> (\S+)", body[d.end():] if d else body, re.M)
-        allg[key].append((f, re.sub(r"^.*/yavs-corpus/", "", loc[1]) if loc else "-", name))
+        allg[key].append((f, re.sub(r"^.*/(yavs|rsim)-corpus/", "", re.sub(r"^.*?/lib/", "lib/", loc[1]) if "-corpus/" not in loc[1] else loc[1]) if loc else "-", name))
 CASCADE = ("E1002:", "E1004:", "L0001:")  # a unit or library missing because an earlier file failed
 for title, keep in (("all", lambda k: True), ("without cascades (missing unit or library: E1002, E1004, L0001)", lambda k: not k.startswith(CASCADE))):
     print(f"\n## Failures grouped by first diagnostic (top 30, {title})\n")

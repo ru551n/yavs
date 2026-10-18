@@ -1,0 +1,28 @@
+[package]
+name = "rsim-llvm"
+description = "LLVM 21 tier for rsim: IR to LLVM, JIT through ORC LLJIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# LLVM is optional so `cargo build --workspace` works on machines without it.
+# Test with: cargo test -p rsim-llvm --features llvm
+llvm = ["dep:llvm-sys"]
+
+[dependencies]
+# Pinned to LLVM 21.1 (design rule 5). Dynamic linking keeps link memory low;
+# llvm-sys falls back to static libs when no shared libLLVM exists.
+llvm-sys = { version = "=211.1.1", features = ["prefer-dynamic", "strict-versioning"], optional = true }
+
+[[example]]
+name = "measure"
+required-features = ["llvm"]
+
+# Not `workspace = true`: the workspace forbids unsafe_code, and this crate is
+# the FFI boundary to LLVM. It denies unsafe_code and allows it at the crate
+# root with a comment instead.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

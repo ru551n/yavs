@@ -31,3 +31,30 @@
   Memory is the same 4 bits per element. Full table in `crates/rsim-logic/LAYOUT.md`.
 - **Costs:** `to_string` is 2x slower (per-element decode); a 1-element vector takes 32 bytes, so
   the kernel keeps scalar signals as bare `StdULogic`. VHPI/FST need a transpose per element.
+
+## LLVM bindings: llvm-sys 211, no inkwell (rsim-llvm)
+
+- **Choice:** `llvm-sys` `=211.1.1` (MIT), the raw LLVM 21.1 C API, features `prefer-dynamic` and
+  `strict-versioning`, optional behind the crate feature `llvm` (default off, so the workspace
+  builds without LLVM). Test with `cargo test -p rsim-llvm --features llvm`.
+- **Why not inkwell:** inkwell 0.10.0 (Apache-2.0) has an `llvm21-1` feature on top of llvm-sys
+  211, but its only JITs are MCJIT and the legacy ORCv1 (`LLVMOrcCreateInstance`), which no longer
+  exists. ORC LLJIT (rule 5) would need raw llvm-sys anyway, and mixing inkwell's lifetimes with
+  raw ORC handles costs more than it saves. The C API surface we use is small (core IR builder,
+  `LLVMRunPasses`, LLJIT, absolute symbols), wrapped in `jit.rs`.
+- **JIT shape:** one LLJIT per simulation, driven from one background compile thread. Every
+  module has its own `LLVMContext` (`LLVMOrcCreateNewThreadSafeContextFromLLVMContext`, since LLVM
+  21 removed `ThreadSafeContextGetContext`). Host runtime functions are absolute symbols in the
+  main dylib, so the executable exports nothing for the JIT and nothing is looked up in the process.
+  Target: host triple, CPU `x86-64-v2` (x86_64) or `generic` (aarch64), never the host CPU.
+  Optimisation: `default<O2>` through `LLVMRunPasses`.
+- **Runtime errors** in JIT code call a Rust `extern "C"` callback that records the error and
+  returns; the generated code then returns a status. No unwinding through JIT frames (Win64 does
+  not register unwind info for them, see `crates/rsim-llvm/WINDOWS.md`).
+- **Linking:** shared `libLLVM-21.so` on Linux (low link memory). On Windows llvm-sys refuses
+  dynamic linking and uses the static libs of the official release tarball; see WINDOWS.md.
+- **Size threshold (rule 5):** codegen time grows faster than linearly with function size (about
+  0.15 s at 10k IR instructions, 3.8 s at 100k, 28 s at 300k at O2; numbers in STATUS.md). The
+  proposal for M6: JIT a function at O2 up to 40k LLVM IR instructions (under 1 s, under 100 MiB),
+  keep larger units in the interpreter, and lower big processes as several functions rather
+  than one. To be confirmed with real lowered code in M6.

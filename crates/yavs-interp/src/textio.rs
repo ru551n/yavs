@@ -363,6 +363,7 @@ pub(crate) fn lookup(symbol: &str, family: Option<&str>) -> Option<Native> {
         (_, Some("file_seek")) => file_seek,
         (_, Some("file_truncate")) => file_truncate,
         (_, Some("file_rewind")) => file_rewind,
+        (_, Some("file_canseek")) => file_canseek,
         (_, Some("deallocate")) => deallocate,
         ("yavs.textio.readline.text_line", _) => readline,
         ("yavs.textio.writeline.text_line", _) => writeline,
@@ -574,6 +575,19 @@ fn file_rewind(
 ) -> R<Option<u64>> {
     text(m, arg(a, 0)?, |f| f.rewind())?;
     Ok(None)
+}
+
+fn file_canseek(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: Args<'_>,
+) -> R<Option<u64>> {
+    let cell = arg(a, 0)?;
+    // A closed file cannot seek.
+    let b = m.file_state_of(cell)?
+        && m.with_file(cell, |s| Ok(matches!(s, FileSlot::Text(t) if t.can_seek())))?;
+    Ok(Some(u64::from(b)))
 }
 
 fn deallocate(

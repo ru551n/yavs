@@ -301,10 +301,10 @@ per family, keyed by the type class, with the family symbol below. Individual sy
 | `yavs.implicit.sll`, `.srl`, `.sla`, `.sra`, `.rol`, `.ror` | BIT and BOOLEAN one-dimensional arrays | 2008, 2019 |
 | `yavs.implicit.cat` | `&` on one-dimensional arrays | 2008, 2019 |
 | `yavs.implicit.meq`, `.mneq`, `.mlt`, `.mle`, `.mgt`, `.mge`, `.cond` | matching `?=` `?/=` `?<` `?<=` `?>` `?>=` and `??` on BIT and arrays | 2008, 2019 |
-| `yavs.implicit.to_string` | `TO_STRING` on scalar types and array types of character literals; `TO_OSTRING`, `TO_HSTRING` on BIT_VECTOR | 2008, 2019 |
+| `yavs.implicit.to_string`, `.to_ostring`, `.to_hstring` | `TO_STRING` on scalar types and array types of character literals; `TO_OSTRING`, `TO_HSTRING` on BIT_VECTOR | 2008, 2019 |
 | `yavs.implicit.rising_edge`, `.falling_edge` | `RISING_EDGE`, `FALLING_EDGE` on `signal BOOLEAN` and `signal BIT` (listed in `standard.vhdl`) | 2008, 2019 |
 | `yavs.implicit.file_open`, `.file_close`, `.read`, `.write`, `.flush`, `.endfile` | per file type | 2008, 2019 |
-| `yavs.implicit.file_state`, `.file_mode`, `.file_position`, `.file_size`, `.file_seek`, `.file_truncate`, `.file_rewind` | per file type | 2019 |
+| `yavs.implicit.file_state`, `.file_mode`, `.file_position`, `.file_size`, `.file_seek`, `.file_truncate`, `.file_rewind`, `.file_canseek` | per file type | 2019 |
 | `yavs.implicit.deallocate` | per access type | 2008, 2019 |
 | `yavs.implicit.range_record` | `'RANGE_RECORD` support records (`<T>_RANGE_RECORD`) | 2019 |
 

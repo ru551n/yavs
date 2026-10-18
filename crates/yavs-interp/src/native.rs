@@ -70,10 +70,7 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
         .map(|r| r.split('.').next().unwrap_or(r));
     let attr = symbol.strip_prefix("yavs.attr.");
     let valid = k.explicit.contains(symbol)
-        || family.is_some_and(|f| {
-            // TO_HSTRING and TO_OSTRING belong to the to_string family in NATIVE.md.
-            k.families.contains(f) || f == "to_hstring" || f == "to_ostring"
-        })
+        || family.is_some_and(|f| k.families.contains(f))
         || attr.is_some_and(|a| ATTRS.contains(&a));
     if !valid {
         return Err(format!(
@@ -556,6 +553,11 @@ mod tests {
         assert!(lookup("yavs.implicit.to_string.integer").unwrap().is_some());
         assert!(lookup("yavs.attr.image").unwrap().is_some());
         assert!(lookup("yavs.implicit.file_open.text").unwrap().is_some());
+        // Families sem declares (#163): all valid and implemented.
+        for f in ["to_hstring", "to_ostring", "file_canseek"] {
+            let s = format!("yavs.implicit.{f}.std.standard.bit_vector");
+            assert!(lookup(&s).unwrap().is_some(), "{s}");
+        }
         assert!(
             lookup("yavs.textio.read.line_integer_boolean")
                 .unwrap()

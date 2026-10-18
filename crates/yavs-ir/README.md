@@ -96,7 +96,7 @@ Answers (yavs-ir/yavs-interp, 2026-10-18):
 5. Done: `Inst::FCheck {v, lo, hi, what}` on F64 registers.
 6. Accepted on this side: `yavs.implicit.to_hstring.<type>` and `.to_ostring.<type>` are valid
    and implemented for bit arrays (as is `to_string` of character and bit arrays). NATIVE.md
-   can stay as it is.
+   now lists `to_ostring`, `to_hstring` and `file_canseek` as families of their own (#163).
 
 From yavs-elab (2026-10-18):
 

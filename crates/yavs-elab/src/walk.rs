@@ -227,6 +227,22 @@ pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<D
     }
 }
 
+/// E2103 for generic type, subprogram or package `d` without an actual.
+fn no_generic_actual(db: &Db, d: DeclId, at: Span) -> Box<Diagnostic> {
+    let d = &db.decls[d];
+    Box::new(
+        Diagnostic::error(
+            codes::GENERIC_NO_VALUE,
+            format!("generic `{}` has no actual", d.name),
+        )
+        .with_primary(at, "instantiated here without an actual for it")
+        .with_secondary(d.span, "generic type, subprogram or package declared here")
+        .with_help(
+            "associate it in the generic map of an instance; `-g` gives only generic constants",
+        ),
+    )
+}
+
 fn ice(span: Span, what: &str) -> Diagnostic {
     Diagnostic::error(codes::INTERNAL, format!("internal error: {what}"))
         .with_primary(span, "while elaborating this")
@@ -594,30 +610,12 @@ impl Elab<'_> {
                     consts.push(a);
                 }
                 (_, A::Generic(x)) => actuals.push(Some(x)),
-                _ => {
-                    let d = &self.db.decls[g];
-                    return Err(Box::new(
-                        Diagnostic::error(
-                            codes::GENERIC_NO_VALUE,
-                            format!("generic `{}` has no actual", d.name),
-                        )
-                        .with_primary(at, "instantiated here without an actual for it")
-                        .with_secondary(d.span, "generic type, subprogram or package declared here")
-                        .with_help("associate it in the generic map of an instance; `-g` gives only generic constants"),
-                    ));
-                }
+                _ => return Err(no_generic_actual(self.db, g, at)),
             }
         }
         match self.db.instantiate_entity(entity, arch, &actuals, at) {
             Ok((e, a)) => Ok((e, a, consts)),
-            Err(_) => {
-                let mut ds = self.db.take_diagnostics();
-                let last = ds.pop().map(Box::new).unwrap_or_else(|| {
-                    Box::new(ice(at, "entity instantiation failed without a diagnostic"))
-                });
-                self.errors.extend(ds);
-                Err(last)
-            }
+            Err(_) => Err(self.db_error(at)),
         }
     }
 
@@ -1773,14 +1771,67 @@ impl Elab<'_> {
             .m
             .hier
             .add(Some(s), ScopeKind::Component { comp }, label);
+        // Generic types, subprograms and packages: elaborate the component's clone for
+        // these actuals; the binding refers to the original's formals (#222).
+        let mut formals: HashMap<DeclId, GenericActual> = HashMap::new();
+        let (cgens, cports, g, orig) = if cgens.iter().any(|&d| self.db.is_non_constant_generic(d))
+        {
+            let mut actuals = Vec::with_capacity(cgens.len());
+            let mut consts = Vec::new();
+            for (&d, a) in cgens.iter().zip(g) {
+                match a {
+                    A::Generic(x) if self.db.is_non_constant_generic(d) => {
+                        formals.insert(d, x);
+                        actuals.push(Some(x));
+                    }
+                    _ if self.db.is_non_constant_generic(d) => {
+                        return Err(no_generic_actual(self.db, d, span));
+                    }
+                    a => {
+                        consts.push(a);
+                        actuals.push(None);
+                    }
+                }
+            }
+            let n = match self.db.instantiate_component(comp, &actuals, span) {
+                Ok(n) => n,
+                Err(_) => return Err(self.db_error(span)),
+            };
+            let DeclKind::Component(nc) = &self.db.decls[n].kind else {
+                return Err(Box::new(ice(span, "component clone")));
+            };
+            let orig: Vec<DeclId> = cgens
+                .iter()
+                .copied()
+                .filter(|&d| !self.db.is_non_constant_generic(d))
+                .chain(cports.iter().copied())
+                .collect();
+            (nc.generics.to_vec(), nc.ports.to_vec(), consts, orig)
+        } else {
+            (cgens.to_vec(), cports.to_vec(), g, Vec::new())
+        };
         for (i, &cg) in cgens.iter().enumerate() {
             self.generic(c, cg, &g[i], Some(s), &[], span)?;
         }
         for (i, &cp) in cports.iter().enumerate() {
             self.port(c, cp, &p[i], Some(s), span)?;
         }
+        // The original's generic constants and ports name the clone's objects.
+        for (&o, &n) in orig.iter().zip(cgens.iter().chain(&cports)) {
+            if let Some(v) = self.m.vals.get(c.index()).and_then(|m| m.get(&n)).cloned() {
+                self.m.set(c, o, v);
+            }
+            if let Some(x) = self.m.signal(c, n) {
+                self.m.sigs.insert((c, o), x);
+            }
+        }
         match self.binding(region, st, comp, cfg, span)? {
-            Some(b) => {
+            Some(mut b) => {
+                if !formals.is_empty() {
+                    for a in &mut b.gmap {
+                        self.through_component(a, &formals, span)?;
+                    }
+                }
                 let a = self.load_arch(b.entity, b.arch, span)?;
                 self.instance(
                     Some(c),
@@ -1813,6 +1864,58 @@ impl Elab<'_> {
             ),
         }
         Ok(())
+    }
+
+    /// An entity generic's actual in a binding (default by name, or a generic map) that
+    /// names a generic type, subprogram or package of the component: the component's actual.
+    fn through_component(
+        &self,
+        a: &mut A,
+        formals: &HashMap<DeclId, GenericActual>,
+        span: Span,
+    ) -> R<()> {
+        let db: &Db = self.db;
+        let formal = match &*a {
+            A::Local(l) => Some(*l),
+            A::Generic(GenericActual::Subprogram(d)) => Some(*d),
+            A::Generic(GenericActual::Subtype(st)) => {
+                let t = db.base(*st);
+                match formals
+                    .keys()
+                    .find(|&&f| matches!(db.decls[f].kind, DeclKind::GenericType(x) if x == t))
+                {
+                    Some(&f) if db.types[t].first_subtype == *st => Some(f),
+                    Some(_) => {
+                        return Err(unsupported(
+                            span,
+                            "a subtype of a component's generic type as the actual of an entity's",
+                            "#222",
+                        ));
+                    }
+                    None => None,
+                }
+            }
+            A::Generic(GenericActual::Package(i)) => formals
+                .keys()
+                .find(|&&f| matches!(db.decls[f].kind, DeclKind::GenericPackage(x) if x == *i))
+                .copied(),
+            _ => None,
+        };
+        if let Some(x) = formal.and_then(|f| formals.get(&f)) {
+            *a = A::Generic(*x);
+        }
+        Ok(())
+    }
+
+    /// The last diagnostic Db reported (the others go to `errors`).
+    fn db_error(&mut self, at: Span) -> Box<Diagnostic> {
+        let mut ds = self.db.take_diagnostics();
+        let last = ds
+            .pop()
+            .map(Box::new)
+            .unwrap_or_else(|| Box::new(ice(at, "instantiation failed without a diagnostic")));
+        self.errors.extend(ds);
+        last
     }
 
     fn process(

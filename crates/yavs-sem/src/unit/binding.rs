@@ -14,7 +14,7 @@ use crate::hir::{
     Actual, Arg, Binding, BlockConfig, BlockTarget, ComponentConfig, ConfigItem, EntityAspect,
     ExprKind, GenSelect, InstTarget, InstanceSel, Mode, ObjRoot, StmtKind, UnitHir,
 };
-use crate::ids::{DeclId, LibId, ScopeId, StmtId, SubtypeId, UnitId};
+use crate::ids::{DeclId, LibId, ScopeId, StmtId, SubtypeId, TypeId, UnitId};
 use crate::loader::{LibSource, UnitKey, UnitKind, UnitSlot};
 use crate::scope::{ScopeKind, UseItem, Visible};
 
@@ -128,6 +128,7 @@ impl Db {
             .analyze_conc_stmts(scope, &a.stmts, false)
             .unwrap_or_default();
         self.resolve_pending_specs(unit);
+        self.instantiate_blocks(unit);
         UnitHir::Architecture { entity, stmts }
     }
 
@@ -1470,13 +1471,28 @@ impl Db {
         };
         let (eg, ep) = (generics.to_vec(), ports.to_vec());
         let mut errs = Errs::default();
+        // Generic types of the component and the entity that correspond by name (#222).
+        let types: Vec<(TypeId, TypeId)> = locals_g
+            .iter()
+            .filter_map(|&l| match self.decls[l].kind {
+                DeclKind::GenericType(a) => eg.iter().find_map(|&f| match self.decls[f].kind {
+                    DeclKind::GenericType(b)
+                        if self.decls[f].name.key() == self.decls[l].name.key() =>
+                    {
+                        Some((a, b))
+                    }
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
         let generic_map = match &b.generic_map {
             Some(m) => errs.keep(self.assoc_list(cscope, &eg, m, b.span)),
-            None => errs.keep(self.default_map(&locals_g, &eg, e, at)),
+            None => errs.keep(self.default_map(&locals_g, &eg, e, &types, at)),
         };
         let port_map = match &b.port_map {
             Some(m) => errs.keep(self.assoc_list(cscope, &ep, m, b.span)),
-            None => errs.keep(self.default_map(&locals_p, &ep, e, at)),
+            None => errs.keep(self.default_map(&locals_p, &ep, e, &types, at)),
         };
         errs.finish(())?;
         Ok(Binding {
@@ -1488,24 +1504,21 @@ impl Db {
 
     /// The default generic or port map of a binding (7.3.3): each entity formal
     /// gets the component local of the same name; a local without such a
-    /// formal, or of another type, is `E1703`.
+    /// formal, or of another type, is `E1703`. `types`: the component's generic types
+    /// with the entity's of the same name, which stand for the same actual.
     fn default_map(
         &mut self,
         locals: &[DeclId],
         formals: &[DeclId],
         entity: UnitId,
+        types: &[(TypeId, TypeId)],
         at: Span,
     ) -> Result<Box<[Arg]>, Reported> {
         let mut errs = Errs::default();
         for &l in locals {
             let key = self.decls[l].name.key();
             let hit = formals.iter().find(|&&f| self.decls[f].name.key() == key);
-            let ok = hit.is_some_and(
-                |&f| match (self.formal_subtype(l), self.formal_subtype(f)) {
-                    (Some(a), Some(b)) => self.base(a) == self.base(b),
-                    _ => false,
-                },
-            );
+            let ok = hit.is_some_and(|&f| self.binds_by_name(l, f, types));
             if !ok {
                 let what = match &self.decls[l].kind {
                     DeclKind::Object(o) if o.role == ObjRole::Port => "port",
@@ -1554,7 +1567,12 @@ impl Db {
         for (k, &f) in formals.iter().enumerate() {
             let key = self.decls[f].name.key();
             let actual = match locals.iter().find(|&&l| self.decls[l].name.key() == key) {
-                Some(&l) => Actual::Expr(self.object_ref(l, at)),
+                Some(&l) => match self.decls[l].kind {
+                    DeclKind::GenericType(t) => Actual::Subtype(self.types[t].first_subtype),
+                    DeclKind::GenericSubprogram(_) => Actual::Subprogram(l),
+                    DeclKind::GenericPackage(i) => Actual::Package(i),
+                    _ => Actual::Expr(self.object_ref(l, at)),
+                },
                 None => match &self.decls[f].kind {
                     DeclKind::Object(o) if o.default.is_none() && o.role == ObjRole::Port => {
                         Actual::Open
@@ -1569,6 +1587,38 @@ impl Db {
             });
         }
         Ok(args.into())
+    }
+
+    /// Whether component local `l` matches entity formal `f` of the same name in a
+    /// default binding: objects of the same base type, generic types, subprograms of the
+    /// same profile and formal packages of the same generic package (`types` as for
+    /// `default_map`).
+    fn binds_by_name(&self, l: DeclId, f: DeclId, types: &[(TypeId, TypeId)]) -> bool {
+        let same = |a: SubtypeId, b: SubtypeId| {
+            let (a, b) = (self.base(a), self.base(b));
+            a == b || types.contains(&(a, b))
+        };
+        match (&self.decls[l].kind, &self.decls[f].kind) {
+            (DeclKind::Object(a), DeclKind::Object(b)) => same(a.subtype, b.subtype),
+            (DeclKind::GenericType(_), DeclKind::GenericType(_)) => true,
+            (DeclKind::GenericSubprogram(a), DeclKind::GenericSubprogram(b)) => {
+                a.kind == b.kind
+                    && a.params.len() == b.params.len()
+                    && a.params
+                        .iter()
+                        .zip(&b.params)
+                        .all(|(x, y)| same(x.subtype, y.subtype))
+                    && match (a.ret, b.ret) {
+                        (Some(x), Some(y)) => same(x, y),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            (DeclKind::GenericPackage(a), DeclKind::GenericPackage(b)) => {
+                self.insts[*a].generic == self.insts[*b].generic
+            }
+            _ => false,
+        }
     }
 
     fn config_entity(&self, cfg: UnitId) -> Option<UnitId> {

@@ -1667,6 +1667,14 @@ impl Db {
         errs.keep(self.st_decls(bscope, &b.decls, s.span));
         let body = errs.keep(self.conc_stmts(bscope, &b.stmts, false));
         errs.finish(())?;
+        // Generic types, subprograms and packages: cloned with the actuals at the end of
+        // the architecture (`Db::instantiate_blocks`, #222).
+        if let Some(g) = &generics
+            && g.iter().any(|&d| self.is_non_constant_generic(d))
+            && let Some(cx) = self.cur()
+        {
+            self.generic.blocks.push((cx.unit, id));
+        }
         Ok(StmtKind::Block {
             scope: bscope,
             guard,

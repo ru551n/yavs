@@ -947,6 +947,12 @@ every instance shares. Generic constants stay generics of the clone (instance da
 clone's generic list holds only them. Mangled names: `work.e[t=>std.standard.integer,f=>...]`
 for the entity, plus `.<arch>` for the architecture, so declarations inside get distinct names.
 
+Components and blocks with generic types, subprograms or packages (#222): `Db::instantiate_component`
+clones the component declaration per distinct map for elab (no code, so no mangled name of its
+own); a block has one generic map, so `Db::instantiate_blocks` replaces the block statement in
+place by its clone at the end of the architecture (its names stay the site's). Configuration
+specifications inside a cloned region are cloned with the remap (`clone_specs`).
+
 ### 5.4 2019 additions
 
 | Feature | Sem work |

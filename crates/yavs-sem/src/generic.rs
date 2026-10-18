@@ -135,6 +135,12 @@ pub struct GenericState {
     pub(crate) entities: HashMap<(UnitId, UnitId, Box<[Option<GenericActual>]>), (UnitId, UnitId)>,
     /// Mangled names of those clones (5.3).
     pub(crate) unit_names: HashMap<UnitId, Symbol>,
+    /// Components cloned per map of those actuals (`instantiate_component`).
+    #[allow(clippy::type_complexity)]
+    pub(crate) components: HashMap<(DeclId, Box<[Option<GenericActual>]>), DeclId>,
+    /// Blocks with generic types, subprograms or packages of the architectures being
+    /// analyzed, innermost first (`instantiate_blocks`).
+    pub(crate) blocks: Vec<(UnitId, StmtId)>,
 }
 
 /// One association of a formal package's generic map (6.5.6.3).

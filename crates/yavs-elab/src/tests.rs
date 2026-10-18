@@ -1426,6 +1426,71 @@ fn top_level_generic_type_has_no_actual() {
     assert_eq!(got, [codes::GENERIC_NO_VALUE]);
 }
 
+/// Components with generic types and subprograms (#222): the component is cloned per map,
+/// the bound entity gets the component's actuals through the default binding.
+#[test]
+fn generic_type_components() {
+    let src = "
+      entity leaf is
+        generic (type t; init : t; function f(x : t) return t);
+        port (q : out t);
+      end;
+      architecture a of leaf is begin q <= f(init); end;
+      entity t is end;
+      architecture a of t is
+        component leaf is
+          generic (type t; init : t; function f(x : t) return t);
+          port (q : out t);
+        end component;
+        function inc(x : integer) return integer is begin return x + 1; end;
+        function neg(x : boolean) return boolean is begin return not x; end;
+        signal a, b : integer;
+        signal d : boolean;
+      begin
+        u1 : leaf generic map (t => integer, init => 1, f => inc) port map (a);
+        u2 : leaf generic map (t => integer, init => 2, f => inc) port map (b);
+        u3 : leaf generic map (t => boolean, init => true, f => neg) port map (d);
+      end;";
+    let mut db = analyze_rev("gencomp", src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let arch = |label: &str| {
+        e.hier
+            .scopes
+            .iter()
+            .find_map(|s| match s.kind {
+                ScopeKind::Instance { arch, .. } if s.name.key.as_str() == label => Some(arch),
+                _ => None,
+            })
+            .expect("instance")
+    };
+    assert_eq!(arch("u1"), arch("u2"));
+    assert_ne!(arch("u1"), arch("u3"));
+    // Three signals, three component ports, three entity ports.
+    assert_eq!(sig_paths(&e).len(), 9);
+}
+
+/// A bound entity's generic type that the component does not have gets no actual: E2103.
+#[test]
+fn component_without_the_entitys_generic_type() {
+    let src = "
+      entity leaf is generic (type t; n : natural); end;
+      architecture a of leaf is begin end;
+      entity t is end;
+      architecture a of t is
+        component leaf is generic (n : natural); end component;
+      begin
+        u : leaf generic map (n => 1);
+      end;";
+    let mut db = analyze_rev("gencomp_missing", src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let Err(errs) = crate::elaborate(&mut db, top, &[], &ElabConfig::default()) else {
+        panic!("elaboration succeeded");
+    };
+    let got: Vec<&str> = errs.iter().map(|d| d.code).collect();
+    assert_eq!(got, [codes::GENERIC_NO_VALUE]);
+}
+
 /// `others` in a configuration leaves out the instances earlier component configurations
 /// name, so it may bind an instance next to one a specification binds (#75).
 #[test]

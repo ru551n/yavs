@@ -14,7 +14,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `ids.rs` | typed ids, `Arena` | S1 | done |
 | `db.rs` | `Db`, arenas, `WellKnown`, `Poison`, diagnostics helpers (`error`, `ice`, `unsupported`) | S1 | done; add fields additively |
 | `loader.rs` | libraries, `UnitKey`/`UnitSlot`/`Unit`, file cache, on-demand loader, `analyze_file`, `UnitRecord`s | S1 | M1 lead |
-| `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170; ctxlib: context-reference libraries (#36); semuse: use clauses and visibility #54 |
+| `unit.rs` | design units, context clauses, implicit context; configurations (6.5) | S1 (context), S5 (entity/arch/config) | owner: units (S1 parts by M1 lead are done); sem08: corpus false positives #167-#170; ctxlib: context-reference libraries (#36); semuse: use clauses and visibility #54; gencomp: `default_map`/`binds_by_name` for generic types, subprograms and packages, `instantiate_blocks` call (#222) |
 | `scope.rs` | regions, `declare`, `lookup`, use clauses, visibility (1.4), undeclared-name reporting | S1 | M1 lead; semuse: use clauses and visibility #54 |
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead; semstatic: deferred constants outside packages #53; s7left: named return values #33; subhdr: subprogram header generic maps and non-object parameters in `subprogram_spec` #227 (done); constnoval: constants without a value outside packages and missing full declarations #213; extuse: aliases of external names #19 |
 | `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1); semdrv: range attribute prefix diagnostics #47 |
@@ -26,9 +26,9 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate; sem08: corpus false positives #167-#170 (user attribute specifications) |
 | `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic; gentypes: concurrent statements in the clone, `seed_type` (#75); subhdr: header generic maps through `subprogram_instance` (#227, done) |
-| `generic/entity.rs` | design entities with generic types, subprograms or packages cloned per map (`Db::instantiate_entity`, 5.3) | S4 | owner: gentypes (#75) |
+| `generic/entity.rs` | design entities with generic types, subprograms or packages cloned per map (`Db::instantiate_entity`, 5.3) | S4 | owner: gentypes (#75); gencomp: components, blocks, cloned configuration specifications (#222) |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
-| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33 |
+| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33; gencomp: generic blocks queued for `instantiate_blocks` (#222) |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt; sem08: corpus false positives #167-#170 |
 | `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6; semalias: alias negative suite #46 |
 | `external.rs` | external names (6.1) | S6 | owner: s6 |
@@ -307,5 +307,6 @@ Corpus groups `tests/corpus/hierarchy` and `generics` (difftest) stop in analysi
   `Db::instantiate_entity(entity, arch, actuals, at)` (`generic/entity.rs`) clones the entity
   and architecture once per distinct map of those actuals (generic constants stay generics of
   the clone); elab calls it per instance. Defaults of entity generic subprograms are
-  resolved at the instance (`binding.rs` `subprogram_default`, `E1504`). Open: configuration
-  specifications inside such an architecture (`E9999`).
+  resolved at the instance (`binding.rs` `subprogram_default`, `E1504`). Components
+  (`Db::instantiate_component`), blocks (`Db::instantiate_blocks`) and configuration
+  specifications inside such an architecture followed in #222.

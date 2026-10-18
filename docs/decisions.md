@@ -464,6 +464,14 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   like an ordinary architecture, the instances share code and differ in instance data (the
   generic constants). The clone's mangled name carries the actuals (sem.md 5.3), so rule 4
   identity holds per map. Rationale: shapes and lowered code depend on the actual types only.
+- **Components and blocks with generic types, subprograms or packages (#222):** a component is
+  cloned once per distinct map (`Db::instantiate_component`), elab elaborates the clone's
+  generics and ports and passes the actuals through the binding to the entity's clone; a block
+  (one generic map) is replaced in place by its clone at the end of its architecture, after the
+  configuration specifications are resolved (`Db::instantiate_blocks`), so configuration
+  declarations analyzed later and lowering see an ordinary block. Configuration specifications
+  in a cloned region are cloned with it. Rationale: the same mechanism as entities (#75), no
+  formal type reaches elab or lowering.
 
 ## Design units and binding (yavs-sem, S5)
 

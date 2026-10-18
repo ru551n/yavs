@@ -1,16 +1,20 @@
 //! Design entities with generic types, subprograms or packages (2008 6.5.6): one clone of
 //! the entity and architecture per distinct map of those actuals, with the formals replaced
 //! by the actuals (5.1, 5.3). Generic constants stay generics of the clone: their values
-//! are instance data that elab evaluates per instance.
+//! are instance data that elab evaluates per instance. Components get the same treatment
+//! (`instantiate_component`, per map, for elab), blocks are instantiated in place at the
+//! end of their architecture (`instantiate_blocks`, one generic map each). #222.
 
 use yavs_diag::Span;
 use yavs_syntax::Symbol;
 
 use super::{GenericMap, Remap};
 use crate::db::{Db, Reported};
-use crate::decl::{Decl, DeclKind};
-use crate::hir::UnitHir;
-use crate::ids::{DeclId, InstId, SubtypeId, UnitId};
+use crate::decl::{Component, Decl, DeclKind};
+use crate::hir::{
+    Actual, Arg, Binding, ComponentConfig, EntityAspect, InstanceSel, StmtKind, UnitHir,
+};
+use crate::ids::{DeclId, InstId, ScopeId, StmtId, SubtypeId, UnitId};
 use crate::loader::Unit;
 
 /// The actual of a generic type, subprogram or package of a design entity, as the HIR
@@ -70,19 +74,6 @@ impl Db {
         if self.scopes[ascope].parent != Some(actx) || self.scopes[actx].parent != Some(escope) {
             return Err(self.ice(at, "architecture region outside its entity's"));
         }
-        // Component configuration specifications are keyed by region and statement, which
-        // the clone renews.
-        let specs = self
-            .config_specs
-            .keys()
-            .any(|&s| s == ascope || self.inside(s, ascope));
-        if specs {
-            return Err(self.unsupported(
-                at,
-                "configuration specifications in an entity with generic types, subprograms or packages",
-                "S4",
-            ));
-        }
         let mangled = self.entity_mangled(entity, actuals);
         let ne = self.clone_unit(entity, mangled.clone());
         let na = self.clone_unit(arch, format!("{mangled}.{}", self.units[arch].name.key));
@@ -96,41 +87,7 @@ impl Db {
         r.bodies = true;
         r.decls.insert(self.units[entity].decl, ed);
         r.decls.insert(self.units[arch].decl, ad);
-        let mut map = GenericMap::default();
-        let mut failed = false;
-        for (&f, a) in generics.iter().zip(actuals) {
-            let span = self.decls[f].span;
-            match (&self.decls[f].kind, a) {
-                (DeclKind::Object(_), None) => {}
-                (DeclKind::GenericType(t), Some(GenericActual::Subtype(st))) => {
-                    let (t, st) = (*t, *st);
-                    failed |= self
-                        .seed_type(None, nes, escope, f, t, st, span, &mut r, &mut map)
-                        .is_err();
-                }
-                (DeclKind::GenericSubprogram(_), Some(GenericActual::Subprogram(d))) => {
-                    r.decls.insert(f, *d);
-                    map.subprograms.insert(f, *d);
-                }
-                (DeclKind::GenericPackage(fi), Some(GenericActual::Package(i))) => {
-                    let (fi, i) = (*fi, *i);
-                    if let Some(m) = self.generic.maps.get(&i) {
-                        r.merge(&m.clone());
-                    }
-                    r.scopes.insert(self.insts[fi].scope, self.insts[i].scope);
-                    let name = self.decls[f].name;
-                    let new = self.new_decl(nes, name, DeclKind::PackageInst(i), span);
-                    r.decls.insert(f, new);
-                    map.packages.insert(f, i);
-                }
-                (DeclKind::Error, _) => failed = true,
-                _ => {
-                    failed = true;
-                    self.ice(span, "generic actual of the wrong kind");
-                }
-            }
-        }
-        if failed {
+        if !self.seed_generics(&mut r, nes, escope, &generics, actuals) {
             return Err(Reported);
         }
         self.fill_scope(&mut r, escope, nes);
@@ -146,6 +103,7 @@ impl Db {
         let estmts = self.r_stmts(&mut r, &estmts);
         let astmts = self.r_stmts(&mut r, &astmts);
         self.fix_bodies(&mut r);
+        self.clone_specs(&mut r, ascope, false, at)?;
         if r.failed {
             return Err(Reported);
         }
@@ -224,6 +182,276 @@ impl Db {
         self.units[n].decl = d;
         self.generic.unit_names.insert(n, Symbol::intern(&mangled));
         n
+    }
+
+    /// Seed `r` with the actuals of `formals` (one per formal, `None` for generic
+    /// constants) declared in `from`, cloned into `to`. False if one failed (reported).
+    fn seed_generics(
+        &mut self,
+        r: &mut Remap,
+        to: ScopeId,
+        from: ScopeId,
+        formals: &[DeclId],
+        actuals: &[Option<GenericActual>],
+    ) -> bool {
+        let mut map = GenericMap::default();
+        let mut failed = false;
+        for (&f, a) in formals.iter().zip(actuals) {
+            let span = self.decls[f].span;
+            match (&self.decls[f].kind, a) {
+                (DeclKind::Object(_), None) => {}
+                (DeclKind::GenericType(t), Some(GenericActual::Subtype(st))) => {
+                    let (t, st) = (*t, *st);
+                    failed |= self
+                        .seed_type(None, to, from, f, t, st, span, r, &mut map)
+                        .is_err();
+                }
+                (DeclKind::GenericSubprogram(_), Some(GenericActual::Subprogram(d))) => {
+                    r.decls.insert(f, *d);
+                }
+                (DeclKind::GenericPackage(fi), Some(GenericActual::Package(i))) => {
+                    let (fi, i) = (*fi, *i);
+                    if let Some(m) = self.generic.maps.get(&i) {
+                        r.merge(&m.clone());
+                    }
+                    r.scopes.insert(self.insts[fi].scope, self.insts[i].scope);
+                    let name = self.decls[f].name;
+                    let new = self.new_decl(to, name, DeclKind::PackageInst(i), span);
+                    r.decls.insert(f, new);
+                }
+                (DeclKind::Error, _) => failed = true,
+                _ => {
+                    failed = true;
+                    self.ice(span, "generic actual of the wrong kind");
+                }
+            }
+        }
+        !failed
+    }
+
+    /// Clone the component configuration specifications of `root` and the regions inside
+    /// it (keyed by region, naming statements, both renewed by the clone). `moved`: the
+    /// originals are no longer reachable (a block instantiated in place).
+    fn clone_specs(
+        &mut self,
+        r: &mut Remap,
+        root: ScopeId,
+        moved: bool,
+        at: Span,
+    ) -> Result<(), Reported> {
+        let mut keys: Vec<ScopeId> = self
+            .config_specs
+            .keys()
+            .copied()
+            .filter(|&s| s == root || self.inside(s, root))
+            .collect();
+        keys.sort();
+        for k in keys {
+            let Some(&nk) = r.scopes.get(&k) else {
+                return Err(self.ice(at, "configuration specification in a region not cloned"));
+            };
+            let specs = if moved {
+                self.config_specs.remove(&k).unwrap_or_default()
+            } else {
+                std::mem::take(self.config_specs.get_mut(&k).expect("key listed"))
+            };
+            let mut out = Vec::with_capacity(specs.len());
+            for c in &specs {
+                if c.block.is_some() {
+                    return Err(self.ice(c.span, "block configuration in a specification"));
+                }
+                let instances = match &c.instances {
+                    InstanceSel::Labels(l) => InstanceSel::Labels(
+                        l.iter().map(|s| *r.stmts.get(s).unwrap_or(s)).collect(),
+                    ),
+                    InstanceSel::All => InstanceSel::All,
+                    InstanceSel::Others => InstanceSel::Others,
+                };
+                let binding = c.binding.as_ref().map(|b| Binding {
+                    aspect: b.aspect.as_ref().map(|a| match a {
+                        EntityAspect::Entity { unit, arch } => EntityAspect::Entity {
+                            unit: *unit,
+                            arch: *arch,
+                        },
+                        EntityAspect::Configuration(u) => EntityAspect::Configuration(*u),
+                        EntityAspect::Open => EntityAspect::Open,
+                    }),
+                    generic_map: self.r_args(r, &b.generic_map),
+                    port_map: self.r_args(r, &b.port_map),
+                });
+                out.push(ComponentConfig {
+                    instances,
+                    component: self.r_decl(r, c.component),
+                    binding,
+                    block: None,
+                    span: c.span,
+                });
+            }
+            if !moved {
+                self.config_specs.insert(k, specs);
+            }
+            self.config_specs.entry(nk).or_default().extend(out);
+        }
+        Ok(())
+    }
+
+    /// Whether `d` is a generic type, subprogram or package.
+    pub fn is_non_constant_generic(&self, d: DeclId) -> bool {
+        matches!(
+            self.decls[d].kind,
+            DeclKind::GenericType(_) | DeclKind::GenericSubprogram(_) | DeclKind::GenericPackage(_)
+        )
+    }
+
+    /// The clone of component `comp` for these actuals of its generics (`None` for
+    /// generic constants), with the formals replaced by the actuals: its generic list
+    /// keeps only the generic constants, in order, its ports are in order. Elab elaborates
+    /// the clone's generics and ports and binds the instance (#222).
+    pub fn instantiate_component(
+        &mut self,
+        comp: DeclId,
+        actuals: &[Option<GenericActual>],
+        at: Span,
+    ) -> Result<DeclId, Reported> {
+        let key = (comp, actuals.to_vec().into_boxed_slice());
+        if let Some(&c) = self.generic.components.get(&key) {
+            return Ok(c);
+        }
+        let DeclKind::Component(c) = &self.decls[comp].kind else {
+            return Err(self.ice(at, "instantiate_component of a non-component"));
+        };
+        let (cscope, generics, ports) = (c.scope, c.generics.clone(), c.ports.clone());
+        if generics.len() != actuals.len() {
+            return Err(self.ice(at, "generic actuals do not match the component's generics"));
+        }
+        let (name, dscope, span) = (
+            self.decls[comp].name,
+            self.decls[comp].scope,
+            self.decls[comp].span,
+        );
+        let nd = self.new_decl(dscope, name, DeclKind::Error, span);
+        let ncs = self.add_scope(
+            self.scopes[cscope].kind,
+            self.scopes[cscope].parent,
+            Some(nd),
+        );
+        let mut r = Remap::new(cscope, ncs);
+        r.decls.insert(comp, nd);
+        if !self.seed_generics(&mut r, ncs, cscope, &generics, actuals) {
+            return Err(Reported);
+        }
+        self.fill_scope(&mut r, cscope, ncs);
+        let consts: Vec<DeclId> = generics
+            .iter()
+            .copied()
+            .filter(|&g| !self.is_non_constant_generic(g))
+            .collect();
+        let generics = consts.iter().map(|&g| self.r_decl(&mut r, g)).collect();
+        let ports = ports.iter().map(|&p| self.r_decl(&mut r, p)).collect();
+        if r.failed {
+            return Err(Reported);
+        }
+        self.decls[nd].kind = DeclKind::Component(Component {
+            scope: ncs,
+            generics,
+            ports,
+        });
+        self.generic.components.insert(key, nd);
+        Ok(nd)
+    }
+
+    /// Instantiate the blocks with generic types, subprograms or packages of architecture
+    /// `unit`, innermost first, now that its configuration specifications are resolved
+    /// (`architecture_body`). A failure is reported.
+    pub(crate) fn instantiate_blocks(&mut self, unit: UnitId) {
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.generic.blocks)
+            .into_iter()
+            .partition(|(u, _)| *u == unit);
+        self.generic.blocks = rest;
+        for (_, st) in mine {
+            let _ = self.instantiate_block(st);
+        }
+    }
+
+    /// Replace block statement `st` with its generic types, subprograms and packages by a
+    /// clone with the formals replaced by the actuals of its generic map (one generic map
+    /// per block, so in place). Its generics and generic map keep the constants only.
+    fn instantiate_block(&mut self, st: StmtId) -> Result<(), Reported> {
+        let at = self.stmts[st].span;
+        let StmtKind::Block {
+            scope: bscope,
+            guard,
+            generics,
+            generic_map,
+            ports,
+            port_map,
+            body,
+        } = &self.stmts[st].kind
+        else {
+            return Err(self.ice(at, "instantiate_block of a non-block"));
+        };
+        let (bscope, guard) = (*bscope, *guard);
+        let (generics, generic_map, ports) = (generics.clone(), generic_map.clone(), ports.clone());
+        let (port_map, body) = (port_map.clone(), body.clone());
+        let mut actuals = Vec::with_capacity(generics.len());
+        for (i, &g) in generics.iter().enumerate() {
+            if !self.is_non_constant_generic(g) {
+                actuals.push(None);
+                continue;
+            }
+            let a = generic_map.iter().find(|a| a.formal as usize == i);
+            actuals.push(Some(match a.map(|a| &a.actual) {
+                Some(Actual::Subtype(x)) => GenericActual::Subtype(*x),
+                Some(Actual::Subprogram(x)) => GenericActual::Subprogram(*x),
+                Some(Actual::Package(x)) => GenericActual::Package(*x),
+                _ => return Err(self.ice(at, "block generic without an actual")),
+            }));
+        }
+        let nbs = self.add_scope(
+            self.scopes[bscope].kind,
+            self.scopes[bscope].parent,
+            self.scopes[bscope].owner,
+        );
+        let mut r = Remap::new(bscope, nbs);
+        r.bodies = true;
+        if !self.seed_generics(&mut r, nbs, bscope, &generics, &actuals) {
+            return Err(Reported);
+        }
+        self.fill_scope(&mut r, bscope, nbs);
+        let mut index = vec![None; generics.len()];
+        let mut consts = Vec::new();
+        for (i, &g) in generics.iter().enumerate() {
+            if actuals[i].is_none() {
+                index[i] = Some(consts.len() as u16);
+                consts.push(self.r_decl(&mut r, g));
+            }
+        }
+        let kept: Vec<Arg> = generic_map
+            .iter()
+            .filter_map(|a| {
+                let formal = index.get(a.formal as usize).copied().flatten()?;
+                Some(Arg {
+                    formal,
+                    actual: a.actual.clone(),
+                })
+            })
+            .collect();
+        let kind = StmtKind::Block {
+            scope: nbs,
+            guard: guard.map(|g| self.r_decl(&mut r, g)),
+            generics: consts.into(),
+            generic_map: self.r_args(&mut r, &kept),
+            ports: ports.iter().map(|&p| self.r_decl(&mut r, p)).collect(),
+            port_map: self.r_args(&mut r, &port_map),
+            body: self.r_stmts(&mut r, &body),
+        };
+        self.fix_bodies(&mut r);
+        self.clone_specs(&mut r, bscope, true, at)?;
+        if r.failed {
+            return Err(Reported);
+        }
+        self.stmts[st].kind = kind;
+        Ok(())
     }
 
     /// Whether `s` lies inside region `outer`.

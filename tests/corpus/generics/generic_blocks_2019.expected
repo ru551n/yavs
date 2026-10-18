@@ -1,0 +1,10 @@
+exit	0
+diag	note	1020000	0	:generic_blocks:hb:g(1):b:_p0	bv 1: 0001 y2=1001
+diag	note	1030000	0	:generic_blocks:hi:g(1):b:_p0	int 1: 8 y2=1001
+diag	note	2040000	0	:generic_blocks:hb:g(2):b:_p0	bv 2: 0011 y2=1002
+diag	note	2060000	0	:generic_blocks:hi:g(2):b:_p0	int 2: 9 y2=1002
+diag	note	4200000	0	:generic_blocks:hb:_p0	bv y1=-999
+diag	note	4300000	0	:generic_blocks:hi:_p0	int y1=-999
+diag	note	6000000	0	:generic_blocks:outer:inner:_p0	nested 42
+diag	note	7000000	0	:generic_blocks:pk:_p0	scaled 40
+diag	note	8000000	0	:generic_blocks:cb:_p0	configured -995

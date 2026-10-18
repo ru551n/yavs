@@ -61,6 +61,8 @@ const PASS: &[&str] = &[
     "generics/elab_calls",
     "generics/elab_values",
     "generics/for_generate",
+    "generics/generic_blocks_2019",
+    "generics/generic_components_2019",
     "generics/generic_entities_2019",
     "generics/generic_entity_locals_2019",
     "generics/generic_map",

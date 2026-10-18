@@ -105,7 +105,10 @@ An installed binary finds `lib/` next to itself (#43).
   instances, also inside generic units, by HIR cloning (visible part eager, bodies lazy via
   `Db::instance_body`); `W1501`, `W1506`; design entities with generic types, subprograms or
   packages cloned with their architecture per distinct map for elab (`generic/entity.rs`,
-  `Db::instantiate_entity`, concurrent statements cloned too). The fixed/float packages' declarations, generic bodies
+  `Db::instantiate_entity`, concurrent statements cloned too); components (`Db::instantiate_component`,
+  per map, for elab) and blocks (in place, `Db::instantiate_blocks`) with them too, configuration
+  specifications cloned with their region, default binding by name of generic types, subprograms
+  and packages (#222). The fixed/float packages' declarations, generic bodies
   and instance bodies analyze clean in 2008 and 2019 (#37); mode views of generic packages and subprograms are
   cloned with them (#32). Open: anonymous generic types, instantiating a generic protected type
   (parser request).
@@ -394,12 +397,12 @@ composite: E9999), an external name as an `in` port actual driven by its equival
 one delta later (#186), linkage ports and mode-view ports, entities with generic types,
 subprograms and packages (yavs-sem `Db::instantiate_entity` clones the entity and architecture
 once per distinct map of those actuals, with its own mangled identity; generic constants stay
-instance data; #75), `others` in a configuration after component configurations naming
+instance data; #75; components and blocks with them, configuration specifications in such an
+architecture, #222), `others` in a configuration after component configurations naming
 specification-bound instances, non-static expression actuals of `in` ports and of parts of
 them driven by their equivalent IR process one delta later, static expression parts in the
 formal's initial value (#74). Not yet: conversions of record ports, record-typed signal-name
-expression actuals (#74); `inertial` signal-name actuals are expression actuals (#233), configuration specifications inside an entity with
-generic types.
+expression actuals (#74); `inertial` signal-name actuals are expression actuals (#233).
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data

@@ -1313,31 +1313,19 @@ impl Db {
             K::Block(b) => self.block(scope, s, b, id)?,
             K::Instance(i) => {
                 let target = self.st_inst_target(scope, &i.unit)?;
-                let Some((gens, ports)) = self
-                    .inst_formals(&target)
-                    .map(|(g, p)| (g.to_vec(), p.to_vec()))
-                else {
-                    return Err(self.ice(s.span, "instantiated unit has no generics and ports"));
-                };
-                let mut errs = Errs::default();
-                let generic_map = errs.keep(self.st_assoc(
+                self.instance_kind(
                     scope,
-                    &gens,
-                    i.generic_map.as_deref().unwrap_or(&[]),
                     s.span,
-                ));
-                let port_map = errs.keep(self.st_assoc(
-                    scope,
-                    &ports,
-                    i.port_map.as_deref().unwrap_or(&[]),
-                    s.span,
-                ));
-                errs.finish(())?;
-                StmtKind::Instance {
                     target,
-                    generic_map: generic_map.unwrap_or_default(),
-                    port_map: port_map.unwrap_or_default(),
-                }
+                    i.generic_map.as_deref().unwrap_or(&[]),
+                    i.port_map.as_deref().unwrap_or(&[]),
+                )?
+            }
+            // `l : c;` is parsed as a procedure call; it instantiates when `c`
+            // is not a subprogram (11.7).
+            K::ProcedureCall(n) if s.label.is_some() && self.names_component(scope, n) => {
+                let target = self.component_target(scope, n)?;
+                self.instance_kind(scope, s.span, target, &[], &[])?
             }
             K::ProcedureCall(n) => {
                 let call = self.st_proc_call(scope, n)?;
@@ -1555,7 +1543,7 @@ impl Db {
         let generic_map = match (&generics, &b.generic_map) {
             (Some(g), Some(m)) => {
                 let g = g.to_vec();
-                errs.keep(self.st_assoc(bscope, &g, m, s.span))
+                errs.keep(self.st_assoc(scope, &g, m, s.span))
             }
             _ => Some(Box::default()),
         };
@@ -1566,7 +1554,7 @@ impl Db {
         let port_map = match (&ports, &b.port_map) {
             (Some(p), Some(m)) => {
                 let p = p.to_vec();
-                errs.keep(self.st_assoc(bscope, &p, m, s.span))
+                errs.keep(self.st_assoc(scope, &p, m, s.span))
             }
             _ => Some(Box::default()),
         };
@@ -1641,6 +1629,33 @@ impl Db {
             cond,
             scope: gscope,
             body,
+        })
+    }
+
+    /// An instance statement once its target is known: maps checked against
+    /// the target's generics and ports.
+    fn instance_kind(
+        &mut self,
+        scope: ScopeId,
+        span: Span,
+        target: InstTarget,
+        gmap: &[ast::AssocElem],
+        pmap: &[ast::AssocElem],
+    ) -> Result<StmtKind, Reported> {
+        let Some((gens, ports)) = self
+            .inst_formals(&target)
+            .map(|(g, p)| (g.to_vec(), p.to_vec()))
+        else {
+            return Err(self.ice(span, "instantiated unit has no generics and ports"));
+        };
+        let mut errs = Errs::default();
+        let generic_map = errs.keep(self.st_assoc(scope, &gens, gmap, span));
+        let port_map = errs.keep(self.st_assoc(scope, &ports, pmap, span));
+        errs.finish(())?;
+        Ok(StmtKind::Instance {
+            target,
+            generic_map: generic_map.unwrap_or_default(),
+            port_map: port_map.unwrap_or_default(),
         })
     }
 
@@ -1766,7 +1781,7 @@ impl Db {
         }
     }
 
-    /// decl (lead): an interface list (block generics and ports).
+    /// unit: an interface list (block generics and ports).
     fn st_interfaces(
         &mut self,
         scope: ScopeId,
@@ -1777,34 +1792,27 @@ impl Db {
         self.interface_list(scope, list, role)
     }
 
-    /// expr (lead): an association list against `formals` (generic and port
-    /// maps): complete, in formal order, missing actuals reported (E1311).
+    /// unit: an association list against `formals` (generic and port
+    /// maps): complete, in formal order, missing actuals reported (E1311)
+    /// at `span`. Actuals are resolved in `scope`.
     fn st_assoc(
         &mut self,
-        _scope: ScopeId,
+        scope: ScopeId,
         formals: &[DeclId],
         assocs: &[ast::AssocElem],
         span: Span,
     ) -> Result<Box<[Arg]>, Reported> {
-        if formals.is_empty() && assocs.is_empty() {
-            return Ok(Box::default());
-        }
-        Err(self.unsupported(span, "generic and port maps", "S5"))
+        self.assoc_list(scope, formals, assocs, span)
     }
 
-    /// unit (lead): the component, entity (with architecture) or
-    /// configuration an instance names.
+    /// unit: the component, entity (with architecture) or configuration an
+    /// instance names.
     fn st_inst_target(
         &mut self,
-        _scope: ScopeId,
+        scope: ScopeId,
         u: &ast::InstantiatedUnit,
     ) -> Result<InstTarget, Reported> {
-        let span = match u {
-            ast::InstantiatedUnit::Component(n)
-            | ast::InstantiatedUnit::Entity { name: n, .. }
-            | ast::InstantiatedUnit::Configuration(n) => n.span,
-        };
-        Err(self.unsupported(span, "instantiated units", "S5"))
+        self.inst_target(scope, u)
     }
 
     /// scope (lead): the `GUARD` signal visible at a guarded assignment (11.6).

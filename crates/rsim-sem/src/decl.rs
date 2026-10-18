@@ -361,7 +361,7 @@ impl Db {
             D::Group(x) => Err(self.unsupported(x.span, "groups", "S6")),
             D::GroupTemplate(x) => Err(self.unsupported(x.span, "group templates", "S6")),
             D::Disconnect(x) => Err(self.unsupported(x.span, "disconnection specifications", "S5")),
-            D::ConfigSpec(x) => Err(self.unsupported(x.span, "configuration specifications", "S5")),
+            D::ConfigSpec(x) => self.config_spec(scope, x),
             D::View(x) => Err(self.unsupported(x.span, "mode views", "S7")),
         }
     }

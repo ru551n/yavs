@@ -81,6 +81,7 @@ impl B {
             scope,
             context: root,
             deps: Vec::new(),
+            refs: Vec::new(),
             file,
             span: sp(),
             rev: self.db.rev,

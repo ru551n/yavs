@@ -110,6 +110,9 @@ pub struct Unit {
     pub context: ScopeId,
     /// Units named by its context clause or by selected names, and its primary.
     pub deps: Vec<UnitId>,
+    /// Units named but not analyzed for this one (an instance's architecture, a
+    /// default-bound entity): manifest dependencies only (unit.rs).
+    pub refs: Vec<UnitRef>,
     pub file: FileId,
     pub span: Span,
     /// The file's own revision `F`.
@@ -537,6 +540,11 @@ impl Db {
             };
             if !rec.depends_on.contains(&r) {
                 rec.depends_on.push(r);
+            }
+        }
+        for r in &unit.refs {
+            if !rec.depends_on.contains(r) {
+                rec.depends_on.push(r.clone());
             }
         }
         rec

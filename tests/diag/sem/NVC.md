@@ -504,17 +504,19 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `subtype_of_subtype_range_ok` | none | accepts | accepts |
 | `variable_needs_constraint` | E1212 @8 | rejects @8 | rejects @8 |
 
-### unit (25)
+### unit (27)
 
 | File | Expected | NVC | GHDL |
 |---|---|---|---|
 | `arch_in_other_library` | E1002 @4 | rejects @4 | rejects @4 |
 | `architecture_of_package` | E1004 @5 | rejects @5 | rejects @5 |
 | `architecture_without_entity` | E1004 @4 | rejects @4 | rejects @4 |
+| `binding_entity_in_port_unassociated` | E1703 @9 | rejects @9 | accepts |
+| `binding_unknown_formal` | E1100 @9 | rejects @9 | rejects @9 |
 | `component_default_binding_near_miss_ok` | none | accepts | accepts |
 | `component_generic_mismatch` | E1100 @9 | rejects @9 | rejects @9 |
 | `component_instance_not_a_component` | E1700 @8 | rejects @8 | rejects @8 |
-| `component_port_mismatch` | E1703 @9 | rejects @9 | rejects @9 |
+| `component_port_mismatch` | E1703 @9 | rejects @9 | accepts |
 | `component_unknown_binding_entity` | E1002 @7 | rejects @7 | rejects @7 |
 | `configuration_label_not_instance` | E1701 @14 | rejects @14 | rejects @14 |
 | `configuration_label_wrong_component` | E1701 @13 | accepts | rejects @13 |

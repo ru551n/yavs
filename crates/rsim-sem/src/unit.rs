@@ -13,6 +13,12 @@ use crate::ids::{DeclId, LibId, ScopeId, UnitId};
 use crate::loader::{Unit, UnitKey, UnitKind, UnitSlot};
 use crate::scope::{ScopeKind, UseItem, Visible};
 
+mod binding;
+pub(crate) use binding::PendingSpec;
+
+#[cfg(test)]
+mod tests;
+
 /// What the prefix of an expanded name or use clause denotes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Region {
@@ -59,6 +65,7 @@ impl Db {
             scope: root,
             context: root,
             deps: Vec::new(),
+            refs: Vec::new(),
             file,
             span: ast.span,
             rev,
@@ -118,7 +125,18 @@ impl Db {
             }
             let p = self.load_unit(lib, pk, Some(pname.span))?;
             if self.units[p].kind != want {
-                return Err(self.wrong_kind(p, pname.span, want));
+                let have = kind_str(self.units[p].kind);
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NO_PRIMARY,
+                        format!("`{}` is a {have}, not {}", pname.text, article(want)),
+                    )
+                    .with_primary(pname.span, format!("expected {}", article(want)))
+                    .with_secondary(
+                        self.units[p].name.span,
+                        format!("the {have} is declared here"),
+                    ),
+                ));
             }
             self.units[unit].deps.push(p);
             parent = Some(self.units[p].scope);
@@ -178,13 +196,9 @@ impl Db {
                 }
                 UnitHir::Context
             }
-            L::Entity(e) => return Err(self.unsupported(e.name.span, "entity declarations", "S5")),
-            L::Architecture(a) => {
-                return Err(self.unsupported(a.name.span, "architecture bodies", "S5"));
-            }
-            L::Configuration(c) => {
-                return Err(self.unsupported(c.name.span, "configuration declarations", "S5"));
-            }
+            L::Entity(e) => self.entity_body(unit, scope, e),
+            L::Architecture(a) => self.architecture_body(unit, scope, a),
+            L::Configuration(c) => self.configuration_body(unit, scope, c)?,
             L::PackageInstance(p) => {
                 return Err(self.unsupported(p.name.span, "package instantiation", "S4"));
             }
@@ -205,13 +219,13 @@ impl Db {
             Diagnostic::error(
                 diag::WRONG_UNIT_KIND,
                 format!(
-                    "`{}` is a {}, not a {}",
+                    "`{}` is {}, not {}",
                     self.units[u].name.text,
-                    kind_str(have),
-                    kind_str(want)
+                    article(have),
+                    article(want)
                 ),
             )
-            .with_primary(span, format!("expected a {}", kind_str(want)))
+            .with_primary(span, format!("expected {}", article(want)))
             .with_secondary(
                 self.units[u].name.span,
                 format!("the {} is declared here", kind_str(have)),
@@ -401,7 +415,8 @@ impl Db {
                     let Some(key) = suffix_key(suffix) else {
                         continue;
                     };
-                    let Ok(u) = self.load_dep(l, UnitKey::Primary(key), Some(n.span)) else {
+                    let at = suffix_span(suffix, n.span);
+                    let Ok(u) = self.load_dep(l, UnitKey::Primary(key), Some(at)) else {
                         continue;
                     };
                     self.note_dep(u);
@@ -498,7 +513,8 @@ impl Db {
                 })?;
                 match r {
                     Region::Library(l) => {
-                        let u = self.load_dep(l, UnitKey::Primary(key), Some(n.span))?;
+                        let at = suffix_span(suffix, n.span);
+                        let u = self.load_dep(l, UnitKey::Primary(key), Some(at))?;
                         self.note_dep(u);
                         Ok(self.units[u].decl)
                     }
@@ -542,6 +558,17 @@ impl MaxOr for Span {
     fn max_or(self, other: Span) -> Span {
         if self == Span::default() { other } else { self }
     }
+}
+
+/// `an entity`, `a package`, ...
+fn article(k: UnitKind) -> String {
+    let s = kind_str(k);
+    let a = if s.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{a} {s}")
 }
 
 fn kind_str(k: UnitKind) -> &'static str {

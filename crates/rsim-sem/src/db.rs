@@ -126,6 +126,10 @@ pub struct Db {
     pub(crate) validated: crate::validate::Mark,
     /// Processes and subprograms whose statements are being analyzed, innermost last (stmt.rs).
     pub(crate) stmt_owners: Vec<crate::stmt::Owner>,
+    /// Configuration specifications (7.3.1) by the declarative region they are in (unit.rs).
+    pub config_specs: HashMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
+    /// Configuration specifications whose instance labels wait for the statement part.
+    pub(crate) pending_specs: Vec<crate::unit::PendingSpec>,
     diags: Vec<Diagnostic>,
     errors: usize,
 }
@@ -218,6 +222,8 @@ impl Db {
             top_context: None,
             tainted: HashSet::new(),
             stmt_owners: Vec::new(),
+            config_specs: HashMap::new(),
+            pending_specs: Vec::new(),
             diags: Vec::new(),
             errors: 0,
         }

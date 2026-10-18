@@ -172,13 +172,11 @@ From aggregate (expr/aggregate.rs, attr.rs). The analyses exist with unit tests;
 | Hook | Wanted | Owner |
 |---|---|---|
 | `st_proc_call(scope, &ast::Name)` | procedure call: overload with procedure result, `hir::Call` | expr |
-| `st_interfaces(scope, &[InterfaceDecl], role, span)` | block generics/ports | decl |
-| `st_assoc(scope, formals, &[AssocElem], span)` | generic/port map, complete in formal order | expr |
-| `st_inst_target(scope, &InstantiatedUnit)` | component / entity(arch) / configuration of an instance | unit |
 
-- unit.rs: call `db.analyze_conc_stmts(scope, &arch.stmts, false)` for architectures and
-  `(scope, &entity.stmts, true)` for entity statement parts (passive check, E1813); it also runs
-  the multiple-source check (E1812).
+- Done (units): `st_interfaces`, `st_assoc`, `st_inst_target` call `unit/binding.rs`
+  (`interface_list`, `assoc_list`, `inst_target`); `l : c;` parsed as a procedure call
+  instantiates when `c` is not a subprogram; entities and architectures run
+  `analyze_conc_stmts`.
 - Loop parameters must have `stat: None` and generate parameters `Globally` on their `Obj`
   expressions: the longest static prefix depends on it (lsp.rs, NVC #856).
 - `seq_stmts(scope, stmts)` (decl.rs's hook) is implemented; nested bodies inherit `wait` and
@@ -209,3 +207,18 @@ From cli (`rsim analyze`):
   `--work=std:...`, which the CLI rejects (E0102, contract: rsim resolves them). The stdlib corpus
   needs a bootstrap mode from the sem owners (a `Db` mode that analyzes std.standard as work)
   before the CLI can offer one.
+
+## Units (unit.rs, unit/binding.rs)
+
+- Entities, architectures, configuration
+  specifications (`config_spec`; stored in `Db::config_specs` by region once the statement
+  part is analyzed) and configuration declarations (`UnitHir::Configuration`) are analyzed.
+- `Db::default_binding(scope, component)` is the 7.3.3 rule for elab (Q4): directly visible
+  entity first (`W1703` at the instance when `work` has a different one), last architecture in
+  manifest or analysis order.
+- `Unit::refs` are manifest dependencies on units not loaded during analysis (an instance's
+  named architecture, the default-bound entity of a component); `unit_record` adds them.
+- Generic types, subprograms and packages on entities, components and blocks report `E9999`
+  (S4, generic); mode view ports report `E9999` (S7).
+- An entity and its architecture are one region (12.1): `declare` in an architecture checks the
+  entity's names (`E1101`).

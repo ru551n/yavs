@@ -57,7 +57,8 @@ pub struct FuncFlags(pub u8);
 impl FuncFlags {
     /// The function or a procedure it calls can execute `Suspend`.
     pub const MAY_SUSPEND: FuncFlags = FuncFlags(1);
-    /// Touches shared variables, protected objects or the shared heap (serial marking).
+    /// Touches shared variables, protected objects, the shared heap or disk files (serial
+    /// marking).
     pub const TOUCHES_SHARED: FuncFlags = FuncFlags(2);
     /// Set by lowering: the function is pure.
     pub const PURE: FuncFlags = FuncFlags(4);

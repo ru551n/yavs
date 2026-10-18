@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yavs_diag::{FileId, Span};
-use yavs_interp::{InstData, InstSig, InterpProcess, ProcDriver, Runtime, proc_flags};
+use yavs_interp::{InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState, proc_flags};
 use yavs_ir::*;
 use yavs_kernel::*;
 
@@ -375,7 +375,12 @@ impl Design {
                 ids.push(id);
                 drivers.push(ProcDriver { id, sig: s, range });
             }
-            let ip = InterpProcess::new(rt.clone(), p.func, inst.clone(), drivers, None).unwrap();
+            // File users are serial (#82) and get the (here empty) shared state.
+            let shared = self
+                .prog
+                .is_serial(p.func)
+                .then(|| Arc::new(Mutex::new(SharedState::new(Vec::new()))));
+            let ip = InterpProcess::new(rt.clone(), p.func, inst.clone(), drivers, shared).unwrap();
             let ip = wrap(ip, p.name);
             b.process(p.name, proc_flags(&self.prog, p.func), &ids, ip);
         }

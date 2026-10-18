@@ -173,6 +173,41 @@ fn callee(inst: &Inst) -> Option<FuncId> {
     }
 }
 
+/// Natives that read or write disk files or directories. File objects of different processes
+/// can name the same external file, so their callers are serial: the bytes on disk and what a
+/// process reads back do not depend on `--threads` (#82, #107). Includes textio `OUTPUT`, which
+/// the kernel orders anyway.
+// ponytail: also serialises processes that only write to OUTPUT; tell them apart by the file
+// argument if serial testbench processes ever dominate.
+fn touches_files(symbol: &str) -> bool {
+    const FILE_OPS: [&str; 13] = [
+        "file_open",
+        "file_close",
+        "read",
+        "write",
+        "flush",
+        "endfile",
+        "file_state",
+        "file_mode",
+        "file_position",
+        "file_size",
+        "file_seek",
+        "file_truncate",
+        "file_rewind",
+    ];
+    if let Some(rest) = symbol.strip_prefix("yavs.implicit.") {
+        return FILE_OPS.contains(&rest.split('.').next().unwrap_or(rest));
+    }
+    [
+        "yavs.textio.readline.",
+        "yavs.textio.writeline.",
+        "yavs.textio.tee.",
+        "yavs.env.dir_",
+    ]
+    .iter()
+    .any(|p| symbol.starts_with(p))
+}
+
 /// MAY_SUSPEND and TOUCHES_SHARED over the reverse call graph; each edge is visited once.
 fn propagate(prog: &mut Program) {
     let n = prog.funcs.len();
@@ -189,6 +224,14 @@ fn propagate(prog: &mut Program) {
                 }
                 | Inst::CallProt { .. }
                 | Inst::New { shared: true, .. } => fl.insert(FuncFlags::TOUCHES_SHARED),
+                Inst::CallNative { native, .. }
+                    if prog
+                        .natives
+                        .get(native)
+                        .is_some_and(|n| touches_files(&n.symbol)) =>
+                {
+                    fl.insert(FuncFlags::TOUCHES_SHARED)
+                }
                 Inst::Cover { .. } => fl.insert(FuncFlags::HAS_COVER),
                 _ => {}
             }

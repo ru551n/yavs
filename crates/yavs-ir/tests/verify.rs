@@ -201,3 +201,38 @@ b0:
 fn inst_stays_small() {
     assert_eq!(std::mem::size_of::<Inst>(), 32);
 }
+
+/// Callers of disk-file natives are serial (#82, #107); line-only textio natives are not.
+#[test]
+fn file_natives_make_callers_serial() {
+    let mut pb = ProgramBuilder::new();
+    let mut procs = vec![];
+    for (i, sym) in [
+        "yavs.textio.writeline.text_line",
+        "yavs.implicit.file_open.std.textio.text",
+        "yavs.implicit.endfile.std.textio.text",
+        "yavs.env.dir_deletefile.string.r_file_delete_status",
+        "yavs.textio.write.line_integer_side_width",
+        "yavs.implicit.eq.integer",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let p = pb.declare(&format!("p{i}"), FuncKind::Process, None);
+        let native = pb.native(sym, None);
+        let mut fb = pb.define(p);
+        fb.stmt(StmtKind::Call, sp());
+        let args = fb.regs(&[]);
+        fb.emit(Inst::CallNative {
+            native,
+            args,
+            dst: None,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        procs.push(p);
+    }
+    let prog = pb.finish().unwrap();
+    let serial: Vec<bool> = procs.iter().map(|&p| prog.is_serial(p)).collect();
+    assert_eq!(serial, [true, true, true, true, false, false]);
+}

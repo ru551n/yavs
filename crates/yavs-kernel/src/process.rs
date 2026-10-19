@@ -339,7 +339,11 @@ impl Ctx<'_> {
         delay: Time,
         value: Option<Buf>,
     ) -> Result<(), SimError> {
-        let time = self.after(delay)?;
+        // A transaction past TIME'HIGH can never mature: dropped, as most reference
+        // simulators do (lrm-checks.md).
+        let Ok(time) = self.after(delay) else {
+            return Ok(());
+        };
         if new.last().is_some_and(|t| t.time >= time) {
             return Err(self.error(ErrorKind::InvalidAssign(
                 "waveform delays not ascending".into(),
@@ -362,7 +366,7 @@ impl Ctx<'_> {
     ) -> Result<(), SimError> {
         let fail = |m: &str| self.error(ErrorKind::InvalidAssign(m.into()));
         let Some(first) = new.first() else {
-            return Err(fail("empty waveform"));
+            return Ok(()); // every element was past TIME'HIGH (push_txn)
         };
         let reject_from = match mode {
             DelayMode::Transport => None,
@@ -393,8 +397,9 @@ impl Ctx<'_> {
     }
 
     /// Timeout of the coming wait, relative to now.
+    /// A timeout past TIME'HIGH never expires (lrm-checks.md).
     pub fn wait_for(&mut self, delay: Time) -> Result<(), SimError> {
-        self.st.deadline = Some(self.after(delay)?);
+        self.st.deadline = self.after(delay).ok();
         Ok(())
     }
 

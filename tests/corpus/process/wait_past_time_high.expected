@@ -1,0 +1,3 @@
+exit	0
+diag	note	9223372036852775807	0	:wait_past_time_high:driver	assigned past TIME'HIGH
+diag	note	9223372036853775807	0	:wait_past_time_high:waiter	near TIME'HIGH

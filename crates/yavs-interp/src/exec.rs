@@ -2267,9 +2267,8 @@ impl Machine {
                 let t = to_time(self.ri(t))?;
                 let c = kc!();
                 c.wait_for(t)?;
-                let deadline = c.after(t)?;
                 if self.dbg.is_some() {
-                    self.waits.timeout = Some(deadline);
+                    self.waits.timeout = c.after(t).ok();
                 }
             }
             Inst::WaitAt { t } => {

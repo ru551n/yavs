@@ -302,7 +302,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     // yavs-kernel runtime errors
     (
         "E3001",
-        "The time of a scheduled event, `now + delay`, is beyond `TIME'HIGH`.",
+        "A run-for time, `now + delay`, is beyond `TIME'HIGH`. (A wait timeout or a transaction past `TIME'HIGH` is not an error: it never matures.)",
     ),
     (
         "E3002",

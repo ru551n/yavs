@@ -223,6 +223,7 @@ const PASS: &[&str] = &[
     "process/return_when_2019",
     "process/sensitivity",
     "process/subprograms",
+    "process/wait_past_time_high",
     "process/unaffected_2019",
     "process/wait_forms",
     "protected/alloc_call_in_init",

@@ -757,13 +757,35 @@ fn time_overflow_is_an_error_value() {
         sim.run_for(Time::MAX).unwrap_err().kind,
         ErrorKind::TimeOverflow { .. }
     ));
-    // The process at 0 waited for TIME'HIGH: fine. Waiting again overflows.
+}
+
+#[test]
+fn waits_and_transactions_past_time_high_never_mature() {
+    // At TIME'HIGH the process assigns 1 ns later and waits 1 ns: both are past TIME'HIGH,
+    // so the transaction is dropped, the timeout never expires and the run ends normally.
     let mut b = Builder::new();
-    b.process("q", NONE, &[], p(|c| c.wait_for(Time::MAX)));
+    let s = b.signal("s", BYTE, &[0]);
+    let d = b.driver(s);
+    let mut step = 0;
+    b.process(
+        "q",
+        NONE,
+        &[d],
+        p(move |c| {
+            step += 1;
+            match step {
+                1 => c.wait_for(Time::MAX),
+                2 => {
+                    c.assign(d, None, &[(ns(1), &[1])], DelayMode::Transport)?;
+                    c.wait_for(ns(1))
+                }
+                _ => panic!("resumed past TIME'HIGH"),
+            }
+        }),
+    );
     let (mut sim, _) = build(b, Config::default());
-    let err = sim.run_until(Time::MAX).unwrap_err();
-    assert!(matches!(err.kind, ErrorKind::TimeOverflow { .. }), "{err}");
-    assert_eq!(err.process, Some((ProcId(0), "q".into())));
+    sim.run_until(Time::MAX).unwrap();
+    assert_eq!(sim.now(), Time::MAX);
 }
 
 #[test]

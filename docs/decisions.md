@@ -102,9 +102,12 @@ milestone users care about works.
   so it can be swapped or vendored. yavs-wave's round-trip tests read every file back with `wellen`.
 - **FST mapping:** std_logic family and bit are written as characters (`u x 0 1 z w l h -`) with
   the VHDL data type set, so viewers show `U`, `X`, ...; other enums are bit vectors with an FST
-  enum table (literal names in original spelling); integers and time are two's complement vectors;
+  enum table (literal names in original spelling); integers and time are two's complement vectors
+  (an integer has its subtype's name, else that of the subtype it derives from, and the width its
+  elaborated range needs: unsigned ranges `ceil(log2(hi + 1))` bits, others the signed width; #306);
   reals are doubles; vector bounds go into the name (`data[7:0]`, `rev[0:3]`, left first, so
-  direction is kept); records and arrays are scopes with one signal per sub-element.
+  direction is kept); records and arrays are scopes with one signal per sub-element; the chosen
+  alternative of a generate with a label is the scope `label.alt` (#306).
 - **Durability:** a block is flushed on the next time advance after `flush_interval` (default
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel

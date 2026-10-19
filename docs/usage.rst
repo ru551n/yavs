@@ -61,12 +61,16 @@ Waveforms
 ``--wave FILE.fst`` records the whole design as an FST file that waveform viewers read:
 
 * The hierarchy follows the elaborated design: instances (shown with their ``entity(arch)``),
-  blocks, generate scopes (``g(3)`` for each for-generate index) and package
+  blocks, generate scopes (``g(3)`` for each for-generate index, ``g.alt1`` for the chosen
+  alternative of an if or case generate with a label) and package
   signals (``work.pkg.sig``). Names keep the spelling of the source.
 * Every signal and port is recorded, ports with their direction. ``std_logic`` and ``bit``
   values and their vectors show as characters (``U``, ``X``, ``Z``...) with the vector bounds
   and direction kept; other enumerations show their literal names; integers, ``time`` and
-  ``real`` show as numbers. Records are scopes with one entry per field, and arrays of anything
+  ``real`` show as numbers. An integer carries the name of its subtype (``natural``, or your
+  ``small_t``) and the width its range needs: ``natural range 0 to 255`` is 8 bits, a range with
+  negative values is signed (``-8 to 7`` is 4 bits), and a range that depends on a generic is
+  sized after elaboration. Records are scopes with one entry per field, and arrays of anything
   other than ``std_logic`` or ``bit`` are scopes with one entry per element (``mem(2)``,
   ``grid(1,2)``). Variables are not recorded.
 * FST has no delta cycles: several deltas at one time step give one change with the final

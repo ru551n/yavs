@@ -1738,7 +1738,7 @@ impl Elab<'_> {
                         }
                     };
                     if take {
-                        let alt = alabel.map(|l| l.key);
+                        let alt = alabel;
                         return self.gen_alt(s, st, label, gscope, &body, cfg, alt, depth);
                     }
                 }
@@ -1760,7 +1760,7 @@ impl Elab<'_> {
                             Choice::Element(_) => false,
                         };
                         if hit {
-                            pick = Some((alt.scope, alt.body.to_vec(), alt.label.map(|l| l.key)));
+                            pick = Some((alt.scope, alt.body.to_vec(), alt.label));
                             break 'alts;
                         }
                     }
@@ -1857,11 +1857,17 @@ impl Elab<'_> {
         gscope: yavs_sem::ScopeId,
         body: &[StmtId],
         cfg: Option<&CfgPath>,
-        alt: Option<Symbol>,
+        alt: Option<Ident>,
         depth: u32,
     ) -> R<()> {
-        let g = self.m.hier.add(Some(s), ScopeKind::Generate, label);
-        let gcfg = cfg.and_then(|c| self.sub_cfg_alt(c, st, alt));
+        let g = self.m.hier.add(
+            Some(s),
+            ScopeKind::Generate {
+                alt: alt.map(|l| l.text),
+            },
+            label,
+        );
+        let gcfg = cfg.and_then(|c| self.sub_cfg_alt(c, st, alt.map(|l| l.key)));
         self.decls(g, gscope)?;
         let mut c = 0;
         self.stmts(g, body, gcfg.as_ref(), &mut c, depth)

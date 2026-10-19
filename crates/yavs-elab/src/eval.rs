@@ -972,6 +972,8 @@ impl Model {
                 // Only the bounds are used (attribute prefixes).
                 elem: Box::new(Shape::Scalar {
                     ty: db.base(db.exprs[e].subtype),
+                    sub: db.exprs[e].subtype,
+                    range: None,
                     elem: Elem::Bytes(1),
                     left: Val::Int(0),
                     res: None,
@@ -1097,6 +1099,7 @@ impl Model {
         let ty = db.base(st);
         match &db.types[ty].kind {
             k if k.is_scalar() => {
+                let mut range = None;
                 let left = match k {
                     TypeKind::Floating | TypeKind::UniversalReal => match db.scalar_range(st) {
                         Some(RangeC::Explicit { left, .. }) => self.eval(db, left, scope)?,
@@ -1104,6 +1107,7 @@ impl Model {
                     },
                     _ => {
                         let b = self.scalar_bounds(db, st, scope, span)?;
+                        range = Some(b);
                         match k {
                             TypeKind::Enum { .. } => Val::Enum(b.left as u32),
                             TypeKind::Physical { .. } => Val::Phys(b.left),
@@ -1117,6 +1121,8 @@ impl Model {
                 };
                 Ok(Some(Shape::Scalar {
                     ty,
+                    sub: st,
+                    range,
                     elem: elem_of(db, ty),
                     left,
                     res,

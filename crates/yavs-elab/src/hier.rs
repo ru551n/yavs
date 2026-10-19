@@ -12,7 +12,8 @@
 
 use yavs_kernel::{Elem, PortMode, Range, SignalType, Value};
 use yavs_sem::hir::Direction;
-use yavs_sem::{DeclId, StmtId, TypeId, UnitId};
+use yavs_sem::{DeclId, StmtId, SubtypeId, TypeId, UnitId};
+use yavs_syntax::Symbol;
 use yavs_syntax::ast::Ident;
 
 use crate::eval::Val;
@@ -59,8 +60,10 @@ pub enum ScopeKind {
         param: DeclId,
         value: Val,
     },
-    /// The chosen alternative of an `if` or `case` generate.
-    Generate,
+    /// The chosen alternative of an `if` or `case` generate; `alt` is its label, if it has one.
+    Generate {
+        alt: Option<Symbol>,
+    },
     Process {
         stmt: StmtId,
     },
@@ -229,9 +232,12 @@ impl Bounds {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// `left` is the subtype's `'left`, the default initial value; `res` its resolution
-    /// function, if resolved.
+    /// function, if resolved. `sub` is the declared subtype and `range` its bounds (positions;
+    /// `None` for reals and shapes only used for attribute prefixes).
     Scalar {
         ty: TypeId,
+        sub: SubtypeId,
+        range: Option<Bounds>,
         elem: Elem,
         left: Val,
         res: Option<DeclId>,

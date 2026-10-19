@@ -160,6 +160,24 @@ fn waves_of_a_design() {
         assert_eq!(var(&["wave_tb"], "r").var_type(), VarType::Real);
         assert_eq!(var(&["wave_tb"], "t").var_type(), VarType::Time);
         assert!(h.lookup_var(&["wave_tb"], "big").is_none(), "over the cap");
+        // Integers: the subtype's name, the width its range needs.
+        let int = |n: &str| {
+            let v = var(&["wave_tb"], n);
+            (
+                v.vhdl_type_name(h).map(str::to_ascii_lowercase),
+                v.length(h),
+            )
+        };
+        assert_eq!(int("i"), (Some("integer".into()), Some(32)));
+        assert_eq!(int("nat"), (Some("natural".into()), Some(31)));
+        assert_eq!(int("sm"), (Some("small_t".into()), Some(8)));
+        assert_eq!(int("neg"), (Some("integer".into()), Some(4)), "-8 to 7");
+        assert_eq!(var(&["wave_tb"], "t").length(h), Some(64));
+        // The chosen alternative of a case or if generate keeps its label.
+        assert!(h.lookup_scope(&["wave_tb", "cg.alt1"]).is_some());
+        assert!(h.lookup_var(&["wave_tb", "cg.alt1"], "cgs").is_some());
+        assert!(h.lookup_var(&["wave_tb", "ig.alt_b"], "igs").is_some());
+        assert!(h.lookup_scope(&["wave_tb", "cg"]).is_none());
     }
 
     // One value per time step: the final one (FST has no deltas), so time 0 shows the
@@ -196,7 +214,7 @@ fn waves_of_a_design() {
     assert_eq!(changes(&s, "wave_tb.r"), "0=0 40000000=2.5");
     assert_eq!(
         changes(&s, "wave_tb.i"),
-        format!("0={} 40000000={:064b}", "0".repeat(64), -7i64)
+        format!("0={} 40000000={:032b}", "0".repeat(32), -7i32)
     );
     assert_eq!(
         changes(&s, "wave_tb.t"),
@@ -205,7 +223,7 @@ fn waves_of_a_design() {
     assert_eq!(changes(&s, "wave_tb.rec.a"), "0=u 40000000=x");
     assert_eq!(
         changes(&s, "wave_tb.rec.n"),
-        format!("0={} 40000000={:064b}", "0".repeat(64), 42)
+        format!("0={} 40000000={:032b}", "0".repeat(32), 42)
     );
     // wellen shows the elements of an array scope without the array's name.
     assert_eq!(
@@ -219,7 +237,7 @@ fn waves_of_a_design() {
     assert_eq!(changes(&s, "wave_tb.u2.recs.recs(1).a"), "0=1");
     assert_eq!(
         changes(&s, "wave_tb.u2.recs.recs(1).n"),
-        format!("0={}", "1".repeat(64))
+        format!("0={}", "1".repeat(32))
     );
 
     // --threads 4 records the same waves.

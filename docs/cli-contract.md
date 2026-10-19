@@ -223,7 +223,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--wave=FILE.fst`: write an FST of the whole design. Hierarchy follows the
   elaborated design (instances, generate scopes, records and arrays as scopes);
   std_logic family and bit are written as characters, other enumerations with an
-  enum table, integers, reals and time as numbers. Several deltas at one time step
+  enum table, integers, reals and time as numbers (an integer with its subtype's name and
+  the width its range needs; a generate alternative with a label is scope `label.alt`). Several deltas at one time step
   give one value change (the final value). The file is the same at any
   `--threads`. Signals and ports are recorded, variables are not (#305). Flushed periodically, on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints

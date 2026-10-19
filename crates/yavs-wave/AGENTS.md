@@ -35,6 +35,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 | `wavefst` 0.4.0 for FST, behind our own `WaveWriter` API; no FST code of our own | Enum tables, VHDL var types, reals, header-patching flush | `docs/decisions.md` "Waveform writer: wavefst" |
 | std_logic family and bit written as characters with the VHDL data type set; other enums as bit vectors with an FST enum table (original spelling); integers/time two's complement; reals doubles; vector bounds in the name (`data[7:0]`, left first) | Viewers show `U`, `X`, direction kept | same, "FST mapping" |
 | Records and arrays are scopes with one signal per sub-element | Rule 11 (same sub-element events as everything else) | `docs/plan.md` rule 11 |
+| An integer is written with its subtype's name and the width of its range (`Shape::Scalar::{sub, range}`; none: base name, 64 bits); the chosen generate alternative is the scope `label.alt` (`ScopeKind::Generate::alt`), so `*` in a glob does not span `label.alt` | Viewers show the declared type; #306 | `docs/decisions.md` "Waveform writer: wavefst" |
 | Include/exclude globs, size cap for arrays and memories, enum names in metadata | Rule 11 | `docs/plan.md` rule 11 |
 | Flushed on the next time advance after `flush_interval` or `block_change_limit`; header patched each time; SIGINT asks the kernel to stop between cycles and the recorder calls `finish` | A killed run is readable | `docs/decisions.md` "Durability" |
 | Waves come in through the event bus as a subscriber (M7) | Plan "Designed for the GUI" | `docs/plan.md` |
@@ -65,6 +66,6 @@ cargo run -p yavs-wave --example demo
 
 ## 6. Coordination
 
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:wave`): #129 FST
+- Open issues (snapshot 2026-10-18; #306 done, `gh issue list -R ru551n/yavs --label crate:wave`): #129 FST
   output as an event-bus subscriber, hierarchy, enum tables, globs and size caps; #116 `--wave`
   wired into `yavs run`. Epic: #145 (M7).

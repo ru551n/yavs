@@ -258,7 +258,7 @@ impl Design<'_> {
                 ),
                 yavs_elab::ScopeKind::Block => (ScopeKind::Block, String::new()),
                 yavs_elab::ScopeKind::ForGenerate { .. } => (ScopeKind::ForGenerate, String::new()),
-                yavs_elab::ScopeKind::Generate => (ScopeKind::Generate, String::new()),
+                yavs_elab::ScopeKind::Generate { .. } => (ScopeKind::Generate, String::new()),
                 yavs_elab::ScopeKind::Process { .. } => (ScopeKind::Process, String::new()),
                 // ponytail: FST has no library scope; a block keeps `lib.pkg.sig` paths.
                 yavs_elab::ScopeKind::Library => (ScopeKind::Block, String::new()),
@@ -271,6 +271,10 @@ impl Design<'_> {
             let mut name = sc.name.text.to_string();
             if let Some(i) = &sc.index {
                 name = format!("{name}({i})");
+            }
+            // The label of the chosen alternative stays in the name: `g.alt1`.
+            if let yavs_elab::ScopeKind::Generate { alt: Some(a) } = &sc.kind {
+                name = format!("{name}.{a}");
             }
             self.b.scope(&name, kind, &comp);
             for &o in &sc.objs {
@@ -306,8 +310,15 @@ impl Design<'_> {
     /// first leaf is `leaf`.
     fn node(&mut self, shape: &Shape, name: &str, leaf: u32, k: u64, port: PortDir) {
         match shape {
-            Shape::Scalar { ty, elem, res, .. } => {
-                let (sty, conv) = self.scalar(*ty, *elem, res.is_some());
+            Shape::Scalar {
+                ty,
+                sub,
+                range,
+                elem,
+                res,
+                ..
+            } => {
+                let (sty, conv) = self.scalar(*ty, *elem, res.is_some(), Some((*sub, *range)));
                 self.signal(name, sty, port, leaf, k, 1, conv);
             }
             Shape::Array {
@@ -331,7 +342,7 @@ impl Design<'_> {
                         return;
                     }
                     let (SigType::Scalar(ScalarType::Enum(e)), conv) =
-                        self.scalar(*et, Elem::Logic, res.is_some() || whole.is_some())
+                        self.scalar(*et, Elem::Logic, res.is_some() || whole.is_some(), None)
                     else {
                         unreachable!("logic scalars are enums")
                     };
@@ -398,7 +409,14 @@ impl Design<'_> {
         });
     }
 
-    fn scalar(&mut self, t: yavs_sem::TypeId, elem: Elem, resolved: bool) -> (SigType, Conv) {
+    /// `decl`: the declared subtype and its bounds, which name and size integers.
+    fn scalar(
+        &mut self,
+        t: yavs_sem::TypeId,
+        elem: Elem,
+        resolved: bool,
+        decl: Option<(yavs_sem::SubtypeId, Option<yavs_elab::Bounds>)>,
+    ) -> (SigType, Conv) {
         let db = self.db;
         let td = &db.types[t];
         let tname = td.name.text.to_string();
@@ -443,11 +461,13 @@ impl Design<'_> {
             }
             TypeKind::Floating | TypeKind::UniversalReal => ScalarType::Real,
             TypeKind::Physical { .. } if Some(t) == db.well_known.time => ScalarType::Time,
-            // ponytail: 64 bits for every integer and physical; the subtype's range is not in
-            // the shape. Narrow it when viewers need the declared width.
+            // The declared subtype's name and the width its range needs; 64 bits and the base
+            // type name when there is neither.
             _ => ScalarType::Integer {
-                name: tname,
-                bits: 64,
+                name: decl
+                    .and_then(|(st, _)| subtype_name(db, st))
+                    .unwrap_or(tname),
+                bits: decl.and_then(|(_, r)| r).map_or(64, int_bits),
             },
         };
         (SigType::Scalar(sc), Conv::Raw)
@@ -463,6 +483,31 @@ impl Design<'_> {
             _ => n,
         }
     }
+}
+
+/// The name of `st`, else of the nearest named subtype it was derived from (`natural range
+/// 0 to 15` is a `natural`).
+fn subtype_name(db: &Db, mut st: yavs_sem::SubtypeId) -> Option<String> {
+    loop {
+        if let Some(n) = db.subtypes[st].name {
+            return Some(n.text.to_string());
+        }
+        st = db.subtypes[st].parent?;
+    }
+}
+
+/// The width of the two's complement encoding that holds every value of `b`.
+fn int_bits(b: yavs_elab::Bounds) -> u32 {
+    let (lo, hi) = b.low_high();
+    if hi < lo {
+        return 1;
+    }
+    if lo >= 0 {
+        return (64 - hi.leading_zeros()).max(1);
+    }
+    // `!lo` is -lo - 1, the largest magnitude a negative value needs.
+    let mag = (!lo as u64).max(hi.max(0) as u64);
+    65 - mag.leading_zeros()
 }
 
 fn bounds(d: yavs_elab::Bounds) -> Bounds {

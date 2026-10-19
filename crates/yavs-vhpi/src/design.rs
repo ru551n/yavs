@@ -509,7 +509,7 @@ impl Builder<'_> {
             ScopeKind::Block => (vhpiBlockStmtK, None),
             ScopeKind::ForGenerate { .. } => (vhpiForGenerateK, None),
             // VHPI has one class for the chosen alternative of `if` and `case` generates.
-            ScopeKind::Generate => (vhpiIfGenerateK, None),
+            ScopeKind::Generate { .. } => (vhpiIfGenerateK, None),
             ScopeKind::Process { stmt } => match &db.stmts[*stmt].kind {
                 StmtKind::Process { scope, .. } => {
                     sem_regions.push(*scope);

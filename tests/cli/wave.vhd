@@ -68,7 +68,30 @@ architecture sim of wave_tb is
   signal big   : std_logic_vector(99 downto 0) := (others => 'Z');
   type grid_t is array (0 to 1, 0 to 2) of std_logic;
   signal grid  : grid_t := (others => (others => '0'));
+  subtype small_t is natural range 0 to 255;
+  signal sm    : small_t := 200;
+  signal neg   : integer range -8 to 7 := -3;
+  signal nat   : natural := 5;
+  constant SEL : integer := 1;
 begin
+  cg : case SEL generate
+    when alt1 : 1 =>
+      signal cgs : std_logic := '1';
+    begin
+    end;
+    when others =>
+    begin
+    end;
+  end generate;
+
+  ig : if alt_a : SEL = 2 generate
+    signal igs : std_logic := '0';
+  begin
+  elsif alt_b : SEL = 1 generate
+    signal igs : std_logic := '1';
+  begin
+  end generate;
+
   u1 : entity work.wave_sub port map (Clk_In => Clk, q => count);
   u2 : entity work.wave_recs;
 

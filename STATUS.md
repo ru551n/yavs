@@ -149,6 +149,22 @@ start-up cost times 30 (analysis of the design closure is a third of it); `uvvm_
 process activation (`ff_rtl`, 512 lanes x 400 cycles takes 29 s); for the 30 short test cases of `vunit_vc30`
 86 percent of the CPU time is spent before the first delta (analyze 32, elaborate 38, init 16 percent).
 
+Init phase (#405): `vunit_vc30` spent its init time in package initialisation and the replay of
+elaboration-time calls, and most of the package initialisation in VHDL code that fills long arrays one element
+at a time (`new T(0 to 65536 => null)`, the default value of an array of records: 10 to 70 interpreted
+instructions per element). Equal elements are now written by one `Fill` or by doubling `Copy` (lowering, see
+`crates/yavs-lower/AGENTS.md`). Median CPU seconds, `--threads 1`, 3 to 5 runs:
+
+| Benchmark, phase | before | after (this change plus the package state reuse of elaboration) |
+|---|---|---|
+| `vunit_vc30` init | 4.20 | 0.12 |
+| `vunit_vc30` elaborate | 10.56 | 7.70 |
+| `vunit_vc30` total | 27.89 | 20.92 |
+| one verification-component test, package initialisation | 128 ms | 14 ms |
+
+`elab_heavy` init (0.60 s) is the kernel model build (`Builder::build`, about 0.54 s of it for 20000 instances), not
+package or instance data; it belongs to the kernel work. The UVVM and OSVVM benchmarks have no init cost (0.01 s).
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

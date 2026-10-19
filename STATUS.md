@@ -235,7 +235,7 @@ go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/
 subset runs as implicit checker processes, also in `-- psl` comments with `--psl` (#226); other PSL is skipped
 with one `W0004` warning per design unit (#138).
 
-Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): only the `vcomponents` package analyzes today (47 of 1073 files); VITAL (#118) is built in; the primitive models wait on further root causes and the Synopsys arithmetic packages (#117). The 6 hdl-modules files that need `unisim` analyze against it.
+Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): 952 of 1073 files analyze since the VITAL packages are built in (#118); the other 121 (114 `unisim`, 7 `unimacro`) all stop on the missing Synopsys `std_logic_arith`, `std_logic_signed` or `std_logic_unsigned` (#117), with no other root cause. The 6 hdl-modules files that need `unisim` analyze against it.
 
 Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
 `YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus` compares them with the

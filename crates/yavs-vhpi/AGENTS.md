@@ -75,7 +75,9 @@ side #268, the callbacks themselves #272):
   A symbol missing from the Rust table is dropped by the linker from the rlib.
 - `abi_matches_c_header` needs a C compiler at test time (approved dependency); it cannot run
   under wine.
-- The Windows MSVC path (`/DEF:`, `lib.exe`, `cl`) has never run (#124); MinGW was checked under
+- The Windows MSVC path (`/DEF:`, `lib.exe`, `cl`) runs in the `windows-latest` CI job:
+  `crates/yavs/tests/vhpi_run.rs` builds a throwaway `yavs.lib` from the `.def` (`/NAME:yavs.exe`),
+  links the plugin DLL against it and loads it with `yavs run --vhpi` (#124). MinGW was checked under
   wine.
 - The CLI must call `keep_exports()` (done first in its `main`); otherwise the linker drops the
   symbols before the export list applies. `crates/yavs/tests/vhpi_exports.rs` checks the
@@ -98,4 +100,4 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 - The Python testbench framework itself is not installed; installing it needs the user's approval (#122).
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
   object model over `SimControl` and the event bus; #122 Python testbench framework regression (install needs
-  approval); #123 disabled callbacks stay cheap; #124 Windows MSVC path never run.
+  approval); #123 disabled callbacks stay cheap.

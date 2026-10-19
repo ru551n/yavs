@@ -571,7 +571,7 @@ runs the test as written.
 Done (#266): the `yavs` executable exports the full `vhpi_*` C ABI of `vhpi_user.h` (42 symbols,
 functions and the `vhpiFS`..`vhpiS` time constants) on Linux x86_64 and aarch64 (also in the
 glibc 2.17 cargo-zigbuild release builds, where the linker exports more than the list) and in the
-Windows `.exe` export table (MinGW checked; MSVC `/DEF:` still never run, #124). No import library is built or shipped (user decision, 2026-10-18): a VHPI plugin brings its own.
+Windows `.exe` export table (MinGW checked; MSVC `/DEF:` and the `yavs run --vhpi` plugin load run in the `windows-latest` CI job, #124). No import library is built or shipped (user decision, 2026-10-18): a VHPI plugin brings its own.
 `crates/yavs/tests/vhpi_exports.rs` checks the ELF `.dynsym` (Linux) and the PE export directory (Windows, in the `windows-latest` CI job, #124) against the header.
 
 Done (#267): `yavs run --vhpi=LIB[:ENTRY]` (repeatable) loads plugins after elaboration,

@@ -735,6 +735,13 @@ a note and a help suggesting an access type, as the reference simulators reject 
 
 ## Elaboration (yavs-elab, M2)
 
+- **The elaboration-time session grows one program** (#383, elab agent, 2026-10-19): a function
+  that uses package state and is called for the first time is lowered into the session's
+  program by the kept lowering (`Lowerer::suspend`/`resume`, `snapshot`), and the runtime moves
+  to the grown program with the package data, shared state, open files and assert counts as they
+  are (`Runtime::extend`). Lowering every run-time package again, initialising them and replaying
+  the log per new function was most of elaboration on library testbenches. A full rebuild stays
+  for `Session::undo`, a failed lowering or call, and a change of the run-time packages.
 - **Element order inside a kernel leaf:** composites flatten row major, leftmost first; a logic
   leaf (bit-planes) mirrors it, kernel offset `n - 1 - p` for row-major position `p` (element 0 of
   yavs-logic is the rightmost element). `NetGraph::select` is the one implementation; lowering

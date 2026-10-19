@@ -9,9 +9,11 @@
 //! the same package state and `build` stays repeatable (rule 4). A replayed call that returns
 //! a different value is an internal error.
 //!
-//! ponytail: the session program is lowered again (packages plus every function called so
-//! far) and the log replayed whenever a new function is called, O(functions x calls); a
-//! lowerer that can add functions to a finished program would make it incremental.
+//! A function called for the first time is lowered into the session's program (the lowerer
+//! is kept, `Lowerer::suspend`), and the runtime moves to the grown program with the package
+//! state as it is (`Runtime::extend`, #383). Only `Session::undo`, a failed lowering or a
+//! change of the run-time packages lower everything again, initialise the packages and replay
+//! the log.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,7 +23,7 @@ use yavs_interp::{Bindings, CallVal, InstData, Runtime, SharedState, Sources};
 use yavs_ir::{FuncId, Program, TyId};
 use yavs_kernel::SimError;
 use yavs_lower::{LowerOptions, Lowerer, PackageIr};
-use yavs_sem::{Db, DeclId};
+use yavs_sem::{Db, DeclId, UnitId};
 
 use crate::eval::Val;
 
@@ -204,6 +206,10 @@ struct Live {
     rt: Arc<Runtime>,
     shared: Arc<Mutex<SharedState>>,
     sigs: HashMap<DeclId, Sig>,
+    /// The lowering that made `rt.prog`, with the run-time packages it lowered, to add
+    /// functions to; `None` after a failed lowering.
+    lowerer: Option<(yavs_lower::Suspended, Vec<UnitId>)>,
+    shared_size: u32,
 }
 
 /// Package state during elaboration and the calls made with it.
@@ -265,14 +271,26 @@ impl Session {
     fn run(&mut self, db: &Db, d: DeclId, constant: bool, args: &[Val]) -> Result<Val, Fail> {
         if self.live.as_ref().is_none_or(|l| !l.sigs.contains_key(&d)) {
             self.lowered.push((d, constant));
-            match self.rebuild(db) {
-                Ok(l) => {
-                    self.live = Some(l);
-                    self.dirty = false;
-                }
-                Err(e) => {
+            // A failed call may have left the package state half changed: rebuild it then.
+            let added = match self.live.as_mut() {
+                Some(live) if !self.dirty => add(live, db, d, constant),
+                _ => None,
+            };
+            if let Some(r) = added {
+                if let Err(e) = r {
                     self.lowered.pop();
                     return Err(e);
+                }
+            } else {
+                match self.rebuild(db) {
+                    Ok(l) => {
+                        self.live = Some(l);
+                        self.dirty = false;
+                    }
+                    Err(e) => {
+                        self.lowered.pop();
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -291,30 +309,18 @@ impl Session {
 
     /// Lower the packages and `lowered`, initialise the packages and replay the log.
     fn rebuild(&self, db: &Db) -> Result<Live, Fail> {
-        let lower = |ds: Vec<Diagnostic>| {
-            Fail::Lower(ds.into_iter().next().map(|d| d.message).unwrap_or_default())
-        };
+        let lower = lower_fail;
         let mut l = Lowerer::new(db, LowerOptions::default());
-        for u in crate::sim::run_time_packages(db) {
+        let pkgs = crate::sim::run_time_packages(db);
+        for &u in &pkgs {
             l.package(u).map_err(lower)?;
         }
         let mut sigs = HashMap::new();
         for &(d, constant) in &self.lowered {
-            let s = if constant {
-                let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
-                    return Err(Fail::Runtime("internal error: not a constant".into()));
-                };
-                Sig {
-                    func: l.package_value(d).map_err(lower)?,
-                    params: Vec::new(),
-                    ret: Some(l.ty(db.base(o.subtype)).map_err(lower)?),
-                }
-            } else {
-                sig(&mut l, db, d).map_err(lower)?
-            };
-            sigs.insert(d, s);
+            sigs.insert(d, item(&mut l, db, d, constant)?);
         }
-        let lw = l.finish().map_err(lower)?;
+        let lw = l.snapshot().map_err(lower)?;
+        let lowerer = Some((l.suspend(), pkgs));
         let prog = Arc::new(lw.program);
         let shared = Arc::new(Mutex::new(SharedState::new(vec![
             0;
@@ -338,6 +344,62 @@ impl Session {
         )
         .map_err(runtime)?;
         replay(&rt, &shared, &sigs, &self.log).map_err(Fail::Runtime)?;
-        Ok(Live { rt, shared, sigs })
+        Ok(Live {
+            rt,
+            shared,
+            sigs,
+            lowerer,
+            shared_size: lw.shared_size,
+        })
     }
+}
+
+fn lower_fail(ds: Vec<Diagnostic>) -> Fail {
+    Fail::Lower(ds.into_iter().next().map(|d| d.message).unwrap_or_default())
+}
+
+/// Lower function `d`, or the reader of package constant `d` (`constant`), with `l`.
+fn item(l: &mut Lowerer, db: &Db, d: DeclId, constant: bool) -> Result<Sig, Fail> {
+    if !constant {
+        return sig(l, db, d).map_err(lower_fail);
+    }
+    let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
+        return Err(Fail::Runtime("internal error: not a constant".into()));
+    };
+    Ok(Sig {
+        func: l.package_value(d).map_err(lower_fail)?,
+        params: Vec::new(),
+        ret: Some(l.ty(db.base(o.subtype)).map_err(lower_fail)?),
+    })
+}
+
+/// Add `d` (as [`item`]) to `live`'s program, keeping the package state. `None` when it
+/// cannot be added and the session must be rebuilt: no lowering to resume, other run-time
+/// packages, another shared variables area, or the runtime still in use.
+fn add(live: &mut Live, db: &Db, d: DeclId, constant: bool) -> Option<Result<(), Fail>> {
+    let (st, pkgs) = live.lowerer.take()?;
+    if pkgs != crate::sim::run_time_packages(db) {
+        return None;
+    }
+    let mut l = Lowerer::resume(db, st);
+    let s = match item(&mut l, db, d, constant) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+    let lw = match l.snapshot() {
+        Ok(lw) => lw,
+        Err(ds) => return Some(Err(lower_fail(ds))),
+    };
+    if lw.shared_size != live.shared_size {
+        return None;
+    }
+    let rt = Arc::get_mut(&mut live.rt)?;
+    let prog = Arc::new(lw.program);
+    let sources = Sources::of(&prog, &db.sources);
+    if let Err(e) = rt.extend(prog, sources) {
+        return Some(Err(runtime(e)));
+    }
+    live.sigs.insert(d, s);
+    live.lowerer = Some((l.suspend(), pkgs));
+    Some(Ok(()))
 }

@@ -103,6 +103,12 @@ lookup m(1, 0): :Top:M(1,0)
 lookup \Ext Sig\: :Top:\Ext Sig\
 lookup \EXT SIG\: null
 lookup @work:types_pkg:pkg_c: @work:Types_Pkg:Pkg_C
+lookup :top.g(1).u.reg: :Top:G(1):U:Reg
+lookup :Top.B1.Inner: :Top:B1:Inner
+lookup top.ig.e.init(0): :Top:IG:E:Init(0)
+lookup b1.inner: :Top:B1:Inner
+lookup g(0).u.d.a: :Top:G(0):U:D.A
+lookup :top.nope.reg: null
 lookup no_such: null
 lookup outs(2): null
 lookup r.c: null

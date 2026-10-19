@@ -159,6 +159,7 @@ static void dump_type(vhpiHandleT t, int depth) {
       else
         put(" %d %s %d", vhpi_get(vhpiLeftBoundP, x),
             vhpi_get(vhpiIsUpP, x) ? "to" : "downto", vhpi_get(vhpiRightBoundP, x));
+      put(" u%d", vhpi_get(vhpiIsUnconstrainedP, x));
       vhpi_release_handle(x);
     }
     put(" ]");
@@ -178,7 +179,7 @@ static void dump_type(vhpiHandleT t, int depth) {
     if ((it = vhpi_iterator(vhpiEnumLiterals, b)) != NULL) {
       int n = 0;
       while ((x = vhpi_scan(it)) != NULL) {
-        if (n++ < 4) put(" %s@%d", str(vhpiNameP, x), vhpi_get(vhpiPositionP, x));
+        if (n++ < 4) put(" %s@%d=%s", str(vhpiNameP, x), vhpi_get(vhpiPositionP, x), str(vhpiStrValP, x));
         vhpi_release_handle(x);
       }
     }

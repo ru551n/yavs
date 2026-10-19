@@ -376,7 +376,7 @@ impl Design {
         } else {
             format!(":{name}")
         };
-        let abs = vhpi_name(&abs);
+        let abs = self.dots_to_colons(vhpi_name(&abs));
         if let Some(&n) = self.by_name.get(&abs) {
             return Some((n, Vec::new()));
         }
@@ -400,6 +400,22 @@ impl Design {
             return Some((base, path));
         }
         None
+    }
+}
+
+impl Design {
+    /// `.` also separates the levels of the hierarchy (`:TOP.CHILD.SIG`): a `.` that follows a
+    /// region (no layout) is a `:`. A `.` after a declaration stays a field selection.
+    fn dots_to_colons(&self, mut abs: String) -> String {
+        let mut from = 0;
+        while let Some(i) = abs[from..].find('.').map(|i| i + from) {
+            match self.by_name.get(&abs[..i]) {
+                Some(&n) if self.node(n).layout.is_none() => abs.replace_range(i..=i, ":"),
+                _ => break,
+            }
+            from = i + 1;
+        }
+        abs
     }
 }
 

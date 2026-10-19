@@ -170,6 +170,13 @@ static void start_of_sim(const vhpiCbDataT *cb) {
   lookup("\\Ext Sig\\", root);
   lookup("\\EXT SIG\\", root);
   lookup("@work:types_pkg:pkg_c", NULL);
+  /* '.' also separates the levels of the hierarchy. */
+  lookup(":top.g(1).u.reg", NULL);
+  lookup(":Top.B1.Inner", NULL);
+  lookup("top.ig.e.init(0)", NULL);
+  lookup("b1.inner", root);
+  lookup("g(0).u.d.a", root);
+  lookup(":top.nope.reg", NULL);
   lookup("no_such", root);
   lookup("outs(2)", root);
   lookup("r.c", root);

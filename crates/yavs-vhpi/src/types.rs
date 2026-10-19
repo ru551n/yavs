@@ -156,6 +156,8 @@ impl Types {
         Some(match prop {
             vhpiNameP | vhpiUnitNameP => vhpi_name(&name),
             vhpiCaseNameP => name,
+            // An enumeration literal's value string is the literal as written.
+            vhpiStrValP if matches!(o, TypeObj::Lit(..)) => name,
             _ => return None,
         })
     }
@@ -177,7 +179,9 @@ impl Types {
                     (vhpiNumFieldsP | DEPRECATED_vhpiNumFieldsP, Def::Record(f)) => {
                         i32::try_from(f.len()).ok()?
                     }
-                    (vhpiIsUnconstrainedP, Def::Array { .. }) => flag(ty.ranges.is_none()),
+                    (vhpiIsUnconstrainedP, d) => {
+                        flag(matches!(d, Def::Array { .. }) && ty.ranges.is_none())
+                    }
                     (vhpiIsScalarP, d) => flag(matches!(d, Def::Scalar(..))),
                     (vhpiIsCompositeP, d) => flag(!matches!(d, Def::Scalar(..))),
                     (vhpiIsAnonymousP, _) => flag(ty.anonymous),
@@ -190,6 +194,8 @@ impl Types {
                     vhpiLeftBoundP => int(r.left)?,
                     vhpiRightBoundP => int(r.right)?,
                     vhpiIsUpP => flag(r.up),
+                    // Every range handle is a constraint with bounds.
+                    vhpiIsUnconstrainedP => vhpiFalse,
                     vhpiIsNullP => match (r.left, r.right) {
                         (Bound::Int(l), Bound::Int(h)) => flag(if r.up { l > h } else { l < h }),
                         (Bound::Real(l), Bound::Real(h)) => flag(if r.up { l > h } else { l < h }),

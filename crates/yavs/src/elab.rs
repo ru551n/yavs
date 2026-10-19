@@ -564,8 +564,7 @@ pub fn run(
             }
         };
     }
-    let probes = a.wave_variables.then(yavs_wave::VarProbes::default);
-    let (mut sim, built) = match e.build_full(cfg, probes.as_ref()) {
+    let (mut sim, built) = match e.build_full(cfg) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.
         Err(err) => {
@@ -584,7 +583,7 @@ pub fn run(
     sim.subscribe(Box::new(Printer { names }));
     let rt = built.as_ref().map(|b| b.rt.clone());
     if !a.vhpi.is_empty() {
-        if let Some(b) = built {
+        if let Some(b) = built.clone() {
             yavs_vhpi::set_runtime(b);
         }
         sim.subscribe(Box::new(yavs_vhpi::VhpiObserver));
@@ -609,20 +608,24 @@ pub fn run(
                 std::path::Path::new(path),
                 sel,
                 cfg,
-                probes.as_ref(),
+                built.as_ref().filter(|_| a.wave_variables),
             ) {
                 Ok((rec, skipped)) => {
                     for s in skipped {
+                        let why = match s.elems {
+                            Some(n) => format!(
+                                "it has {n} elements, more than `--wave-max-array={}`",
+                                a.wave_max_array
+                            ),
+                            None => "its bounds are known only when the simulation runs".into(),
+                        };
                         out.emit(
                             &none,
                             &Diagnostic::warning(
                                 "W0802",
                                 format!("`{}` is not recorded in the waveform", s.path),
                             )
-                            .with_note(format!(
-                                "it has {} elements, more than `--wave-max-array={}`",
-                                s.elems, a.wave_max_array
-                            )),
+                            .with_note(why),
                         );
                     }
                     sim.subscribe(Box::new(rec.clone()));

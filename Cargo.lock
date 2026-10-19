@@ -1617,6 +1617,7 @@ dependencies = [
  "wellen",
  "yavs-elab",
  "yavs-interp",
+ "yavs-ir",
  "yavs-kernel",
  "yavs-sem",
 ]

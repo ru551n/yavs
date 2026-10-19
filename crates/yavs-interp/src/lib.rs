@@ -21,7 +21,6 @@ pub use foreign::{ForeignModel, ModelArg, ModelCall, ScalarKind};
 mod heap;
 mod implicit;
 mod native;
-mod probe;
 mod reflect;
 mod textio;
 
@@ -42,7 +41,6 @@ pub use debug::{
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
 pub use heap::Heap;
-pub use probe::{ProbeLocal, ProcVars, VarProbes};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 
 use exec::{Fault, Machine, Outcome};
@@ -370,7 +368,6 @@ pub struct InterpProcess {
     shared: Option<Arc<Mutex<SharedState>>>,
     /// This process's entry in `SharedState::procs`.
     roots_slot: Option<usize>,
-    vars: Option<Arc<ProcVars>>,
 }
 
 impl InterpProcess {
@@ -410,7 +407,6 @@ impl InterpProcess {
             done: false,
             shared,
             roots_slot: None,
-            vars: None,
         })
     }
 
@@ -418,12 +414,6 @@ impl InterpProcess {
     pub fn with_debug(mut self, session: Arc<DebugSession>, name: &str) -> InterpProcess {
         let i = session.register(name);
         self.m.attach(session, i);
-        self
-    }
-
-    /// Publish the watched variables of this process at each suspension (see [`ProcVars`]).
-    pub fn with_vars(mut self, vars: Arc<ProcVars>) -> InterpProcess {
-        self.vars = Some(vars);
         self
     }
 
@@ -440,10 +430,11 @@ impl InterpProcess {
     /// Variable `name` of the process's declarative part, read while the process is
     /// suspended (VHPI, #309): its IR type and value (a composite's data and descriptor, as
     /// [`call_values`] returns them). The declarative part of a process that has not run
-    /// yet runs first ([`InterpProcess::prestart`]). An error for a name the process does not declare.
+    /// yet runs first ([`InterpProcess::prestart`]). An error for a process that has ended
+    /// or a name the process does not declare.
     pub fn var(&mut self, name: &str) -> Result<(yavs_ir::TyId, CallVal), String> {
         let (ty, a) = self.var_slot(name)?;
-        let v = read_slot(&self.m, ty, a).map_err(fault_text)?;
+        let v = self.with_sh(|m| read_slot(m, ty, a))?;
         Ok((ty, v))
     }
 
@@ -451,13 +442,40 @@ impl InterpProcess {
     /// bounds, so `v`'s data must have the size of the current value's.
     pub fn set_var(&mut self, name: &str, v: &CallVal) -> Result<(), String> {
         let (ty, a) = self.var_slot(name)?;
-        write_slot(&mut self.m, ty, a, v).map_err(fault_text)
+        self.with_sh(|m| write_slot(m, ty, a, v))
+    }
+
+    /// Runs `f` on the machine, holding the shared state if the process has it: a serial
+    /// process keeps its composite variables in the shared heap.
+    fn with_sh<T>(&mut self, f: impl FnOnce(&mut Machine) -> exec::R<T>) -> Result<T, String> {
+        let Some(shared) = self.shared.clone() else {
+            return f(&mut self.m).map_err(fault_text);
+        };
+        let mut g = shared
+            .lock()
+            .map_err(|_| "shared state lock poisoned".to_string())?;
+        self.m.sh = Some(std::mem::take(&mut *g));
+        let r = f(&mut self.m);
+        if let Some(st) = self.m.sh.take() {
+            *g = st;
+        }
+        r.map_err(fault_text)
+    }
+
+    /// Whether the process has its variables: it has started (or [`InterpProcess::prestart`]
+    /// ran) and not ended.
+    pub fn has_vars(&self) -> bool {
+        let m = &self.m;
+        m.frames.first().is_some_and(|f| f.func == m.entry)
     }
 
     /// The IR type and slot address of variable `name` in the process's frame.
     fn var_slot(&mut self, name: &str) -> Result<(yavs_ir::TyId, u64), String> {
         self.prestart()?;
         let m = &self.m;
+        if !self.has_vars() {
+            return Err("the process has ended".into());
+        }
         // ponytail: by name; the declarative part is lowered before the statements, so the
         // first local of a name is the variable (a loop parameter may reuse the name later).
         // Key locals by declaration if two ever share a name in one frame.
@@ -612,16 +630,12 @@ impl Process for InterpProcess {
         let r = self.exec(Some(&mut *ctx));
         match r {
             Ok(Outcome::Suspended) => {
-                // Frame 0 is the process's own: its slots hold the process variables.
-                if let (Some(v), Some(f)) = (&self.vars, self.m.frames.first()) {
-                    v.publish(&f.slots);
-                }
                 self.m.after_suspend();
                 Ok(())
             }
             Ok(Outcome::Returned(_)) => {
-                // ponytail: the frame is gone, so a process that ends keeps the variable
-                // values of its last suspension in the waveform.
+                // The frame is gone: `var` fails from now on, and the waveform keeps the
+                // variable values of the last suspension.
                 self.done = true;
                 self.m.terminated();
                 Ok(())

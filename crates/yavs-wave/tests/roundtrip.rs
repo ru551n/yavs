@@ -426,7 +426,7 @@ fn selection_and_array_cap() {
         h.skipped,
         [Skipped {
             path: "top.mem".into(),
-            elems: 1 << 20
+            elems: Some(1 << 20)
         }]
     );
 

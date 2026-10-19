@@ -20,10 +20,10 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Re-exports; the value byte layouts per `SigType` (crate docs) |
-| `src/model.rs` | `Hierarchy`, `HierarchyBuilder`, `Scope`/`ScopeKind` (`Record`, `Array`, ...), `Signal`, `SignalId`, `SigType`, `ScalarType`, `EnumType`, `Bounds`, `Dir`, `ObjClass`, `PortDir`, `Skipped` |
+| `src/model.rs` | `Hierarchy`, `HierarchyBuilder`, `Scope`/`ScopeKind` (`Record`, `Array`, ...), `Signal`, `SignalId`, `SigType`, `ScalarType`, `EnumType`, `Bounds`, `Dir`, `ObjClass`, `PortDir`, `Skipped` (`elems: None`: a variable whose bounds are known only at run time, `HierarchyBuilder::unknown`) |
 | `src/select.rs` | `Selection`: case-insensitive globs (`*` one level, `**` across, `?`), `max_array_elems` |
 | `src/writer.rs` | `WaveWriter` (`change`, `finish`, also on drop), `WaveConfig` (timescale `-15` fs, `flush_interval` 5 s, `block_change_limit`), `Error` |
-| `src/sim.rs` | `record` (with `Option<&VarProbes>`), `Recorder`: elaborated design to `Hierarchy`; kernel changes to `change` calls, final value per time step in entry order (same file at any `--threads`) |
+| `src/sim.rs` | `record` (with `Option<&Built>` for `--wave-variables`), `Recorder`: elaborated design to `Hierarchy`; kernel changes to `change` calls, final value per time step in entry order (same file at any `--threads`) |
 | `src/interrupt.rs` | `install(stop)`: first Ctrl-C/SIGTERM calls `stop` (kernel ends between cycles, file finished); second exits 1 |
 | `tests/roundtrip.rs` | Every file read back with wellen |
 | `examples/demo.rs` | Small end-to-end use |
@@ -36,7 +36,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 | std_logic family and bit written as characters with the VHDL data type set; other enums as bit vectors with an FST enum table (original spelling); integers/time two's complement; reals doubles; vector bounds in the name (`data[7:0]`, left first) | Viewers show `U`, `X`, direction kept | same, "FST mapping" |
 | Records and arrays are scopes with one signal per sub-element | Rule 11 (same sub-element events as everything else) | `docs/plan.md` rule 11 |
 | An integer is written with its subtype's name and the width of its range (`Shape::Scalar::{sub, range}`; none: base name, 64 bits); the chosen generate alternative is the scope `label.alt` (`ScopeKind::Generate::alt`), so `*` in a glob does not span `label.alt` | Viewers show the declared type; #306 | `docs/decisions.md` "Waveform writer: wavefst" |
-| Process variables (`--wave-variables`, off by default) are sampled once per time step, at `NextTimeStep` and `EndOfSim`, from the bytes the process published when it last suspended (`yavs_interp::ProcVars`, watched only when the selection keeps them); a variable is written when it differs from its last written value | Variables are not on the event bus; the value at a suspension is the value at the end of the step, so any `--threads` gives the same file; #305 | `docs/decisions.md` "Waveform writer: wavefst" |
+| Variables (`--wave-variables`, off by default: process variables and non-protected shared variables) are read once per time step, at `NextTimeStep` and `EndOfSim`, through `Hook::with_process`/`InterpProcess::var` and `yavs_interp::shared_var`, decoded with `yavs_elab::ir_decode`, and declared from `Elaborated::var_shapes` with the signals' `node` walk (records and arrays as scopes); a sub-element is written when it differs from its last written value | Variables are not on the event bus; every process is suspended between phases, so any `--threads` gives the same file; #305, #348, #321 | `docs/decisions.md` "Waveform writer: wavefst" |
 | Include/exclude globs, size cap for arrays and memories, enum names in metadata | Rule 11 | `docs/plan.md` rule 11 |
 | Flushed on the next time advance after `flush_interval` or `block_change_limit`; header patched each time; SIGINT asks the kernel to stop between cycles and the recorder calls `finish` | A killed run is readable | `docs/decisions.md` "Durability" |
 | Waves come in through the event bus as a subscriber (M7) | Plan "Designed for the GUI" | `docs/plan.md` |

@@ -40,6 +40,8 @@ pub struct Model {
     /// (`Elaborated::var_ports`).
     pub(crate) shared_vars: std::collections::HashSet<(ScopeId, DeclId)>,
     pub(crate) var_ports: std::collections::BTreeMap<(ScopeId, DeclId), crate::VarObj>,
+    /// `Elaborated::var_shapes`.
+    pub(crate) var_shapes: HashMap<(Option<ScopeId>, DeclId), Shape>,
     /// User functions lowered for elaboration-time calls (ir.md 3.6): `None` when lowering
     /// failed (the reason is reported at the call).
     pub(crate) funcs: HashMap<DeclId, Result<Lowered1, crate::pkgcall::Fail>>,

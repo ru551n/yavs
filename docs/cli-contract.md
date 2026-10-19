@@ -236,10 +236,13 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   with more elements are left out with warning `W0802`. Signals left out by either
   are not read while simulating. The test runner does not
   pass these; use `yavs.sim_flags`.
-- `--wave-variables` (needs `--wave`, default off): also record the scalar variables of
-  processes (scope = the process label, path `top.proc.var`, matched by the globs), sampled at
-  the end of each time step; same file at any `--threads`. Composite variables and shared
-  variables are not recorded.
+- `--wave-variables` (needs `--wave`, default off): also record process variables (scope =
+  the process label, path `top.proc.var`) and non-protected shared variables (in their region,
+  `top.u1.v`, or package, `lib.pkg.v`), sampled at the end of each time step; same file at any
+  `--threads`. Records and arrays are scopes as for signals, integers have the width of their
+  elaborated range, and the globs and `--wave-max-array` apply. Access, file and protected
+  variables are not recorded; a variable whose bounds
+  are known only at run time is left out with `W0802`.
 - `--resolution=fs|ps|ns|us|ms|sec` (`run`, default `fs`): the time resolution limit, a run-time
   setting (plan rule 7). It is the value of `std.env.resolution_limit`, the unit of TIME
   values in `std.reflection` mirrors (decisions.md "Reflection: TIME values in mirrors") and the

@@ -29,4 +29,3 @@ pub use model::{
 pub use select::Selection;
 pub use sim::{Recorder, record};
 pub use writer::{Error, WaveConfig, WaveWriter};
-pub use yavs_interp::VarProbes;

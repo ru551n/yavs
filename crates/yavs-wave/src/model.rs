@@ -176,11 +176,12 @@ pub enum Node {
     Signal(Signal),
 }
 
-/// An array or memory that was left out because it exceeded the size cap.
+/// An array or memory that was left out because it exceeded the size cap (`elems`), or a
+/// variable whose bounds are known only when the simulation runs (`None`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skipped {
     pub path: String,
-    pub elems: u64,
+    pub elems: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -245,7 +246,10 @@ impl HierarchyBuilder {
         if f.scope.is_some() && len > self.sel.max_array_elems as u64 {
             f.scope = None;
             let path = f.path.clone();
-            self.skipped.push(Skipped { path, elems: len });
+            self.skipped.push(Skipped {
+                path,
+                elems: Some(len),
+            });
         }
         self.stack.last().is_some_and(|f| f.scope.is_some())
     }
@@ -272,7 +276,7 @@ impl HierarchyBuilder {
         {
             self.skipped.push(Skipped {
                 path,
-                elems: bounds.len(),
+                elems: Some(bounds.len()),
             });
             return false;
         }
@@ -285,6 +289,15 @@ impl HierarchyBuilder {
         };
         self.push(Node::Signal(sig));
         true
+    }
+
+    /// A variable `name` that is left out because its bounds are not known before the
+    /// simulation runs; listed in [`Hierarchy::skipped`] when the selection keeps it.
+    pub fn unknown(&mut self, name: &str) {
+        let path = self.path_of(name);
+        if !self.dropped() && self.sel.included(&path) && !self.sel.excluded(&path) {
+            self.skipped.push(Skipped { path, elems: None });
+        }
     }
 
     fn push(&mut self, node: Node) {

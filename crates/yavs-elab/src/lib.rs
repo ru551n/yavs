@@ -195,6 +195,11 @@ pub struct Elaborated {
     /// using one fails when it is called (#255).
     pub pkg_ext: std::collections::HashMap<yavs_sem::DeclId, ScopeId>,
     pub ext_unbound: std::collections::HashMap<yavs_sem::DeclId, String>,
+    /// The elaborated shape of each process variable and non-protected shared variable whose
+    /// bounds elaboration knows, by declaring region (a process variable's: the process's
+    /// enclosing region; `None`: a package's) and declaration. The waveform recorder declares
+    /// variables with it, as signals with theirs (#321).
+    pub var_shapes: std::collections::HashMap<(Option<ScopeId>, yavs_sem::DeclId), Shape>,
     /// Shared variables by (declaring region, declaration): one object each (#249).
     pub(crate) shared_vars: std::collections::HashSet<(ScopeId, yavs_sem::DeclId)>,
     /// Warnings of a successful elaboration.

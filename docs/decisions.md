@@ -112,12 +112,22 @@ milestone users care about works.
   reals are doubles; vector bounds go into the name (`data[7:0]`, `rev[0:3]`, left first, so
   direction is kept); records and arrays are scopes with one signal per sub-element; the chosen
   alternative of a generate with a label is the scope `label.alt` (#306).
-- **Variables (#305):** opt in with `--wave-variables`. Only scalar process variables; they sit
-  in the process's scope. Sampled once per time step (`NextTimeStep`, `EndOfSim`) from a snapshot
-  the process publishes when it suspends (`yavs_interp::ProcVars`, `InterpProcess::with_vars`,
-  `Elaborated::build_probed`), so nothing is published for variables the globs drop and the
-  file does not depend on `--threads`. A process that ends keeps the values of its last
-  suspension. Composite variables and shared variables are not recorded yet.
+- **Variables (#305, #348, #321):** opt in with `--wave-variables`. Process variables sit in the
+  process's scope, non-protected shared variables in their region or package (a package
+  without an elaborated scope gets `lib.pkg` scopes). Read once per time step (`NextTimeStep`,
+  `EndOfSim`), when every process is suspended, through the observer accessors of #309
+  (`Hook::with_process`, `InterpProcess::var`, `yavs_interp::shared_var`) and decoded with
+  `yavs_elab::ir_decode`; nothing runs at a suspension, so a run without the option pays
+  nothing, and the file does not depend on `--threads`. A sub-element is written when it
+  differs from its last written value. Shapes are the elaborated ones
+  (`Elaborated::var_shapes`, computed with the signals' `Model::shape` in the declaring
+  region), so generic-dependent bounds and integer widths match signals'. A shape whose
+  evaluation would call a function with side effects on package state is not computed (the
+  call is undone: the process makes it itself when it starts, #251) and the variable is left
+  out with `W0802`. Protected-type shared variables are not recorded: the accessor exposes no
+  protected object state. A process that ends keeps the values of its last suspension (its
+  frame is gone). Reading a serial process's variables holds the shared state: its composite
+  variables live in the shared heap.
 - **Durability:** a block is flushed on the next time advance after `flush_interval` (default
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel

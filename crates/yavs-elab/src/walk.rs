@@ -510,6 +510,22 @@ pub(crate) fn elaborate(
                 e.errors.push(*x);
             }
         }
+        // The shapes of the shared variables of loaded packages (waves, #321).
+        let vars: Vec<DeclId> =
+            e.db.units
+                .iter()
+                .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
+                .flat_map(|s| e.db.decls_with_instances(s))
+                .filter(|&d| {
+                    matches!(&e.db.decls[d].kind,
+                    DeclKind::Object(o) if o.class == ObjClass::SharedVariable)
+                })
+                .collect();
+        for d in vars {
+            if let Err(x) = e.var_shape(None, d) {
+                e.errors.push(*x);
+            }
+        }
         // Implicit signals named in the subprograms of a package body belong to the package
         // (LRM 16.2.4), after the signals they are of.
         let implicit: Vec<(UnitId, DeclId)> =
@@ -563,6 +579,7 @@ pub(crate) fn elaborate(
         pkg_ext: e.m.pkg_ext,
         ext_unbound: e.m.ext_unbound,
         shared_vars: e.m.shared_vars,
+        var_shapes: e.m.var_shapes,
         warnings: e.warnings,
         ir: None,
         elab_calls: std::mem::take(&mut e.m.session.log),
@@ -1008,6 +1025,12 @@ impl Elab<'_> {
                 // The actual of a variable port finds its object here (#188).
                 (ObjClass::SharedVariable, _) => {
                     self.m.shared_vars.insert((s, d));
+                    self.var_shape(Some(s), d)?;
+                }
+                (ObjClass::Variable, ObjRole::Plain)
+                    if db.scopes[region].kind == yavs_sem::scope::ScopeKind::Process =>
+                {
+                    self.var_shape(Some(s), d)?;
                 }
                 (ObjClass::Signal, ObjRole::Plain) => {
                     let span = decl.span;
@@ -2282,6 +2305,37 @@ impl Elab<'_> {
             .unwrap_or_else(|| Box::new(ice(at, "instantiation failed without a diagnostic")));
         self.errors.extend(ds);
         last
+    }
+
+    /// The shape of variable `d` of region `s` (`None`: a package's) for the waveform
+    /// recorder (`Elaborated::var_shapes`, #321), from its subtype. Left out when elaboration cannot compute it without calling a function the
+    /// process calls itself when it starts (#251): such a call is undone.
+    fn var_shape(&mut self, s: Option<ScopeId>, d: DeclId) -> R<()> {
+        let db: &Db = self.db;
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Ok(());
+        };
+        let k = &db.types[db.base(o.subtype)].kind;
+        if !(k.is_scalar()
+            || matches!(
+                k,
+                yavs_sem::types::TypeKind::Array { .. } | yavs_sem::types::TypeKind::Record { .. }
+            ))
+        {
+            return Ok(());
+        }
+        let mark = self.m.session.mark();
+        let sh = self.m.shape(db, o.subtype, s, decl.span).ok().flatten();
+        let called = self.m.session.mark() != mark;
+        self.m
+            .session
+            .undo(db, mark)
+            .map_err(|m| Box::new(ice(decl.span, &format!("undoing calls: {m}"))))?;
+        if let (Some(sh), false) = (sh, called) {
+            self.m.var_shapes.insert((s, d), sh);
+        }
+        Ok(())
     }
 
     fn process(

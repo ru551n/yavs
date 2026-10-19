@@ -11,6 +11,7 @@ wavefst = { version = "0.4.0", default-features = false, features = ["writer", "
 ctrlc = { version = "3.5.2", features = ["termination"] }
 yavs-elab = { path = "../yavs-elab" }
 yavs-interp = { path = "../yavs-interp" }
+yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-sem = { path = "../yavs-sem" }
 

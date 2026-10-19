@@ -55,11 +55,12 @@ pub struct Ir {
 }
 
 /// The interpreter side of a built simulation (`Elaborated::build_full`).
+#[derive(Clone)]
 pub struct Built {
     pub rt: Arc<Runtime>,
     pub shared: Arc<Mutex<SharedState>>,
     /// The slot address and value type of each non-protected shared variable, by declaring
-    /// region (`None` for a package's) and declaration: VHPI reads and writes it there
+    /// region (`None` for a package's) and declaration: VHPI and waves read it there
     /// (`yavs_interp::shared_var`, #309). Every region's is listed, used by a process or not
     /// (#342).
     pub vars: HashMap<(Option<ScopeId>, yavs_sem::DeclId), (u64, yavs_ir::TyId)>,
@@ -410,28 +411,13 @@ impl Elaborated {
         &self,
         cfg: Config,
     ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
-        self.build_probed(cfg, None)
+        self.build_full(cfg).map(|(s, b)| (s, b.map(|b| b.rt)))
     }
 
-    /// [`Elaborated::build_runtime`] that registers the scalar variables of every process in
-    /// `probes` (by the index of the process scope), for the waveform's variables.
-    pub fn build_probed(
-        &self,
-        cfg: Config,
-        probes: Option<&yavs_interp::VarProbes>,
-    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
-        self.build_full(cfg, probes)
-            .map(|(s, b)| (s, b.map(|b| b.rt)))
-    }
-
-    /// [`Elaborated::build_probed`] with the shared state and where the shared variables
-    /// are (VHPI, #309).
-    pub fn build_full(
-        &self,
-        cfg: Config,
-        probes: Option<&yavs_interp::VarProbes>,
-    ) -> Result<(SimControl, Option<Built>), SimError> {
-        self.build_runtime_with(cfg, probes, None)
+    /// [`Elaborated::build_runtime`] with the shared state and where the shared variables
+    /// are (VHPI and waves, #309).
+    pub fn build_full(&self, cfg: Config) -> Result<(SimControl, Option<Built>), SimError> {
+        self.build_runtime_with(cfg, None)
     }
 
     /// [`Elaborated::build_runtime`] with every process attached to the debug session (ir.md
@@ -442,7 +428,7 @@ impl Elaborated {
         cfg: Config,
         session: &Arc<DebugSession>,
     ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
-        self.build_runtime_with(cfg, None, Some(session))
+        self.build_runtime_with(cfg, Some(session))
             .map(|(s, b)| (s, b.map(|b| b.rt)))
     }
 
@@ -455,7 +441,6 @@ impl Elaborated {
     fn build_runtime_with(
         &self,
         cfg: Config,
-        probes: Option<&yavs_interp::VarProbes>,
         dbg: Option<&Arc<DebugSession>>,
     ) -> Result<(SimControl, Option<Built>), SimError> {
         let attach = |proc: InterpProcess, p: &crate::ProcInst| match dbg {
@@ -667,18 +652,13 @@ impl Elaborated {
                     });
                 }
                 let serial = ir.program.is_serial(pir.func);
-                let mut proc = InterpProcess::new(
+                let proc = InterpProcess::new(
                     rt.clone(),
                     pir.func,
                     inst,
                     drivers,
                     serial.then(|| shared.clone()),
                 )?;
-                if let Some(probes) = probes {
-                    let v = yavs_interp::ProcVars::of(&rt.prog, pir.func);
-                    probes.insert(p.scope.0, v.clone());
-                    proc = proc.with_vars(v);
-                }
                 Ok(Box::new(attach(proc, p)))
             },
             res,

@@ -83,12 +83,17 @@ Waveforms
   path, such as ``tb.u1.count``: matching ignores case, ``*`` matches within one level, ``**``
   across levels and ``?`` one character, and a pattern that matches a scope covers everything
   below it. Signals left out cost nothing while simulating.
-* ``--wave-variables`` also records the scalar variables of processes (integers, enumerations,
-  ``real``, ``time``, ``std_logic``), in a scope named after the process, such as
-  ``tb.main.count``, and the include and exclude globs apply to them. A variable is sampled at
-  the end of each time step, so the file shows its value after all the deltas of that step and
-  is the same for any ``--threads``. Without the option, variables are not recorded and cost
-  nothing. Arrays, records and shared variables are not recorded yet.
+* ``--wave-variables`` also records variables: those of processes, in a scope named after the
+  process (``tb.main.count``), and shared variables, in the region or package that declares
+  them (``tb.u1.acc``, ``work.pkg.total``). They are shown like signals: records and arrays as
+  scopes, ``std_logic`` and ``bit`` vectors as vectors, and an integer with the width of its
+  range after elaboration (``integer range 0 to DEPTH - 1`` is 4 bits when ``DEPTH`` is 16). The
+  include and exclude globs and ``--wave-max-array`` apply to them. A variable is sampled at the
+  end of each time step, so the file shows its value after all the deltas of that step and is
+  the same for any ``--threads``; a process that ends keeps the values it had when it last
+  suspended. Without the option, variables are not recorded and cost nothing. Not recorded:
+  access and file variables, shared variables of a protected type, and a variable whose bounds
+  are known only when the simulation runs (warning ``W0802``).
 * Arrays and vectors with more elements than ``--wave-max-array`` (default 65536) are left out
   with warning ``W0802``.
 * The file is written out periodically while simulating and finished at the end of the

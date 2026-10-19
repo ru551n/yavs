@@ -62,8 +62,10 @@ fn dump(path: &Path) -> String {
     }
     let refs: Vec<_> = vars.iter().map(|v| v.signal_ref()).collect();
     let names: Vec<_> = vars.iter().map(|v| v.full_name(h)).collect();
-    if refs.is_empty() {
-        return s; // wellen cannot load signals of a file without changes
+    if refs.is_empty() || w.time_table().is_empty() {
+        // wellen cannot load signals of a file without changes (variables of a run that
+        // failed before its first suspension)
+        return s;
     }
     w.load_signals(&refs);
     let tt = w.time_table().to_vec();
@@ -500,7 +502,11 @@ fn corpus_wave(f: &Path) -> bool {
         return false;
     }
     let fst = d.join("a.fst");
-    let mut args = vec![format!("--wave={}", fst.display()), format!("--std={std}")];
+    let mut args = vec![
+        format!("--wave={}", fst.display()),
+        "--wave-variables".to_string(),
+        format!("--std={std}"),
+    ];
     if let Some(t) = field("stop") {
         args.push(format!("--stop-time={t}"));
     }
@@ -520,4 +526,124 @@ fn corpus_wave(f: &Path) -> bool {
     dump(&fst);
     let _ = std::fs::remove_dir_all(&d);
     true
+}
+
+/// Composite, shared and generic-sized variables (#321): records and arrays are scopes like
+/// signals, shared variables sit in their region or package, and a range that depends on a
+/// generic gives the width of its elaborated range.
+#[test]
+fn wave_composite_and_shared_variables() {
+    let d = scratch("varsx");
+    let work = format!("--work=work:{}", d.join("lib").display());
+    let ok = yavs()
+        .args(["analyze", "--std=2008", "--relaxed", &work])
+        .arg(repo().join("tests/cli/wave_vars.vhd"))
+        .status()
+        .expect("yavs")
+        .success();
+    assert!(ok);
+    let go = |f: &Path, extra: &[&str]| -> String {
+        let wave = format!("--wave={}", f.display());
+        let mut a = vec!["--relaxed", wave.as_str(), "--wave-variables"];
+        a.extend_from_slice(extra);
+        a.push("wave_vars_tb");
+        let out = run(&d, &a);
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{err}");
+        err
+    };
+    let fst = d.join("a.fst");
+    let err = go(&fst, &[]);
+    let s = dump(&fst);
+    // `0 to DEPTH - 1` with DEPTH = 16: 4 bits; `DEPTH / 4 - 1 downto 0`: 4 elements.
+    assert!(
+        s.contains("wave_vars_tb.u.main.cnt Integer Implicit Some(4)"),
+        "{s}"
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.cnt"),
+        "0=0001 10000000=0010 20000000=0011"
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.vec"),
+        "0=1111 10000000=0000 20000000=1111"
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.bv"),
+        "0=010 10000000=100 20000000=001"
+    );
+    // A record is a scope with its fields, an array one with its elements.
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.pr.a"), "0=1");
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.pr.n"),
+        "0=001 10000000=010 20000000=011"
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.ints.(2)"),
+        format!("0={:032b} 20000000={:032b}", 10, 30)
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.s.(1)"),
+        format!("0={:08b} 10000000={:08b} 20000000={:08b}", b'b', b'c', b'd')
+    );
+    // Shared variables: an architecture's in its instance, a package's in its package.
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.acc"),
+        format!("0={:032b} 10000000={:032b} 20000000={:032b}", 1, 3, 6)
+    );
+    assert_eq!(
+        changes(&s, "work.wv_pkg.pcount"),
+        format!("0={:032b} 10000000={:032b} 20000000={:032b}", 3, 4, 5)
+    );
+    {
+        let w = read(&fst).expect("wellen");
+        let h = w.hierarchy();
+        let pr = h
+            .lookup_scope(&["wave_vars_tb", "u", "main", "pr"])
+            .expect("record scope");
+        assert_eq!(h[pr].scope_type(), ScopeType::VhdlRecord);
+        h.lookup_var(&["wave_vars_tb", "u"], "acc")
+            .expect("shared variable");
+    }
+    // A protected object and a line are not recorded; a variable whose bounds call an
+    // impure function is named in a warning.
+    assert!(!s.contains("cell") && !s.contains("main.l "), "{s}");
+    assert!(
+        err.contains("`wave_vars_tb.u.main.dyn` is not recorded")
+            && err.contains("known only when the simulation runs"),
+        "{err}"
+    );
+    // The globs and the size cap apply to variables.
+    let sel = d.join("sel.fst");
+    let err = go(
+        &sel,
+        &[
+            "--wave-exclude=**.pr",
+            "--wave-max-array=3",
+            "--wave-include=**.main.*",
+        ],
+    );
+    let names: Vec<String> = dump(&sel)
+        .lines()
+        .filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "wave_vars_tb.u.main.cnt",
+            "wave_vars_tb.u.main.bv",
+            "wave_vars_tb.u.main.ints.(1)",
+            "wave_vars_tb.u.main.ints.(2)",
+            "wave_vars_tb.u.main.s.(1)",
+            "wave_vars_tb.u.main.s.(2)"
+        ]
+    );
+    assert!(
+        err.contains("`wave_vars_tb.u.main.vec` is not recorded"),
+        "{err}"
+    );
+    // The same file at any thread count.
+    let t4 = d.join("t4.fst");
+    go(&t4, &["--threads=4"]);
+    assert_eq!(dump(&t4), s);
 }

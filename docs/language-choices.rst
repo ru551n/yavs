@@ -319,7 +319,8 @@ target unchanged; in 2008 files they are errors (10.5.2.1).
 Configurations
 --------------
 
-A block configuration of a default-bound instance is accepted (3.4.3). A configuration that
+A block configuration of a default-bound instance is an error (``E1704``, 3.4.3): bind the
+instance explicitly. A configuration that
 names an instance of another component, or binds an instance that a configuration
 specification already binds to a different entity aspect, is an error at analysis (7.3); an
 incremental binding may repeat the entity aspect of the primary binding (7.3.2.1). Some simulators

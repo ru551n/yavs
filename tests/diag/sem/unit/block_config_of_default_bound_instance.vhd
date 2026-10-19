@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
--- expect: none
--- LRM 3.4.3, 7.3.3 (default binding; permissive: Questa accepts, NVC and GHDL reject)
+-- expect: E1704 15:7 component `c` is only default-bound, so a block configuration cannot configure its architecture
+-- LRM 3.4.3, 7.3.3 (a default binding is not enough: two of the three reference simulators reject it)
 entity c is generic (n : integer := 0); end entity;
 architecture rtl of c is begin end architecture;
 entity top is end entity;

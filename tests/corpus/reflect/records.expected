@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:records:_p0	outer OUTER len 5
+diag	note	0	0	:records:_p0	el 0 ID : NATURAL idx 0
+diag	note	0	0	:records:_p0	el 1 COL : COLOR idx 1
+diag	note	0	0	:records:_p0	el 2 POS : INNER idx 2
+diag	note	0	0	:records:_p0	el 3 TAG : STRING idx 3
+diag	note	0	0	:records:_p0	el 4 T : TIME idx 4
+diag	note	0	0	:records:_p0	id 1 col green x 10 tag2 'y' t 2000000 FS
+diag	note	0	0	:records:_p0	pos sub INNER Y
+diag	note	0	0	:records:_p0	rt OUTER 1
+diag	note	0	0	:records:_p0	k -2 blue
+diag	note	0	0	:records:_p0	inner type X 2
+diag	note	0	0	:records:_p0	done

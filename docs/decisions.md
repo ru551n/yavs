@@ -525,6 +525,12 @@ resolution both readings give the same number. Applies to the M3 runtime that bu
   from the left); the reference simulator 1.23 normalises some indices differently (`tests/corpus/reflect/multidim`
   is `ref=hand`).
 - A conversion to the wrong class (`value_mirror.to_record` of an integer) is a runtime error.
+- `p'reflect` of an access object mirrors the access value (`class_access`), not the designated
+  object the prefix is also appropriate for (LRM 8.1); the reference simulator agrees
+  (yavs-sem, 2026-10-19, #97).
+- A scalar subtype whose range is not static (generic or parameter bounds) is reflected with its
+  range evaluated where `'reflect` is evaluated, also as an element, index or designated subtype;
+  mirrors made from that mirror keep it (yavs-lower, yavs-interp, 2026-10-19, #97).
 ## Incomplete types in protected method profiles (user, 2026-10-18; amends U-2)
 
 Allowed only in units of library `std` (`std.reflection` needs it). In user code it is `E1220` with

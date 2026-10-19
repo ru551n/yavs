@@ -1,0 +1,18 @@
+exit	0
+diag	note	0	0	:physical:_p0	t value 5000000 unit 1 image 5000000 FS sub TIME
+diag	note	0	0	:physical:_p0	time units 8
+diag	note	0	0	:physical:_p0	unit 1 FS scale 1
+diag	note	0	0	:physical:_p0	unit 2 PS scale 1000
+diag	note	0	0	:physical:_p0	unit 3 NS scale 1000000
+diag	note	0	0	:physical:_p0	unit 4 US scale 1000000000
+diag	note	0	0	:physical:_p0	unit 5 MS scale 1000000000000
+diag	note	0	0	:physical:_p0	unit 6 SEC scale 1000000000000000
+diag	note	0	0	:physical:_p0	unit 7 MIN scale 60000000000000000
+diag	note	0	0	:physical:_p0	unit 8 HR scale 3600000000000000000
+diag	note	0	0	:physical:_p0	ns idx 3 scale us 1000000000
+diag	note	0	0	:physical:_p0	delay_length DELAY_LENGTH low 0 asc true
+diag	note	0	0	:physical:_p0	d value 20000 image 20000 UM sub SHORT
+diag	note	0	0	:physical:_p0	short left 0 right 50000 high 50000 UM len 50001
+diag	note	0	0	:physical:_p0	dist low -100 scale cm 10000 name CM
+diag	note	0	0	:physical:_p0	rt 20000 UM
+diag	note	0	0	:physical:_p0	done

@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:scalars2:_p0	int 9223372036854775807
+diag	note	0	0	:scalars2:_p0	natural 0 positive 1
+diag	note	0	0	:scalars2:_p0	prob PROB true
+diag	note	0	0	:scalars2:_p0	ts 1000 FS 2000000000 TIME
+diag	note	0	0	:scalars2:_p0	ia BYTE 'k' 255
+diag	note	0	0	:scalars2:_p0	byte BYTE class_integer BYTE
+diag	note	0	0	:scalars2:_p0	times class_array 2 TIME
+diag	note	0	0	:scalars2:_p0	value_class class_array class_floating
+diag	note	0	0	:scalars2:_p0	done

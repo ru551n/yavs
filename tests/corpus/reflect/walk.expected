@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:walk:_p0	(NAME => ['h', 'i'], PS => [(K => red, V => 1), (K => blue, V => -7)], R => 325, T => 15000000 FS, FLAGS => ['1', '0'])
+diag	note	0	0	:walk:_p0	[(K => red, V => 1), (K => blue, V => -7)]
+diag	note	0	0	:walk:_p0	(K => blue, V => -7)
+diag	note	0	0	:walk:_p0	done

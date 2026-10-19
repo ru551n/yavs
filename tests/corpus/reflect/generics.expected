@@ -1,0 +1,13 @@
+exit	0
+diag	note	1000000	0	:generics:u:_p0	word 4 3
+diag	note	1000000	0	:generics:u:_p0	rng -2 2 2
+diag	note	1000000	0	:generics:u:_p0	r.k -1 w 4
+diag	note	1000000	0	:generics:u:_p0	p '1' 4
+diag	note	1000000	0	:generics:u:_p0	nested 2 -2 5
+diag	note	1000000	0	:generics:u:_p0	letters 'd' 4
+diag	note	1000000	0	:generics:u:_p0	rng_arr 2 'd'
+diag	note	1000000	0	:generics:u:_p0	local 7 3
+diag	note	1000000	0	:generics:u:_p0	ts 3000000 3000000 FS sr 0 '1'
+diag	note	1000000	0	:generics:u:_p0	pc 12
+diag	note	1000000	0	:generics:u:_p0	inst INTEGER/class_integer REC/class_record
+diag	note	1000000	0	:generics:u:_p0	snapshot -2 now 1

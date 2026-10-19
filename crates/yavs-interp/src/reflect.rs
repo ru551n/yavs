@@ -1,12 +1,15 @@
 //! `std.reflection` (LRM 2019 16.11): mirror objects and the 123 mirror methods.
 //!
-//! `x'reflect` and `T'reflect` call `yavs.attr.reflect (refl, is_value, v)` with the
+//! `x'reflect` and `T'reflect` call `yavs.attr.reflect (refl, is_value, v, ranges)` with the
 //! [`yavs_ir::Refl`] entry of the subtype: `v` is the scalar cell, the address of a composite's
 //! fat pair `[data, descriptor]`, or for a subtype mirror the address of the array subtype's
-//! descriptor (0 when unconstrained or not an array).
+//! descriptor (0 when unconstrained or not an array); `ranges` is 0 or the address of
+//! `[count][refl, left, right, dir]...`, the run-time ranges of the reachable scalar subtypes
+//! whose range is not static (their entries hold the type's range).
 //!
 //! A mirror is a private-heap object (`Obj::Mirror`, generational handle) holding a copy of
-//! what it reflects: `[refl: u32][is_value: u32][desc_len: u64][descriptor][value]`. The value
+//! what it reflects: `[refl: u32][flags: u32][desc_len: u64][descriptor][value][ranges]` (see
+//! `encode`). The value
 //! of a scalar is its 8-byte cell; a composite keeps its IR layout, so descriptor and value
 //! are the `[descriptor][elements]` form of a heap array and the GC scans them like one. Every
 //! mirror access type designates such an object: `value_mirror.to_integer` returns the same
@@ -56,7 +59,13 @@ struct Mirror {
     value: bool,
     desc: Vec<u8>,
     val: Vec<u8>,
+    /// Run-time ranges of non-static scalar subtypes, `[refl, left, right, dir]` per entry,
+    /// passed on to every mirror made from this one.
+    ranges: Vec<u8>,
 }
+
+/// One `ranges` entry.
+const RANGE: usize = 32;
 
 fn rd64(b: &[u8], at: usize) -> u64 {
     let mut a = [0u8; 8];
@@ -95,29 +104,49 @@ fn const_bytes(prog: &Program, c: ConstId) -> R<Vec<u8>> {
     }
 }
 
-fn alloc(m: &mut Machine, id: ReflId, value: bool, desc: &[u8], val: &[u8]) -> R<u64> {
-    let mut d = Vec::with_capacity(HDR + desc.len() + val.len());
-    d.extend(id.0.to_le_bytes());
-    d.extend(u32::from(value).to_le_bytes());
-    d.extend((desc.len() as u64).to_le_bytes());
-    d.extend_from_slice(desc);
-    d.extend_from_slice(val);
+fn alloc(
+    m: &mut Machine,
+    id: ReflId,
+    value: bool,
+    desc: &[u8],
+    val: &[u8],
+    ranges: &[u8],
+) -> R<u64> {
+    let d = encode(id, value, desc, val, ranges)?;
     m.heap
         .alloc(Obj::Mirror, d)
         .map_err(|_| Fault::Runtime("heap object limit (16M objects per heap) exceeded".into()))
 }
 
+/// A mirror object's bytes: `[refl: u32][flags: u32][desc_len: u64][descriptor][value]
+/// [ranges]`; flags bit 0 is set for a value mirror, the rest count the `ranges` entries.
+fn encode(id: ReflId, value: bool, desc: &[u8], val: &[u8], ranges: &[u8]) -> R<Vec<u8>> {
+    let mut d = Vec::with_capacity(HDR + desc.len() + val.len() + ranges.len());
+    d.extend(id.0.to_le_bytes());
+    let flags = u32::try_from(ranges.len() / RANGE * 2)
+        .map_err(|_| ice("too many run-time ranges in a mirror"))?;
+    d.extend((flags | u32::from(value)).to_le_bytes());
+    d.extend((desc.len() as u64).to_le_bytes());
+    d.extend_from_slice(desc);
+    d.extend_from_slice(val);
+    d.extend_from_slice(ranges);
+    Ok(d)
+}
+
 fn parse(d: &[u8]) -> Option<Mirror> {
     let id = u32::try_from(le(d.get(0..4)?)).ok()?;
-    let value = le(d.get(4..8)?) != 0;
+    let flags = le(d.get(4..8)?);
     let n = usize::try_from(rd64(d, 8)).ok()?;
+    let r = usize::try_from(flags >> 1).ok()?.checked_mul(RANGE)?;
+    let end = d.len().checked_sub(r)?;
     let desc = d.get(HDR..HDR + n)?.to_vec();
-    let val = d.get(HDR + n..)?.to_vec();
+    let val = d.get(HDR + n..end)?.to_vec();
     Some(Mirror {
         refl: ReflId(id),
-        value,
+        value: flags & 1 != 0,
         desc,
         val,
+        ranges: d[end..].to_vec(),
     })
 }
 
@@ -157,7 +186,7 @@ pub(crate) fn mirror_handles(prog: &Program, data: &[u8], out: &mut Vec<u64>) ->
             true
         }
         Some(ReflKind::Array { ty, .. }) => {
-            crate::heap::object_handles(prog, *ty, &data[HDR..], out)
+            crate::heap::object_handles(prog, *ty, &data[HDR..data.len() - mi.ranges.len()], out)
         }
         Some(ReflKind::Record { ty, .. }) => crate::heap::value_handles(prog, *ty, &mi.val, out),
         Some(_) => true,
@@ -335,6 +364,16 @@ fn reflect_attr(m: &mut Machine, a: &[u64]) -> R<u64> {
     let id = ReflId(arg(a, 0)? as u32);
     let value = arg(a, 1)? != 0;
     let v = arg(a, 2)?;
+    let ranges = match arg(a, 3)? {
+        0 => Vec::new(),
+        p => {
+            let n = m.load(p, Width::B8)?;
+            let bytes = n
+                .checked_mul(RANGE as u64)
+                .ok_or_else(|| ice("run-time range count"))?;
+            m.rd(add_addr(p, 8)?, bytes)?.to_vec()
+        }
+    };
     let rt = m.rt.clone();
     let prog = &rt.prog;
     let r = refl(prog, id)?;
@@ -359,7 +398,7 @@ fn reflect_attr(m: &mut Machine, a: &[u64]) -> R<u64> {
         (_, true) => (Vec::new(), v.to_le_bytes().to_vec()),
         (_, false) => (Vec::new(), Vec::new()),
     };
-    alloc(m, id, value, &desc, &val)
+    alloc(m, id, value, &desc, &val, &ranges)
 }
 
 // ---- method helpers ----
@@ -387,7 +426,7 @@ fn same(_: &mut Machine, a: &[u64]) -> R<u64> {
 
 fn subtype_of(m: &mut Machine, a: &[u64]) -> R<u64> {
     let mi = get(m, arg(a, 0)?)?;
-    alloc(m, mi.refl, false, &mi.desc, &[])
+    alloc(m, mi.refl, false, &mi.desc, &[], &mi.ranges)
 }
 
 fn simple_name(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -474,8 +513,16 @@ fn value(m: &mut Machine, a: &[u64]) -> R<u64> {
     Ok(cell(&mi))
 }
 
-/// `(left, right, downto)` of a scalar subtype, as cells.
-fn scalar_range(r: &Refl) -> R<(u64, u64, bool)> {
+/// `(left, right, downto)` of the scalar subtype of mirror `mi`, as cells: its run-time range
+/// when it has one, else its entry's.
+fn scalar_range(mi: &Mirror, r: &Refl) -> R<(u64, u64, bool)> {
+    if let Some(e) = mi
+        .ranges
+        .chunks_exact(RANGE)
+        .find(|e| rd64(e, 0) == u64::from(mi.refl.0))
+    {
+        return Ok((rd64(e, 8), rd64(e, 16), rd64(e, 24) == 1));
+    }
     Ok(match r.kind {
         ReflKind::Enum {
             left,
@@ -511,8 +558,8 @@ enum Bound {
     High,
 }
 
-fn bound_cell(r: &Refl, b: Bound) -> R<u64> {
-    let (l, rr, downto) = scalar_range(r)?;
+fn bound_cell(mi: &Mirror, r: &Refl, b: Bound) -> R<u64> {
+    let (l, rr, downto) = scalar_range(mi, r)?;
     Ok(match (b, downto) {
         (Bound::Left, _) => l,
         (Bound::Right, _) => rr,
@@ -524,20 +571,20 @@ fn bound_cell(r: &Refl, b: Bound) -> R<u64> {
 /// `left`, `right`, `low`, `high` of a scalar subtype mirror: a value mirror.
 fn bound(m: &mut Machine, a: &[u64], b: Bound) -> R<u64> {
     let (mi, r) = this(m, a)?;
-    let v = bound_cell(&r, b)?;
-    alloc(m, mi.refl, true, &[], &v.to_le_bytes())
+    let v = bound_cell(&mi, &r, b)?;
+    alloc(m, mi.refl, true, &[], &v.to_le_bytes(), &mi.ranges)
 }
 
 fn ascending(m: &mut Machine, a: &[u64]) -> R<u64> {
-    let (_, r) = this(m, a)?;
-    Ok(bool_cell(!scalar_range(&r)?.2))
+    let (mi, r) = this(m, a)?;
+    Ok(bool_cell(!scalar_range(&mi, &r)?.2))
 }
 
 /// Number of values of a discrete (or physical) subtype.
 fn length(m: &mut Machine, a: &[u64]) -> R<u64> {
-    let (_, r) = this(m, a)?;
-    let lo = bound_cell(&r, Bound::Low)? as i64;
-    let hi = bound_cell(&r, Bound::High)? as i64;
+    let (mi, r) = this(m, a)?;
+    let lo = bound_cell(&mi, &r, Bound::Low)? as i64;
+    let hi = bound_cell(&mi, &r, Bound::High)? as i64;
     if hi < lo {
         return Ok(0);
     }
@@ -552,8 +599,8 @@ fn length(m: &mut Machine, a: &[u64]) -> R<u64> {
 fn enum_literal_idx(m: &mut Machine, a: &[u64]) -> R<u64> {
     let (mi, r) = this(m, a)?;
     let idx = arg(a, 1)? as i64;
-    let lo = bound_cell(&r, Bound::Low)? as i64;
-    let hi = bound_cell(&r, Bound::High)? as i64;
+    let lo = bound_cell(&mi, &r, Bound::Low)? as i64;
+    let hi = bound_cell(&mi, &r, Bound::High)? as i64;
     let pos = lo.checked_add(idx).filter(|&p| idx >= 0 && p <= hi);
     let Some(pos) = pos else {
         return rt_err(format!(
@@ -562,7 +609,7 @@ fn enum_literal_idx(m: &mut Machine, a: &[u64]) -> R<u64> {
             (hi - lo + 1).max(0)
         ));
     };
-    alloc(m, mi.refl, true, &[], &(pos as u64).to_le_bytes())
+    alloc(m, mi.refl, true, &[], &(pos as u64).to_le_bytes(), &mi.ranges)
 }
 
 fn enum_literal_name(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -571,15 +618,15 @@ fn enum_literal_name(m: &mut Machine, a: &[u64]) -> R<u64> {
     let ReflKind::Enum { ty, .. } = r.kind else {
         return Err(ice("enumeration method on another class"));
     };
-    let lo = bound_cell(&r, Bound::Low)? as usize;
-    let hi = bound_cell(&r, Bound::High)? as i64;
+    let lo = bound_cell(&mi, &r, Bound::Low)? as usize;
+    let hi = bound_cell(&mi, &r, Bound::High)? as i64;
     let rt = m.rt.clone();
     let ls = lits(&rt.prog, ty)?;
     let pos = (lo..ls.len())
         .take_while(|&p| p as i64 <= hi)
         .find(|&p| lit_matches(&ls[p], &name));
     match pos {
-        Some(p) => alloc(m, mi.refl, true, &[], &(p as u64).to_le_bytes()),
+        Some(p) => alloc(m, mi.refl, true, &[], &(p as u64).to_le_bytes(), &mi.ranges),
         None => rt_err(format!(
             "enumeration_literal(\"{}\"): no such literal in {}",
             String::from_utf8_lossy(&name),
@@ -607,7 +654,12 @@ fn phys_unit(m: &Machine, r: &Refl) -> R<(usize, i64)> {
         return Ok((1, 1));
     }
     let res = yavs_std::env::resolution_limit(m.rt.resolution);
-    let i = units(&m.rt.prog, ty)?
+    time_unit(units(&m.rt.prog, ty)?, res)
+}
+
+/// The 1-based index and scale of the TIME unit equal to the resolution limit `res` (fs).
+fn time_unit(units: &[(String, i64)], res: i64) -> R<(usize, i64)> {
+    let i = units
         .iter()
         .position(|u| u.1 == res)
         .ok_or_else(|| ice(format!("no TIME unit of {res} fs")))?;
@@ -731,7 +783,7 @@ fn record_get(m: &mut Machine, a: &[u64], by_name: bool) -> R<u64> {
     let rt = m.rt.clone();
     let er = refl(&rt.prog, eid)?;
     let (d, v) = record_elem(&rt.prog, ty, er, &mi.desc, &mi.val, i)?;
-    alloc(m, eid, true, &d, &v)
+    alloc(m, eid, true, &d, &v, &mi.ranges)
 }
 
 fn record_length(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -779,7 +831,7 @@ fn record_elem_subtype(m: &mut Machine, a: &[u64], by_name: bool) -> R<u64> {
             d = fd;
         }
     }
-    alloc(m, eid, false, &d, &[])
+    alloc(m, eid, false, &d, &[], &mi.ranges)
 }
 
 // ---- arrays ----
@@ -820,7 +872,7 @@ fn array_get(m: &mut Machine, a: &[u64], idx: &[i64]) -> R<u64> {
     let rt = m.rt.clone();
     let er = refl(&rt.prog, eid)?;
     let (d, v) = array_elem(&rt.prog, ty, er, &mi.desc, &mi.val, k)?;
-    alloc(m, eid, true, &d, &v)
+    alloc(m, eid, true, &d, &v, &mi.ranges)
 }
 
 fn get1(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -867,10 +919,10 @@ fn dim_arg(r: &Refl, a: &[u64]) -> R<usize> {
 }
 
 fn index_subtype(m: &mut Machine, a: &[u64]) -> R<u64> {
-    let (_, r) = this(m, a)?;
+    let (mi, r) = this(m, a)?;
     let d = dim_arg(&r, a)?;
     let id = array_parts(&r)?.1[d];
-    alloc(m, id, false, &[], &[])
+    alloc(m, id, false, &[], &[], &mi.ranges)
 }
 
 fn element_subtype(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -882,7 +934,7 @@ fn element_subtype(m: &mut Machine, a: &[u64]) -> R<u64> {
         }) => const_bytes(&m.rt.prog, *c)?,
         _ => mi.desc.get(index.len() * 24..).unwrap_or(&[]).to_vec(),
     };
-    alloc(m, eid, false, &d, &[])
+    alloc(m, eid, false, &d, &[], &mi.ranges)
 }
 
 fn array_dim(m: &mut Machine, a: &[u64]) -> R<(i64, i64, bool, String)> {
@@ -930,9 +982,9 @@ fn designated(r: &Refl) -> R<ReflId> {
 }
 
 fn designated_subtype(m: &mut Machine, a: &[u64]) -> R<u64> {
-    let (_, r) = this(m, a)?;
+    let (mi, r) = this(m, a)?;
     let d = designated(&r)?;
-    alloc(m, d, false, &[], &[])
+    alloc(m, d, false, &[], &[], &mi.ranges)
 }
 
 fn is_null(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -980,7 +1032,7 @@ fn access_get(m: &mut Machine, a: &[u64]) -> R<u64> {
             (Vec::new(), le(b).to_le_bytes().to_vec())
         }
     };
-    alloc(m, did, true, &desc, &val)
+    alloc(m, did, true, &desc, &val, &mi.ranges)
 }
 
 fn file_logical_name(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -1288,6 +1340,41 @@ mod tests {
             .map(|k| rd64(&array_elem(&prog, slv, &sl_r, &rd, &row, k).unwrap().1, 0))
             .collect();
         assert_eq!(codes, [7, 6, 8]);
+    }
+
+    /// TIME mirror values are in resolution-limit units (decisions.md): 5 ns at a
+    /// picosecond resolution is 5000 of unit 2 (PS).
+    #[test]
+    fn time_in_resolution_units() {
+        let us: Vec<(String, i64)> = [("FS", 1), ("PS", 1000), ("NS", 1_000_000)]
+            .map(|(n, s)| (n.to_string(), s))
+            .to_vec();
+        assert_eq!(time_unit(&us, 1).unwrap(), (1, 1));
+        let (idx, scale) = time_unit(&us, 1000).unwrap();
+        assert_eq!((idx, 5_000_000 / scale), (2, 5000));
+        assert!(time_unit(&us, 10).is_err());
+    }
+
+    /// Run-time ranges survive the object encoding and win over the entry's static range.
+    #[test]
+    fn mirror_ranges_round_trip() {
+        let ranges: Vec<u8> = [9i64, 0, 0, 0, 7, 4, -2, 1]
+            .into_iter()
+            .flat_map(i64::to_le_bytes)
+            .collect();
+        let d = encode(ReflId(7), true, &[1, 2], &5u64.to_le_bytes(), &ranges).unwrap();
+        let mi = parse(&d).unwrap();
+        assert!(mi.value);
+        assert_eq!((mi.refl, mi.desc.as_slice(), cell(&mi)), (ReflId(7), &[1u8, 2][..], 5));
+        let r = entry(
+            "RNG",
+            ReflKind::Int {
+                left: 0,
+                right: 3,
+                downto: false,
+            },
+        );
+        assert_eq!(scalar_range(&mi, &r).unwrap(), (4, (-2i64) as u64, true));
     }
 
     #[test]

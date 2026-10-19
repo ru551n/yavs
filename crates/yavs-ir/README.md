@@ -46,7 +46,8 @@ textual dump.
   packed cell.
 - `Program.reflect` (`Refl`, `ReflKind`, `ReflId`): subtype descriptions for `std.reflection`
   mirrors, built by `ProgramBuilder::reflect` / `reflect_set`; `yavs.attr.reflect` takes
-  `(refl, is_value, v)` (yavs-interp `reflect.rs`).
+  `(refl, is_value, v, ranges)`, `ranges` the run-time bounds of reachable scalar subtypes with
+  a non-static range or 0 (yavs-interp `reflect.rs`).
 
 - `ForeignArg` gained `Array { ty, lengths, copy_back }`, `Record { ty, copy_back }` and
   `Access` (still `Copy`); an exhaustive `match` on it needs the new arms.

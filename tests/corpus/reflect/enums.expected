@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:enums:_p0	mid MID len 2 left green right blue low green high blue asc true
+diag	note	0	0	:enums:_p0	rev REV len 3 left blue right red low red high blue asc false
+diag	note	0	0	:enums:_p0	color lit0 red lit3 white byname 3
+diag	note	0	0	:enums:_p0	c pos 2 image blue sub MID
+diag	note	0	0	:enums:_p0	c roundtrip blue MID
+diag	note	0	0	:enums:_p0	color sm COLOR white
+diag	note	0	0	:enums:_p0	sl 'Z' pos 4 sub STD_ULOGIC len 9
+diag	note	0	0	:enums:_p0	ch 'A' pos 65 len 256
+diag	note	0	0	:enums:_p0	bit '1' sev failure
+diag	note	0	0	:enums:_p0	done

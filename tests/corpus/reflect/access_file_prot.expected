@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:access_file_prot:_p0	p null false val 42 sub INT_PTR des INTEGER
+diag	note	0	0	:access_file_prot:_p0	q null true
+diag	note	0	0	:access_file_prot:_p0	s 'e' len 3
+diag	note	0	0	:access_file_prot:_p0	rp 3 des REC
+diag	note	0	0	:access_file_prot:_p0	line des STRING
+diag	note	0	0	:access_file_prot:_p0	f name reflect_af.bin kind write_mode sub INT_FILE des INTEGER
+diag	note	0	0	:access_file_prot:_p0	text des STRING
+diag	note	0	0	:access_file_prot:_p0	pc COUNTER COUNTER COUNTER
+diag	note	0	0	:access_file_prot:_p0	done

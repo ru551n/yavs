@@ -365,11 +365,15 @@ binary file read/write of records and arrays of composites, the PSL natives, `Se
 
 std.reflection (`yavs-interp/src/reflect.rs`, `yavs-lower/src/reflect.rs`): all 123 mirror
 methods and `'reflect` (value and subtype mirrors, built from the value and its descriptor;
-private-heap mirror objects traced by the GC). End to end through `yavs run` for integer,
-floating, physical (TIME in resolution-limit units), enumeration and array mirrors
-(`tests/corpus/reflect`, 3/3 against the reference simulator, one `ref=hand`). Record, access, file and protected
-mirrors are implemented in the runtime (unit-tested element extraction) and wait on the
-lowering of those types and of mirror variables (lower2).
+private-heap mirror objects traced by the GC). End to end through `yavs run` for every class:
+enumeration, integer, floating, physical (TIME in resolution-limit units), record, array
+(multi-dimensional, unconstrained parameters, null), access, file and protected mirrors, of
+variables, constants, signals, ports and type marks, with mirror variables and generic
+subprogram instances (`tests/corpus/reflect`, 12/12 at 1, 4 and 4 shuffled threads; 6 against
+the reference simulator, 6 `ref=hand` where it is wrong or crashes). Scalar subtypes whose range
+is not static (generic or parameter bounds) get their range at the `'reflect`, also as element,
+index or designated subtypes. The CLI has no resolution option yet, so TIME mirrors are
+exercised end to end in femtoseconds only (other resolutions: a unit test).
 
 ## elab (`crates/yavs-elab`, M2)
 

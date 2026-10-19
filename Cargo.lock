@@ -1427,8 +1427,10 @@ dependencies = [
  "yavs-dap",
  "yavs-diag",
  "yavs-elab",
+ "yavs-interp",
  "yavs-kernel",
  "yavs-lib",
+ "yavs-llvm",
  "yavs-sem",
  "yavs-std",
  "yavs-syntax",
@@ -1534,6 +1536,10 @@ name = "yavs-llvm"
 version = "0.7.0"
 dependencies = [
  "llvm-sys",
+ "yavs-diag",
+ "yavs-interp",
+ "yavs-ir",
+ "yavs-kernel",
 ]
 
 [[package]]

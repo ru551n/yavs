@@ -539,6 +539,16 @@ fn elab_and_run() {
     assert!(!out.contains("unreachable"), "{out}");
     let (code, _, _) = yavs(&["run", &lib, "fin", "--stop-time=2ns"]);
     assert_eq!(code, 0);
+    // `--tier=llvm` gives the same output as the interpreter, or E0120 without the feature.
+    let tier = yavs(&["run", &lib, "busy", "--tier=llvm"]);
+    if cfg!(feature = "llvm") {
+        assert_eq!(tier, yavs(&["run", &lib, "busy", "--tier=interp"]));
+        let (_, err, _) = yavs(&["run", &lib, "busy", "--tier=llvm", "--verbose"]);
+        assert!(err.contains("note: --tier=llvm: "), "{err}");
+    } else {
+        assert_eq!(tier.0, 2);
+        assert!(tier.1.contains("error[E0120]"), "{}", tier.1);
+    }
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

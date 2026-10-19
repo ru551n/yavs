@@ -22,9 +22,9 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Bindings` (foreigns, `revision`, `resolution`, `sources`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState` (its collection, `SharedGc`), `InterpProcess` (`new`, `with_debug`, `var`/`set_var`: a variable of the suspended process, #309), `shared_var`/`set_shared_var` (a shared variable at its slot), `proc_flags`, `call`, `call_shared`, `call_values` (composite arguments and results as data and descriptor bytes, `CallVal`), `call_native` (a native on such values, elaboration-time predefined operations, #220), `resolve` |
+| `src/lib.rs` | `Runtime::new(Arc<Program>, Bindings)` (fails early on unknown natives/unbound foreigns), `Tier` and `Runtime::set_tier` (the LLVM tier seam), `Bindings` (foreigns, `revision`, `resolution`, `sources`), `Limits`, `InstData`/`InstSig`, `ProcDriver`, `SharedState` (its collection, `SharedGc`), `InterpProcess` (`new`, `with_debug`, `var`/`set_var`: a variable of the suspended process, #309), `shared_var`/`set_shared_var` (a shared variable at its slot), `proc_flags`, `call`, `call_shared`, `call_values` (composite arguments and results as data and descriptor bytes, `CallVal`), `call_native` (a native on such values, elaboration-time predefined operations, #220), `resolve` |
 | `src/probe.rs` | `ProcVars` (scalar locals of a process function, published at each suspension for the locals watched), `VarProbes` (by process scope); used by the waveform recorder (`InterpProcess::with_vars`) |
-| `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with reference-simulator-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
+| `src/exec.rs` | `Machine`: instruction dispatch, `run_tier` (compiled code of the top frame, fast loop only), checked arithmetic via `yavs-std`, checks with reference-simulator-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
 | `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots, sealed objects and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
 | `src/implicit.rs` | `yavs.implicit.<family>.<type>[#<form>]` operations |
@@ -60,6 +60,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | Assert state: each process sees the state at the start of its cycle plus its own changes; changes merge in process order at the next cycle | Rule 3 with parallel processes (#99) | `docs/decisions.md` "IR and interpreter" |
 | Check and overflow texts match the reference simulator (`value 101 outside of PCT range 0 to 100 for variable P`, ...) | Strict difftest | `crates/yavs-ir/README.md` Requests answer 4 |
 | `now` without a kernel (elaboration-time calls, #77) returns 0 fs | LRM 14.7.5.2: simulation starts at 0; the external test runner's factories read it during elaboration | `docs/decisions.md` "Elaboration" |
+| Compiled code (`Tier`) runs on the top frame's registers from the fast loop only; it steps instructions that always continue through `step` (an ICE if one does not) and returns at the others, which `exec` executes | Rule 5 by construction; the debug loop never runs compiled code | `docs/decisions.md` "LLVM tier: side exits", ir.md 5 |
 | Runtime errors stop at once (bound, overflow, null, delta limit); a report at the stop severity ends the process | Error motto; exit severity (user, 2026-10-18) | `docs/plan.md` "Error-handling motto", `docs/decisions.md` "Runtime: default exit severity" |
 
 Module-local decisions go in this section and ir.md section 9 in the same commit (root

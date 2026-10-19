@@ -9,14 +9,18 @@
 //! the JIT as absolute symbols, so the executable exports nothing.
 
 // This crate is the FFI boundary to the LLVM C API: unsafe is allowed here and
-// nowhere else in the workspace. Raw LLVM handles never leave the `jit` and
-// `spike` modules.
+// nowhere else in the workspace. Raw LLVM handles never leave the `jit`,
+// `lower` and `spike` modules.
 #![allow(unsafe_code)]
 
 #[cfg(feature = "llvm")]
 mod jit;
 #[cfg(feature = "llvm")]
+mod lower;
+#[cfg(feature = "llvm")]
 pub mod spike;
 
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
+#[cfg(feature = "llvm")]
+pub use lower::{LlvmTier, compile};

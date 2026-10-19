@@ -21,7 +21,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
 | `src/cov.rs` | `yavs cov merge` and `yavs cov report` (`--exclude`, `--uncovered`, `-W`; E0110, E0111, E0112) |
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
-| `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107) |
+| `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107), `use_llvm` (`--tier=llvm`, `--verbose`, E0120/E0121) |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
 | `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd`, `--threads 4` identity, `cov merge`, `cov report` and Cobertura, E0111, exclusions (pragmas, report rows round trip, moved/stale/hit warnings) |
 | `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
@@ -49,6 +49,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `--cov` writes the database after the run whatever its outcome (none after an elaboration failure); a write failure makes the exit status at least 1 | Coverage of failing tests is still wanted | `docs/cli-contract.md` 5, `docs/decisions.md` "Code coverage" |
 | Unimplemented flags and combinations (`--dap` with `--wave`, `--vhpi` or `--cov`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `--dap` hands the elaborated design to `yavs_dap::serve` after `--load` binding and the resolution check; `--threads` above 1 is warning `W0109` | Stops need one thread | `docs/cli-contract.md` 5, `docs/decisions.md` "DAP server" |
+| `--tier=interp` default; `--tier=llvm` sets the LLVM tier on the runtime after package initialisation (feature `llvm`, else `E0120`); `--verbose` notes go to stderr | Default build needs no LLVM; elaboration stays interpreted | `docs/cli-contract.md` 5, `docs/decisions.md` "LLVM tier: side exits" |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
 Module-local decisions go in this section in the same commit; CLI or test-runner-facing behaviour goes
@@ -89,7 +90,8 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
   cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound, W0109
   `--threads` ignored with `--dap`, E0110 coverage file cannot be written, E0111 coverage database
-  cannot be read).
+  cannot be read, E0120 `--tier=llvm` without the LLVM tier, E0121 the LLVM tier cannot compile
+  the design).
 
 ## 6. Coordination
 

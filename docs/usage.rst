@@ -43,6 +43,9 @@ otherwise.
   cleared the assert counts since.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code; the output
+  is the same as with the default ``--tier=interp``. It needs a yavs built with the ``llvm``
+  feature (LLVM 21). ``--verbose`` prints what the LLVM tier leaves to the interpreter.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
   ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME
   values in ``std.reflection`` mirrors. A TIME literal with a unit below the limit anywhere in

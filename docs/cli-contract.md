@@ -296,6 +296,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   own set): a stop after the cycle in which the signal changed (to `value`, as the variables
   view writes it), reason `data breakpoint`, `text` `PATH = VALUE`. Supported requests and the
   id scheme: `crates/yavs-dap/AGENTS.md`.
+- `--tier=interp|llvm` (`run`, default `interp`): `llvm` compiles every function of the design
+  with the LLVM tier before time 0 and runs that code; the output is identical to `interp` (the
+  interpreter is the reference). Elaboration-time code (package and instance initialisation)
+  runs interpreted either way, and so does a run under `--dap`. It needs a yavs built with the
+  `llvm` cargo feature (LLVM 21):
+  otherwise `--tier=llvm` is error `E0120` (exit 2); a design the tier cannot compile is `E0121`
+  (exit 3, a bug in yavs). `--verbose` prints, on stderr, a note per function left to the
+  interpreter and how many instructions were compiled. The test runner passes neither; use
+  `yavs.sim_flags`.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

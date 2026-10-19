@@ -221,6 +221,27 @@ impl Default for Bindings {
     }
 }
 
+/// A compiled tier for some functions of a program (the LLVM tier in `yavs-llvm`).
+///
+/// Compiled code runs a function on the registers of its interpreter frame and leaves
+/// everything it does not lower itself to the interpreter: it calls `step` to execute one
+/// instruction in place (the instructions that always continue with the next one) and
+/// returns at the others (calls, returns, waits, reports, slow and error paths), which the
+/// interpreter then executes. The interpreter stays the semantic reference (rule 5).
+pub trait Tier: Send + Sync {
+    /// Run `func` from instruction `pc` until an instruction the interpreter must execute
+    /// and return its index; `None` when `func` is not compiled. `step(regs, pc)` executes
+    /// the instruction at `pc` on `regs` and returns `false` on a fault, after which `run`
+    /// returns `pc` at once.
+    fn run(
+        &self,
+        func: FuncId,
+        pc: u32,
+        regs: &mut Vec<u64>,
+        step: &mut dyn FnMut(&mut Vec<u64>, u32) -> bool,
+    ) -> Option<u32>;
+}
+
 /// A program bound for execution, shared by all processes of a simulation.
 pub struct Runtime {
     pub prog: Arc<Program>,
@@ -241,6 +262,8 @@ pub struct Runtime {
     pub(crate) asserts: env::Asserts,
     /// Open file objects; a file cell holds index + 1 (0: never opened).
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
+    /// Compiled code, set once before the simulation starts (`set_tier`).
+    pub(crate) tier: std::sync::OnceLock<Arc<dyn Tier>>,
 }
 
 fn usage(m: String) -> SimError {
@@ -301,6 +324,7 @@ impl Runtime {
             sources: b.sources,
             asserts: Default::default(),
             files: Mutex::new(textio::FileSlot::preopened()),
+            tier: Default::default(),
             prog,
         }))
     }
@@ -309,6 +333,13 @@ impl Runtime {
     /// the CLI's exit status follows the error and failure counts at the end of the run.
     pub fn assert_count(&self, s: yavs_kernel::Severity) -> u64 {
         self.asserts.counts()[s as usize]
+    }
+
+    /// Run compiled code of `tier` where it has some, from now on (`yavs run --tier`).
+    /// Elaboration-time code that already ran stayed interpreted; a debugger keeps a
+    /// process interpreted. Returns `false` if a tier was set before.
+    pub fn set_tier(&self, tier: Arc<dyn Tier>) -> bool {
+        self.tier.set(tier).is_ok()
     }
 
     /// Coverage counter values.

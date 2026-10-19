@@ -31,12 +31,15 @@ GHDL = ("mkdir -p {work} && o=$(ghdl -a -fpsl --std={std2} --workdir={work} {rel
 YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} {relaxed} {psl} {file} 2>&1) || {{ printf \'%s\\n\' "$o" >&2; exit 97; }}; '
         '"$R" elab --std={std} --work=work:{work} {relaxed} {psl} {top} || exit 98; '
         '"$R" run --std={std} --work=work:{work} {relaxed} {psl} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
-TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS}
+# yavs with every function compiled by the LLVM tier (needs a yavs built with `--features llvm`);
+# compared with the same `.expected`, so it must match the interpreter (rule 5).
+YAVS_LLVM = YAVS.replace("--threads=", "--tier=llvm --threads=")
+TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS, "yavs-llvm": YAVS_LLVM}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904"}
+RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904"}
 # Fields masked by default per builtin candidate (reference prints them all).
-DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": ""}
+DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": "", "yavs-llvm": ""}
 
 UNITS = {"fs": 1, "ps": 10**3, "ns": 10**6, "us": 10**9, "ms": 10**12, "sec": 10**15, "s": 10**15}
 

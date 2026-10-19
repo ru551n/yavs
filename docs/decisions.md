@@ -161,6 +161,28 @@ milestone users care about works.
   keep larger units in the interpreter, and lower big processes as several functions rather
   than one. To be confirmed with real lowered code in M6.
 
+## LLVM tier: side exits to the interpreter (yavs-llvm, yavs-interp)
+
+- **Shape:** one LLVM function per IR function, `fn(env, regs, pc) -> u32`, running on the
+  registers of the interpreter's own frame. It enters at `pc` (block starts and the instruction
+  after each exit), executes register arithmetic, compares, checks, address arithmetic and
+  branches itself, executes any other instruction that always continues with the next one
+  through the `yavs_rt_step` callback (the interpreter's `step`), and returns the index of the
+  instruction the interpreter executes next: calls, returns, waits, reports, natives, and the
+  slow or error path of an inline instruction. `yavs_interp::Tier` is the seam; the interpreter
+  calls it from its fast loop only, so a debugger keeps a process interpreted.
+- **Why:** rule 5 by construction. An error path re-executes the instruction in the
+  interpreter, so every message is the interpreter's; frames, the heap, temporaries and traces
+  stay one implementation, and calls between compiled and interpreted functions need nothing
+  special. Instructions move from the callback to native code one kind at a time, each checked
+  against the interpreter (`crates/yavs-llvm/tests/tier.rs`, the difftest `yavs-llvm`
+  candidate). This replaces the frame-only entry `fn(frame, inst, rt, resume)` of ir.md 5 for
+  now; the suspension invariant still allows that form later.
+- **Tiers:** `yavs run --tier=llvm` compiles every non-elaboration function at O2 before time 0
+  (no size threshold yet: #126 is the user's); `--tier=interp` is the default. Tier-up of hot
+  functions on a background thread (`auto`) is #125.
+- Decided by the M6 agent, 2026-10-19.
+
 ## Kernel crate and process interface (yavs-kernel)
 
 - **Crate:** the LRM 14.7 cycle lives in `crates/yavs-kernel`, independent of the IR. yavs-rt

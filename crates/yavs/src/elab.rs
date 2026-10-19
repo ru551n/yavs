@@ -114,6 +114,13 @@ pub struct RunArgs {
     /// Load a VHPI plugin, `LIB[:ENTRY]`.
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
+    /// Execution tier: `interp`, or `llvm` to compile every function with LLVM before time 0
+    /// (needs a yavs built with the `llvm` feature).
+    #[arg(long, value_enum, default_value = "interp")]
+    tier: TierArg,
+    /// Print notes on how the run is set up (functions the LLVM tier leaves interpreted).
+    #[arg(long)]
+    verbose: bool,
     /// Run under a Debug Adapter Protocol client: on 127.0.0.1:PORT (0 picks a free port) or
     /// on standard input and output (`stdio`).
     #[arg(long, value_name = "PORT|stdio", value_parser = yavs_dap::parse_transport)]
@@ -129,6 +136,12 @@ fn plusarg(s: &str) -> Result<String, String> {
     } else {
         Err(format!("expected +NAME or +NAME=VALUE, found `{s}`"))
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TierArg {
+    Interp,
+    Llvm,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -390,6 +403,53 @@ pub fn elab(
     }
 }
 
+/// Compile the program with the LLVM tier and run it from now on (`--tier=llvm`); the error.
+#[cfg(feature = "llvm")]
+fn use_llvm(rt: Option<&yavs_interp::Runtime>, verbose: bool) -> Option<Diagnostic> {
+    let rt = rt?;
+    let tier = match yavs_llvm::compile(&rt.prog, yavs_llvm::OptLevel::O2) {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(
+                Diagnostic::error("E0121", "the LLVM tier cannot compile the design")
+                    .with_note(e.to_string())
+                    .with_note("this is a bug in yavs"),
+            );
+        }
+    };
+    if verbose {
+        for (f, why) in &tier.notes {
+            let name = rt.prog.func(*f).map_or("?", |f| f.name.as_str());
+            eprintln!("note: `{name}` ({f}) stays interpreted under --tier=llvm: {why}");
+        }
+        let n: usize = tier.interpreted.iter().map(|k| k.1).sum();
+        let kinds: Vec<String> = tier
+            .interpreted
+            .iter()
+            .map(|(k, c)| format!("{k} {c}"))
+            .collect();
+        eprintln!(
+            "note: --tier=llvm: {} instructions compiled, {n} executed by the interpreter ({})",
+            tier.inline,
+            kinds.join(", ")
+        );
+    }
+    rt.set_tier(std::sync::Arc::new(tier));
+    None
+}
+
+#[cfg(not(feature = "llvm"))]
+fn use_llvm(_: Option<&yavs_interp::Runtime>, _: bool) -> Option<Diagnostic> {
+    Some(
+        Diagnostic::error(
+            "E0120",
+            "`--tier=llvm` needs a yavs built with the LLVM tier",
+        )
+        .with_note("this yavs was built without the `llvm` cargo feature")
+        .with_help("use `--tier=interp`, or build yavs with `--features llvm` (needs LLVM 21)"),
+    )
+}
+
 pub fn run(
     a: RunArgs,
     format: MessageFormat,
@@ -513,6 +573,13 @@ pub fn run(
             return out.finish(if err.exit_status() == 101 { 3 } else { 2 });
         }
     };
+    if a.tier == TierArg::Llvm
+        && let Some(d) = use_llvm(built.as_ref().map(|b| &*b.rt), a.verbose)
+    {
+        let code = if d.code == "E0120" { 2 } else { 3 };
+        out.emit(&none, &d);
+        return out.finish(code);
+    }
     let names: Vec<String> = e.procs.iter().map(|p| e.proc_name(p)).collect();
     sim.subscribe(Box::new(Printer { names }));
     let rt = built.as_ref().map(|b| b.rt.clone());

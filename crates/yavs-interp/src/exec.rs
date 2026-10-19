@@ -1093,7 +1093,10 @@ impl Machine {
             let f = prog
                 .func(fr.func)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
-            let pc = fr.pc as usize;
+            let mut pc = fr.pc as usize;
+            if !DEBUG && let Some(tier) = rt.tier.get() {
+                pc = self.run_tier(&**tier, prog, f, pc, ctx)?;
+            }
             let inst = *f
                 .code
                 .get(pc)
@@ -1135,6 +1138,56 @@ impl Machine {
                     return Ok(Outcome::Suspended);
                 }
             }
+        }
+    }
+
+    /// Run compiled code of the top frame from `pc` (ir.md 5): the index of the instruction
+    /// the interpreter executes next. Compiled code steps other instructions through
+    /// `step`, which never changes the frame stack.
+    fn run_tier(
+        &mut self,
+        tier: &dyn crate::Tier,
+        prog: &Program,
+        f: &Func,
+        pc: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<usize> {
+        let func = self.top().func;
+        let mut regs = std::mem::take(&mut self.top().regs);
+        let mut fault = None;
+        let ran = tier.run(func, pc as u32, &mut regs, &mut |regs, at| {
+            std::mem::swap(&mut self.top().regs, regs);
+            self.top().pc = at;
+            let r = match f.code.get(at as usize) {
+                Some(&inst) => self.step(prog, f, inst, ctx),
+                None => Err(ice(format!(
+                    "compiled code stepped pc {at} beyond `{}`",
+                    f.name
+                ))),
+            };
+            std::mem::swap(&mut self.top().regs, regs);
+            match r {
+                Ok(Flow::Next) => true,
+                Ok(_) => {
+                    fault = Some(ice(format!(
+                        "compiled code stepped a control instruction at pc {at} of `{}`",
+                        f.name
+                    )));
+                    false
+                }
+                Err(e) => {
+                    fault = Some(e);
+                    false
+                }
+            }
+        });
+        let top = self.top();
+        top.regs = regs;
+        let pc = ran.map_or(pc, |p| p as usize);
+        top.pc = pc as u32;
+        match fault {
+            Some(e) => Err(e),
+            None => Ok(pc),
         }
     }
 

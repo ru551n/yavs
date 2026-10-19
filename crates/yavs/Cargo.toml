@@ -12,12 +12,14 @@ yavs-cov = { path = "../yavs-cov" }
 yavs-diag.workspace = true
 yavs-dap = { path = "../yavs-dap" }
 yavs-elab = { path = "../yavs-elab" }
+yavs-interp = { path = "../yavs-interp" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-lib = { path = "../yavs-lib" }
 yavs-sem = { path = "../yavs-sem" }
 yavs-std = { path = "../yavs-std" }
 yavs-syntax.workspace = true
 yavs-wave = { path = "../yavs-wave" }
+yavs-llvm = { path = "../yavs-llvm", optional = true }
 yavs-vhpi = { path = "../yavs-vhpi" }
 
 [lints]
@@ -26,6 +28,8 @@ workspace = true
 [features]
 # Builds the external parse corpus test (needs YAVS_CORPUS, see tools/fetch-corpus.sh).
 corpus = []
+# The LLVM tier (`yavs run --tier=llvm`); needs LLVM 21 (crates/yavs-llvm/AGENTS.md).
+llvm = ["dep:yavs-llvm", "yavs-llvm/llvm"]
 
 [[test]]
 name = "corpus"

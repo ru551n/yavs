@@ -21,7 +21,7 @@ themselves are described in `tests/corpus/AGENTS.md`.
 
 | File | What |
 |---|---|
-| `difftest.py` | Harness: templates `NVC`, `GHDL`, `YAVS`, `normalise()`, `yavs_fatal()` (yavs runtime diagnostics to `fatal` events), ignore masks, `--bless`, `--json`, `--threads`, `--shuffle`, `--filter`, `--jobs` (max 8), `--list`, `--no-sandbox` |
+| `difftest.py` | Harness: templates `NVC`, `GHDL`, `YAVS`, `YAVS_LLVM` (`--tier=llvm`, compared with the same `.expected`: rule 5), `normalise()`, `yavs_fatal()` (yavs runtime diagnostics to `fatal` events), ignore masks, `--bless`, `--json`, `--threads`, `--shuffle`, `--filter`, `--jobs` (max 8), `--list`, `--no-sandbox` |
 | `report.sh` | Build `yavs`, run at 1, 4 and 4 shuffled threads, write `tests/corpus/RESULTS.md` (scratch `~/.cache/rsim-difftest2.<pid>`, removed afterwards) |
 | `report.py` | `--json` results to `RESULTS.md`, failures grouped with an owner guess per code/message |
 | `README.md` | The contract |
@@ -58,6 +58,7 @@ rule 24).
 python3 tools/difftest/difftest.py                          # reference simulator against its own .expected (needs it)
 python3 tools/difftest/difftest.py --candidate yavs --threads 4 --filter 'report/|env/' -v
 YAVS_BIN=$PWD/target/debug/yavs python3 tools/difftest/difftest.py --candidate yavs
+YAVS_BIN=<yavs built with --features llvm> python3 tools/difftest/difftest.py --candidate yavs-llvm
 python3 tools/difftest/difftest.py --bless --filter 'mygroup/'   # new references from the reference simulator
 tools/difftest/report.sh                                    # tests/corpus/RESULTS.md
 ```

@@ -12,7 +12,8 @@
 | M3: full types and libraries | done per `docs/plan.md`: arrays, records, access and protected types, resolution (composite, access, protected and resolution groups in `tests/corpus/RESULTS.md`); `numeric_std`, fixed and float from source (#94); textio, `env`, package generics, external names; `--load` foreign subprograms (#95); bit-plane layout (user, 2026-10-18). Not done: binary file read/write of records and arrays of composites (ir and interp section) |
 | M8: DAP server | first slice (#130): `yavs run --dap=PORT\|stdio` serves the Debug Adapter Protocol over the interpreter's debug session (`crates/yavs-dap`): threads per process, line breakpoints with hit counts, continue, pause (in a process or between cycles), run for or until a time, next delta and next time step (custom requests and VS Code commands, #324), signal breakpoints on a change or a value (DAP data breakpoints and `yavs/setSignalBreakpoints`, #322), step over/in/out, stack frames with source positions, locals, region signals and generics, evaluate for locals and signals by name or path, output events, exit status; one thread under `--dap`, so sessions are deterministic. Scripted sessions in `crates/yavs/tests/dap.rs`. VS Code extension `editors/vscode` (debugger type `yavs`, analyzes and launches over stdio): verified with the DAP test client (`test/client.js`) and in a real headless VS Code (`test/vscode`, breakpoint hit, frame, continue to the end); not in CI. Open: force/deposit #323, live waves and `--wave`/`--vhpi` with `--dap` #325, conditions, composite variables, hierarchy #326 |
 | M9: coverage | statement and branch coverage (#131): `yavs run --cov[=FILE]` writes a per-run database keyed by instance path and statement text hash, `yavs cov merge`, `yavs cov report` (text summary, Cobertura XML); no counters without `--cov`; counts identical at any `--threads`; pinned in `crates/yavs/tests/coverage.rs`. Exclusions (#351): `-- coverage off/on` pragmas, `cov report --uncovered` rows and `--exclude FILE`. Open: toggle coverage (#343), HTML (#344) |
-| M5, M6, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`) |
+| M6: JIT tier | in progress: `yavs run --tier=llvm` (feature `llvm`) compiles every function with LLVM 21 and passes the whole difftest corpus (300/300 at 1 thread, identical to the interpreter, rule 5; 289/289 at 4 shuffled threads before the corpus grew); 61% of the compiled programs' instructions run as native code, the rest through the interpreter (side exits, `docs/decisions.md`); open: native lowering of the rest (#334 to #341), tier-up on a background thread (#125), threshold (#126), Windows (#127), aarch64 (#128); llvm section |
+| M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`) |
 
 ### External test runner: its own VHDL suites (#112)
 
@@ -333,8 +334,19 @@ and property tests, criterion benchmarks. Default layout is bit-planes; see
 
 ## llvm (`crates/yavs-llvm`)
 
-JIT risk spike ahead of M6, behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`).
-Done: llvm-sys 211 bindings (docs/decisions.md), ORC LLJIT with a portable CPU, O2 through
+LLVM tier (M6), behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`; `cargo build
+-p yavs --features llvm` for `yavs run --tier=llvm`). `compile` lowers every non-elaboration IR
+function to one LLVM function on the interpreter frame's registers: register arithmetic,
+compares, checks, address arithmetic and branches are native; other instructions go through a
+callback into the interpreter or return to it (calls, waits, reports, every slow or error path).
+Difftest corpus under `--tier=llvm` (`difftest.py --candidate yavs-llvm`): 300/300 at 1 thread (289/289 at 4 shuffled threads, measured before the corpus grew),
+the same as the interpreter. Over the corpus programs 463545 instructions are compiled inline and
+292347 executed by the interpreter (Load 86317, AddrOf 50301, Stmt 22193, Alloc 19994, Store
+18879, DopeLen 17142, LayoutOf 15683, Copy 11453, ...; issues #334 to #341). Whole corpus, one
+run after the other, debug build, 2026-10-19: 30 s interpreted, 123 s with `--tier=llvm`, almost
+all of it compiling every function at O2 before time 0 (tier-up of hot functions only is #125).
+
+Spike (before M6), done: llvm-sys 211 bindings (docs/decisions.md), ORC LLJIT with a portable CPU, O2 through
 `LLVMRunPasses`, Rust runtime callbacks as absolute symbols, a checked i64 sum that traps into
 Rust on overflow, a process body reading and writing a `#[repr(C)]` struct, a 10k-instruction
 function checked against its Rust reference semantics, an unresolved runtime symbol reported by

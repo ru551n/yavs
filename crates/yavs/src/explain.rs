@@ -78,6 +78,14 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     ("E0104", "The design has no top level to elaborate."),
     ("E0105", "`--stop-time` is not a valid time such as `10ms`."),
+    (
+        "E0120",
+        "`yavs run --tier=llvm` on a yavs built without the LLVM tier (the `llvm` cargo feature, which needs LLVM 21). Use `--tier=interp`.",
+    ),
+    (
+        "E0121",
+        "The LLVM tier could not compile the design for `--tier=llvm`. This is a bug in yavs; `--tier=interp` runs the design.",
+    ),
     // yavs-wave
     (
         "E0801",

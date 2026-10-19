@@ -470,7 +470,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   accept the actual instance's type (`int_ring.arr`): `E1300` at the actual of the call, with a
   note. Two of the three reference simulators reject the call; the third rejects the name itself.
   One formal package deep is unchanged. The check lives in `call_args` (parameters flagged while
-  the generic unit is analyzed, cloned with the instance).
+  the generic unit is analyzed, cloned with the instance); it applies only when the formal's type
+  belongs to a concrete instance, so a call inside a generic unit with the unit's own `s.r.arr` is
+  accepted.
 - **W1501 (unused generic)** applies to the generics of packages and subprograms, reported once
   the unit is complete: after the package body, after the package declaration when the library
   holds no body for it, after a generic subprogram body. Entity, component and block generics are

@@ -1555,7 +1555,12 @@ impl Db {
                         let id = self.resolve_in(scope, x, *ft);
                         stat = stat.min(self.exprs[id].stat);
                         let (class, mode, name) = &classes[k];
-                        if decls[k].is_some_and(|p| self.generic.hop2_clones.contains(&p)) {
+                        // Only a type of a concrete instance is distinct: one still in a generic
+                        // package's own region (the call is inside a generic unit) is the same.
+                        let td = self.types[self.subtypes[*ft].base].decl;
+                        if decls[k].is_some_and(|p| self.generic.hop2_clones.contains(&p))
+                            && !self.generic.lists.contains_key(&self.decls[td].scope)
+                        {
                             let ty = self.subtype_name(*ft);
                             self.report(
                                 Diagnostic::error(

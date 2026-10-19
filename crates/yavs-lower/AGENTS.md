@@ -35,6 +35,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 
 | Decision | Why | Source |
 |---|---|---|
+| An alias of a logic element or slice of a variable with a static name has no storage: uses lower the aliased name (reads and writes), seen with the alias subtype's bounds; a non-static name stays `E2001` | Logic arrays are bit planes, so the part is not addressable; a static name denotes the same part at every use (#296) | LRM 6.6.2 |
 | A `Failed` that reaches a `Lowerer` entry point with no diagnostic is an ICE (`Cx::take_failed`), never an empty error list | A failed run must always say why (#292) | root `AGENTS.md` rule 1 |
 | One code per design unit; generics, signals and non-locally-static constants are instance data (`Space::Inst`), never folded into code | Shared code, rule 4 identity | ir.md 2, DESIGN.md "Shape" |
 | Objects live in frame slots; registers are per-statement temporaries; nothing live across `Suspend` | Simple verifier, re-entrant waits | DESIGN.md "Registers, slots, temporaries", ir.md 1.2 |

@@ -473,10 +473,15 @@ impl<'a, 'b> Fx<'a, 'b> {
                     },
                 );
             }
+            // A logic element or slice is not addressable. When its name is static it denotes
+            // the same part at every use, so the alias has no storage and its uses lower the
+            // aliased name (`alias_target`, LRM 6.6.2), as for signals.
+            _ if db.is_static_object_name(target) => {}
             _ => {
-                return Err(self
-                    .cx
-                    .unsupported(span, "aliases of logic array elements and slices"));
+                return Err(self.cx.unsupported(
+                    span,
+                    "aliases of logic array elements and slices with a non-static name",
+                ));
             }
         }
         Ok(())

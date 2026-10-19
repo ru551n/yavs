@@ -3912,6 +3912,31 @@ impl<'a> Fx<'a, '_> {
                             dims,
                         })
                     }
+                    // An alias without storage: the aliased name, an array seen with the
+                    // alias subtype's bounds.
+                    None if self.alias_target(*d).is_some() => {
+                        let (t, ast) = self.alias_target(*d).ok_or(Failed)?;
+                        match self.place(t)? {
+                            Place::Array {
+                                data,
+                                dope,
+                                off,
+                                tid,
+                                dims,
+                            } => {
+                                let what = db.decls[*d].name.to_string();
+                                let dope = self.dope_as(dope, ast, &what, span)?;
+                                Ok(Place::Array {
+                                    data,
+                                    dope,
+                                    off,
+                                    tid,
+                                    dims,
+                                })
+                            }
+                            p => Ok(p),
+                        }
+                    }
                     None if matches!(&db.decls[*d].kind, DeclKind::Object(o) if o.class == yavs_sem::decl::ObjClass::File) =>
                     {
                         let addr = self.file_cell(*d, span)?;

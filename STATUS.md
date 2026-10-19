@@ -276,7 +276,7 @@ positional aggregates as values and targets, of named aggregate targets with ran
 element subtypes as values (#89, #230; without a constrained context they take the direction of their range choices, a mix is `E1334`; an array value under `others` is `E1323`, #242); `&` on arrays of arrays and of records (#234); package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
 bounds too, shared protected variables, package signals and files); composite architecture
-constants evaluated once per region (#73); aliases of record elements of ports (#292); a lowering failure without a diagnostic is an ICE. `tests/corpus.rs` runs every corpus group plus
+constants evaluated once per region (#73); aliases of record elements of ports (#292) and of static logic elements and slices of variables (#296); a lowering failure without a diagnostic is an ICE. `tests/corpus.rs` runs every corpus group plus
 `crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 `'element` attributes of objects with open element bounds (unconstrained ports, aliases of external names, parameters) read the object's descriptor (#235, #243; difftest `composite/element_attr_open`).

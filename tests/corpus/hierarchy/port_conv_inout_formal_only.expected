@@ -1,0 +1,3 @@
+exit	0
+diag	note	2000000	0	:port_conv_inout_formal_only:u:_p0	sub q 4
+diag	note	3000000	0	:port_conv_inout_formal_only:_p0	io 4

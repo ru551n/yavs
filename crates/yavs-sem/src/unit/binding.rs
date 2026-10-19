@@ -989,22 +989,39 @@ impl Db {
             }
             _ => None,
         };
-        // An `inout` port converts both ways or not at all (6.5.7.1; both reference
-        // simulators reject one way only).
-        if mode == Some(Mode::Inout) && formal_conv.is_some() != actual_conv.is_some() {
+        // An `inout` port converted on the actual side only would send the formal's value
+        // back unconverted (2 of 3 reference simulators reject it, L72). A formal conversion
+        // alone is legal: copy-out converts, copy-in passes the actual unchanged, so the
+        // actual's type must also be the formal's.
+        if mode == Some(Mode::Inout) && actual_conv.is_some() && formal_conv.is_none() {
             let name = self.decls[f].name;
-            let (span, way) = match actual_conv {
-                Some(_) => (self.exprs[id].span, "the way in, but not the way out"),
-                None => (fspan, "the way out, but not the way in"),
-            };
             return Err(self.error(
                 Diagnostic::error(
                     diag::CONV_MISUSE,
-                    format!("`inout` port `{name}` is converted {way}"),
+                    format!("`inout` port `{name}` is converted the way in, but not the way out"),
                 )
-                .with_primary(span, "the only conversion of this association")
-                .with_help("convert both ways, `conv(formal) => conv(actual)`, or not at all"),
+                .with_primary(
+                    self.exprs[id].span,
+                    "the only conversion of this association",
+                )
+                .with_help(
+                    "convert both ways, `conv(formal) => conv(actual)`, or convert the formal only",
+                ),
             ));
+        }
+        if mode == Some(Mode::Inout) && formal_conv.is_some() && actual_conv.is_none() {
+            let (ft, at) = (self.base(st), self.base(self.exprs[id].subtype));
+            if ft != at {
+                let (name, ftn, atn) = (self.decls[f].name, self.type_name(ft), self.type_name(at));
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NO_OVERLOAD,
+                        format!("`inout` port `{name}` of type `{ftn}` is converted the way out only, but the actual is of type `{atn}`"),
+                    )
+                    .with_primary(self.exprs[id].span, format!("expected type `{ftn}` to pass in unchanged"))
+                    .with_help("convert the actual too, `conv(formal) => conv(actual)`"),
+                ));
+            }
         }
         if let Some((conv, x)) = actual_conv
             && mode != Some(Mode::Out)

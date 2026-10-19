@@ -1058,8 +1058,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   composites have the same leaves, so a type conversion of a record port or an array of
   composites is the identity leaf by leaf (an integer leaf to a real one converted element by
   element), with no function to call; leaf lengths that differ are E2110 in elaboration. An
-  `inout` port converted in one direction only is E1313 in sem, as for subprogram calls
-  (lrm-checks L76).
+  `inout` port converted on the actual side only is E1313 in sem (lrm-checks L72); one
+  converted on the formal side only is accepted: copy-out converts, copy-in passes the actual
+  unchanged (majority, user rule 2026-10-19: 2 of 3 reference simulators accept it, 2 of 3
+  reject the actual-side form).
 - **Signal references of several parts** (#71): an individually associated signal formal whose
   parts lie in different signals (`drive2(x(1) => s1, x(0) => s0)`, a record formal field by
   field) is a reference of several parts in the IR (`SigParts`, ir.md 1.8): still two

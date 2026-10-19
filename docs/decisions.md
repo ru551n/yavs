@@ -268,6 +268,25 @@ milestone users care about works.
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.
+- **Variables (#309):** observers reach a suspended process through `Hook::with_process` and
+  `Process::as_any` (the kernel stays ignorant of the interpreter; another process tier
+  implements `as_any` for its own state); the interpreter reads and writes the slot of a
+  process variable by name in the process's frame, and a shared variable at its slot (`Built::vars`): a
+  region's address is what its instance cell holds once its thunk ran, a package's comes from
+  a slot thunk (`Lowerer::var_slots`); no thunk runs only for VHPI, so nothing changes for a
+  design without plugins, and a region variable no process uses has no slot to read. Values
+  cross as elaborated values (`ConstValue`, the IR memory codec of yavs-elab), so variables of
+  any composite type share one path. Only from simulation callbacks: every process is
+  suspended there, so reads and writes are the same at any `--threads`, and VHPI calls from a
+  foreign subprogram (a process running, the shared state taken) never touch it. A deposit is
+  written at once rather than queued like signal puts: a variable has no driver or delta, and
+  the one reference simulator that exposes variables through VHPI also writes at once (the
+  reference simulator with VHPI used elsewhere here finds no handle for them). Forces and releases of
+  variables are `W0903` (that simulator treats a force as a deposit and has no release); the
+  read-only phases refuse writes as for signals. A process variable is readable once its
+  process ran (yavs creates the variables then), from `vhpiCbEndOfInitialization` on; that
+  simulator also reads it before. Array bounds of an object with a constrained subtype come
+  from the subtype, not from its initial value (`x"00"` of a `(7 downto 0)` variable).
 - **Verified:** Linux x86_64 by `cargo test` (C plugin built against only the header, loaded
   through `vhpi_startup_routines` and through `LIB:ENTRY`, plus missing file, missing entry and
   unresolved-symbol errors). Windows x86_64 GNU by cross-building with MinGW and running under

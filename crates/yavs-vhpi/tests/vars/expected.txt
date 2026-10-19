@@ -1,0 +1,82 @@
+vhpi: read before the process ran: error: vhpi_get_value: the process has not started yet
+vhpi: read a protected object: error: vhpi_get_value: this shared variable has no value to read (a protected object, or no process uses it)
+vhpi: end of initialization
+vhpi:   p:n=0
+vhpi:   p:v=00000000
+vhpi:   p:v(0)=2
+vhpi:   p:r.a=1
+vhpi:   p:r.b=0000
+vhpi:   p:r.t=2
+vhpi:   p:b=0
+vhpi:   p:s=abc
+vhpi:   p:x=0.5
+vhpi:   q:k=3
+vhpi:   sv=5
+vhpi:   @work:pkg:pv=1010
+vhpi:   @work:pkg:pv(3)=3
+** Note: 5000000fs+0: n=1 v=00000001 r.a=2 r.b=0000 r.t=2000000 fs b=false s=abc
+    Process :top:p
+** Note: 5000000fs+0: sv=6 pv=1010
+    Process :top:sh
+** Note: 10000000fs+0: k=3
+    Process :top:q
+vhpi: t=12
+vhpi:   p:n=1
+vhpi:   p:v=00000001
+vhpi:   p:v(0)=3
+vhpi:   p:r.a=2
+vhpi:   p:r.b=0000
+vhpi:   p:r.t=2
+vhpi:   p:b=0
+vhpi:   p:s=abc
+vhpi:   p:x=0.5
+vhpi:   q:k=4
+vhpi:   sv=6
+vhpi:   @work:pkg:pv=1010
+vhpi:   @work:pkg:pv(3)=3
+vhpi: deposits: ok
+vhpi: t=12 after the deposits
+vhpi:   p:n=100
+vhpi:   p:v=10100101
+vhpi:   p:v(0)=3
+vhpi:   p:r.a=42
+vhpi:   p:r.b=0010
+vhpi:   p:r.t=7
+vhpi:   p:b=1
+vhpi:   p:s=xyz
+vhpi:   p:x=2.25
+vhpi:   q:k=10
+vhpi:   sv=-3
+vhpi:   @work:pkg:pv=101X
+vhpi:   @work:pkg:pv(3)=3
+vhpi: force a variable: error: vhpi_put_value: a variable is deposited, not forced or released
+vhpi: release a variable: error: vhpi_put_value: a variable is deposited, not forced or released
+vhpi: deposit too short: error: vhpi_put_value: format vhpiBinStrVal: 3 elements for an array of 8
+vhpi: deposit in a read-only phase: error: vhpi_put_value: no writes in a read-only phase (end of time step, end of simulation)
+** Note: 15000000fs+0: n=101 v=10100110 r.a=84 r.b=0010 r.t=7000000 fs b=true s=xyz
+    Process :top:p
+** Note: 15000000fs+0: sv=-2 pv=101X
+    Process :top:sh
+** Note: 20000000fs+0: k=10
+    Process :top:q
+** Note: 25000000fs+0: n=102 v=10100111 r.a=168 r.b=0010 r.t=7000000 fs b=true s=xyz
+    Process :top:p
+** Note: 25000000fs+0: sv=-1 pv=101X
+    Process :top:sh
+vhpi: t=30
+vhpi:   p:n=102
+vhpi:   p:v=10100111
+vhpi:   p:v(0)=3
+vhpi:   p:r.a=168
+vhpi:   p:r.b=0010
+vhpi:   p:r.t=7
+vhpi:   p:b=1
+vhpi:   p:s=xyz
+vhpi:   p:x=2.25
+vhpi:   q:k=11
+vhpi:   sv=-1
+vhpi:   @work:pkg:pv=101X
+vhpi:   @work:pkg:pv(3)=3
+** Note: 30000000fs+0: k=11
+    Process :top:q
+** Note: 30000000fs+0: FINISH called with status 0

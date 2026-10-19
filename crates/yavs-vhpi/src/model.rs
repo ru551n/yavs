@@ -12,8 +12,10 @@ use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, SourceMap, render};
 use yavs_kernel::{ForceMode, Range, SigRef, SignalId, SimError, Value};
 use yavs_sem::stat::{ConstValue, Elems};
 
+use crate::abi::with_hook;
 use crate::callbacks::{Callbacks, Clock, Watched};
 use crate::design::{Design, Layout, Node, NodeId, Origin, ROOT, vhpi_name};
+use crate::sim::Update;
 use crate::sys::*;
 use crate::types::{TyId, TypeObj};
 use crate::value::{self, Read, Scalar};
@@ -293,6 +295,8 @@ pub(crate) struct State {
     /// A read-only phase (end of time step, end of simulation): puts are refused.
     pub(crate) read_only: bool,
     pub(crate) error: Option<Error>,
+    /// The interpreter side of the simulation (`set_runtime`): shared variables (#309).
+    pub(crate) built: Option<yavs_elab::Built>,
     /// Strings handed out by `vhpi_get_str`. They are never freed, so the
     /// pointers stay valid; the set is small and bounded by the design.
     strings: HashMap<String, CString>,
@@ -472,8 +476,77 @@ impl State {
                 .as_ref()
                 .and_then(|v| Read::from_const(ty.clone(), v))
                 .ok_or_else(|| misuse("this is a bug in yavs: no elaborated value")),
-            _ => Err((Fault::Unsupported, "vhpi_get_value of a variable".into())),
+            Origin::Var { .. } => {
+                let whole = self
+                    .var(at.node, None)
+                    .ok_or_else(|| misuse("variable values are read in simulation callbacks"))?
+                    .map_err(|m| misuse(&m))?;
+                descend(whole, Self::path(obj))
+                    .and_then(|v| Read::from_const(ty.clone(), &v))
+                    .ok_or_else(|| misuse("this is a bug in yavs: the variable's value"))
+            }
+            _ => Err((
+                Fault::Unsupported,
+                "vhpi_get_value of an object without an elaborated value".into(),
+            )),
         }
+    }
+
+    /// The sub-element path of a declaration (empty) or sub-element.
+    fn path(obj: &Object) -> &[u64] {
+        match obj {
+            Object::Elem { path, .. } => path,
+            _ => &[],
+        }
+    }
+
+    /// The value of variable `node` (#309), changed by `update` when given; `None` outside a
+    /// simulation callback (processes are suspended only there).
+    fn var(&self, node: &Node, update: Update<'_>) -> Option<Result<ConstValue, String>> {
+        let Origin::Var { proc, scope, decl } = node.origin else {
+            return Some(Err("this is a bug in yavs: not a variable".into()));
+        };
+        with_hook(|h| match proc {
+            Some(p) => crate::sim::var(h, p, &node.name, update),
+            None => match self.built.as_ref() {
+                Some(b) => crate::sim::shared_var(b, scope, decl, update),
+                None => Err("shared variables are read in a simulation".into()),
+            },
+        })
+    }
+
+    /// `vhpi_put_value` on a variable or one of its sub-elements (#309): a deposit, written
+    /// into the variable at once (its processes are suspended).
+    fn put_var(
+        &self,
+        obj: &Object,
+        at: &At<'_>,
+        mode: vhpiPutValueModeT,
+        decode: impl FnOnce(&Scalar, Option<usize>) -> Result<Read, value::Error>,
+    ) -> Result<(), (Fault, String)> {
+        let misuse = |m: &str| (Fault::Misuse, format!("vhpi_put_value: {m}"));
+        if !matches!(mode, vhpiDeposit | vhpiDepositPropagate) {
+            return Err(misuse("a variable is deposited, not forced or released"));
+        }
+        if self.read_only {
+            return Err(misuse(
+                "no writes in a read-only phase (end of time step, end of simulation)",
+            ));
+        }
+        let (ty, len, array) = Self::scalars(at.l, "vhpi_put_value")?;
+        let v = decode(ty, array.then_some(len as usize)).map_err(|e| match e {
+            value::Error::Unsupported(m) => (Fault::Unsupported, m),
+            value::Error::Mismatch(m) => misuse(&m),
+        })?;
+        let path = Self::path(obj);
+        let mut update = |whole: &mut ConstValue| {
+            let new = v.to_const(&descend(whole.clone(), path)?)?;
+            replace(whole, path, new)
+        };
+        self.var(at.node, Some(&mut update))
+            .ok_or_else(|| misuse("variables are written in simulation callbacks"))?
+            .map(|_| ())
+            .map_err(|m| misuse(&m))
     }
 
     /// The type of a declaration or sub-element.
@@ -511,9 +584,7 @@ impl State {
         let at = self.at(obj, "vhpi_put_value")?;
         match (&at.node.origin, at.node.kind) {
             (Origin::Signal { .. }, _) => {}
-            (_, vhpiVarDeclK) => {
-                return Err((Fault::Unsupported, "vhpi_put_value of a variable".into()));
-            }
+            (Origin::Var { .. }, _) => return self.put_var(obj, &at, mode, decode),
             _ => {
                 let kind = self.kind(obj);
                 return Err(misuse(format!(
@@ -873,6 +944,36 @@ fn leaves(l: &Layout) -> u32 {
         Layout::Scalar(_) | Layout::Open => 1,
         Layout::Array { elem, .. } => leaves(elem),
         Layout::Record(fields) => fields.iter().map(|(_, f)| leaves(f)).sum(),
+    }
+}
+
+/// Sub-element `path` of value `v`: per step a record field or a row-major element.
+fn descend(mut v: ConstValue, path: &[u64]) -> Option<ConstValue> {
+    for &i in path {
+        v = match v {
+            ConstValue::Record(r) => r.get(i as usize)?.clone(),
+            a @ ConstValue::Array(_) => const_elem(&a, i)?,
+            _ => return None,
+        };
+    }
+    Some(v)
+}
+
+/// Replaces sub-element `path` of `v` with `new`.
+fn replace(v: &mut ConstValue, path: &[u64], new: ConstValue) -> Option<()> {
+    let Some((&i, rest)) = path.split_first() else {
+        *v = new;
+        return Some(());
+    };
+    match v {
+        ConstValue::Record(r) => replace(r.get_mut(i as usize)?, rest, new),
+        ConstValue::Array(a) => {
+            let mut xs = value::elements(a);
+            replace(xs.get_mut(i as usize)?, rest, new)?;
+            a.elems = Elems::Runs(xs.into_iter().map(|x| (1, x)).collect());
+            Some(())
+        }
+        _ => None,
     }
 }
 

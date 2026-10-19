@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use yavs_kernel::{LogicVec, Value};
-use yavs_sem::stat::{ConstValue, Elems};
+use yavs_sem::stat::{ArrayConst, ConstValue, Elems};
 
 use crate::design::vhpi_name;
 use crate::sys::*;
@@ -150,16 +150,7 @@ impl Read {
     /// An elaboration-time value: a scalar, or an array of scalars.
     pub(crate) fn from_const(ty: Scalar, v: &ConstValue) -> Option<Read> {
         let (array, vals): (bool, Vec<ConstValue>) = match v {
-            ConstValue::Array(a) => (
-                true,
-                match &a.elems {
-                    Elems::Bytes(b) => b.iter().map(|&x| ConstValue::Enum(x.into())).collect(),
-                    Elems::Runs(r) => r
-                        .iter()
-                        .flat_map(|(n, v)| std::iter::repeat_n(v.clone(), *n as usize))
-                        .collect(),
-                },
-            ),
+            ConstValue::Array(a) => (true, elements(a)),
             v => (false, vec![v.clone()]),
         };
         let cells = match ty {
@@ -174,6 +165,38 @@ impl Read {
             _ => Cells::Int(vals.iter().map(ConstValue::as_int).collect::<Option<_>>()?),
         };
         Some(Read { ty, array, cells })
+    }
+
+    /// This value as an elaborated value; an array takes the bounds of `like`, the value it
+    /// replaces (#309).
+    pub(crate) fn to_const(&self, like: &ConstValue) -> Option<ConstValue> {
+        let one = |i: usize| -> Option<ConstValue> {
+            Some(match (&self.ty, &self.cells) {
+                (_, Cells::Real(v)) => ConstValue::Real(*v.get(i)?),
+                (Scalar::Enum { .. }, Cells::Int(v)) => {
+                    ConstValue::Enum(u32::try_from(*v.get(i)?).ok()?)
+                }
+                (Scalar::Phys { .. }, Cells::Int(v)) => ConstValue::Phys(*v.get(i)?),
+                (_, Cells::Int(v)) => ConstValue::Int(*v.get(i)?),
+            })
+        };
+        if !self.array {
+            return one(0);
+        }
+        let ConstValue::Array(a) = like else {
+            return None;
+        };
+        let n = match &self.cells {
+            Cells::Int(v) => v.len(),
+            Cells::Real(v) => v.len(),
+        };
+        let elems = (0..n)
+            .map(|i| one(i).map(|x| (1, x)))
+            .collect::<Option<_>>()?;
+        Some(ConstValue::Array(ArrayConst {
+            bounds: a.bounds.clone(),
+            elems: Elems::Runs(elems),
+        }))
     }
 
     /// The format `vhpiObjTypeVal` stands for.
@@ -749,6 +772,17 @@ fn split_phys(v: i64) -> vhpiPhysT {
 }
 
 /// The format `vhpiObjTypeVal` stands for, for a scalar or an `array` of `ty`.
+/// The elements of an array value, row major.
+pub(crate) fn elements(a: &ArrayConst) -> Vec<ConstValue> {
+    match &a.elems {
+        Elems::Bytes(b) => b.iter().map(|&x| ConstValue::Enum(x.into())).collect(),
+        Elems::Runs(r) => r
+            .iter()
+            .flat_map(|(n, v)| std::iter::repeat_n(v.clone(), *n as usize))
+            .collect(),
+    }
+}
+
 pub(crate) fn natural_format(ty: &Scalar, array: bool) -> vhpiFormatT {
     let (s, a) = match ty {
         Scalar::Enum { logic: true, .. } => (vhpiLogicVal, vhpiLogicVecVal),

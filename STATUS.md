@@ -619,7 +619,23 @@ with none enabled the observer does not take the state lock. `crates/yavs/tests/
 `vhpi_drives_a_clocked_design` (a counter clocked and reset only from VHPI, force, release and
 deposit on a driven signal, value changes on a signal, a port, a bit and a record; identical at
 `--threads 1` and `4`, `tests/put/expected.txt`) and `vhpi_put_value_misuse_is_reported`
-(`tests/put/errors.txt`). Missing: writing variables (#309), `vhpi_schedule_transaction`.
+(`tests/put/errors.txt`). Missing: `vhpi_schedule_transaction`.
+
+Done (#309, variables): `vhpi_get_value` and `vhpi_put_value` (deposits) on process variables,
+non-protected shared variables of architectures, blocks and packages, and their record fields
+and array elements, from simulation callbacks (processes are suspended there). Process
+variables through the kernel's `Hook::with_process` and `Process::as_any` into the
+interpreter's frame (`InterpProcess::var`/`set_var`), shared variables at the slot address
+elaboration computes (`Elaborated::build_full`, `yavs_interp::shared_var`); values cross as
+elaborated values (`yavs_elab::ir_decode`/`ir_encode`). A deposit is written at once, so
+later reads in the callback and the process when it resumes see it. Forces, releases, the
+read-only phases and a process variable before its process first ran (before
+`vhpiCbEndOfInitialization`) are `W0903`; a protected object has no value. Array bounds of
+objects with a constrained subtype now come from the subtype, not the initial value.
+`crates/yavs/tests/vhpi_run.rs` `vhpi_reads_and_deposits_variables` (`tests/plugin/vars.c`,
+`tests/vars/expected.txt`, identical at `--threads 1` and `4`). Not yet: reading a process
+variable before its process ran, a region's shared variable no process uses (#342), variables
+of subprograms.
 
 Done (#274): `vhpi_register_foreignf` and `vhpi_get_foreignf_info` (`crates/yavs-vhpi/src/foreign.rs`):
 `'FOREIGN "VHPI library model"` functions and procedures (lowering: `ForeignRef::model`; interpreter:

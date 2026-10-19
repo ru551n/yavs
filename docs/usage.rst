@@ -205,7 +205,15 @@ least significant bit): ``vhpiDepositPropagate`` sets the value until a driver n
 signal to its drivers' value. The non-propagating ``vhpiDeposit`` and ``vhpiForce`` are refused
 (``W0903``). A write takes effect in the next delta at the same time; in the read-only phases
 (start of postponed processes, end of time step, end of simulation) it is refused. Constants, generics, records as a whole and ``vhpiSizeConstraint`` are
-``W0903``; variables cannot be written yet (``W0904``). A ``vhpiCbValueChange`` callback on a
+``W0903``.
+
+Variables of processes and shared variables (of architectures, blocks and packages, not of a
+protected type) and their record fields and array elements are read with ``vhpi_get_value``
+and written with ``vhpi_put_value`` in ``vhpiDeposit`` or ``vhpiDepositPropagate`` mode from
+simulation callbacks. A deposit changes the variable at once: a read later in the same
+callback returns the new value, and the process sees it when it next resumes. A process's
+variables exist once it has run, from ``vhpiCbEndOfInitialization`` on; forcing or releasing a
+variable is a ``W0903`` warning. A ``vhpiCbValueChange`` callback on a
 signal, port or one of their sub-elements runs once in every cycle in which any of its elements
 changed, with the object's value in the format its ``value`` field asks for.
 

@@ -494,7 +494,7 @@ pub fn run(
         };
     }
     let probes = a.wave_variables.then(yavs_wave::VarProbes::default);
-    let (mut sim, rt) = match e.build_probed(cfg, probes.as_ref()) {
+    let (mut sim, built) = match e.build_full(cfg, probes.as_ref()) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.
         Err(err) => {
@@ -504,7 +504,11 @@ pub fn run(
     };
     let names: Vec<String> = e.procs.iter().map(|p| e.proc_name(p)).collect();
     sim.subscribe(Box::new(Printer { names }));
+    let rt = built.as_ref().map(|b| b.rt.clone());
     if !a.vhpi.is_empty() {
+        if let Some(b) = built {
+            yavs_vhpi::set_runtime(b);
+        }
         sim.subscribe(Box::new(yavs_vhpi::VhpiObserver));
     }
     let wave_error = |path: &str, err: yavs_wave::Error| {

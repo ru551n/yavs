@@ -115,6 +115,11 @@ fn vhpi_dir() -> PathBuf {
 
 /// Compiles `yavs-vhpi/tests/plugin/<name>.c` and analyses `vhdl`.
 fn setup_with(name: &str, vhdl: &str) -> (String, PathBuf) {
+    setup_args(name, vhdl, &[])
+}
+
+/// [`setup_with`], analysing with `args`.
+fn setup_args(name: &str, vhdl: &str, args: &[&str]) -> (String, PathBuf) {
     // One directory per call: the tests run in parallel.
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -131,7 +136,11 @@ fn setup_with(name: &str, vhdl: &str) -> (String, PathBuf) {
     let src = tmp.join("top.vhd");
     std::fs::write(&src, vhdl).expect("write");
     let lib = format!("--work=work:{}", tmp.join("lib").display());
-    let (code, err, _) = yavs(&["analyze", &lib, &src.display().to_string()]);
+    let src = src.display().to_string();
+    let mut a = vec!["analyze", &lib];
+    a.extend_from_slice(args);
+    a.push(&src);
+    let (code, err, _) = yavs(&a);
     assert_eq!(code, 0, "{err}");
     (lib, so)
 }
@@ -448,7 +457,7 @@ fn vhpi_drives_a_clocked_design() {
 }
 
 /// Constants, generics, records and read-only phases cannot be written; bad values are
-/// misuse (W0903), variables not implemented yet (W0904).
+/// misuse (W0903), and so is a variable before its process ran.
 #[test]
 fn vhpi_put_value_misuse_is_reported() {
     let (code, err, out) = put("errors", &[]);
@@ -523,4 +532,44 @@ fn vhpi_foreign_missing_model_and_result() {
     let (code, err, _) = foreign("nores", &[]);
     assert_ne!(code, 0);
     assert!(err.contains("did not set its result"), "{err}");
+}
+
+/// Process and shared variables (#309): read at the end of initialization and in callbacks,
+/// deposited (scalars, a logic vector and one of its elements, record fields, a string, a
+/// variable of a process suspended in a procedure, an architecture's and a package's shared
+/// variable) and seen by the processes when they resume; forces and read-only phases are
+/// misuse. The trace is `yavs-vhpi/tests/vars/expected.txt`
+/// (`YAVS_BLESS=1` rewrites it), the same at 1 and 4 threads.
+#[test]
+fn vhpi_reads_and_deposits_variables() {
+    let dir = vhpi_dir().join("tests/vars");
+    let vhdl = std::fs::read_to_string(dir.join("design.vhd")).expect("design");
+    let (lib, so) = setup_args("vars", &vhdl, &["--relaxed"]);
+    let spec = format!("--vhpi={}:vars", so.display());
+    let run = |threads: &str| {
+        let args = [
+            "run",
+            "--relaxed",
+            &lib,
+            &spec,
+            "--resolution=ns",
+            threads,
+            "top",
+        ];
+        yavs(&args)
+    };
+    let (code, err, out) = run("--threads=1");
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("bug in yavs"), "{err}");
+    let expected = dir.join("expected.txt");
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &out).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected trace")
+        .replace("\r\n", "\n");
+    assert_eq!(out, want);
+    let (code, err, again) = run("--threads=4");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out, "--threads=4");
 }

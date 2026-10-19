@@ -47,6 +47,12 @@ pub fn set_design(db: &yavs_sem::Db, e: &yavs_elab::Elaborated) {
     abi::with_state(|s| s.design = d);
 }
 
+/// Sets the interpreter side of the simulation about to run (`Elaborated::build_full`):
+/// plugins read and write shared variables through it (#309).
+pub fn set_runtime(b: yavs_elab::Built) {
+    abi::with_state(|s| s.built = Some(b));
+}
+
 /// Sets the tool's arguments that plugins read (`vhpiArgcP`, `vhpiArgvs`).
 pub fn set_argv(argv: Vec<String>) {
     abi::with_state(|s| s.argv = argv);

@@ -9,7 +9,11 @@
 
 use std::sync::atomic::Ordering;
 
-use yavs_kernel::{EndReason, Hook, Phase, Range, SignalId, WakeId};
+use yavs_elab::{Built, ScopeId};
+use yavs_interp::{CallVal, InterpProcess};
+use yavs_kernel::{EndReason, Hook, Phase, ProcId, Range, SignalId, WakeId};
+use yavs_sem::DeclId;
+use yavs_sem::stat::ConstValue;
 
 use crate::abi::{fire, hooked, with_state};
 use crate::callbacks::WATCHING;
@@ -82,6 +86,82 @@ fn requests(s: &mut State, hook: &mut Hook<'_>, hold_puts: bool) {
         Some(Control::Stop) => hook.end(EndReason::Stop(0)),
         None => {}
     }
+}
+
+/// Calls `f` with kernel process `proc`, an interpreter process (observers run between
+/// phases: it is suspended).
+fn interp<R>(
+    h: &mut Hook<'_>,
+    proc: u32,
+    f: impl FnOnce(&mut InterpProcess) -> Result<R, String>,
+) -> Result<R, String> {
+    h.with_process(ProcId(proc), |p| {
+        let p = p.as_any().and_then(|a| a.downcast_mut::<InterpProcess>());
+        f(p.ok_or("this is a bug in yavs: not an interpreter process")?)
+    })
+    .unwrap_or_else(|| Err(format!("this is a bug in yavs: no process {proc}")))
+}
+
+/// A change of a variable's whole value; `None` from it: the new value does not fit.
+pub(crate) type Update<'a> = Option<&'a mut dyn FnMut(&mut ConstValue) -> Option<()>>;
+
+/// The value of variable `name` of kernel process `proc` (#309), changed by `update` when
+/// given (`None` from it: the new value does not fit).
+pub(crate) fn var(
+    h: &mut Hook<'_>,
+    proc: u32,
+    name: &str,
+    update: Update<'_>,
+) -> Result<ConstValue, String> {
+    interp(h, proc, |p| {
+        let (ty, v) = p.var(name)?;
+        let (v, new) = change(p.program(), ty, &v, name, update)?;
+        if let Some(new) = new {
+            p.set_var(name, &new)?;
+        }
+        Ok(v)
+    })
+}
+
+/// [`var`] of the non-protected shared variable `decl` of region `scope` (`None`: a
+/// package's).
+pub(crate) fn shared_var(
+    b: &Built,
+    scope: Option<ScopeId>,
+    decl: DeclId,
+    update: Update<'_>,
+) -> Result<ConstValue, String> {
+    let Some(&(slot, ty)) = b.vars.get(&(scope, decl)) else {
+        return Err(
+            "this shared variable has no value to read (a protected object, or no process \
+             uses it)"
+                .into(),
+        );
+    };
+    let v = yavs_interp::shared_var(&b.rt, &b.shared, slot, ty)?;
+    let (v, new) = change(&b.rt.prog, ty, &v, "shared", update)?;
+    if let Some(new) = new {
+        yavs_interp::set_shared_var(&b.rt, &b.shared, slot, ty, &new)?;
+    }
+    Ok(v)
+}
+
+/// Value `v` of IR type `ty` decoded, and with `update` the changed value encoded.
+fn change(
+    prog: &yavs_ir::Program,
+    ty: yavs_ir::TyId,
+    v: &CallVal,
+    name: &str,
+    update: Update<'_>,
+) -> Result<(ConstValue, Option<CallVal>), String> {
+    let bug = || format!("this is a bug in yavs: variable `{name}` not decoded or encoded");
+    let mut whole = yavs_elab::ir_decode(prog, ty, v).ok_or_else(bug)?;
+    let Some(f) = update else {
+        return Ok((whole, None));
+    };
+    f(&mut whole).ok_or_else(bug)?;
+    let new = yavs_elab::ir_encode(prog, ty, &whole).ok_or_else(bug)?;
+    Ok((whole, Some(new)))
 }
 
 impl yavs_kernel::Observer for VhpiObserver {

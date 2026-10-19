@@ -56,6 +56,13 @@ pub(crate) enum Origin {
         decl: DeclId,
         value: Option<ConstValue>,
     },
+    /// A variable (#309): of the process that is kernel process `proc`, or (`None`) a shared
+    /// variable declared in elaborated region `scope` (a package's has none).
+    Var {
+        proc: Option<u32>,
+        scope: Option<ScopeId>,
+        decl: DeclId,
+    },
     /// A package instance or a design unit.
     Unit(UnitId),
     /// The root of a design given by name only (`set_design_root`).
@@ -632,6 +639,23 @@ impl Builder<'_> {
                     leaf: e.nets.obj(obj).leaves.0.0,
                 },
             ),
+            None if kind == vhpiVarDeclK => {
+                // Its value is the running process's (`Origin::Var`), not its initial value.
+                let proc = s.and_then(|s| {
+                    e.procs
+                        .iter()
+                        .position(|p| p.scope == s && p.actual.is_none())
+                });
+                let v = o.default.and_then(|x| db.value(x));
+                (
+                    self.layout(o.subtype, v, s),
+                    Origin::Var {
+                        proc: proc.map(|p| p as u32),
+                        scope: s,
+                        decl: d,
+                    },
+                )
+            }
             None => {
                 let v = s.and_then(|s| e.value(s, d));
                 let v = v.or_else(|| o.default.and_then(|x| db.value(x)));
@@ -810,18 +834,22 @@ impl Builder<'_> {
                     Some(ConstValue::Array(a)) => Some(a),
                     _ => None,
                 };
-                let bounds: Option<Vec<Bounds>> = match (arr, &db.subtypes[st].constraint) {
-                    (Some(a), _) => Some(
-                        a.bounds
-                            .iter()
-                            .map(|&(left, dir, right)| Bounds { left, dir, right })
-                            .collect(),
-                    ),
-                    (None, Constraint::Array { dims: Some(ds), .. }) => {
+                // A constrained subtype's bounds win over the value's (LRM 5.3.2.2: a
+                // variable's `x"00"` has the bounds of its `(7 downto 0)`).
+                let constrained = match &db.subtypes[st].constraint {
+                    Constraint::Array { dims: Some(ds), .. } => {
                         ds.iter().map(|r| self.range(r, s)).collect()
                     }
                     _ => None,
                 };
+                let bounds: Option<Vec<Bounds>> = constrained.or_else(|| {
+                    arr.map(|a| {
+                        a.bounds
+                            .iter()
+                            .map(|&(left, dir, right)| Bounds { left, dir, right })
+                            .collect()
+                    })
+                });
                 let Some(bounds) = bounds else {
                     return Layout::Open;
                 };

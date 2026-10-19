@@ -7,19 +7,19 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
-| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 8 of 11 pass completely, the other three fail on #221 and #231, table below (#112) |
+| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 9 of 11 pass completely (`check` now too), `com` and `verification_components` fail on #246, #248, #251 and #252, table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
 | M3, M5, M6, M8 to M10 | not started (crate spikes below) |
 
 ### External test runner: its own VHDL suites (#112)
 
-`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at e07bb49; pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner (none this time).
+`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at 07911a8; pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. Skipped as reported by the runner (none this time).
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 256 | 1 | 0 | two calls of a procedure with a `signal out` parameter on different constant elements #231 (fixed since, not re-measured) |
-| com | 46 | 99 | 0 | protected method called from a subprogram nested in a method of the same body #221 (fixed, not re-measured) |
+| check | 257 | 0 | 0 | none |
+| com | 141 | 4 | 0 | access value allocated by a function called from a protected body variable initializer is stale (E3009, E9999) #246 |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
 | logging | 113 | 0 | 0 | none |
@@ -28,7 +28,7 @@ suite (`vunit/vhdl/<suite>/test`). Skipped as reported by the runner (none this 
 | record_dict (2019) | 6 | 0 | 0 | none |
 | run | 5 | 0 | 0 | none |
 | string_ops | 15 | 0 | 0 | none |
-| verification_components | 47 | 480 | 0 | #221 (all 480, fixed, not re-measured; failures behind it are not visible yet); `tb_axi_stream_protocol_checker` is left out |
+| verification_components | 455 | 124 | 0 | process constant whose initializer calls an impure function is evaluated twice #251 (114, all `tb_axi_stream`); order of processes within a delta, instance before parent #252 (7); `'length` of an unconstrained port in an architecture constant is 1 #248 (3) |
 
 ## CI and releases
 

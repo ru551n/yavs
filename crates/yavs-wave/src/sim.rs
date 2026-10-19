@@ -226,10 +226,11 @@ impl Recorder {
     pub fn sync(&self) {
         let mut guard = self.lock();
         let st = &mut *guard;
-        if let (None, Some(w)) = (&st.error, &mut st.writer) {
-            if let Err(e) = w.sync() {
-                st.error = Some(e);
-            }
+        if st.error.is_none()
+            && let Some(w) = st.writer.as_mut()
+            && let Err(e) = w.sync()
+        {
+            st.error = Some(e);
         }
     }
 

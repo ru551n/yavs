@@ -1196,6 +1196,11 @@ which tools/difftest parses.
   elaborated shape, else the shape of its value). An alias of a composite variable part keeps
   its whole descriptor (record and element bounds too), checked against the alias subtype
   element by element (#315).
+- **`'left`/`'right`/`'low`/`'high`/`'ascending` of a scalar subtype during elaboration**
+  (integer, enumeration and physical types) evaluate the subtype's range in the instance
+  (`Model::scalar_bounds`) instead of folding it, so a range naming a port
+  (`integer range p'range`, the index subtype sem gives a range choice `(p'range => '0')`)
+  has the actual's bounds (#311).
 - **A folded constant read as a whole** (`Fx::expr`, `e.value` of an `Obj`) takes the descriptor
   of its own subtype when that has one, so the element bounds of an array constant are the
   declared ones, not those of the literals that fold into its value (#247).

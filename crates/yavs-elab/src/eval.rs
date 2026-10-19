@@ -533,16 +533,28 @@ impl Model {
                         | PredefAttr::Low
                         | PredefAttr::Length
                         | PredefAttr::Ascending
-                ) && !matches!(prefix, AttrPrefix::Subtype(st) if db.types[db.base(*st)].kind.is_scalar()) =>
+                ) && !matches!(prefix, AttrPrefix::Subtype(st) if matches!(
+                    db.types[db.base(*st)].kind,
+                    TypeKind::Floating | TypeKind::UniversalReal
+                )) =>
             {
                 let dim = match args.first() {
                     Some(a) => int(&self.eval(db, *a, scope)?, db.exprs[*a].span)? - 1,
                     None => 0,
                 };
-                let b = self.prefix_bounds(db, prefix, dim as u32, scope, ex.span)?;
+                // A scalar subtype's range may name an object (`integer range p'range`, the
+                // index subtype of an aggregate's range choice, #311): evaluated here, since
+                // folding knows no signal bounds.
+                let b = match prefix {
+                    AttrPrefix::Subtype(st) if db.types[db.base(*st)].kind.is_scalar() => {
+                        self.scalar_bounds(db, *st, scope, ex.span)?
+                    }
+                    _ => self.prefix_bounds(db, prefix, dim as u32, scope, ex.span)?,
+                };
                 let (lo, hi) = b.low_high();
                 let wrap = |v: i64| match db.types[db.base(ex.subtype)].kind {
                     TypeKind::Enum { .. } => Val::Enum(v as u32),
+                    TypeKind::Physical { .. } => Val::Phys(v),
                     _ => Val::Int(v),
                 };
                 return Ok(match attr {

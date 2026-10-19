@@ -143,7 +143,10 @@ milestone users care about works.
 - **Durability:** a block is flushed on the next time advance after `flush_interval` (default
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel
-  stops between time steps and calls `finish`, which is also done on drop.
+  stops between time steps and calls `finish`, which is also done on drop. With `--dap` the
+  recorder also flushes (`Recorder::sync`, through the `yavs_dap::Sync` hook) before every
+  `stopped` event, so a viewer reading the file at a stop sees every completed time step; the
+  step in progress at a stop inside a process appears when it ends (#423).
 
 ## Packed logic vectors: bit-planes (yavs-logic)
 

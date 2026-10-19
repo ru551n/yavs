@@ -393,3 +393,55 @@ fn attach_through_response_file() {
     assert_eq!(child.wait().expect("wait").code(), Some(0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--wave` with `--dap`: the FST is flushed at every stop, so a viewer reading it while the run
+/// is stopped finds every change up to the stop time.
+#[test]
+fn wave_file_is_readable_at_a_stop() {
+    let dir = setup("stopwave");
+    let fst = dir.join("tb.fst");
+    let mut child = spawn(
+        &dir,
+        "tb",
+        &["--dap=stdio", &format!("--wave={}", fst.display())],
+    );
+    let mut c = stdio_client(&mut child);
+    let src = dir.join("tb.vhd").display().to_string();
+    c.request("initialize", json!({"adapterID": "yavs"}));
+    c.request("launch", json!({}));
+    c.request(
+        "setBreakpoints",
+        json!({"source": {"path": src}, "breakpoints": [{"line": 12}]}),
+    );
+    c.request("configurationDone", json!({}));
+    c.event("stopped"); // k = 1 at 0 ns
+    c.request("continue", json!({"threadId": 1}));
+    c.event("stopped"); // k = 2 at 10 ns: cnt became 2 at 0 ns
+    let mut w = wellen::simple::read(&fst).expect("FST readable while stopped");
+    let h = w.hierarchy();
+    let var = h
+        .all_vars()
+        .map(|r| &h[r])
+        .find(|v| v.full_name(h) == "tb.cnt")
+        .expect("tb.cnt");
+    let sr = var.signal_ref();
+    w.load_signals(&[sr]);
+    let tt = w.time_table().to_vec();
+    let last = w
+        .get_signal(sr)
+        .expect("loaded")
+        .iter_changes()
+        .last()
+        .map(|(t, v)| (tt[t as usize], v.to_bit_string()));
+    assert_eq!(last, Some((0, Some(format!("{:032b}", 2)))), "{last:?}");
+    c.request(
+        "setBreakpoints",
+        json!({"source": {"path": src}, "breakpoints": []}),
+    );
+    c.request("continue", json!({"threadId": 1}));
+    c.event("exited");
+    c.request("disconnect", json!({}));
+    drop(c.w);
+    child.wait().expect("wait");
+    let _ = std::fs::remove_dir_all(&dir);
+}

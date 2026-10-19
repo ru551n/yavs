@@ -554,6 +554,14 @@ is reported as usual.
    as in any session.
 5. Disconnect, or let the test finish: VUnit then prints the result of the test.
 
+The run also writes its waveform to ``wave.fst`` in the test's output directory (the path is in
+the ``yavs run`` line VUnit prints). Under ``--dap`` yavs flushes the file at every stop, so at a
+breakpoint or step it holds every change of the completed time steps up to the stop (the time
+step in progress shows once it ends). To follow it next to the debug session, open the file with
+a VS Code waveform extension that opens FST files and add the signals you want. Viewers with an
+auto-reload option or a reload button need it after each stop; a viewer without one needs the file
+closed and reopened. The same works for any run: ``yavs run --dap=4711 --wave=out.fst tb``.
+
 * **Threads are processes**, named by their path such as ``:tb:u1:p``.
 * **Line breakpoints** stop at the statements that start on the line, or on the next line that
   has one; a hit condition (``3``, ``>= 3``, ``% 3``) is supported.

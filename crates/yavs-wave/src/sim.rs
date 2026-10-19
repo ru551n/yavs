@@ -109,12 +109,20 @@ pub trait Sink: Send {
     fn change(&mut self, time: u64, id: SignalId, value: &[u8]) -> Result<(), Error>;
     /// Every change of the time step at `time` has been given.
     fn step(&mut self, _time: u64) {}
+    /// Make what was given so far readable by others (a debugger stop); default: nothing.
+    fn sync(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
     fn finish(self: Box<Self>) -> Result<(), Error>;
 }
 
 impl Sink for WaveWriter {
     fn change(&mut self, time: u64, id: SignalId, value: &[u8]) -> Result<(), Error> {
         WaveWriter::change(self, time, id, value)
+    }
+
+    fn sync(&mut self) -> Result<(), Error> {
+        self.flush()
     }
 
     fn finish(self: Box<Self>) -> Result<(), Error> {
@@ -211,6 +219,18 @@ impl Recorder {
     /// start of the simulation (`Phase::StartOfSim` does this otherwise).
     pub fn start(&self, now: u64) {
         self.lock().start(now);
+    }
+
+    /// Write the completed time steps to disk now, so a reader of the file sees every change up
+    /// to the last one (a debugger stop); a step still running appears once it ends.
+    pub fn sync(&self) {
+        let mut guard = self.lock();
+        let st = &mut *guard;
+        if let (None, Some(w)) = (&st.error, &mut st.writer) {
+            if let Err(e) = w.sync() {
+                st.error = Some(e);
+            }
+        }
     }
 
     /// Write what is still pending (a run that paused or failed inside a time step), close the

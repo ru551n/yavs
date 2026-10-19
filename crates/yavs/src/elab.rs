@@ -618,8 +618,12 @@ pub fn run(
         let interrupted = Arc::new(AtomicBool::new(false));
         let attach = |sim: &mut yavs_kernel::SimControl, built: Option<&yavs_elab::Built>| {
             let rec = observers(&a, &db, &e, sim, built, &interrupted, &mut out)?;
-            Ok(rec.map(|(path, rec)| -> yavs_dap::Finish {
-                Box::new(move |sim| rec.finish(sim).err().map(|err| wave_error(&path, err)))
+            Ok(rec.map(|(path, rec)| {
+                let r = rec.clone();
+                let finish: yavs_dap::Finish =
+                    Box::new(move |sim| rec.finish(sim).err().map(|err| wave_error(&path, err)));
+                let sync: yavs_dap::Sync = Box::new(move || r.sync());
+                (finish, sync)
             }))
         };
         let r = yavs_dap::serve(db.clone(), e.clone(), cfg, stop, t, attach);

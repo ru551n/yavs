@@ -128,11 +128,16 @@ struct Shared {
     db: Arc<Db>,
     elab: Arc<Elaborated>,
     built: OnceLock<Built>,
+    sync: OnceLock<Sync>,
 }
 
 /// Work at the end of the run, before `exited` (the caller's `--wave` recorder finishing its
 /// file); a diagnostic fails the run.
 pub type Finish = Box<dyn FnOnce(&SimControl) -> Option<Diagnostic>>;
+
+/// Work at every stop, before `stopped` is sent (the caller's `--wave` file flushed, so an
+/// editor's wave viewer can read every change up to the stop).
+pub type Sync = Box<dyn Fn() + Send + std::marker::Sync>;
 
 /// The first variables reference of the per-stop table (`Shared::nodes`); the stateless
 /// references of scopes stay below it.
@@ -407,6 +412,9 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
     sh.stopped.store(true, Ordering::Relaxed);
     // The waves of the completed time steps, then the stop.
     sh.stream.push();
+    if let Some(sync) = sh.sync.get() {
+        sync();
+    }
     sh.event("stopped", stopped);
     let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
     loop {
@@ -1648,7 +1656,10 @@ pub fn serve(
     cfg: Config,
     stop: Time,
     transport: Transport,
-    attach: impl FnOnce(&mut SimControl, Option<&Built>) -> Result<Option<Finish>, Box<Diagnostic>>,
+    attach: impl FnOnce(
+        &mut SimControl,
+        Option<&Built>,
+    ) -> Result<Option<(Finish, Sync)>, Box<Diagnostic>>,
 ) -> Result<u8, Box<Diagnostic>> {
     let (db_arc, e_arc) = (db, e);
     let (db, e) = (&*db_arc, &*e_arc);
@@ -1707,6 +1718,7 @@ pub fn serve(
         db: db_arc.clone(),
         elab: e_arc.clone(),
         built: OnceLock::new(),
+        sync: OnceLock::new(),
     });
     let session = DebugSession::new(&ir.program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());
@@ -1730,7 +1742,13 @@ pub fn serve(
         sub: sh.wave.clone(),
         last: 0,
     }));
-    let finish = attach(&mut sim, built.as_ref())?;
+    let finish = match attach(&mut sim, built.as_ref())? {
+        Some((finish, sync)) => {
+            let _ = sh.sync.set(sync);
+            Some(finish)
+        }
+        None => None,
+    };
     let rt = built.as_ref().map(|b| b.rt.clone());
     if let Some(b) = built {
         let _ = sh.built.set(b);

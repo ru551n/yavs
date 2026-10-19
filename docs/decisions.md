@@ -1794,3 +1794,11 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   <arguments> --dap=stdio` (`yavs` from `--yavs`, else next to `yavs-gui`, else PATH);
   `yavs-gui --attach HOST:PORT` connects to a `yavs run --dap=PORT`. Closing the window sends
   `disconnect` and kills the child if it has not exited after 2 s.
+- **G2 client state (#399):** the GUI owns the line breakpoint list and resends a file's whole
+  set (enabled entries only) on every change and, for all files, before `configurationDone`; a
+  breakpoint the server moved follows to the line it answered. Until the server sends structured
+  time (P1) the GUI parses `"<reason> at <time>, delta <n>"` from the `stopped` description.
+  Source files are read from disk by the path of a frame, or typed into the Source panel until
+  `loadedSources` (P5) exists. Answers to requests of an earlier stop are dropped. Why: the
+  server holds no list the client could read back, and the design keeps all state on the UI
+  thread.

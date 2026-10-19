@@ -1,7 +1,7 @@
 # M10 GUI: yavs-gui
 
-Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Slice G1
-(#388) is implemented in `gui/` (see `gui/AGENTS.md`). Binding inputs: `docs/plan.md`
+Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Slices G1
+(#388) and G2 (#399) are implemented in `gui/` (see `gui/AGENTS.md`). Binding inputs: `docs/plan.md`
 (the `yavs-gui` row of the architecture table, "Designed for the GUI from the start", M10) and the
 M8 DAP server as it is on main (`crates/yavs-dap/AGENTS.md`).
 

@@ -415,8 +415,7 @@ impl Db {
         // A user operator with anonymous parameter types goes to its instance for the
         // operands' types (#308).
         let actuals: Vec<Option<&ast::Expr>> = operands.iter().map(|o| Some(*o)).collect();
-        let Some((callee, pre)) =
-            self.implicit_instance_of(scope, callee, &actuals, span, span)
+        let Some((callee, pre)) = self.implicit_instance_of(scope, callee, &actuals, span, span)
         else {
             return self.poison_expr();
         };

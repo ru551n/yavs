@@ -2125,7 +2125,12 @@ impl Db {
             s.kind,
         );
         // An anonymous parameter type stays itself (it is not an instance's type).
-        let anon = self.generic.formal_anon.get(&f).cloned().unwrap_or_default();
+        let anon = self
+            .generic
+            .formal_anon
+            .get(&f)
+            .cloned()
+            .unwrap_or_default();
         let mut mapped = |db: &mut Db, p: SubtypeId| {
             let b = db.base(p);
             if anon.contains(&b) {

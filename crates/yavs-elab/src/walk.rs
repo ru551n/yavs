@@ -468,6 +468,7 @@ pub(crate) fn elaborate(
         sigs: e.m.sigs,
         var_ports: e.m.var_ports,
         ext_vars: e.m.ext_vars,
+        shared_vars: e.m.shared_vars,
         warnings: e.warnings,
         ir: None,
         elab_calls: std::mem::take(&mut e.m.session.log),

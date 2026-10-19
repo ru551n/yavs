@@ -95,7 +95,8 @@ pub struct InstConst {
     pub init: FuncId,
     /// Declared in the entity or architecture itself (not in a block or generate): one value
     /// per instance, shared by the instance data of all its regions. A shared variable's
-    /// thunk creates its object, so it must run once per instance (LRM 6.4.2.4).
+    /// thunk creates its object, so it must run once per instance (LRM 6.4.2.4); one of a
+    /// block or generate runs once per declaring region (yavs-elab, #249).
     pub instance_level: bool,
 }
 

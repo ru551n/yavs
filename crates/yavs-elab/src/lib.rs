@@ -138,6 +138,8 @@ pub struct Elaborated {
     /// of the variable, whose object the alias's instance data cell holds (#93).
     pub ext_vars:
         std::collections::HashMap<(ScopeId, yavs_sem::DeclId), (ScopeId, yavs_sem::DeclId)>,
+    /// Shared variables by (declaring region, declaration): one object each (#249).
+    pub(crate) shared_vars: std::collections::HashSet<(ScopeId, yavs_sem::DeclId)>,
     /// Warnings of a successful elaboration.
     pub warnings: Vec<Diagnostic>,
     /// Conversion functions of port associations (`PortEdge::to_formal`/`to_actual`).

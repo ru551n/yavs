@@ -781,13 +781,23 @@ impl Elaborated {
         }
         for c in u.consts.iter().filter(|c| !known.contains(&c.decl)) {
             // An instance-level constant or shared variable is one object for all regions of
-            // the instance (#190): its thunk runs once per instance.
-            let key = (self.instance_of(i), c.decl);
-            let cached = if c.instance_level {
-                once.get(&key).cloned()
+            // the instance (#190); a shared variable of a block or generate one per elaboration
+            // of its declarative part, shared by the nested regions (#249): its thunk runs once
+            // per declaring region.
+            let key = if c.instance_level {
+                Some((self.instance_of(i), c.decl))
+            } else if self.shared_vars.iter().any(|&(_, d)| d == c.decl) {
+                let mut cur = Some(i);
+                while let Some(r) = cur.filter(|&r| !self.shared_vars.contains(&(r, c.decl))) {
+                    cur = self.hier.scope(r).parent;
+                }
+                // Declared in a region nested in this one: no process of this region names it.
+                let Some(r) = cur else { continue };
+                Some((r, c.decl))
             } else {
                 None
             };
+            let cached = key.and_then(|k| once.get(&k).cloned());
             let v = match cached {
                 Some(v) => v,
                 None => {
@@ -802,8 +812,8 @@ impl Elaborated {
                         Some(shared),
                     )?
                     .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))?;
-                    if c.instance_level {
-                        once.insert(key, v.clone());
+                    if let Some(k) = key {
+                        once.insert(k, v.clone());
                     }
                     v
                 }

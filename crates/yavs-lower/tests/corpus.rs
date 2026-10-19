@@ -168,6 +168,7 @@ const PASS: &[&str] = &[
     "protected/method_alias_objects",
     "protected/method_nested",
     "protected/private_variables",
+    "protected/shared_var_regions",
     "protected/stack",
     "protected/variable_ports",
     "protected/variable_ports_same_delta",

@@ -1,0 +1,6 @@
+exit	0
+diag	note	1000000	0	:shared_var_regions:b:_p1	b: 33
+diag	note	2000000	0	:shared_var_regions:g:_p0	g: 3
+diag	note	3000000	0	:shared_var_regions:f(1):_p1	f(1): 101
+diag	note	4000000	0	:shared_var_regions:f(2):_p1	f(2): 1102
+diag	note	5000000	0	:shared_var_regions:f(3):_p1	f(3): 1103

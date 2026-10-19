@@ -781,7 +781,9 @@ which tools/difftest parses.
   values and signals stay empty in outer regions, whose processes never name them.
   Constants and shared variables declared in the entity or architecture itself
   (`InstConst::instance_level`) are computed once per instance and shared by all its regions
-  (#190).
+  (#190). A shared variable of a block or generate is created once per elaboration of its
+  declarative part (the block, the chosen alternative, each `for` iteration) and shared by
+  the regions nested in it, found through `Elaborated::shared_vars` (LRM 14.4, 6.4.2.4, #249).
 - **Instance values:** generics, generate parameters and non-static constants are written by
   the elaborator from its folded values (`UnitIr::write_value`); constants it cannot
   fold run a thunk once per region (a composite's returns its fat pair, appended to the

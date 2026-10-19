@@ -94,6 +94,8 @@ pub struct Options {
     pub std: Std,
     /// User conditional analysis identifiers, `(name, value)`.
     pub defines: Vec<(String, String)>,
+    /// Read `-- psl` comments as PSL pragmas (`--psl`); native PSL statements are always read.
+    pub psl: bool,
 }
 
 pub struct Parsed {
@@ -155,7 +157,7 @@ pub fn parse_file(file: FileId, source: &SourceFile, opts: &Options) -> Parsed {
         latin1: source.is_latin1(),
     };
     let mut diags = Vec::new();
-    let toks = lexer::lex(file, src, opts.std, &mut diags);
+    let toks = lexer::lex(file, src, opts.std, opts.psl, &mut diags);
     let toks = directive::preprocess(file, src, toks, opts.std, &opts.defines, &mut diags);
     let design = parser::parse(file, src, toks, opts.std, &mut diags);
     let ok = !diags.iter().any(|d| d.severity == Severity::Error);

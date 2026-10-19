@@ -78,6 +78,8 @@ pub struct Options {
     pub defines: Vec<(String, String)>,
     /// `--encoding`: how source files are read (decisions.md, source encoding).
     pub encoding: yavs_syntax::Encoding,
+    /// `--psl`: read `-- psl` comments as PSL pragmas.
+    pub psl: bool,
 }
 
 impl Options {
@@ -89,6 +91,7 @@ impl Options {
             relaxed: false,
             defines: Vec::new(),
             encoding: yavs_syntax::Encoding::Auto,
+            psl: false,
         }
     }
 }

@@ -293,6 +293,7 @@ impl Db {
         let opts = yavs_syntax::Options {
             std: rev,
             defines: self.opts.defines.clone(),
+            psl: self.opts.psl,
         };
         let parsed = yavs_syntax::parse_file(file, self.sources.get(file), &opts);
         for d in parsed.diags {

@@ -26,6 +26,9 @@ pub struct Args {
     /// Relax some LRM checks (sem.md 8.4).
     #[arg(long)]
     relaxed: bool,
+    /// Read `-- psl` comments as PSL pragmas (native PSL statements are always read).
+    #[arg(long)]
+    psl: bool,
     /// Define a conditional analysis identifier, `NAME=VALUE`.
     #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = crate::parse_define)]
     defines: Vec<(String, String)>,
@@ -203,6 +206,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
+    opts.psl = a.psl;
     opts.defines = a.defines;
     opts.encoding = encoding;
 

@@ -28,6 +28,7 @@ fn symbols_of(rev: Std, pkg: &str, out: &mut BTreeSet<String>) {
     let opts = Options {
         std: rev,
         defines: Vec::new(),
+        psl: false,
     };
     let parsed = yavs_syntax::parse_file(file, sources.get(file), &opts);
     let design = parsed

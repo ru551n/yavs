@@ -332,8 +332,8 @@ check these only at elaboration.
 PSL
 ---
 
-yavs runs a subset of PSL (see the usage page) and reads it in ``-- psl`` comments without
-any option; some simulators read PSL in comments only when asked to, and some reject PSL
+yavs runs a subset of PSL (see the usage page) and reads it in ``-- psl`` comments only with
+the option ``--psl``, as the simulators that read PSL in comments do; some simulators reject PSL
 altogether. A directive is checked in the delta cycle of its clock event, with the values the
 signals have then. yavs also accepts an ``@`` clock on a directive, ``assume`` and a ``severity``
 clause on an assertion, which some simulators reject. The default failure message is ``PSL

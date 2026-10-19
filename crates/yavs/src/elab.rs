@@ -35,6 +35,9 @@ pub struct Common {
     /// Relax some LRM checks (sem.md 8.4).
     #[arg(long)]
     relaxed: bool,
+    /// Read `-- psl` comments as PSL pragmas (native PSL statements are always read).
+    #[arg(long)]
+    psl: bool,
     /// Warning control: `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE` (docs/cli-contract.md 4).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
@@ -200,6 +203,7 @@ fn elaborate(
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     opts.libraries = libs;
     opts.relaxed = c.relaxed;
+    opts.psl = c.psl;
     opts.encoding = encoding;
     let mut db = Db::new(opts);
     let analyzed = db.analyze_closure(&files);

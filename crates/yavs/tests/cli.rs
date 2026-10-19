@@ -278,8 +278,15 @@ fn psl_run() {
             .output()
             .expect("run")
     };
-    assert!(yavs(&["analyze", &lib, "psl_run.vhd"]).status.success());
+    let analyze =
+        |extra: &[&str]| yavs(&[&["analyze", &lib][..], extra, &["psl_run.vhd"]].concat());
+    // Without --psl the pragma lines are comments: one cover hit fewer.
+    assert!(analyze(&[]).status.success());
     let o = yavs(&["run", &lib, "psl_run"]);
+    let plain = String::from_utf8(o.stdout).expect("utf-8");
+    assert_eq!(plain.matches("cover hit").count(), 0, "{plain}");
+    assert!(analyze(&["--psl"]).status.success());
+    let o = yavs(&["run", "--psl", &lib, "psl_run"]);
     let _ = std::fs::remove_dir_all(&tmp);
     assert_eq!(o.status.code(), Some(0));
     let out = String::from_utf8(o.stdout).expect("utf-8");

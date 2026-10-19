@@ -49,6 +49,9 @@ enum Command {
         /// Define a conditional analysis identifier, `NAME=VALUE`.
         #[arg(long = "define", short = 'D', value_name = "NAME=VALUE", value_parser = parse_define)]
         defines: Vec<(String, String)>,
+        /// Read `-- psl` comments as PSL pragmas.
+        #[arg(long)]
+        psl: bool,
         /// Print the syntax tree (for debugging yavs).
         #[arg(long, hide = true)]
         dump_ast: bool,
@@ -179,13 +182,14 @@ fn main() -> ExitCode {
     // A panic is an internal compiler error (E9999, exit 3), never a bare 101. `analyze` also
     // catches its own to name the file.
     std::panic::set_hook(Box::new(|_| {}));
-    let (std, defines, dump_ast, files) = match command {
+    let (std, defines, psl, dump_ast, files) = match command {
         Command::Parse {
             std,
             defines,
+            psl,
             dump_ast,
             files,
-        } => (std, defines, dump_ast, files),
+        } => (std, defines, psl, dump_ast, files),
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
         Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color, encoding)),
         Command::Run(a) => return guard(format, color, || elab::run(a, format, color, encoding)),
@@ -196,6 +200,7 @@ fn main() -> ExitCode {
             StdArg::V2019 => Std::Vhdl2019,
         },
         defines,
+        psl,
     };
 
     let mut sources = SourceMap::default();

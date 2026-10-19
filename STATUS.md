@@ -229,7 +229,7 @@ An installed binary finds `lib/` next to itself (#43).
 Hand-written lexer, conditional analysis on the token stream and recursive-descent parser for
 VHDL-2008 and VHDL-2019 into an owned AST (`yavs parse [--std 2008|2019] files...`). Diagnostics
 go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/`). A simple PSL
-subset runs as implicit checker processes, also in `-- psl` comments (#226); other PSL is skipped
+subset runs as implicit checker processes, also in `-- psl` comments with `--psl` (#226); other PSL is skipped
 with one `W0004` warning per design unit (#138).
 
 Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): only the `vcomponents` package analyzes today (47 of 1073 files); VITAL (#118) is built in; the primitive models wait on further root causes and the Synopsys arithmetic packages (#117). The 6 hdl-modules files that need `unisim` analyze against it.

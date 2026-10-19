@@ -122,7 +122,7 @@ PSL assertions
 --------------
 
 yavs runs a simple subset of PSL, written as VHDL-2008 statements in an architecture, block or
-generate statement, or in comments that start with ``-- psl``:
+generate statement, or, with ``--psl``, in comments that start with ``-- psl``:
 
 .. code-block:: text
 
@@ -144,6 +144,7 @@ tick. A failing ``assert`` or ``assume`` reports like a VHDL assertion, with sev
 and the message ``PSL assertion failed`` unless the directive gives others; a ``cover`` prints
 its ``report`` text, as a note, every time it is hit, and nothing without one. A ``-- psl``
 comment holds one statement, which may continue on the comment lines below it up to its ``;``.
+Without ``--psl`` such comments are comments; pass the option to ``analyze``, ``elab`` and ``run``.
 
 Everything else (``property`` and ``sequence`` declarations, sequences such as
 ``{a; b}``, other operators, built-in functions such as ``rose``, directives without a clock,

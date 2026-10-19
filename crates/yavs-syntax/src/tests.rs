@@ -12,6 +12,7 @@ fn parse_std(src: &str, std: Std) -> crate::Parsed {
         &Options {
             std,
             defines: Vec::new(),
+            psl: true,
         },
     )
 }
@@ -882,6 +883,27 @@ fn psl_is_skipped_with_one_warning_per_unit() {
     assert_eq!(psl_warnings(src), ["W0004", "W0004", "W0004"]);
     // A plain VHDL assertion is not PSL, even on a signal named `always`.
     assert!(psl_warnings(&conc("assert always;\nassert a report \"x\";")).is_empty());
+}
+
+#[test]
+fn psl_pragma_needs_the_flag() {
+    let src = "architecture a of e is\n-- psl default clock is rising_edge(clk);\nbegin\n-- psl assert always a;\nend;";
+    let off = |psl| {
+        let p = parse_str(
+            FileId(0),
+            src,
+            &Options {
+                std: Std::Vhdl2008,
+                defines: Vec::new(),
+                psl,
+            },
+        );
+        let LibraryUnit::Architecture(a) = &p.design.unwrap().units[0].unit else {
+            panic!()
+        };
+        a.stmts.len()
+    };
+    assert_eq!((off(false), off(true)), (0, 1));
 }
 
 /// The architecture's statements: (label, process) of each checker, `None` for others.

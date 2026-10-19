@@ -22,7 +22,7 @@ systemd-run for debugging.
 
 One line in the first 15 lines of each `.vhd`:
 
-    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [relaxed] [exit=N] [ref=hand] [ignore=a,b]
+    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [relaxed] [psl] [exit=N] [ref=hand] [ignore=a,b]
 
 - `top`: top-level entity (required). All design units in the file are analysed into one library.
 - `std`: default 2008. `stop`: passed as `--stop-time` (needed for free-running clocks).
@@ -31,6 +31,7 @@ One line in the first 15 lines of each `.vhd`:
 - `relaxed`: analyse, elaborate and run with each candidate's switch that relaxes LRM checks
   (`--relaxed` for yavs and the reference simulator, `-frelaxed` for the second one; `{relaxed}`
   in a template), e.g. for VHDL-93 style shared variables of non-protected types.
+- `psl`: yavs gets `--psl` (read `-- psl` comment pragmas); the references read them anyway.
 - `exit`: expected process exit status of the reference (default 0). `--bless` refuses to write
   an `.expected` whose exit status differs, so a broken test cannot be blessed by accident.
 - `ignore`: fields added to the ignore set for this test only (below), e.g. `ignore=order` for a

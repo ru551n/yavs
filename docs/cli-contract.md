@@ -162,6 +162,9 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   `--message-format=json` (section 0).
 - Options from plan rule 13 that users will put in `yavs.a_flags`:
   `--relaxed` and the `-W` forms below. They also work for `elab` and `run`.
+  - `--psl` (also `yavs parse`): read `-- psl` comments as PSL pragmas, as the reference
+    simulators do only when asked (native VHDL-2008 PSL statements are always read). Pass it to
+    `analyze`, `elab` and `run` alike, as the sources are read again at elaboration.
   - `-Werror`: every warning is an error (exit 1 after the batch).
   - `-Werror=CODE`: that warning is an error. `-Wno-CODE`: that warning is not
     printed. `-WCODE`: that warning stays a warning even under `-Werror`.

@@ -1,4 +1,4 @@
--- difftest: top=psl_pragma std=2008 exit=1 ignore=path
+-- difftest: top=psl_pragma std=2008 exit=1 ignore=path psl
 -- The PSL subset in comment pragmas (#226), one statement over three lines.
 -- ignore=path: for a PSL directive the reference prints its label, not a process path.
 entity psl_pragma is end;

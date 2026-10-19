@@ -39,6 +39,7 @@ fn lib() {
             let opts = Options {
                 std,
                 defines: Vec::new(),
+                psl: false,
             };
             let parsed = parse_file(file, sources.get(file), &opts);
             for d in &parsed.diags {

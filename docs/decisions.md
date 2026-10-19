@@ -355,8 +355,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   every hit and nothing without one (both references). A directive that does not fit (no clock,
   SEREs, other operators, a PSL built-in call such as `rose(a)`, a name of a skipped `property`/
   `sequence`, anything left after the property) is parsed again as before and skipped with
-  `W0004`; the attempt's diagnostics are dropped. `-- psl` comments are read without an option
-  (the references need one) when the text after `psl` starts with an optional `label :` and a PSL
+  `W0004`; the attempt's diagnostics are dropped. `-- psl` comments are read only with the option
+  `--psl` (`parse`, `analyze`, `elab`, `run`; user, 2026-10-19, as the references need one; the
+  first version read them by default; native statements are always read) when the text after `psl` starts with an optional `label :` and a PSL
   directive or declaration keyword and reaches a `;` before a line that is not a comment or is
   another `-- psl` comment; the following comment lines continue the statement up to its `;`.
   Prose such as `-- PSL assert failed` (in the 2019 `std.env` source) stays a comment. `->` is

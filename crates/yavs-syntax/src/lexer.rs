@@ -7,13 +7,20 @@ use crate::codes;
 use crate::source::Src;
 use crate::token::{Kw, Tok, Token};
 
-pub(crate) fn lex(file: FileId, src: Src, std: Std, diags: &mut Vec<Diagnostic>) -> Vec<Token> {
+pub(crate) fn lex(
+    file: FileId,
+    src: Src,
+    std: Std,
+    psl: bool,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Token> {
     let mut lx = Lexer {
         file,
         src,
         b: src.bytes,
         pos: 0,
         std,
+        psl,
         diags,
         toks: Vec::with_capacity(src.bytes.len() / 4),
         pragma: Pragma::Off,
@@ -28,6 +35,8 @@ struct Lexer<'a> {
     b: &'a [u8],
     pos: usize,
     std: Std,
+    /// `--psl`: `-- psl` comments are pragmas.
+    psl: bool,
     diags: &'a mut Vec<Diagnostic>,
     toks: Vec<Token>,
     pragma: Pragma,
@@ -184,7 +193,7 @@ impl Lexer<'_> {
             .get(p..p + 3)
             .is_some_and(|w| w.eq_ignore_ascii_case(b"psl"))
             && matches!(self.b.get(p + 3), Some(b' ' | b'\t'));
-        if psl && self.is_pragma(p + 3) {
+        if self.psl && psl && self.is_pragma(p + 3) {
             self.pos = p + 3;
             self.pragma = Pragma::Line;
         } else if self.pragma == Pragma::Open {

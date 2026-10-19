@@ -790,6 +790,7 @@ pub(crate) mod fixture {
         let opts = yavs_syntax::Options {
             std,
             defines: Vec::new(),
+            psl: false,
         };
         let mut sm = yavs_diag::SourceMap::default();
         let f = sm.add("t.vhd", src);

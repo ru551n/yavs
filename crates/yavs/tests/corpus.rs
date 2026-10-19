@@ -106,6 +106,7 @@ fn parse(path: &Path, std: Std) -> Outcome {
     let opts = Options {
         std,
         defines: Vec::new(),
+        psl: false,
     };
     let parsed = parse_file(file, sources.get(file), &opts);
     let error = parsed

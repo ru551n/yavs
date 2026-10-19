@@ -16,7 +16,7 @@ RC_ANALYSE, RC_ELAB = 97, 98
 
 # Candidate command templates (run with bash -c). Placeholders: {file} {top}
 # {std} {std2} {stop} {stop_flag} {res_flag} {relaxed} {work} {threads} {shuffle}.
-# {relaxed} is the candidate's own switch for the `relaxed` header (empty without it).
+# {psl} is `--psl` for the yavs template (header `psl`). {relaxed} is the candidate's own switch for the `relaxed` header (empty without it).
 # Analysis output is shown only when analysis fails: its warnings (those of `relaxed` tests)
 # are not simulation output.
 NVC = ("o=$(nvc --std={std} --work={work} -a --psl {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
@@ -28,9 +28,9 @@ GHDL = ("mkdir -p {work} && o=$(ghdl -a -fpsl --std={std2} --workdir={work} {rel
 # analyze fails -> 97; `yavs elab` fails (usage, elaboration, "not implemented") -> 98. `yavs run`
 # then passes its status through: `stop(2)` exits 2, the same code as an elaboration error.
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
-YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} {relaxed} {file} 2>&1) || {{ printf \'%s\\n\' "$o" >&2; exit 97; }}; '
-        '"$R" elab --std={std} --work=work:{work} {relaxed} {top} || exit 98; '
-        '"$R" run --std={std} --work=work:{work} {relaxed} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
+YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} {relaxed} {psl} {file} 2>&1) || {{ printf \'%s\\n\' "$o" >&2; exit 97; }}; '
+        '"$R" elab --std={std} --work=work:{work} {relaxed} {psl} {top} || exit 98; '
+        '"$R" run --std={std} --work=work:{work} {relaxed} {psl} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
 TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
@@ -55,7 +55,7 @@ HDR = re.compile(r"^--\s*difftest:\s*(.*)$")
 
 def parse_header(path):
     h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": "", "res": "",
-         "relaxed": None}
+         "relaxed": None, "psl": None}
     for line in path.read_text().splitlines()[:15]:
         m = HDR.match(line)
         if m:
@@ -64,8 +64,8 @@ def parse_header(path):
                 if k not in h:
                     raise SystemExit(f"{path}: unknown header key {k!r}")
                 h[k] = int(v) if k == "exit" else v
-                if k == "relaxed" and v:
-                    raise SystemExit(f"{path}: header key 'relaxed' takes no value")
+                if k in ("relaxed", "psl") and v:
+                    raise SystemExit(f"{path}: header key {k!r} takes no value")
     if not h["top"]:
         raise SystemExit(f"{path}: missing '-- difftest: top=NAME' header")
     return h
@@ -81,6 +81,7 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
         std2={"1993": "93", "2002": "02", "2008": "08", "2019": "19"}[std],
         stop=hdr["stop"], stop_flag=f"--stop-time={hdr['stop']}" if hdr["stop"] else "",
         res_flag=f"--resolution={hdr['res']}" if hdr["res"] else "", relaxed=hdr.get("relaxed_flag", ""),
+        psl="--psl" if hdr["psl"] is not None else "",
         work=shlex.quote(str(work / "lib")), threads=threads, shuffle=shuffle or "",
         shuffle_flag=f"--shuffle={shuffle}" if shuffle else "",
         shuffle_on="--shuffle" if shuffle else "")

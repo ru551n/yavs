@@ -51,6 +51,7 @@ fn parse(db: &mut Db, src: &str, std: LangRev) -> (FileId, ast::DesignFile) {
         &yavs_syntax::Options {
             std,
             defines: Vec::new(),
+            psl: false,
         },
     );
     assert!(p.diags.is_empty(), "{:?}", p.diags);

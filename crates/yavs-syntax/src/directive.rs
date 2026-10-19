@@ -342,7 +342,7 @@ mod tests {
             bytes: src.as_bytes(),
             latin1: false,
         };
-        let toks = lex(FileId(0), s, std, &mut d);
+        let toks = lex(FileId(0), s, std, false, &mut d);
         let defs = vec![("USER".to_string(), "on".to_string())];
         let toks = preprocess(FileId(0), s, toks, std, &defs, &mut d);
         let text = toks

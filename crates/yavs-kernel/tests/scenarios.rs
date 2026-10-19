@@ -11,6 +11,7 @@ use yavs_logic::StdULogic;
 const NONE: ProcFlags = ProcFlags {
     postponed: false,
     serial: false,
+    several_waits: false,
 };
 
 fn u32_of(v: &[u8]) -> u32 {
@@ -287,6 +288,7 @@ fn postponed_runs_once_at_end_of_time_step() {
     let post = ProcFlags {
         postponed: true,
         serial: false,
+        several_waits: false,
     };
     b.process(
         "watch",
@@ -348,6 +350,7 @@ fn postponed_zero_delay_is_an_error() {
         ProcFlags {
             postponed: true,
             serial: false,
+            several_waits: false,
         },
         &[d],
         p(move |c| {
@@ -870,4 +873,90 @@ fn composite_resolved_as_a_whole() {
         matches!(&e.kind, ErrorKind::Usage(m) if m.contains("does not share the sources")),
         "{e:?}"
     );
+}
+
+/// #252: at initialisation elaboration order; then the processes with one suspension point in
+/// elaboration order, then the others in reverse, those resumed by a signal before those
+/// resumed by a timeout. The same at any thread count and with shuffled execution.
+#[test]
+fn process_order_by_shape() {
+    let run = |cfg: Config| {
+        let mut b = Builder::new();
+        let s = b.signal("s", BYTE, &[0]);
+        let d = b.driver(s);
+        // (several waits, resumed by a timeout)
+        for (k, (several, timeout)) in [
+            (true, false),
+            (false, false),
+            (true, true),
+            (true, false),
+            (false, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut started = false;
+            let flags = ProcFlags {
+                several_waits: several,
+                ..NONE
+            };
+            b.process(
+                &format!("p{k}"),
+                flags,
+                &[],
+                p(move |c| {
+                    if started {
+                        c.report(Severity::Note, "resumed");
+                        return Ok(());
+                    }
+                    started = true;
+                    c.report(Severity::Note, "init");
+                    if timeout {
+                        c.wait_for(ns(1))
+                    } else {
+                        c.wait_on(s)
+                    }
+                }),
+            );
+        }
+        b.process(
+            "drv",
+            NONE,
+            &[d],
+            p(move |c| c.assign(d, None, &[(ns(1), &[1])], DelayMode::INERTIAL)),
+        );
+        let (mut sim, trace) = build(b, cfg);
+        sim.run_until(ns(5)).unwrap();
+        trace
+            .take()
+            .into_iter()
+            .filter(|l| l.contains("Note"))
+            .collect::<Vec<_>>()
+    };
+    let want: Vec<String> = [
+        "0 fs +0 p0 Note: init",
+        "0 fs +0 p1 Note: init",
+        "0 fs +0 p2 Note: init",
+        "0 fs +0 p3 Note: init",
+        "0 fs +0 p4 Note: init",
+        "1 ns +0 p1 Note: resumed",
+        "1 ns +0 p4 Note: resumed",
+        "1 ns +0 p3 Note: resumed",
+        "1 ns +0 p0 Note: resumed",
+        "1 ns +0 p2 Note: resumed",
+    ]
+    .map(String::from)
+    .to_vec();
+    assert_eq!(run(Config::default()), want);
+    let threads = Config {
+        threads: 4,
+        ..Config::default()
+    };
+    assert_eq!(run(threads), want);
+    let shuffled = Config {
+        shuffle: Some(7),
+        threads: 4,
+        ..Config::default()
+    };
+    assert_eq!(run(shuffled), want);
 }

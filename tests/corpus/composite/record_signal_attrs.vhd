@@ -1,4 +1,6 @@
--- difftest: top=record_signal_attrs std=2008
+-- difftest: top=record_signal_attrs std=2008 ignore=order
+-- ignore=order: processes report in one cycle, ordered by yavs's rule (#252), which the
+-- reference simulator does not follow here, so each process's reports are compared.
 -- Signal attributes of records and of parts of arrays of records that span several fields:
 -- 'event, 'active, 'last_event, 'last_active, 'last_value, and the implicit signals
 -- 'stable, 'quiet, 'transaction and 'delayed of such parts (#215).

@@ -1,4 +1,6 @@
--- difftest: top=wait_forms std=2008
+-- difftest: top=wait_forms std=2008 ignore=order
+-- ignore=order: processes report in one cycle, ordered by yavs's rule (#252), which the
+-- reference simulator does not follow here, so each process's reports are compared.
 entity wait_forms is end;
 architecture t of wait_forms is
   signal a, b : integer := 0;

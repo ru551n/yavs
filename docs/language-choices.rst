@@ -54,6 +54,26 @@ composites. Standard: 4.6, 14.7.2.
 
 *Portable:* drive every field from every process that drives the signal.
 
+Order of processes within a cycle
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: vhdl
+
+   tb  : process begin wait until clk = '1'; check(ready); wait; end process;
+   dut : entity work.d port map (clk, ready);   -- its process: wait until clk = '1'; ...
+
+The standard does not say in which order the processes resumed in one simulation cycle run
+(14.7.5.3), and simulators differ. yavs fixes the order, the same at any ``--threads``: at
+initialization every process runs in elaboration order. After that, the processes with one
+suspension point (a sensitivity list, or exactly one wait statement and no wait in a called
+procedure) run first, in elaboration order; then the other processes, in reverse elaboration
+order, those resumed by a signal before those resumed by a timeout. Reports, ``textio`` output
+and ``stop``/``finish`` appear in that order, and processes that share a variable see each
+other's updates in it. ``--shuffle`` permutes the run order but not the order of the output.
+
+*Portable:* do not let a result depend on which process runs first in a cycle: pass values
+through signals, which every process sees one delta later.
+
 Signal attributes at time zero
 ------------------------------
 

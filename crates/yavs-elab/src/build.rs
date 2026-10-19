@@ -17,6 +17,9 @@ impl Process for Boxed {
     fn serial(&self) -> bool {
         self.0.serial()
     }
+    fn several_waits(&self) -> bool {
+        self.0.several_waits()
+    }
 }
 
 fn usage(m: String) -> SimError {
@@ -171,6 +174,7 @@ impl Elaborated {
                 ProcFlags {
                     postponed: p.postponed,
                     serial: false,
+                    several_waits: false,
                 },
                 &ds,
                 Boxed(proc),

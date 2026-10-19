@@ -37,6 +37,15 @@ impl Program {
             .get(f)
             .is_some_and(|f| f.flags.contains(FuncFlags::TOUCHES_SHARED))
     }
+
+    /// The process has one suspension point: one `Suspend` and no call of a `MAY_SUSPEND`
+    /// procedure (a sensitivity list, or one wait statement). It orders the processes of a
+    /// delta (#252, yavs-kernel DESIGN.md "Parallel evaluation").
+    pub fn single_suspend(&self, f: FuncId) -> bool {
+        self.funcs.get(f).is_some_and(|f| {
+            f.resume.len() == 1 && f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -308,7 +308,10 @@ call, `Builder::port_parts`, #74), K2 kernel-maintained `'stable`/`'quiet`/`'del
 disconnection time, K5 null-range signals, K7 bit-plane storage for logic signals (bytes for
 everything else). K6 (buffered user-file streams) was dropped: disk files are the interpreter's
 own and their callers serial (#82). Serial marking reaches the kernel through `Process::serial`,
-so shared-variable, protected-type and file users run in order at any `--threads` (#107).
+so shared-variable, protected-type and file users run in order at any `--threads` (#107). The order
+of the processes of one cycle is fixed (#252): elaboration order at initialisation; then the
+processes with one suspension point in elaboration order, then the others
+(`Process::several_waits`) in reverse, signal-resumed before timeout-resumed.
 
 Benchmark (`cargo run --release -p yavs-kernel --example bench -- 10000 <work>`), 24-core host
 under load from other agents (runs vary by about 15%), 8 worker threads. "Before" is the byte-only

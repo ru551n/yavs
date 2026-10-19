@@ -1,0 +1,14 @@
+exit	0
+diag	note	0	0	:process_order:m1	m1 init
+diag	note	0	0	:process_order:t1	t1 init
+diag	note	0	0	:process_order:m2	m2 init
+diag	note	0	0	:process_order:t2	t2 init
+diag	note	1000000	0	:process_order:s1	s1 sensitivity list
+diag	note	1000000	0	:process_order:u:ls	u.ls sensitivity list
+diag	note	1000000	0	:process_order:w1	w1 one wait
+diag	note	1000000	0	:process_order:pr	pr wait in a procedure
+diag	note	1000000	0	:process_order:m2	m2 event
+diag	note	1000000	0	:process_order:u:lm	u.lm two waits
+diag	note	1000000	0	:process_order:m1	m1 event
+diag	note	1000000	0	:process_order:t2	t2 timeout
+diag	note	1000000	0	:process_order:t1	t1 timeout

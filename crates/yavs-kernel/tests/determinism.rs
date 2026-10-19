@@ -134,6 +134,7 @@ fn design(with_serial: bool) -> Builder {
                 ProcFlags {
                     postponed: false,
                     serial: k < 3,
+                    several_waits: false,
                 },
                 &[],
                 Serial(p(move |c| {

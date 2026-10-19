@@ -771,7 +771,8 @@ which tools/difftest parses.
   `Assertion violation` event on both sides.
 - **Exit 2 is not always an elaboration failure:** `stop(2)` exits 2 like the reference simulator, so the yavs template
   runs `yavs elab` first and maps only its failure to "elaboration failed".
-- **Report order within one cycle (#11): yavs keeps committing in elaboration order.** the reference simulator's
+- **Report order within one cycle (#11), superseded by "Process order within a cycle" below
+  (#252, user 2026-10-19): yavs kept committing in elaboration order.** the reference simulator's
   order is neither elaboration nor wakeup (FIFO) order: six processes whose timeouts all fall on
   3 ns, scheduled at 0, 1 and 2 ns, report as p2 p4 p1 p5 p6 p3 in the reference simulator, an artefact of its event
   heap; processes woken by one signal event report in reverse registration order. Matching that
@@ -1085,3 +1086,26 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).
+
+## Process order within a cycle (user, 2026-10-19, #252)
+
+- **Choice ("split by process shape"):** the processes of one batch run (serial ones) and commit
+  their effects (reports, textio `OUTPUT`, `stop`/`finish`, forces, transactions, waits) in one
+  fixed order, the same at any `--threads`. At initialisation: elaboration order. After that:
+  the processes with one suspension point (a sensitivity list, or exactly one `Suspend` and no
+  call of a procedure that may suspend: `yavs_ir::Program::single_suspend`) first, in
+  elaboration order; then all others in reverse elaboration order, those resumed by a signal
+  before those resumed by a timeout. Postponed processes follow the same rule. `--shuffle`
+  still permutes only the execution order. The kernel gets the shape as
+  `ProcFlags::several_waits` or `Process::several_waits`.
+- **Why:** the order is unspecified (LRM 14.7.5.3), and the reference simulators differ.
+  Measured per sub-case (issue #252), the majority of the three is reverse elaboration order
+  for processes with several waits (instances, nesting, generates, blocks; events before
+  timeouts; deltas after the first; postponed processes) and elaboration order for
+  sensitivity-list and one-wait processes. This rule matches the majority in every sub-case
+  that has one, and verification component testbenches that check a value an instance reports
+  in the same cycle pass. Rejected: plain reverse order after initialisation (against the
+  majority for sensitivity-list monitors), numbering child scopes first (minority for the
+  hierarchy sub-cases), and keeping elaboration order (fails those testbenches).
+- Corpus tests whose processes report in one cycle and whose order the reference simulator does
+  not share carry `ignore=order`; `process/process_order` is `ref=hand`.

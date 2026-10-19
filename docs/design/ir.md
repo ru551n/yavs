@@ -460,6 +460,11 @@ SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Obs
   directory native, or a package variable; textio `OUTPUT` users included, a ponytail).
   The interpreter reports it through `Process::serial`, which the kernel ORs into the flags. Computed once per `Func` by the linear propagation in 1.2, looked up per
   instance.
+- **Process shape (#252):** `Program::single_suspend` is true for a process with one resume
+  point that is a `Suspend` (a sensitivity list or one wait statement; a call of a
+  `MAY_SUSPEND` procedure is a resume point but counts as several). The interpreter reports the
+  others through `Process::several_waits`; the kernel orders a cycle's processes by it
+  (yavs-kernel DESIGN.md "Parallel evaluation").
 - **Protected locking (M2/M3):** every protected caller is serial, so the kernel already runs it
   alone and `CallProt` takes no lock. `// ponytail: protected calls serialised via serial
   marking; per-instance locks when benchmarks at the scale of large test-runner suites show serial processes dominate`. The

@@ -207,6 +207,8 @@ pub(crate) struct ProcMeta {
     pub generation: u64,
     /// Resumed but not yet executed.
     pub ready: bool,
+    /// The pending resumption is a timeout (orders the batch, `SimControl::order`).
+    pub by_timeout: bool,
 }
 
 /// A port association between a formal and an actual (K1), each one or more sub-element
@@ -703,7 +705,7 @@ impl SimControl {
                 for p in &mut self.procs {
                     p.ready = true;
                 }
-                self.run_batch((0..self.procs.len() as u32).collect(), false)?;
+                self.run_batch((0..self.procs.len() as u32).collect(), false, true)?;
             }
             f(self)
         }))
@@ -830,14 +832,14 @@ impl SimControl {
 
         // e: run the resumed non-postponed processes.
         let ready = std::mem::take(&mut self.ready);
-        self.run_batch(ready, false)?;
+        self.run_batch(ready, false, false)?;
 
         // f/g: at the last delta of this time, postponed processes.
         if self.next_time() != Some(self.now) {
             self.phase(Phase::LastKnownDelta);
             if self.next_time() != Some(self.now) {
                 let postponed = std::mem::take(&mut self.postponed);
-                self.run_batch(postponed, true)?;
+                self.run_batch(postponed, true, false)?;
                 self.phase(Phase::EndOfTimeStep);
             }
         }
@@ -1164,6 +1166,7 @@ impl SimControl {
             return;
         }
         meta.ready = true;
+        meta.by_timeout = by_timeout;
         meta.generation += 1;
         lock(&self.slots[p as usize]).st.timed_out = by_timeout;
         if meta.flags.postponed {
@@ -1173,13 +1176,37 @@ impl SimControl {
         }
     }
 
+    /// The order in which a batch runs (serial processes) and commits (#252, user
+    /// 2026-10-19): at initialisation elaboration order; afterwards the processes with one
+    /// suspension point in elaboration order, then the others in reverse elaboration order,
+    /// those resumed by a signal before those resumed by a timeout.
+    fn order(&self, pids: &mut [u32], init: bool) {
+        if init {
+            pids.sort_unstable();
+            return;
+        }
+        pids.sort_unstable_by_key(|&p| {
+            let m = &self.procs[p as usize];
+            if m.flags.several_waits {
+                (true, m.by_timeout, Reverse(p))
+            } else {
+                (false, false, Reverse(u32::MAX - p))
+            }
+        });
+    }
+
     /// Run `pids` (in parallel where allowed), then commit their effects and waits in
-    /// elaboration order.
-    fn run_batch(&mut self, mut pids: Vec<u32>, postponed: bool) -> Result<(), SimError> {
+    /// `order`.
+    fn run_batch(
+        &mut self,
+        mut pids: Vec<u32>,
+        postponed: bool,
+        init: bool,
+    ) -> Result<(), SimError> {
         if let Some(state) = &mut self.rng {
             shuffle(&mut pids, state);
         } else {
-            pids.sort_unstable();
+            self.order(&mut pids, init);
         }
         {
             let sh = Shared {
@@ -1224,7 +1251,7 @@ impl SimControl {
             }
         }
         self.stats.process_runs += pids.len() as u64;
-        pids.sort_unstable();
+        self.order(&mut pids, init);
         let mut first_err = None;
         for &p in &pids {
             self.procs[p as usize].ready = false;
@@ -1267,6 +1294,7 @@ impl SimControl {
                 break;
             }
         }
+        pids.sort_unstable();
         self.last_ran = pids;
         first_err.map_or(Ok(()), Err)
     }

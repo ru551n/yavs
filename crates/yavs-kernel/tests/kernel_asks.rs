@@ -11,6 +11,7 @@ use yavs_logic::StdULogic;
 const NONE: ProcFlags = ProcFlags {
     postponed: false,
     serial: false,
+    several_waits: false,
 };
 
 fn lv(s: &str) -> LogicVec {

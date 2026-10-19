@@ -221,11 +221,13 @@ impl Runtime {
     }
 }
 
-/// Kernel flags of a process function: serial when it touches shared state (ir.md 3.5).
+/// Kernel flags of a process function: serial when it touches shared state (ir.md 3.5),
+/// several waits unless it has one suspension point (#252).
 pub fn proc_flags(prog: &Program, func: FuncId) -> ProcFlags {
     ProcFlags {
         postponed: false,
         serial: prog.is_serial(func),
+        several_waits: !prog.single_suspend(func),
     }
 }
 
@@ -292,6 +294,10 @@ impl InterpProcess {
 impl Process for InterpProcess {
     fn serial(&self) -> bool {
         self.m.rt.prog.is_serial(self.m.entry)
+    }
+
+    fn several_waits(&self) -> bool {
+        !self.m.rt.prog.single_suspend(self.m.entry)
     }
 
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {

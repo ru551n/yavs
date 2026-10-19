@@ -23,9 +23,9 @@ the IR plugs in, error handling, open questions); read it before editing.
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Re-exports (the public API is exactly this list) |
-| `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`), `PortMode` |
+| `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`: `postponed`, `serial`, `several_waits`), `PortMode` |
 | `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
-| `src/process.rs` | `Process` trait (`run`, `serial`), `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`), `ProcId`, `Severity` |
+| `src/process.rs` | `Process` trait (`run`, `serial`, `several_waits`), `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`), `ProcId`, `Severity` |
 | `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
 | `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
 | `src/time.rs` | `Time` (checked fs arithmetic), `Unit`, `TimeError` |
@@ -38,7 +38,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | Decision | Why | Source |
 |---|---|---|
 | Ready processes run in parallel (rayon); they read only current-cycle values and write their own driver queue and effect buffer | No data races without `unsafe` | `docs/plan.md` "Parallel kernel design", DESIGN.md "Parallel evaluation" |
-| Effects (report, assert, textio `OUTPUT`, `stop`/`finish`, force) are committed in elaboration (`ProcId`) order | `--threads 1` and `N` byte-identical | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3 |
+| Effects (report, assert, textio `OUTPUT`, `stop`/`finish`, force) are committed in one fixed batch order: elaboration order at initialisation; then one-suspension-point processes in elaboration order, then `several_waits` ones in reverse, signal-resumed before timeout-resumed | `--threads 1` and `N` byte-identical; the majority of the reference simulators per case (#252, user 2026-10-19) | `docs/plan.md` "Parallel kernel design"; root `AGENTS.md` rule 3; DESIGN.md "Parallel evaluation"; `docs/decisions.md` "Process order within a cycle" |
 | The update phase of independent signals (no port, no composite group, no force or deposit this cycle) runs in parallel, one signal per task, errors taken in signal id order; ports, groups and the commit phase stay serial (#103) | Signals cross no other state; ports cross signals in level order, and the commit is small next to the update | DESIGN.md "The cycle" |
 | Processes touching non-protected shared variables, protected types or disk files are `serial` through M3 (user decision; files: #82); serial is `ProcFlags::serial` or `Process::serial` | No locks needed yet; the process knows what it touches | `docs/decisions.md` "Kernel round 2" (Protected types), "Kernel round 3", DESIGN.md |
 | No kernel user-file streams (K6 dropped): the interpreter reads and writes disk files directly | Write, close, reopen-for-read in one delta; serial callers keep it deterministic | `docs/decisions.md` "Kernel round 3" |

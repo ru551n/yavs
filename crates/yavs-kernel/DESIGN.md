@@ -122,20 +122,28 @@ Within a delta the kernel has two phases that never overlap:
   process can only read current-cycle values and write its own waveforms, its own wait state and
   its own effect buffer. No data races are possible without `unsafe`, and the crate forbids
   `unsafe`.
-- **Commit phase** (one thread). Processes are visited in elaboration order (`ProcId` order):
-  their new transactions and timeouts go into the queue, their sensitivity into waiter lists, and
-  their buffered effects are committed: `report`, textio `OUTPUT` text, `stop`/`finish`,
+- **Commit phase** (one thread). Processes are visited in the batch order below: their new
+  transactions and timeouts go into the queue, their sensitivity into waiter lists, and their
+  buffered effects are committed: `report`, textio `OUTPUT` text, `stop`/`finish`,
   force/release. User files are not kernel state (K6 was dropped, #82): the interpreter reads
   and writes disk files directly, so a process that writes, closes and reopens a file in one
   delta reads what it wrote, and every caller of a file operation is serial.
+- **Batch order** (`SimControl::order`, #252, user 2026-10-19). At initialisation:
+  elaboration (`ProcId`) order. After that: the processes with one suspension point first, in
+  elaboration order; then those with `ProcFlags::several_waits` (or `Process::several_waits`:
+  more than one wait statement, or a wait in a called procedure; the interpreter takes it from
+  `yavs_ir::Program::single_suspend`) in reverse elaboration order, those resumed by a signal
+  before those resumed by a timeout (`ProcMeta::by_timeout`, the reason of the resumption that
+  made the process ready). Postponed processes use the same order. It matches the majority of
+  the reference simulators per case (`docs/decisions.md` "Process order within a cycle").
 - **Serial processes** (`ProcFlags::serial`, or `Process::serial` returning true) run one at a
-  time, in order, after the parallel batch. Through M3 every process that touches a
+  time, in batch order, after the parallel batch. Through M3 every process that touches a
   non-protected shared variable, calls a protected type or touches a disk file is serial (user
   decision; files #82); the kernel needs nothing else for that. `Process::serial` lets the
   process implementation (the interpreter, from the IR's `TOUCHES_SHARED`) say so itself, so
   no builder in between can drop it (#107).
 - **Shuffle** (`Config::shuffle`) permutes the execution order with a seeded splitmix64. Commit
-  order stays fixed, so only designs whose processes share state change their output. Tests
+  order stays the batch order, so only designs whose processes share state change their output. Tests
   check that a design of 1000+ processes, with ports, implicit signals and a logic bus, gives
   identical traces for 1 and 8 threads and several seeds.
 

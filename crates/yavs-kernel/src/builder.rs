@@ -21,6 +21,10 @@ pub struct ProcFlags {
     /// Never runs concurrently: touches non-protected shared variables or (through M3) calls
     /// a protected type.
     pub serial: bool,
+    /// Suspends at more than one point (several wait statements, or a wait in a called
+    /// procedure): after initialisation it runs after the processes with one suspension point,
+    /// in reverse elaboration order (#252, DESIGN.md "Parallel evaluation").
+    pub several_waits: bool,
 }
 
 /// Port mode of a formal (LRM 6.5.2).
@@ -288,6 +292,7 @@ impl Builder {
         }
         let flags = ProcFlags {
             serial: flags.serial || process.serial(),
+            several_waits: flags.several_waits || process.several_waits(),
             ..flags
         };
         self.procs.push(ProcDecl {
@@ -484,6 +489,7 @@ impl Builder {
                 flags: p.flags,
                 generation: 0,
                 ready: false,
+                by_timeout: false,
             });
         }
         SimControl::new(

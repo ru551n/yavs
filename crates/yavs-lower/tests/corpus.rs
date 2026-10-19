@@ -104,6 +104,7 @@ const PASS: &[&str] = &[
     "hierarchy/incremental_binding",
     "hierarchy/inertial_port_actual",
     "hierarchy/instance_path_names",
+    "hierarchy/instance_process_order",
     "hierarchy/process_local_names",
     "hierarchy/mode_view_generic",
     "hierarchy/mode_view_nested",
@@ -151,6 +152,7 @@ const PASS: &[&str] = &[
     "process/conditional_expr_2019",
     "process/individual_assoc",
     "process/individual_assoc_parts",
+    "process/process_order",
     "process/signal_param_parts",
     "process/signal_param_records",
     "process/signal_param_slices",
@@ -416,6 +418,32 @@ fn simulate(file: &Path) -> Result<String, String> {
     Ok(format!("exit\t{code}\n{out}"))
 }
 
+/// Sorts each run of `diag` events of one time and delta stably by process path.
+fn order_mask(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let key = |l: &str| {
+        let f: Vec<&str> = l.split('\t').collect();
+        (f.len() == 6 && f[0] == "diag").then(|| (f[2].to_string(), f[3].to_string()))
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let k = key(lines[i]);
+        let mut j = i + 1;
+        while k.is_some() && j < lines.len() && key(lines[j]) == k {
+            j += 1;
+        }
+        let mut run = lines[i..j].to_vec();
+        run.sort_by_key(|l| l.split('\t').nth(4).unwrap_or(""));
+        for l in run {
+            out.push_str(l);
+            out.push('\n');
+        }
+        i = j;
+    }
+    out
+}
+
 #[test]
 fn corpus_groups() {
     let mut summary = String::new();
@@ -439,7 +467,19 @@ fn corpus_groups() {
             // Testbenches write files relative to the working directory: give each its own.
             let cwd = tempfile::tempdir().unwrap();
             std::env::set_current_dir(cwd.path()).unwrap();
-            let got = simulate(&f);
+            let mut got = simulate(&f);
+            // `ignore=order` in the header: same-cycle events of different processes are
+            // compared per process, as `tools/difftest` does.
+            let mut expected = expected;
+            if std::fs::read_to_string(&f)
+                .unwrap()
+                .lines()
+                .take(15)
+                .any(|l| l.contains("difftest:") && l.contains("ignore=order"))
+            {
+                expected = order_mask(&expected);
+                got = got.map(|o| order_mask(&o));
+            }
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {
                 _ if pass => "PASS".to_string(),

@@ -1,0 +1,10 @@
+== 2008
+note: RES s1 sensitivity list 1
+note: RES u.ls sensitivity list 2
+note: RES w1 one wait 3
+note: RES pr wait in a procedure 4
+note: RES m2 event 5
+note: RES u.lm two waits 6
+note: RES m1 event 7
+note: RES t2 timeout 8
+note: RES t1 timeout 9

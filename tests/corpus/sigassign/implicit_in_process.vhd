@@ -1,4 +1,6 @@
--- difftest: top=implicit_in_process std=2008
+-- difftest: top=implicit_in_process std=2008 ignore=order
+-- ignore=order: processes report in one cycle, ordered by yavs's rule (#252), which the
+-- reference simulator does not follow here, so each process's reports are compared.
 -- 'stable, 'quiet, 'delayed and 'transaction named inside process bodies (LRM 16.2.4: the
 -- implicit signal belongs to the region enclosing the process), for scalars, a record and a
 -- part of an array of records, in reads and in waits, in a loop and inside a for-generate (#240).

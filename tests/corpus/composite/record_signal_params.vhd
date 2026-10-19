@@ -1,4 +1,6 @@
--- difftest: top=record_signal_params std=2008
+-- difftest: top=record_signal_params std=2008 ignore=order
+-- ignore=order: processes report in one cycle, ordered by yavs's rule (#252), which the
+-- reference simulator does not follow here, so each process's reports are compared.
 -- Signal parameters whose type has records in it: records, arrays of records and their parts
 -- as actuals of in, out and inout signal parameters, passed on to further calls, with
 -- attributes, waits and drivers through the parameter; fields of record signals as actuals of

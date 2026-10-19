@@ -1,4 +1,6 @@
--- difftest: top=mode_view_nested std=2019
+-- difftest: top=mode_view_nested std=2019 ignore=order
+-- ignore=order: processes report in one cycle, ordered by yavs's rule (#252), which the
+-- reference simulator does not follow here, so each process's reports are compared.
 -- 2019 mode views (6.5.2): a nested element view, an array of records (`view (v) of`), a
 -- view port passed down to a child with the same view and an inout element.
 library ieee; use ieee.std_logic_1164.all;

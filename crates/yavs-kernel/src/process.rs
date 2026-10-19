@@ -42,6 +42,12 @@ pub trait Process: Send {
     fn serial(&self) -> bool {
         false
     }
+
+    /// The process suspends at more than one point: the kernel orders it as if built with
+    /// `ProcFlags::several_waits`.
+    fn several_waits(&self) -> bool {
+        false
+    }
 }
 
 impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {

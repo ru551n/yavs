@@ -123,6 +123,8 @@ impl Scalar {
 /// A signal or port.
 pub(crate) struct Sig {
     pub name: String,
+    /// Lower-case path, `:top:u1:s`.
+    pub path: String,
     pub ty: String,
     leaf: u32,
     leaves: u32,
@@ -136,6 +138,73 @@ impl Sig {
             .map(|l| read(SignalId(l).into()))
             .collect();
         self.fmt.show(&vals, 0)
+    }
+
+    /// Its kernel leaf signals.
+    pub fn leaves(&self) -> impl Iterator<Item = SignalId> + use<> {
+        (self.leaf..self.leaf + self.leaves).map(SignalId)
+    }
+
+    /// `text` as [`Sig::show`] writes the value, without blanks, so a value breakpoint
+    /// compares text; an error when no value of the type is written so.
+    pub fn canon(&self, text: &str) -> Result<String, String> {
+        self.fmt.canon(text.trim()).map(|t| squash(&t))
+    }
+}
+
+/// `t` without blanks.
+pub(crate) fn squash(t: &str) -> String {
+    t.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+impl Fmt {
+    fn canon(&self, t: &str) -> Result<String, String> {
+        let lit = |lits: &[String]| {
+            // Character literals match exactly, identifiers in any case.
+            lits.iter()
+                .find(|l| {
+                    if l.starts_with('\'') {
+                        *l == t
+                    } else {
+                        l.eq_ignore_ascii_case(t)
+                    }
+                })
+                .cloned()
+                .ok_or_else(|| format!("`{t}` is not one of {}", lits.join(", ")))
+        };
+        match self {
+            Fmt::Logic(lits, _) | Fmt::Bytes(_, Scalar::Enum(lits)) => lit(lits),
+            Fmt::Bytes(_, Scalar::Int) => t
+                .parse::<i64>()
+                .map(|v| v.to_string())
+                .map_err(|_| format!("`{t}` is not an integer")),
+            Fmt::Bytes(_, Scalar::Real) => t
+                .parse::<f64>()
+                .map(|v| v.to_string())
+                .map_err(|_| format!("`{t}` is not a real number")),
+            Fmt::Bytes(_, Scalar::Phys(u)) => t
+                .split_once(char::is_whitespace)
+                .filter(|(_, unit)| unit.trim().eq_ignore_ascii_case(u))
+                .and_then(|(v, _)| v.parse::<i64>().ok())
+                .map(|v| format!("{v} {u}"))
+                .ok_or_else(|| format!("`{t}` is not an integer number of {u}")),
+            Fmt::Array(n, e, true) => {
+                let s = t
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .ok_or_else(|| format!("`{t}` is not a string literal"))?;
+                if s.chars().count() as u64 != *n {
+                    return Err(format!("`{t}` does not have {n} elements"));
+                }
+                s.chars()
+                    .map(|c| e.canon(&format!("'{c}'")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(t.to_string())
+            }
+            // ponytail: other composites compare as the text the Variables view shows; parse
+            // aggregates once values can be written (#323).
+            _ => Ok(t.to_string()),
+        }
     }
 }
 
@@ -229,15 +298,16 @@ impl Design {
                     continue;
                 }
                 let k = d.sigs.len();
+                let path = format!("{prefix}{}", obj.name.key).to_ascii_lowercase();
                 d.sigs.push(Sig {
                     name: obj.name.text.to_string(),
+                    path: path.clone(),
                     ty: db.types[obj.shape.ty()].name.text.to_string(),
                     leaf: obj.leaves.0.0,
                     leaves: obj.leaves.1.0 - obj.leaves.0.0,
                     fmt: fmt(db, &obj.shape),
                 });
-                d.by_path
-                    .insert(format!("{prefix}{}", obj.name.key).to_ascii_lowercase(), k);
+                d.by_path.insert(path, k);
                 scope_sigs.entry(s).or_default().push(k);
             }
         }
@@ -292,6 +362,11 @@ impl Design {
 
     /// A signal by simple name seen from process `p`, or by path (`:top:u1:s`, `top.u1.s`).
     pub fn lookup(&self, p: Option<&Proc>, name: &str) -> Option<&Sig> {
+        self.find(p, name).map(|k| &self.sigs[k])
+    }
+
+    /// [`Design::lookup`], as an index into `sigs`.
+    pub fn find(&self, p: Option<&Proc>, name: &str) -> Option<usize> {
         let n = name.trim().to_ascii_lowercase();
         let path = if n.starts_with(':') {
             n.clone()
@@ -302,9 +377,7 @@ impl Design {
             .into_iter()
             .flat_map(|p| &p.regions)
             .find_map(|r| self.by_path.get(&format!("{r}{n}")));
-        local
-            .or_else(|| self.by_path.get(&path))
-            .map(|&k| &self.sigs[k])
+        local.or_else(|| self.by_path.get(&path)).copied()
     }
 }
 

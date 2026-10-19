@@ -19,8 +19,8 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `serve` (transport, session, run loop, end of run), `Transport`/`parse_transport`, `Shared` state, reader-thread requests (`handle`, `set_breakpoints`, `parse_hit`), stop-time requests (`Front::on_stop`, `serve_stop`, `stack_trace`, `scopes`, `variables`, `evaluate`), `Output` observer |
-| `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, signals (`Sig`, value text from kernel leaves), per process its regions, signals and generics |
+| `src/lib.rs` | `serve` (transport, session, run loop, end of run), `Transport`/`parse_transport`, `Shared` state, reader-thread requests (`handle`, `set_breakpoints`, `parse_hit`, `data_breakpoint_info`, `set_signal_breakpoints`), the run loop's `Run`s and `signal_hit`, stop-time requests (`Front::on_stop`, `serve_stop`, `stack_trace`, `scopes`, `variables`, `evaluate`), `Output` observer |
+| `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, signals (`Sig`, value text from kernel leaves, `Sig::canon` for value breakpoints), per process its regions, signals and generics |
 | `src/wire.rs` | `Content-Length` framing (`read_message`, `write_message`) |
 | `../../editors/vscode/` | The VS Code extension and its client and in-editor tests (run them after changing this crate, `editors/vscode/AGENTS.md`) |
 | `../yavs/tests/dap.rs`, `../yavs/tests/dap/` | Scripted sessions over stdio (`NAME.script` in, `NAME.expected` transcript, `YAVS_BLESS=1`), pause, TCP |
@@ -38,6 +38,9 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | `yavs/runFor`/`yavs/runUntil`/`yavs/stepDelta`/`yavs/stepTimestep` are `SimControl::run_until`/`step_delta`/`step_timestep` in the run loop (`Run`); from a stop inside a process they are queued (`Shared::queued`) and the kernel paused, so they start once the cycle has ended (a delta step is then that end) | Nothing but `SimControl` drives the kernel; a process stop is mid-cycle | issue #324 |
 | A stop during a run to a time does not cancel it: the run loop keeps the limit until it is reached, so `continue` resumes it | One rule for line, signal and pause stops; matches a `run` command resumed after a breakpoint | this file |
 | Custom run requests answer, then send `continued` (thread of the stop, or 1) | A client marks the session running only for the standard resume requests | VS Code |
+| Signal breakpoints are one `SignalBreak` observer, subscribed before the run, whose shared watch list (`Watches`) holds every leaf of every signal breakpoint, on any change; `setDataBreakpoints` and `yavs/setSignalBreakpoints` each replace their own set (`Shared::sig_bps`), answered on the reader thread | The interpreter's signal breakpoint and the event bus, no second watcher; VS Code resends all data breakpoints on every change and must not drop the custom ones |
+| A value breakpoint compares text: the value as `Sig::show` writes it against the requested value normalized by `Sig::canon` (enumeration literals, integers, reals, physical values in the primary unit, string literals of character arrays are checked; other composites compare as typed, blanks ignored). After a pause with hits, a change that matches no breakpoint resumes the run | One value syntax, the one the Variables view shows; no value parser per type yet (#323 needs one for deposit) | issue #322 |
+| Conditions and hit conditions on data breakpoints are rejected (`verified: false`) | Not supported yet (#326); no silent drop | this file |
 | From a stop between cycles, every step request is a global step (next statement of any process) | No process is current there | ir.md 3.4 |
 | Reports and `OUTPUT` text are `output` events (stdout carries DAP in `stdio` mode); runtime errors an `output` event of category `stderr` | stdout is the protocol channel | `docs/cli-contract.md` 5 |
 | Disconnect stops the run (`Interrupt::stop`), then `exited`, `terminated` and the disconnect response, in that order | Deterministic transcript | this file |
@@ -63,5 +66,5 @@ yavs run --work=lib:out/lib tb --dap=4711       # then attach an editor to 127.0
 
 ## 6. Open issues
 
-#322 signal breakpoints, #323 force/deposit/release, #325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
+#323 force/deposit/release, #325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
 variables, hierarchy browsing.

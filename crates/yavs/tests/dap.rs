@@ -201,6 +201,15 @@ fn run_to_time_and_steps() {
     script_case("runto", &["--threads=4"]);
 }
 
+/// Signal breakpoints: data breakpoint info for a signal, a local and unknown names, stops on
+/// changes (`setDataBreakpoints`) and on values (`yavs/setSignalBreakpoints`), rejected
+/// values and conditions. Identical at `--threads=4`.
+#[test]
+fn signal_breakpoints() {
+    script_case("signals", &[]);
+    script_case("signals", &["--threads=4"]);
+}
+
 /// Pause a simulation that would run forever, then read a signal and disconnect.
 #[test]
 fn pause() {

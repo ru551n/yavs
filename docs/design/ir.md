@@ -426,6 +426,7 @@ impl DebugSession {   // one per simulation, shared by all attached processes
 InterpProcess::with_debug(self, Arc<DebugSession>, name) -> InterpProcess
 Elaborated::build_debug(cfg, &Arc<DebugSession>)   // every process attached (yavs-elab)
 SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Observer
+SignalBreak::watches(&self) -> Watches   // the shared watch list, changed while running (DAP)
 ```
 
 | Feature | How |

@@ -23,8 +23,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Value as Json, json};
 use yavs_diag::{Diagnostic, MessageFormat};
 use yavs_elab::Elaborated;
-use yavs_interp::{DebugSession, Debugger, HitCond, LineBp, ProcState, Resume, Stop, StopReason};
-use yavs_kernel::{Config, EndReason, Interrupt, RunStatus, SigRef, SimControl, Time, Value};
+use yavs_interp::{
+    DebugSession, Debugger, HitCond, Hits, LineBp, ProcState, Resume, SignalBreak, Stop,
+    StopReason, Watches,
+};
+use yavs_kernel::{
+    Config, EndReason, Interrupt, RunStatus, SigRef, SignalId, SimControl, Time, Value,
+};
 use yavs_sem::Db;
 
 use design::Design;
@@ -100,6 +105,19 @@ struct Shared {
     disconnect: Mutex<Option<Json>>,
     /// Breakpoint statements per absolute file path, so a request replaces one file's set.
     bps: Mutex<HashMap<String, Vec<yavs_ir::StmtId>>>,
+    /// Signal breakpoints: those of `setDataBreakpoints` and of `yavs/setSignalBreakpoints`.
+    sig_bps: Mutex<[Vec<SigBp>; 2]>,
+    /// What the kernel's `SignalBreak` watches (every leaf of `sig_bps`) and its hits.
+    watches: OnceLock<Watches>,
+    hits: OnceLock<Hits>,
+}
+
+/// A signal breakpoint: a change of the signal, or a change to a value.
+struct SigBp {
+    /// Index into `Design::sigs`.
+    sig: usize,
+    /// The value as `Sig::canon` writes it.
+    value: Option<String>,
 }
 
 impl Shared {
@@ -506,6 +524,7 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
                     "supportsHitConditionalBreakpoints": true,
                     "supportsEvaluateForHovers": true,
                     "supportsTerminateRequest": true,
+                    "supportsDataBreakpoints": true,
                 }),
             );
             sh.event("initialized", json!({}));
@@ -516,6 +535,9 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
             sh.respond(&req, json!({}));
         }
         "setBreakpoints" => set_breakpoints(sh, &req),
+        "dataBreakpointInfo" => data_breakpoint_info(sh, &req),
+        "setDataBreakpoints" => set_signal_breakpoints(sh, &req, 0),
+        "yavs/setSignalBreakpoints" => set_signal_breakpoints(sh, &req, 1),
         "setExceptionBreakpoints" => sh.respond(&req, json!({})),
         "configurationDone" => {
             sh.respond(&req, json!({}));
@@ -594,6 +616,118 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
     sh.respond(req, json!({"breakpoints": out}));
 }
 
+/// The process of thread `tid`, as the design shows it.
+fn thread_proc(sh: &Shared, tid: i64) -> Option<&design::Proc> {
+    proc_name(sh, tid).and_then(|n| sh.design.proc(&n))
+}
+
+/// Whether variable `name` of a variables reference (or, without one, the expression `name`
+/// seen from `frameId`) is a signal a data breakpoint can watch.
+fn data_breakpoint_info(sh: &Shared, req: &Json) {
+    let a = &req["arguments"];
+    let name = a["name"].as_str().unwrap_or_default();
+    let found = match a["variablesReference"].as_i64() {
+        Some(r) if r & 3 != 2 => Err("only signals can be watched"),
+        Some(r) => Ok(sh.design.find(thread_proc(sh, r >> 18), name)),
+        None => {
+            let tid = a["frameId"].as_i64().map_or(0, |f| f >> 16);
+            Ok(sh.design.find(thread_proc(sh, tid), name))
+        }
+    };
+    let body = match found {
+        Ok(Some(k)) => {
+            let path = &sh.design.sigs[k].path;
+            json!({"dataId": path, "description": path, "accessTypes": ["write"], "canPersist": true})
+        }
+        Ok(None) => json!({"dataId": null, "description": format!("no signal `{name}` here")}),
+        Err(m) => json!({"dataId": null, "description": m}),
+    };
+    sh.respond(req, body);
+}
+
+/// Replace the signal breakpoints of `setDataBreakpoints` (`set` 0: `dataId` is a path) or
+/// of `yavs/setSignalBreakpoints` (`set` 1: `signal`, a name seen from `frameId` or a path,
+/// and an optional `value`), then the watch list.
+fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
+    let a = &req["arguments"];
+    let p = thread_proc(sh, a["frameId"].as_i64().map_or(0, |f| f >> 16));
+    let mut bps = Vec::new();
+    let mut out = Vec::new();
+    let empty = Vec::new();
+    for bp in a["breakpoints"].as_array().unwrap_or(&empty) {
+        let name = bp[if set == 0 { "dataId" } else { "signal" }]
+            .as_str()
+            .unwrap_or_default();
+        let r = match sh.design.find(p, name) {
+            None => Err(format!("no signal `{name}` here")),
+            Some(_) if !bp["condition"].is_null() || !bp["hitCondition"].is_null() => {
+                Err("conditions on signal breakpoints are not supported (#326)".into())
+            }
+            Some(k) => match bp["value"].as_str() {
+                None => Ok(SigBp {
+                    sig: k,
+                    value: None,
+                }),
+                Some(v) => sh.design.sigs[k].canon(v).map(|v| SigBp {
+                    sig: k,
+                    value: Some(v),
+                }),
+            },
+        };
+        out.push(match r {
+            Ok(b) => {
+                let d = &sh.design.sigs[b.sig].path;
+                bps.push(b);
+                json!({"verified": true, "description": d})
+            }
+            Err(m) => json!({"verified": false, "message": m}),
+        });
+    }
+    let mut all = sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner());
+    all[set] = bps;
+    let w: Vec<(SignalId, Option<Value>)> = all
+        .iter()
+        .flatten()
+        .flat_map(|b| sh.design.sigs[b.sig].leaves())
+        .map(|l| (l, None))
+        .collect();
+    *sh.watches
+        .get()
+        .expect("set before the reader starts")
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = w;
+    sh.respond(req, json!({"breakpoints": out}));
+}
+
+/// After a pause: whether a watched signal changed in the last cycle, and the first signal
+/// breakpoint that holds now, as text for the stop.
+fn signal_hit(sh: &Shared, sim: &SimControl) -> (bool, Option<String>) {
+    let hits = std::mem::take(
+        &mut *sh
+            .hits
+            .get()
+            .expect("set before the run")
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()),
+    );
+    if hits.is_empty() {
+        return (false, None);
+    }
+    let all = sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner());
+    let hit = all.iter().flatten().find_map(|b| {
+        let s = &sh.design.sigs[b.sig];
+        if !hits.iter().any(|h| s.leaves().any(|l| l == h.2)) {
+            return None;
+        }
+        let now = s.show(&|r| sim.value(r).ok());
+        match &b.value {
+            Some(v) if design::squash(&now) != *v => None,
+            _ => Some(format!("{} = {now}", s.path)),
+        }
+    });
+    (true, hit)
+}
+
 /// `N`, `= N`, `>= N`, `% N`: the hit count condition.
 fn parse_hit(s: &str) -> Result<HitCond, String> {
     let t = s.trim();
@@ -663,6 +797,9 @@ pub fn serve(
         queued: Mutex::new(None),
         disconnect: Mutex::new(None),
         bps: Mutex::new(HashMap::new()),
+        sig_bps: Mutex::default(),
+        watches: OnceLock::new(),
+        hits: OnceLock::new(),
     });
     let session = DebugSession::new(&ir.program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());
@@ -678,6 +815,10 @@ pub fn serve(
         sh: sh.clone(),
         names,
     }));
+    let brk = SignalBreak::new(sim.interrupt());
+    let _ = sh.watches.set(brk.watches());
+    let _ = sh.hits.set(brk.hits());
+    sim.subscribe(Box::new(brk));
     {
         let sh = sh.clone();
         std::thread::spawn(move || {
@@ -731,31 +872,45 @@ pub fn serve(
         if r != Ok(RunStatus::Paused) || sh.terminating.load(Ordering::Relaxed) {
             break r;
         }
-        let queued = sh.queued.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let (watched, hit) = signal_hit(&sh, &sim);
         let in_process = sh.paused_in_process.swap(false, Ordering::Relaxed);
-        let reason = match queued {
-            // The cycle stopped in has ended: that was the delta step.
-            Some(Run::Delta) => "step",
+        // A delta step queued at a stop in a process ends with the cycle that just ended; the
+        // other runs start now (or after a signal breakpoint stop, when it is continued).
+        let step = match sh.queued.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            Some(Run::Delta) => true,
             Some(run) => {
                 next = Some(run);
-                continue;
+                step
             }
-            None if in_process => continue,
-            None if sh.pause_req.swap(false, Ordering::Relaxed) => {
-                session.cancel_pause();
-                "pause"
-            }
-            None if step || limit < stop => {
-                limit = stop;
-                "step"
-            }
-            None => break r, // the stop time
+            None => step,
         };
-        let body = json!({
+        let reason = if hit.is_some() {
+            "data breakpoint"
+        } else if next.is_some() {
+            continue;
+        } else if step {
+            "step"
+        } else if in_process {
+            continue;
+        } else if sh.pause_req.swap(false, Ordering::Relaxed) {
+            session.cancel_pause();
+            "pause"
+        } else if watched {
+            continue; // no signal breakpoint holds
+        } else if limit < stop {
+            limit = stop;
+            "step"
+        } else {
+            break r; // the stop time
+        };
+        let mut body = json!({
             "reason": reason,
             "allThreadsStopped": true,
             "description": format!("{reason} at {}, delta {}", sim.now(), sim.delta()),
         });
+        if let Some(t) = hit {
+            body["text"] = json!(t);
+        }
         match serve_stop(&sh, &At::Kernel(&sim), body) {
             Some(Next::Resume(Resume::GlobalStep)) => session.request_global_step(),
             Some(Next::Run(run)) => next = Some(run),

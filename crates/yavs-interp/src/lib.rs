@@ -38,8 +38,8 @@ use yavs_std::arith::TimeResolution;
 use yavs_std::types::Revision;
 
 pub use debug::{
-    DebugSession, Debugger, FrameView, HitCond, LineBp, LocalView, ProcState, ProcStatus, Resume,
-    SignalBreak, Stop, StopReason, format_scalar,
+    DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
+    Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
 pub use heap::Heap;
 pub use probe::{ProbeLocal, ProcVars, VarProbes};

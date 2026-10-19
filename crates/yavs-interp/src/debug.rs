@@ -366,40 +366,56 @@ impl StepMode {
     }
 }
 
+/// The signals a [`SignalBreak`] watches, each on any change or on one value.
+pub type Watches = Arc<Mutex<Vec<(SignalId, Option<Value>)>>>;
+
+/// `(time, delta, signal)` of each [`SignalBreak`] hit.
+pub type Hits = Arc<Mutex<Vec<(Time, u32, SignalId)>>>;
+
 /// A signal breakpoint: pauses `SimControl` (through its `Interrupt`) after a cycle in which
 /// a watched signal changed, or changed to a given value. Subscribe it with
 /// `SimControl::subscribe`; `run_for` then returns `RunStatus::Paused` at that time and
 /// delta.
 pub struct SignalBreak {
-    watches: Vec<(SignalId, Option<Value>)>,
+    watches: Watches,
     interrupt: Interrupt,
-    hits: Arc<Mutex<Vec<(Time, u32, SignalId)>>>,
+    hits: Hits,
 }
 
 impl SignalBreak {
     pub fn new(interrupt: Interrupt) -> SignalBreak {
         SignalBreak {
-            watches: Vec::new(),
+            watches: Watches::default(),
             interrupt,
             hits: Arc::default(),
         }
     }
 
     /// Stop on any change of `s`, or only when it becomes `value`.
-    pub fn watch(mut self, s: SignalId, value: Option<Value>) -> SignalBreak {
-        self.watches.push((s, value));
+    pub fn watch(self, s: SignalId, value: Option<Value>) -> SignalBreak {
+        if let Ok(mut w) = self.watches.lock() {
+            w.push((s, value));
+        }
         self
     }
 
+    /// The watch list, to change while the simulation runs (a debugger's signal breakpoints).
+    pub fn watches(&self) -> Watches {
+        self.watches.clone()
+    }
+
     /// `(time, delta, signal)` of every hit so far.
-    pub fn hits(&self) -> Arc<Mutex<Vec<(Time, u32, SignalId)>>> {
+    pub fn hits(&self) -> Hits {
         self.hits.clone()
     }
 }
 
 impl Observer for SignalBreak {
     fn value_change(&mut self, h: &mut Hook<'_>, s: SignalId, _r: yavs_kernel::Range) {
-        for (w, want) in &self.watches {
+        let Ok(watches) = self.watches.lock() else {
+            return;
+        };
+        for (w, want) in watches.iter() {
             if *w != s {
                 continue;
             }

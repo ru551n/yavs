@@ -58,6 +58,40 @@ function custom(command, prompt) {
   };
 }
 
+/** Signal value breakpoints per session id: the server replaces the whole set per request. */
+const valueBps = new Map();
+
+/** Ask for a signal and a value, add the breakpoint, and send the session's set. */
+async function breakOnValue() {
+  const s = vscode.debug.activeDebugSession;
+  if (!s || s.type !== 'yavs') return;
+  const signal = await vscode.window.showInputBox({
+    prompt: 'Signal (a name visible from the selected frame, or a path such as :tb:u1:s)',
+  });
+  if (!signal) return;
+  const value = await vscode.window.showInputBox({ prompt: `Stop when ${signal} becomes`, placeHolder: "'1'" });
+  if (!value) return;
+  const bps = [...(valueBps.get(s.id) || []), { signal, value }];
+  await sendValueBps(s, bps);
+}
+
+async function sendValueBps(s, bps) {
+  try {
+    const r = await s.customRequest('yavs/setSignalBreakpoints', {
+      frameId: vscode.debug.activeStackItem?.frameId,
+      breakpoints: bps,
+    });
+    const bad = r.breakpoints.findIndex((b) => !b.verified);
+    if (bad >= 0) {
+      vscode.window.showErrorMessage(`yavs: ${r.breakpoints[bad].message}`);
+      bps.splice(bad, 1);
+    }
+    valueBps.set(s.id, bps);
+  } catch (e) {
+    vscode.window.showErrorMessage(`yavs: ${e.message}`);
+  }
+}
+
 function activate(context) {
   const reg = vscode.commands.registerCommand;
   context.subscriptions.push(
@@ -65,7 +99,13 @@ function activate(context) {
     reg('yavs.runFor', custom('yavs/runFor', 'Run for how long (from now)?')),
     reg('yavs.runUntil', custom('yavs/runUntil', 'Run until which simulation time?')),
     reg('yavs.stepDelta', custom('yavs/stepDelta')),
-    reg('yavs.stepTimestep', custom('yavs/stepTimestep')));
+    reg('yavs.stepTimestep', custom('yavs/stepTimestep')),
+    reg('yavs.breakOnValue', breakOnValue),
+    reg('yavs.clearValueBreaks', () => {
+      const s = vscode.debug.activeDebugSession;
+      if (s && s.type === 'yavs') return sendValueBps(s, []);
+    }),
+    vscode.debug.onDidTerminateDebugSession((s) => valueBps.delete(s.id)));
 }
 
 function deactivate() {}

@@ -11,7 +11,9 @@ VS Code).
   for `.vhd`/`.vhdl` (so breakpoints can be set without another VHDL extension) and breakpoints
   for it. A `DebugAdapterDescriptorFactory` runs `yavs analyze` on `sources`, then starts
   `yavs run ... --dap=stdio TOP`, or attaches to `port`. Commands (palette, only in a `yavs`
-  session) send the server's custom requests: run for/until a time, next delta, next time step.
+  session) send the server's custom requests: run for/until a time, next delta, next time step,
+  signal value breakpoints (kept per session in the extension, since the request replaces the
+  set). "Break on Value Change" is VS Code's own (DAP data breakpoints).
 - Does not: implement DAP (all of it is `yavs-dap`), highlight or lint VHDL.
 - Plain JavaScript, no bundler, no runtime dependencies.
 
@@ -22,8 +24,8 @@ VS Code).
 | `package.json` | Manifest: `contributes.debuggers`, languages, breakpoints, snippets |
 | `extension.js` | The adapter descriptor factory (`runArgs`, `libArgs`) and the commands (`custom`) |
 | `sample/` | A testbench workspace with `.vscode/launch.json` (used by the tests) |
-| `test/client.js` | A VS Code style session through the DAP test client against `yavs run --dap=stdio` |
-| `test/vscode/run.js`, `suite.js` | A real VS Code (headless) on a copy of `sample/`: breakpoint hit, frame, the delta step command, continue to the end |
+| `test/client.js` | A VS Code style session through the DAP test client against `yavs run --dap=stdio`, data breakpoints included |
+| `test/vscode/run.js`, `suite.js` | A real VS Code (headless) on a copy of `sample/`: breakpoint hit, frame, the delta step command, a signal value breakpoint, continue to the end |
 
 ## 3. Design decisions
 

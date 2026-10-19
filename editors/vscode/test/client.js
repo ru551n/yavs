@@ -47,6 +47,7 @@ async function main() {
   });
   assert.equal(init.body.supportsConfigurationDoneRequest, true);
   assert.equal(init.body.supportsEvaluateForHovers, true);
+  assert.equal(init.body.supportsDataBreakpoints, true);
 
   // Launch, a breakpoint on `i := twice(k);`, configurationDone, stopped.
   await Promise.all([
@@ -103,8 +104,41 @@ async function main() {
   st = await dc.stackTraceRequest({ threadId: 1 });
   assert.deepEqual(st.body.stackFrames.map((f) => [f.name, f.line]), [[':tb:p', 21]]);
 
-  // Clear the breakpoint and run to the end.
   await dc.setBreakpointsRequest({ source: { path: src }, lines: [], breakpoints: [] });
+  // "Break on Value Change" on `cnt` in the Variables view: VS Code asks for its data id, then
+  // sets every data breakpoint.
+  const info = await dc.dataBreakpointInfoRequest({
+    variablesReference: scopes.body.scopes[1].variablesReference,
+    name: 'cnt',
+  });
+  assert.equal(info.body.dataId, ':tb:cnt');
+  assert.deepEqual(info.body.accessTypes, ['write']);
+  const local = await dc.dataBreakpointInfoRequest({
+    variablesReference: scopes.body.scopes[0].variablesReference,
+    name: 'i',
+  });
+  assert.equal(local.body.dataId, null);
+  const set = await dc.setDataBreakpointsRequest({
+    breakpoints: [{ dataId: info.body.dataId, accessType: 'write' }],
+  });
+  assert.equal(set.body.breakpoints[0].verified, true);
+  const stop = async (resume) => (await Promise.all([resume, dc.waitForEvent('stopped')]))[1].body;
+  let s = await stop(dc.continueRequest({ threadId: 1 }));
+  assert.deepEqual([s.reason, s.description, s.text],
+    ['data breakpoint', 'data breakpoint at 0 fs, delta 1', ':tb:cnt = 2']);
+
+  // A signal breakpoint on a value (the extension's "Break when a signal equals...").
+  await dc.setDataBreakpointsRequest({ breakpoints: [] });
+  const eq = await dc.customRequest('yavs/setSignalBreakpoints', {
+    breakpoints: [{ signal: 'tb.cnt', value: '6' }],
+  });
+  assert.equal(eq.body.breakpoints[0].verified, true);
+  s = await stop(dc.continueRequest({ threadId: 1 }));
+  assert.deepEqual([s.reason, s.description, s.text],
+    ['data breakpoint', 'data breakpoint at 20 ns, delta 1', ':tb:cnt = 6']);
+  await dc.customRequest('yavs/setSignalBreakpoints', { breakpoints: [] });
+
+  // Run to the end.
   const out = dc.waitForEvent('output');
   const exited = dc.waitForEvent('exited');
   await Promise.all([dc.continueRequest({ threadId: 1 }), dc.waitForEvent('terminated')]);

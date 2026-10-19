@@ -311,6 +311,12 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
 * **Stepping** within the stopped process: step over (``next``), into a subprogram (``stepIn``)
   and out of it (``stepOut``). Stepping over a ``wait`` stops when the process resumes. After a
   pause between simulation cycles, a step stops at the next statement of any process.
+* **Signal breakpoints** stop after the simulation cycle in which a signal changed: in VS Code
+  "Break on Value Change" on a signal in the Variables view (DAP data breakpoints, also on a
+  name or path through ``dataBreakpointInfo``). "yavs: Break when a signal equals..." stops only
+  when the signal takes a value, written as the Variables view shows it (``'1'``, ``"0101"``,
+  ``42``, ``TRUE``); other clients send the custom request ``yavs/setSignalBreakpoints``. The
+  stop gives the signal's path and new value.
 * **Pause** stops a running simulation: inside a process if one is running, otherwise between
   cycles.
 * **Run for a time or until a time**, **step to the next delta** and **step to the next time
@@ -335,6 +341,6 @@ A stop is a defined point of the simulation: under ``--dap`` processes run on on
 simulation ends the client gets the exit status of the run; disconnecting ends the simulation
 (exit status 1 if it had not ended).
 
-Not yet: conditions on breakpoints, signal breakpoints, forcing and depositing signal values,
+Not yet: conditions on breakpoints, forcing and depositing signal values,
 live waveforms, composite variables (shown as ``(...)``), and ``--dap``
 together with ``--wave`` or ``--vhpi``.

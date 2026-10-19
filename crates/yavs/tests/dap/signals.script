@@ -1,0 +1,26 @@
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 20}]}
+request configurationDone {}
+event stopped
+request dataBreakpointInfo {"variablesReference": 262146, "name": "cnt"}
+request dataBreakpointInfo {"variablesReference": 262145, "name": "i"}
+request dataBreakpointInfo {"name": "nosuch", "frameId": 65536}
+request dataBreakpointInfo {"name": "tb.v"}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request setDataBreakpoints {"breakpoints": [{"dataId": ":tb:cnt", "accessType": "write"}, {"dataId": ":tb:nosuch"}, {"dataId": ":tb:v", "condition": "v = \"0000\""}]}
+request continue {"threadId": 1}
+event stopped
+request continue {"threadId": 1}
+event stopped
+request evaluate {"expression": "tb.v"}
+request setDataBreakpoints {"breakpoints": []}
+request yavs/setSignalBreakpoints {"frameId": 65536, "breakpoints": [{"signal": "cnt", "value": "6"}, {"signal": "v", "value": "\"1010\""}, {"signal": "v", "value": "\"10\""}, {"signal": "cnt", "value": "x"}, {"signal": "tb.v", "value": "\"1012\""}]}
+request continue {"threadId": 1}
+event stopped
+request continue {"threadId": 1}
+event stopped
+request yavs/setSignalBreakpoints {"breakpoints": []}
+request continue {"threadId": 1}
+event terminated
+request disconnect {}

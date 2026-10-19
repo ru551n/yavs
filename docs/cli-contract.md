@@ -290,7 +290,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs/runUntil` (argument `time`, a TIME literal such as `"10 ns"` or `"10ns"`, relative to the
   current time or absolute), `yavs/stepDelta` and `yavs/stepTimestep` (no arguments); each
   answers, sends `continued`, and the next `stopped` event's `description` gives the time and
-  delta. Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
+  delta. Signal breakpoints are DAP data breakpoints (`supportsDataBreakpoints`; `dataId` is
+  the signal's lower-case path `:top:u1:s`) and the custom request `yavs/setSignalBreakpoints`
+  (`breakpoints: [{signal, value?}]`, `frameId` for names seen from a process; it replaces its
+  own set): a stop after the cycle in which the signal changed (to `value`, as the variables
+  view writes it), reason `data breakpoint`, `text` `PATH = VALUE`. Supported requests and the
+  id scheme: `crates/yavs-dap/AGENTS.md`.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

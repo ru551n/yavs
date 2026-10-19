@@ -58,6 +58,16 @@
         "command": "yavs.stepTimestep",
         "title": "Step to the next time step",
         "category": "yavs"
+      },
+      {
+        "command": "yavs.breakOnValue",
+        "title": "Break when a signal equals...",
+        "category": "yavs"
+      },
+      {
+        "command": "yavs.clearValueBreaks",
+        "title": "Clear signal value breakpoints",
+        "category": "yavs"
       }
     ],
     "menus": {
@@ -76,6 +86,14 @@
         },
         {
           "command": "yavs.stepTimestep",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.breakOnValue",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.clearValueBreaks",
           "when": "debugType == 'yavs'"
         }
       ]

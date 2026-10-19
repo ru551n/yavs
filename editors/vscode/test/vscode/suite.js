@@ -1,6 +1,6 @@
 // Inside VS Code: set a breakpoint in tb.vhd, start "Debug tb" from launch.json, and check
 // that the session stops there with a frame VS Code can open, steps one delta with the yavs
-// command, then runs to the end.
+// command, stops on a signal value, then runs to the end.
 'use strict';
 
 const assert = require('assert');
@@ -61,11 +61,22 @@ async function run() {
   assert.equal(d.reason, 'step');
   assert.match(d.description, /^step at 0 fs, delta 0$/);
 
+  // A signal value breakpoint (what "yavs: Break when a signal equals..." sends).
+  const hit = waitFor('stopped on the signal', 60000, (r) => (onStop = r));
+  await session.customRequest('yavs/setSignalBreakpoints', {
+    breakpoints: [{ signal: ':tb:cnt', value: '6' }],
+  });
+  await session.customRequest('continue', { threadId: 1 });
+  const h = await hit;
+  assert.equal(h.reason, 'data breakpoint');
+  assert.equal(h.text, ':tb:cnt = 6');
+  await session.customRequest('yavs/setSignalBreakpoints', { breakpoints: [] });
+
   const ended = waitFor('end of session', 60000, (r) => vscode.debug.onDidTerminateDebugSession(r));
   vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
   await session.customRequest('continue', { threadId: 1 });
   await ended;
-  assert.equal(stops.length, 2);
+  assert.equal(stops.length, 3);
 }
 
 module.exports = { run };

@@ -34,14 +34,19 @@ impl Sources {
     /// The files `prog`'s statements are in, taken from the session's source map.
     pub fn of(prog: &Program, map: &SourceMap) -> Sources {
         let mut s = Sources::default();
-        for (_, st) in prog.stmts.iter() {
+        s.add_from(prog, 0, map);
+        s
+    }
+
+    /// Add the files of `prog`'s statements from statement `first` on.
+    pub(crate) fn add_from(&mut self, prog: &Program, first: usize, map: &SourceMap) {
+        for (_, st) in prog.stmts.iter().skip(first) {
             let id = st.span.file;
-            if s.files.get(id.0 as usize).is_none_or(Option::is_none) {
+            if self.files.get(id.0 as usize).is_none_or(Option::is_none) {
                 let f = map.get(id);
-                s.add(id, &f.path, f.bytes());
+                self.add(id, &f.path, f.bytes());
             }
         }
-        s
     }
 
     /// Add one file (tests build programs by hand).
@@ -358,6 +363,17 @@ impl Asserts {
             st.apply(op);
         }
         st.counts
+    }
+
+    /// Take `from`'s state as this one's base (`Runtime::inherit`).
+    pub(crate) fn inherit(&self, from: &Asserts) {
+        let base = from
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .base
+            .clone();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).base = base;
     }
 
     /// A report during elaboration (no kernel yet): counted in `ELAB_COUNTS`, false when that

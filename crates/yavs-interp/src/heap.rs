@@ -52,6 +52,7 @@ pub enum Obj {
     Mirror,
 }
 
+#[derive(Clone)]
 struct Slot {
     generation: u32,
     ty: Obj,
@@ -60,6 +61,7 @@ struct Slot {
     start: usize,
 }
 
+#[derive(Clone)]
 pub struct Heap {
     tag: u8,
     slots: Vec<Slot>,

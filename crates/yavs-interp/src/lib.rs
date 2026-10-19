@@ -72,7 +72,7 @@ pub struct ProcDriver {
 }
 
 /// Shared variables and the shared heap, used only by serial processes (ir.md 3.5).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SharedState {
     /// Addressed by `AddrSpace::Shared`; `Program::shared_roots` is its root map.
     pub vars: Vec<u8>,
@@ -83,7 +83,7 @@ pub struct SharedState {
 
 /// A serial process's shared-heap roots: handles from its frames' root maps (`None`: one
 /// could not be located) and the slots addresses in its frames and temporaries reach.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ProcRoots {
     pub handles: Option<Vec<u64>>,
     pub pinned: Vec<u32>,
@@ -337,10 +337,15 @@ impl Runtime {
     }
 
     /// Run `prog`, a program that extends this one (every id of this one names the same item
-    /// there, `Lowerer::snapshot`), with `sources` for it. Everything else stays: package
-    /// data, open files, assert counts, coverage counters. Elaboration adds the functions it
-    /// calls to one program this way instead of initialising the packages again.
-    pub fn extend(&mut self, prog: Arc<Program>, sources: Sources) -> Result<(), SimError> {
+    /// there, `Lowerer::snapshot`), the files of its new statements read from `map`.
+    /// Everything else stays: package data, open files, assert counts, coverage counters.
+    /// Elaboration adds the functions it calls to one program this way instead of
+    /// initialising the packages again.
+    pub fn extend(
+        &mut self,
+        prog: Arc<Program>,
+        map: &yavs_diag::SourceMap,
+    ) -> Result<(), SimError> {
         for (_, n) in prog.natives.iter().skip(self.natives.len()) {
             self.natives.push(native::lookup(&n.symbol).map_err(usage)?);
         }
@@ -348,9 +353,27 @@ impl Runtime {
         self.models.resize(prog.foreign.len(), None);
         self.expanded
             .resize_with(prog.consts.len(), Default::default);
-        self.sources = sources;
+        self.sources.add_from(&prog, self.prog.stmts.len(), map);
         self.prog = prog;
         Ok(())
+    }
+
+    /// The data of the bound packages, in `Bindings::packages` order.
+    pub fn package_data(&self) -> &[Arc<InstData>] {
+        &self.pkgs
+    }
+
+    /// Whether code run so far opened a file or closed a standard one: such state cannot be
+    /// carried into another runtime ([`Runtime::inherit`]).
+    pub fn files_touched(&self) -> bool {
+        let files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+        files.len() != 2 || !files.iter().all(textio::FileSlot::is_open)
+    }
+
+    /// Start from `from`'s VHDL assert state (enables and the like, as code run by `from`
+    /// left it): a simulation going on from package state that elaboration-time calls made.
+    pub fn inherit(&self, from: &Runtime) {
+        self.asserts.inherit(&from.asserts);
     }
 
     /// While `on`, calls run again what they ran before (elaboration-time calls replayed on

@@ -54,7 +54,7 @@ impl FileSlot {
         ]
     }
 
-    fn is_open(&self) -> bool {
+    pub(crate) fn is_open(&self) -> bool {
         match self {
             FileSlot::Text(f) => f.state() == FileOpenState::Open,
             FileSlot::Output { open } => *open,

@@ -2084,11 +2084,10 @@ impl Fx<'_, '_> {
                     self.cx.shared_size = off + shape.size();
                     // The GC root: an access value, or the handle of the variable's object.
                     let root = match shape {
-                        VarShape::Scalar(_) => matches!(
-                            db.types[t].kind,
-                            yavs_sem::types::TypeKind::Access { .. }
-                        )
-                        .then_some(off),
+                        VarShape::Scalar(_) => {
+                            matches!(db.types[t].kind, yavs_sem::types::TypeKind::Access { .. })
+                                .then_some(off)
+                        }
                         _ => Some(off + 16),
                     };
                     if let Some(r) = root {

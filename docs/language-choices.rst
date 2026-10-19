@@ -277,7 +277,10 @@ Conversions in call associations
    geti(integer(r));        -- actual conversion of an in variable parameter
 
 Formal conversions are accepted for ``out`` and ``inout`` variable parameters, actual conversions
-only where data flows in. A conversion on an unconstrained formal is an error (``E1312``).
+only where data flows in. A formal that is not fully constrained takes its index ranges from its conversion, as for ports
+(5.3.2.2): ``bv4(x) => v`` with a constrained subtype ``bv4``, or a conversion function whose
+parameter subtype is constrained. A conversion that defines no bounds, ``bit_vector(x) => v``,
+is an error (``E1312``).
 Some simulators do not support conversions in calls (6.5.7.1).
 
 *Portable:* convert into a temporary variable before and after the call.

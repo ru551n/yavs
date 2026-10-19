@@ -9,7 +9,7 @@ use yavs_diag::Span;
 use yavs_ir::{CmpOp, Inst, Reg, RegTy, Width};
 use yavs_sem::decl::Param;
 use yavs_sem::hir::{IndividualPart as Part, LspStep, Mode};
-use yavs_sem::types::TypeKind;
+use yavs_sem::types::{Constrainedness, TypeKind};
 use yavs_sem::{DeclId, ExprId};
 
 use crate::expr::Place;
@@ -151,10 +151,20 @@ impl Fx<'_, '_> {
                 }
             }
             Shape::Arr => {
-                let Some(dope) = self.subtype_dope(p.subtype, span)? else {
+                // An unconstrained formal takes the conversion's bounds (5.3.2.2).
+                let st = match copy_in {
+                    Some(c) if db.constrainedness(p.subtype) != Constrainedness::Full => {
+                        db.exprs[c].subtype
+                    }
+                    _ if db.constrainedness(p.subtype) != Constrainedness::Full => db
+                        .formal_conv_subtype(copy_out)
+                        .unwrap_or(p.subtype),
+                    _ => p.subtype,
+                };
+                let Some(dope) = self.subtype_dope(st, span)? else {
                     return Err(self.cx.ice(span, "converted formal without a descriptor"));
                 };
-                let tid = self.ty(db.base(p.subtype), span)?;
+                let tid = self.ty(db.base(st), span)?;
                 let (size, _) = self.layout(tid, dope);
                 let tmp = self.alloc(size);
                 let slot = self.fb.slot(16, 8);
@@ -166,7 +176,7 @@ impl Fx<'_, '_> {
                     // A copy, not the conversion's value: that may share the actual's data.
                     Some(e) => {
                         let v = self.expr(e)?;
-                        let dims = crate::ty::array_of(db, db.base(p.subtype)).map_or(0, |x| x.1);
+                        let dims = crate::ty::array_of(db, db.base(st)).map_or(0, |x| x.1);
                         let place = Place::Array {
                             data: tmp,
                             dope,
@@ -177,8 +187,8 @@ impl Fx<'_, '_> {
                         self.store_place(place, v, db.exprs[e].subtype, &what, span)?;
                     }
                     None => {
-                        let c = db.subtypes[p.subtype].constraint.clone();
-                        self.default_into(p.subtype, &c, tmp, dope, span)?;
+                        let c = db.subtypes[st].constraint.clone();
+                        self.default_into(st, &c, tmp, dope, span)?;
                     }
                 }
                 if native {

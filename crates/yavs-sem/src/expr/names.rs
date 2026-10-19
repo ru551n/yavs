@@ -1653,6 +1653,18 @@ impl Db {
         Some((e, hargs.into(), stat))
     }
 
+    /// The subtype a formal-part conversion `fe` gives the formal: its type mark, or the
+    /// parameter subtype of the conversion function (5.3.2.2).
+    pub fn formal_conv_subtype(&self, fe: ExprId) -> Option<SubtypeId> {
+        match &self.exprs[fe].kind {
+            ExprKind::Conv { to, .. } => Some(*to),
+            ExprKind::Call { callee, .. } => {
+                Some(self.decls[*callee].kind.subprogram()?.params.first()?.subtype)
+            }
+            _ => None,
+        }
+    }
+
     /// `id` as an actual conversion `conv(name)` (6.5.7.1): the conversion's declaration
     /// (a function, or a type for a type conversion) and the object name it converts.
     pub(crate) fn actual_conversion(&self, id: ExprId) -> Option<(DeclId, ExprId)> {
@@ -1774,28 +1786,6 @@ impl Db {
                 return None;
             }
         };
-        // No bounds flow back through a conversion (F8, as in port maps).
-        if self.constrainedness(st) != crate::types::Constrainedness::Full {
-            self.report(
-                Diagnostic::error(
-                    diag::FORMAL_CONV_UNCONSTRAINED,
-                    format!(
-                        "a conversion of formal `{}` needs a fully constrained formal",
-                        name.text
-                    ),
-                )
-                .with_primary(
-                    fname.span,
-                    format!(
-                        "`{}` is of the unconstrained subtype `{}`",
-                        name.text,
-                        self.subtype_name(st)
-                    ),
-                )
-                .with_help("associate the formal directly and convert after the call"),
-            );
-            return None;
-        }
         let named = matches!(x.kind, ast::ExprKind::Name(_));
         let (obj, copy_in, actual_conv) = if mode == M::Inout {
             // The way in: the actual part converts the actual to the formal's type.
@@ -1930,6 +1920,36 @@ impl Db {
                 "write a conversion function call or a type conversion of the formal",
             );
         };
+        // A formal that is not fully constrained takes its bounds from the conversion
+        // (5.3.2.2, as in port maps; user, 2026-10-19): the actual part's result subtype
+        // for `inout`, the formal part's type mark or parameter subtype for `out`.
+        if self.constrainedness(st) != crate::types::Constrainedness::Full {
+            let def = match copy_in {
+                Some(c) => Some(self.exprs[c].subtype),
+                None => self.formal_conv_subtype(fe),
+            };
+            if def.is_none_or(|d| self.constrainedness(d) != crate::types::Constrainedness::Full) {
+                self.report(
+                    Diagnostic::error(
+                        diag::FORMAL_CONV_UNCONSTRAINED,
+                        format!(
+                            "the conversion of unconstrained formal `{}` must give its bounds",
+                            name.text
+                        ),
+                    )
+                    .with_primary(
+                        fname.span,
+                        format!(
+                            "`{}` is of the unconstrained subtype `{}`",
+                            name.text,
+                            self.subtype_name(st)
+                        ),
+                    )
+                    .with_help("use a constrained subtype as the type mark, or a function with a constrained parameter subtype"),
+                );
+                return None;
+            }
+        }
         Some(Actual::Converted {
             formal_conv: Some(formal_conv),
             actual_conv,

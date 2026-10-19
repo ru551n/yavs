@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:call_conversions_unconstrained:_p0	setv 5 to 8
+diag	note	0	0	:call_conversions_unconstrained:_p0	v=0111
+diag	note	0	0	:call_conversions_unconstrained:_p0	setv 5 to 8
+diag	note	0	0	:call_conversions_unconstrained:_p0	v=1110
+diag	note	0	0	:call_conversions_unconstrained:_p0	incv 5 to 8
+diag	note	0	0	:call_conversions_unconstrained:_p0	v=0100

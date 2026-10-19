@@ -783,7 +783,10 @@ a note and a help suggesting an access type, as the reference simulators reject 
   a type conversion on an unconstrained formal is accepted when it defines the bounds (a constrained
   type mark or result subtype, LRM 5.3.2.2); only a conversion that gives no bounds is E1312. The reference simulators split
   (one gives the formal the actual's bounds, one does so for formal-part type conversions,
-  one crashes on several forms), so the clear LRM text decides.
+  one crashes on several forms), so the clear LRM text decides. User, 2026-10-19: subprogram
+  call formal conversions (#229) follow the same rule: the formal gets the conversion's bounds
+  at run time (the actual part's result subtype for `inout`, the formal part's type mark or
+  parameter subtype for `out`), `E1312` only when the conversion defines none.
 - **Range check of expression actuals of parts** (#263, portleft agent, 2026-10-19; LRM
   6.5.6.3, 14.7.3.1, `docs/design/lrm-checks.md` L88): the equivalent process of a non-static
   expression actual of a scalar part (`r.f => x + 1`, `v(0) => x - 3`) checks the value

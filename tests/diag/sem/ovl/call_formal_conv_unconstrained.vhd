@@ -1,7 +1,7 @@
 -- yavs-test: std=2008
 -- expect: E1312 22:10 formal conversion of an unconstrained formal
 -- LRM 6.5.7.1
--- No bounds flow back through a conversion, so the formal must be fully constrained (rule 1 review F8).
+-- A conversion that defines no bounds (an unconstrained type mark) on an unconstrained formal.
 entity e is end entity;
 architecture a of e is
   function to_r(i : integer) return real is begin return real(i); end function;

@@ -191,6 +191,7 @@ const PASS: &[&str] = &[
     "postponed/postponed_basic",
     "postponed/postponed_wait",
     "process/call_conversions",
+    "process/call_conversions_unconstrained",
     "process/case_if",
     "process/conditional_expr_2019",
     "process/individual_assoc",

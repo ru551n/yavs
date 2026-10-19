@@ -21,6 +21,7 @@ extend the VHPI conformance run (#273).
 | `plugins/props.c` | Name lookup, kinds, integer and string properties, type handles, indexing, resolution |
 | `plugins/values.c` | Every signal read in every value format |
 | `plugins/cbs.c` | Callback reasons: registration, firing order, time and delta |
+| `plugins/nonprop.c`, `designs/nonprop.vhd` | The non-propagating put modes: accepted or not, the value, value-change callbacks and process events |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
 | `designs/hier.vhd`, `designs/drive.vhd` | The designs |
 

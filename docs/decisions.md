@@ -253,9 +253,10 @@ milestone users care about works.
   VHPI do (#319). Identical at any thread count. An integer (`vhpiIntVal`) put into a logic
   vector is its two's complement with the rightmost element least significant (the references
   both accept it and disagree on the bits; the VHPI text gives no rule, this is the numeric
-  reading, agent, 2026-10-19). The non-propagating modes `vhpiDeposit` and `vhpiForce` act like their propagating
-  forms: the kernel has no value change without a cycle, and the reference simulator with VHPI
-  refuses them. A deposit sets the driving value until a source next updates those elements;
+  reading, agent, 2026-10-19). The non-propagating modes `vhpiDeposit` and `vhpiForce` on a
+  signal are misuse (`W0903`, return 1): two of the three references with VHPI refuse them, the
+  third changes the value with no event and no delta (user, 2026-10-19: check that reference,
+  then follow the majority; `tools/vhpi-conformance` plugin `nonprop`). A deposit sets the driving value until a source next updates those elements;
   a release recomputes the driving value from the sources, so a force and release after a
   deposit return to the drivers' value, as both references with VHPI do (#310; a signal
   without sources keeps the deposit). Value-change callbacks repeat until

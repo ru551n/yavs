@@ -180,7 +180,8 @@ status 0. A plugin that cannot be loaded is error ``E0901`` or ``E0902`` and exi
 time 0.
 
 Callbacks for the phases of the simulation run: start and end of simulation, start and end of
-initialization, next time step, start of each cycle, last known delta cycle (the read-write
+initialization, next time step, start of each cycle, start and end of each cycle's processes,
+start of postponed processes, last known delta cycle (the read-write
 phase: values put here take effect in one more delta), end of time step (the read-only phase,
 after postponed processes), each also in its repeating ``Rep`` form, and after a delay. They can
 be disabled, enabled again and removed; a disabled callback costs nothing while it waits. VHPI
@@ -198,12 +199,12 @@ return the size it needs. Enumeration values are positions: a ``std_ulogic`` giv
 enumeration literals, record elements and physical units.
 
 ``vhpi_put_value`` writes signals and ports and their record fields and array elements, in the
-same formats: ``vhpiDepositPropagate`` and ``vhpiDeposit`` set the value until a driver next
-updates it, ``vhpiForcePropagate`` and ``vhpiForce`` hold it against the drivers until
-``vhpiRelease``. A write takes effect in the current cycle from an after-delay callback or a
-callback before the signal update (next time step, start of cycle), and in the next delta at the
-same time from any other callback; in the read-only phases (end of time step, end of simulation)
-it is refused. Constants, generics, records as a whole and ``vhpiSizeConstraint`` are
+same formats, and an integer into a logic vector (two's complement, the rightmost element the
+least significant bit): ``vhpiDepositPropagate`` sets the value until a driver next updates it,
+``vhpiForcePropagate`` holds it against the drivers until ``vhpiRelease``, which returns the
+signal to its drivers' value. The non-propagating ``vhpiDeposit`` and ``vhpiForce`` are refused
+(``W0903``). A write takes effect in the next delta at the same time; in the read-only phases
+(start of postponed processes, end of time step, end of simulation) it is refused. Constants, generics, records as a whole and ``vhpiSizeConstraint`` are
 ``W0903``; variables cannot be written yet (``W0904``). A ``vhpiCbValueChange`` callback on a
 signal, port or one of their sub-elements runs once in every cycle in which any of its elements
 changed, with the object's value in the format its ``value`` field asks for.

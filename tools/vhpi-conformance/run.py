@@ -32,6 +32,7 @@ RUNS = {
     "values": [("hier", "hier")],
     "cbs": [("hier", "hier")],
     "put": [("drive", "drive")],
+    "nonprop": [("nonprop", "nonprop")],
 }
 SANDBOX = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 

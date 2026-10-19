@@ -521,6 +521,22 @@ impl State {
                 )));
             }
         }
+        // Two of the three references with VHPI refuse them on signals (user, 2026-10-19).
+        if matches!(mode, vhpiDeposit | vhpiForce) {
+            return Err(misuse(format!(
+                "the non-propagating mode {} does not apply to a signal; use {}",
+                if mode == vhpiDeposit {
+                    "vhpiDeposit"
+                } else {
+                    "vhpiForce"
+                },
+                if mode == vhpiDeposit {
+                    "vhpiDepositPropagate"
+                } else {
+                    "vhpiForcePropagate"
+                },
+            )));
+        }
         if self.read_only {
             return Err(misuse(
                 "no writes in a read-only phase (end of time step, end of simulation)".into(),

@@ -212,8 +212,9 @@ and gives each library a legal identifier as its name.
 ## VHPI
 
 Reproducers are the C plugins of `tools/vhpi-conformance` (the case names the plugin and its trace
-lines), not `tests/discrepancies/`. Only sim1 and sim4 implement VHPI; sim2 and sim3 are
-`unsupported` (no vote). Rule (user, 2026-10-19): follow the LRM where it is clear, else the
+lines), not `tests/discrepancies/`. sim1 and sim4 run every plugin; sim3 runs a plugin only with full design access enabled and was
+checked for `nonprop` alone; sim2 is `unsupported` (no vote). There is no `tests/discrepancies` case:
+that harness runs VHDL only. Rule (user, 2026-10-19): follow the LRM where it is clear, else the
 majority of the references that run it.
 
 | Case | Construct | LRM | Kind | sim1 | sim2 | sim3 | sim4 | yavs | yavs's choice | Decided |
@@ -225,6 +226,7 @@ majority of the references that run it.
 | `put`: `release` (`crates/yavs-vhpi/tests/put`, entry `clocked`) | `vhpiForcePropagate` then `vhpiRelease` after a `vhpiDepositPropagate`, no driver transaction between | VHPI `vhpi_put_value` (silent on deposits) | LRM ambiguity | the drivers' value | unsupported | unsupported | the drivers' value | the drivers' value | a release recomputes the driving value from the sources | agent, 2026-10-19 (#310, both references) |
 | `put`: `free (wrong format)` | `vhpi_put_value` with `vhpiIntVal` into a `std_logic_vector(3 downto 0)` | VHPI `vhpi_put_value` (no rule for this pair) | LRM ambiguity | accepted: the integer as the position of the leftmost element (`3` gives `1000`) | unsupported | unsupported | accepted: the binary number (`3` gives `0011`) | accepted as sim4 | accept (both); the numeric reading, rightmost bit least significant, two's complement, `W0903` if it does not fit | agent, 2026-10-19 (#319) |
 | `put`: `last-known-delta` after a put at 15 ns, 25 ns | a propagating put from an after-delay callback | VHPI `vhpi_put_value` (timing not fixed) | LRM ambiguity | applied in a new delta (cycles 1) | unsupported | unsupported | applied in a new delta (cycles 1) | applied in a new delta | puts from before the update wait for the next delta | agent, 2026-10-19 (#319, both references) |
+| `nonprop` | `vhpi_put_value` with the non-propagating `vhpiDeposit` / `vhpiForce` on a signal | VHPI `vhpi_put_value` (modes listed, semantics for signals not given) | LRM ambiguity | refused | unsupported | refused | accepted: the value changes with no event, no value-change callback and no delta | refused (`W0903`, return 1) | follow the majority: refuse | user, 2026-10-19 (check sim4, then majority) |
 | `values`: `cnt`, `k` | `vhpi_get_value` with `vhpiEnumVal` on an integer object | VHPI clause, `vhpi_get_value` (formats per type, not strict) | LRM ambiguity | the integer | unsupported | unsupported | the integer | the integer | read the integer (a negative one does not fit and is `W0903`) | agent, 2026-10-19 (#318) |
 
 ## Adding a case

@@ -2,6 +2,8 @@ vhpi: put constant: error: vhpi_put_value: an object of kind 1028 cannot be writ
 vhpi: put generic: error: vhpi_put_value: an object of kind 1053 cannot be written, only signals and ports
 vhpi: put variable: error: vhpi_put_value of a variable: not implemented in yavs yet
 vhpi: size constraint: error: vhpi_put_value: vhpiSizeConstraint applies to the result of a foreign function
+vhpi: non-propagating deposit: error: vhpi_put_value: the non-propagating mode vhpiDeposit does not apply to a signal; use vhpiDepositPropagate
+vhpi: non-propagating force: error: vhpi_put_value: the non-propagating mode vhpiForce does not apply to a signal; use vhpiForcePropagate
 vhpi: put too short: error: vhpi_put_value: format vhpiBinStrVal: 3 elements for an array of 4
 vhpi: put bad literal: error: vhpi_put_value: format vhpiBinStrVal: no literal 'Q'
 vhpi: put too wide: error: vhpi_put_value: format vhpiHexStrVal: 1F is not a number of 4 bits

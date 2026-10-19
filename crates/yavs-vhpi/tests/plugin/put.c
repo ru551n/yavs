@@ -122,10 +122,10 @@ static void at(const vhpiCbDataT *cb) {
     vhpi_printf("vhpi: release d=%d\n", put_int(d, 0, vhpiRelease));
     break;
   case 55:
-    vhpi_printf("vhpi: deposit d=%d\n", put_int(d, 77, vhpiDeposit));
+    vhpi_printf("vhpi: deposit d=%d\n", put_int(d, 77, vhpiDepositPropagate));
     break;
   case 60:
-    vhpi_printf("vhpi: force d=%d\n", put_str(d, vhpiDecStrVal, "-9", vhpiForce));
+    vhpi_printf("vhpi: force d=%d\n", put_str(d, vhpiDecStrVal, "-9", vhpiForcePropagate));
     break;
   case 65:
     vhpi_printf("vhpi: release d=%d\n", put_int(d, 0, vhpiRelease));
@@ -192,6 +192,10 @@ static void errors_start(const vhpiCbDataT *cb) {
   check("put variable");
   put_int(h("d"), 1, vhpiSizeConstraint);
   check("size constraint");
+  put_int(h("d"), 1, vhpiDeposit);
+  check("non-propagating deposit");
+  put_int(h("d"), 1, vhpiForce);
+  check("non-propagating force");
   put_str(h("q"), vhpiBinStrVal, "101", vhpiDepositPropagate);
   check("put too short");
   put_str(h("q"), vhpiBinStrVal, "10Q1", vhpiDepositPropagate);

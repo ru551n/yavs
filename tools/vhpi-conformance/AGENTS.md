@@ -28,6 +28,7 @@ extend the VHPI conformance run (#273).
 | `plugins/tport.c`, `designs/tport.vhd` | Read-write and read-only callbacks at time 0 of a design with no delta there, a put from the read-write one, value changes through a transport delay on an integer port |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
 | `plugins/fresult.c`, `designs/fresult.vhd` | Foreign functions with array results (#330), one entity per case: sized with `vhpiSizeConstraint` or not, a string, a constrained result; the size before and after, the bounds |
+| `plugins/fparam.c`, `designs/fparam.vhd`, `fsig.vhd`, `fsigin.vhd` | Foreign subprograms with record (fields read and written), access (`vhpiPtrVal`, `vhpiDerefObj`) and signal parameters (read, a deposit, transactions on the parameter and on its driver); signal ones in their own files, as one reference refuses `out` signal parameters at analysis |
 | `plugins/vars.c`, `designs/vars.vhd` | Variables read and deposited before their process ran, and a shared variable no process uses (#342) |
 | `designs/hier.vhd`, `designs/drive.vhd` | The designs |
 

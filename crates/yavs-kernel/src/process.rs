@@ -452,6 +452,24 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// A deposit (VHPI `vhpiDepositPropagate` from a foreign subprogram the process calls):
+    /// the driving value of `r` until a source next updates it, applied in the next cycle.
+    pub fn deposit<'v>(
+        &mut self,
+        r: impl Into<SigRef>,
+        value: impl Into<ValueRef<'v>>,
+    ) -> Result<(), SimError> {
+        let op = make_op(
+            self.sh.signals,
+            r.into(),
+            OpMode::Deposit,
+            Some(value.into()),
+        )
+        .map_err(|k| self.error(k))?;
+        self.st.effects.push(Effect::Op(op));
+        Ok(())
+    }
+
     /// `s <= release [in|out];`
     pub fn release(&mut self, r: impl Into<SigRef>, mode: ForceMode) -> Result<(), SimError> {
         let op = make_op(self.sh.signals, r.into(), OpMode::Release(mode), None)

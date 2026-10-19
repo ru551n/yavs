@@ -542,14 +542,16 @@ fn foreign(top: &str, extra: &[&str]) -> (i32, String, String) {
 
 /// Foreign functions and procedures registered with `vhpi_register_foreignf` and called from
 /// VHDL (#274): scalar and array parameters, results through `vhpi_put_value` (array results
-/// sized with `vhpiSizeConstraint`, #330), `out` and `inout` parameters, registration queries
-/// and registration misuse. The plugin's output is
+/// sized with `vhpiSizeConstraint`, #330), `out` and `inout` parameters, record fields, access
+/// values and signal parameters driven through the caller's driver (#330), registration
+/// queries and registration misuse. The plugin's output is
 /// `yavs-vhpi/tests/foreign/expected.txt` (`YAVS_BLESS=1` rewrites it).
 #[test]
 fn vhpi_foreign_subprograms() {
     let (code, err, out) = foreign("top", &[]);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("foreign ok"), "{out}{err}");
+    assert!(out.contains("signals ok"), "{out}{err}");
     let expected = vhpi_dir().join("tests/foreign/expected.txt");
     let plugin: String = out
         .lines()

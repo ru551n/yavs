@@ -43,11 +43,12 @@ RUNS = {
     "tport": [("tport", "tport")],
     "vars": [("vars", "vars")],
     "fresult": [("fresult", f"fr_{c}") for c in ("rev", "iota", "word", "nosize", "fixed")],
+    "fparam": [("fparam", "fp_rec"), ("fparam", "fp_acc"), ("fsig", "fp_sig"), ("fsigin", "fp_sigin")],
 }
 # Designs with shared variables of non-protected types: analysed with the relaxed option.
 RELAXED = {"vars"}
 # Plugins that register foreign models; their designs name the plugin's file in the library word.
-FOREIGN = {"fresult"}
+FOREIGN = {"fresult", "fparam"}
 SANDBOX = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 
 

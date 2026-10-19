@@ -6,6 +6,8 @@ use yavs_ir::{
     VhpiModel, Width,
 };
 
+use yavs_kernel::{Ctx, DelayMode, Elem, Time, Value};
+
 use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
 use crate::heap::Obj;
 
@@ -23,6 +25,11 @@ pub enum ScalarKind {
         lits: Vec<String>,
         logic: Option<LogicKind>,
     },
+    /// An access value: the one cell is the address of the designated object's data, 0 for
+    /// null.
+    Access,
+    /// A record: its scalar fields are the argument's `fields`.
+    Record,
 }
 
 /// One actual of a model call (or its function result). `cells` are the VHDL cells of the
@@ -40,6 +47,29 @@ pub struct ModelArg {
     pub len: Option<usize>,
     /// False for a function result the model has not set yet.
     pub set: bool,
+    /// The fields of a record, in declaration order (each a scalar).
+    pub fields: Vec<ModelArg>,
+    /// A signal parameter: its value, and what the model drove (`cells` unused).
+    pub signal: Option<ModelSignal>,
+}
+
+/// A signal parameter of a model call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelSignal {
+    /// The signal's value at the call.
+    pub value: Value,
+    /// `out`/`inout`: a deposit (`vhpi_put_value`), applied before the transactions.
+    pub deposit: Option<Value>,
+    /// `out`/`inout`: transactions scheduled on the caller's driver, in order.
+    pub txns: Vec<ModelTxn>,
+}
+
+/// A transaction a model scheduled on a driver (`vhpi_schedule_transaction`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelTxn {
+    pub value: Value,
+    pub delay: Time,
+    pub mode: DelayMode,
 }
 
 /// A call of a `'FOREIGN "VHPI library model"` subprogram.
@@ -271,6 +301,20 @@ impl Machine {
         let n = n
             .filter(|&n| n <= u64::from(u32::MAX))
             .ok_or_else(|| Fault::Runtime(format!("foreign `{name}`: array argument too large")))?;
+        let buf = self.marshal_data(&et, ct, logic, data, n, name)?;
+        Ok((buf, data, lens))
+    }
+
+    /// The `n` elements at `data` as a C array (`marshal_array`).
+    fn marshal_data(
+        &mut self,
+        et: &Ty,
+        ct: CType,
+        logic: Option<bool>,
+        data: u64,
+        n: u64,
+        name: &str,
+    ) -> R<Vec<u8>> {
         let cs = csize(ct);
         let mut buf = vec![0u8; n as usize * cs];
         match logic {
@@ -296,7 +340,42 @@ impl Machine {
                 }
             }
         }
-        Ok((buf, data, lens))
+        Ok(buf)
+    }
+
+    /// The fields of a record of type `ty` in VHDL layout, for a VHPI model: each field's
+    /// type and byte offset, and the element count of an array field (scalars or constrained
+    /// arrays of scalars).
+    #[allow(clippy::type_complexity)]
+    fn model_fields(&self, ty: TyId, name: &str) -> R<Vec<(String, TyId, u64, Option<u64>)>> {
+        let prog = &self.rt.prog;
+        let Some(Ty::Record { fields }) = prog.types.get(ty) else {
+            return Err(ice("record argument of a non-record type"));
+        };
+        let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, &[])
+            .map_err(|e| ice(format!("record layout: {e}")))?;
+        let mut out = Vec::with_capacity(fields.len());
+        for (f, &off) in fields.iter().zip(&l.offsets) {
+            let n = match (prog.types.get(f.ty), f.desc) {
+                (Some(Ty::Array { .. }), Some(c)) => {
+                    let Some(yavs_ir::ConstData::Bytes(d)) = prog.consts.get(c) else {
+                        return Err(ice("record field descriptor"));
+                    };
+                    let (fl, _) = Ty::layout(&prog.types, &prog.consts, f.ty, d)
+                        .map_err(|e| ice(format!("field layout: {e}")))?;
+                    Some(fl.count)
+                }
+                (Some(Ty::Array { .. }), None) => {
+                    return rt_err(format!(
+                        "foreign `{name}`: record field `{}` without a static constraint",
+                        f.name
+                    ));
+                }
+                _ => None,
+            };
+            out.push((f.name.clone(), f.ty, off, n));
+        }
+        Ok(out)
     }
 
     fn unmarshal_array(
@@ -419,8 +498,10 @@ impl Machine {
 
     /// A call of a VHPI model: arguments as neutral cells, the model reads and writes them,
     /// `out`/`inout` arguments and the result come back.
+    #[allow(clippy::too_many_arguments)]
     fn model_call(
         &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
         name: &str,
         id: ForeignId,
         m: &VhpiModel,
@@ -442,37 +523,106 @@ impl Machine {
             args: Vec::new(),
             ret: None,
         };
-        // Per array argument: its buffer layout, for the copy back.
-        let mut arrays: Vec<Option<(u64, u64, TyId)>> = Vec::new();
-        for ((a, &r), p) in fargs.iter().zip(regs).zip(&m.params) {
+        // Argument `k` starts at register `starts[k]`; arrays keep their buffer layout for
+        // the copy back.
+        let mut starts = Vec::with_capacity(fargs.len());
+        let mut arrays: Vec<Option<(u64, u64)>> = Vec::with_capacity(fargs.len());
+        let mut at = 0;
+        for (a, p) in fargs.iter().zip(&m.params) {
+            let r = *regs
+                .get(at)
+                .ok_or_else(|| ice("model argument registers"))?;
+            starts.push(at);
+            at += a.cells();
             let v = self.r(r);
-            let (kind, _) = self.kind_of(p.ty)?;
-            let (cells, array) = match *a {
-                ForeignArg::Value(_) => (vec![v], false),
-                ForeignArg::ScalarRef(_, w) => (vec![self.load(v, w)?], false),
+            let mut arg = ModelArg {
+                name: p.name.clone(),
+                mode: p.mode,
+                kind: ScalarKind::Record,
+                array: false,
+                cells: Vec::new(),
+                len: Some(1),
+                set: true,
+                fields: Vec::new(),
+                signal: None,
+            };
+            arrays.push(None);
+            match *a {
+                ForeignArg::Value(_) => arg.cells = vec![v],
+                ForeignArg::ScalarRef(_, w) => arg.cells = vec![self.load(v, w)?],
                 ForeignArg::Array { ty, .. } => {
                     let (buf, data, lens) = self.marshal_array(ty, v, name)?;
                     let n: u64 = lens.iter().product();
                     let (_, ct, _, _) = self.array_elem(ty, name)?;
                     let cs = csize(ct);
-                    arrays.push(Some((data, n, ty)));
-                    let cells = (0..n as usize).map(|i| get_c(&buf, i * cs, ct)).collect();
-                    (cells, true)
+                    arrays[starts.len() - 1] = Some((data, n));
+                    arg.cells = (0..n as usize).map(|i| get_c(&buf, i * cs, ct)).collect();
+                    arg.array = true;
                 }
-                _ => return Err(ice("VHPI model argument shape")),
-            };
-            if !array {
-                arrays.push(None);
+                ForeignArg::Record { ty, .. } => {
+                    for (fname, fty, off, n) in self.model_fields(ty, name)? {
+                        let at = add_addr(v, off)?;
+                        let (kind, et) = self.kind_of(fty)?;
+                        let cells = match n {
+                            None => {
+                                let w = width_of(et.scalar_size().ok_or_else(|| ice("field"))?)?;
+                                vec![self.load(at, w)?]
+                            }
+                            Some(n) => {
+                                let (et, ct, logic, _) = self.array_elem(fty, name)?;
+                                let buf = self.marshal_data(&et, ct, logic, at, n, name)?;
+                                let cs = csize(ct);
+                                (0..n as usize).map(|i| get_c(&buf, i * cs, ct)).collect()
+                            }
+                        };
+                        arg.fields.push(ModelArg {
+                            name: format!("{}.{fname}", p.name),
+                            kind,
+                            array: n.is_some(),
+                            len: Some(cells.len()),
+                            cells,
+                            ..arg.clone()
+                        });
+                    }
+                    arg.len = Some(arg.fields.len());
+                    call.args.push(arg);
+                    continue;
+                }
+                ForeignArg::Access => {
+                    arg.kind = ScalarKind::Access;
+                    arg.cells = vec![self.access_ptr(v)? as usize as u64];
+                    call.args.push(arg);
+                    continue;
+                }
+                ForeignArg::Signal { .. } => {
+                    if self.is_multi(r) {
+                        return rt_err(format!(
+                            "foreign `{name}`: a signal parameter associated in parts is not \
+                             supported"
+                        ));
+                    }
+                    let (sr, ty) = self.sigref(r)?;
+                    let Some(c) = ctx.as_deref_mut() else {
+                        return rt_err("signal parameter of a foreign call during elaboration");
+                    };
+                    let value = match ty.elem {
+                        Elem::Bytes(_) => Value::Bytes(c.value(sr)?.to_vec()),
+                        Elem::Logic => Value::Logic(c.logic(sr)?),
+                    };
+                    arg.array = matches!(self.ty(p.ty)?, Ty::Array { .. });
+                    arg.len = Some(sr.range.map_or(0, |r| r.len) as usize);
+                    arg.signal = Some(ModelSignal {
+                        value,
+                        deposit: None,
+                        txns: Vec::new(),
+                    });
+                }
             }
-            call.args.push(ModelArg {
-                name: p.name.clone(),
-                mode: p.mode,
-                kind,
-                array,
-                len: Some(cells.len()),
-                cells,
-                set: true,
-            });
+            arg.kind = self.kind_of(p.ty)?.0;
+            if arg.signal.is_none() {
+                arg.len = Some(arg.cells.len());
+            }
+            call.args.push(arg);
         }
         if let Some(rt_ty) = m.ret {
             let (kind, _) = self.kind_of(rt_ty)?;
@@ -487,6 +637,8 @@ impl Machine {
                     None => Some(1),
                 },
                 set: false,
+                fields: Vec::new(),
+                signal: None,
             });
         }
         h.call(&mut call).map_err(|e| {
@@ -495,21 +647,23 @@ impl Machine {
                 m.library, m.model
             ))
         })?;
-        for (k, ((a, &r), p)) in fargs.iter().zip(regs).zip(&m.params).enumerate() {
+        for (k, (a, p)) in fargs.iter().zip(&m.params).enumerate() {
             if p.mode == ForeignMode::In {
                 continue;
             }
+            let r = regs[starts[k]];
             let v = self.r(r);
-            let (_, et) = self.kind_of(p.ty)?;
-            let cells = &call.args[k].cells;
+            let arg = &call.args[k];
+            let cells = &arg.cells;
             match *a {
                 ForeignArg::ScalarRef(_, w) => {
+                    let (_, et) = self.kind_of(p.ty)?;
                     let c = *cells.first().ok_or_else(|| ice("model argument cells"))?;
                     check_back(&et, c, name, k)?;
                     self.store(v, w, c)?;
                 }
                 ForeignArg::Array { ty, .. } => {
-                    let Some((data, n, _)) = arrays[k] else {
+                    let Some((data, n)) = arrays[k] else {
                         return Err(ice("array argument"));
                     };
                     let (_, ct, _, _) = self.array_elem(ty, name)?;
@@ -525,6 +679,51 @@ impl Machine {
                         put_c(&mut buf, i * cs, ct, c, name, k)?;
                     }
                     self.unmarshal_array(ty, &buf, data, n, name, k)?;
+                }
+                ForeignArg::Record { ty, .. } => {
+                    let fields: Vec<Vec<u64>> =
+                        arg.fields.iter().map(|f| f.cells.clone()).collect();
+                    for ((_, fty, off, n), cells) in
+                        self.model_fields(ty, name)?.into_iter().zip(fields)
+                    {
+                        let at = add_addr(v, off)?;
+                        match n {
+                            None => {
+                                let (_, et) = self.kind_of(fty)?;
+                                let c = *cells.first().ok_or_else(|| ice("field cells"))?;
+                                check_back(&et, c, name, k)?;
+                                let w = width_of(et.scalar_size().ok_or_else(|| ice("field"))?)?;
+                                self.store(at, w, c)?;
+                            }
+                            Some(n) => {
+                                let (_, ct, _, _) = self.array_elem(fty, name)?;
+                                let cs = csize(ct);
+                                let mut buf = vec![0u8; n as usize * cs];
+                                for (i, &c) in cells.iter().enumerate() {
+                                    put_c(&mut buf, i * cs, ct, c, name, k)?;
+                                }
+                                self.unmarshal_array(fty, &buf, at, n, name, k)?;
+                            }
+                        }
+                    }
+                }
+                ForeignArg::Signal { out: true, .. } => {
+                    let Some(sig) = &arg.signal else {
+                        return Err(ice("signal argument without a value"));
+                    };
+                    let slot = u32::try_from(self.r(regs[starts[k] + 1]))
+                        .map_err(|_| ice("driver slot out of range"))?;
+                    let d = self.driver(slot)?;
+                    let (sr, _) = self.sigref(r)?;
+                    let Some(c) = ctx.as_deref_mut() else {
+                        return rt_err("signal parameter of a foreign call during elaboration");
+                    };
+                    if let Some(dv) = &sig.deposit {
+                        c.deposit(sr, dv)?;
+                    }
+                    for t in &sig.txns {
+                        c.assign(d.id, sr.range, &[(t.delay, &t.value)], t.mode)?;
+                    }
                 }
                 _ => return Err(ice("VHPI model argument shape")),
             }
@@ -586,6 +785,7 @@ impl Machine {
         f: &Func,
         id: ForeignId,
         args: Regs,
+        ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<u64> {
         let x = prog
             .foreign
@@ -594,7 +794,7 @@ impl Machine {
         let rt = self.rt.clone();
         if let Some(m) = &x.model {
             let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();
-            return self.model_call(x.name.as_str(), id, m, &x.args, &regs);
+            return self.model_call(ctx, x.name.as_str(), id, m, &x.args, &regs);
         }
         let Some(fun) = rt.foreign.get(id.0 as usize).and_then(|f| f.as_ref()) else {
             return Err(Fault::Unbound(
@@ -613,6 +813,9 @@ impl Machine {
             let v = self.r(r);
             temps.push(match *a {
                 ForeignArg::Value(_) | ForeignArg::Access => Temp::None,
+                ForeignArg::Signal { .. } => {
+                    return Err(ice("a signal parameter of a VHPIDIRECT subprogram"));
+                }
                 ForeignArg::ScalarRef(ct, w) => {
                     let cur = self.load(v, w)?;
                     Temp::Scalar(Box::new([arg_bits(to_c(ct, cur, name, k)?)]), ct, w)

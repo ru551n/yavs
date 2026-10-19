@@ -1362,6 +1362,16 @@ which tools/difftest parses.
   reference simulators that run array results) and indexed `1 to n` (both references); one
   reference refuses composite results at analysis. Rule 15 majority, recorded in the
   discrepancy catalogue (`fresult`).
+- **VHPI model record, access and signal parameters (#330, 2026-10-19):** records of scalars
+  and constrained arrays of scalars (fields as their own cells), `in` access values (the
+  address of the designated data, `vhpiPtrVal`), and signal parameters of scalars or arrays of
+  scalars (`ForeignArg::Signal`: the reference, the caller's driver slot, a descriptor). A
+  signal parameter crosses as its kernel `Value`; what the model drives comes back as a deposit
+  and transactions (`yavs_interp::ModelSignal`) that the interpreter applies through the
+  calling process's `Ctx` after the call (new `Ctx::deposit`), so foreign code never touches the
+  kernel and runs are the same at any thread count. Writes to record fields are accepted (one
+  reference refuses, one accepts: permissive); signal parameter behaviour follows the one
+  reference that runs it (the other rejects the class). Catalogue: `fparam`.
 
 ## Binary files (yavs-interp `binfile.rs`, #79, 2026-10-18)
 

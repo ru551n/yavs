@@ -14,11 +14,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use yavs_interp::{ForeignModel, ModelArg, ModelCall, ScalarKind};
+use yavs_interp::{ForeignModel, ModelArg, ModelCall, ModelTxn, ScalarKind};
 use yavs_ir::{ForeignMode, LogicKind};
 
 use crate::abi::with_state;
-use crate::model::{Fault, Object, State};
+use crate::model::{Fault, Object, Part, State};
 use crate::sys::*;
 use crate::value::{Cells, Lit, Read, Scalar};
 
@@ -102,10 +102,36 @@ impl State {
         self.foreign.calls.get(&id)
     }
 
+    /// The parameter, record field or function result `obj` is (a driver: its parameter).
     fn arg(&self, obj: &Object) -> Option<&ModelArg> {
         match obj {
-            Object::Param { call, idx } => self.call(*call)?.args.get(*idx as usize),
+            Object::Param { call, idx, part } => {
+                let a = self.call(*call)?.args.get(*idx as usize)?;
+                match part {
+                    Part::Field(f) => a.fields.get(*f as usize),
+                    Part::Whole | Part::Driver => Some(a),
+                }
+            }
             Object::Call(c) => self.call(*c)?.ret.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn arg_mut(&mut self, obj: &Object) -> Option<&mut ModelArg> {
+        match obj {
+            Object::Param { call, idx, part } => {
+                let a = self
+                    .foreign
+                    .calls
+                    .get_mut(call)?
+                    .args
+                    .get_mut(*idx as usize)?;
+                match part {
+                    Part::Field(f) => a.fields.get_mut(*f as usize),
+                    Part::Whole | Part::Driver => Some(a),
+                }
+            }
+            Object::Call(c) => self.foreign.calls.get_mut(c)?.ret.as_mut(),
             _ => None,
         }
     }
@@ -116,8 +142,19 @@ impl State {
             Object::Foreign(_) => vhpiForeignfK,
             Object::Call(c) if self.call(*c).is_some_and(|c| c.ret.is_none()) => vhpiProcDeclK,
             Object::Call(_) => vhpiFuncDeclK,
-            _ => match self.arg(obj).map(|a| a.mode) {
-                Some(ForeignMode::In) => vhpiConstParamDeclK,
+            Object::Param {
+                part: Part::Field(_),
+                ..
+            } => vhpiSelectedNameK,
+            Object::Param {
+                part: Part::Driver, ..
+            } => vhpiDriverK,
+            _ => match self.arg(obj) {
+                Some(a) if a.signal.is_some() => vhpiSigParamDeclK,
+                // An access parameter is a variable.
+                Some(a) if a.mode == ForeignMode::In && a.kind != ScalarKind::Access => {
+                    vhpiConstParamDeclK
+                }
                 _ => vhpiVarParamDeclK,
             },
         }
@@ -158,7 +195,8 @@ impl State {
                 ForeignMode::InOut => vhpiInoutMode,
             }),
             (Object::Param { .. } | Object::Call(_), vhpiIsCompositeP) => {
-                Some(vhpiIntT::from(self.arg(obj)?.array))
+                let a = self.arg(obj)?;
+                Some(vhpiIntT::from(a.array || a.kind == ScalarKind::Record))
             }
             // An unconstrained array result has no size until the model sets one.
             (Object::Param { .. } | Object::Call(_), vhpiSizeP) => match self.arg(obj) {
@@ -178,9 +216,56 @@ impl State {
                 .map(|idx| Object::Param {
                     call: *c,
                     idx: idx as u32,
+                    part: Part::Whole,
                 })
                 .collect(),
         )
+    }
+
+    /// `vhpi_iterator(rel, param)`: the fields of a record parameter (`vhpiSelectedNames`),
+    /// the caller's driver of an `out` or `inout` signal parameter (`vhpiDrivers`).
+    pub(crate) fn foreign_iter(&self, rel: vhpiOneToManyT, obj: &Object) -> Option<Vec<Object>> {
+        let &Object::Param {
+            call,
+            idx,
+            part: Part::Whole,
+        } = obj
+        else {
+            return None;
+        };
+        let a = self.arg(obj)?;
+        match rel {
+            vhpiSelectedNames if a.kind == ScalarKind::Record => Some(
+                (0..a.fields.len() as u32)
+                    .map(|f| Object::Param {
+                        call,
+                        idx,
+                        part: Part::Field(f),
+                    })
+                    .collect(),
+            ),
+            vhpiDrivers if a.signal.is_some() && a.mode != ForeignMode::In => {
+                Some(vec![Object::Param {
+                    call,
+                    idx,
+                    part: Part::Driver,
+                }])
+            }
+            _ => None,
+        }
+    }
+
+    /// The address an access parameter holds (`vhpiPtrVal`), `None` for anything else.
+    pub(crate) fn foreign_access(&self, obj: &Object) -> Option<u64> {
+        match obj {
+            Object::Param {
+                part: Part::Whole, ..
+            } => self
+                .arg(obj)
+                .filter(|a| a.kind == ScalarKind::Access)
+                .map(|a| a.cells[0]),
+            _ => None,
+        }
     }
 
     /// `vhpi_get_value` on a parameter or a function result.
@@ -192,7 +277,22 @@ impl State {
         if !a.set {
             return Err(misuse("the function result has not been set"));
         }
-        Ok(read_of(a))
+        if matches!(
+            obj,
+            Object::Param {
+                part: Part::Driver,
+                ..
+            }
+        ) {
+            return Err(misuse("a driver has no value"));
+        }
+        let ty = scalar_of(a)?;
+        if let Some(sig) = &a.signal {
+            return Read::from_kernel(ty, a.array, &sig.value).ok_or_else(|| {
+                misuse("this is a bug in yavs: a signal parameter's value does not decode")
+            });
+        }
+        Ok(read_of(ty, a))
     }
 
     /// `vhpi_put_value` on an `out` or `inout` parameter, or on the function result.
@@ -214,23 +314,21 @@ impl State {
                  vhpiDepositPropagate and vhpiSizeConstraint)"
             )));
         }
-        let (call, idx) = match obj {
-            Object::Param { call, idx } => (*call, Some(*idx as usize)),
-            Object::Call(c) => (*c, None),
-            _ => return Err(misuse("not a foreign call object".into())),
-        };
-        let c = self
-            .foreign
-            .calls
-            .get_mut(&call)
-            .ok_or_else(|| misuse("the foreign call has returned".into()))?;
-        let a = match idx {
-            Some(i) => &mut c.args[i],
-            None => c
-                .ret
-                .as_mut()
-                .ok_or_else(|| misuse("a procedure call has no result".into()))?,
-        };
+        let result = matches!(obj, Object::Call(_));
+        if matches!(
+            obj,
+            Object::Param {
+                part: Part::Driver,
+                ..
+            }
+        ) {
+            return Err(misuse(
+                "a driver takes values with vhpi_schedule_transaction".into(),
+            ));
+        }
+        let a = self.arg_mut(obj).ok_or_else(|| {
+            misuse("the foreign call has returned, or a procedure call has no result".into())
+        })?;
         if a.mode == ForeignMode::In {
             return Err(misuse(format!("parameter {} has mode in", a.name)));
         }
@@ -239,7 +337,7 @@ impl State {
             let n = size
                 .and_then(|n| usize::try_from(n).ok())
                 .ok_or_else(|| misuse("vhpiSizeConstraint needs a value with numElems".into()))?;
-            if idx.is_some() || !a.array {
+            if !result || !a.array {
                 return Err(misuse(
                     "vhpiSizeConstraint applies only to an array function result".into(),
                 ));
@@ -254,7 +352,7 @@ impl State {
             a.len = Some(n);
             return Ok(());
         }
-        let ty = scalar_of(&a.kind);
+        let ty = scalar_of(a).map_err(|(_, m)| misuse(m))?;
         // A parameter keeps its length, an array result has the size the model set.
         let n = match (a.array, a.len) {
             (false, _) => None,
@@ -271,6 +369,11 @@ impl State {
             crate::value::Error::Unsupported(m) => (Fault::Unsupported, m),
             crate::value::Error::Mismatch(m) => misuse(m),
         })?;
+        // An out signal parameter: a deposit on the actual, after the call.
+        if let Some(sig) = &mut a.signal {
+            sig.deposit = Some(r.to_kernel());
+            return Ok(());
+        }
         a.cells = match r.cells {
             Cells::Int(v) => v.into_iter().map(|i| i as u64).collect(),
             Cells::Real(v) => v.into_iter().map(f64::to_bits).collect(),
@@ -278,10 +381,63 @@ impl State {
         a.set = true;
         Ok(())
     }
+
+    /// `vhpi_schedule_transaction` on the driver of an `out` signal parameter: a transaction
+    /// the caller schedules on the actual after the call.
+    pub(crate) fn foreign_schedule(
+        &mut self,
+        obj: &Object,
+        delay: yavs_kernel::Time,
+        mode: yavs_kernel::DelayMode,
+        decode: impl FnOnce(&Scalar, Option<usize>) -> Result<Read, crate::value::Error>,
+    ) -> Result<(), (Fault, String)> {
+        let misuse = |m: &str| (Fault::Misuse, format!("vhpi_schedule_transaction: {m}"));
+        if !matches!(
+            obj,
+            Object::Param {
+                part: Part::Driver,
+                ..
+            }
+        ) {
+            return Err(misuse(
+                "not a driver (an out signal parameter's driver is in its vhpiDrivers)",
+            ));
+        }
+        let a = self
+            .arg_mut(obj)
+            .ok_or_else(|| misuse("the foreign call has returned"))?;
+        let ty = scalar_of(a)?;
+        let r = decode(&ty, a.array.then_some(a.len.unwrap_or(0))).map_err(|e| match e {
+            crate::value::Error::Unsupported(m) => (Fault::Unsupported, m),
+            crate::value::Error::Mismatch(m) => misuse(&m),
+        })?;
+        let Some(sig) = &mut a.signal else {
+            return Err(misuse("this is a bug in yavs: a driver of a non-signal"));
+        };
+        sig.txns.push(ModelTxn {
+            value: r.to_kernel(),
+            delay,
+            mode,
+        });
+        Ok(())
+    }
 }
 
-fn scalar_of(k: &ScalarKind) -> Scalar {
-    match k {
+/// The scalar type of an argument's value or elements; a record or access value has none.
+fn scalar_of(a: &ModelArg) -> Result<Scalar, (Fault, String)> {
+    Ok(match &a.kind {
+        ScalarKind::Record => {
+            return Err((
+                Fault::Unsupported,
+                "a record parameter as a whole: use its fields (vhpiSelectedNames)".into(),
+            ));
+        }
+        ScalarKind::Access => {
+            return Err((
+                Fault::Misuse,
+                "an access parameter has only a vhpiPtrVal value".into(),
+            ));
+        }
         ScalarKind::Int => Scalar::Int,
         ScalarKind::Real => Scalar::Real,
         ScalarKind::Phys { time } => Scalar::Phys { time: *time },
@@ -312,11 +468,10 @@ fn scalar_of(k: &ScalarKind) -> Scalar {
                 bit01: matches!(logic, Some(LogicKind::Bit | LogicKind::Boolean)),
             }
         }
-    }
+    })
 }
 
-fn read_of(a: &ModelArg) -> Read {
-    let ty = scalar_of(&a.kind);
+fn read_of(ty: Scalar, a: &ModelArg) -> Read {
     let cells = match ty {
         Scalar::Real => Cells::Real(a.cells.iter().map(|&c| f64::from_bits(c)).collect()),
         _ => Cells::Int(a.cells.iter().map(|&c| c as i64).collect()),

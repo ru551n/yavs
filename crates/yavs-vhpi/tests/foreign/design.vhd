@@ -35,6 +35,22 @@ package models is
   attribute foreign of nibble : function is "VHPI plug nibble";
   function unsized(x : integer) return integer_vector;
   attribute foreign of unsized : function is "VHPI plug unsized";
+  -- Record, access and signal parameters (#330).
+  type pt is record
+    x   : integer;
+    ok  : boolean;
+    tag : std_logic_vector(3 downto 0);
+  end record;
+  function norm(p : pt) return integer;
+  attribute foreign of norm : function is "VHPI plug norm";
+  procedure flip(p : in pt; q : out pt);
+  attribute foreign of flip : procedure is "VHPI plug flip";
+  type int_ptr is access integer;
+  procedure peek(variable p : in int_ptr; r : out integer);
+  attribute foreign of peek : procedure is "VHPI plug peek";
+  procedure drive(signal s : in std_logic_vector; signal o : out std_logic_vector;
+                  signal k : out integer);
+  attribute foreign of drive : procedure is "VHPI plug drive";
 end package;
 
 package body models is
@@ -54,6 +70,11 @@ package body models is
   function word(n : integer) return string is begin return ""; end;
   function nibble(x : integer) return nib is begin return "UUUU"; end;
   function unsized(x : integer) return integer_vector is begin return (1 to 0 => 0); end;
+  function norm(p : pt) return integer is begin return 0; end;
+  procedure flip(p : in pt; q : out pt) is begin end;
+  procedure peek(variable p : in int_ptr; r : out integer) is begin end;
+  procedure drive(signal s : in std_logic_vector; signal o : out std_logic_vector;
+                  signal k : out integer) is begin end;
 end package body;
 
 library ieee;
@@ -61,10 +82,30 @@ use ieee.std_logic_1164.all;
 use work.models.all;
 
 entity top is end;
-architecture a of top is begin
+architecture a of top is
+  signal s, o : std_logic_vector(3 downto 0) := "0110";
+  signal k : integer := 0;
+begin
+  -- Signal parameters: read, a deposit and transactions on the caller's driver.
+  sig : process
+  begin
+    wait for 1 ns;
+    drive(s, o, k);
+    wait for 0 ns;
+    assert o = "1111" report "deposit " & to_string(o) severity failure;
+    wait for 1 ns;
+    assert o = "1001" and k = 0 report "driven " & to_string(o) severity failure;
+    wait for 1 ns;
+    assert k = 4 report "transport" severity failure;
+    report "signals ok";
+    wait;
+  end process;
   process
     variable q, r, n : integer;
     variable v : std_logic_vector(3 downto 0) := "1100";
+    variable rec : pt;
+    variable ptr : int_ptr := new integer'(41);
+    variable null_ptr : int_ptr;
   begin
     assert add(40, 2) = 42 report "add" severity failure;
     assert add(-5, 3) = -2 report "add negative" severity failure;
@@ -86,6 +127,13 @@ architecture a of top is begin
     assert iota(0)'length = 0 report "iota null" severity failure;
     assert word(3) = "abc" report "word" severity failure;
     assert nibble(5) = "0101" and nibble(5)'left = 3 report "nibble" severity failure;
+    assert norm((3, true, "1010")) = 3 + 1 + 2 report "norm" severity failure;
+    flip((3, true, "1010"), rec);
+    assert rec = (-3, false, "0101") report "flip" severity failure;
+    peek(ptr, n);
+    assert n = 41 and ptr.all = 42 report "peek" severity failure;
+    peek(null_ptr, n);
+    assert n = -1 report "peek null" severity failure;
     report "foreign ok";
     wait;
   end process;

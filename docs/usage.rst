@@ -310,8 +310,15 @@ at every call, with ``obj`` the call: ``vhpi_iterator(vhpiParamDecls, obj)`` or
 ``vhpi_handle_by_index(vhpiParamDecls, obj, i)`` give the parameters (``vhpiNameP``,
 ``vhpiModeP``), ``vhpi_get_value`` reads them in every format, and ``vhpi_put_value`` with
 ``vhpiDeposit`` or ``vhpiDepositPropagate`` writes the ``out`` and ``inout`` parameters and, on
-``obj`` itself, the function result. Parameters and results are scalars or arrays of scalars;
-records, access values, signal and file parameters are not supported. A function whose result
+``obj`` itself, the function result. Parameters and results are scalars or arrays of scalars.
+A record parameter's fields (scalars or constrained arrays of scalars) are its
+``vhpiSelectedNames``, read and written one by one. An ``in`` access parameter reads as
+``vhpiPtrVal``: the address of the designated object's data (an ``integer`` is 64 bits), NULL
+for ``null``. A signal parameter reads the signal's value; for an ``out`` or ``inout`` one,
+``vhpi_put_value`` deposits a value on the actual and ``vhpi_schedule_transaction`` on the
+parameter's driver (``vhpi_iterator(vhpiDrivers, param)``) schedules a transaction, with a
+delay in resolution units and ``vhpiInertial`` or ``vhpiTransport``; both take effect when the
+call returns. File parameters are not supported. A function whose result
 is an unconstrained array first sets its length with ``vhpi_put_value`` in
 ``vhpiSizeConstraint`` mode (``numElems``), then puts the value; the result is indexed ``1 to
 n``. A constrained result subtype has its own length and bounds. A function that sets no

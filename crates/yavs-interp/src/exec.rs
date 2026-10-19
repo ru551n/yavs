@@ -852,7 +852,7 @@ impl Machine {
         Ok(())
     }
 
-    fn sigref(&self, r: Reg) -> R<(SigRef, yavs_kernel::SignalType)> {
+    pub(crate) fn sigref(&self, r: Reg) -> R<(SigRef, yavs_kernel::SignalType)> {
         let v = self.r(r);
         let len = self.r(Reg(r.0 + 1)) as u32;
         let (base, off) = ((v >> 32) as u32, v as u32);
@@ -993,11 +993,11 @@ impl Machine {
         Ok(())
     }
 
-    fn is_multi(&self, r: Reg) -> bool {
+    pub(crate) fn is_multi(&self, r: Reg) -> bool {
         self.r(r) >> 32 == MULTI
     }
 
-    fn driver(&self, d: u32) -> R<ProcDriver> {
+    pub(crate) fn driver(&self, d: u32) -> R<ProcDriver> {
         self.drivers
             .get(d as usize)
             .copied()
@@ -1928,7 +1928,7 @@ impl Machine {
                 }
             }
             Inst::CallForeign { foreign, args, dst } => {
-                let v = self.foreign(prog, f, foreign, args)?;
+                let v = self.foreign(prog, f, foreign, args, ctx)?;
                 if let Some(d) = dst {
                     self.set(d, v);
                 }

@@ -695,6 +695,20 @@ pub unsafe extern "C" fn vhpi_get_value(expr: vhpiHandleT, value: *mut vhpiValue
 
 /// `vhpi_get_value` of `obj` into `v`: 0, -1 on error, or the buffer size needed.
 fn get_value(s: &mut State, obj: &Object, v: &mut vhpiValueT) -> c_int {
+    // An access parameter of a foreign call: the designated object's data, or NULL.
+    if let Some(p) = s.foreign_access(obj) {
+        if !matches!(v.format, vhpiPtrVal | vhpiObjTypeVal) {
+            s.fail(
+                Fault::Misuse,
+                "vhpi_get_value: an access parameter has only a vhpiPtrVal value",
+            );
+            return -1;
+        }
+        v.format = vhpiPtrVal;
+        v.numElems = 1;
+        v.value.ptr = p as usize as *mut std::ffi::c_void;
+        return 0;
+    }
     let read = match s.read(obj, |r| with_hook(|h| h.value(r))) {
         Ok(r) => r,
         Err((fault, m)) => {
@@ -755,23 +769,8 @@ pub unsafe extern "C" fn vhpi_put_value(
             return 1;
         };
         let res = s.clock.resolution.fs();
-        let decode = |ty: &value::Scalar, n: Option<usize>| {
-            let Some(v) = v else {
-                return Err(value::Error::Mismatch("NULL value_p".into()));
-            };
-            let mut format = v.format;
-            if format == vhpiObjTypeVal {
-                format = value::natural_format(ty, n.is_some());
-            }
-            // SAFETY: the plugin's value, read as its format says (the contract above).
-            let given = unsafe { given(v, format) }.ok_or_else(|| {
-                value::Error::Unsupported(format!(
-                    "vhpi_put_value: format {}",
-                    value::format_name(format)
-                ))
-            })?;
-            value::Read::decode(ty.clone(), n, format, given, res)
-        };
+        // SAFETY: the contract above.
+        let decode = |ty: &value::Scalar, n| unsafe { decode(v, ty, n, res, "vhpi_put_value") };
         let put = if matches!(o, Object::Call(_) | Object::Param { .. }) {
             s.foreign_put(&o, mode, v.map(|v| v.numElems), decode)
         } else {
@@ -790,6 +789,31 @@ pub unsafe extern "C" fn vhpi_put_value(
             }
         }
     })
+}
+
+/// Decodes the plugin's value `v` into `n` elements (`None`: a scalar) of type `ty`.
+///
+/// # Safety
+/// `v` is NULL or its buffer is readable as `vhpi_put_value` says.
+unsafe fn decode(
+    v: Option<&vhpiValueT>,
+    ty: &value::Scalar,
+    n: Option<usize>,
+    res: u64,
+    func: &str,
+) -> Result<value::Read, value::Error> {
+    let Some(v) = v else {
+        return Err(value::Error::Mismatch("NULL value_p".into()));
+    };
+    let mut format = v.format;
+    if format == vhpiObjTypeVal {
+        format = value::natural_format(ty, n.is_some());
+    }
+    // SAFETY: the plugin's value, read as its format says (the contract above).
+    let given = unsafe { given(v, format) }.ok_or_else(|| {
+        value::Error::Unsupported(format!("{func}: format {}", value::format_name(format)))
+    })?;
+    value::Read::decode(ty.clone(), n, format, given, res)
 }
 
 /// The value a plugin passes in `format`; `None` for a format `vhpi_put_value` does not read.
@@ -840,17 +864,74 @@ fn scalar_member(format: vhpiFormatT, u: vhpiValueU) -> Option<Member> {
     Some(m)
 }
 
+/// Schedules a transaction on a driver: `value` (one value, `num_values` 1) after `delay`
+/// (resolution units) with `mode`, an inertial one rejecting pulses shorter than
+/// `pulse_rej` (NULL: the delay). 0, or 1 on error.
+///
+/// # Safety
+/// `value` is NULL or readable as for `vhpi_put_value`; `delay` and `pulse_rej` are NULL or
+/// readable.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_schedule_transaction(
-    _driver: vhpiHandleT,
-    _value: *mut vhpiValueT,
-    _num_values: u32,
-    _delay: *mut vhpiTimeT,
-    _mode: vhpiDelayModeT,
-    _pulse_rej: *mut vhpiTimeT,
+pub unsafe extern "C" fn vhpi_schedule_transaction(
+    driver: vhpiHandleT,
+    value: *mut vhpiValueT,
+    num_values: u32,
+    delay: *mut vhpiTimeT,
+    mode: vhpiDelayModeT,
+    pulse_rej: *mut vhpiTimeT,
 ) -> c_int {
-    not_implemented("vhpi_schedule_transaction");
-    1
+    let func = "vhpi_schedule_transaction";
+    // SAFETY: NULL or readable per the contract.
+    let (v, delay, rej) = unsafe { (value.as_ref(), delay.as_ref(), pulse_rej.as_ref()) };
+    with_state(|s| {
+        let Some(o) = get_obj(s, driver, func) else {
+            return 1;
+        };
+        let res = s.clock.resolution.fs();
+        let time = |t: &vhpiTimeT| {
+            let units = (i64::from(t.high) << 32) | i64::from(t.low);
+            u64::try_from(units)
+                .ok()
+                .and_then(|u| u.checked_mul(res))
+                .and_then(yavs_kernel::Time::fs)
+                .ok_or_else(|| format!("{func}: a delay of {units} is negative or overflows"))
+        };
+        let parsed = (|| {
+            if num_values != 1 {
+                return Err(format!("{func}: numValues is {num_values}, not 1"));
+            }
+            let d = time(delay.ok_or_else(|| format!("{func}: NULL delay"))?)?;
+            let m = match mode {
+                vhpiTransport => yavs_kernel::DelayMode::Transport,
+                vhpiInertial => yavs_kernel::DelayMode::Inertial {
+                    reject: rej.map(time).transpose()?,
+                },
+                _ => return Err(format!("{func}: bad delay mode {mode}")),
+            };
+            Ok((d, m))
+        })();
+        let (d, m) = match parsed {
+            Ok(x) => x,
+            Err(e) => {
+                s.fail(Fault::Misuse, e);
+                return 1;
+            }
+        };
+        // SAFETY: the contract above.
+        let decode = |ty: &value::Scalar, n| unsafe { decode(v, ty, n, res, func) };
+        match s.foreign_schedule(&o, d, m, decode) {
+            Ok(()) => 0,
+            Err((fault, msg)) => {
+                let msg = if fault == Fault::Unsupported {
+                    format!("{msg}: {NOT_IMPLEMENTED}")
+                } else {
+                    msg
+                };
+                s.fail(fault, msg);
+                1
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]

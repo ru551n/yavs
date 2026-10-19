@@ -66,15 +66,29 @@ impl Fx<'_, '_> {
                 .cx
                 .ice(span, "foreign call arguments out of formal order"));
         }
-        // One cell per parameter: a value, an address, or a fat pair for composites.
-        let mut cells = self.cells(sp, args, span, true)?;
-        for (c, p) in cells.iter_mut().zip(&sp.params) {
-            if matches!(
+        // One cell per parameter: a value, an address, or a fat pair for composites; a
+        // signal parameter of a VHPI model takes `signal_cells`.
+        let mut cells = Vec::new();
+        for (a, p) in args.iter().zip(&sp.params) {
+            let mut c = self.cells(sp, std::slice::from_ref(a), span, true)?;
+            if p.class == ObjClass::Signal {
+                if c.len() != signal_cells(self.db, p) {
+                    return Err(self.cx.error(
+                        NOT_IMPLEMENTED,
+                        span,
+                        format!(
+                            "signal parameter `{}` of a VHPI model associated in parts",
+                            p.name.text
+                        ),
+                    ));
+                }
+            } else if matches!(
                 self.db.types[self.db.base(p.subtype)].kind,
                 TypeKind::Record { .. }
             ) {
-                *c = self.load(*c, yavs_ir::Width::B8, RegTy::Ptr);
+                c[0] = self.load(c[0], yavs_ir::Width::B8, RegTy::Ptr);
             }
+            cells.extend(c);
         }
         let regs = self.fb.regs(&cells);
         let Some(ret) = sp.ret else {
@@ -159,16 +173,38 @@ impl Fx<'_, '_> {
                 )
             };
             let copy_back = p.mode != Mode::In;
-            if p.class == ObjClass::Signal || p.class == ObjClass::File {
+            if p.class == ObjClass::File || (p.class == ObjClass::Signal && vhpi.is_none()) {
                 return Err(bad(self, "signal and file parameters are not supported"));
             }
             let t = db.base(p.subtype);
             if vhpi.is_some() {
-                if matches!(
-                    db.types[t].kind,
-                    TypeKind::Record { .. } | TypeKind::Access { .. }
-                ) {
-                    return Err(bad(self, "record and access parameters of a VHPI model"));
+                // Records of scalars, arrays of scalars and scalars, as signals too.
+                let scalars = match &db.types[t].kind {
+                    TypeKind::Record { elems } => {
+                        let mut all = p.class != ObjClass::Signal;
+                        for e in elems.iter() {
+                            all &= match &db.types[db.base(e.subtype)].kind {
+                                // A field array needs its own constraint.
+                                TypeKind::Array { elem, .. } => {
+                                    matches!(
+                                        db.subtypes[e.subtype].constraint,
+                                        Constraint::Array { dims: Some(_), .. }
+                                    ) && self.ctype(*elem, span)?.is_some()
+                                }
+                                _ => self.ctype(e.subtype, span)?.is_some(),
+                            };
+                        }
+                        all
+                    }
+                    TypeKind::Array { elem, .. } => self.ctype(*elem, span)?.is_some(),
+                    _ => true,
+                };
+                if !scalars {
+                    return Err(bad(
+                        self,
+                        "records of composites, signal records and arrays of composites are \
+                         not supported in a VHPI model",
+                    ));
                 }
                 params.push(VhpiParam {
                     name: pname.clone(),
@@ -179,6 +215,13 @@ impl Fx<'_, '_> {
                     },
                     ty: self.ty(t, span)?,
                 });
+                if p.class == ObjClass::Signal {
+                    args.push(ForeignArg::Signal {
+                        out: copy_back,
+                        cells: signal_cells(db, p) as u8,
+                    });
+                    continue;
+                }
             }
             args.push(match &db.types[t].kind {
                 TypeKind::Array { indexes, .. } => {
@@ -348,6 +391,12 @@ impl Fx<'_, '_> {
         };
         Ok(vhdl::lower_result(Some(v)).ok().flatten())
     }
+}
+
+/// The cells of a VHPI model's signal parameter (`Shape::Sig`, `Shape::SigOut`): the signal
+/// reference, the caller's driver slot when it is `out` or `inout`, an array's descriptor.
+fn signal_cells(db: &yavs_sem::Db, p: &yavs_sem::decl::Param) -> usize {
+    1 + usize::from(p.mode != Mode::In) + usize::from(crate::ty::is_array(db, db.base(p.subtype)))
 }
 
 #[cfg(test)]

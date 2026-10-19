@@ -1,6 +1,7 @@
 info: other info kind=3 elabf=0 execf=1 kindP=3 name=info
 duplicate: vhpi_register_foreignf: other info is already registered
 noexec: vhpi_register_foreignf: a function or procedure needs an execf
+elab: plug drive kind=3
 elab: plug add kind=2
 elab: plug half kind=2
 elab: plug later kind=2
@@ -13,9 +14,19 @@ elab: plug rev kind=2
 elab: plug iota kind=2
 elab: plug word kind=2
 elab: plug nibble kind=2
+elab: plug norm kind=2
+elab: plug flip kind=3
+elab: plug peek kind=3
 add: call kind=1052 name=ADD
 add: param A mode=1001 kind=1029
 add: param B mode=1001 kind=1029
 divmod: in parameter: vhpi_put_value: parameter a has mode in
 size: before=-1 composite=1 constraint rc=0 after=4
 nibble: size=4 resize: vhpi_put_value: the result has 4 elements; vhpiSizeConstraint gives 5
+norm: p kind=1029 composite=1 size=3
+norm: field P.X kind=1093
+norm: field P.OK kind=1093
+norm: field P.TAG kind=1093
+drive: s kind=1095 mode=1001 ones=2
+drive: driver kind=1033
+drive: on the parameter: vhpi_schedule_transaction: not a driver (an out signal parameter's driver is in its vhpiDrivers)

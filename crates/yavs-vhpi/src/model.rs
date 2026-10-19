@@ -72,11 +72,22 @@ pub(crate) enum Object {
     /// The call of a foreign subprogram that a model's `execf` is running (key in
     /// `Foreign::calls`); a function call is also the function's result.
     Call(u64),
-    /// Parameter `idx` of foreign call `call`.
+    /// Parameter `idx` of foreign call `call`, or a part of it.
     Param {
         call: u64,
         idx: u32,
+        part: Part,
     },
+}
+
+/// What of a foreign call's parameter an [`Object::Param`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    Whole,
+    /// Field `i` of a record parameter (`vhpiSelectedNames`).
+    Field(u32),
+    /// The caller's driver of an `out` or `inout` signal parameter (`vhpiDrivers`).
+    Driver,
 }
 
 /// The state of a `vhpi_iterator`.
@@ -846,6 +857,9 @@ impl State {
             |items: Vec<Object>| Ok((!items.is_empty()).then_some(Iter::List { items, next: 0 }));
         if let (vhpiParamDecls, Some(o @ Object::Call(_))) = (rel, reference) {
             return list(self.foreign_params(o).ok_or(false)?);
+        }
+        if let Some(o @ Object::Param { .. }) = reference {
+            return list(self.foreign_iter(rel, o).ok_or(false)?);
         }
         if matches!(
             rel,

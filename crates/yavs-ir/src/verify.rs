@@ -302,12 +302,14 @@ fn check_inst(
         }
         Inst::CallForeign { foreign, args, .. } => match prog.foreign.get(foreign) {
             None => err(format!("missing foreign subprogram {foreign}")),
-            Some(x) if x.args.len() != args.len as usize => err(format!(
-                "foreign `{}` takes {} arguments, {} given",
-                x.name,
-                x.args.len(),
-                args.len
-            )),
+            Some(x) if x.args.iter().map(|a| a.cells()).sum::<usize>() != args.len as usize => {
+                err(format!(
+                    "foreign `{}` takes {} argument registers, {} given",
+                    x.name,
+                    x.args.iter().map(|a| a.cells()).sum::<usize>(),
+                    args.len
+                ))
+            }
             _ => {}
         },
         Inst::Cover { item } if prog.cov.get(item).is_none() => {

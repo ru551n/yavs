@@ -259,6 +259,19 @@ pub enum ForeignArg {
     /// An access value: C gets a pointer to the designated object's data (after the
     /// descriptor for an array object) in VHDL layout, or NULL.
     Access,
+    /// A signal parameter of a VHPI model (never a C call): `cells` registers, the signal
+    /// reference, then for `out` the caller's driver slot, then the descriptor of an array.
+    Signal { out: bool, cells: u8 },
+}
+
+impl ForeignArg {
+    /// The registers the argument takes in a `CallForeign`.
+    pub fn cells(self) -> usize {
+        match self {
+            ForeignArg::Signal { cells, .. } => cells.into(),
+            _ => 1,
+        }
+    }
 }
 
 /// A VHPIDIRECT subprogram (ir.md 1.7). The function pointer is bound outside the IR (the
@@ -329,6 +342,7 @@ impl ForeignRef {
                     ForeignArg::ScalarRef(..) | ForeignArg::Record { .. } | ForeignArg::Access => {
                         vec![CType::Ptr]
                     }
+                    ForeignArg::Signal { .. } => vec![],
                 })
                 .collect(),
             ret: self.ret,

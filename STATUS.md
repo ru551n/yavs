@@ -662,6 +662,11 @@ Done (#330, array results): a foreign function may return a one-dimensional arra
 with `vhpiSizeConstraint` (unconstrained, indexed `1 to n`) or by its constrained result subtype;
 tests in `vhpi_foreign_subprograms` (`rev`, `iota`, `word`, `nibble`) and
 `vhpi_foreign_missing_model_and_result` (`nosize`); conformance plugin `tools/vhpi-conformance/plugins/fresult.c`.
+Done (#330, parameters): record parameters (fields through `vhpiSelectedNames`, written for
+`out`/`inout`), `in` access parameters (`vhpiPtrVal`), signal parameters (value at the call; for
+`out`/`inout` a deposit and transactions on the caller's driver from `vhpiDrivers` with
+`vhpi_schedule_transaction`); tests in `vhpi_foreign_subprograms` (`norm`, `flip`, `peek`,
+`drive`), conformance plugin `tools/vhpi-conformance/plugins/fparam.c`.
 
 Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
 the elaborated design made before plugins load: root and component instances, blocks, `for`

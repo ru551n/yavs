@@ -230,6 +230,123 @@ static void elab(const vhpiCbDataT *cb) {
     vhpi_printf("elab: %s %s kind=%d\n", d.libraryName, d.modelName, (int)d.kind);
 }
 
+/* Record parameters: the fields from vhpiSelectedNames, by index and by iterator. */
+static int field_int(vhpiHandleT rec, int i) {
+  vhpiValueT v;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiIntVal;
+  if (vhpi_get_value(vhpi_handle_by_index(vhpiSelectedNames, rec, i), &v))
+    vhpi_printf("field_int failed\n");
+  return v.value.intg;
+}
+
+static int ones(vhpiHandleT h) {
+  vhpiEnumT bits[64];
+  vhpiValueT v;
+  int i, n = 0;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiLogicVecVal;
+  v.bufSize = sizeof bits;
+  v.value.enumvs = bits;
+  if (vhpi_get_value(h, &v)) vhpi_printf("ones: get failed\n");
+  for (i = 0; i < v.numElems; i++) n += bits[i] == vhpi1;
+  return n;
+}
+
+/* x + ok + the number of '1' in tag. */
+static void norm_exec(const vhpiCbDataT *cb) {
+  static int shown;
+  vhpiHandleT p = param(cb, 0), it, f;
+  vhpiValueT v;
+  if (!shown++) {
+    vhpi_printf("norm: p kind=%d composite=%d size=%d\n", vhpi_get(vhpiKindP, p),
+                vhpi_get(vhpiIsCompositeP, p), vhpi_get(vhpiSizeP, p));
+    it = vhpi_iterator(vhpiSelectedNames, p);
+    while ((f = vhpi_scan(it)))
+      vhpi_printf("norm: field %s kind=%d\n", (const char *)vhpi_get_str(vhpiNameP, f),
+                  vhpi_get(vhpiKindP, f));
+    /* A record has no value as a whole. */
+    memset(&v, 0, sizeof v);
+    v.format = vhpiObjTypeVal;
+    if (!vhpi_get_value(p, &v)) vhpi_printf("norm: whole record read\n");
+  }
+  put_int(cb->obj, field_int(p, 0) + field_int(p, 1) +
+                       ones(vhpi_handle_by_index(vhpiSelectedNames, p, 2)));
+}
+
+/* q.x = -p.x, q.ok = not p.ok, q.tag = not p.tag. */
+static void flip_exec(const vhpiCbDataT *cb) {
+  vhpiHandleT p = param(cb, 0), q = param(cb, 1);
+  vhpiEnumT bits[4];
+  vhpiValueT v;
+  int i;
+  put_int(vhpi_handle_by_index(vhpiSelectedNames, q, 0), -field_int(p, 0));
+  memset(&v, 0, sizeof v);
+  v.format = vhpiEnumVal;
+  v.value.enumv = !field_int(p, 1);
+  vhpi_put_value(vhpi_handle_by_index(vhpiSelectedNames, q, 1), &v, vhpiDepositPropagate);
+  memset(&v, 0, sizeof v);
+  v.format = vhpiLogicVecVal;
+  v.bufSize = sizeof bits;
+  v.value.enumvs = bits;
+  vhpi_get_value(vhpi_handle_by_index(vhpiSelectedNames, p, 2), &v);
+  for (i = 0; i < 4; i++) bits[i] = bits[i] == vhpi1 ? vhpi0 : vhpi1;
+  vhpi_put_value(vhpi_handle_by_index(vhpiSelectedNames, q, 2), &v, vhpiDepositPropagate);
+}
+
+/* An access parameter is the address of the designated object's data (an integer is 64
+ * bits): r gets the value, which is then incremented; -1 for null. */
+static void peek_exec(const vhpiCbDataT *cb) {
+  vhpiValueT v;
+  long long *p;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiObjTypeVal;
+  if (vhpi_get_value(param(cb, 0), &v) || v.format != vhpiPtrVal) vhpi_printf("peek: no pointer\n");
+  p = (long long *)v.value.ptr;
+  put_int(param(cb, 1), p ? (int)(*p)++ : -1);
+}
+
+/* s in, o and k out: o gets a deposit of "1111", then not s after 1 ns (inertial) through
+ * its driver; k gets the number of '1' in "1111" after 2 ns (transport). */
+static void drive_exec(const vhpiCbDataT *cb) {
+  vhpiHandleT s = param(cb, 0), o = param(cb, 1), k = param(cb, 2), d, it;
+  vhpiEnumT bits[4];
+  vhpiValueT v;
+  vhpiTimeT t;
+  vhpiErrorInfoT e;
+  int i, n = ones(s);
+  vhpi_printf("drive: s kind=%d mode=%d ones=%d\n", vhpi_get(vhpiKindP, s), vhpi_get(vhpiModeP, s), n);
+  memset(&v, 0, sizeof v);
+  v.format = vhpiLogicVecVal;
+  v.numElems = 4;
+  v.bufSize = sizeof bits;
+  v.value.enumvs = bits;
+  for (i = 0; i < 4; i++) bits[i] = vhpi1;
+  if (vhpi_put_value(o, &v, vhpiDepositPropagate)) vhpi_printf("drive: deposit failed\n");
+  vhpi_get_value(s, &v);
+  for (i = 0; i < 4; i++) bits[i] = bits[i] == vhpi1 ? vhpi0 : vhpi1;
+  it = vhpi_iterator(vhpiDrivers, o);
+  d = vhpi_scan(it);
+  vhpi_printf("drive: driver kind=%d\n", vhpi_get(vhpiKindP, d));
+  vhpi_release_handle(it);
+  t.high = 0;
+  t.low = 1000000; /* 1 ns in fs */
+  if (vhpi_schedule_transaction(d, &v, 1, &t, vhpiInertial, NULL)) vhpi_printf("drive: o failed\n");
+  /* A transaction on the parameter itself, or on an in parameter, is misuse. */
+  if (!vhpi_schedule_transaction(o, &v, 1, &t, vhpiInertial, NULL)) vhpi_printf("drive: o accepted\n");
+  if (vhpi_check_error(&e)) vhpi_printf("drive: on the parameter: %s\n", e.message);
+  if (vhpi_iterator(vhpiDrivers, s)) vhpi_printf("drive: s has a driver\n");
+  vhpi_check_error(&e);
+  it = vhpi_iterator(vhpiDrivers, k);
+  d = vhpi_scan(it);
+  vhpi_release_handle(it);
+  memset(&v, 0, sizeof v);
+  v.format = vhpiIntVal;
+  v.value.intg = 4;
+  t.low = 2000000;
+  if (vhpi_schedule_transaction(d, &v, 1, &t, vhpiTransport, NULL)) vhpi_printf("drive: k failed\n");
+}
+
 static void reg(vhpiForeignKindT kind, char *name, void (*exec)(const vhpiCbDataT *)) {
   vhpiForeignDataT d;
   vhpiHandleT h;
@@ -258,6 +375,10 @@ PLUGIN_EXPORT void foreign_models(void) {
   reg(vhpiFuncF, "word", word_exec);
   reg(vhpiFuncF, "nibble", nibble_exec);
   reg(vhpiFuncF, "unsized", unsized_exec);
+  reg(vhpiFuncF, "norm", norm_exec);
+  reg(vhpiProcF, "flip", flip_exec);
+  reg(vhpiProcF, "peek", peek_exec);
+  reg(vhpiProcF, "drive", drive_exec);
 }
 
 /* yavs only: registration queries and misuse (other simulators crash or accept it). */

@@ -17,7 +17,7 @@ mod debug;
 mod env;
 mod exec;
 mod foreign;
-pub use foreign::{ForeignModel, ModelArg, ModelCall, ScalarKind};
+pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
 mod heap;
 mod implicit;
 mod native;

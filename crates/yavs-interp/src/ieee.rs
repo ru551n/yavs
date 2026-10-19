@@ -6,7 +6,7 @@
 //! differential test (`tests/ieee_native.rs`) runs both on the same operands. Calling
 //! convention: `native.rs` (arrays as the address of a fat pair, scalars as cells).
 
-use yavs_ir::ieee::{Cmp, Form, Gate, Math, Op, Shift};
+use yavs_ir::ieee::{Cmp, Form, Gate, Math, Op, Shift, Syn};
 use yavs_ir::{DOPE_DIM_BYTES, TyId, Width, dim_len};
 use yavs_kernel::{Ctx, LogicVec, Severity};
 use yavs_logic::{BitVec, StdULogic};
@@ -498,6 +498,120 @@ fn math<const K: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &
     }
 }
 
+// ---- std_logic_arith (Synopsys) ----
+
+/// Give the call back to the VHDL body: the metavalue and range cases of the Synopsys helpers.
+fn fallback(m: &mut Machine) -> Ret {
+    m.ieee_fallback = true;
+    Ok(Some(0))
+}
+
+/// An operand the helpers treat as binary: `(n-1 downto 0)` with every element `0 1 L H`.
+fn bin_down(v: &Vh) -> Option<BitVec> {
+    if v.v.is_empty() || !v.down || v.right != 0 || v.left != v.v.len() as i64 - 1 {
+        return None;
+    }
+    v.v.to_bitvec()
+}
+
+fn syn_add<const SUB: bool, const SIGNED: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (Some(x), Some(y)) = (bin_down(&l), bin_down(&r)) else {
+        return fallback(m);
+    };
+    if x.len() != y.len() {
+        return fallback(m);
+    }
+    let s = if SUB { x.sub(&y) } else { x.add(&y, false) };
+    put(m, &Vh::down(LogicVec::from_bitvec(&s)))
+}
+
+fn syn_mult<const SIGNED: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (Some(x), Some(y)) = (bin_down(&l), bin_down(&r)) else {
+        return fallback(m);
+    };
+    let n = x.len() + y.len();
+    let p = x.extend(n, SIGNED).mul_trunc(&y.extend(n, SIGNED), n);
+    put(m, &Vh::down(LogicVec::from_bitvec(&p)))
+}
+
+fn make_binary(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let l = vh(m, a, 0)?;
+    let Some(b) = l.v.to_bitvec() else {
+        return fallback(m);
+    };
+    put(
+        m,
+        &Vh {
+            v: LogicVec::from_bitvec(&b),
+            ..l
+        },
+    )
+}
+
+/// `conv_unsigned`/`conv_signed` of a vector: the low `min (len, size)` elements, above them the
+/// zero (unsigned argument) or the argument's top element (signed argument).
+fn conv_vec<const FROM_SIGNED: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    let l = vh(m, a, 0)?;
+    let size = int(a, 1)?;
+    let Some(b) = l.v.to_bitvec() else {
+        return fallback(m);
+    };
+    if size < 1 || b.is_empty() {
+        return fallback(m);
+    }
+    let n = size as usize;
+    let keep = b.len().min(n);
+    let fill = FROM_SIGNED && b.get(b.len() - 1);
+    let mut r = BitVec::new(n);
+    (0..n).for_each(|i| r.set(i, if i < keep { b.get(i) } else { fill }));
+    put(m, &Vh::down(LogicVec::from_bitvec(&r)))
+}
+
+/// `conv_unsigned`/`conv_signed` of an integer: the bits of the two's complement value
+/// (the body's `mod 2` and `/ 2` loop), `SIZE` of them.
+fn conv_int<const SIGNED: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    let (arg, size) = (int(a, 0)?, int(a, 1)?);
+    // `temp - 1` of INTEGER'LOW is an overflow error in the unsigned body.
+    if size < 1 || (!SIGNED && arg == -(1i64 << 31)) {
+        return fallback(m);
+    }
+    let n = size as usize;
+    let mut t = arg;
+    let mut r = BitVec::new(n);
+    for i in 0..n {
+        r.set(i, t.rem_euclid(2) == 1);
+        // The signed body halves INTEGER'LOW without the `- 1` of the other negative values.
+        t = if t > 0 || (SIGNED && t <= -(1i64 << 31)) {
+            t / 2
+        } else {
+            (t - 1) / 2
+        };
+    }
+    put(m, &Vh::down(LogicVec::from_bitvec(&r)))
+}
+
 // ---- numeric_std ----
 
 fn zero_ext(b: &BitVec, n: usize, signed: bool) -> BitVec {
@@ -808,7 +922,9 @@ fn form(f: Form) -> u8 {
 
 /// The native of an `yavs.ieee.<key>` symbol.
 pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
-    let op = yavs_ir::ieee::parse(symbol.strip_prefix("yavs.ieee.")?)?;
+    // A native that may give the call back carries the body's function id after `@`.
+    let key = symbol.strip_prefix("yavs.ieee.")?;
+    let op = yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))?;
     Some(match op {
         Op::Gate(g) => [
             gate::<0> as NativeFn,
@@ -875,6 +991,33 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         Op::ToSigned => to_unsigned::<true>,
         Op::Resize { signed: false } => resize::<false>,
         Op::Resize { signed: true } => resize::<true>,
+        Op::Syn(Syn::Add { sub, signed }) => match (sub, signed) {
+            (false, false) => syn_add::<false, false>,
+            (false, true) => syn_add::<false, true>,
+            (true, false) => syn_add::<true, false>,
+            (true, true) => syn_add::<true, true>,
+        },
+        Op::Syn(Syn::Mult { signed: false }) => syn_mult::<false>,
+        Op::Syn(Syn::Mult { signed: true }) => syn_mult::<true>,
+        Op::Syn(Syn::MakeBinary) => make_binary,
+        Op::Syn(Syn::Conv {
+            from_signed: Some(false),
+            ..
+        }) => conv_vec::<false>,
+        Op::Syn(Syn::Conv {
+            from_signed: Some(true),
+            ..
+        }) => conv_vec::<true>,
+        Op::Syn(Syn::Conv {
+            to_signed,
+            from_signed: None,
+        }) => {
+            if to_signed {
+                conv_int::<true>
+            } else {
+                conv_int::<false>
+            }
+        }
         Op::Math(k) => {
             macro_rules! ms {
                 ($($i:literal),*) => {

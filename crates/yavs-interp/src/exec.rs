@@ -215,6 +215,8 @@ pub(crate) struct Machine {
     /// A native `ieee` subprogram made a report at the stop severity: the process ends after
     /// the call, as after `Inst::Report`.
     pub ieee_stop: bool,
+    /// A native `ieee` subprogram gives its call back to the VHDL body (`ieee::fallback`).
+    pub ieee_fallback: bool,
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
@@ -428,6 +430,7 @@ impl Machine {
             waits: Waits::default(),
             pause: None,
             ieee_stop: false,
+            ieee_fallback: false,
             layouts: Vec::new(),
             spare: Vec::new(),
             cells: Vec::new(),
@@ -1476,6 +1479,32 @@ impl Machine {
         )))
     }
 
+    /// Call the VHDL body of a native `ieee` subprogram that gave its call back: the symbol
+    /// ends in `@<function id>`, array arguments become data and descriptor.
+    fn ieee_body(
+        &mut self,
+        prog: &Program,
+        symbol: &str,
+        cells: &[u64],
+        dst: Option<Reg>,
+    ) -> R<Flow> {
+        let (key, id) = symbol
+            .strip_prefix("yavs.ieee.")
+            .and_then(|k| k.rsplit_once('@'))
+            .ok_or_else(|| ice("ieee fallback without a body"))?;
+        let func = FuncId(id.parse().map_err(|_| ice("ieee fallback function id"))?);
+        let mut out = Vec::with_capacity(cells.len() + 2);
+        for (i, &c) in cells.iter().enumerate() {
+            if yavs_ir::ieee::array_param(key, i) {
+                out.push(self.load(c, Width::B8)?);
+                out.push(self.load(add_addr(c, 8)?, Width::B8)?);
+            } else {
+                out.push(c);
+            }
+        }
+        self.call(prog, func, &out, dst)
+    }
+
     fn call(&mut self, prog: &Program, func: FuncId, cells: &[u64], dst: Option<Reg>) -> R<Flow> {
         let f = prog
             .func(func)
@@ -2128,6 +2157,9 @@ impl Machine {
                 };
                 let cells = self.arg_cells(f, args, None, 0)?;
                 let v = fun(self, ctx, n.ty, &cells)?;
+                if std::mem::take(&mut self.ieee_fallback) {
+                    return self.ieee_body(prog, &n.symbol, &cells, dst);
+                }
                 if let Some(d) = dst {
                     let v =
                         v.ok_or_else(|| ice(format!("native `{}` returned no value", n.symbol)))?;

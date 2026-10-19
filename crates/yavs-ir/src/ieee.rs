@@ -7,7 +7,8 @@
 //! matches. `yavs-interp` implements every key; its `ieee` tests check both lists agree.
 
 /// The packages whose subprograms are listed.
-const PACKAGES: [&str; 5] = [
+const PACKAGES: [&str; 6] = [
+    "ieee.std_logic_arith.",
     "ieee.math_real.",
     "ieee.std_logic_1164.",
     "ieee.numeric_std.",
@@ -78,6 +79,28 @@ pub enum Math {
     Sign,
 }
 
+/// The helpers of the vendored Synopsys `std_logic_arith`, which hold the cost of its operators.
+/// Each handles operands of `0 1 L H` only and hands the call back to the VHDL body for
+/// anything else (a metavalue, an unusual range): the body then makes the results and warnings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Syn {
+    /// `plus`, `minus` (signed) and `unsigned_plus`, `unsigned_minus`: operands of one length.
+    Add {
+        sub: bool,
+        signed: bool,
+    },
+    /// `mult`.
+    Mult {
+        signed: bool,
+    },
+    MakeBinary,
+    /// `conv_unsigned` / `conv_signed` of a vector (`from_signed`) or an integer (`None`).
+    Conv {
+        to_signed: bool,
+        from_signed: Option<bool>,
+    },
+}
+
 /// A natively implemented `ieee` subprogram.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Op {
@@ -119,6 +142,7 @@ pub enum Op {
     },
     Shift(Shift),
     Math(Math),
+    Syn(Syn),
 }
 
 /// Reduced key to operation. Every operation listed here is implemented by `yavs-interp`.
@@ -211,6 +235,59 @@ pub fn parse(key: &str) -> Option<Op> {
             "xrol" => Shift::Rol,
             _ => Shift::Ror,
         })),
+        (
+            "std_logic_arith",
+            n @ ("plus" | "minus" | "unsigned_plus" | "unsigned_minus"),
+            [a, b],
+            r,
+        ) if a == b && a == &r => {
+            let signed = match (n.starts_with("unsigned"), r) {
+                (false, "signed") => true,
+                (true, "unsigned") => false,
+                _ => return None,
+            };
+            Some(Op::Syn(Syn::Add {
+                sub: n.ends_with("minus"),
+                signed,
+            }))
+        }
+        ("std_logic_arith", "mult", [a, b], r)
+            if a == b && a == &r && (r == "unsigned" || r == "signed") =>
+        {
+            Some(Op::Syn(Syn::Mult {
+                signed: r == "signed",
+            }))
+        }
+        ("std_logic_arith", "make_binary", [a], r)
+            if *a == r && ["unsigned", "signed", "std_ulogic_vector"].contains(&r) =>
+        {
+            Some(Op::Syn(Syn::MakeBinary))
+        }
+        ("std_logic_arith", n @ ("conv_unsigned" | "conv_signed"), [a, "integer"], r)
+            if r == &n[5..] && ["unsigned", "signed", "integer"].contains(a) =>
+        {
+            Some(Op::Syn(Syn::Conv {
+                to_signed: r == "signed",
+                from_signed: match *a {
+                    "unsigned" => Some(false),
+                    "signed" => Some(true),
+                    _ => None,
+                },
+            }))
+        }
+        ("std_logic_arith", "conv_std_logic_vector", [a, "integer"], "std_ulogic_vector")
+            if ["unsigned", "signed", "integer"].contains(a) =>
+        {
+            // The same elements as `conv_signed` of an integer or `conv_unsigned`/`conv_signed`.
+            Some(Op::Syn(Syn::Conv {
+                to_signed: true,
+                from_signed: match *a {
+                    "unsigned" => Some(false),
+                    "signed" => Some(true),
+                    _ => None,
+                },
+            }))
+        }
         ("math_real", n, ["real"], "real") => Some(Op::Math(match n {
             "sqrt" => Math::Sqrt,
             "exp" => Math::Exp,
@@ -271,6 +348,24 @@ fn short(ty: &str) -> Option<String> {
     let p = PACKAGES.iter().find(|p| ty.starts_with(**p))?;
     let name = &ty[p.len()..];
     Some(name.strip_prefix("unresolved_").unwrap_or(name).to_string())
+}
+
+/// Whether the parameter `i` of the subprogram with this reduced key is an array (passed to a
+/// native as the address of a fat pair, to the body as data and descriptor).
+pub fn array_param(key: &str, i: usize) -> bool {
+    let params = key
+        .split_once('(')
+        .and_then(|(_, r)| r.split_once(')'))
+        .map_or("", |(p, _)| p);
+    params
+        .split(',')
+        .nth(i)
+        .is_some_and(|t| ["unsigned", "signed", "std_ulogic_vector"].contains(&t))
+}
+
+/// Whether the native of `op` may hand the call back to the VHDL body.
+pub fn has_fallback(op: Op) -> bool {
+    matches!(op, Op::Syn(_))
 }
 
 /// The native symbol (`yavs.ieee.<key>`) that replaces the body of the subprogram with this

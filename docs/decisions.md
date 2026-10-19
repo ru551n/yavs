@@ -1903,6 +1903,14 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   iterations, so a transcendental result can differ in its last digits; `CEIL`/`FLOOR`/`ROUND`/
   `TRUNC`/`SIGN` are exact ports, and every out-of-domain argument gives the body's report text,
   severity and returned value (`REAL'LOW`, `0.0`). `YAVS_NO_NATIVE_IEEE` restores the bodies.
+- **Synopsys `std_logic_arith` helpers with a hand-back (orchestrator, 2026-10-19):** `plus`,
+  `minus`, `unsigned_plus`, `unsigned_minus`, `mult`, `make_binary` and the `conv_unsigned`/
+  `conv_signed`/`conv_std_logic_vector` conversions (the cost under the package's operators, and
+  so under `std_logic_unsigned`/`std_logic_signed`) run natively for operands of `0 1 L H` in
+  the shapes the operators produce. Anything else (a metavalue, other bounds, a null array, an
+  overflowing integer) is handed back: the lowered call is `yavs.ieee.<key>@<body function id>`,
+  the native sets `Machine::ieee_fallback` and `exec.rs` calls the body, so results, warnings
+  and errors of those cases are the body's by construction.
 - **Why not the existing `LNum`/`LogicOp` instructions:** they cover neither the bounds and
   warnings of the library functions nor `std_ulogic` tables per operand shape; the native call
   keeps one place that mirrors the library.

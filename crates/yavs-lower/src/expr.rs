@@ -2265,8 +2265,16 @@ impl<'a> Fx<'a, '_> {
                     && sp.ret.is_some()
                     && yavs_ir::ieee::native_symbol(sp.mangled.as_str()).is_some() =>
             {
-                let sym = yavs_ir::ieee::native_symbol(sp.mangled.as_str())
+                let mut sym = yavs_ir::ieee::native_symbol(sp.mangled.as_str())
                     .ok_or_else(|| self.cx.ice(span, "ieee native symbol"))?;
+                // A native that may give the call back names the body's function.
+                if yavs_ir::ieee::symbol_key(&sym)
+                    .and_then(yavs_ir::ieee::parse)
+                    .is_some_and(yavs_ir::ieee::has_fallback)
+                {
+                    let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
+                    sym = format!("{sym}@{}", f.0);
+                }
                 let cells = self.cells(sp, args, span, true)?;
                 let r = self.native(&sym, None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;

@@ -218,6 +218,10 @@ host load about 16 (loop overhead about 2 us per iteration included):
 | `to_integer` | 0.45 | 0.04 |
 | `shift_left` | 0.14 | 0.06 |
 
+Synopsys `std_logic_arith` helpers (`plus`, `minus`, `mult`, `conv_*`; a metavalue hands the call back to the body):
+`tests/corpus/synopsys/tb_arith_mul` 5.50 s to 1.12 s CPU, `tb_arith_addsub` 10.43 s to 7.80 s (its own helper
+functions, not the arithmetic, are most of the rest); the 20 `synopsys` difftest cases pass at `--threads 1` and 4.
+
 `tools/bench`: `ff_rtl` simulate 1.27 s to 0.05 s CPU (total 1.31 to 0.10), `compute_loop` 0.72 to 0.66.
 
 ### Elaboration of short library tests (#383, 2026-10-19)

@@ -27,7 +27,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots, sealed objects and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
 | `src/implicit.rs` | `yavs.implicit.<family>.<type>[#<form>]` operations |
-| `src/ieee.rs` | Native `ieee` subprograms (`yavs_ir::ieee`): ports of the `std_logic_1164`/`numeric_std` bodies on bit-planes, same bounds, metavalues and warning texts; `Machine::ieee_stop` ends the process after a report at the stop severity. Add an operation in `yavs-ir`'s `ieee::parse` and here, then extend `crates/yavs/tests/ieee_native.rs` |
+| `src/ieee.rs` | Native `ieee` subprograms (`yavs_ir::ieee`): ports of the `std_logic_1164`/`numeric_std` bodies on bit-planes, same bounds, metavalues and warning texts; `Machine::ieee_stop` ends the process after a report at the stop severity; `Machine::ieee_fallback` (Synopsys helpers) makes `exec.rs` call the VHDL body named by the `@<id>` suffix of the symbol. Add an operation in `yavs-ir`'s `ieee::parse` and here, then extend `crates/yavs/tests/ieee_native.rs` |
 | `src/textio.rs` | std.textio and TEXT file natives, `FILE_INPUT`/`FILE_OUTPUT`, std.env glue |
 | `src/binfile.rs` | `read`/`write` on files of scalars and arrays of scalars (on-disk format: decisions.md "Binary files") |
 | `src/env.rs` | 2019 std.env: call paths (`Sources`), the VHDL assert state (`Asserts`, cycle-deterministic), time_record |

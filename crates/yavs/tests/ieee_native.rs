@@ -526,3 +526,139 @@ fn native_math_matches_bodies() {
     assert_eq!(n.status.code(), v.status.code());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const ARITH_HEAD: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+entity ta is end entity;
+architecture a of ta is
+  function img (x : std_ulogic_vector) return string is
+    variable r : string(1 to x'length);
+    variable k : integer := 0;
+  begin
+    for i in x'range loop
+      k := k + 1;
+      r(k) := std_ulogic'image(x(i))(2);
+    end loop;
+    return integer'image(x'left) & "," & integer'image(x'right) & "," &
+           boolean'image(x'ascending) & ":" & r;
+  end function;
+  function img (x : unsigned) return string is
+  begin return img(std_ulogic_vector(x)); end function;
+  function img (x : signed) return string is
+  begin return img(std_ulogic_vector(x)); end function;
+  function cv (c : character) return std_ulogic is
+  begin
+    case c is
+      when 'U' => return 'U'; when 'X' => return 'X'; when '0' => return '0';
+      when '1' => return '1'; when 'Z' => return 'Z'; when 'W' => return 'W';
+      when 'L' => return 'L'; when 'H' => return 'H'; when others => return '-';
+    end case;
+  end function;
+  function sv (s : string; l : integer; asc : boolean) return std_ulogic_vector is
+    variable d : std_ulogic_vector(l downto l - s'length + 1);
+    variable u : std_ulogic_vector(l to l + s'length - 1);
+  begin
+    if asc then
+      for i in u'range loop u(i) := cv(s(s'left + i - l)); end loop;
+      return u;
+    else
+      for i in d'range loop d(i) := cv(s(s'left + l - i)); end loop;
+      return d;
+    end if;
+  end function;
+  function uv (s : string; l : integer; asc : boolean) return unsigned is
+  begin return unsigned(sv(s, l, asc)); end function;
+  function gv (s : string; l : integer; asc : boolean) return signed is
+  begin return signed(sv(s, l, asc)); end function;
+begin
+  process
+  begin
+"#;
+
+/// The Synopsys `std_logic_arith` helpers against their bodies, metavalues included (the
+/// natives hand those calls back to the body).
+#[test]
+fn native_synopsys_arith_matches_bodies() {
+    let mut g = Gen {
+        rng: Rng(99),
+        out: String::new(),
+        n: 0,
+    };
+    for _ in 0..150 {
+        for op in ["+", "-", "*"] {
+            for (ta, tb) in [("uv", "uv"), ("gv", "gv"), ("uv", "gv"), ("gv", "uv")] {
+                let (a, b) = (g.operand(ta), g.operand(tb));
+                if a.contains("\"\"") || b.contains("\"\"") {
+                    continue; // null operands raise index errors in the bodies
+                }
+                let r = if ta == "uv" && tb == "uv" {
+                    "unsigned"
+                } else {
+                    "signed"
+                };
+                g.case(&format!("{r}'({a} {op} {b})"), "img");
+            }
+        }
+        for ty in ["uv", "gv"] {
+            let a = g.operand(ty);
+            if a.contains("\"\"") {
+                continue;
+            }
+            let s = 1 + g.rng.below(40);
+            for (f, r) in [
+                ("conv_unsigned", "unsigned"),
+                ("conv_signed", "signed"),
+                ("conv_std_logic_vector", "std_logic_vector"),
+            ] {
+                g.case(&format!("{r}'({f}({a}, {s}))"), "img");
+            }
+        }
+        let i = g.int(false);
+        let s = 1 + g.rng.below(40);
+        for (f, r) in [
+            ("conv_unsigned", "unsigned"),
+            ("conv_signed", "signed"),
+            ("conv_std_logic_vector", "std_logic_vector"),
+        ] {
+            g.case(&format!("{r}'({f}({i}, {s}))"), "img");
+        }
+    }
+    let src = format!(
+        "{ARITH_HEAD}{}    wait;\n  end process;\nend architecture;\n",
+        g.out
+    );
+    let dir = std::env::temp_dir().join(format!("yavs-ieee-arith-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("ta.vhd"), src).expect("write");
+    let a = run(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:lib", "ta.vhd"],
+        true,
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let go = |native| {
+        run(
+            &dir,
+            &["run", "--std=2008", "--work=work:lib", "ta"],
+            native,
+        )
+    };
+    let (n, v) = (go(true), go(false));
+    let (ns, vs) = (
+        String::from_utf8_lossy(&n.stdout),
+        String::from_utf8_lossy(&v.stdout),
+    );
+    assert!(
+        ns.lines().count() > 800,
+        "{}",
+        String::from_utf8_lossy(&n.stderr)
+    );
+    for (i, (x, y)) in ns.lines().zip(vs.lines()).enumerate() {
+        assert_eq!(x, y, "line {i}");
+    }
+    assert_eq!(ns.lines().count(), vs.lines().count());
+    assert_eq!(n.stderr, v.stderr);
+    assert_eq!(n.status.code(), v.status.code());
+    let _ = std::fs::remove_dir_all(&dir);
+}

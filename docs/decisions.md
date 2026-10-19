@@ -1204,6 +1204,9 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   for integer and physical types, is `E1402` in user code (all three reference simulators reject it;
   the range of `universal_integer` is implementation-defined). Library `std` stays exempt: its `TIME`
   declaration uses the literal.
+- **Implicit condition operator (L53, #48; user, 2026-10-19, majority rule):** only a `??` visible at
+  the condition counts, so `use ieee.std_logic_1164.std_ulogic` alone gives `E1340`; two of the
+  three reference simulators reject it (it was accepted before).
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

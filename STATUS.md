@@ -34,66 +34,58 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 
 ### Verification library: its own testbenches (#277)
 
-`tools/suites/uvvm.py --private-copies`, release build with #285 (on main at f74b9821), `-j 4`; one run per testbench
+`tools/suites/uvvm.py` (without `--private-copies`, #290 is fixed), release build of main at ba53e23d (#285 to #302 and #304 in), `-j 2`; one run per testbench
 entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. Non-protected shared
-variables (#285) are no longer a root cause; every run still stops before time 0, most on a
-`report` in a function evaluated during elaboration (#299, the library's licence banner). Only
-the first root cause of each run is counted. Before the fix of #290, 7 runs (the uart
-testbenches) failed in analysis without `--private-copies`.
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 45 runs pass. Only the first root cause of each run is counted.
+The runs now reach simulation; 57 of the 63 failures end at elaboration on one cause (#328).
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 0 | 36 | 0 | report during elaboration #299 (22); alias of a locally static constant in a subprogram #300 (12); record aggregate target #302 (1); `'delayed(0 ns)'last_event` #286 is fixed |
-| uvvm_assertions | 0 | 2 | 0 | #299 |
-| uvvm_vvc_framework | 0 | 3 | 0 | #299 |
-| bitvis_irqc | 0 | 2 | 0 | #299 |
-| bitvis_uart | 0 | 3 | 0 | #299 (2); entity statements #301 (1) |
-| bitvis_vip_scoreboard | 0 | 3 | 0 | #299 (2); #301 (1) |
-| bitvis_vip_avalon_mm | 0 | 5 | 0 | #299 |
-| bitvis_vip_avalon_st | 0 | 6 | 0 | #299 |
-| bitvis_vip_axi | 0 | 2 | 0 | `'length` of a record element of a port in a constant, like #287 |
-| bitvis_vip_axilite | 0 | 2 | 0 | #299 |
-| bitvis_vip_axistream | 0 | 22 | 0 | #299 |
-| bitvis_vip_clock_generator | 0 | 1 | 0 | #299 |
-| bitvis_vip_error_injection | 0 | 2 | 0 | #299 |
-| bitvis_vip_gmii | 0 | 2 | 0 | #299 |
-| bitvis_vip_sbi | 0 | 2 | 0 | #299 (1); `'range` of a record element of a signal #287 is fixed |
-| bitvis_vip_ethernet | 0 | 3 | 1 | #299; 1 skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_gpio | 0 | 1 | 0 | #299 |
+| uvvm_util | 30 | 3 | 3 | element of an array of arrays of unconstrained unsigned #329 (1); not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); 3 skipped: over 5 minutes (two `rand_gaussian`, `rand_cyclic_performance`) |
+| uvvm_assertions | 2 | 0 | 0 | none |
+| uvvm_vvc_framework | 1 | 2 | 0 | record resolved as a whole with a `std_logic` element #328 |
+| bitvis_irqc | 2 | 0 | 0 | none |
+| bitvis_uart | 1 | 2 | 0 | #328 |
+| bitvis_vip_scoreboard | 3 | 0 | 0 | none |
+| bitvis_vip_avalon_mm | 0 | 5 | 0 | #328 (3); 2 not yavs results: the testbench's FIFO is a third-party design file absent from the pinned checkout, so the component stays unbound |
+| bitvis_vip_avalon_st | 0 | 6 | 0 | #328 |
+| bitvis_vip_axi | 1 | 1 | 0 | #328 |
+| bitvis_vip_axilite | 0 | 2 | 0 | #328 |
+| bitvis_vip_axistream | 0 | 22 | 0 | #328 |
+| bitvis_vip_clock_generator | 0 | 1 | 0 | #328 |
+| bitvis_vip_error_injection | 2 | 0 | 0 | none |
+| bitvis_vip_gmii | 0 | 2 | 0 | #328 |
+| bitvis_vip_sbi | 0 | 2 | 0 | #328 |
+| bitvis_vip_ethernet | 0 | 3 | 1 | #328; 1 skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_gpio | 0 | 1 | 0 | #328 |
 | bitvis_vip_i2c | 0 | 0 | 1 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_rgmii | 0 | 2 | 0 | #299 |
+| bitvis_vip_rgmii | 0 | 2 | 0 | #328 |
 | bitvis_vip_spec_cov | 0 | 1 | 0 | shared variable whose type holds access values #303 |
 | bitvis_vip_spi | 0 | 0 | 24 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_uart | 0 | 3 | 0 | #299 |
-| bitvis_vip_wishbone | 0 | 2 | 0 | #299 |
-| external_vip_apb | 0 | 6 | 0 | #299 |
-| Total | 0 | 111 | 26 | |
+| bitvis_vip_uart | 0 | 3 | 0 | #328 |
+| bitvis_vip_wishbone | 0 | 2 | 0 | #328 |
+| external_vip_apb | 3 | 3 | 0 | #328 |
+| Total | 45 | 63 | 29 | |
 
-No run is over 5 minutes (none reaches simulation). The generated-VIP tests of the framework
-component (generator output compiled and simulated) are not run by the driver.
+The generated-VIP tests of the framework component (generator output compiled and simulated) are not run by the driver.
 
 ### Verification library: its own `.pro` regression (#276)
 
 `tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
-521 files in script order and runs each test (`yavs run`, release build of main at 2809229b, 4 in parallel). Pass = exit 0 and the
-library's own `DONE PASSED` summary line. 2008: 16 of 314 tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. The
-17 UART and Ethernet tests simulate but time out: their verification components are left unbound (#291). Every other failure
-ends at elaboration. 2019 (measured at 9c853ae6): the 2008 causes, plus `DynamicVectorGenericPkg` (#30) (`file_open` with `APPEND_MODE`, #297, is fixed since); 0 pass.
+521 files in script order and runs each test (`yavs run`, release build of main at ba53e23d, 2 in parallel). Pass = exit 0 and the
+library's own `DONE PASSED` summary line. 2008: 31 of 314 tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. Every
+failure ends at elaboration or at the first process run, on one of three causes (#312, #313, #314). 2019: the same 31 pass and the same 283 fail, test for test.
 
 | Test suite | Pass | Fail | First root cause (issues) |
 |---|---|---|---|
-| AddressBusTransactionPkg, AddressBusTransactionArrayPkg | 0 | 84 | `'range` of a package signal in a port subtype #294 |
-| Axi4Full | 0 | 72 | deferred constant as a component generic default #295 |
-| AxiStream | 0 | 68 | `'length` of a port record field in an entity constant #304 (31), no diagnostic after an alias of a port record element #292 (25, fixed after this run), alias of a variable slice #296 (12) |
-| Axi4Lite, DpRam | 0 | 18 | #304 |
-| UART, Ethernet | 0 | 17 | time out: verification components left unbound #291 |
-| StreamTransactionPkg, StreamTransactionArrayPkg | 0 | 28 | #304 (24), #292 (4) |
-| InterruptHandler_Gen, TbAxi4_MultipleMemory | 0 | 8 | #294 (7), #295 (1) |
-| Wishbone | 0 | 3 | #296 |
-| Spi, VideoBus, ModelParams, ModelParams_PT | 16 | 0 | none |
-
-Default binding finds the entity in the library of the component's package (#291, fixed); the earlier W2108 in 269 of the 314 runs came from this.
+| AddressBusTransactionPkg, AddressBusTransactionArrayPkg | 0 | 84 | attribute of a record element through an alias of a `'subtype` #312 |
+| Axi4Full | 0 | 72 | #312 |
+| Axi4Lite | 0 | 17 | #312 |
+| InterruptHandler_Gen, TbAxi4_MultipleMemory | 0 | 8 | #312 |
+| AxiStream | 0 | 68 | signal initialiser with an aggregate over an unconstrained port's `'range` in a function call #313 |
+| StreamTransactionPkg, StreamTransactionArrayPkg | 0 | 28 | #313 |
+| Ethernet | 0 | 6 | constant calling an impure function, used as a generic actual #314 |
+| Spi, UART, Wishbone, VideoBus, DpRam, ModelParams, ModelParams_PT | 31 | 0 | none |
 
 ## CI and releases
 

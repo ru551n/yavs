@@ -351,17 +351,22 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   one database per run, merged afterwards with `yavs cov merge A B ... -o OUT`. `yavs cov report
   DB ... [--cobertura FILE.xml] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
   stdout and writes Cobertura XML. `--uncovered` prints instead one exclusion row per item that
-  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`); `--exclude FILE` takes the
+  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `toggle PATH SCALAR   # never
+  0->1|1->0 (FILE:LINE)`, or `# never toggled`); `--exclude FILE` takes the
   items such a file lists out of the summary and the Cobertura report and lists them under
   "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/usage.rst` "Code coverage").
   Exclusions apply when reporting; databases keep raw counts. `--cov-exclude-translate-off`
   (`run`) also leaves `translate_off`/`translate_on` regions out; unbalanced `-- coverage`
-  pragmas are `W0112`/`W0113`. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
+  pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle` (`run`, default all)
+  chooses what is counted; `--cov-toggle-max=N` (default 65536) leaves signals with more
+  `bit`/`std_ulogic` scalars out of toggle coverage with `W0115`. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
   read), `E0112` (an exclusion file cannot be read or has a malformed row) or `E0110` (a file
   cannot be written), or when `-Werror` makes a warning an error; `run` exits at least 1 when the database cannot be written (`E0110`). The
-  database format (a `yavs-coverage 2` line, then one tab-separated item per line: kind,
-  path, statement text hash, occurrence, count, line, file, statement text for display) is yavs's own and may change with
-  its version line.
+  database format (a `yavs-coverage 3` line, then one tab-separated item per line: kind `s` or
+  `bN`, path, statement text hash, occurrence, count, line, file, statement text for display;
+  toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, line, file) is yavs's own
+  and may change with its version line; version 2 databases are still read. Cobertura output
+  has no toggles.
 
 ## 6. GUI and waves
 

@@ -101,10 +101,22 @@ pub struct RunArgs {
     /// Randomize process execution order, with an optional seed.
     #[arg(long, value_name = "SEED", num_args = 0..=1, require_equals = true, default_missing_value = "1")]
     shuffle: Option<u64>,
-    /// Count statement and branch coverage and write the run's coverage database to FILE
-    /// (default `yavs.ycov`).
+    /// Count statement, branch and toggle coverage and write the run's coverage database to
+    /// FILE (default `yavs.ycov`).
     #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "yavs.ycov")]
     cov: Option<String>,
+    /// With `--cov`: the kinds of coverage to count, comma separated.
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "statement,branch,toggle"
+    )]
+    cov_kind: Vec<CovKindArg>,
+    /// With `--cov`: leave signals with more `bit`/`std_ulogic` scalars than this out of
+    /// toggle coverage.
+    #[arg(long, value_name = "N", default_value = "65536")]
+    cov_toggle_max: u64,
     /// With `--cov`: also leave `translate_off` ... `translate_on` regions out of the coverage.
     #[arg(long)]
     cov_exclude_translate_off: bool,
@@ -142,6 +154,13 @@ fn plusarg(s: &str) -> Result<String, String> {
 pub enum TierArg {
     Interp,
     Llvm,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CovKindArg {
+    Statement,
+    Branch,
+    Toggle,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -456,7 +475,9 @@ pub fn run(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    let (mut out, db, e) = match elaborate(&a.common, a.cov.is_some(), format, color, encoding) {
+    let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
+    let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
+    let (mut out, db, e) = match elaborate(&a.common, counters, format, color, encoding) {
         Ok(x) => x,
         Err((out, code)) => return out.finish(code),
     };
@@ -588,6 +609,25 @@ pub fn run(
         }
         sim.subscribe(Box::new(yavs_vhpi::VhpiObserver));
     }
+    // Toggle coverage watches the value-change bus; without it nothing is subscribed.
+    let toggles = kind(CovKindArg::Toggle).then(|| {
+        let (t, skipped) = yavs_cov::toggle::toggles(&db, &e, a.cov_toggle_max);
+        for s in skipped {
+            out.emit(
+                &none,
+                &Diagnostic::warning(
+                    "W0115",
+                    format!("`{}` is not in the toggle coverage", s.path),
+                )
+                .with_note(format!(
+                    "it has {} scalars, more than `--cov-toggle-max={}`",
+                    s.elems, a.cov_toggle_max
+                )),
+            );
+        }
+        sim.subscribe(Box::new(t.clone()));
+        t
+    });
     let wave_error = |path: &str, err: yavs_wave::Error| {
         Diagnostic::error("E0801", format!("cannot write the waveform file `{path}`"))
             .with_note(err.to_string())
@@ -711,9 +751,17 @@ pub fn run(
     if let Some(path) = &a.cov {
         // A design without processes has no counters.
         let counts = rt.as_ref().map(|rt| rt.coverage()).unwrap_or_default();
-        let (cov, warns) = yavs_cov::collect(&db, &e, &counts, a.cov_exclude_translate_off);
+        let (mut cov, warns) = yavs_cov::collect(&db, &e, &counts, a.cov_exclude_translate_off);
         for w in &warns {
             out.emit(&none, w);
+        }
+        cov.items.retain(|k, _| match k.kind {
+            yavs_cov::Kind::Statement => kind(CovKindArg::Statement),
+            yavs_cov::Kind::Branch(_) => kind(CovKindArg::Branch),
+            yavs_cov::Kind::Toggle(_) => false,
+        });
+        if let Some(t) = &toggles {
+            t.add_to(&mut cov);
         }
         if let Err(err) = std::fs::write(path, cov.write()) {
             out.emit(

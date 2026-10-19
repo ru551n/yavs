@@ -32,6 +32,8 @@ pub enum Kind {
     /// (arm 0). An `if` without `else` and a conditional assignment without a final `else`
     /// have one more arm: no condition held.
     Branch(u32),
+    /// A `bit`/`std_ulogic` scalar of a signal or port went 0 -> 1 (`true`) or 1 -> 0.
+    Toggle(bool),
 }
 
 /// The identity of an item, the same in every run of the design.
@@ -44,6 +46,9 @@ pub struct Key {
     pub hash: u64,
     /// Among statements of one unit with the same text: the position in source order.
     pub occ: u32,
+    /// Toggles: the scalar's name below `path` (`data(3)`, `r.valid`); hash and occ are 0.
+    /// Empty for statements and branches.
+    pub sig: String,
 }
 
 /// Where an item is and how often it ran.
@@ -58,6 +63,7 @@ pub struct Entry {
 }
 
 pub mod exclude;
+pub mod toggle;
 
 /// An unclosed `-- coverage off` or a `-- coverage on` without one.
 pub const PRAGMA_UNCLOSED: &str = "W0112";
@@ -69,7 +75,9 @@ pub struct Database {
     pub items: BTreeMap<Key, Entry>,
 }
 
-const MAGIC: &str = "yavs-coverage 2";
+const MAGIC: &str = "yavs-coverage 3";
+/// Older versions [`Database::parse`] still reads (version 2 had no toggles).
+const OLD: &[&str] = &["yavs-coverage 2"];
 
 fn fnv1a(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -291,6 +299,7 @@ pub fn collect(
         kind: items[i].kind,
         hash: items[i].hash,
         occ: occ[i],
+        sig: String::new(),
     };
     let mut add = |k: Key, i: usize, c: u64| {
         if items[i].skip {
@@ -340,12 +349,27 @@ pub fn collect(
 
 impl Database {
     /// The text form: a header line, then one tab-separated line per item, sorted by key.
+    /// Statements and branches: kind, path, hash, occurrence, count, line, file, text;
+    /// toggles (`t1` rise, `t0` fall): kind, path, scalar name, count, line, file.
     pub fn write(&self) -> String {
         let mut s = format!("{MAGIC}\n");
         for (k, e) in &self.items {
             let kind = match k.kind {
                 Kind::Statement => "s".to_string(),
                 Kind::Branch(a) => format!("b{a}"),
+                Kind::Toggle(r) => {
+                    let _ = writeln!(
+                        s,
+                        "t{}\t{}\t{}\t{}\t{}\t{}",
+                        u8::from(r),
+                        k.path,
+                        k.sig,
+                        e.count,
+                        e.line,
+                        e.file
+                    );
+                    continue;
+                }
             };
             let _ = writeln!(
                 s,
@@ -356,38 +380,67 @@ impl Database {
         s
     }
 
-    /// Read the text form of [`Database::write`].
+    /// Read the text form of [`Database::write`] (or of an older version).
     pub fn parse(text: &str) -> Result<Database, String> {
         let mut lines = text.lines();
-        if lines.next() != Some(MAGIC) {
+        let head = lines.next();
+        if head != Some(MAGIC) && !head.is_some_and(|h| OLD.contains(&h)) {
             return Err(format!("not a yavs coverage database (no `{MAGIC}` line)"));
         }
         let mut db = Database::default();
         for (n, l) in lines.enumerate() {
             let bad = || format!("line {}: malformed item `{l}`", n + 2);
-            let f: Vec<&str> = l.splitn(8, '\t').collect();
-            let [kind, path, hash, occ, count, line, file, text] = f[..] else {
-                return Err(bad());
-            };
-            let kind = match kind {
-                "s" => Kind::Statement,
-                _ => Kind::Branch(
-                    kind.strip_prefix('b')
-                        .and_then(|a| a.parse().ok())
-                        .ok_or_else(bad)?,
-                ),
-            };
-            let key = Key {
-                path: path.to_string(),
-                kind,
-                hash: u64::from_str_radix(hash, 16).map_err(|_| bad())?,
-                occ: occ.parse().map_err(|_| bad())?,
-            };
-            let entry = Entry {
-                file: file.to_string(),
-                line: line.parse().map_err(|_| bad())?,
-                count: count.parse().map_err(|_| bad())?,
-                text: text.to_string(),
+            let (key, entry) = if l.starts_with('t') {
+                let f: Vec<&str> = l.splitn(6, '\t').collect();
+                let [kind, path, sig, count, line, file] = f[..] else {
+                    return Err(bad());
+                };
+                let rise = match kind {
+                    "t1" => true,
+                    "t0" => false,
+                    _ => return Err(bad()),
+                };
+                let key = Key {
+                    path: path.to_string(),
+                    kind: Kind::Toggle(rise),
+                    hash: 0,
+                    occ: 0,
+                    sig: sig.to_string(),
+                };
+                let entry = Entry {
+                    file: file.to_string(),
+                    line: line.parse().map_err(|_| bad())?,
+                    count: count.parse().map_err(|_| bad())?,
+                    text: String::new(),
+                };
+                (key, entry)
+            } else {
+                let f: Vec<&str> = l.splitn(8, '\t').collect();
+                let [kind, path, hash, occ, count, line, file, text] = f[..] else {
+                    return Err(bad());
+                };
+                let kind = match kind {
+                    "s" => Kind::Statement,
+                    _ => Kind::Branch(
+                        kind.strip_prefix('b')
+                            .and_then(|a| a.parse().ok())
+                            .ok_or_else(bad)?,
+                    ),
+                };
+                let key = Key {
+                    path: path.to_string(),
+                    kind,
+                    hash: u64::from_str_radix(hash, 16).map_err(|_| bad())?,
+                    occ: occ.parse().map_err(|_| bad())?,
+                    sig: String::new(),
+                };
+                let entry = Entry {
+                    file: file.to_string(),
+                    line: line.parse().map_err(|_| bad())?,
+                    count: count.parse().map_err(|_| bad())?,
+                    text: text.to_string(),
+                };
+                (key, entry)
             };
             if db.items.insert(key, entry).is_some() {
                 return Err(format!("line {}: item listed twice", n + 2));
@@ -418,29 +471,44 @@ impl Database {
             }
         };
         let col = |h: usize, t: usize| format!("{h}/{t} {}", pct(h, t));
-        // Per path: statements (hit, total), branches (hit, total).
-        let mut per: BTreeMap<&str, [usize; 4]> = BTreeMap::new();
+        // Per path: statements, branches, toggles (hit, total each).
+        let mut per: BTreeMap<&str, [usize; 6]> = BTreeMap::new();
         for (k, e) in &self.items {
             let c = per.entry(&k.path).or_default();
-            let o = if k.kind == Kind::Statement { 0 } else { 2 };
+            let o = match k.kind {
+                Kind::Statement => 0,
+                Kind::Branch(_) => 2,
+                Kind::Toggle(_) => 4,
+            };
             c[o + 1] += 1;
             c[o] += usize::from(e.count > 0);
         }
-        let mut t = [0; 4];
+        let mut t = [0; 6];
         for c in per.values() {
             for (a, b) in t.iter_mut().zip(c) {
                 *a += b;
             }
         }
         let mut s = format!(
-            "statements {}\nbranches   {}\n\n",
+            "statements {}\nbranches   {}\ntoggles    {}\n\n",
             col(t[0], t[1]),
-            col(t[2], t[3])
+            col(t[2], t[3]),
+            col(t[4], t[5])
         );
         let w = per.keys().map(|p| p.len()).max().unwrap_or(0).max(4);
-        let _ = writeln!(s, "{:w$}  {:<20}  branches", "path", "statements");
+        let _ = writeln!(
+            s,
+            "{:w$}  {:<20}  {:<20}  toggles",
+            "path", "statements", "branches"
+        );
         for (p, c) in &per {
-            let _ = writeln!(s, "{p:w$}  {:<20}  {}", col(c[0], c[1]), col(c[2], c[3]));
+            let _ = writeln!(
+                s,
+                "{p:w$}  {:<20}  {:<20}  {}",
+                col(c[0], c[1]),
+                col(c[2], c[3]),
+                col(c[4], c[5])
+            );
         }
         let mut missed: Vec<_> = self.items.iter().filter(|(_, e)| e.count == 0).collect();
         missed.sort_by(|a, b| (&a.1.file, a.1.line, a.0).cmp(&(&b.1.file, b.1.line, b.0)));
@@ -451,6 +519,7 @@ impl Database {
             let what = match k.kind {
                 Kind::Statement => "statement".to_string(),
                 Kind::Branch(a) => format!("branch {a}"),
+                Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
             };
             let _ = writeln!(s, "  {}:{}  {what}  {}", e.file, e.line, k.path);
         }
@@ -459,7 +528,8 @@ impl Database {
 
     /// A Cobertura XML report: one class per source file, counts summed over every path. A
     /// line's hits are those of its most executed statement; a line with branches lists how
-    /// many of their arms ran. The timestamp is 0, so equal databases give equal reports.
+    /// many of their arms ran. Toggles are not in it (Cobertura has no notion of them). The
+    /// timestamp is 0, so equal databases give equal reports.
     pub fn cobertura(&self) -> String {
         #[derive(Default)]
         struct Line {
@@ -469,7 +539,11 @@ impl Database {
         // Counts per source statement (or arm), summed over paths.
         let mut stmts: BTreeMap<(&str, u32, u64, u32), u64> = BTreeMap::new();
         let mut files: BTreeMap<&str, BTreeMap<u32, Line>> = BTreeMap::new();
-        for (k, e) in &self.items {
+        for (k, e) in self
+            .items
+            .iter()
+            .filter(|(k, _)| !matches!(k.kind, Kind::Toggle(_)))
+        {
             let line = files.entry(&e.file).or_default().entry(e.line).or_default();
             match k.kind {
                 Kind::Statement => {
@@ -480,6 +554,7 @@ impl Database {
                     let c = line.arms.entry((k.hash, k.occ, a)).or_default();
                     *c = c.saturating_add(e.count);
                 }
+                Kind::Toggle(_) => {}
             }
         }
         for ((f, l, _, _), c) in stmts {
@@ -556,6 +631,11 @@ impl Database {
     }
 }
 
+/// `0->1` or `1->0`.
+pub fn arrow(rise: bool) -> &'static str {
+    if rise { "0->1" } else { "1->0" }
+}
+
 fn xml(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
@@ -582,6 +662,7 @@ mod tests {
                 kind,
                 hash,
                 occ: 0,
+                sig: String::new(),
             },
             Entry {
                 file: "a&b.vhd".into(),
@@ -631,5 +712,26 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("a&b.vhd:9  statement  work.p"), "{s}");
+    }
+
+    #[test]
+    fn toggles_round_trip() {
+        let mut d = Database::default();
+        let (mut k, e) = item(":top:u1", Kind::Toggle(true), 0, 4, 3);
+        k.sig = "r.d(7)".into();
+        d.items.insert(
+            k,
+            Entry {
+                text: String::new(),
+                ..e
+            },
+        );
+        let t = d.write();
+        assert!(t.ends_with("t1\t:top:u1\tr.d(7)\t3\t4\ta&b.vhd\n"), "{t}");
+        assert_eq!(Database::parse(&t).unwrap(), d);
+        // Version 2 databases (no toggles) still read.
+        assert!(Database::parse("yavs-coverage 2\n").is_ok());
+        assert!(d.cobertura().contains("lines-valid=\"0\""));
+        assert!(d.summary().contains("toggles    1/1 100.0%"));
     }
 }

@@ -1612,8 +1612,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   per run (`--cov=FILE`, default `yavs.ycov`, overwritten), written whatever the run's outcome;
   `yavs cov merge` adds counts per key and keeps items only one input has. Cobertura output has
   timestamp 0 so equal databases give byte-identical reports.
-- **Not yet:** toggle coverage (#343) and HTML reports (#344); the LLVM tier does not lower IR
-  yet, so the interpreter is the only tier today.
+- **Not yet:** HTML reports (#344); the LLVM tier does not lower IR yet, so the interpreter is
+  the only tier today.
 
 ## Coverage exclusions (yavs-cov, CLI, #351, user, 2026-10-19)
 
@@ -1643,3 +1643,27 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   exclusion files); excluded items are out of the totals and the Cobertura report and are listed
   with their reasons. `cov merge` does not take exclusions. `unit` names packages only:
   entity and architecture items are excluded with `instance`.
+
+## Toggle coverage (yavs-cov, CLI, #343, 2026-10-19)
+
+- **An observer, not IR:** `yavs_cov::toggle::Toggles` subscribes to the kernel's value-change
+  bus only when toggle coverage is on (`--cov` with `toggle` in `--cov-kind`, the default), so
+  a run without it has no toggle cost. It keeps the last level of every tracked scalar and
+  compares on each change; changes reach observers once per cycle on the main thread, so the
+  counts do not depend on `--threads`. Why: docs/design/ir.md puts toggle coverage on the bus.
+- **What counts:** every scalar `bit` or `std_ulogic` subelement of signals and ports (not
+  `boolean`, not implicit signals, not component ports). Levels: '0'/'L' are 0, '1'/'H' are 1,
+  every other value is neither; a toggle is a change from 0 straight to 1 or 1 to 0, so a change
+  through 'U', 'X', 'Z', 'W' or '-' is none, and the initial value never counts. Why: a
+  transition through an unknown or high impedance value is not a proven 0/1 toggle; this is the
+  common default of other simulators' toggle coverage.
+- **Identity:** two items per scalar (`t1` 0->1, `t0` 1->0): the path of the declaring scope
+  (`:top:g(3)`; package signals `library.package`, as package statements) and the scalar's
+  name (`data(3)`, `r.valid`, `m(1,2)`), never offsets. A scalar is covered when both ran.
+- **Cap:** a signal with more scalars than `--cov-toggle-max` (default 65536, as
+  `--wave-max-array`) is left out with `W0115`. Why: memories cost a counter pair per bit and
+  are rarely toggle targets.
+- **Database version 3:** toggle lines; `yavs-coverage 2` is still read. Cobertura has no
+  toggle notion: toggles are left out of it (text report only). Exclusion row `toggle PATH
+  SCALAR` (globs allowed) takes out both directions; `W0114` only when the scalar toggled both
+  ways.

@@ -5,6 +5,7 @@
 //! ```text
 //! statement <instance|glob> <12hex>.<occ> [file:line]
 //! branch    <instance|glob> <12hex>.<occ>.<arm> [file:line]
+//! toggle    <instance|glob> <scalar|glob>    both directions of a signal's scalar
 //! instance  <glob>          that instance and everything below it
 //! unit      <lib.package>   a package's items
 //! file      <glob>          every item of matching source files
@@ -34,6 +35,7 @@ enum Rule {
         arm: u32,
         at: Option<(String, u32)>,
     },
+    Toggle(String, String),
     Instance(String),
     Unit(String),
     File(String),
@@ -117,10 +119,14 @@ pub fn parse(text: &str) -> Result<Vec<Row>, String> {
                     at,
                 }
             }
+            ["toggle", g, sig] => Rule::Toggle(g.to_string(), sig.to_string()),
             ["instance", g] => Rule::Instance(g.to_string()),
             ["unit", u] => Rule::Unit(u.to_string()),
             ["file", g] => Rule::File(g.to_string()),
-            ["statement" | "branch" | "instance" | "unit" | "file", ..] => {
+            [
+                "statement" | "branch" | "toggle" | "instance" | "unit" | "file",
+                ..,
+            ] => {
                 return Err(bad("wrong number of fields"));
             }
             [t, ..] => return Err(bad(&format!("unknown exclusion type `{t}`"))),
@@ -148,11 +154,15 @@ fn matches(r: &Rule, k: &Key, e: &Entry) -> bool {
             let kind_ok = match k.kind {
                 Kind::Statement => !branch,
                 Kind::Branch(a) => *branch && a == *arm,
+                Kind::Toggle(_) => false,
             };
             kind_ok
                 && k.occ == *occ
                 && format!("{:016x}", k.hash).starts_with(hex)
                 && glob(g, &k.path)
+        }
+        Rule::Toggle(g, sig) => {
+            matches!(k.kind, Kind::Toggle(_)) && glob(g, &k.path) && glob(sig, &k.sig)
         }
         Rule::Instance(g) => {
             k.path.starts_with(':')
@@ -200,7 +210,15 @@ pub fn apply(db: &Database, rows: &[Row], exfile: &str) -> Applied {
                         ),
                     ));
                 }
-                if e.count > 0 {
+                // A toggle row excludes both directions: it warns once, when both ran.
+                let ran = match k.kind {
+                    Kind::Toggle(true) => {
+                        e.count > 0 && partner(db, k).is_some_and(|p| p.count > 0)
+                    }
+                    Kind::Toggle(false) => false,
+                    _ => e.count > 0,
+                };
+                if ran {
                     out.warnings.push(Diagnostic::warning(
                         HIT,
                         format!(
@@ -234,31 +252,61 @@ pub fn apply(db: &Database, rows: &[Row], exfile: &str) -> Applied {
     out
 }
 
+/// The other direction of a toggle item.
+fn partner<'a>(db: &'a Database, k: &Key) -> Option<&'a Entry> {
+    let Kind::Toggle(r) = k.kind else { return None };
+    db.items.get(&Key {
+        kind: Kind::Toggle(!r),
+        ..k.clone()
+    })
+}
+
 /// An item as an exclusion row, without the trailing comment.
 pub fn head(k: &Key, e: &Entry) -> String {
     let id = format!("{:012x}.{}", k.hash >> 16, k.occ);
     match k.kind {
         Kind::Statement => format!("statement {} {id} {}:{}", k.path, e.file, e.line),
         Kind::Branch(a) => format!("branch {} {id}.{a} {}:{}", k.path, e.file, e.line),
+        Kind::Toggle(_) => format!("toggle {} {}", k.path, k.sig),
     }
 }
 
-/// The trailing comment of an item's report row: the arm and the statement text.
+/// The trailing comment of an item's report row: the arm and the statement text, or the
+/// toggle direction and the declaration.
 pub fn comment(k: &Key, e: &Entry) -> String {
     match k.kind {
         Kind::Statement => e.text.clone(),
         Kind::Branch(a) => format!("arm {a}: {}", e.text),
+        Kind::Toggle(r) => format!("{} ({}:{})", crate::arrow(r), e.file, e.line),
     }
 }
 
 impl Database {
     /// The report of `--uncovered`: one exclusion row per item that never ran, in source
-    /// order. Change nothing, paste into an exclusion file.
+    /// order. Change nothing, paste into an exclusion file. A scalar that never toggled
+    /// either way is one row.
     pub fn uncovered(&self) -> String {
-        let mut v: Vec<_> = self.items.iter().filter(|(_, e)| e.count == 0).collect();
+        let mut v: Vec<_> = self
+            .items
+            .iter()
+            .filter(|(k, e)| {
+                e.count == 0
+                    && !(k.kind == Kind::Toggle(true)
+                        && partner(self, k).is_some_and(|p| p.count == 0))
+            })
+            .collect();
         v.sort_by(|a, b| (&a.1.file, a.1.line, a.0).cmp(&(&b.1.file, b.1.line, b.0)));
         v.iter()
-            .map(|(k, e)| format!("{}   # {}\n", head(k, e), comment(k, e)))
+            .map(|(k, e)| {
+                let c = match k.kind {
+                    Kind::Toggle(false) if partner(self, k).is_some_and(|p| p.count == 0) => {
+                        format!("never toggled ({}:{})", e.file, e.line)
+                    }
+                    Kind::Toggle(r) => format!("never {} ({}:{})", crate::arrow(r), e.file, e.line),
+                    _ => comment(k, e),
+                };
+                format!("{}   # {c}\n", head(k, e))
+            })
             .collect()
     }
 }
@@ -310,6 +358,7 @@ mod tests {
                     kind,
                     hash,
                     occ: 0,
+                    sig: String::new(),
                 },
                 Entry {
                     file: "src/a.vhd".into(),

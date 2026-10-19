@@ -53,7 +53,7 @@ otherwise.
   never runs, is an error (``E2120``, LRM 5.2.4.2) that lists the locations; ``0 ps`` is allowed,
   and so is ``0.4 ns``, because the rule is about the unit and not the value.
 * ``--wave out.fst`` records waveforms, see `Waveforms`_.
-* ``--cov[=FILE]`` counts code coverage, see `Code coverage`_.
+* ``--cov[=FILE]`` counts code and toggle coverage, see `Code coverage`_.
 
 Waveforms
 ---------
@@ -111,9 +111,11 @@ Code coverage
     yavs cov merge test_a.ycov test_b.ycov -o all.ycov
     yavs cov report all.ycov --cobertura coverage.xml
 
-``--cov[=FILE]`` counts how often every statement and every branch of the design ran, and writes
-the counts to the coverage database ``FILE`` (default ``yavs.ycov``) at the end of the run,
-whatever its outcome. Without ``--cov`` there are no counters and no cost.
+``--cov[=FILE]`` counts how often every statement and every branch of the design ran and how
+often every ``std_logic`` and ``bit`` signal toggled, and writes the counts to the coverage
+database ``FILE`` (default ``yavs.ycov``) at the end of the run, whatever its outcome. Without
+``--cov`` there are no counters and no cost. ``--cov-kind=LIST`` counts only some kinds
+(``statement``, ``branch``, ``toggle``, comma separated; default all three).
 
 * **Statements**: every sequential statement and every concurrent statement (each time it
   runs). Declarations are not counted.
@@ -122,6 +124,16 @@ whatever its outcome. Without ``--cov`` there are no counters and no cost.
   (``when ... else``) or selected (``with ... select``) assignment, sequential or concurrent
   (one without a final ``else`` has the "no condition held" arm too), and the body of a ``for``
   or ``while`` loop (counted per iteration).
+* **Toggles**: for every scalar ``std_ulogic``/``std_logic`` or ``bit`` of every signal and
+  port (each element of a vector, each field of a record, ``mem(2)(7)``), how often it went
+  from 0 to 1 and from 1 to 0. ``'L'`` counts as 0 and ``'H'`` as 1; every other value
+  (``'U'``, ``'X'``, ``'Z'``, ``'W'``, ``'-'``) is neither, so a change through it is no toggle:
+  ``'0'`` to ``'Z'`` to ``'1'`` counts nothing, and neither does the first ``'U'`` to ``'0'``.
+  A scalar is covered when it toggled both ways. Signals are listed under the path of the
+  scope that declares them (``:tb:u_dut``, ``:tb:g(3)``; package signals under
+  ``library.package``) with their element name (``data(3)``, ``bus.valid``). Signals with more
+  scalars than ``--cov-toggle-max`` (default 65536), such as large memories, are left out with
+  warning ``W0115``. Toggle counting only runs with toggle coverage on.
 * Code of an architecture is counted per instance and shown under its path (``:tb:u_dut``),
   blocks and generate iterations included. Code of a package is counted once under
   ``library.package``. The ``std`` and ``ieee`` libraries are not counted.
@@ -131,10 +143,11 @@ whatever its outcome. Without ``--cov`` there are no counters and no cost.
 
 ``yavs cov merge A.ycov B.ycov ... -o OUT.ycov`` adds up the counts of several runs: write one
 database per run (one ``--cov=FILE`` each) and merge them. ``yavs cov report DB ...`` merges its
-inputs, prints statement and branch totals, one line per instance or package, and every
-statement or branch that never ran with its file and line; ``--cobertura FILE.xml`` also writes a
-Cobertura XML report (one entry per source line: the hits of its most executed statement, and
-how many of its branches ran) for CI services that show coverage. A database that cannot be read
+inputs, prints statement, branch and toggle totals, one line per instance or package, and every
+item that never ran with its file and line (for a toggle, the signal's declaration);
+``--cobertura FILE.xml`` also writes a Cobertura XML report (one entry per source line: the hits
+of its most executed statement, and how many of its branches ran) for CI services that show
+coverage. Cobertura has no notion of toggles, so they are only in the text report. A database that cannot be read
 is error ``E0111``, a file that cannot be written ``E0110``.
 
 Excluding code from coverage
@@ -153,6 +166,7 @@ ran, with the line number and the statement as a comment:
 
     statement :tb:dut:u_fsm  4d2f0a91c3be.0  src/fsm.vhd:61   # state <= idle;
     branch    :tb:dut:u_fsm  c41e09a7b3d2.0.3  src/fsm.vhd:88   # arm 3: case state is
+    toggle :tb:dut data(7)   # never 1->0 (src/dut.vhd:12)
 
 Copy the rows you want to exclude into a file, add a reason after ``#`` if you like, and give it
 to the report:
@@ -171,10 +185,13 @@ Cobertura report and lists them under "excluded" with their reasons. A row match
 stays excluded; the file and line are only there to read, and a line that is no longer right
 is warning ``W0110``. A row that matches nothing (the statement was edited) is ``W0111``, an
 excluded item that did run ``W0114``; ``-Werror`` makes them fail the report. Row types:
-``statement``, ``branch``, ``instance`` (that instance and everything below), ``unit`` (a
-package) and ``file``; anything else is error ``E0112``. The database keeps the raw counts.
+``statement``, ``branch``, ``toggle PATH SCALAR`` (both directions of one scalar; ``*`` and
+``?`` allowed in both, so ``toggle :tb:dut data(*)`` takes the whole vector, and it warns
+``W0114`` only for a scalar that toggled both ways), ``instance`` (that instance and everything
+below), ``unit`` (a package) and ``file``; anything else is error ``E0112``. The database keeps
+the raw counts.
 
-Toggle coverage and HTML reports are not available yet.
+HTML reports are not available yet.
 
 Calling C from VHDL
 -------------------

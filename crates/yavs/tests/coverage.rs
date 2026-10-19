@@ -1,5 +1,6 @@
 //! `yavs run --cov`, `yavs cov merge` and `yavs cov report` on `tests/cli/cov_run.vhd`, whose
-//! statement and branch counts are known (M9, #131).
+//! statement and branch counts are known (M9, #131), and `tests/cli/cov_toggle.vhd`, whose
+//! toggle counts are (#343).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -35,6 +36,7 @@ fn counts(db: &Database) -> Vec<(String, String, u32, u64)> {
             let kind = match k.kind {
                 Kind::Statement => "s".to_string(),
                 Kind::Branch(a) => format!("b{a}"),
+                Kind::Toggle(r) => format!("t{}", u8::from(r)),
             };
             assert!(e.file.ends_with("cov_run.vhd"), "{}", e.file);
             (kind, k.path.clone(), e.line, e.count)
@@ -281,5 +283,116 @@ fn exclusions() {
     // An unclosed `off`.
     let err = cov_run(&tmp, &EXCL.replace("-- coverage on", "-- nothing"));
     assert!(err.contains("warning[W0112]"), "{err}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// (path, scalar, rises, falls) of `tests/cli/cov_toggle.vhd`.
+const TOGGLES: &[(&str, &str, u64, u64)] = &[
+    (":cov_toggle", "clk", 3, 2),
+    // u1's output: 'U' -> '1' at start is no toggle; 'H' and '1' on s each give a fall.
+    (":cov_toggle", "q", 0, 2),
+    (":cov_toggle", "r.valid", 0, 0),
+    // '0' -> 'H' rises, 'H' -> 'Z' -> '0' is no fall, '0' -> '1' rises.
+    (":cov_toggle", "s", 2, 0),
+    (":cov_toggle", "v(0)", 1, 1),
+    (":cov_toggle", "v(1)", 0, 0),
+    (":cov_toggle:u1", "d", 2, 0),
+    (":cov_toggle:u1", "q", 0, 2),
+];
+
+fn toggles(db: &Database) -> Vec<(String, String, u64, u64)> {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, e) in &db.items {
+        if let Kind::Toggle(r) = k.kind {
+            let c: &mut (u64, u64) = m.entry((k.path.clone(), k.sig.clone())).or_default();
+            *(if r { &mut c.0 } else { &mut c.1 }) = e.count;
+        }
+    }
+    m.into_iter().map(|((p, s), (r, f))| (p, s, r, f)).collect()
+}
+
+#[test]
+fn toggle_coverage() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_toggle.vhd");
+    let tmp = tempdir("toggle");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    assert!(
+        yavs(&tmp, &["analyze", &lib, src.to_str().expect("utf-8")])
+            .status
+            .success()
+    );
+    let run = |extra: &[&str]| {
+        let o = yavs(&tmp, &[&["run", &lib, "cov_toggle"][..], extra].concat());
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    run(&["--cov=a.ycov"]);
+    let a = read(&tmp.join("a.ycov"));
+    let want: Vec<_> = TOGGLES
+        .iter()
+        .map(|&(p, s, r, f)| (p.to_string(), s.to_string(), r, f))
+        .collect();
+    assert_eq!(toggles(&a), want);
+
+    // Byte-identical at four threads; merge adds the counts.
+    run(&["--cov=a4.ycov", "--threads", "4"]);
+    assert_eq!(
+        std::fs::read(tmp.join("a.ycov")).expect("a"),
+        std::fs::read(tmp.join("a4.ycov")).expect("a4")
+    );
+    let o = yavs(&tmp, &["cov", "merge", "a.ycov", "a4.ycov", "-o", "m.ycov"]);
+    assert!(o.status.success());
+    let m = toggles(&read(&tmp.join("m.ycov")));
+    assert_eq!(m.len(), want.len());
+    for (x, y) in m.iter().zip(&want) {
+        assert_eq!((x.2, x.3), (2 * y.2, 2 * y.3), "{x:?}");
+    }
+
+    // Only toggles; the cap leaves `v` (two scalars) out with W0115.
+    let err = run(&["--cov=t.ycov", "--cov-kind=toggle", "--cov-toggle-max=1"]);
+    assert!(
+        err.contains("warning[W0115]") && err.contains(":cov_toggle:v"),
+        "{err}"
+    );
+    let t = read(&tmp.join("t.ycov"));
+    assert!(
+        t.items
+            .keys()
+            .all(|k| matches!(k.kind, Kind::Toggle(_)) && !k.sig.starts_with('v'))
+    );
+    assert_eq!(toggles(&t).len(), want.len() - 2);
+
+    // The summary, and `--uncovered` rows that exclude exactly the misses.
+    let o = yavs(&tmp, &["cov", "report", "a.ycov"]);
+    let text = String::from_utf8(o.stdout).expect("utf-8");
+    assert!(text.contains("\ntoggles    8/16 50.0%\n"), "{text}");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered"]);
+    let rows = String::from_utf8(o.stdout).expect("utf-8");
+    let toggle_rows: Vec<_> = rows.lines().filter(|l| l.starts_with("toggle ")).collect();
+    assert!(
+        rows.lines()
+            .any(|l| l.starts_with("toggle :cov_toggle v(1)   # never toggled")),
+        "{rows}"
+    );
+    assert!(
+        rows.lines()
+            .any(|l| l.starts_with("toggle :cov_toggle s   # never 1->0")),
+        "{rows}"
+    );
+    assert_eq!(toggle_rows.len(), 6, "{rows}");
+    std::fs::write(tmp.join("ex.txt"), &rows).expect("write");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex.txt"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(err.is_empty(), "{err}");
+    // A row takes both directions out, the half-toggled scalars with it.
+    assert!(out.contains("toggles    4/4 100.0%"), "{out}");
+    // A glob row over a scalar that toggled both ways warns.
+    std::fs::write(tmp.join("ex2.txt"), "toggle * v(*)\n").expect("write");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex2.txt"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.matches("warning[W0114]").count(), 1, "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -23,7 +23,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
 | `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107), `use_llvm` (`--tier=llvm`, `--verbose`, E0120/E0121) |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
-| `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd`, `--threads 4` identity, `cov merge`, `cov report` and Cobertura, E0111, exclusions (pragmas, report rows round trip, moved/stale/hit warnings) |
+| `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd` and toggles of `tests/cli/cov_toggle.vhd` (`--cov-kind`, W0115), `--threads 4` identity, `cov merge`, `cov report` and Cobertura, E0111, exclusions (pragmas, report rows round trip, moved/stale/hit warnings) |
 | `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
 | `tests/lib_parse.rs` | Every file in `lib/` parses (2008 and 2019) |
@@ -90,8 +90,9 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
   cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound, W0109
   `--threads` ignored with `--dap`, E0110 coverage file cannot be written, E0111 coverage database
-  cannot be read, E0120 `--tier=llvm` without the LLVM tier, E0121 the LLVM tier cannot compile
-  the design).
+  cannot be read, E0112 exclusion file, W0110-W0114 exclusions and pragmas, W0115 signal over
+  `--cov-toggle-max`, E0120 `--tier=llvm` without the LLVM tier, E0121 the LLVM tier cannot
+  compile the design).
 
 ## 6. Coordination
 

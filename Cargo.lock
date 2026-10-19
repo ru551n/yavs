@@ -1445,6 +1445,7 @@ dependencies = [
  "yavs-diag",
  "yavs-elab",
  "yavs-ir",
+ "yavs-kernel",
  "yavs-sem",
 ]
 

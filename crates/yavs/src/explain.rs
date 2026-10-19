@@ -130,7 +130,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E0112",
-        "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row; the note names the line. Rows start with `statement`, `branch`, `instance`, `unit` or `file`.",
+        "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row; the note names the line. Rows start with `statement`, `branch`, `toggle`, `instance`, `unit` or `file`.",
     ),
     (
         "W0110",
@@ -150,7 +150,11 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W0114",
-        "A row of the exclusion file excludes an item that ran in the merged runs. It is excluded anyway; check that the exclusion is still wanted.",
+        "A row of the exclusion file excludes an item that ran in the merged runs (for a `toggle` row: the scalar toggled both ways). It is excluded anyway; check that the exclusion is still wanted.",
+    ),
+    (
+        "W0115",
+        "A signal or port has more `bit`/`std_ulogic` scalars than `--cov-toggle-max` (default 65536), so its toggles are not counted. Raise the limit to count them; large memories are usually left out on purpose.",
     ),
     // yavs-vhpi
     (

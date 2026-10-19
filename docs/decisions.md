@@ -234,6 +234,15 @@ milestone users care about works.
   runs before the deltas still due at this time have settled. VHPI times count in units of `--resolution`. Disabled
   callbacks are kept out of the per-phase sets, so they cost nothing per cycle (#123, plan rule 9).
   Full rules: `crates/yavs-vhpi/AGENTS.md` section 3.
+- **Puts and value changes (#271, #272):** `vhpi_put_value` goes through the kernel's observer
+  forces and deposits, queued until the callback returns, so it follows the kernel's rules (in
+  the current cycle before the update, else the next delta) and is identical at any thread
+  count. The non-propagating modes `vhpiDeposit` and `vhpiForce` act like their propagating
+  forms: the kernel has no value change without a cycle, and the reference simulator with VHPI
+  refuses them. A deposit sets the driving value until a source next updates those elements,
+  so a release after a deposit returns to the deposited value while no driver has updated; the
+  reference simulator returns to the drivers' value instead (open question #310). Value-change callbacks repeat until
+  removed and run once per cycle.
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.

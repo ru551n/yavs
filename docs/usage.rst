@@ -185,8 +185,18 @@ return the size it needs. Enumeration values are positions: a ``std_ulogic`` giv
 ``vhpiDontCare``, ``bit`` and ``boolean`` give 0 and 1. A format that does not fit the value is a
 ``W0903`` warning and returns -1, never a converted value. The type of an object
 (``vhpiType``, ``vhpiBaseType``, ``vhpiElemType``) shows its kind, name, range constraints,
-enumeration literals, record elements and physical units. Writing values and value-change
-callbacks are not implemented yet.
+enumeration literals, record elements and physical units.
+
+``vhpi_put_value`` writes signals and ports and their record fields and array elements, in the
+same formats: ``vhpiDepositPropagate`` and ``vhpiDeposit`` set the value until a driver next
+updates it, ``vhpiForcePropagate`` and ``vhpiForce`` hold it against the drivers until
+``vhpiRelease``. A write takes effect in the current cycle from an after-delay callback or a
+callback before the signal update (next time step, start of cycle), and in the next delta at the
+same time from any other callback; in the read-only phases (end of time step, end of simulation)
+it is refused. Constants, generics, records as a whole and ``vhpiSizeConstraint`` are
+``W0903``; variables cannot be written yet (``W0904``). A ``vhpiCbValueChange`` callback on a
+signal, port or one of their sub-elements runs once in every cycle in which any of its elements
+changed, with the object's value in the format its ``value`` field asks for.
 
 Plusargs
 --------

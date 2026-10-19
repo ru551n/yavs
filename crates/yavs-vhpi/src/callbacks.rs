@@ -4,15 +4,19 @@
 //! Only enabled phase callbacks sit in the per-reason sets, so a disabled callback costs
 //! nothing per cycle however many there are (#123). After-delay callbacks are kernel
 //! wake-ups (`Hook::wake_at`); registering or removing one outside an observer call queues
-//! the kernel request for the next one (`to_wake`, `to_cancel`).
+//! the kernel request for the next one (`to_wake`, `to_cancel`). Value-change callbacks are
+//! keyed by the kernel signals they watch; with none enabled, `WATCHING` is false and the
+//! observer does not even take the state lock for a value change.
 
 // VHPI names are matched as written in the C standard.
 #![allow(non_upper_case_globals)]
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use yavs_kernel::{Time, Unit, WakeId};
+use yavs_kernel::{Range, SignalId, Time, Unit, WakeId};
 
+use crate::model::Object;
 use crate::sys::*;
 
 /// Simulation time as plugins see it, updated by the observer before each callback.
@@ -63,7 +67,19 @@ pub(crate) struct Callback {
     delay: Time,
     at: Time,
     wake: Option<WakeId>,
+    /// Value-change callbacks: the kernel elements of the object, and the cycle (time,
+    /// delta) the callback last ran in.
+    watch: Watched,
+    last: Option<(Time, u32)>,
+    /// The object of a value-change callback, whose value fills `data.value`.
+    pub(crate) obj: Option<Object>,
 }
+
+/// The kernel elements a value-change callback watches.
+pub(crate) type Watched = Box<[(SignalId, Range)]>;
+
+/// Some value-change callback is enabled. Read without the state lock.
+pub(crate) static WATCHING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
@@ -71,6 +87,9 @@ pub(crate) struct Callbacks {
     next: u64,
     /// Enabled phase callbacks per base reason, in registration order.
     armed: HashMap<i32, BTreeSet<u64>>,
+    /// Enabled value-change callbacks per kernel signal: the elements each watches, in
+    /// registration order.
+    watched: HashMap<SignalId, Vec<(Range, u64)>>,
     /// Pending after-delay wake-ups.
     wakes: HashMap<WakeId, u64>,
     /// Kernel requests not made yet: after-delay callbacks to schedule, wake-ups to cancel.
@@ -79,9 +98,10 @@ pub(crate) struct Callbacks {
 }
 
 /// The reason without `Rep` and whether it repeats; `None` for a reason yavs does not
-/// support. `vhpiCbValueChange` waits for the object model (#269).
+/// support. A value-change callback repeats until it is removed.
 fn split(reason: i32) -> Option<(i32, bool)> {
     Some(match reason {
+        vhpiCbValueChange => (reason, true),
         vhpiCbStartOfSimulation
         | vhpiCbEndOfSimulation
         | vhpiCbStartOfInitialization
@@ -108,15 +128,25 @@ pub(crate) enum RegisterError {
 
 impl Callbacks {
     /// Registers a callback; `delay` is the `time` field the caller passed (after-delay
-    /// reasons need it). Returns the callback's id.
+    /// reasons need it), `watch` the object of a value-change callback and its kernel
+    /// elements. Returns the callback's id.
     pub(crate) fn register(
         &mut self,
         data: vhpiCbDataT,
         flags: i32,
         delay: Option<vhpiTimeT>,
+        watch: Option<(Object, Watched)>,
         clock: &Clock,
     ) -> Result<u64, RegisterError> {
         let (base, rep) = split(data.reason).ok_or(RegisterError::Unsupported)?;
+        let (obj, watch) = match (base, watch) {
+            (vhpiCbValueChange, None) => {
+                return Err(RegisterError::Misuse(
+                    "a value-change callback needs a signal, a port or a sub-element of one",
+                ));
+            }
+            (_, w) => w.map_or((None, Box::default()), |(o, w)| (Some(o), w)),
+        };
         let (delay, at) = if base == vhpiCbAfterDelay {
             let d = delay.ok_or(RegisterError::Misuse("after-delay callback without time"))?;
             let d = clock
@@ -148,15 +178,47 @@ impl Callbacks {
                 delay,
                 at,
                 wake: None,
+                watch,
+                last: None,
+                obj,
             },
         );
         if base == vhpiCbAfterDelay {
             // Time runs while it is disabled: a disabled one is skipped when due.
             self.to_wake.push(id);
         } else if state == vhpiEnable {
-            self.armed.entry(base).or_default().insert(id);
+            self.arm(id, true);
         }
         Ok(id)
+    }
+
+    /// Puts an enabled callback into the set its phase or value changes look at, or takes
+    /// it out.
+    fn arm(&mut self, id: u64, on: bool) {
+        let cb = &self.all[&id];
+        if cb.base != vhpiCbValueChange {
+            let set = self.armed.entry(cb.base).or_default();
+            if on {
+                set.insert(id);
+            } else {
+                set.remove(&id);
+            }
+            return;
+        }
+        for &(sig, r) in &cb.watch {
+            let list = self.watched.entry(sig).or_default();
+            if on {
+                list.push((r, id));
+                // Registration order: an older callback may be enabled again later.
+                list.sort_by_key(|&(_, i)| i);
+            } else {
+                list.retain(|&(_, i)| i != id);
+                if list.is_empty() {
+                    self.watched.remove(&sig);
+                }
+            }
+        }
+        WATCHING.store(!self.watched.is_empty(), Ordering::Relaxed);
     }
 
     pub(crate) fn get(&self, id: u64) -> Option<&Callback> {
@@ -178,23 +240,18 @@ impl Callbacks {
         }
         cb.state = to;
         if cb.base != vhpiCbAfterDelay {
-            let set = self.armed.entry(cb.base).or_default();
-            if on {
-                set.insert(id);
-            } else {
-                set.remove(&id);
-            }
+            self.arm(id, on);
         }
     }
 
     /// Removes a callback, also a matured one.
     pub(crate) fn remove(&mut self, id: u64) {
+        if self.all.get(&id).is_some_and(|cb| cb.state == vhpiEnable) {
+            self.arm(id, false);
+        }
         let Some(cb) = self.all.remove(&id) else {
             return;
         };
-        if let Some(set) = self.armed.get_mut(&cb.base) {
-            set.remove(&id);
-        }
         if let Some(w) = cb.wake {
             self.wakes.remove(&w);
             self.to_cancel.push(w);
@@ -217,6 +274,23 @@ impl Callbacks {
         self.armed
             .get(&reason)
             .map_or_else(Vec::new, |s| s.iter().copied().collect())
+    }
+
+    /// The enabled value-change callbacks watching elements `r` of `sig` that have not run
+    /// in this cycle (`now`, `delta`), in registration order; each is marked as run.
+    pub(crate) fn changed(&mut self, sig: SignalId, r: Range, now: Time, delta: u32) -> Vec<u64> {
+        let Some(list) = self.watched.get(&sig) else {
+            return Vec::new();
+        };
+        let mut ids = Vec::new();
+        for &(w, id) in list {
+            let cb = self.all.get_mut(&id).expect("watched callbacks exist");
+            if w.overlaps(r) && cb.last != Some((now, delta)) {
+                cb.last = Some((now, delta));
+                ids.push(id);
+            }
+        }
+        ids
     }
 
     /// When the after-delay callback `id`, waiting for a kernel wake-up, is due.
@@ -293,7 +367,7 @@ mod tests {
     }
 
     fn register(cbs: &mut Callbacks, reason: i32, flags: i32) -> u64 {
-        let ok = cbs.register(data(reason), flags, None, &Clock::default());
+        let ok = cbs.register(data(reason), flags, None, None, &Clock::default());
         ok.unwrap_or_else(|_| panic!("register {reason}"))
     }
 
@@ -337,6 +411,46 @@ mod tests {
         assert!(cbs.get(once).is_none());
     }
 
+    /// Value-change callbacks: keyed by signal, once per cycle, only while enabled.
+    #[test]
+    fn value_changes_by_signal_once_per_cycle() {
+        let mut cbs = Callbacks::default();
+        let clock = Clock::default();
+        let (a, b) = (SignalId(3), SignalId(4));
+        let mut watch = |w: &[(SignalId, Range)]| {
+            let ok = cbs.register(
+                data(vhpiCbValueChange),
+                vhpiReturnCb,
+                None,
+                Some((Object::Tool, w.into())),
+                &clock,
+            );
+            ok.unwrap_or_else(|_| panic!("register"))
+        };
+        let whole = watch(&[(a, Range::new(0, 8))]);
+        let bit = watch(&[(a, Range::new(2, 1))]);
+        let rec = watch(&[(a, Range::new(4, 4)), (b, Range::new(0, 1))]);
+        assert!(WATCHING.load(Ordering::Relaxed));
+        let t = Time::ZERO;
+        assert_eq!(cbs.changed(a, Range::new(0, 2), t, 1), [whole]);
+        assert_eq!(cbs.changed(a, Range::new(2, 4), t, 1), [bit, rec]);
+        assert!(
+            cbs.changed(b, Range::new(0, 1), t, 1).is_empty(),
+            "once per cycle"
+        );
+        assert_eq!(cbs.changed(b, Range::new(0, 1), t, 2), [rec]);
+        cbs.set_enabled(whole, false);
+        assert_eq!(cbs.changed(a, Range::new(0, 8), t, 3), [bit, rec]);
+        cbs.set_enabled(whole, true);
+        assert_eq!(cbs.changed(a, Range::new(0, 8), t, 4), [whole, bit, rec]);
+        assert!(cbs.fire(whole, t).is_some(), "value change repeats");
+        for id in [whole, bit, rec] {
+            cbs.remove(id);
+        }
+        assert!(cbs.changed(a, Range::new(0, 8), t, 5).is_empty());
+        assert!(!WATCHING.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn after_delay_times_follow_the_resolution() {
         let mut cbs = Callbacks::default();
@@ -346,7 +460,7 @@ mod tests {
             resolution: Unit::Ns,
         };
         let d = vhpiTimeT { high: 0, low: 4 };
-        let Ok(id) = cbs.register(data(vhpiCbAfterDelay), 0, Some(d), &clock) else {
+        let Ok(id) = cbs.register(data(vhpiCbAfterDelay), 0, Some(d), None, &clock) else {
             panic!("register");
         };
         assert_eq!(cbs.due_at(id), Some(Time::ns(7)));
@@ -354,15 +468,15 @@ mod tests {
         assert_eq!((clock.vhpi_now().high, clock.vhpi_now().low), (0, 3));
         let neg = vhpiTimeT { high: -1, low: 0 };
         assert!(matches!(
-            cbs.register(data(vhpiCbAfterDelay), 0, Some(neg), &clock),
+            cbs.register(data(vhpiCbAfterDelay), 0, Some(neg), None, &clock),
             Err(RegisterError::Misuse(_))
         ));
         assert!(matches!(
-            cbs.register(data(vhpiCbAfterDelay), 0, None, &clock),
+            cbs.register(data(vhpiCbAfterDelay), 0, None, None, &clock),
             Err(RegisterError::Misuse(_))
         ));
         assert!(matches!(
-            cbs.register(data(vhpiCbValueChange), 0, None, &clock),
+            cbs.register(data(vhpiCbSensitivity), 0, None, None, &clock),
             Err(RegisterError::Unsupported)
         ));
     }

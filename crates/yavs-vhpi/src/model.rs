@@ -9,14 +9,42 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, SourceMap, render};
-use yavs_kernel::{SigRef, SignalId, SimError, Value};
+use yavs_kernel::{ForceMode, Range, SigRef, SignalId, SimError, Value};
 use yavs_sem::stat::{ConstValue, Elems};
 
-use crate::callbacks::{Callbacks, Clock};
-use crate::design::{Design, Layout, NodeId, Origin, ROOT, vhpi_name};
+use crate::callbacks::{Callbacks, Clock, Watched};
+use crate::design::{Design, Layout, Node, NodeId, Origin, ROOT, vhpi_name};
 use crate::sys::*;
 use crate::types::{TyId, TypeObj};
-use crate::value::{Read, Scalar};
+use crate::value::{self, Read, Scalar};
+
+/// Where a declaration or sub-element lives (`State::at`).
+struct At<'a> {
+    node: &'a Node,
+    /// The layout of the sub-element.
+    l: &'a Layout,
+    /// Signals: the first kernel leaf of the sub-element, the row-major instance of it among
+    /// that leaf's repetitions and the number of repetitions.
+    leaf: u32,
+    k: u64,
+    reps: u64,
+    /// Generics and constants: the elaborated value.
+    cv: Option<ConstValue>,
+}
+
+impl At<'_> {
+    /// The kernel elements of a scalar or an array of `len` scalars of type `ty`.
+    fn signal_ref(&self, ty: &Scalar, len: u64) -> SigRef {
+        // A logic leaf stores its rightmost element at offset 0 (yavs-elab `hier`).
+        let first = self.k * len;
+        let offset = if ty.on_planes() {
+            self.reps * len - first - len
+        } else {
+            first
+        };
+        SignalId(self.leaf).slice(offset as u32, len as u32)
+    }
+}
 
 /// What a handle points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,6 +184,20 @@ impl Handles {
     }
 }
 
+/// A `vhpi_put_value` the kernel has not seen yet: made from a callback or before the
+/// simulation, applied when the callback returns (`sim.rs`), so by the kernel's rules for
+/// observer forces and deposits.
+pub(crate) struct Put {
+    pub(crate) at: SigRef,
+    pub(crate) op: PutOp,
+}
+
+pub(crate) enum PutOp {
+    Deposit(Value),
+    Force(ForceMode, Value),
+    Release(ForceMode),
+}
+
 /// The pending request from `vhpi_control`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -235,6 +277,10 @@ pub(crate) struct State {
     /// The tool's arguments (`vhpiArgcP`, `vhpiArgvs`): the program name, then the plusargs.
     pub(crate) argv: Vec<String>,
     pub(crate) control: Option<Control>,
+    /// Puts waiting for the kernel, in call order.
+    pub(crate) puts: Vec<Put>,
+    /// A read-only phase (end of time step, end of simulation): puts are refused.
+    pub(crate) read_only: bool,
     pub(crate) error: Option<Error>,
     /// Strings handed out by `vhpi_get_str`. They are never freed, so the
     /// pointers stay valid; the set is small and bounded by the design.
@@ -312,26 +358,17 @@ impl State {
         }
     }
 
-    /// `vhpi_get_value`: the value of a declaration or sub-element, a scalar or an array of
-    /// scalars. Signals are read through `kernel` (`None` outside a simulation callback).
-    pub(crate) fn read(
-        &self,
-        obj: &Object,
-        kernel: impl FnOnce(SigRef) -> Option<Result<Value, SimError>>,
-    ) -> Result<Read, (Fault, String)> {
-        let misuse = |m: &str| (Fault::Misuse, format!("vhpi_get_value: {m}"));
+    /// Where `obj` (a declaration or sub-element) lives; `func` names the VHPI call for
+    /// errors.
+    fn at(&self, obj: &Object, func: &str) -> Result<At<'_>, (Fault, String)> {
+        let misuse = || (Fault::Misuse, format!("{func}: the object has no value"));
         let (base, path): (NodeId, &[u64]) = match obj {
             Object::Node(n) => (*n, &[]),
             Object::Elem { base, path } => (*base, path),
-            _ => return Err(misuse("the object has no value")),
+            _ => return Err(misuse()),
         };
         let node = self.design.node(base);
-        let mut l = node
-            .layout
-            .as_ref()
-            .ok_or_else(|| misuse("the object has no value"))?;
-        // Signals: the kernel leaf, the row-major instance among the leaf's
-        // repetitions and the number of repetitions.
+        let mut l = node.layout.as_ref().ok_or_else(misuse)?;
         let (mut leaf, mut k, mut reps) = match node.origin {
             Origin::Signal { leaf, .. } => (leaf, 0u64, 1u64),
             _ => (0, 0, 1),
@@ -360,40 +397,51 @@ impl State {
                 _ => unreachable!("element handles follow the layout"),
             }
         }
-        let (ty, len, array) = match l {
-            Layout::Scalar(t) => (t, 1, false),
+        Ok(At {
+            node,
+            l,
+            leaf,
+            k,
+            reps,
+            cv,
+        })
+    }
+
+    /// The element type, element count and arrayness of a scalar or an array of scalars.
+    fn scalars<'l>(l: &'l Layout, func: &str) -> Result<(&'l Scalar, u64, bool), (Fault, String)> {
+        match l {
+            Layout::Scalar(t) => Ok((t, 1, false)),
             Layout::Array { elem, .. } => match &**elem {
-                Layout::Scalar(t) => (t, l.count(), true),
-                _ => {
-                    return Err((
-                        Fault::Unsupported,
-                        "vhpi_get_value of an array of composites: read its elements".into(),
-                    ));
-                }
-            },
-            Layout::Record(_) => {
-                return Err((
+                Layout::Scalar(t) => Ok((t, l.count(), true)),
+                _ => Err((
                     Fault::Unsupported,
-                    "vhpi_get_value of a record: read its elements".into(),
-                ));
-            }
-            Layout::Open => return Err(misuse("the object's bounds are not known")),
-        };
-        match &node.origin {
+                    format!("{func} of an array of composites: use its elements"),
+                )),
+            },
+            Layout::Record(_) => Err((
+                Fault::Unsupported,
+                format!("{func} of a record: use its elements"),
+            )),
+            Layout::Open => Err((
+                Fault::Misuse,
+                format!("{func}: the object's bounds are not known"),
+            )),
+        }
+    }
+
+    /// `vhpi_get_value`: the value of a declaration or sub-element, a scalar or an array of
+    /// scalars. Signals are read through `kernel` (`None` outside a simulation callback).
+    pub(crate) fn read(
+        &self,
+        obj: &Object,
+        kernel: impl FnOnce(SigRef) -> Option<Result<Value, SimError>>,
+    ) -> Result<Read, (Fault, String)> {
+        let misuse = |m: &str| (Fault::Misuse, format!("vhpi_get_value: {m}"));
+        let at = self.at(obj, "vhpi_get_value")?;
+        let (ty, len, array) = Self::scalars(at.l, "vhpi_get_value")?;
+        match &at.node.origin {
             Origin::Signal { .. } => {
-                // A logic leaf stores its rightmost element at offset 0 (yavs-elab `hier`).
-                let logic = matches!(
-                    ty,
-                    Scalar::Enum { logic: true, .. } | Scalar::Enum { bit01: true, .. }
-                );
-                let first = k * len;
-                let offset = if logic {
-                    reps * len - first - len
-                } else {
-                    first
-                };
-                let r = SignalId(leaf).slice(offset as u32, len as u32);
-                let v = kernel(r)
+                let v = kernel(at.signal_ref(ty, len))
                     .ok_or_else(|| misuse("signal values are read in simulation callbacks"))?
                     .map_err(|e| {
                         (
@@ -405,7 +453,8 @@ impl State {
                     misuse("this is a bug in yavs: the kernel value does not match the type")
                 })
             }
-            Origin::Decl { value: Some(_), .. } => cv
+            Origin::Decl { value: Some(_), .. } => at
+                .cv
                 .as_ref()
                 .and_then(|v| Read::from_const(ty.clone(), v))
                 .ok_or_else(|| misuse("this is a bug in yavs: no elaborated value")),
@@ -422,6 +471,111 @@ impl State {
             }
             _ => None,
         }
+    }
+
+    /// `vhpi_put_value` on a signal, port or one of their sub-elements: checks the object,
+    /// the phase and the value (`decode` turns the plugin's value into elements of the
+    /// object's type, `n` of them for an array), then queues the kernel operation.
+    pub(crate) fn put(
+        &mut self,
+        obj: &Object,
+        mode: vhpiPutValueModeT,
+        decode: impl FnOnce(&Scalar, Option<usize>) -> Result<Read, value::Error>,
+    ) -> Result<(), (Fault, String)> {
+        let misuse = |m: String| (Fault::Misuse, format!("vhpi_put_value: {m}"));
+        if mode == vhpiSizeConstraint {
+            return Err(misuse(
+                "vhpiSizeConstraint applies to the result of a foreign function".into(),
+            ));
+        }
+        if !matches!(
+            mode,
+            vhpiDeposit | vhpiDepositPropagate | vhpiForce | vhpiForcePropagate | vhpiRelease
+        ) {
+            return Err(misuse(format!("bad mode {mode}")));
+        }
+        let at = self.at(obj, "vhpi_put_value")?;
+        match (&at.node.origin, at.node.kind) {
+            (Origin::Signal { .. }, _) => {}
+            (_, vhpiVarDeclK) => {
+                return Err((Fault::Unsupported, "vhpi_put_value of a variable".into()));
+            }
+            _ => {
+                let kind = self.kind(obj);
+                return Err(misuse(format!(
+                    "an object of kind {kind} cannot be written, only signals and ports"
+                )));
+            }
+        }
+        if self.read_only {
+            return Err(misuse(
+                "no writes in a read-only phase (end of time step, end of simulation)".into(),
+            ));
+        }
+        let (ty, len, array) = Self::scalars(at.l, "vhpi_put_value")?;
+        let r = at.signal_ref(ty, len);
+        // The default force mode of a force statement (LRM 10.5.2.1): `out` for a port of
+        // mode out, inout or buffer, `in` otherwise.
+        let fm = match at.node.mode {
+            Some(vhpiOutMode | vhpiInoutMode | vhpiBufferMode) => ForceMode::Driving,
+            _ => ForceMode::Effective,
+        };
+        let op = if mode == vhpiRelease {
+            PutOp::Release(fm)
+        } else {
+            let n = array.then_some(len as usize);
+            let v = decode(ty, n)
+                .map_err(|e| match e {
+                    value::Error::Unsupported(m) => (Fault::Unsupported, m),
+                    value::Error::Mismatch(m) => misuse(m),
+                })?
+                .to_kernel();
+            match mode {
+                vhpiForce | vhpiForcePropagate => PutOp::Force(fm, v),
+                _ => PutOp::Deposit(v),
+            }
+        };
+        self.puts.push(Put { at: r, op });
+        Ok(())
+    }
+
+    /// The kernel elements of a signal, port or one of their sub-elements (value-change
+    /// callbacks), in leaf order.
+    pub(crate) fn watch(&self, obj: &Object) -> Option<Watched> {
+        let at = self.at(obj, "vhpi_register_cb").ok()?;
+        if !matches!(at.node.origin, Origin::Signal { .. }) {
+            return None;
+        }
+        // Per leaf under the sub-layout: whether it is on planes and its elements per
+        // instance of the sub-layout.
+        fn walk(l: &Layout, m: u64, out: &mut Vec<(bool, u64)>) {
+            match l {
+                Layout::Scalar(t) => out.push((t.on_planes(), m)),
+                Layout::Array { elem, .. } => walk(elem, m * l.count(), out),
+                Layout::Record(fields) => fields.iter().for_each(|(_, f)| walk(f, m, out)),
+                Layout::Open => out.push((false, 0)),
+            }
+        }
+        let mut leaves = Vec::new();
+        walk(at.l, 1, &mut leaves);
+        Some(
+            leaves
+                .iter()
+                .enumerate()
+                .map(|(j, &(logic, m))| {
+                    let first = at.k * m;
+                    let offset = if logic {
+                        at.reps * m - first - m
+                    } else {
+                        first
+                    };
+                    (
+                        SignalId(at.leaf + j as u32),
+                        Range::new(offset as u32, m as u32),
+                    )
+                })
+                .collect(),
+        )
     }
 
     /// The declaration an object is or is part of.

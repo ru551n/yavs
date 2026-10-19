@@ -606,7 +606,20 @@ and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs
 `tests/plugin/sched.c` scenarios: timed finish at T in resolution units, after-delay chains and
 a removed repeating one, read-write before postponed before read-only, enable/disable with
 100000 disabled callbacks, misuse; output identical at `--threads 1` and `4`.
-Missing: value-change callbacks (#271).
+
+Done (#271, #272 value changes): `vhpi_put_value` on signals, ports and their record fields and
+array elements, in every format `vhpi_get_value` produces (`Read::decode`), queued in the state
+and handed to the kernel as `Hook::deposit`/`force`/`release` when the callback returns:
+`vhpiDeposit[Propagate]` deposits, `vhpiForce[Propagate]` forces (force mode `out` for ports of
+mode out/inout/buffer, `in` otherwise), `vhpiRelease` releases; refused in the read-only phases;
+constants, generics, records as a whole, bad values and `vhpiSizeConstraint` are `W0903`.
+`vhpiCbValueChange` on signals, ports and sub-elements, keyed by kernel signal and dispatched
+from `Observer::value_change`, once per cycle, with the value filled in the requested format;
+with none enabled the observer does not take the state lock. `crates/yavs/tests/vhpi_run.rs`
+`vhpi_drives_a_clocked_design` (a counter clocked and reset only from VHPI, force, release and
+deposit on a driven signal, value changes on a signal, a port, a bit and a record; identical at
+`--threads 1` and `4`, `tests/put/expected.txt`) and `vhpi_put_value_misuse_is_reported`
+(`tests/put/errors.txt`). Missing: writing variables (#309), `vhpi_schedule_transaction`.
 
 Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
 the elaborated design made before plugins load: root and component instances, blocks, `for`
@@ -624,7 +637,7 @@ Checked by `crates/yavs/tests/vhpi_run.rs` `plugin_walks_the_design_hierarchy` (
 `crates/yavs-vhpi/tests/plugin/hier.c` against `tests/hier/expected.txt`) and unit tests;
 names and kinds agree with the reference simulator that has VHPI wherever it reports them.
 Missing: equivalent processes of concurrent statements, aliases, files, `vhpiGenerateIndexP`;
-sub-elements of variables whose bounds are only known at run time (`W0904`); puts (#271).
+sub-elements of variables whose bounds are only known at run time (`W0904`).
 
 Done (#270, values): `vhpi_get_value` (`crates/yavs-vhpi/src/value.rs`) on signals, ports,
 generics and constants and their record fields and array elements (any dimension), from callbacks

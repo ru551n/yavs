@@ -1,5 +1,6 @@
 //! Values for `vhpi_get_value` (#270): an object's value as typed scalar elements ([`Read`]),
-//! from the kernel or from elaboration, encoded in the format a plugin asks for.
+//! from the kernel or from elaboration, encoded in the format a plugin asks for; and for
+//! `vhpi_put_value` (#271) the reverse, a plugin's value decoded into a kernel value.
 //!
 //! Enumeration values are positions at the boundary: std_ulogic positions are the `vhpiU` ..
 //! `vhpiDontCare` codes, BIT and BOOLEAN (kernel codes 2 and 3) become 0 and 1 (`vhpibit0`,
@@ -12,7 +13,7 @@
 
 use std::sync::Arc;
 
-use yavs_kernel::Value;
+use yavs_kernel::{LogicVec, Value};
 use yavs_sem::stat::{ConstValue, Elems};
 
 use crate::design::vhpi_name;
@@ -77,6 +78,16 @@ pub(crate) enum Error {
     Unsupported(String),
     /// A format that does not apply to this value (W0903).
     Mismatch(String),
+}
+
+impl Scalar {
+    /// Stored as logic planes in the kernel: std_ulogic, BIT and BOOLEAN.
+    pub(crate) fn on_planes(&self) -> bool {
+        matches!(
+            self,
+            Scalar::Enum { logic: true, .. } | Scalar::Enum { bit01: true, .. }
+        )
+    }
 }
 
 impl Read {
@@ -167,23 +178,7 @@ impl Read {
 
     /// The format `vhpiObjTypeVal` stands for.
     pub(crate) fn natural(&self) -> vhpiFormatT {
-        let (s, a) = match &self.ty {
-            Scalar::Enum { logic: true, .. } => (vhpiLogicVal, vhpiLogicVecVal),
-            Scalar::Enum {
-                character: true, ..
-            } => (vhpiCharVal, vhpiStrVal),
-            Scalar::Enum { lits, .. } if lits.len() <= 256 => {
-                (vhpiSmallEnumVal, vhpiSmallEnumVecVal)
-            }
-            Scalar::Enum { .. } => (vhpiEnumVal, vhpiEnumVecVal),
-            // ponytail: 32-bit integer formats; report vhpiLongIntVal for types wider than
-            // 32 bits when 64-bit integer types need it.
-            Scalar::Int => (vhpiIntVal, vhpiIntVecVal),
-            Scalar::Real => (vhpiRealVal, vhpiRealVecVal),
-            Scalar::Phys { time: true } => (vhpiTimeVal, vhpiTimeVecVal),
-            Scalar::Phys { time: false } => (vhpiPhysVal, vhpiPhysVecVal),
-        };
-        if self.array { a } else { s }
+        natural_format(&self.ty, self.array)
     }
 
     /// The value in `format` (not `vhpiObjTypeVal`); `res_fs` is the resolution limit.
@@ -432,6 +427,273 @@ impl Read {
     }
 }
 
+/// The value a plugin passes to `vhpi_put_value`, read out of its `vhpiValueT` by `abi.rs`.
+pub(crate) enum Given<'a> {
+    /// A scalar format: the union member it names.
+    Scalar(Member),
+    /// A string format: the text up to the NUL.
+    Text(&'a [u8]),
+    /// A vector format: `numElems` elements of the format's C type, in native byte order.
+    Vector(&'a [u8]),
+}
+
+/// The bytes of one element of vector format `f`; `None` for other formats.
+pub(crate) fn vector_elem_size(f: vhpiFormatT) -> Option<usize> {
+    Some(match f {
+        vhpiEnumVecVal | vhpiLogicVecVal | vhpiIntVecVal => 4,
+        vhpiSmallEnumVecVal => 1,
+        vhpiLongIntVecVal | vhpiRealVecVal | vhpiTimeVecVal | vhpiPhysVecVal => 8,
+        _ => return None,
+    })
+}
+
+pub(crate) fn is_text(f: vhpiFormatT) -> bool {
+    matches!(
+        f,
+        vhpiBinStrVal | vhpiOctStrVal | vhpiHexStrVal | vhpiDecStrVal | vhpiStrVal
+    )
+}
+
+impl Read {
+    /// `vhpi_put_value`: the value `given` in `format` (not `vhpiObjTypeVal`) as elements of
+    /// `ty`: `n` of them for an array, one scalar for `None`. `res_fs` is the resolution limit.
+    pub(crate) fn decode(
+        ty: Scalar,
+        n: Option<usize>,
+        format: vhpiFormatT,
+        given: Given<'_>,
+        res_fs: u64,
+    ) -> Result<Read, Error> {
+        let name = format_name(format);
+        let what = match (&ty, n) {
+            (Scalar::Enum { logic: true, .. }, _) => "a logic",
+            (Scalar::Enum { .. }, _) => "an enumeration",
+            (Scalar::Int, _) => "an integer",
+            (Scalar::Real, _) => "a real",
+            (Scalar::Phys { .. }, _) => "a physical",
+        };
+        let shape = if n.is_some() { "array" } else { "object" };
+        let mismatch =
+            || Error::Mismatch(format!("format {name} does not apply to {what} {shape}"));
+        let bad = |m: String| Error::Mismatch(format!("format {name}: {m}"));
+        let lits = match &ty {
+            Scalar::Enum { lits, .. } => Some(lits.clone()),
+            _ => None,
+        };
+        let is_time = matches!(ty, Scalar::Phys { time: true });
+        let is_phys = matches!(ty, Scalar::Phys { .. });
+        let fs = |ticks: i64| {
+            ticks
+                .checked_mul(res_fs as i64)
+                .ok_or_else(|| bad(format!("time {ticks} overflows")))
+        };
+        // The position of the literal shown as character `c`.
+        let by_char = |c: u8| {
+            let lits = lits.as_ref()?;
+            let find = |c: u8| lits.iter().position(|l| l.ch == Some(c));
+            find(c).or_else(|| find(c.to_ascii_uppercase()))
+        };
+        let cells: Cells = match (format, given) {
+            (_, Given::Scalar(v)) if n.is_none() => match (v, &ty) {
+                (Member::Real(r), Scalar::Real) => Cells::Real(vec![r]),
+                (Member::Int(i), Scalar::Int | Scalar::Enum { .. }) => Cells::Int(vec![i]),
+                (Member::Char(c), Scalar::Enum { .. }) => Cells::Int(vec![
+                    by_char(c).ok_or_else(|| bad(format!("no literal '{}'", c as char)))? as i64,
+                ]),
+                (Member::Time(t), _) if is_time => Cells::Int(vec![fs(t)?]),
+                (Member::Phys(p), _) if is_phys && !is_time => Cells::Int(vec![p]),
+                _ => return Err(mismatch()),
+            },
+            (_, Given::Vector(b)) if n.is_some() => {
+                let size = vector_elem_size(format).ok_or_else(mismatch)?;
+                let words = b.chunks_exact(size);
+                match (format, &ty) {
+                    (vhpiRealVecVal, Scalar::Real) => Cells::Real(
+                        words
+                            .map(|w| f64::from_ne_bytes(w.try_into().expect("8 bytes")))
+                            .collect(),
+                    ),
+                    (vhpiEnumVecVal | vhpiLogicVecVal, Scalar::Enum { .. }) => Cells::Int(
+                        words
+                            .map(|w| i64::from(u32::from_ne_bytes(w.try_into().expect("4 bytes"))))
+                            .collect(),
+                    ),
+                    (vhpiSmallEnumVecVal, Scalar::Enum { .. }) => {
+                        Cells::Int(words.map(|w| i64::from(w[0])).collect())
+                    }
+                    (vhpiIntVecVal, Scalar::Int) => Cells::Int(
+                        words
+                            .map(|w| i64::from(i32::from_ne_bytes(w.try_into().expect("4 bytes"))))
+                            .collect(),
+                    ),
+                    (vhpiLongIntVecVal, Scalar::Int) => Cells::Int(
+                        words
+                            .map(|w| i64::from_ne_bytes(w.try_into().expect("8 bytes")))
+                            .collect(),
+                    ),
+                    (vhpiTimeVecVal | vhpiPhysVecVal, _)
+                        if is_phys && is_time == (format == vhpiTimeVecVal) =>
+                    {
+                        let mut out = Vec::new();
+                        for w in words {
+                            let high = i32::from_ne_bytes(w[..4].try_into().expect("4 bytes"));
+                            let low = u32::from_ne_bytes(w[4..].try_into().expect("4 bytes"));
+                            let v = (i64::from(high) << 32) | i64::from(low);
+                            out.push(if is_time { fs(v)? } else { v });
+                        }
+                        Cells::Int(out)
+                    }
+                    _ => return Err(mismatch()),
+                }
+            }
+            (vhpiStrVal, Given::Text(t)) => match n {
+                Some(_) => Cells::Int(
+                    t.iter()
+                        .map(|&c| {
+                            by_char(c)
+                                .map(|p| p as i64)
+                                .ok_or_else(|| bad(format!("no literal '{}'", c as char)))
+                        })
+                        .collect::<Result<_, _>>()?,
+                ),
+                None => {
+                    let lits = lits.as_ref().ok_or_else(mismatch)?;
+                    let text = String::from_utf8_lossy(t);
+                    let p = lits
+                        .iter()
+                        .position(|l| match l.ch {
+                            Some(c) => t == [c],
+                            None => vhpi_name(&l.name) == vhpi_name(&text),
+                        })
+                        .ok_or_else(|| bad(format!("no literal {text}")))?;
+                    Cells::Int(vec![p as i64])
+                }
+            },
+            (vhpiBinStrVal | vhpiOctStrVal | vhpiHexStrVal | vhpiDecStrVal, Given::Text(t)) => {
+                let text = std::str::from_utf8(t).map_err(|_| bad("not ASCII text".into()))?;
+                let radix = match format {
+                    vhpiBinStrVal => 2,
+                    vhpiOctStrVal => 8,
+                    vhpiHexStrVal => 16,
+                    _ => 10,
+                };
+                match (n, &ty) {
+                    // A logic array: binary text is one literal per element; other radixes a
+                    // number of that many bits.
+                    (n, Scalar::Enum { logic: true, .. }) => {
+                        let bits = n.unwrap_or(1);
+                        let chars: Vec<u8> = if radix == 2 {
+                            t.to_vec()
+                        } else {
+                            to_bits(text, radix, bits).ok_or_else(|| {
+                                bad(format!("{text} is not a number of {bits} bits"))
+                            })?
+                        };
+                        Cells::Int(
+                            chars
+                                .iter()
+                                .map(|&c| {
+                                    by_char(c)
+                                        .map(|p| p as i64)
+                                        .ok_or_else(|| bad(format!("no literal '{}'", c as char)))
+                                })
+                                .collect::<Result<_, _>>()?,
+                        )
+                    }
+                    (None, Scalar::Int | Scalar::Enum { .. }) => {
+                        let (neg, digits) = match text.strip_prefix('-') {
+                            Some(d) => (true, d),
+                            None => (false, text),
+                        };
+                        let v = i64::from_str_radix(digits, radix)
+                            .map_err(|_| bad(format!("{text} is not a number")))?;
+                        Cells::Int(vec![if neg { -v } else { v }])
+                    }
+                    _ => return Err(mismatch()),
+                }
+            }
+            _ => return Err(mismatch()),
+        };
+        let len = match &cells {
+            Cells::Int(v) => v.len(),
+            Cells::Real(v) => v.len(),
+        };
+        match n {
+            Some(n) if len != n => {
+                return Err(bad(format!("{len} elements for an array of {n}")));
+            }
+            None if len != 1 => return Err(bad(format!("{len} elements for a scalar"))),
+            _ => {}
+        }
+        if let (Some(lits), Cells::Int(v)) = (&lits, &cells)
+            && let Some(p) = v.iter().find(|&&p| p < 0 || p as usize >= lits.len())
+        {
+            return Err(bad(format!("{p} is not a literal position")));
+        }
+        Ok(Read {
+            ty,
+            array: n.is_some(),
+            cells,
+        })
+    }
+
+    /// The kernel value of these elements, laid out as `from_kernel` reads it.
+    pub(crate) fn to_kernel(&self) -> Value {
+        match (&self.ty, &self.cells) {
+            (Scalar::Enum { logic, bit01, .. }, Cells::Int(v)) if *logic || *bit01 => {
+                // Leftmost first, as a literal: the kernel stores the rightmost at offset 0.
+                // BIT and BOOLEAN are the codes of '0' and '1'.
+                let chars: String = v
+                    .iter()
+                    .map(|&p| {
+                        let code = p as usize + if *bit01 { 2 } else { 0 };
+                        b"UX01ZWLH-"[code] as char
+                    })
+                    .collect();
+                Value::Logic(chars.parse::<LogicVec>().expect("logic literals"))
+            }
+            (Scalar::Enum { lits, .. }, Cells::Int(v)) if lits.len() <= 256 => {
+                Value::Bytes(v.iter().map(|&p| p as u8).collect())
+            }
+            (Scalar::Enum { .. }, Cells::Int(v)) => {
+                Value::Bytes(v.iter().flat_map(|&p| (p as u32).to_le_bytes()).collect())
+            }
+            (_, Cells::Int(v)) => Value::Bytes(v.iter().flat_map(|p| p.to_le_bytes()).collect()),
+            (_, Cells::Real(v)) => Value::Bytes(v.iter().flat_map(|r| r.to_le_bytes()).collect()),
+        }
+    }
+}
+
+/// The union member a scalar format names.
+pub(crate) enum Member {
+    Int(i64),
+    Real(f64),
+    Char(u8),
+    /// Ticks of the resolution limit.
+    Time(i64),
+    Phys(i64),
+}
+
+/// The `n` binary digits, leftmost first, of the unsigned number `text` in `radix`; `None`
+/// when it is not one or needs more bits.
+fn to_bits(text: &str, radix: u32, n: usize) -> Option<Vec<u8>> {
+    let mut bits = vec![0u8; n]; // least significant first
+    for c in text.chars() {
+        let d = c.to_digit(radix)?;
+        // bits = bits * radix + d
+        let mut carry = d;
+        for b in &mut bits {
+            let x = u32::from(*b) * radix + carry;
+            *b = (x % 2) as u8;
+            carry = x / 2;
+        }
+        if carry != 0 {
+            return None;
+        }
+    }
+    Some(bits.iter().rev().map(|b| b'0' + b).collect())
+}
+
 /// A NUL-terminated buffer; `numElems` is its length without the NUL.
 fn cstring(mut text: Vec<u8>) -> Encoded {
     let n = text.len();
@@ -451,6 +713,25 @@ fn split_phys(v: i64) -> vhpiPhysT {
         high: (v >> 32) as i32,
         low: v as u32,
     }
+}
+
+/// The format `vhpiObjTypeVal` stands for, for a scalar or an `array` of `ty`.
+pub(crate) fn natural_format(ty: &Scalar, array: bool) -> vhpiFormatT {
+    let (s, a) = match ty {
+        Scalar::Enum { logic: true, .. } => (vhpiLogicVal, vhpiLogicVecVal),
+        Scalar::Enum {
+            character: true, ..
+        } => (vhpiCharVal, vhpiStrVal),
+        Scalar::Enum { lits, .. } if lits.len() <= 256 => (vhpiSmallEnumVal, vhpiSmallEnumVecVal),
+        Scalar::Enum { .. } => (vhpiEnumVal, vhpiEnumVecVal),
+        // ponytail: 32-bit integer formats; report vhpiLongIntVal for types wider than
+        // 32 bits when 64-bit integer types need it.
+        Scalar::Int => (vhpiIntVal, vhpiIntVecVal),
+        Scalar::Real => (vhpiRealVal, vhpiRealVecVal),
+        Scalar::Phys { time: true } => (vhpiTimeVal, vhpiTimeVecVal),
+        Scalar::Phys { time: false } => (vhpiPhysVal, vhpiPhysVecVal),
+    };
+    if array { a } else { s }
 }
 
 /// `vhpiIntVal` for 6.
@@ -514,6 +795,47 @@ mod tests {
     fn slv(s: &str) -> Read {
         let v: LogicVec = s.parse().unwrap();
         Read::from_kernel(std_logic(), true, &Value::Logic(v)).unwrap()
+    }
+
+    /// Puts: what a plugin passes decodes into the kernel value a read gives back.
+    #[test]
+    fn decode_round_trips_through_the_kernel() {
+        let put = |ty: Scalar, n: Option<usize>, f, g: Given<'_>| {
+            Read::decode(ty, n, f, g, 1_000_000).map(|r| r.to_kernel())
+        };
+        let want = Value::Logic("01XZ".parse().unwrap());
+        let bin = put(std_logic(), Some(4), vhpiBinStrVal, Given::Text(b"01xZ"));
+        assert_eq!(bin, Ok(want));
+        let codes: Vec<u8> = [2u32, 3, 1, 4]
+            .iter()
+            .flat_map(|c| c.to_ne_bytes())
+            .collect();
+        let vec = put(std_logic(), Some(4), vhpiLogicVecVal, Given::Vector(&codes));
+        assert_eq!(vec, Ok(Value::Logic("01XZ".parse().unwrap())));
+        let hex = put(std_logic(), Some(6), vhpiHexStrVal, Given::Text(b"2A"));
+        assert_eq!(hex, Ok(Value::Logic("101010".parse().unwrap())));
+        assert!(put(std_logic(), Some(4), vhpiHexStrVal, Given::Text(b"1F")).is_err());
+        assert!(put(std_logic(), Some(4), vhpiBinStrVal, Given::Text(b"010")).is_err());
+        let one = put(bit(), None, vhpiLogicVal, Given::Scalar(Member::Int(1)));
+        assert_eq!(one, Ok(Value::Logic("1".parse().unwrap())));
+        assert!(put(bit(), None, vhpiLogicVal, Given::Scalar(Member::Int(2))).is_err());
+        let int = put(Scalar::Int, None, vhpiDecStrVal, Given::Text(b"-9"));
+        assert_eq!(int, Ok(Value::Bytes((-9i64).to_le_bytes().to_vec())));
+        // TIME counts in the resolution limit (here ns).
+        let t = put(
+            Scalar::Phys { time: true },
+            None,
+            vhpiTimeVal,
+            Given::Scalar(Member::Time(3)),
+        );
+        assert_eq!(t, Ok(Value::Bytes(3_000_000i64.to_le_bytes().to_vec())));
+        let r = put(
+            Scalar::Int,
+            None,
+            vhpiRealVal,
+            Given::Scalar(Member::Real(1.0)),
+        );
+        assert!(matches!(r, Err(Error::Mismatch(_))));
     }
 
     #[test]

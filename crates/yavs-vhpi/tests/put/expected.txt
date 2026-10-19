@@ -1,0 +1,73 @@
+** Note: 0fs+0: d=0
+    Process :top:_p1
+** Note: 0fs+0: rst='1'
+    Process :top:_p2
+vhpi: q=0000 t=0 d=1
+vhpi: q(0)=0 t=0 d=1
+vhpi: u:q=0000 t=0 d=1
+vhpi: d changed t=10 d=0
+** Note: 10000000fs+0: d=1
+    Process :top:_p1
+vhpi: at t=12 d=0
+vhpi: deposit p.a=0
+vhpi: p changed t=12 d=0
+vhpi: at t=15 d=0
+vhpi: force d=0
+vhpi: d changed t=15 d=0
+** Note: 15000000fs+0: d=100
+    Process :top:_p1
+vhpi: at t=22 d=0
+vhpi: rst=0
+** Note: 22000000fs+0: rst='0'
+    Process :top:_p2
+vhpi: q=0001 t=25 d=2
+vhpi: q(0)=1 t=25 d=2
+vhpi: u:q=0001 t=25 d=2
+vhpi: q=0010 t=35 d=2
+vhpi: q(0)=0 t=35 d=2
+vhpi: u:q=0010 t=35 d=2
+vhpi: at t=40 d=0
+vhpi: release d=0
+vhpi: d changed t=40 d=0
+** Note: 40000000fs+0: d=2
+    Process :top:_p1
+vhpi: q=0011 t=45 d=2
+vhpi: q(0)=1 t=45 d=2
+vhpi: u:q=0011 t=45 d=2
+vhpi: d changed t=50 d=0
+** Note: 50000000fs+0: d=3
+    Process :top:_p1
+vhpi: at t=55 d=0
+vhpi: deposit d=0
+vhpi: d changed t=55 d=0
+** Note: 55000000fs+0: d=77
+    Process :top:_p1
+vhpi: q=0100 t=55 d=2
+vhpi: q(0)=0 t=55 d=2
+vhpi: u:q=0100 t=55 d=2
+vhpi: at t=60 d=0
+vhpi: force d=0
+vhpi: d changed t=60 d=0
+** Note: 60000000fs+0: d=-9
+    Process :top:_p1
+vhpi: at t=65 d=0
+vhpi: release d=0
+vhpi: d changed t=65 d=0
+** Note: 65000000fs+0: d=77
+    Process :top:_p1
+vhpi: q=0101 t=65 d=2
+vhpi: q(0)=1 t=65 d=2
+vhpi: u:q=0101 t=65 d=2
+vhpi: d changed t=70 d=0
+** Note: 70000000fs+0: d=4
+    Process :top:_p1
+vhpi: q=0110 t=75 d=2
+vhpi: q(0)=0 t=75 d=2
+vhpi: u:q=0110 t=75 d=2
+vhpi: read_write t=80 d=0 rst=0
+** Note: 80000000fs+1: rst='1'
+    Process :top:_p2
+vhpi: q=0000 t=85 d=2
+vhpi: u:q=0000 t=85 d=2
+vhpi: at t=100 d=0
+** Note: 100000000fs+0: FINISH called with status 0

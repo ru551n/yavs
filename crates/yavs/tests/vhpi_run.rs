@@ -404,3 +404,54 @@ fn plugin_reads_values_in_every_format() {
         .replace("\r\n", "\n");
     assert_eq!(out, want);
 }
+
+/// Runs `top` of `yavs-vhpi/tests/put/design.vhd` with the `put` plugin entry `entry`.
+fn put(entry: &str, extra: &[&str]) -> (i32, String, String) {
+    let vhdl = std::fs::read_to_string(vhpi_dir().join("tests/put/design.vhd")).expect("design");
+    let (lib, so) = setup_with("put", &vhdl);
+    let spec = format!("--vhpi={}:{entry}", so.display());
+    let mut args = vec!["run", &lib, &spec, "--resolution=ns"];
+    args.extend_from_slice(extra);
+    args.push("top");
+    yavs(&args)
+}
+
+/// A counter whose clock and reset come only from `vhpi_put_value`, value-change callbacks on
+/// signals, ports and sub-elements, and force, release and deposit on a driven signal (#271,
+/// #272). The trace is `yavs-vhpi/tests/put/expected.txt` (`YAVS_BLESS=1` rewrites it), the
+/// same at 1 and 4 threads.
+#[test]
+fn vhpi_drives_a_clocked_design() {
+    let (code, err, out) = put("clocked", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("warning["), "{err}");
+    let expected = vhpi_dir().join("tests/put/expected.txt");
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &out).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected trace")
+        .replace("\r\n", "\n");
+    assert_eq!(out, want);
+    let (code, err, again) = put("clocked", &["--threads=4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out, "--threads=4");
+}
+
+/// Constants, generics, records and read-only phases cannot be written; bad values are
+/// misuse (W0903), variables not implemented yet (W0904).
+#[test]
+fn vhpi_put_value_misuse_is_reported() {
+    let (code, err, out) = put("errors", &[]);
+    assert_eq!(code, 0, "{err}");
+    let expected = vhpi_dir().join("tests/put/errors.txt");
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &out).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected trace")
+        .replace("\r\n", "\n");
+    assert_eq!(out, want);
+    assert!(err.contains("warning[W0903]"), "{err}");
+    assert!(err.contains("warning[W0904]"), "{err}");
+}

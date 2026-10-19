@@ -19,7 +19,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use crate::callbacks::{Callback, RegisterError};
 use crate::model::{Control, Fault, INT_PROPS, Iter, Object, STR_PROPS, State};
 use crate::sys::*;
-use crate::value::{self, Encoded};
+use crate::value::{self, Encoded, Given, Member};
 use yavs_kernel::Hook;
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -489,7 +489,16 @@ pub unsafe extern "C" fn vhpi_register_cb(cb: *mut vhpiCbDataT, flags: i32) -> v
             s.fail(Fault::Misuse, "vhpi_register_cb: NULL cb_rtn");
             return std::ptr::null_mut();
         }
-        match s.cbs.register(data, flags, delay, &s.clock) {
+        let watch = if data.reason == vhpiCbValueChange {
+            s.handles
+                .get(data.obj)
+                .cloned()
+                .and_then(|o| Some((s.watch(&o)?, o)))
+                .map(|(w, o)| (o, w))
+        } else {
+            None
+        };
+        match s.cbs.register(data, flags, delay, watch, &s.clock) {
             Ok(id) if flags & vhpiReturnCb != 0 => s.handles.alloc(Object::Callback(id)),
             Ok(_) => std::ptr::null_mut(),
             Err(RegisterError::Misuse(why)) => {
@@ -575,9 +584,17 @@ pub unsafe extern "C" fn vhpi_get_cb_info(h: vhpiHandleT, out: *mut vhpiCbDataT)
 pub(crate) fn fire(ids: &[u64]) -> usize {
     let mut ran = 0;
     for &id in ids {
-        let Some((mut data, mut time)) =
-            with_state(|s| Some((s.cbs.fire(id, s.clock.now)?, s.clock.vhpi_now())))
-        else {
+        let Some((mut data, mut time)) = with_state(|s| {
+            let data = s.cbs.fire(id, s.clock.now)?;
+            // A value-change callback: the object's value in the format the plugin asked for.
+            let obj = s.cbs.get(id).and_then(|cb| cb.obj.clone());
+            // SAFETY: the plugin registered `value` as NULL or a writable `vhpiValueT` (with
+            // its buffer) that lives as long as the callback.
+            if let (Some(obj), Some(v)) = (obj, unsafe { data.value.as_mut() }) {
+                get_value(s, &obj, v);
+            }
+            Some((data, s.clock.vhpi_now()))
+        }) else {
             continue;
         };
         data.time = &mut time;
@@ -670,38 +687,42 @@ pub unsafe extern "C" fn vhpi_get_value(expr: vhpiHandleT, value: *mut vhpiValue
         with_state(|s| s.fail(Fault::Misuse, "vhpi_get_value: NULL value_p"));
         return -1;
     };
-    let encoded = with_state(|s| {
-        let obj = get_obj(s, expr, "vhpi_get_value")?;
-        let read = match s.read(&obj, |r| with_hook(|h| h.value(r))) {
-            Ok(r) => r,
-            Err((fault, m)) => {
-                s.fail(fault, m);
-                return None;
-            }
-        };
-        if v.format == vhpiObjTypeVal {
-            v.format = read.natural();
-        }
-        match read.encode(v.format, s.clock.resolution.fs()) {
-            Ok(e) => Some(e),
-            Err(value::Error::Unsupported(m)) => {
-                s.fail(Fault::Unsupported, format!("{m}: {NOT_IMPLEMENTED}"));
-                None
-            }
-            Err(value::Error::Mismatch(m)) => {
-                s.fail(Fault::Misuse, format!("vhpi_get_value: {m}"));
-                None
-            }
-        }
-    });
-    match encoded {
+    with_state(|s| match get_obj(s, expr, "vhpi_get_value") {
+        Some(obj) => get_value(s, &obj, v),
         None => -1,
-        Some(Encoded::Scalar(u)) => {
+    })
+}
+
+/// `vhpi_get_value` of `obj` into `v`: 0, -1 on error, or the buffer size needed.
+fn get_value(s: &mut State, obj: &Object, v: &mut vhpiValueT) -> c_int {
+    let read = match s.read(obj, |r| with_hook(|h| h.value(r))) {
+        Ok(r) => r,
+        Err((fault, m)) => {
+            s.fail(fault, m);
+            return -1;
+        }
+    };
+    if v.format == vhpiObjTypeVal {
+        v.format = read.natural();
+    }
+    let encoded = match read.encode(v.format, s.clock.resolution.fs()) {
+        Ok(e) => e,
+        Err(value::Error::Unsupported(m)) => {
+            s.fail(Fault::Unsupported, format!("{m}: {NOT_IMPLEMENTED}"));
+            return -1;
+        }
+        Err(value::Error::Mismatch(m)) => {
+            s.fail(Fault::Misuse, format!("vhpi_get_value: {m}"));
+            return -1;
+        }
+    };
+    match encoded {
+        Encoded::Scalar(u) => {
             v.value = u;
             v.numElems = 1;
             0
         }
-        Some(Encoded::Buffer { bytes, n }) => {
+        Encoded::Buffer { bytes, n } => {
             v.numElems = i32::try_from(n).unwrap_or(i32::MAX);
             // SAFETY: reading the pointer member of the union; every member is plain data.
             let ptr = unsafe { v.value.ptr };
@@ -715,14 +736,103 @@ pub unsafe extern "C" fn vhpi_get_value(expr: vhpiHandleT, value: *mut vhpiValue
     }
 }
 
+/// Writes a signal, port or sub-element (#271): deposits and forces through the kernel,
+/// applied when the calling callback returns (see `crates/yavs-vhpi/AGENTS.md`).
+///
+/// # Safety
+/// `value` is NULL or points to a `vhpiValueT` whose buffer (for string and vector formats)
+/// is readable: a NUL-terminated string, or `numElems` elements.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_put_value(
-    _obj: vhpiHandleT,
-    _value: *mut vhpiValueT,
-    _mode: vhpiPutValueModeT,
+pub unsafe extern "C" fn vhpi_put_value(
+    obj: vhpiHandleT,
+    value: *mut vhpiValueT,
+    mode: vhpiPutValueModeT,
 ) -> c_int {
-    not_implemented("vhpi_put_value");
-    1
+    // SAFETY: NULL or readable per the contract.
+    let v = unsafe { value.as_ref() };
+    with_state(|s| {
+        let Some(o) = get_obj(s, obj, "vhpi_put_value") else {
+            return 1;
+        };
+        let res = s.clock.resolution.fs();
+        let decode = |ty: &value::Scalar, n: Option<usize>| {
+            let Some(v) = v else {
+                return Err(value::Error::Mismatch("NULL value_p".into()));
+            };
+            let mut format = v.format;
+            if format == vhpiObjTypeVal {
+                format = value::natural_format(ty, n.is_some());
+            }
+            // SAFETY: the plugin's value, read as its format says (the contract above).
+            let given = unsafe { given(v, format) }.ok_or_else(|| {
+                value::Error::Unsupported(format!(
+                    "vhpi_put_value: format {}",
+                    value::format_name(format)
+                ))
+            })?;
+            value::Read::decode(ty.clone(), n, format, given, res)
+        };
+        match s.put(&o, mode, decode) {
+            Ok(()) => 0,
+            Err((fault, m)) => {
+                let m = if fault == Fault::Unsupported {
+                    format!("{m}: {NOT_IMPLEMENTED}")
+                } else {
+                    m
+                };
+                s.fail(fault, m);
+                1
+            }
+        }
+    })
+}
+
+/// The value a plugin passes in `format`; `None` for a format `vhpi_put_value` does not read.
+///
+/// # Safety
+/// The buffer of a string or vector format is readable as `vhpi_put_value` says.
+unsafe fn given(v: &vhpiValueT, format: vhpiFormatT) -> Option<Given<'_>> {
+    if value::is_text(format) {
+        // SAFETY: reading the pointer member; the plugin passes a NUL-terminated string.
+        let p = unsafe { v.value.str_ };
+        if p.is_null() {
+            return Some(Given::Text(&[]));
+        }
+        // SAFETY: as above.
+        return Some(Given::Text(unsafe { CStr::from_ptr(p.cast()) }.to_bytes()));
+    }
+    if let Some(size) = value::vector_elem_size(format) {
+        // SAFETY: reading the pointer member; the buffer holds `numElems` elements.
+        let p = unsafe { v.value.ptr };
+        let n = usize::try_from(v.numElems).ok()?;
+        if p.is_null() || n == 0 {
+            return Some(Given::Vector(&[]));
+        }
+        // SAFETY: as above.
+        return Some(Given::Vector(unsafe {
+            std::slice::from_raw_parts(p.cast::<u8>(), n * size)
+        }));
+    }
+    scalar_member(format, v.value).map(Given::Scalar)
+}
+
+/// The union member scalar format `format` names.
+fn scalar_member(format: vhpiFormatT, u: vhpiValueU) -> Option<Member> {
+    // SAFETY: every union member is plain data; the format names the one the plugin set.
+    let m = unsafe {
+        match format {
+            vhpiEnumVal | vhpiLogicVal => Member::Int(i64::from(u.enumv)),
+            vhpiSmallEnumVal => Member::Int(i64::from(u.smallenumv)),
+            vhpiIntVal => Member::Int(i64::from(u.intg)),
+            vhpiLongIntVal => Member::Int(u.longintg),
+            vhpiRealVal => Member::Real(u.real),
+            vhpiCharVal => Member::Char(u.ch),
+            vhpiTimeVal => Member::Time((i64::from(u.time.high) << 32) | i64::from(u.time.low)),
+            vhpiPhysVal => Member::Phys((i64::from(u.phys.high) << 32) | i64::from(u.phys.low)),
+            _ => return None,
+        }
+    };
+    Some(m)
 }
 
 #[unsafe(no_mangle)]

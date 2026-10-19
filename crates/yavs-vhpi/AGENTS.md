@@ -14,7 +14,8 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 - The object model: the design hierarchy (`design.rs`, #269), a read-only snapshot of the
   elaborated design with no simulation state, and the tool. `vhpi_get_value` (#270,
   `value.rs`) reads signals through the kernel `Hook` of the running observer call and
-  generics and constants from their elaborated value; puts (#271) are next. Simulation-phase and after-delay callbacks are real
+  generics and constants from their elaborated value; `vhpi_put_value` (#271) queues kernel
+  deposits and forces. Simulation-phase, after-delay and value-change callbacks are real
   (#272): `VhpiObserver` (`sim.rs`) is a kernel `Observer`.
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
   or ship a separate VHPI DLL. `yavs run --vhpi` (#267, `crates/yavs/src/elab.rs`) sets the
@@ -35,11 +36,11 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `src/sys.rs` | `#[repr(C)]` types and one constant per enumerator (no bindgen), no unsafe |
 | `src/abi.rs` | Exported `extern "C"` VHPI functions, process-wide state behind a mutex (`with_state`, `fire`); unsafe confined here and in `plugin.rs` |
 | `src/design.rs` | The design hierarchy snapshot: `Design::build(db, elaborated)`, `Node` (regions, declarations, design units; `Origin` links each to the elaborated design for the value layer), `Layout` (sub-element structure, each scalar with its value type), `lookup` by name, `vhpi_name` |
-| `src/value.rs` | `Scalar` (a scalar's value type), `Read` (a value as positions, integers or reals, from a kernel `Value` or an elaborated `ConstValue`), `natural` (the `vhpiObjTypeVal` format) and `encode` (every format); no unsafe |
+| `src/value.rs` | `Scalar` (a scalar's value type), `Read` (a value as positions, integers or reals, from a kernel `Value` or an elaborated `ConstValue`), `natural` (the `vhpiObjTypeVal` format) and `encode` (every format); `decode` and `to_kernel` for puts (`Given` is the plugin's value, read out by `abi.rs`); no unsafe |
 | `src/types.rs` | Types as VHPI objects: `Types` (interned `Ty`: kind, name, base, structure, ranges), `TypeObj` (type, range, literal, record element, unit), their properties, relations and iterators; built by `design.rs` (`object_ty`, `base_ty`) |
-| `src/model.rs` | `Object` (tool, callback, node, sub-element path, iterator, type object), handles, `State` (properties, one-to-one relations, iterators), `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting |
-| `src/callbacks.rs` | Callback registry: registration, enable/disable/remove, per-reason sets of enabled callbacks, after-delay wake-up bookkeeping, `Clock` (time in resolution units) |
-| `src/sim.rs` | `VhpiObserver`: phase callbacks at the matching `Phase`, after-delay callbacks on `Observer::wake`, kernel requests (wake-ups, cancels, end) after each batch |
+| `src/model.rs` | `Object` (tool, callback, node, sub-element path, iterator, type object), handles, `State` (properties, one-to-one relations, iterators), `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting; `at` (where an object lives: kernel leaf and range, or elaborated value), `read`, `put` (queues a `Put`), `watch` (the kernel elements of a value-change callback) |
+| `src/callbacks.rs` | Callback registry: registration, enable/disable/remove, per-reason sets of enabled callbacks, after-delay wake-up bookkeeping, value-change callbacks keyed by kernel signal (`watched`, `changed`, `WATCHING`), `Clock` (time in resolution units) |
+| `src/sim.rs` | `VhpiObserver`: phase callbacks at the matching `Phase`, after-delay callbacks on `Observer::wake`, value-change callbacks on `Observer::value_change`, kernel requests (puts, wake-ups, cancels, end) after each batch |
 | `src/plugin.rs` | `PluginSpec`, `load`, `LoadError` (`E0901` cannot load, `E0902` no entry point); `ForeignLib`, `load_foreign`, `bind_foreign` (`--load`: libraries in order, then the executable; never unloaded) |
 | `src/shim.c` | `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` (C variadics) |
 | `src/exports.txt` | The one list of exported symbols |
@@ -47,6 +48,7 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `src/lib.rs` | `set_design`, `set_design_root` (a root-only design for the spike host), `set_resolution`, `run_callbacks` (outside a simulation, the spike host), `take_control` |
 | `tests/vhpi.rs`, `tests/plugin/plugin.c` | ABI vs C header (`abi_matches_c_header`, all ~610 constants, sizes, offsets), C plugin loaded both ways, missing file/entry/symbol errors |
 | `tests/plugin/sched.c` | Callback scenarios (one entry each) run by `crates/yavs/tests/vhpi_run.rs` through `yavs run --vhpi` |
+| `tests/plugin/put.c`, `tests/put/` | Puts and value changes: a counter clocked and reset only from VHPI, force/release/deposit on a driven signal (`expected.txt`), misuse (`errors.txt`); run like `hier.c` |
 | `tests/plugin/values.c`, `tests/values/` | `vhpi_get_value` in every format over a design with every kind of object; run like `hier.c` |
 | `tests/plugin/hier.c`, `tests/hier/` | Hierarchy dump plugin, its design and expected output; run through `yavs run --vhpi` by `crates/yavs/tests/vhpi_run.rs` (`YAVS_BLESS=1` rewrites the dump) |
 
@@ -81,6 +83,11 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | An object's `vhpiType` is its type declaration when its subtype is the type's first subtype with the declaration's own bounds, a named subtype (`STD_LOGIC`, `NATURAL`) when the bounds are the subtype's own, else an anonymous subtype (`vhpiIsAnonymousP`) with the elaborated bounds, named like its base type as the reference simulator does (`STD_ULOGIC_VECTOR` for `std_logic_vector(7 downto 0)`). Equal types are one interned object, so handles compare equal. Every scalar type has its range as a constraint (enumerations and REAL too, where the reference simulator lists none); `vhpiBaseType` of a type declaration is itself | Python testbench frameworks branch on the base type's kind and name and size arrays from `vhpiConstraints` | #270 |
 | Buffer protocol: a string or vector format returns the size it needs in bytes (strings with their NUL) when `bufSize` is smaller or the buffer pointer is NULL, with `numElems` already set | IEEE `vhpi_get_value` | #270 |
 
+| `vhpi_put_value` (#271) checks the object, the phase and the value at the call (misuse `W0903`: constants, generics, bad formats, lengths or literals, `vhpiSizeConstraint`, a write in a read-only phase; `W0904`: variables (#309), records and arrays of composites as a whole), then queues a `Put` in the state; `sim.rs` hands the queue to `Hook::deposit`/`force`/`release` after each callback batch (puts made at load time at `StartOfSim`). So puts follow the kernel's rules: from an after-delay, next-time-step or start-of-cycle callback in this cycle, from a value-change or read-write callback in the next delta. A queue rather than `with_hook` at the call, so load-time puts take the same path | One path for every caller; deterministic at any thread count | #271 |
+| Put modes: `vhpiDeposit[Propagate]` is a kernel deposit (driving value until a source next updates the elements), `vhpiForce[Propagate]` a force with the force statement's default mode (`out` for ports of mode out, inout, buffer; `in` otherwise), `vhpiRelease` the matching release. The non-propagating modes act like the propagating ones (the kernel changes no value without a cycle; the reference simulator refuses them). A release after a deposit returns to the deposited value while no driver has updated (#310) | Permissive; one kernel API | #271 |
+| Put formats: every format `vhpi_get_value` produces, decoded into the object's element type (`Read::decode`); binary strings of logic values are one literal per element (case-insensitive), octal, hex and decimal strings of logic values a number of that many bits; `vhpiObjTypeVal` means the natural format; enumeration positions are checked against the literals. ponytail: no range check of integer subtypes (a value outside a subtype's range is stored); add it with type objects | Mirrors the reads | #271 |
+| `vhpiCbValueChange` (#272) on a signal, port or sub-element: registered with the object's kernel elements (`State::watch`, every leaf of a record), kept per kernel signal in `Callbacks::watched` while enabled; `sim.rs` dispatches it from `Observer::value_change` at most once per cycle (time, delta), in the kernel's signal and range order, then registration order, with `value` filled in the format it asks for (`vhpiObjTypeVal` becomes the natural one); it repeats until removed. A static `WATCHING` flag skips the state lock per event while none is enabled. On anything else it is `W0903` | #123: cheap when unused; one event bus | #272 |
+
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
 Callback reasons map to kernel observer calls (`crates/yavs-kernel/DESIGN.md` "The cycle"; kernel
@@ -99,7 +106,7 @@ testbench frameworks use `vhpiCbRepLastKnownDeltaCycle` for their read-write pha
 | `vhpiCbAfterDelay` | `Hook::wake_at(now + delay)`, then `Observer::wake` with that `WakeId`; removing the callback is `Hook::cancel`. A delay of 0 is the next delta. A disabled one is skipped when due (a one-shot then matures) |
 | `vhpiCbLastKnownDeltaCycle` (read-write) | `Phase::LastKnownDelta` (puts queued here create one more delta) |
 | `vhpiCbEndOfTimeStep` (read-only) | `Phase::EndOfTimeStep` (after postponed processes; no puts) |
-| `vhpiCbValueChange` (#269, not yet) | `Observer::value_change`; register it in `callbacks.rs` keyed by signal, dispatch in `sim.rs` |
+| `vhpiCbValueChange` | `Observer::value_change`, once per cycle per callback (see the decisions above) |
 
 Callback rules (#272, #123):
 
@@ -149,5 +156,5 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 - The Python testbench framework itself is not installed; installing it needs the user's approval (#122).
 - Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
   object model over `SimControl` and the event bus (hierarchy done, #269); #122 Python testbench
-  framework regression (install needs approval); #271 puts (value-change
-  callbacks of #272 wait for them). #123 (disabled callbacks stay cheap) is done.
+  framework regression (install needs approval); #309 variables' values; #310 release after a
+  deposit. #123, #270, #271, #272 are done.

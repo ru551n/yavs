@@ -218,10 +218,16 @@ pub struct Hierarchy {
     items: Vec<Item>,
     names: String,
     types: Vec<Arc<SigType>>,
+    signals: usize,
     pub skipped: Vec<Skipped>,
 }
 
 impl Hierarchy {
+    /// The number of signals declared.
+    pub fn signals(&self) -> usize {
+        self.signals
+    }
+
     fn text(&self, s: Str) -> &str {
         &self.names[s.at as usize..(s.at + s.len) as usize]
     }
@@ -418,6 +424,7 @@ impl HierarchyBuilder {
         }
         let ty = self.intern(ty);
         let name = self.put(name);
+        self.h.signals += 1;
         self.h.items.push(Item::Signal {
             name,
             id,

@@ -50,7 +50,7 @@ pub struct WaveConfig {
     /// A block is flushed on the next time advance once this much wall-clock time has passed, so
     /// a killed run still leaves a readable file.
     pub flush_interval: Duration,
-    /// Also flush after this many buffered changes.
+    /// Also flush after this many buffered changes (at least twice the number of signals).
     pub block_change_limit: usize,
     pub version: String,
 }
@@ -108,9 +108,12 @@ pub struct WaveWriter {
 impl WaveWriter {
     pub fn create(path: impl AsRef<Path>, h: &Hierarchy, cfg: WaveConfig) -> Result<Self, Error> {
         let file = BufWriter::new(File::create(path)?);
+        // A block starts with the value of every variable: with many variables, hold at least
+        // twice as many changes per block, or the blocks are mostly those values.
+        let block_change_limit = cfg.block_change_limit.max(2 * h.signals());
         let mut fst = FstWriter::builder(file)
             .timescale_exponent(cfg.timescale_exponent)
-            .block_change_limit(cfg.block_change_limit)
+            .block_change_limit(block_change_limit)
             .build()?;
         let mut w = Self {
             fst: None,

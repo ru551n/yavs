@@ -538,3 +538,42 @@ fn bad_value_length_is_an_error() {
     let mut w = WaveWriter::create(dir.path().join("e.fst"), &h, WaveConfig::default()).unwrap();
     assert!(w.change(0, n, &[1, 2]).is_err());
 }
+
+/// More signals than half the default block limit: the writer holds more changes per block,
+/// and every value still reads back.
+#[test]
+fn many_signals_round_trip() {
+    const N: u32 = 140_000;
+    let mut b = HierarchyBuilder::new(Selection::default());
+    let bit = Arc::new(SigType::Scalar(ScalarType::Enum(EnumType::bit())));
+    b.scope("t", ScopeKind::Instance, "t");
+    for i in 0..N {
+        b.signal_shared(
+            &format!("s{i}"),
+            SignalId(i),
+            &bit,
+            PortDir::None,
+            ObjClass::Signal,
+        );
+    }
+    b.up();
+    let h = b.finish();
+    assert_eq!(h.signals(), N as usize);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.fst");
+    let mut w = WaveWriter::create(&path, &h, WaveConfig::default()).unwrap();
+    for t in 0..3u64 {
+        for i in 0..N {
+            w.change(t, SignalId(i), &[((i as u64 + t) % 2) as u8])
+                .unwrap();
+        }
+    }
+    w.finish().unwrap();
+    let mut r = read(&path).unwrap();
+    for i in [0u32, 1, 70_000, N - 1] {
+        let want: Vec<_> = (0..3u64)
+            .map(|t| (t, ((i as u64 + t) % 2).to_string()))
+            .collect();
+        assert_eq!(changes(&mut r, &["t"], &format!("s{i}")), want);
+    }
+}

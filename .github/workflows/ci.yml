@@ -1,6 +1,6 @@
 # Root AGENTS.md rule 13 on the three release platforms (#134). Default features only: the LLVM
 # tier (`--features llvm`) needs an LLVM install and is not built here. The qemu/Wine ffi runs are not part of CI yet.
-# The `corpus` job gates the analysis corpora (#63) on Linux x86_64.
+# The `corpus` job gates the analysis corpora (#63) and the discrepancy cases on Linux x86_64.
 name: CI
 
 on:
@@ -62,3 +62,8 @@ jobs:
               || { failed="$failed $m"; echo "::group::$m differs"; grep -h '^DIFF\|differ from' "$RUNNER_TEMP/$m.log"; echo "::endgroup::"; }
           done
           test -z "$failed" || { echo "corpora differing from their expected lists:$failed"; exit 1; }
+      # Discrepancy cases (tests/discrepancies): yavs's output must match each expected-yavs.
+      # Reference simulators are not needed; only yavs is run.
+      - name: Check the discrepancy cases against expected-yavs
+        run: |
+          YAVS_BIN="$PWD/target/release/yavs" python3 tools/discrepancies/run.py --sims yavs --check --no-sandbox

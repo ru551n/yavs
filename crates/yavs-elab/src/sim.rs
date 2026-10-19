@@ -31,6 +31,8 @@ pub struct Ir {
     pub packages: Vec<yavs_lower::PackageIr>,
     /// Source files of the program's statements, for `std.env` call paths.
     pub sources: yavs_interp::Sources,
+    /// The std/ieee revision of the design.
+    pub revision: yavs_std::types::Revision,
     /// Bytes of the shared variables area (file objects of packages).
     pub shared_size: u32,
     /// The C function of each `program.foreign` entry, bound by the caller (`yavs run
@@ -244,6 +246,7 @@ impl Elaborated {
         let sources = yavs_interp::Sources::of(&lowered.program, &db.sources);
         self.ir = Some(Ir {
             sources,
+            revision: crate::pkgcall::revision_of(db),
             program: Arc::new(lowered.program),
             units,
             resolvers,
@@ -402,6 +405,7 @@ impl Elaborated {
             &ir.foreign_searched,
             &shared,
             time_resolution(cfg.resolution),
+            ir.revision,
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an
                 // external signal: its subprogram fails when called).

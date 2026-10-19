@@ -209,11 +209,15 @@ pub fn severity_level_type() -> EnumType {
 }
 
 pub fn file_open_kind_type(rev: Revision) -> EnumType {
-    let mut v = vec!["READ_MODE", "WRITE_MODE", "APPEND_MODE"];
-    if rev >= Revision::Vhdl2019 {
-        v.push("READ_WRITE_MODE");
+    match rev {
+        Revision::Vhdl2008 => EnumType::from_idents(&["READ_MODE", "WRITE_MODE", "APPEND_MODE"]),
+        Revision::Vhdl2019 => EnumType::from_idents(&[
+            "READ_MODE",
+            "READ_WRITE_MODE",
+            "WRITE_MODE",
+            "APPEND_MODE",
+        ]),
     }
-    EnumType::from_idents(&v)
 }
 
 pub fn file_open_status_type() -> EnumType {

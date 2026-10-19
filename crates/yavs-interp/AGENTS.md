@@ -41,6 +41,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 |---|---|---|
 | Interpreter is the semantic reference; `--threads 1`/`N` identical | Rules 3 and 5 | `docs/plan.md` rule 5; root `AGENTS.md` rule 3 |
 | A signal reference of several parts is mapped part by part onto `Ctx` in one step: reads concatenate, `'event`/`'active` any part, `'last_event` the most recent, drives split each waveform value and use each part's own driver slot; the parts' table lives in temporary memory | #71, LRM 16.2.4; no kernel change, same delta | ir.md 1.8 |
+| `Bindings::revision` must be set by whoever builds the runtime (elab does, from `Db::rev`): FILE_OPEN_KIND positions differ per revision (2019 has READ_WRITE_MODE second), as do INTEGER bounds and `vhdl_version` | #297 | `yavs_std::file::FileOpenKind::from_pos` |
 | Memory model: untyped u64 registers, 8 address spaces, every data-dependent access bounds-checked; out-of-object is an ICE, freed object a runtime error | Fail early, no UB | `docs/decisions.md` "IR and interpreter (M2)" |
 | Temporaries live until the next statement of their frame | Unconstrained results survive return without copy | same |
 | Natives by NATIVE.md symbol; undefined symbol fails `Runtime::new`, defined but unimplemented is a runtime error naming it | Fail early | same; `lib/NATIVE.md` |

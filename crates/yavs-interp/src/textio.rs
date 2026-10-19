@@ -76,9 +76,9 @@ pub(crate) fn file_info(m: &Machine, value: u64) -> R<(Vec<u8>, u64)> {
     Ok(match slot {
         FileSlot::Text(f) => {
             let kind = f.mode().map_err(file_err)?;
-            (f.logical_name().to_vec(), kind as u64)
+            (f.logical_name().to_vec(), kind.pos(m.rt.revision))
         }
-        FileSlot::Output { open: true } => (STD_OUTPUT.to_vec(), FileOpenKind::Write as u64),
+        FileSlot::Output { open: true } => (STD_OUTPUT.to_vec(), FileOpenKind::Write.pos(m.rt.revision)),
         FileSlot::Output { open: false } => return Err(file_err(FileError::NotOpen)),
     })
 }
@@ -312,13 +312,8 @@ impl Machine {
     }
 
     fn file_open(&mut self, cell: u64, name: &[u8], kind: u64) -> R<FileOpenStatus> {
-        let kind = match kind {
-            0 => FileOpenKind::Read,
-            1 => FileOpenKind::Write,
-            2 => FileOpenKind::Append,
-            3 => FileOpenKind::ReadWrite,
-            _ => return Err(ice(format!("FILE_OPEN_KIND position {kind}"))),
-        };
+        let kind = FileOpenKind::from_pos(kind, self.rt.revision)
+            .ok_or_else(|| ice(format!("FILE_OPEN_KIND position {kind}")))?;
         if self.file_state_of(cell)? {
             return Ok(FileOpenStatus::StatusError);
         }
@@ -541,7 +536,7 @@ fn file_mode(
         FileSlot::Output { open: true } => Ok(FileOpenKind::Write),
         FileSlot::Output { open: false } => Err(file_err(FileError::NotOpen)),
     })?;
-    Ok(Some(k as u64))
+    Ok(Some(k.pos(m.rt.revision)))
 }
 
 fn natural(v: impl TryInto<i64>, what: &str) -> R<Option<u64>> {

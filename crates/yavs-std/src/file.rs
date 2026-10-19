@@ -6,6 +6,7 @@
 //! before it (CRLF and stray CRs at the end of a line), and the last line
 //! may lack an LF. WRITELINE always writes LF, on every platform.
 
+use crate::types::Revision;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -17,6 +18,32 @@ pub enum FileOpenKind {
     Append,
     /// VHDL-2019.
     ReadWrite,
+}
+
+impl FileOpenKind {
+    /// The kind at position `pos` of FILE_OPEN_KIND: READ, WRITE, APPEND in 2008; READ,
+    /// READ_WRITE, WRITE, APPEND in 2019 (LRM 2019 5.5.2).
+    pub fn from_pos(pos: u64, rev: Revision) -> Option<Self> {
+        use FileOpenKind::*;
+        let table = match rev {
+            Revision::Vhdl2008 => &[Read, Write, Append][..],
+            Revision::Vhdl2019 => &[Read, ReadWrite, Write, Append][..],
+        };
+        table.get(pos as usize).copied()
+    }
+
+    /// The inverse of `from_pos` (READ_WRITE exists only in 2019).
+    pub fn pos(self, rev: Revision) -> u64 {
+        use FileOpenKind::*;
+        match (rev, self) {
+            (_, Read) => 0,
+            (Revision::Vhdl2008, Write) => 1,
+            (Revision::Vhdl2008, Append | ReadWrite) => 2,
+            (Revision::Vhdl2019, ReadWrite) => 1,
+            (Revision::Vhdl2019, Write) => 2,
+            (Revision::Vhdl2019, Append) => 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,6 +469,21 @@ pub fn path_of(name: &[u8]) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_kind_positions_follow_the_revision() {
+        use FileOpenKind::*;
+        for (rev, kinds) in [
+            (Revision::Vhdl2008, &[Read, Write, Append][..]),
+            (Revision::Vhdl2019, &[Read, ReadWrite, Write, Append][..]),
+        ] {
+            for (i, k) in kinds.iter().enumerate() {
+                assert_eq!(FileOpenKind::from_pos(i as u64, rev), Some(*k));
+                assert_eq!(k.pos(rev), i as u64);
+            }
+            assert_eq!(FileOpenKind::from_pos(kinds.len() as u64, rev), None);
+        }
+    }
 
     #[test]
     fn lines_and_seek() {

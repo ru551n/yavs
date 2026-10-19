@@ -118,6 +118,7 @@ pub(crate) fn init_packages(
     searched: &str,
     shared: &Arc<Mutex<SharedState>>,
     resolution: yavs_std::arith::TimeResolution,
+    revision: yavs_std::types::Revision,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
@@ -127,6 +128,7 @@ pub(crate) fn init_packages(
         foreign: foreign.to_vec(),
         searched: searched.to_string(),
         resolution,
+        revision,
         ..Default::default()
     };
     for p in packages {
@@ -136,6 +138,14 @@ pub(crate) fn init_packages(
         data.push(Arc::new(d));
     }
     Runtime::new(prog.clone(), bind(&data))
+}
+
+/// The std/ieee revision the design runs against (INTEGER bounds, FILE_OPEN_KIND, `vhdl_version`).
+pub(crate) fn revision_of(db: &Db) -> yavs_std::types::Revision {
+    match db.rev {
+        yavs_syntax::Std::Vhdl2019 => yavs_std::types::Revision::Vhdl2019,
+        yavs_syntax::Std::Vhdl2008 => yavs_std::types::Revision::Vhdl2008,
+    }
 }
 
 /// One call that ran with package state during elaboration, in elaboration order.
@@ -311,6 +321,7 @@ impl Session {
             "",
             &shared,
             yavs_std::arith::TimeResolution::Fs,
+            revision_of(db),
             |_, _| Ok(()),
         )
         .map_err(runtime)?;

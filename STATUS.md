@@ -78,7 +78,7 @@ component (generator output compiled and simulated) are not run by the driver.
 521 files in script order and runs each test (`yavs run`, release build of main at 2809229b, 4 in parallel). Pass = exit 0 and the
 library's own `DONE PASSED` summary line. 2008: 16 of 314 tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. The
 17 UART and Ethernet tests simulate but time out: their verification components are left unbound (#291). Every other failure
-ends at elaboration. 2019 (measured at 9c853ae6): the 2008 causes, plus `DynamicVectorGenericPkg` (#30) and `file_open` with `APPEND_MODE` (#297); 0 pass.
+ends at elaboration. 2019 (measured at 9c853ae6): the 2008 causes, plus `DynamicVectorGenericPkg` (#30) (`file_open` with `APPEND_MODE`, #297, is fixed since); 0 pass.
 
 | Test suite | Pass | Fail | First root cause (issues) |
 |---|---|---|---|

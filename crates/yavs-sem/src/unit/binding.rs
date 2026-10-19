@@ -934,7 +934,10 @@ impl Db {
             && matches!(self.decls[c].kind, DeclKind::Type(_) | DeclKind::Subtype(_))
             && !self.closely_related(self.base(st), self.base(back))
         {
-            let (from, to) = (self.type_name(self.base(st)), self.type_name(self.base(back)));
+            let (from, to) = (
+                self.type_name(self.base(st)),
+                self.type_name(self.base(back)),
+            );
             return Err(self.error(
                 Diagnostic::error(
                     diag::BAD_CONVERSION,

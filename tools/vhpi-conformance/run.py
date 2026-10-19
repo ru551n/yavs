@@ -11,7 +11,11 @@ output is then a three-way comparison per plugin and design: how many yavs trace
 sim4, both or neither. A line that matches neither is a candidate yavs gap; a line where the two
 references differ from each other is a reference quirk.
 
-Environment: YAVS_BIN (default `yavs` on PATH), SIM4_BIN (optional). Exit status 1 if any yavs
+SIM3_BIN (bin directory of the third reference, licence in LM_LICENSE_FILE) adds a run of it, which
+needs full design access (vopt) for puts; its trace is written next to the others and its match
+count with yavs is printed.
+
+Environment: YAVS_BIN (default `yavs` on PATH), SIM4_BIN and SIM3_BIN (optional). Exit status 1 if any yavs
 trace differs from sim1.
 Python 3 stdlib only.
 """
@@ -33,6 +37,7 @@ RUNS = {
     "cbs": [("hier", "hier")],
     "put": [("drive", "drive")],
     "nonprop": [("nonprop", "nonprop")],
+    "intvec": [("intvec", "intvec")],
 }
 SANDBOX = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 
@@ -42,7 +47,7 @@ def sh(cmd, cwd):
     return p.returncode, p.stdout, p.stderr
 
 
-NOTE = re.compile(r"^(\*\* Note: (\S+: )?|# VHPI: )")  # reference simulators print plugin output as notes
+NOTE = re.compile(r"^(\*\* Note: (\S+: )?|# VHPI: |# )")  # reference simulators print plugin output as notes
 
 
 def trace(out, err, rc):
@@ -86,6 +91,23 @@ def run_sim4(so, design, top, work):
     return trace(o, e, rc), o + e
 
 
+def run_sim3(so, design, top, work):
+    """Third reference: needs full design access (vopt) and loads the plugin by its startup table."""
+    bindir = os.environ["SIM3_BIN"]
+    f = str(HERE / "designs" / f"{design}.vhd")
+    work.mkdir(exist_ok=True)
+    (work / "run.do").write_text("run -all\nquit\n")
+    env_lic = os.environ.get("LM_LICENSE_FILE", "")
+    pre = ["env", f"SALT_LICENSE_SERVER={env_lic}"]
+    for step in ([f"{bindir}/vlib", "work"], [f"{bindir}/vcom", "-2008", f],
+                 [f"{bindir}/vopt", "-access=rw+/.", top, "-o", "opt"]):
+        rc, o, e = sh(pre + step, work)
+        if rc or re.search(r"[1-9]\d* Errors", o):
+            return None, f"{step[0].split('/')[-1]} failed: {o.strip().splitlines()[-1:]}"
+    rc, o, e = sh(pre + [f"{bindir}/vsim", "-c", "-vhpi", str(so), "opt", "-do", "run.do"], work)
+    return trace(o, e, rc), o + e
+
+
 def fold(l):
     """Case-folded line with the library separator unified: names are upper case in one reference."""
     return l.lower().replace("work:", "work.")
@@ -118,7 +140,8 @@ def main():
         for design, top in RUNS[name]:
             tag = f"{name}.{design}"
             res = {}
-            sims = [("sim1", run_ref), ("yavs", run_yavs)] + ([("sim4", run_sim4)] if "SIM4_BIN" in os.environ else [])
+            sims = [("sim1", run_ref), ("yavs", run_yavs)] + ([("sim4", run_sim4)] if "SIM4_BIN" in os.environ else []) \
+                + ([("sim3", run_sim3)] if "SIM3_BIN" in os.environ else [])
             for sim, fn in sims:
                 work = out / f"{tag}.{sim}.{'08' if sim == 'sim1' else 'work'}"
                 tr, err = fn(so, design, top, work)
@@ -144,6 +167,9 @@ def main():
                 cnt = {k: lab.count(k) for k in kinds}
                 agree = len(r4) - len(matched(r4, r1))
                 print(f"  three-way ({len(got)} yavs lines): both {cnt['both']}, sim1 only {cnt['sim1']}, sim4 only {cnt['sim4']}, neither {cnt['neither']}; case-folded; sim4 lines not in sim1: {agree}")
+            if "sim3" in res:
+                m3 = matched(list(map(fold, got)), list(map(fold, res["sim3"])))
+                print(f"  sim3: {len(m3)}/{len(got)} yavs lines matched; sim3 trace {len(res['sim3'])} lines")
             if a.show and diff:
                 print("\n".join(diff))
     print(f"traces and diffs in {out}")

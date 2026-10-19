@@ -22,6 +22,7 @@ extend the VHPI conformance run (#273).
 | `plugins/values.c` | Every signal read in every value format |
 | `plugins/cbs.c` | Callback reasons: registration, firing order, time and delta |
 | `plugins/nonprop.c`, `designs/nonprop.vhd` | The non-propagating put modes: accepted or not, the value, value-change callbacks and process events |
+| `plugins/intvec.c`, `designs/intvec.vhd` | An integer put into vectors: which bits each simulator takes, negative values, values that do not fit |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
 | `designs/hier.vhd`, `designs/drive.vhd` | The designs |
 
@@ -35,6 +36,7 @@ extend the VHPI conformance run (#273).
 | Times are printed in fs (callback time times the resolution) | Resolution defaults differ |
 | A zero diff is the goal, but not every difference is a yavs bug (for example the reference simulator reports upper-case names); judge each hunk, and file an issue for real ones | VHPI leaves details to the tool |
 
+| A third reference (`SIM3_BIN`, its bin directory, licence in `LM_LICENSE_FILE`) is run too: `vopt -access=rw+/.` for the design, the plugin loaded by its startup table (no function name), trace lines are prefixed `# `; its match count with yavs is printed, no table | Puts need full design access; sim3 refuses most callback reasons and some puts, so it is a vote, not a template |
 | A second reference (`SIM4_BIN`, the directory with its `vlib`, `vcom`, `vsim`; its licence variable must be set) gives a three-way table: each yavs line is `both` (matches the two references), `sim1`, `sim4` or `neither`, after case folding | A line only yavs has is a candidate gap; where the references differ from each other it is a reference quirk |
 | The plugins load the second reference through the exported `conf_boot` function (`PLUGIN_INIT` defines it) and look signals up in the first region below the root when the root is a wrapper | That reference has a dummy root above the design and loads by function name |
 

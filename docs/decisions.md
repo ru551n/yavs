@@ -239,8 +239,11 @@ milestone users care about works.
   time as `W0903`; calls yavs does not implement yet as `W0904`, once per distinct message.
 - **Simulation callbacks (#272):** a kernel `Observer` in the crate (`VhpiObserver`) runs them;
   the kernel got two phases for it, `EndOfInit` and `NextCycle`, and three more for #317:
-  `StartOfProcesses` and `EndOfProcesses` around every cycle's processes (both references with
-  VHPI fire end of processes there; one also start of processes) and `StartOfPostponed` (read-only,
+  `StartOfProcesses` and `EndOfProcesses` around every cycle's processes (all three references
+  with VHPI accept end of processes; sim1 and sim3 also fire it once after initialization's
+  process run, at cycle 0, sim4 does not: rule 15, majority of sim1/sim3/sim4, so yavs fires it
+  there too, before `EndOfInit`; start of processes is accepted by sim4 only and stays accepted,
+  rule 15(b), and never fires after initialization in sim4 or yavs) and `StartOfPostponed` (read-only,
   only when postponed processes run, as the one reference that accepts it fires it). IEEE VHPI has no read-write or
   read-only synch reason: the read-write phase is `vhpiCb[Rep]LastKnownDeltaCycle`
   (`Phase::LastKnownDelta`, puts there make one more delta) and the read-only phase
@@ -255,9 +258,14 @@ milestone users care about works.
   the update (after delay, next time step, start of cycle) are handed to the kernel at the
   start-of-processes phase of the same cycle, so they make a new delta as both references with
   VHPI do (#319). Identical at any thread count. An integer (`vhpiIntVal`) put into a logic
-  vector is its two's complement with the rightmost element least significant (the references
-  both accept it and disagree on the bits; the VHPI text gives no rule, this is the numeric
-  reading, agent, 2026-10-19). The non-propagating modes `vhpiDeposit` and `vhpiForce` on a
+  vector is its two's complement with the rightmost element least significant (rule 15: all
+  three references with VHPI were run (`tools/vhpi-conformance` plugin `intvec`). sim1 and sim4
+  accept the put and disagree on the bits (sim1 stores the integer as an enumeration position in
+  the leftmost element only, giving non-logic characters for most values), sim3 refuses it for
+  every value; acceptance is the majority. The bit reading is a 1-1 tie that sim3 does not
+  break, so it stays the numeric reading, which the VHPI text does not rule out; a value that
+  does not fit is refused, as no two references agree on it. Agent, 2026-10-19, flagged to the
+  user). The non-propagating modes `vhpiDeposit` and `vhpiForce` on a
   signal are misuse (`W0903`, return 1): two of the three references with VHPI refuse them, the
   third changes the value with no event and no delta (user, 2026-10-19: check that reference,
   then follow the majority; `tools/vhpi-conformance` plugin `nonprop`). A deposit sets the driving value until a source next updates those elements;

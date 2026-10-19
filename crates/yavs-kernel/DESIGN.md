@@ -97,7 +97,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    processes whose waited range overlaps a changed range.
 4. Run resumed non-postponed processes (parallel, below), between the `StartOfProcesses` and
    `EndOfProcesses` callbacks (every cycle, #317; at `EndOfProcesses` what the processes
-   scheduled is not applied yet).
+   scheduled is not applied yet). `EndOfProcesses` also fires once after initialization's
+   process run, before `EndOfInit` (majority of the reference simulators).
 5. If no delta follows: `LastKnownDelta` callback (it may queue deposits, which create a delta);
    if still none, run resumed postponed processes (after the `StartOfPostponed` callback, only
    when there are any) and call `EndOfTimeStep`. A postponed process

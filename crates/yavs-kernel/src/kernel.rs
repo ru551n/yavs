@@ -61,7 +61,7 @@ pub enum Phase {
     /// Every cycle, before its resumed non-postponed processes run (#317).
     StartOfProcesses,
     /// Every cycle, after its non-postponed processes ran: what they scheduled is not yet
-    /// applied (#317).
+    /// applied (#317). Also once after initialization's process run, before `EndOfInit`.
     EndOfProcesses,
     /// No further delta is scheduled at this time; ops queued here create one.
     LastKnownDelta,
@@ -798,6 +798,7 @@ impl SimControl {
                     p.ready = true;
                 }
                 self.run_batch((0..self.procs.len() as u32).collect(), false, true)?;
+                self.phase(Phase::EndOfProcesses);
                 self.phase(Phase::EndOfInit);
             }
             f(self)

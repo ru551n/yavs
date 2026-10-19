@@ -1007,3 +1007,5 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   Recorded in `docs/design/lrm-checks.md` L62.
 - **Implicit operations of a generic type in positional generic maps (L69, #223; user, 2026-10-19):**
   they take no position, with no warning; two of three reference simulators agree.
+- **Calls through aliases of methods of shared and process variables (L15, #237; user, 2026-10-19):**
+  stay accepted (permissive), although the reference simulators reject or crash on the calls.

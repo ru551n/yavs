@@ -298,7 +298,7 @@ An alias of a method of any other object (`alias push is sv.push [integer];` for
 variable of an architecture or package, or a process variable) is legal by 6.6.3 (a nonobject
 alias of a subprogram) and all three reference simulators analyze the declaration. Calls through
 it differ: two reference simulators crash (one at analysis, one at run time), the third rejects
-the call ("visible only by selection"). Decided (permissive, #237): the alias carries its object
+the call ("visible only by selection"). Decided (permissive, #237; user, 2026-10-19): the alias carries its object
 and a call through it runs the method on that object, as `sv.push(..)` would; the object is a
 simple or expanded name of an object or object alias, anything else is `E9999`
 (`protected/method_alias_objects` in the difftest corpus, `.expected` by hand).

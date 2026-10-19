@@ -38,7 +38,7 @@ every edit) and `lib/NATIVE.md` (native symbols) are the binding documents.
 | Old `rsim` comments in vendored files are kept | `SHA256SUMS` stays valid after the rename | `docs/decisions.md` "Project name" |
 | One `std`/`ieee` revision per design; mapping `std`/`ieee` as user libraries is an error | Same `INTEGER` everywhere (user, 2026-10-18) | `docs/plan.md` "Test-runner integration", `docs/cli-contract.md` 3 |
 | Synopsys packages deferred to M4b, clean room only; do not reproduce them from memory | User, 2026-10-18; root `AGENTS.md` rule 8 | `docs/plan.md` "Vendor libraries" |
-| `ieee/*/vital_*` (IEEE 1076.4 VITAL 2000) are vendored unmodified from the IEEE text; licence note `LICENSE-IEEE-VITAL`; `tools/update-ieee-libs.sh` preserves them; yavs-sem exempts them from E1830 | User decision 2026-10-19 (#118): do as the other simulators | `lib/SOURCES.md` "VITAL packages" |
+| `ieee/*/vital_*` (IEEE 1076.4 VITAL 2000) are vendored unmodified from the IEEE text; licence note `LICENSE-IEEE-VITAL`; `tools/update-ieee-libs.sh` preserves them; yavs-sem exempts a call of `NOW` in them from E1830 and the access-result rule for pure functions | User decision 2026-10-19 (#118): do as the other simulators | `lib/SOURCES.md` "VITAL packages" |
 | Licence: Apache-2.0 (IEEE P1076 WG), redistributable with yavs; nothing from the reference simulators | Licensing | `lib/README.md` "Licensing" |
 
 Decisions about these sources go in `SOURCES.md` (edits) or this section, in the same commit

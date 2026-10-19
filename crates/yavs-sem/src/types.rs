@@ -1444,7 +1444,7 @@ impl Db {
     /// A range constraint of type `base`.
     /// The access, file or (with `protected`) protected type in `t`, through composites
     /// (5.5, 6.4.2.2).
-    fn bad_elem(&self, t: TypeId, protected: bool) -> Option<(&'static str, TypeId)> {
+    pub(crate) fn bad_elem(&self, t: TypeId, protected: bool) -> Option<(&'static str, TypeId)> {
         match &self.types[t].kind {
             TypeKind::Access { .. } => Some(("access", t)),
             TypeKind::File { .. } => Some(("file", t)),

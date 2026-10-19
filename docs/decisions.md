@@ -49,8 +49,12 @@ milestone users care about works.
   (VITAL 2000) live in `lib/ieee/{2008,2019}/vital_*` byte for byte from the IEEE text (origin,
   cross-check and licence in `lib/SOURCES.md`, `lib/LICENSE-IEEE-VITAL`, shipped in the release
   archive). They run as plain VHDL: functional, zero-delay use (no SDF back-annotation). Their pure
-  functions call `NOW` (`GlitchMinTime`, ...), which LRM 4.3 forbids: units of `ieee` named
-  `vital_*` are exempt from E1830, user code is not. `tools/update-ieee-libs.sh` preserves them.
+  functions call `NOW` (`GlitchMinTime`, ...), which LRM 4.3 forbids: in units of `ieee` named
+  `vital_*` a call of `std.standard.now` is exempt from E1830, user code is not. The exemption is
+  exactly that call: reads of signals, variables and files and calls of other impure functions in
+  a vital pure function are still E1830. The same units are also exempt from the 4.2.1 rule that
+  a pure function's result is not of an access type and has no access subelement
+  (`VitalTimingDataInit`), which user code gets (E1830, L95). `tools/update-ieee-libs.sh` preserves them.
 - **No VHPI import library** (user, 2026-10-18). The release builds and ships no `yavs.lib`; a VHPI plugin brings its own
   import library for `yavs.exe`'s exports (Python testbench frameworks ship `.def` files per simulator). #124 is
   reduced to checking that the exports are there.

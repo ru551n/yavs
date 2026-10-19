@@ -148,9 +148,7 @@ impl Db {
         let body = self.seq_list(&mut cx, stmts);
         self.stmt_owners.pop();
         let body = body?;
-        if let SubprogramKind::Function { pure: true } = kind
-            && !self.in_vital_library(scope)
-        {
+        if let SubprogramKind::Function { pure: true } = kind {
             self.check_purity(decl, scope, &body);
         }
         Ok(body)
@@ -1335,6 +1333,7 @@ impl Db {
     fn check_purity(&mut self, f: DeclId, fscope: ScopeId, body: &[StmtId]) {
         let mut found: Vec<(Span, String)> = Vec::new();
         let fname = self.decl_name(f);
+        let vital = self.in_vital_library(fscope);
         let mut stack: Vec<StmtId> = body.to_vec();
         while let Some(s) = stack.pop() {
             let mut roots = Vec::new();
@@ -1364,6 +1363,11 @@ impl Db {
                     ExprKind::Call { callee, .. } => {
                         if let Some(sp) = self.decls[*callee].kind.subprogram()
                             && sp.kind == (SubprogramKind::Function { pure: false })
+                            // Vendored VITAL packages call `NOW` in pure functions; that
+                            // is the only exemption (decisions.md).
+                            && !(vital
+                                && self.decls[*callee].name.to_string() == "now"
+                                && self.in_std_library(self.decls[*callee].scope))
                         {
                             found.push((
                                 self.exprs[e].span,

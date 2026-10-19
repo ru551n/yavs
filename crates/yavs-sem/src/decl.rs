@@ -1285,6 +1285,27 @@ impl Db {
         if let (true, Some(r), Some(n)) = (method_2008, ret, &s.return_type) {
             self.check_not_access_or_file("protected method result", r, n.span, false)?;
         }
+        // 4.2.1 (2008, 2019): the result of a pure function is not of an access type and
+        // has no access subelement (clear; sim2 and sim4 reject, sim1 and sim3 accept).
+        // `--relaxed` makes it warning W1830. Vendored VITAL packages are exempt.
+        if let (SubprogramKind::Function { pure: true }, Some(r), Some(n)) =
+            (kind, ret, &s.return_type)
+            && !self.in_vital_library(scope)
+            && let Some((_, bad)) = self.bad_elem(self.base(r), false)
+            && matches!(self.types[bad].kind, crate::types::TypeKind::Access { .. })
+        {
+            let msg = format!(
+                "the result of pure function `{name}` is or contains access type `{}`",
+                self.type_name(bad)
+            );
+            let d = if self.opts.relaxed {
+                yavs_diag::Diagnostic::warning(crate::diag::W_PURE_IMPURE, msg)
+            } else {
+                yavs_diag::Diagnostic::error(crate::diag::PURE_SIDE_EFFECT, msg)
+                    .with_help("declare the function `impure`")
+            };
+            self.report(d.with_primary(n.span, "access type in the result of a pure function"));
+        }
         if let (Some(r), Some(ret)) = (s.return_ident, ret) {
             self.named_return(pscope, r, ret)?;
         }

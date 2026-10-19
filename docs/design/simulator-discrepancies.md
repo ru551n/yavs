@@ -208,6 +208,7 @@ and gives each library a legal identifier as its name.
 | `transaction-at-init` | `S'transaction` at initialization | 14.7.5.2 | LRM clear | OK* | OK* | OK | OK | OK | no toggle at time 0 | user, 2026-10-19 (#241) |
 | `external-name-subprogram-generate` | a relative external name in a subprogram of a block in each generate iteration | 8.7 | LRM clear | OK* | OK | OK | OK | OK | each iteration's own instance (sim1 binds the first iteration's for all) | agent, 2026-10-19 (#255, L86) |
 | `external-constant-run-time-value` | an external constant whose target is computed when its region is elaborated (`'path_name`) | 8.7, 16.2.5 | LRM clear | OK | OK* | OK | OK | OK | the target's value, read from its region's data (sim2 drops the instance from the path) | agent, 2026-10-19 (#255) |
+| `pure-function-returns-access` | a pure function whose result type is an access type or a record or array with access subelements | 4.2.1 | LRM clear | OK | REJECT | OK | REJECT | REJECT | E1830 (W1830 with `--relaxed`); vendored `ieee.vital_*` units exempt | agent, 2026-10-19 (#118, L95) |
 
 ## VHPI
 

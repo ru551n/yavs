@@ -1556,20 +1556,30 @@ impl<'a> Fx<'a, '_> {
         {
             return self.dope_of(expr).map(Some);
         }
-        // `x'element` of an object whose element bounds are open: the element part of the
-        // object's descriptor, after its own dimensions (rule 1).
-        if let Constraint::FromObject {
-            expr,
-            elem_depth: 1,
-        } = db.subtypes[st].constraint
+        // `x'element...` of an object whose element bounds are open: the part of the object's
+        // descriptor after the dimensions of the `elem_depth` outer levels (rule 1).
+        if let Constraint::FromObject { expr, elem_depth } = db.subtypes[st].constraint
+            && elem_depth > 0
             && !matches!(
                 db.subtypes[st].parent.map(|p| &db.subtypes[p].constraint),
                 Some(Constraint::Array { dims: Some(_), .. })
             )
-            && let TypeKind::Array { indexes, .. } = &db.types[db.base(db.exprs[expr].subtype)].kind
         {
+            let mut tid = self.ty(db.base(db.exprs[expr].subtype), span)?;
+            let mut off = 0;
+            for _ in 0..elem_depth {
+                let Some(Ty::Array { elem, dims, .. }) =
+                    self.fb.program().types().get(tid).cloned()
+                else {
+                    return Err(self
+                        .cx
+                        .ice(span, "'element of a non-array descriptor level"));
+                };
+                off += 24 * u32::from(dims);
+                tid = elem;
+            }
             let dope = self.dope_of(expr)?;
-            return Ok(Some(self.offset(dope, 24 * indexes.len() as u32)));
+            return Ok(Some(self.offset(dope, off)));
         }
         if self.is_general(db.base(st), span)? {
             return self.desc_of(st, None, span);

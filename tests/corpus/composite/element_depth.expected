@@ -1,0 +1,15 @@
+exit	0
+diag	note	0	0	:element_depth:i0:_p0	port2 4 1 1 4 4 false
+diag	note	0	0	:element_depth:i0:_p0	port3 6 3 4 5 2 false
+diag	note	0	0	:element_depth:i0:_p0	alias 4 4
+diag	note	1000000	0	:element_depth:_p0	var2 15 8 8
+diag	note	1000000	0	:element_depth:_p0	var2range 8
+diag	note	1000000	0	:element_depth:_p0	var3 2 5 4
+diag	note	1000000	0	:element_depth:_p0	sig2 4 4 4
+diag	note	1000000	0	:element_depth:_p0	sig3 6 4
+diag	note	1000000	0	:element_depth:_p0	p2s 4 1 1 4 4 false 0
+diag	note	1000000	0	:element_depth:_p0	p2v 15 8 8 15 8 false 0
+diag	note	1000000	0	:element_depth:_p0	p3s 6 3 3 6 4 false 4 5 2
+diag	note	1000000	0	:element_depth:_p0	p3v 2 5 2 5 4 true 4 0 1
+diag	note	1000000	0	:element_depth:_p0	const2 3 5 3 5 3 true 0 3
+diag	note	1000000	0	:element_depth:_p0	const3 9 7 7 9 3 false 3 0 0 9

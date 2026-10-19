@@ -1787,7 +1787,7 @@ impl Db {
             }
             "element" => match self.element_subtype(st) {
                 Some(e) => match self.subtypes[st].constraint {
-                    Constraint::FromObject { expr, .. } => {
+                    Constraint::FromObject { expr, elem_depth } => {
                         let base = self.base(e);
                         Ok(self.subtypes.push(SubtypeDef {
                             base,
@@ -1795,7 +1795,7 @@ impl Db {
                             parent: Some(e),
                             constraint: Constraint::FromObject {
                                 expr,
-                                elem_depth: 1,
+                                elem_depth: elem_depth + 1,
                             },
                             resolution: self.subtypes[e].resolution.clone(),
                             span: attr.span,

@@ -1066,3 +1066,6 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   is unaffected.
 - **Initial `'transaction` (L67, #241; user, 2026-10-19):** `S'transaction` does not toggle at
   initialization (LRM 14.7.5.2), as the third reference simulator and unlike the other two.
+- **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
+  prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
+  depth, summing the dimension cells, to find the descriptor part (#256).

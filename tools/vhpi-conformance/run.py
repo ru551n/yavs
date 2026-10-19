@@ -5,7 +5,14 @@ traces (the plugin's "T " lines plus the exit status) are diffed.
 
     tools/vhpi-conformance/run.py [--only PLUGIN[,..]] [--show] [--out DIR]
 
-Environment: YAVS_BIN (default `yavs` on PATH). Exit status 1 if any trace differs.
+A second reference simulator (sim4, also implements VHPI) is used when SIM4_BIN names its bin
+directory (the one with vlib, vcom and vsim; the simulator's licence variable must be set). The
+output is then a three-way comparison per plugin and design: how many yavs trace lines match sim1,
+sim4, both or neither. A line that matches neither is a candidate yavs gap; a line where the two
+references differ from each other is a reference quirk.
+
+Environment: YAVS_BIN (default `yavs` on PATH), SIM4_BIN (optional). Exit status 1 if any yavs
+trace differs from sim1.
 Python 3 stdlib only.
 """
 import argparse
@@ -34,7 +41,7 @@ def sh(cmd, cwd):
     return p.returncode, p.stdout, p.stderr
 
 
-NOTE = re.compile(r"^\*\* Note: (\S+: )?")  # a reference simulator prints plugin output as notes
+NOTE = re.compile(r"^(\*\* Note: (\S+: )?|# VHPI: )")  # reference simulators print plugin output as notes
 
 
 def trace(out, err, rc):
@@ -65,6 +72,32 @@ def run_ref(so, design, top, work):
     return trace(o, e, rc), e
 
 
+def run_sim4(so, design, top, work):
+    bindir = os.environ["SIM4_BIN"]
+    f = str(HERE / "designs" / f"{design}.vhd")
+    work.mkdir(exist_ok=True)  # the run directory; the library is its `work`
+    (work / "run.do").write_text("run -all\nquit\n")
+    for step in ([f"{bindir}/vlib", "work"], [f"{bindir}/vcom", "-2008", f]):
+        rc, o, e = sh(step, work)
+        if rc or re.search(r"[1-9]\d* Errors", o):
+            return None, f"{step[0].split('/')[-1]} failed: {o.strip().splitlines()[-1:]}"
+    rc, o, e = sh([f"{bindir}/vsim", "-c", "-loadvhpi", f"{so}:conf_boot", top, "-do", "run.do"], work)
+    return trace(o, e, rc), o + e
+
+
+def fold(l):
+    """Case-folded line with the library separator unified: names are upper case in one reference."""
+    return l.lower().replace("work:", "work.")
+
+
+def matched(a, b):
+    """Indices of a that are in the longest common subsequence with b."""
+    idx = set()
+    for blk in difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks():
+        idx.update(range(blk.a, blk.a + blk.size))
+    return idx
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--only", help="comma separated plugin names")
@@ -84,7 +117,8 @@ def main():
         for design, top in RUNS[name]:
             tag = f"{name}.{design}"
             res = {}
-            for sim, fn in (("sim1", run_ref), ("yavs", run_yavs)):
+            sims = [("sim1", run_ref), ("yavs", run_yavs)] + ([("sim4", run_sim4)] if "SIM4_BIN" in os.environ else [])
+            for sim, fn in sims:
                 work = out / f"{tag}.{sim}.{'08' if sim == 'sim1' else 'work'}"
                 tr, err = fn(so, design, top, work)
                 (out / f"{tag}.{sim}.err").write_text(err if isinstance(err, str) else "")
@@ -100,6 +134,15 @@ def main():
             ok = ref == got
             bad += not ok
             print(f"{'PASS' if ok else 'DIFF'} {tag}: {same}/{len(ref)} reference lines matched, yavs {len(got)} lines")
+            if "sim4" in res:
+                g, r1, r4 = (list(map(fold, x)) for x in (got, ref, res["sim4"]))
+                m1, m4 = matched(g, r1), matched(g, r4)
+                kinds = ["neither", "sim1", "sim4", "both"]
+                lab = [kinds[(i in m1) + 2 * (i in m4)] for i in range(len(got))]
+                (out / f"{tag}.three").write_text("".join(f"{k:8} {l}\n" for k, l in zip(lab, got)))
+                cnt = {k: lab.count(k) for k in kinds}
+                agree = len(r4) - len(matched(r4, r1))
+                print(f"  three-way ({len(got)} yavs lines): both {cnt['both']}, sim1 only {cnt['sim1']}, sim4 only {cnt['sim4']}, neither {cnt['neither']}; case-folded; sim4 lines not in sim1: {agree}")
             if a.show and diff:
                 print("\n".join(diff))
     print(f"traces and diffs in {out}")

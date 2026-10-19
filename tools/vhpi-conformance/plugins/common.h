@@ -51,7 +51,20 @@ static const char *S(vhpiStrPropertyT p, vhpiHandleT h) {
 /* ":a:b" is a full name; anything else is relative to the design root. */
 static vhpiHandleT lookup(const char *name) {
   if (name[0] == ':') return vhpi_handle_by_name(name, NULL);
-  return vhpi_handle_by_name(name, vhpi_handle(vhpiRootInst, NULL));
+  vhpiHandleT root = vhpi_handle(vhpiRootInst, NULL);
+  vhpiHandleT h = vhpi_handle_by_name(name, root);
+  if (h) return h;
+  /* A simulator whose root is a wrapper above the design: retry in its first region. */
+  vhpiHandleT it = vhpi_iterator(vhpiInternalRegions, root);
+  vhpiHandleT top = it ? vhpi_scan(it) : NULL;
+  if (top) {
+    h = vhpi_handle_by_name(name, top);
+    if (h) {
+      vhpiErrorInfoT e;
+      vhpi_check_error(&e);
+    }
+  }
+  return h;
 }
 
 /* Time in fs, from the callback time or vhpi_get_time. */
@@ -145,7 +158,9 @@ static void plugin_register(void) {
 #else
 #define PLUGIN_EXPORT
 #endif
-#define PLUGIN_INIT(fn) PLUGIN_EXPORT void (*vhpi_startup_routines[])(void) = {fn, NULL};
+#define PLUGIN_INIT(fn) \
+  PLUGIN_EXPORT void (*vhpi_startup_routines[])(void) = {fn, NULL}; \
+  PLUGIN_EXPORT void conf_boot(void) { fn(); }
 #define PLUGIN_START(fn) \
   static void plugin_init(void) { plugin_body = fn; plugin_register(); } \
   PLUGIN_INIT(plugin_init)

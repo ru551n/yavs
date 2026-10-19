@@ -43,7 +43,7 @@ testbenches) fail in analysis on #290 instead.
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 0 | 36 | 0 | report during elaboration #299 (22); alias of a locally static constant in a subprogram #300 (12); record aggregate target #302 (1); `'delayed(0 ns)'last_event` actual #286 (1) |
+| uvvm_util | 0 | 36 | 0 | report during elaboration #299 (22); alias of a locally static constant in a subprogram #300 (12); record aggregate target #302 (1); `'delayed(0 ns)'last_event` #286 is fixed |
 | uvvm_assertions | 0 | 2 | 0 | #299 |
 | uvvm_vvc_framework | 0 | 3 | 0 | #299 |
 | bitvis_irqc | 0 | 2 | 0 | #299 |
@@ -57,7 +57,7 @@ testbenches) fail in analysis on #290 instead.
 | bitvis_vip_clock_generator | 0 | 1 | 0 | #299 |
 | bitvis_vip_error_injection | 0 | 2 | 0 | #299 |
 | bitvis_vip_gmii | 0 | 2 | 0 | #299 |
-| bitvis_vip_sbi | 0 | 2 | 0 | #299 (1); `'range` of a record element of a signal #287 (1) |
+| bitvis_vip_sbi | 0 | 2 | 0 | #299 (1); `'range` of a record element of a signal #287 is fixed |
 | bitvis_vip_ethernet | 0 | 3 | 1 | #299; 1 skipped: third-party design files absent from the pinned checkout |
 | bitvis_vip_gpio | 0 | 1 | 0 | #299 |
 | bitvis_vip_i2c | 0 | 0 | 1 | skipped: third-party design files absent from the pinned checkout |

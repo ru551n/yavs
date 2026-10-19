@@ -637,9 +637,18 @@ through the observer's `Hook` (signals) or the elaborated value (generics, const
 buffer-size protocol. `crates/yavs/tests/vhpi_run.rs` `plugin_reads_values_in_every_format`
 (C plugin `tests/plugin/values.c`, 27 objects by 22 formats, against `tests/values/expected.txt`)
 plus unit tests; every value the reference simulator with VHPI reports correctly agrees.
-Missing: type and constraint objects (`vhpiBaseType`, `vhpiType`, `vhpiConstraints`, enum
-literals, record element and unit declarations), variables' values, `vhpiPtrVal`,
-`vhpiRawDataVal`, `vhpiSmallPhys*`, records as a whole (`W0904`).
+Types (`crates/yavs-vhpi/src/types.rs`, a table built with the snapshot): `vhpiType` (and the
+2008 `vhpiSubtype`) of declarations and sub-elements, `vhpiBaseType`, `vhpiElemType`,
+`vhpiConstraints` (integer, enumeration, floating and physical ranges with `vhpiLeftBoundP`,
+`vhpiRightBoundP`, `vhpiIsUpP`, `vhpiIsNullP`, the float and physical bound properties),
+`vhpiEnumLiterals`, `vhpiRecordElems`, `vhpiUnitDecls`, `vhpiNumLiteralsP`,
+`vhpiNumDimensionsP`, `vhpiNumFieldsP`, `vhpiIsUnconstrainedP`, `vhpiIsScalarP`,
+`vhpiIsAnonymousP`, `vhpiPositionP`, `vhpiPhysPositionP`; the same plugin dumps every object's
+type, and it agrees with the reference simulator on kinds, names, bases, bounds, dimensions,
+literals and fields (yavs also gives enumeration and floating ranges and unit names).
+Missing: variables' values, `vhpiPtrVal`, `vhpiRawDataVal`, `vhpiSmallPhys*`, records as a
+whole (`W0904`); the element subtype of a resolved array subtype (`std_logic_vector`'s
+elements report `STD_ULOGIC`).
 
 ## discrepancies (simulator catalogue)
 

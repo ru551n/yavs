@@ -28,6 +28,7 @@ use yavs_sem::types::{Constraint, RangeC, TypeKind};
 use yavs_sem::{Db, DeclId, SubtypeId, TypeId, UnitId};
 
 use crate::sys::*;
+use crate::types::{Bound, Def, Range, Ty, TyId, Types};
 use crate::value::{Lit, Scalar};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -84,6 +85,8 @@ pub(crate) struct Node {
     pub(crate) mode: Option<vhpiModeT>,
     /// The sub-element structure of an object; `None` for regions and design units.
     pub(crate) layout: Option<Layout>,
+    /// An object's type (`vhpiType`), in `Design::types`.
+    pub(crate) ty: Option<TyId>,
     pub(crate) origin: Origin,
 }
 
@@ -197,6 +200,15 @@ impl Dim {
     }
 }
 
+fn range_kind(sc: &Scalar) -> vhpiClassKindT {
+    match sc {
+        Scalar::Enum { .. } => vhpiEnumRangeK,
+        Scalar::Int => vhpiIntRangeK,
+        Scalar::Real => vhpiFloatRangeK,
+        Scalar::Phys { .. } => vhpiPhysRangeK,
+    }
+}
+
 fn index_at(b: Bounds, p: u64) -> i64 {
     match b.dir {
         Direction::To => b.left + p as i64,
@@ -241,6 +253,7 @@ pub(crate) fn vhpi_name(s: &str) -> String {
 pub(crate) struct Design {
     pub(crate) nodes: Vec<Node>,
     pub(crate) packages: Vec<NodeId>,
+    pub(crate) types: Types,
     /// `vhpiFullNameP` of every region and declaration.
     by_name: HashMap<String, NodeId>,
 }
@@ -273,6 +286,7 @@ impl Design {
             def_name: None,
             mode: None,
             layout: None,
+            ty: None,
             origin: Origin::Named,
         });
         d
@@ -282,6 +296,7 @@ impl Design {
         Design {
             nodes: Vec::new(),
             packages: Vec::new(),
+            types: Types::default(),
             by_name: HashMap::new(),
         }
     }
@@ -294,9 +309,12 @@ impl Design {
             d: Design::empty(),
             units: HashMap::new(),
             scalars: RefCell::default(),
+            types: RefCell::default(),
+            base_tys: RefCell::default(),
         };
         b.region(ScopeId(0), None);
         b.packages();
+        b.d.types = b.types.into_inner();
         b.d
     }
 
@@ -419,6 +437,9 @@ struct Builder<'a> {
     units: HashMap<UnitId, NodeId>,
     /// Scalar types by base type: enumeration literals are shared.
     scalars: RefCell<HashMap<TypeId, Scalar>>,
+    types: RefCell<Types>,
+    /// Type declarations by base type.
+    base_tys: RefCell<HashMap<TypeId, TyId>>,
 }
 
 impl Builder<'_> {
@@ -463,6 +484,7 @@ impl Builder<'_> {
             def_name: None,
             mode: None,
             layout: None,
+            ty: None,
             origin: Origin::Unit(u),
         });
         self.units.insert(u, n);
@@ -531,6 +553,7 @@ impl Builder<'_> {
             def_name,
             mode: None,
             layout: None,
+            ty: None,
             origin: Origin::Scope(s),
         });
         // After the region itself: the root instance is the first node.
@@ -606,6 +629,7 @@ impl Builder<'_> {
                 )
             }
         };
+        let ty = self.object_ty(o.subtype, &layout, s);
         let mode = match (kind, o.mode.as_ref()) {
             (vhpiPortDeclK, Some(m)) => Some(match m {
                 Mode::In => vhpiInMode,
@@ -632,6 +656,7 @@ impl Builder<'_> {
             def_name: None,
             mode,
             layout: Some(layout),
+            ty: Some(ty),
             origin,
         });
     }
@@ -662,6 +687,7 @@ impl Builder<'_> {
                 def_name: None,
                 mode: None,
                 layout: None,
+                ty: None,
                 origin: Origin::Unit(u),
             });
             self.d.packages.push(n);
@@ -822,6 +848,15 @@ impl Builder<'_> {
         let RangeC::Explicit { left, dir, right } = r else {
             return None;
         };
+        Some(Bounds {
+            left: self.fold(*left, s)?.as_int()?,
+            dir: *dir,
+            right: self.fold(*right, s)?.as_int()?,
+        })
+    }
+
+    /// A static expression, or one that folds with the generics and constants of region `s`.
+    fn fold(&self, x: yavs_sem::ExprId, s: Option<ScopeId>) -> Option<ConstValue> {
         let (db, e) = (self.db, self.e);
         let mut operand = |x: yavs_sem::ExprId| -> Option<ConstValue> {
             if let Some(v) = db.value(x) {
@@ -832,16 +867,156 @@ impl Builder<'_> {
                 _ => None,
             }
         };
-        let mut bound = |x| {
-            operand(x)
-                .or_else(|| db.fold_with(x, &mut operand).ok().flatten())?
-                .as_int()
+        operand(x).or_else(|| db.fold_with(x, &mut operand).ok().flatten())
+    }
+
+    /// The type of an object of subtype `st` laid out as `layout` (elaborated bounds) in
+    /// region `s`: its type declaration or named subtype when the bounds are their own, else
+    /// an anonymous subtype.
+    fn object_ty(&self, st: SubtypeId, layout: &Layout, s: Option<ScopeId>) -> TyId {
+        let db = self.db;
+        let t = db.base(st);
+        // Open bounds (an element of a base type): the subtype's own.
+        let own_layout = self.layout(st, None, None);
+        let layout = if *layout == Layout::Open {
+            &own_layout
+        } else {
+            layout
         };
-        Some(Bounds {
-            left: bound(*left)?,
-            dir: *dir,
-            right: bound(*right)?,
-        })
+        let own = own_layout == *layout;
+        if own && st == db.types[t].first_subtype {
+            return self.base_ty(t);
+        }
+        let base = self.base_ty(t);
+        let mut ty = self.ty_of(st, layout, s);
+        ty.base = Some(base);
+        ty.kind = vhpiSubtypeDeclK;
+        if let (true, Some(n)) = (own, db.subtypes[st].name) {
+            ty.name = n.text.to_string();
+        } else {
+            ty.anonymous = true;
+        }
+        self.types.borrow_mut().add(ty)
+    }
+
+    /// The declaration of type `t`, with the bounds of its first subtype.
+    fn base_ty(&self, t: TypeId) -> TyId {
+        if let Some(&id) = self.base_tys.borrow().get(&t) {
+            return id;
+        }
+        let fs = self.db.types[t].first_subtype;
+        let ty = self.ty_of(fs, &self.layout(fs, None, None), None);
+        let id = self.types.borrow_mut().add(ty);
+        self.base_tys.borrow_mut().insert(t, id);
+        id
+    }
+
+    /// Kind, name, structure and ranges of subtype `st` laid out as `layout`, as a type
+    /// declaration (the caller makes a subtype of it).
+    fn ty_of(&self, st: SubtypeId, layout: &Layout, s: Option<ScopeId>) -> Ty {
+        let db = self.db;
+        let t = db.base(st);
+        let td = &db.types[t];
+        let (kind, def, ranges) = match (&td.kind, layout) {
+            (TypeKind::Array { indexes, elem }, _) => {
+                let (dims, el) = match layout {
+                    Layout::Array { dims, elem } => (Some(dims), &**elem),
+                    _ => (None, &Layout::Open),
+                };
+                let ranges = dims.map(|ds| {
+                    ds.iter()
+                        .zip(indexes.iter())
+                        .map(|(d, &ix)| {
+                            let int = |v| Bound::Int(v);
+                            Range {
+                                kind: range_kind(&self.scalar(db.base(ix))),
+                                left: int(d.bounds.left),
+                                right: int(d.bounds.right),
+                                up: d.bounds.dir == Direction::To,
+                            }
+                        })
+                        .collect()
+                });
+                let def = Def::Array {
+                    elem: self.object_ty(*elem, el, s),
+                    dims: indexes.len() as u32,
+                };
+                (vhpiArrayTypeDeclK, def, ranges)
+            }
+            (TypeKind::Record { elems }, _) => {
+                let fields = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, el)| {
+                        let fl = match layout {
+                            Layout::Record(fs) => fs.get(i).map_or(&Layout::Open, |f| &f.1),
+                            _ => &Layout::Open,
+                        };
+                        (el.name.text.to_string(), self.object_ty(el.subtype, fl, s))
+                    })
+                    .collect();
+                (vhpiRecordTypeDeclK, Def::Record(fields), None)
+            }
+            (k, _) => {
+                let sc = self.scalar(t);
+                let kind = match k {
+                    TypeKind::Enum { .. } => vhpiEnumTypeDeclK,
+                    TypeKind::Floating | TypeKind::UniversalReal => vhpiFloatTypeDeclK,
+                    TypeKind::Physical { .. } => vhpiPhysTypeDeclK,
+                    _ => vhpiIntTypeDeclK,
+                };
+                let units = match k {
+                    TypeKind::Physical { units } => units
+                        .iter()
+                        .map(|u| (db.decls[u.decl].name.to_string(), u.scale))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let ranges = self.scalar_range(st, &sc, s).map(|r| vec![r]);
+                (kind, Def::Scalar(sc, units), ranges)
+            }
+        };
+        Ty {
+            kind,
+            name: td.name.text.to_string(),
+            anonymous: false,
+            base: None,
+            def,
+            ranges,
+        }
+    }
+
+    /// The range of scalar subtype `st`: its constraint, else its type's.
+    fn scalar_range(&self, st: SubtypeId, sc: &Scalar, s: Option<ScopeId>) -> Option<Range> {
+        let db = self.db;
+        let td = &db.types[db.base(st)];
+        let kind = range_kind(sc);
+        match &db.subtypes[st].constraint {
+            Constraint::Range(RangeC::Explicit { left, dir, right }) => {
+                let bound = |v: ConstValue| match v {
+                    ConstValue::Real(r) => Some(Bound::Real(r)),
+                    v => v.as_int().map(Bound::Int),
+                };
+                Some(Range {
+                    kind,
+                    left: bound(self.fold(*left, s)?)?,
+                    right: bound(self.fold(*right, s)?)?,
+                    up: *dir == Direction::To,
+                })
+            }
+            _ if st != td.first_subtype => self.scalar_range(td.first_subtype, sc, None),
+            _ => match sc {
+                Scalar::Enum { lits, .. } => Some(Range {
+                    kind,
+                    left: Bound::Int(0),
+                    right: Bound::Int(lits.len() as i64 - 1),
+                    up: true,
+                }),
+                // ponytail: an integer, floating or physical type without a folded range
+                // has no constraint object; the base range of Q2 when a plugin needs it.
+                _ => None,
+            },
+        }
     }
 }
 

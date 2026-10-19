@@ -163,6 +163,13 @@ unsafe extern "C" {
 
 // ---- Data symbols ------------------------------------------------------
 
+fn phys_of(v: i64) -> vhpiPhysT {
+    vhpiPhysT {
+        high: (v >> 32) as i32,
+        low: v as u32,
+    }
+}
+
 const fn phys(fs: u64) -> vhpiPhysT {
     vhpiPhysT {
         high: (fs >> 32) as i32,
@@ -330,10 +337,23 @@ pub extern "C" fn vhpi_get_str(prop: vhpiStrPropertyT, h: vhpiHandleT) -> *const
     })
 }
 
+/// Floating bounds of a range constraint.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_get_real(_prop: vhpiRealPropertyT, _h: vhpiHandleT) -> vhpiRealT {
-    not_implemented("vhpi_get_real");
-    0.0
+pub extern "C" fn vhpi_get_real(prop: vhpiRealPropertyT, h: vhpiHandleT) -> vhpiRealT {
+    with_state(|s| {
+        let Some(obj) = get_obj(s, h, "vhpi_get_real") else {
+            return 0.0;
+        };
+        match &obj {
+            Object::Type(o) => s.design.types.real_property(*o, prop),
+            _ => None,
+        }
+        .unwrap_or_else(|| {
+            let known = matches!(prop, vhpiFloatLeftBoundP | vhpiFloatRightBoundP);
+            no_property(s, "vhpi_get_real", prop, &obj, known);
+            0.0
+        })
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -341,6 +361,19 @@ pub extern "C" fn vhpi_get_phys(prop: vhpiPhysPropertyT, h: vhpiHandleT) -> vhpi
     with_state(|s| {
         if prop == vhpiResolutionLimitP && h.is_null() {
             return phys(s.clock.resolution.fs());
+        }
+        let known = matches!(
+            prop,
+            vhpiPhysLeftBoundP | vhpiPhysRightBoundP | vhpiPhysPositionP
+        );
+        if known && let Some(obj) = get_obj(s, h, "vhpi_get_phys") {
+            if let Object::Type(o) = obj
+                && let Some(v) = s.design.types.phys_property(o, prop)
+            {
+                return phys_of(v);
+            }
+            no_property(s, "vhpi_get_phys", prop, &obj, true);
+            return vhpiPhysT::default();
         }
         s.fail(
             Fault::Unsupported,

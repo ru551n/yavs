@@ -25,6 +25,7 @@ mod design;
 mod model;
 mod plugin;
 mod sim;
+mod types;
 mod value;
 
 pub use model::Control;

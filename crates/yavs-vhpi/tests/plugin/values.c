@@ -1,7 +1,9 @@
 /* Test VHPI plugin: reads objects of every kind in every vhpi_get_value
  * format, first with no buffer (the call returns the size it needs) and then
  * with one. A signal is read at the start of simulation, from an after-delay
- * callback, and everything at the end. The output is compared with
+ * callback, and everything at the end, then the type of each object: kind,
+ * name, base type, constraints, element type, literals, fields and units.
+ * The output is compared with
  * tests/values/expected.txt.
  * SPDX-License-Identifier: MIT OR Apache-2.0 */
 
@@ -101,6 +103,7 @@ static void show(const vhpiValueT *v) {
  * the size the first asked for. */
 static void read_one(vhpiHandleT h, const char *name, int f, const char *fname) {
   vhpiValueT v;
+  vhpiErrorInfoT err;
   int rc;
   memset(&v, 0, sizeof v);
   v.format = f;
@@ -118,13 +121,96 @@ static void read_one(vhpiHandleT h, const char *name, int f, const char *fname) 
   } else if (rc == 0) {
     show(&v);
   }
-  if (rc < 0 && vhpi_check_error(NULL)) put(" error");
+  if (rc < 0 && vhpi_check_error(&err)) put(" error");
   flush();
+}
+
+static const char *str(vhpiStrPropertyT p, vhpiHandleT h) {
+  const vhpiCharT *v = vhpi_get_str(p, h);
+  return v ? (const char *)v : "-";
+}
+
+/* Kind and name of a type, its base, constraints and parts, on one line. */
+static void dump_type(vhpiHandleT t, int depth) {
+  vhpiHandleT b, it, x;
+  int kind = vhpi_get(vhpiKindP, t);
+  put(" %s:%s", str(vhpiKindStrP, t), str(vhpiNameP, t));
+  b = vhpi_handle(vhpiBaseType, t);
+  if (b) {
+    put(" base=%s", str(vhpiNameP, b));
+    if (kind == vhpiSubtypeDeclK) kind = vhpi_get(vhpiKindP, b);
+  } else {
+    b = t;
+  }
+  if ((it = vhpi_iterator(vhpiConstraints, t)) != NULL) {
+    put(" [");
+    while ((x = vhpi_scan(it)) != NULL) {
+      int k = vhpi_get(vhpiKindP, x);
+      if (k == vhpiFloatRangeK)
+        put(" %g %s %g", vhpi_get_real(vhpiFloatLeftBoundP, x),
+            vhpi_get(vhpiIsUpP, x) ? "to" : "downto",
+            vhpi_get_real(vhpiFloatRightBoundP, x));
+      else if (k == vhpiPhysRangeK)
+        put(" %d:%u %s %d:%u", (int)vhpi_get_phys(vhpiPhysLeftBoundP, x).high,
+            (unsigned)vhpi_get_phys(vhpiPhysLeftBoundP, x).low,
+            vhpi_get(vhpiIsUpP, x) ? "to" : "downto",
+            (int)vhpi_get_phys(vhpiPhysRightBoundP, x).high,
+            (unsigned)vhpi_get_phys(vhpiPhysRightBoundP, x).low);
+      else
+        put(" %d %s %d", vhpi_get(vhpiLeftBoundP, x),
+            vhpi_get(vhpiIsUpP, x) ? "to" : "downto", vhpi_get(vhpiRightBoundP, x));
+      vhpi_release_handle(x);
+    }
+    put(" ]");
+  }
+  switch (kind) {
+  case vhpiArrayTypeDeclK:
+    put(" dims=%d unconstrained=%d", vhpi_get(vhpiNumDimensionsP, b),
+        vhpi_get(vhpiIsUnconstrainedP, t));
+    if ((x = vhpi_handle(vhpiElemType, b)) != NULL && depth < 2) {
+      put(" elem(");
+      dump_type(x, depth + 1);
+      put(" )");
+    }
+    break;
+  case vhpiEnumTypeDeclK:
+    put(" literals=%d", vhpi_get(vhpiNumLiteralsP, b));
+    if ((it = vhpi_iterator(vhpiEnumLiterals, b)) != NULL) {
+      int n = 0;
+      while ((x = vhpi_scan(it)) != NULL) {
+        if (n++ < 4) put(" %s@%d", str(vhpiNameP, x), vhpi_get(vhpiPositionP, x));
+        vhpi_release_handle(x);
+      }
+    }
+    break;
+  case vhpiRecordTypeDeclK:
+    if ((it = vhpi_iterator(vhpiRecordElems, b)) != NULL)
+      while ((x = vhpi_scan(it)) != NULL) {
+        vhpiHandleT ft = vhpi_handle(vhpiType, x);
+        put(" %s@%d:", str(vhpiNameP, x), vhpi_get(vhpiPositionP, x));
+        put("%s", ft ? str(vhpiNameP, ft) : "-");
+        vhpi_release_handle(x);
+      }
+    break;
+  case vhpiPhysTypeDeclK:
+    if ((it = vhpi_iterator(vhpiUnitDecls, b)) != NULL)
+      while ((x = vhpi_scan(it)) != NULL) {
+        vhpiPhysT u = vhpi_get_phys(vhpiPhysPositionP, x);
+        put(" %s=%d:%u", str(vhpiNameP, x), (int)u.high, (unsigned)u.low);
+        vhpi_release_handle(x);
+      }
+    break;
+  default:
+    break;
+  }
 }
 
 static void read_cnt(const vhpiCbDataT *cb) {
   vhpiHandleT h = vhpi_handle_by_name("cnt", root());
-  put("t=%u ", (unsigned)cb->time->low);
+  vhpiTimeT now;
+  (void)cb;
+  vhpi_get_time(&now, NULL);
+  put("t=%u ", (unsigned)now.low);
   read_one(h, "cnt", vhpiIntVal, "Int");
 }
 
@@ -140,6 +226,13 @@ static void read_all(const vhpiCbDataT *cb) {
     }
     for (f = 0; fmts[f].n; f++) read_one(h, names[i], fmts[f].f, fmts[f].n);
     vhpi_release_handle(h);
+  }
+  for (i = 0; names[i]; i++) {
+    vhpiHandleT h = vhpi_handle_by_name(names[i], root());
+    vhpiHandleT t = h ? vhpi_handle(vhpiType, h) : NULL;
+    put("type %s:", names[i]);
+    if (t) dump_type(t, 0);
+    flush();
   }
   /* A NULL buffer pointer also asks for the size; a short one does too. */
   {

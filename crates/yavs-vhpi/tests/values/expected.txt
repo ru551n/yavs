@@ -594,4 +594,31 @@ cnt IntVec rc=-1 error
 cnt RealVec rc=-1 error
 cnt TimeVec rc=-1 error
 cnt Ptr rc=-1 error
+type sl: vhpiSubtypeDeclK:STD_LOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3
+type slv: vhpiSubtypeDeclK:STD_ULOGIC_VECTOR base=STD_ULOGIC_VECTOR [ 7 downto 0 ] dims=1 unconstrained=0 elem( vhpiEnumTypeDeclK:STD_ULOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3 )
+type sv: vhpiSubtypeDeclK:STD_ULOGIC_VECTOR base=STD_ULOGIC_VECTOR [ 0 to 5 ] dims=1 unconstrained=0 elem( vhpiEnumTypeDeclK:STD_ULOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3 )
+type bv: vhpiSubtypeDeclK:BIT_VECTOR base=BIT_VECTOR [ 0 to 3 ] dims=1 unconstrained=0 elem( vhpiEnumTypeDeclK:BIT base=BIT [ 0 to 1 ] literals=2 '0'@0 '1'@1 )
+type b: vhpiEnumTypeDeclK:BIT base=BIT [ 0 to 1 ] literals=2 '0'@0 '1'@1
+type bo: vhpiEnumTypeDeclK:BOOLEAN base=BOOLEAN [ 0 to 1 ] literals=2 FALSE@0 TRUE@1
+type i: vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
+type r: vhpiFloatTypeDeclK:REAL base=REAL [ -1.79769e+308 to 1.79769e+308 ]
+type t: vhpiPhysTypeDeclK:TIME base=TIME [ -2147483648:0 to 2147483647:4294967295 ] FS=0:1 PS=0:1000 NS=0:1000000 US=0:1000000000 MS=232:3567587328 SEC=232830:2764472320 MIN=13969838:2659581952 HR=838190317:661127168
+type d: vhpiPhysTypeDeclK:DIST_T base=DIST_T [ 0:0 to 0:1000000 ] MM=0:1 M=0:1000
+type st: vhpiEnumTypeDeclK:STATE_T base=STATE_T [ 0 to 2 ] literals=3 IDLE@0 RUN@1 DONE@2
+type s: vhpiSubtypeDeclK:STRING base=STRING [ 1 to 5 ] dims=1 unconstrained=0 elem( vhpiEnumTypeDeclK:CHARACTER base=CHARACTER [ 0 to 255 ] literals=256 NUL@0 SOH@1 STX@2 ETX@3 )
+type ch: vhpiEnumTypeDeclK:CHARACTER base=CHARACTER [ 0 to 255 ] literals=256 NUL@0 SOH@1 STX@2 ETX@3
+type rec: vhpiRecordTypeDeclK:REC_T base=REC_T A@0:STD_LOGIC B@1:INTEGER C@2:STD_ULOGIC_VECTOR
+type rec.a: vhpiSubtypeDeclK:STD_LOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3
+type rec.b: vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
+type rec.c: vhpiSubtypeDeclK:STD_ULOGIC_VECTOR base=STD_ULOGIC_VECTOR [ 3 downto 0 ] dims=1 unconstrained=0 elem( vhpiEnumTypeDeclK:STD_ULOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3 )
+type mem: vhpiArrayTypeDeclK:MEM_T base=MEM_T [ 0 to 1 0 to 2 ] dims=2 unconstrained=0 elem( vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ] )
+type mem(1,2): vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
+type iv: vhpiSubtypeDeclK:INTEGER_VECTOR base=INTEGER_VECTOR [ 0 to 2 ] dims=1 unconstrained=0 elem( vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ] )
+type iv(1): vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
+type rv: vhpiSubtypeDeclK:REAL_VECTOR base=REAL_VECTOR [ 0 to 1 ] dims=1 unconstrained=0 elem( vhpiFloatTypeDeclK:REAL base=REAL [ -1.79769e+308 to 1.79769e+308 ] )
+type slv(5): vhpiEnumTypeDeclK:STD_ULOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3
+type p: vhpiSubtypeDeclK:STD_ULOGIC_VECTOR base=STD_ULOGIC_VECTOR [ 3 downto 0 ] dims=1 unconstrained=0 elem( vhpiEnumTypeDeclK:STD_ULOGIC base=STD_ULOGIC [ 0 to 8 ] literals=9 'U'@0 'X'@1 '0'@2 '1'@3 )
+type g: vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
+type k: vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
+type cnt: vhpiIntTypeDeclK:INTEGER base=INTEGER [ -2147483648 to 2147483647 ]
 short buffer rc=6

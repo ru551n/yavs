@@ -15,6 +15,7 @@ use yavs_sem::stat::{ConstValue, Elems};
 use crate::callbacks::{Callbacks, Clock};
 use crate::design::{Design, Layout, NodeId, Origin, ROOT, vhpi_name};
 use crate::sys::*;
+use crate::types::{TyId, TypeObj};
 use crate::value::{Read, Scalar};
 
 /// What a handle points at.
@@ -34,6 +35,8 @@ pub(crate) enum Object {
         path: Box<[u64]>,
     },
     Iter(Iter),
+    /// A type, range constraint, enumeration literal, record element or unit (`types.rs`).
+    Type(TypeObj),
 }
 
 /// The state of a `vhpi_iterator`.
@@ -181,6 +184,13 @@ pub(crate) enum Fault {
     NotFound,
 }
 
+/// The one-to-one relations of type objects (`types.rs`).
+macro_rules! TYPE_RELATIONS {
+    () => {
+        vhpiBaseType | vhpiType | DEPRECATED_vhpiSubtype | vhpiElemType | DEPRECATED_vhpiElemSubtype
+    };
+}
+
 /// The properties `State::int_property` and `State::str_property` implement.
 pub(crate) const INT_PROPS: &[vhpiIntPropertyT] = &[
     vhpiKindP,
@@ -191,9 +201,22 @@ pub(crate) const INT_PROPS: &[vhpiIntPropertyT] = &[
     vhpiModeP,
     vhpiIsCompositeP,
     vhpiSizeP,
+    vhpiNumLiteralsP,
+    vhpiNumDimensionsP,
+    vhpiNumFieldsP,
+    DEPRECATED_vhpiNumFieldsP,
+    vhpiIsUnconstrainedP,
+    vhpiIsScalarP,
+    vhpiIsAnonymousP,
+    vhpiPositionP,
+    vhpiLeftBoundP,
+    vhpiRightBoundP,
+    vhpiIsUpP,
+    vhpiIsNullP,
 ];
 pub(crate) const STR_PROPS: &[vhpiStrPropertyT] = &[
     vhpiNameP,
+    vhpiUnitNameP,
     vhpiCaseNameP,
     vhpiFullNameP,
     vhpiFullCaseNameP,
@@ -390,6 +413,17 @@ impl State {
         }
     }
 
+    /// The type of a declaration or sub-element.
+    fn obj_ty(&self, obj: &Object) -> Option<TyId> {
+        match obj {
+            Object::Node(n) => self.design.node(*n).ty,
+            Object::Elem { base, path } => {
+                self.design.types.elem(self.design.node(*base).ty?, path)
+            }
+            _ => None,
+        }
+    }
+
     /// The declaration an object is or is part of.
     fn base(obj: &Object) -> Option<NodeId> {
         match obj {
@@ -404,6 +438,7 @@ impl State {
             Object::Argv(_) => vhpiArgvK,
             Object::Callback(_) => vhpiCallbackK,
             Object::Iter(_) => vhpiIteratorK,
+            Object::Type(o) => self.design.types.kind(*o),
             Object::Node(n) => self.design.node(*n).kind,
             Object::Elem { base, path } => {
                 self.design
@@ -435,6 +470,9 @@ impl State {
             (Object::Tool, vhpiNameP) => "yavs".into(),
             (Object::Argv(i), vhpiStrValP) => self.argv[*i].clone(),
             (Object::Tool, vhpiToolVersionP) => env!("CARGO_PKG_VERSION").into(),
+            (Object::Type(o), _) if prop != vhpiKindStrP => {
+                return self.design.types.str_property(*o, prop);
+            }
             (_, vhpiKindStrP) => {
                 let k = i64::from(self.kind(obj));
                 VHPICLASSKINDT_VALUES
@@ -457,6 +495,7 @@ impl State {
         let node = Self::base(obj).map(|n| self.design.node(n));
         Some(match (obj, prop) {
             (_, vhpiKindP) => self.kind(obj),
+            (Object::Type(o), _) => return self.design.types.int_property(*o, prop),
             (Object::Callback(i), vhpiStateP) => self.cbs.get(*i)?.state,
             (Object::Callback(i), vhpiReasonP) => self.cbs.get(*i)?.data.reason,
             (Object::Tool, vhpiArgcP) => vhpiIntT::try_from(self.argv.len()).ok()?,
@@ -507,6 +546,25 @@ impl State {
                     },
                 })
             }
+            (
+                vhpiType | DEPRECATED_vhpiSubtype | vhpiBaseType,
+                Some(o @ (Object::Node(_) | Object::Elem { .. })),
+            ) => {
+                let t = self.obj_ty(o).ok_or(false)?;
+                let t = if kind == vhpiBaseType {
+                    self.design.types.base(t)
+                } else {
+                    t
+                };
+                Ok(Object::Type(TypeObj::Ty(t)))
+            }
+            (TYPE_RELATIONS!(), Some(Object::Type(o))) => self
+                .design
+                .types
+                .one_to_one(kind, *o)
+                .map(Object::Type)
+                .ok_or(false),
+            (TYPE_RELATIONS!(), _) => Err(false),
             (vhpiDesignUnit | vhpiPrimaryUnit | vhpiUpperRegion | vhpiImmRegion, _) => Err(false),
             (vhpiPrefix | vhpiParent, Some(Object::Node(_))) => Err(false),
             _ => Err(true),
@@ -522,6 +580,23 @@ impl State {
     ) -> Result<Option<Iter>, bool> {
         let list =
             |items: Vec<Object>| Ok((!items.is_empty()).then_some(Iter::List { items, next: 0 }));
+        if matches!(
+            rel,
+            vhpiConstraints | vhpiEnumLiterals | vhpiRecordElems | vhpiUnitDecls
+        ) {
+            // A declaration iterates its type's constraints.
+            let t = match reference {
+                Some(Object::Type(TypeObj::Ty(t))) => Some(*t),
+                Some(o @ (Object::Node(_) | Object::Elem { .. })) if rel == vhpiConstraints => {
+                    self.obj_ty(o)
+                }
+                _ => None,
+            };
+            let items = t
+                .and_then(|t| self.design.types.iterate(rel, t))
+                .ok_or(false)?;
+            return list(items.into_iter().map(Object::Type).collect());
+        }
         let decls = |n: NodeId, k: Option<vhpiClassKindT>| {
             list(
                 self.design

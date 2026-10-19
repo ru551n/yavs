@@ -182,7 +182,9 @@ enumeration, logic, integer, real, time and physical values and their vectors).
 ``vhpiObjTypeVal`` reports the object's own format; a buffer that is too small makes the call
 return the size it needs. Enumeration values are positions: a ``std_ulogic`` gives ``vhpiU`` to
 ``vhpiDontCare``, ``bit`` and ``boolean`` give 0 and 1. A format that does not fit the value is a
-``W0903`` warning and returns -1, never a converted value. Writing values and value-change
+``W0903`` warning and returns -1, never a converted value. The type of an object
+(``vhpiType``, ``vhpiBaseType``, ``vhpiElemType``) shows its kind, name, range constraints,
+enumeration literals, record elements and physical units. Writing values and value-change
 callbacks are not implemented yet.
 
 Plusargs

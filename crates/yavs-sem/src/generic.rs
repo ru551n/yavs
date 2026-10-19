@@ -2758,8 +2758,13 @@ impl Db {
                     Actual::Individual(parts) => Actual::Individual(
                         parts
                             .iter()
-                            .map(|(path, e, f)| {
-                                (self.r_path(r, path), self.r_expr(r, *e), self.r_expr(r, *f))
+                            .map(|(path, e, f, inertial)| {
+                                (
+                                    self.r_path(r, path),
+                                    self.r_expr(r, *e),
+                                    self.r_expr(r, *f),
+                                    *inertial,
+                                )
                             })
                             .collect(),
                     ),

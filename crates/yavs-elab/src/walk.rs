@@ -34,7 +34,8 @@ enum A {
     Local(DeclId),
     Open,
     Default,
-    Parts(Vec<(Vec<LspStep>, ExprId)>),
+    /// Sub-element associations: path, actual and whether it was written `inertial`.
+    Parts(Vec<(Vec<LspStep>, ExprId, bool)>),
     /// The actual of a generic type, subprogram or package.
     Generic(GenericActual),
     Conv {
@@ -67,7 +68,9 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
             Actual::Expr(e) => A::Expr(*e, a.inertial),
             Actual::Default => A::Default,
             Actual::Open => A::Open,
-            Actual::Individual(p) => A::Parts(p.iter().map(|(s, e, _)| (s.to_vec(), *e)).collect()),
+            Actual::Individual(p) => {
+                A::Parts(p.iter().map(|(s, e, _, i)| (s.to_vec(), *e, *i)).collect())
+            }
             Actual::Subtype(st) => A::Generic(GenericActual::Subtype(*st)),
             Actual::Subprogram(d) => A::Generic(GenericActual::Subprogram(*d)),
             Actual::Package(i) => A::Generic(GenericActual::Package(*i)),
@@ -1274,11 +1277,16 @@ impl Elab<'_> {
                 let fo = self
                     .m
                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
-                for (steps, e) in parts {
+                for (steps, e, inertial) in parts {
                     let espan = self.db.exprs[*e].span;
                     let fsels = self.m.steps(self.db, None, steps, sc, espan)?;
                     let (fl, fshape) = self.m.select(fo, &fsels, espan)?;
-                    let Some((ao, asels)) = self.m.name_ref(self.db, *e, sc)? else {
+                    // `inertial` makes even a signal name an expression actual (LRM 6.5.6.3).
+                    let name = match self.m.name_ref(self.db, *e, sc)? {
+                        Some(_) if *inertial => None,
+                        n => n,
+                    };
+                    let Some((ao, asels)) = name else {
                         if mode != PortMode::In {
                             return Err(Box::new(ice(espan, "expression actual of a non-in port")));
                         }
@@ -3074,7 +3082,7 @@ impl Model {
         db: &Db,
         s: ScopeId,
         st: yavs_sem::SubtypeId,
-        parts: &[(Vec<LspStep>, ExprId)],
+        parts: &[(Vec<LspStep>, ExprId, bool)],
         sc: ScopeId,
         span: Span,
     ) -> R<Shape> {
@@ -3087,7 +3095,7 @@ impl Model {
             ));
         };
         let mut lh: Vec<Option<(i64, i64)>> = vec![None; indexes.len()];
-        for (steps, e) in parts {
+        for (steps, e, _) in parts {
             let espan = db.exprs[*e].span;
             let Some(first) = self
                 .steps(db, None, &steps[..1.min(steps.len())], sc, espan)?

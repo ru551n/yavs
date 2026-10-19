@@ -444,8 +444,8 @@ them driven by their equivalent IR process one delta later (records leaf by leaf
 the instance's generics checked, expression actuals in a binding indication's port map),
 static expression parts in the formal's initial value, unconstrained formals bounded by a
 static value or a conversion function's result subtype, type conversions of record ports and
-arrays of composites (#74). Not yet: `inertial` signal-name actuals are expression actuals
-(#233).
+arrays of composites (#74), `inertial` signal-name actuals as expression actuals, whole
+formals (#233) and parts of an individual association (#261).
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data

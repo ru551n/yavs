@@ -691,7 +691,11 @@ a note and a help suggesting an access type, as the reference simulators reject 
   port, as the reference simulator. An unconstrained formal takes the bounds of a static
   value, and those of a conversion function's constrained result subtype; a non-static
   expression without a globally static subtype is E2111 (LRM 6.5.6.3 is clear, both
-  reference simulators reject). Still open: `inertial` signal-name actuals (#233).
+  reference simulators reject). `inertial` signal-name actuals are expression actuals (#233),
+  also on a part of an individual association (#261, LRM 6.5.6.3 is clear; the reference
+  simulators split: one follows the LRM, one ignores `inertial` on a part, one does not parse
+  it; `docs/design/lrm-checks.md` L80): the HIR keeps the reserved word per part
+  (`IndividualPart`), and an `inertial` part of a port that is not `in` is E1360.
 
 - **Aliases of external signal names** (#19, LRM 6.6.2, 8.7, 14.4.1): `alias s is
   <<signal .tb.dut.x : t>>;` in an architecture, block, generate or process binds when the

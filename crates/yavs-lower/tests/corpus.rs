@@ -105,6 +105,7 @@ const PASS: &[&str] = &[
     "hierarchy/external_variable",
     "hierarchy/incremental_binding",
     "hierarchy/inertial_port_actual",
+    "hierarchy/inertial_port_parts",
     "hierarchy/instance_path_names",
     "hierarchy/instance_process_order",
     "hierarchy/process_local_names",

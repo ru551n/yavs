@@ -131,8 +131,9 @@ pub struct Arg {
     pub inertial: bool,
 }
 
-/// One part of an individual association: its path, actual and formal part.
-pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId);
+/// One part of an individual association: its path, actual, formal part and whether the actual
+/// was written `inertial` (an expression actual even for a signal name, LRM 6.5.6.3).
+pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId, bool);
 
 #[derive(Clone)]
 pub enum Actual {

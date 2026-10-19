@@ -1360,13 +1360,26 @@ impl Db {
                 )));
                 continue;
             };
+            let inertial = matches!(a.actual, ast::Actual::Inertial(_));
+            if inertial
+                && matches!(&self.decls[f].kind, DeclKind::Object(o) if o.mode != Some(Mode::In))
+            {
+                errs.keep::<()>(Err(self.error(
+                    Diagnostic::error(
+                        diag::CLASS_MISUSE,
+                        "an `inertial` actual (an expression) is only allowed for an `in` port",
+                    )
+                    .with_primary(e.span, "not allowed here"),
+                )));
+                continue;
+            }
             let st = self.exprs[fe].subtype;
             let id = self.expr_in_subtype(scope, e, st);
             if self.is_poison_expr(id) {
                 errs.0 = true;
                 continue;
             }
-            out.push((steps.into_boxed_slice(), id, fe));
+            out.push((steps.into_boxed_slice(), id, fe, inertial));
         }
         if !errs.0 && out.len() == parts.len() {
             let spans: Vec<Span> = parts.iter().map(|p| p.1).collect();
@@ -1385,7 +1398,7 @@ impl Db {
     fn check_contiguous(
         &mut self,
         f: DeclId,
-        out: &[(Box<[crate::hir::LspStep]>, ExprId, ExprId)],
+        out: &[crate::hir::IndividualPart],
         spans: &[Span],
     ) -> Result<(), Reported> {
         use crate::hir::{Direction, LspStep, RangeC};

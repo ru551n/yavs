@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:inertial_port_parts:m:_p0	i=00 r.a='0' r.b='0' @0 fs
+diag	note	5000000	0	:inertial_port_parts:m:_p0	i=00 r.a='1' r.b='0' @5000000 fs
+diag	note	5000000	1	:inertial_port_parts:m:_p0	i=10 r.a='1' r.b='0' @5000000 fs
+diag	note	7000000	0	:inertial_port_parts:m:_p0	i=11 r.a='1' r.b='0' @7000000 fs
+diag	note	7000000	1	:inertial_port_parts:m:_p0	i=11 r.a='1' r.b='1' @7000000 fs
+diag	note	10000000	0	:inertial_port_parts:m:_p0	i=11 r.a='0' r.b='1' @10000000 fs
+diag	note	10000000	1	:inertial_port_parts:m:_p0	i=01 r.a='0' r.b='1' @10000000 fs

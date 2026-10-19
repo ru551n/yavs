@@ -208,6 +208,15 @@ pub(crate) struct Machine {
     waits: Waits,
     /// Stop when the entry frame jumps to this block (a process's body, #342).
     pub pause: Option<yavs_ir::BlockId>,
+    /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
+    /// and the layout words written. Layouts are pure functions of type and descriptor.
+    layouts: Vec<Option<LayoutMemo>>,
+}
+
+struct LayoutMemo {
+    dsz: u64,
+    desc: Vec<u8>,
+    words: Vec<u8>,
 }
 
 fn sev(v: u64) -> R<Severity> {
@@ -308,10 +317,36 @@ fn blocks_of(bytes: &[u8]) -> Vec<[u64; 4]> {
 }
 
 fn bytes_of(blocks: &[[u64; 4]]) -> Vec<u8> {
-    blocks
-        .iter()
-        .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
-        .collect()
+    let mut out = Vec::with_capacity(blocks.len() * 32);
+    for w in blocks.as_flattened() {
+        out.extend_from_slice(&w.to_le_bytes());
+    }
+    out
+}
+
+/// The bytes of constant `c`: compact constants are expanded once per runtime (rule 12).
+fn const_bytes(rt: &Runtime, c: yavs_ir::ConstId) -> R<&[u8]> {
+    match rt.prog.consts.get(c) {
+        Some(ConstData::Bytes(b)) => Ok(b),
+        Some(d) => {
+            let cell = rt
+                .expanded
+                .get(c.0 as usize)
+                .ok_or_else(|| ice(format!("no constant {c}")))?;
+            if cell.get().is_none() {
+                let _ = cell.set(expand_const(d)?);
+            }
+            Ok(cell.get().map(Vec::as_slice).unwrap_or(&[]))
+        }
+        None => Err(ice(format!("no constant {c}"))),
+    }
+}
+
+/// Plane `p` of the 64-element block at `b` (32 bytes, plane words little endian).
+fn plane_word(b: &[u8], p: usize) -> u64 {
+    let mut w = [0u8; 8];
+    w.copy_from_slice(&b[p * 8..p * 8 + 8]);
+    u64::from_le_bytes(w)
 }
 
 fn get_bits(words: &[[u64; 4]], start: u64, m: u64, p: usize) -> u64 {
@@ -377,6 +412,7 @@ impl Machine {
             dbg: None,
             waits: Waits::default(),
             pause: None,
+            layouts: Vec::new(),
         }
     }
 
@@ -670,21 +706,7 @@ impl Machine {
                         .data
                 }
             },
-            CONST => match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
-                Some(ConstData::Bytes(b)) => b,
-                Some(c) => {
-                    let cell = self
-                        .rt
-                        .expanded
-                        .get(idx as usize)
-                        .ok_or_else(|| ice(format!("no constant c{idx}")))?;
-                    if cell.get().is_none() {
-                        let _ = cell.set(expand_const(c)?);
-                    }
-                    cell.get().map(Vec::as_slice).unwrap_or(&[])
-                }
-                None => return Err(ice(format!("no constant c{idx}"))),
-            },
+            CONST => const_bytes(&self.rt, yavs_ir::ConstId(idx))?,
             HEAP => self
                 .heap
                 .data(idx)
@@ -1443,13 +1465,9 @@ impl Machine {
                 self.set(dst, a);
             }
             Inst::CopyConst { dst, c } => {
-                let bytes = expand_const(
-                    prog.consts
-                        .get(c)
-                        .ok_or_else(|| ice(format!("no constant {c}")))?,
-                )?;
+                let rt = self.rt.clone();
                 let a = self.r(dst);
-                self.put(a, &bytes)?;
+                self.put(a, const_bytes(&rt, c)?)?;
             }
             Inst::Alloc { dst, size } => {
                 let a = self.temp_alloc(self.r(size))?;
@@ -1752,8 +1770,8 @@ impl Machine {
             }
             Inst::LGet { dst, base, idx } => {
                 let i = self.r(idx);
-                let b = blocks_of(self.rd(add_addr(self.r(base), i / 64 * 32)?, 32)?);
-                let code = (0..4).fold(0u64, |c, p| c | (b[0][p] >> (i % 64) & 1) << p);
+                let b = self.rd(add_addr(self.r(base), i / 64 * 32)?, 32)?;
+                let code = (0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p);
                 self.set(dst, code);
             }
             Inst::LSet { base, idx, v } => {
@@ -1763,11 +1781,12 @@ impl Machine {
                     return Err(ice(format!("std_ulogic code {code}")));
                 }
                 let a = add_addr(self.r(base), i / 64 * 32)?;
-                let mut b = blocks_of(self.rd(a, 32)?);
+                let b = self.wr(a, 32)?;
+                let s = i % 64;
                 for p in 0..4 {
-                    set_bits(&mut b, i % 64, 1, p, code >> p & 1);
+                    let w = plane_word(b, p) & !(1 << s) | (code >> p & 1) << s;
+                    b[p * 8..p * 8 + 8].copy_from_slice(&w.to_le_bytes());
                 }
-                self.put(a, &bytes_of(&b))?;
             }
             Inst::LCopy {
                 dst,
@@ -1843,24 +1862,39 @@ impl Machine {
                 self.set(dst, n);
             }
             Inst::LayoutOf { dst, ty, desc } => {
-                let dsz = Ty::desc_size(&prog.types, ty)
-                    .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?;
-                let d = self.rd(self.r(desc), dsz)?.to_vec();
-                let (l, _) =
-                    Ty::layout(&prog.types, &prog.consts, ty, &d).map_err(|e| match e {
+                let t = ty.0 as usize;
+                if self.layouts.len() <= t {
+                    self.layouts.resize_with(t + 1, || None);
+                }
+                let mut memo = self.layouts[t].take();
+                let dsz = match &memo {
+                    Some(m) => m.dsz,
+                    None => Ty::desc_size(&prog.types, ty)
+                        .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?,
+                };
+                let d = self.rd(self.r(desc), dsz)?;
+                if memo.as_ref().is_none_or(|m| m.desc != d) {
+                    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
                         LayoutError::TooLarge => Fault::Runtime(e.to_string()),
                         LayoutError::Malformed(_) => ice(e.to_string()),
                     })?;
-                let mut words = vec![l.size, l.align];
-                if l.offsets.is_empty() {
-                    words.extend([l.stride, l.count]);
-                } else {
-                    words.extend(&l.offsets);
+                    let mut words = vec![l.size, l.align];
+                    if l.offsets.is_empty() {
+                        words.extend([l.stride, l.count]);
+                    } else {
+                        words.extend(&l.offsets);
+                    }
+                    memo = Some(LayoutMemo {
+                        dsz,
+                        desc: d.to_vec(),
+                        words: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+                    });
                 }
-                let a = self.temp_alloc(words.len() as u64 * 8)?;
-                let b: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-                self.put(a, &b)?;
+                let m = memo.ok_or_else(|| ice("layout memo missing"))?;
+                let a = self.temp_alloc(m.words.len() as u64)?;
+                self.put(a, &m.words)?;
                 self.set(dst, a);
+                self.layouts[t] = Some(m);
             }
             Inst::SubtypeCheck {
                 dope,

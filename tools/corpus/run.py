@@ -57,7 +57,7 @@ def main():
     ap.add_argument("--tool", choices=sorted(TEMPLATES), default="yavs")
     ap.add_argument("--cmd")
     ap.add_argument("--root", action="append", default=[])
-    ap.add_argument("--out", help="library directory (default ~/.cache/rsim-corpora/<tool>-<name>)")
+    ap.add_argument("--out", help="library directory (default ~/.cache/yavs-corpus-out/<tool>-<name>-<pid>, unique per run)")
     ap.add_argument("--expected", help="expected-results list ('none' to skip the comparison)")
     ap.add_argument("--keep-going", action="store_true")
     ap.add_argument("--bless", action="store_true", help="write the expected list from this (complete) run")
@@ -80,7 +80,7 @@ def main():
         if d is None:
             die(f"source {s['id']} not found under {[str(r) for r in roots]}; run tools/fetch-corpus.sh")
         base[s["id"]] = d
-    out = Path(a.out or f"~/.cache/rsim-corpora/{a.tool}-{name}").expanduser()
+    out = Path(a.out or f"~/.cache/yavs-corpus-out/{a.tool}-{name}-{os.getpid()}").expanduser()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
 

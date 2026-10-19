@@ -1658,9 +1658,14 @@ impl Db {
     pub fn formal_conv_subtype(&self, fe: ExprId) -> Option<SubtypeId> {
         match &self.exprs[fe].kind {
             ExprKind::Conv { to, .. } => Some(*to),
-            ExprKind::Call { callee, .. } => {
-                Some(self.decls[*callee].kind.subprogram()?.params.first()?.subtype)
-            }
+            ExprKind::Call { callee, .. } => Some(
+                self.decls[*callee]
+                    .kind
+                    .subprogram()?
+                    .params
+                    .first()?
+                    .subtype,
+            ),
             _ => None,
         }
     }

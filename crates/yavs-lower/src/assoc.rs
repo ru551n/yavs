@@ -156,9 +156,9 @@ impl Fx<'_, '_> {
                     Some(c) if db.constrainedness(p.subtype) != Constrainedness::Full => {
                         db.exprs[c].subtype
                     }
-                    _ if db.constrainedness(p.subtype) != Constrainedness::Full => db
-                        .formal_conv_subtype(copy_out)
-                        .unwrap_or(p.subtype),
+                    _ if db.constrainedness(p.subtype) != Constrainedness::Full => {
+                        db.formal_conv_subtype(copy_out).unwrap_or(p.subtype)
+                    }
                     _ => p.subtype,
                 };
                 let Some(dope) = self.subtype_dope(st, span)? else {

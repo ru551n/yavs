@@ -720,9 +720,20 @@ impl Db {
                 Mode::View { .. } => self.view_driven_paths(mode),
                 _ => continue,
             };
+            // (actual, driven paths below it): an individual association's parts each
+            // cover the part of the view their formal part names.
             let mut es = Vec::new();
-            self.walk_actual_top(&a.actual, Use::Target, &mut |e, _| es.push(e));
-            for e in es {
+            match &a.actual {
+                Actual::Individual(parts) if matches!(mode, Mode::View { .. }) => {
+                    for (steps, e, _, _) in parts.iter() {
+                        es.push((*e, self.view_driven_below(mode, steps)));
+                    }
+                }
+                _ => self.walk_actual_top(&a.actual, Use::Target, &mut |e, _| {
+                    es.push((e, driven.clone()));
+                }),
+            }
+            for (e, driven) in es {
                 if let Some(l) = self.signal_lsp(e)
                     && !self.is_param(l.root)
                 {

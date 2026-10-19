@@ -132,7 +132,7 @@ An installed binary finds `lib/` next to itself (#43).
   methods of shared variables and variables (#237; prefixes other than an object name are
   `E9999`; a call of such a failed alias reports nothing more, #245). View ports, nested and array views, and calls through method aliases simulate
   (`hierarchy/mode_view_*`, `protected/private_variables`, `protected/method_alias_objects`), and so do signal
-  parameters with a view (record, nested, `'converse` and array views, slices, several calling processes; #254).
+  parameters with a view (record, nested, `'converse` and array views, slices, several calling processes; #254), also associated element by element (#265).
   `buffer` and `linkage` subprogram parameters are `E1236`.
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`

@@ -129,6 +129,7 @@ there is untested.
 | `unaffected-variable` | `unaffected` in a variable assignment | 10.5.2.1 (2019) | LRM clear | CRASH | REJECT | 08: REJECT / 19: OK | to be filled | 08: REJECT / 19: OK | 2019: target unchanged; 2008: rejected | agent (L60) |
 | `use-clause-constant-vs-literal` | use-clause clash between a constant and an enumeration literal | 12.4 | LRM clear | OK | REJECT | REJECT | to be filled | REJECT | E1102 (both invisible) | agent (NVC.md) |
 | `variable-port` | 2019 port of class variable with a protected type | 6.5.2, 6.5.7.1 (2019), LCS-2016-047 | LRM clear | OK | REJECT | REJECT | to be filled | OK | accepted in 2019 files | agent (lrm-checks L21) |
+| `view-individual-driven-elements` | element-wise association of a mode-view subprogram formal whose `in` element's actual has another source | 6.5.2, 14.7.2 | LRM clear | OK* | unsupported | OK* | to be filled | OK | only the view's `out`, `inout` and `buffer` elements are driven (#265, L85); sim1 and sim3 also drive the `in` element, so its value is the unresolved result; sim2 has no assignment to mode view elements | agent (#265) |
 
 ## Elaboration
 

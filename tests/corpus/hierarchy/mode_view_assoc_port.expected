@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	1	:mode_view_assoc_port:s1:_p0	got 3
+diag	note	0	1	:mode_view_assoc_port:_p0	tb got 3
+diag	note	0	2	:mode_view_assoc_port:m1:_p0	sent
+diag	note	0	2	:mode_view_assoc_port:m2:_p0	sent

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:mode_view_assoc_param:_p0	put 1 v='0' b='1'
+diag	note	1000000	0	:mode_view_assoc_param:_p0	s 1 2
+diag	note	1000000	0	:mode_view_assoc_param:_p0	put 5 v='1' b='1'
+diag	note	2000000	0	:mode_view_assoc_param:_p0	free 5 6
+diag	note	2000000	0	:mode_view_assoc_param:_p0	put 9 v='0' b='1'
+diag	note	3000000	0	:mode_view_assoc_param:_p0	s 9 10

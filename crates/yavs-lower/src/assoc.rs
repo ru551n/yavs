@@ -32,12 +32,6 @@ impl Fx<'_, '_> {
         };
         let sh = shape(db, self.cx, p, span)?;
         if let Shape::RecSig(out) = sh {
-            if let yavs_sem::hir::Mode::View { .. } = p.mode {
-                return Err(self.cx.unsupported(
-                    span,
-                    "individual association of a signal parameter with a mode view",
-                ));
-            }
             return self.rec_sig_parts(f, p, parts, out, span, cells);
         }
         let dope = self.formal_dope(p, parts, span)?;
@@ -347,20 +341,29 @@ impl Fx<'_, '_> {
             out: false,
             desc: desc.is_some(),
         };
+        // A mode view drives only its `out`, `inout` and `buffer` leaves, each through the
+        // slot of the driver sem collected for it (`view_leaf_slot`); the others have none.
+        let tree = matches!(p.mode, Mode::View { .. }).then(|| db.port_mode_tree(p.mode));
+        let out = out && tree.is_none();
         // Per formal leaf: (actual reference, slot, first element) of each part over it.
         let mut per: Vec<Vec<(Reg, Reg, Reg)>> = vec![Vec::new(); leaves.len()];
         for &(_, e, formal, _) in parts {
             let es = db.exprs[e].span;
-            // The actual's leaves, in order, each with its driver slot.
+            // The actual's leaves, in order, each with its driver slot (a view: the leaf and
+            // the actual's signal, whose slot is found per formal leaf below).
             let mut actual = Vec::new();
+            let mut aleaf = Vec::new();
+            let mut asig = None;
             if let Some((d, steps)) = self.comp_steps(e) {
+                asig = Some(d);
                 let part = self.comp_select(d, &steps, es)?;
                 let slot0 = if out {
                     Some(self.leaf_slot(d, e, &part, es)?)
                 } else {
                     None
                 };
-                for (j, (_, r, _)) in part.leaves.iter().enumerate() {
+                for (j, (al, r, _)) in part.leaves.iter().enumerate() {
+                    aleaf.push(al.clone());
                     let slot = match slot0 {
                         Some(s0) => {
                             let j = self.int(j as i64);
@@ -401,7 +404,31 @@ impl Fx<'_, '_> {
             if fpart.leaves.len() != actual.len() {
                 return Err(self.cx.ice(es, "formal part and actual differ in leaves"));
             }
-            for ((leaf, fref, _), (aref, slot)) in fpart.leaves.iter().zip(actual) {
+            let lsp = match asig.and_then(|d| self.cx.objs.get(&d)) {
+                Some(Obj::RecSignal(Some(_))) => None,
+                _ => db.lsp(e),
+            };
+            for (j, ((leaf, fref, _), (aref, mut slot))) in
+                fpart.leaves.iter().zip(actual).enumerate()
+            {
+                if let Some(tree) = &tree {
+                    let driven = matches!(
+                        tree.leaf_mode(&leaf.path),
+                        Some(Mode::Out | Mode::Inout | Mode::Buffer)
+                    );
+                    if driven {
+                        slot = match (asig, aleaf.get(j)) {
+                            (Some(d), Some(al)) => {
+                                let rel = &leaf.path[fpart.path.len().min(leaf.path.len())..];
+                                self.view_leaf_slot(d, &lsp, al, rel, es)?
+                            }
+                            _ => {
+                                let (d, ..) = self.sig_name(e)?;
+                                self.out_driver_slot(d, e)?
+                            }
+                        };
+                    }
+                }
                 let buf = self.alloc_n(16);
                 self.store(buf, *fref, Width::Sig);
                 let first = self.load(buf, Width::B8, RegTy::I64);
@@ -434,7 +461,7 @@ impl Fx<'_, '_> {
             });
             cells.push(dst);
         }
-        if out {
+        if out || tree.is_some() {
             // Each leaf drives through the slots its parts carry.
             let none = self.int(-1);
             cells.push(none);

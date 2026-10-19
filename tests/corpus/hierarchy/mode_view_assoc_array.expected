@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:mode_view_assoc_array:m1:_p0	put '1''1'
+diag	note	0	0	:mode_view_assoc_array:m1:_p0	arr '1''1'
+diag	note	0	0	:mode_view_assoc_array:m1:_p0	m '1'
+diag	note	1000000	0	:mode_view_assoc_array:_p0	1245
+diag	note	1000000	0	:mode_view_assoc_array:_p0	put '1''1'
+diag	note	1000000	0	:mode_view_assoc_array:_p0	arr '1''1'
+diag	note	1000000	0	:mode_view_assoc_array:_p0	arr '1''1'
+diag	note	2000000	0	:mode_view_assoc_array:_p0	1248

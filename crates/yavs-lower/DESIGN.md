@@ -77,7 +77,8 @@ a call into your module in a small commit.
   slot of the first leaf (`out`/`inout`; leaf `k` uses that slot plus `k`), then the actual's
   descriptor when the type needs one (#215). A formal with a mode view (#254) passes each leaf
   the view drives as a one-part `SigParts` reference with its own driver slot and `-1` in the
-  slot cell (`Fx::view_leaves`). A constrained formal gets
+  slot cell (`Fx::view_leaves`; also per formal leaf of an individually associated view formal,
+  `assoc.rs`, #265). A constrained formal gets
   the formal's descriptor after a length check. An individually associated parameter
   (`Actual::Individual`, 6.5.7.1, `assoc.rs`) of variable or constant class is a temporary of
   the formal's subtype: each part is copied in through its formal part (a name of the formal,

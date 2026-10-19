@@ -1119,7 +1119,8 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
 - A call with a view signal parameter drives, in the calling process, one longest static prefix
   per `out`/`inout`/`buffer` element of the mode tree (`Db::view_driven_paths`, `call_drivers`):
   the actual's prefix plus the element's field steps, a `Field` after an array meaning that
-  element of every array element (#254).
+  element of every array element (#254). For an individual association the parts count one by
+  one: the elements below the part's formal name (`Db::view_driven_below`, #265).
 - `'converse` of anything but a mode view is `E1621` at the attribute. A nested element view of
   another record type is `E1901` at the view name.
 - In generic units views are cloned with their declaration (record subtype and nested views

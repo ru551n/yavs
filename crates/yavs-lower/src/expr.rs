@@ -708,6 +708,54 @@ impl<'a> Fx<'a, '_> {
         Ok(self.int(i64::from(base + k as u32)))
     }
 
+    /// The driver slot of leaf `leaf` of an actual of a view formal, `rel` being the leaf's
+    /// field path below the formal (part) the actual is associated with: the driver sem
+    /// collected for it (`lsp` is the actual's), or for a signal parameter passed on its
+    /// slot cell plus the leaf's index.
+    pub(crate) fn view_leaf_slot(
+        &mut self,
+        d: DeclId,
+        lsp: &Option<yavs_sem::hir::Lsp>,
+        leaf: &crate::RecLeaf,
+        rel: &[u32],
+        span: Span,
+    ) -> R<Reg> {
+        Ok(match lsp {
+            None => {
+                let Some(Obj::RecSignal(Some(rp))) = self.cx.objs.get(&d).copied() else {
+                    return Err(self.cx.ice(span, "signal parameter without its cells"));
+                };
+                let a = self.addr(rp.space, rp.slot_off());
+                let base = self.load(a, Width::B8, RegTy::I64);
+                let k = self.int(i64::from(leaf.sig));
+                self.bin(IntOp::Add, base, k)
+            }
+            // The driver sem collected for this leaf of the actual, and the leaf's
+            // position below it.
+            Some(l) => {
+                let mut l = l.clone();
+                l.path = l
+                    .path
+                    .iter()
+                    .cloned()
+                    .chain(rel.iter().map(|&f| yavs_sem::hir::LspStep::Field(f)))
+                    .collect();
+                let Some(k) = self.driver_index(&l) else {
+                    return Err(self
+                        .cx
+                        .ice(span, "view element without a driver of the process"));
+                };
+                let base = self.driver_base.get(k).copied().unwrap_or(k as u32);
+                let under = crate::func::lsp_fields(&self.drivers[k]);
+                let covered = self.leaves_under(d, &under);
+                let Some(j) = covered.iter().position(|c| c.path == leaf.path) else {
+                    return Err(self.cx.ice(span, "view element outside its driver"));
+                };
+                self.int(i64::from(base + j as u32))
+            }
+        })
+    }
+
     /// The leaf references of actual `e` (part `part` of signal `d`) for a signal formal
     /// `p` with a mode view, then the unused slot cell: a leaf the view drives (`out`,
     /// `inout`, `buffer`) is a reference of one part carrying its own driver slot, since
@@ -744,42 +792,7 @@ impl<'a> Fx<'a, '_> {
                 cells.push(*r);
                 continue;
             }
-            let slot = match &lsp {
-                // A signal parameter passed on: its slot cell plus the leaf's index (a leaf
-                // that came with its own slot keeps it, `Inst::SigParts`).
-                None => {
-                    let Some(Obj::RecSignal(Some(rp))) = self.cx.objs.get(&d).copied() else {
-                        return Err(self.cx.ice(span, "signal parameter without its cells"));
-                    };
-                    let a = self.addr(rp.space, rp.slot_off());
-                    let base = self.load(a, Width::B8, RegTy::I64);
-                    let k = self.int(i64::from(leaf.sig));
-                    self.bin(IntOp::Add, base, k)
-                }
-                // The driver sem collected for this leaf of the actual, and the leaf's
-                // position below it.
-                Some(l) => {
-                    let mut l = l.clone();
-                    l.path = l
-                        .path
-                        .iter()
-                        .cloned()
-                        .chain(rel.iter().map(|&f| yavs_sem::hir::LspStep::Field(f)))
-                        .collect();
-                    let Some(k) = self.driver_index(&l) else {
-                        return Err(self
-                            .cx
-                            .ice(span, "view element without a driver of the process"));
-                    };
-                    let base = self.driver_base.get(k).copied().unwrap_or(k as u32);
-                    let under = crate::func::lsp_fields(&self.drivers[k]);
-                    let covered = self.leaves_under(d, &under);
-                    let Some(j) = covered.iter().position(|c| c.path == leaf.path) else {
-                        return Err(self.cx.ice(span, "view element outside its driver"));
-                    };
-                    self.int(i64::from(base + j as u32))
-                }
-            };
+            let slot = self.view_leaf_slot(d, &lsp, leaf, rel, span)?;
             let table = self.alloc_n(yavs_ir::SIG_PART_BYTES);
             self.store(table, *r, Width::Sig);
             let s = self.offset(table, 16);

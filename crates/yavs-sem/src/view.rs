@@ -472,6 +472,12 @@ impl Db {
     /// `inout`, `buffer`), outermost first. A `Field` step after an array (`view (v) of
     /// arr_t`) names that element of every array element.
     pub fn view_driven_paths(&self, m: Mode) -> Vec<Vec<LspStep>> {
+        self.view_driven_below(m, &[])
+    }
+
+    /// Like `view_driven_paths`, for the part of the signal that the formal part `steps`
+    /// names (an individual association, 6.5.7.1): the paths are relative to that part.
+    pub fn view_driven_below(&self, m: Mode, steps: &[LspStep]) -> Vec<Vec<LspStep>> {
         fn walk(t: &ModeTree, path: &mut Vec<LspStep>, out: &mut Vec<Vec<LspStep>>) {
             match t {
                 ModeTree::Leaf(Mode::Out | Mode::Inout | Mode::Buffer) => out.push(path.clone()),
@@ -486,8 +492,30 @@ impl Db {
                 ModeTree::Array(e) => walk(e, path, out),
             }
         }
+        fn below<'a>(mut t: &'a ModeTree, mut steps: &[LspStep]) -> &'a ModeTree {
+            while let Some((s, rest)) = steps.split_first() {
+                match (t, s) {
+                    (ModeTree::Record { elems, .. }, LspStep::Field(i)) => t = &elems[*i as usize],
+                    // The name addresses that field of every element.
+                    (ModeTree::Array(e), LspStep::Field(_)) => {
+                        t = e;
+                        continue;
+                    }
+                    (ModeTree::Array(e), LspStep::Index(_) | LspStep::Slice(_)) => t = e,
+                    (_, LspStep::Rebase(_)) => {}
+                    // Below a leaf (an element of an array of scalars): the leaf's mode.
+                    _ => return t,
+                }
+                steps = rest;
+            }
+            t
+        }
         let mut out = Vec::new();
-        walk(&self.port_mode_tree(m), &mut Vec::new(), &mut out);
+        walk(
+            below(&self.port_mode_tree(m), steps),
+            &mut Vec::new(),
+            &mut out,
+        );
         out
     }
 

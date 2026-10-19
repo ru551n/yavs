@@ -969,7 +969,10 @@ which tools/difftest parses.
   The formal is passed like an `inout` record signal parameter, except that each driven leaf is
   a reference of one part carrying its own driver slot (`Inst::SigParts`) and the slot cell is
   `-1`: the driven leaves' slots need not be consecutive. A view parameter passed on keeps those
-  slots. Individual association of a view formal is `E2001`. Driving a non-static name below a
+  slots. An individually associated view formal (#265, 6.5.7.1) does the same per formal leaf:
+  the leaf's mode comes from the view by the leaf's full path, and its driver is the one sem
+  collected for the part's actual plus the leaf's path below the formal part
+  (`Db::view_driven_below`, `Fx::view_leaf_slot`); the other leaves have no slot. Driving a non-static name below a
   view (`bs(i).ready`) is checked against the view by the name's own steps, not its longest
   static prefix (`E1903` only for an `in` element below the name).
 - **`buffer` and `linkage` subprogram parameters** are `E1236` (LRM 4.2.2.1; the reference

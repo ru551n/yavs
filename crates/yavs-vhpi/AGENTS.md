@@ -55,6 +55,19 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
+Callback reasons map to kernel observer calls (`crates/yavs-kernel/DESIGN.md` "The cycle"; kernel
+side #268, the callbacks themselves #272):
+
+| VHPI reason | Kernel |
+|---|---|
+| `vhpiCbStartOfSimulation`, `vhpiCbEndOfSimulation` | `Phase::StartOfSim`, `Phase::EndOfSim` |
+| `vhpiCbNextTimeStep` | `Phase::NextTimeStep` |
+| `vhpiCbAfterDelay` | `Hook::wake_at(now + delay)`, then `Observer::wake` with that `WakeId`; removing the callback is `Hook::cancel` |
+| `vhpiCbReadWriteSynch` | `Observer::wake` of a `Hook::wake_at(now)`: the next delta at this time, before its update, so `vhpi_put_value` applies in that delta |
+| `vhpiCbLastKnownDeltaCycle` | `Phase::LastKnownDelta` (puts queued here create one more delta) |
+| `vhpiCbReadOnlySynch`, `vhpiCbEndOfTimeStep` | `Phase::EndOfTimeStep` (after postponed processes; no puts) |
+| `vhpiCbValueChange` | `Observer::value_change` |
+
 ## 4. Invariants and pitfalls
 
 - Adding an export means editing `src/exports.txt` only; `build.rs` derives every other list.

@@ -99,14 +99,37 @@ pub struct Stats {
     pub events: u64,
 }
 
+/// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WakeId {
+    time: Time,
+    seq: u64,
+}
+
+impl WakeId {
+    pub fn time(self) -> Time {
+        self.time
+    }
+}
+
+/// Pending wake-ups, each with the index of the observer that registered it.
+#[derive(Default)]
+struct Wakes {
+    pending: BTreeMap<WakeId, usize>,
+    next: u64,
+}
+
 /// What an observer may do from a callback: read signals, queue forces and deposits
-/// (applied in the next cycle) and end the simulation.
+/// (applied in the next cycle), schedule wake-ups and end the simulation.
 pub struct Hook<'a> {
     now: Time,
     delta: u32,
     signals: &'a [Signal],
     ops: &'a mut Vec<SignalOp>,
     end: &'a mut Option<EndReason>,
+    wakes: &'a mut Wakes,
+    /// Index of the observer being called.
+    observer: usize,
 }
 
 impl Hook<'_> {
@@ -164,6 +187,27 @@ impl Hook<'_> {
     pub fn stop(&mut self) {
         self.end.get_or_insert(EndReason::Requested);
     }
+
+    /// Schedule a cycle at absolute time `t` (`>= now`; at `now` it is the next delta) whose
+    /// `Observer::wake` call goes to this observer. The simulation does not end as idle while
+    /// a wake-up is pending.
+    pub fn wake_at(&mut self, t: Time) -> Result<WakeId, SimError> {
+        if t < self.now {
+            return Err(self.err(ErrorKind::DeadlineInPast { deadline: t }));
+        }
+        let id = WakeId {
+            time: t,
+            seq: self.wakes.next,
+        };
+        self.wakes.next += 1;
+        self.wakes.pending.insert(id, self.observer);
+        Ok(id)
+    }
+
+    /// Cancel a pending wake-up; false if it already fired or was cancelled.
+    pub fn cancel(&mut self, id: WakeId) -> bool {
+        self.wakes.pending.remove(&id).is_some()
+    }
 }
 
 /// A subscriber on the event bus: waves, VHPI, DAP, the GUI.
@@ -174,6 +218,10 @@ pub trait Observer: Send {
     fn report(&mut self, _hook: &mut Hook<'_>, _report: &Report) {}
     /// textio `OUTPUT` text.
     fn output(&mut self, _hook: &mut Hook<'_>, _process: ProcId, _bytes: &[u8]) {}
+    /// A wake-up this observer scheduled with `Hook::wake_at` is due: after `NextTimeStep`
+    /// (if the time advanced) and before the signal update, so forces and deposits queued
+    /// here apply in this cycle.
+    fn wake(&mut self, _hook: &mut Hook<'_>, _id: WakeId) {}
 }
 
 /// Pause or stop a running simulation from another thread. Checked between simulation
@@ -291,6 +339,7 @@ pub struct SimControl {
     end_fired: bool,
     failed: Option<SimError>,
     observers: Vec<Box<dyn Observer>>,
+    wakes: Wakes,
     pool: Option<rayon::ThreadPool>,
     rng: Option<u64>,
     interrupt: Interrupt,
@@ -399,6 +448,7 @@ impl SimControl {
             end_fired: false,
             failed: None,
             observers: Vec::new(),
+            wakes: Wakes::default(),
             pool,
             interrupt: Interrupt::default(),
             stats: Stats::default(),
@@ -737,11 +787,20 @@ impl SimControl {
 
     // ---- the cycle ----------------------------------------------------
 
-    /// `Tn`: the time of the next cycle, dropping stale queue entries.
+    /// `Tn`: the time of the next cycle, dropping stale queue entries. Pending observer
+    /// wake-ups count, so the simulation is not idle while one waits.
     fn next_time(&mut self) -> Option<Time> {
         if !self.ops.is_empty() {
             return Some(self.now);
         }
+        let wake = self.wakes.pending.first_key_value().map(|(id, _)| id.time);
+        match (self.next_queued(), wake) {
+            (Some(q), Some(w)) => Some(q.min(w)),
+            (q, w) => q.or(w),
+        }
+    }
+
+    fn next_queued(&mut self) -> Option<Time> {
         while let Some(&Reverse((t, e))) = self.queue.peek() {
             let live = match e {
                 Entry::Timeout(p, g) => self.procs[p as usize].generation == g,
@@ -790,6 +849,9 @@ impl SimControl {
         }
         self.cycle += 1;
         self.stats.cycles += 1;
+        if !self.wakes.pending.is_empty() {
+            self.fire_wakes();
+        }
         self.update().map_err(|k| self.err(k))?;
         let mut changed = std::mem::take(&mut self.changed_sigs);
         changed.sort_unstable();
@@ -1321,6 +1383,25 @@ impl SimControl {
         }
     }
 
+    /// Call `Observer::wake` for the wake-ups due now, in `WakeId` order. Wake-ups scheduled
+    /// at `now` from these calls fire in the next delta.
+    fn fire_wakes(&mut self) {
+        let mut due = Vec::new();
+        while let Some(e) = self.wakes.pending.first_entry() {
+            if e.key().time > self.now {
+                break;
+            }
+            due.push(e.remove_entry());
+        }
+        for (id, who) in due {
+            self.notify(|o, h| {
+                if h.observer == who {
+                    o.wake(h, id);
+                }
+            });
+        }
+    }
+
     fn phase(&mut self, phase: Phase) {
         self.notify(|o, h| o.phase(h, phase));
     }
@@ -1333,8 +1414,11 @@ impl SimControl {
             signals: &self.signals,
             ops: &mut self.ops,
             end: &mut self.end,
+            wakes: &mut self.wakes,
+            observer: 0,
         };
-        for o in &mut observers {
+        for (i, o) in observers.iter_mut().enumerate() {
+            hook.observer = i;
             f(o.as_mut(), &mut hook);
         }
         self.observers = observers;

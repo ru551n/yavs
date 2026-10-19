@@ -51,7 +51,7 @@ pub enum ErrorKind {
     PostponedDelta,
     /// A malformed signal assignment.
     InvalidAssign(String),
-    /// A wait deadline earlier than the current time.
+    /// A wait or observer wake-up deadline earlier than the current time.
     DeadlineInPast { deadline: Time },
     /// An id or element range that does not exist in this model.
     BadRef(String),

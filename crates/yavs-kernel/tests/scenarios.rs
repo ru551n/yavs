@@ -960,3 +960,192 @@ fn process_order_by_shape() {
     };
     assert_eq!(run(shuffled), want);
 }
+
+/// An observer that calls `f` with `None` at `StartOfSim` and with the id of each wake-up.
+struct Waker<F>(F);
+
+impl<F: FnMut(&mut Hook<'_>, Option<WakeId>) + Send> Observer for Waker<F> {
+    fn phase(&mut self, h: &mut Hook<'_>, phase: Phase) {
+        if phase == Phase::StartOfSim {
+            (self.0)(h, None);
+        }
+    }
+    fn wake(&mut self, h: &mut Hook<'_>, id: WakeId) {
+        (self.0)(h, Some(id));
+    }
+}
+
+/// A process reporting `s` on every change, and nothing else scheduled.
+fn quiet_design() -> (Builder, SignalId) {
+    let mut b = Builder::new();
+    let s = b.signal("s", BYTE, &[0]);
+    b.process(
+        "w",
+        NONE,
+        &[],
+        p(move |c| {
+            c.report(Severity::Note, format!("{:?}", c.value(s)?));
+            c.wait_on(s)
+        }),
+    );
+    (b, s)
+}
+
+fn phase_trace(b: Builder) -> (SimControl, Trace) {
+    let mut sim = b.build(Config::default()).unwrap();
+    let trace = Trace {
+        phases: true,
+        ..Trace::default()
+    };
+    sim.subscribe(Box::new(trace.clone()));
+    (sim, trace)
+}
+
+/// A wake-up gives a cycle at its time with the usual phases, a deposit from it applies in
+/// that cycle, and the simulation is not idle before it.
+#[test]
+fn observer_wake_up_defers_idle_end() {
+    let (b, s) = quiet_design();
+    let (mut sim, trace) = phase_trace(b);
+    let lines = trace.lines.clone();
+    sim.subscribe(Box::new(Waker(
+        move |h: &mut Hook<'_>, id: Option<WakeId>| match id {
+            None => assert_eq!(h.wake_at(ns(7)).unwrap().time(), ns(7)),
+            Some(id) => {
+                lines.lock().unwrap().push(format!("wake at {}", id.time()));
+                h.deposit(s, &[4]).unwrap();
+            }
+        },
+    )));
+    assert_eq!(sim.run_until(ns(5)).unwrap(), RunStatus::Paused);
+    assert_eq!(
+        sim.run_until(ns(20)).unwrap(),
+        RunStatus::Ended(EndReason::Idle)
+    );
+    assert_eq!(sim.now(), ns(7));
+    assert_eq!(
+        trace.take(),
+        [
+            "0 fs +0 StartOfSim",
+            "0 fs +0 p0 Note: [0]",
+            "7 ns +0 NextTimeStep",
+            "wake at 7 ns",
+            "7 ns +0 s[0..1]=[4]",
+            "7 ns +0 p0 Note: [4]",
+            "7 ns +0 LastKnownDelta",
+            "7 ns +0 EndOfTimeStep",
+            "7 ns +0 EndOfSim",
+        ]
+    );
+}
+
+/// A wake-up in the past is an error (E3005); one at `now` fires in the next delta.
+#[test]
+fn observer_wake_up_in_the_past_or_now() {
+    let (b, _) = quiet_design();
+    let (mut sim, trace) = phase_trace(b);
+    let lines = trace.lines.clone();
+    sim.subscribe(Box::new(Waker(
+        move |h: &mut Hook<'_>, id: Option<WakeId>| match id {
+            None => _ = h.wake_at(ns(7)).unwrap(),
+            Some(_) => {
+                lines
+                    .lock()
+                    .unwrap()
+                    .push(format!("wake {} +{}", h.now(), h.delta()));
+                if h.delta() == 0 {
+                    let e = h.wake_at(ns(6)).unwrap_err();
+                    assert_eq!(e.kind.code(), "E3005");
+                    h.wake_at(h.now()).unwrap();
+                }
+            }
+        },
+    )));
+    assert_eq!(
+        sim.run_until(ns(20)).unwrap(),
+        RunStatus::Ended(EndReason::Idle)
+    );
+    assert_eq!(
+        trace.take()[2..],
+        [
+            "7 ns +0 NextTimeStep",
+            "wake 7 ns +0",
+            "wake 7 ns +1",
+            "7 ns +1 LastKnownDelta",
+            "7 ns +1 EndOfTimeStep",
+            "7 ns +1 EndOfSim",
+        ]
+    );
+}
+
+/// A cancelled wake-up neither fires nor keeps the simulation alive.
+#[test]
+fn observer_wake_up_cancel() {
+    let (b, _) = quiet_design();
+    let (mut sim, trace) = phase_trace(b);
+    let lines = trace.lines.clone();
+    let mut later = None;
+    sim.subscribe(Box::new(Waker(
+        move |h: &mut Hook<'_>, id: Option<WakeId>| match id {
+            None => {
+                let gone = h.wake_at(ns(1)).unwrap();
+                assert!(h.cancel(gone));
+                assert!(!h.cancel(gone));
+                h.wake_at(ns(3)).unwrap();
+                later = Some(h.wake_at(ns(6)).unwrap());
+            }
+            Some(id) => {
+                lines.lock().unwrap().push(format!("wake at {}", id.time()));
+                assert!(!h.cancel(id), "a fired wake-up is no longer pending");
+                assert!(h.cancel(later.take().unwrap()));
+            }
+        },
+    )));
+    assert_eq!(
+        sim.run_until(ns(20)).unwrap(),
+        RunStatus::Ended(EndReason::Idle)
+    );
+    assert_eq!(sim.now(), ns(3));
+    assert_eq!(
+        trace
+            .take()
+            .into_iter()
+            .filter(|l| l.starts_with("wake"))
+            .collect::<Vec<_>>(),
+        ["wake at 3 ns"]
+    );
+}
+
+/// Each observer gets only its own wake-ups, in time order, then registration order.
+#[test]
+fn observer_wake_ups_of_many_observers() {
+    let (b, _) = quiet_design();
+    let mut sim = b.build(Config::default()).unwrap();
+    let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+    for tag in 0..3u64 {
+        let lines = lines.clone();
+        let mut mine = Vec::new();
+        sim.subscribe(Box::new(Waker(
+            move |h: &mut Hook<'_>, id: Option<WakeId>| match id {
+                None => {
+                    mine.push(h.wake_at(ns(3 - tag)).unwrap());
+                    mine.push(h.wake_at(ns(5)).unwrap());
+                }
+                Some(id) => {
+                    assert!(mine.contains(&id), "observer {tag} got a foreign wake-up");
+                    lines.lock().unwrap().push(format!("{} o{tag}", id.time()));
+                }
+            },
+        )));
+    }
+    assert_eq!(
+        sim.run_until(ns(20)).unwrap(),
+        RunStatus::Ended(EndReason::Idle)
+    );
+    assert_eq!(
+        *lines.lock().unwrap(),
+        [
+            "1 ns o2", "2 ns o1", "3 ns o0", "5 ns o0", "5 ns o1", "5 ns o2"
+        ]
+    );
+}

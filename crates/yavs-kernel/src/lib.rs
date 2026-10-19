@@ -16,6 +16,7 @@ pub use builder::{Builder, Converter, PortConv, PortMode, ProcFlags};
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
     Config, EndReason, Hook, Interrupt, Observer, Phase, Report, RunStatus, SimControl, Stats,
+    WakeId,
 };
 pub use process::{Ctx, ProcId, Process, Severity};
 pub use signal::{

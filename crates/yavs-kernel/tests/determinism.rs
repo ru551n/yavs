@@ -242,3 +242,48 @@ fn parallel_update_reports_the_lowest_failing_signal() {
         );
     }
 }
+
+/// Observer wake-ups between and on clock edges, depositing and cancelling, give the same
+/// trace at any thread count.
+#[test]
+fn observer_wake_ups_give_identical_traces() {
+    struct Waker(Arc<Mutex<Vec<String>>>, Option<WakeId>);
+    impl Observer for Waker {
+        fn phase(&mut self, h: &mut Hook<'_>, phase: Phase) {
+            let t = h.now();
+            if phase == Phase::NextTimeStep && t.as_fs() % ns(10).as_fs() == 0 && t < ns(150) {
+                h.wake_at(t.checked_add(ns(3)).unwrap()).unwrap();
+                h.wake_at(t.checked_add(ns(5)).unwrap()).unwrap();
+                if let Some(old) = self
+                    .1
+                    .replace(h.wake_at(t.checked_add(ns(15)).unwrap()).unwrap())
+                {
+                    h.cancel(old);
+                }
+            }
+        }
+        fn wake(&mut self, h: &mut Hook<'_>, id: WakeId) {
+            let v = (h.now().as_fs() / ns(1).as_fs()) as u32;
+            h.deposit(SignalId(1), &v.to_le_bytes()).unwrap();
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{} +{} wake {id:?}", h.now(), h.delta()));
+        }
+    }
+    let run = |threads| {
+        let cfg = Config {
+            threads,
+            ..Config::default()
+        };
+        let (mut sim, t) = build(design(false), cfg);
+        sim.subscribe(Box::new(Waker(t.lines.clone(), None)));
+        assert_eq!(sim.run_until(ns(200)).unwrap(), RunStatus::Paused);
+        t.take()
+    };
+    let one = run(1);
+    assert!(one.iter().any(|l| l.contains("wake")), "no wake-up fired");
+    assert!(one.iter().any(|l| l.starts_with("13 ns +0 cell0")));
+    assert_eq!(one, run(4));
+    assert_eq!(one, run(8));
+}

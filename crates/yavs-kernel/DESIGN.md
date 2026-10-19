@@ -44,6 +44,13 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 - **Event queue**: one binary heap of `(time, Driver | Timeout(proc, generation) |
   Implicit(i))`. A zero-delay transaction is queued at `now` and matures in the next delta.
   Stale entries are dropped when they reach the top, so they never cause an empty cycle.
+- **Observer wake-ups** (`Hook::wake_at(t) -> WakeId`, `Hook::cancel`, #268) live in their own
+  ordered map `WakeId (time, registration number) -> observer index`, not in the event queue,
+  so a cancel removes the entry at once and an empty map costs one check per cycle. `Tn` is the
+  earlier of the queue and the first wake-up, so the simulation is not `Idle` while one is
+  pending. A wake-up before `now` is `ErrorKind::DeadlineInPast` (E3005); one at `now` gives the
+  next delta (counted against the delta limit). With no observer there are no wake-ups and
+  nothing changes.
 - **Waiters**: per signal, `(proc, range, generation)`. A process's generation increases on every
   resumption, invalidating its other waiters and its timeout in O(1). Lists are compacted when
   they reach twice their live size.
@@ -54,7 +61,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 
 1. Advance to `Tn` (new time step: delta 0, `NextTimeStep` callback) or count a delta. More than
    `max_deltas` deltas at one time is an `ErrorKind::DeltaLimit` naming the processes of the last
-   delta.
+   delta. Then the observer wake-ups due now fire (`Observer::wake`, only to the observer that
+   scheduled each, in `WakeId` order); forces and deposits they queue apply in this cycle's
+   update, and wake-ups they schedule at `now` fire in the next delta.
 2. **Update phase** (`update`), all within this cycle:
    - drain due queue entries: matured transactions into driver values (null ones disconnect),
      marking elements active; timeouts resume processes;
@@ -146,6 +155,11 @@ Within a delta the kernel has two phases that never overlap:
   order stays the batch order, so only designs whose processes share state change their output. Tests
   check that a design of 1000+ processes, with ports, implicit signals and a logic bus, gives
   identical traces for 1 and 8 threads and several seeds.
+
+**Observers** run on the kernel thread, one at a time in subscription order, only between the
+phases above (never during the run phase), so everything they do (reads, forces, deposits,
+wake-ups and their numbering) is the same at any `--threads`; `tests/determinism.rs` checks
+traces with wake-ups at 1, 4 and 8 threads.
 
 **GC and heap safepoints.** The commit phase is the only point at which no process runs and no
 `Ctx` exists. That is where the shared heap collects; process heaps collect when their process

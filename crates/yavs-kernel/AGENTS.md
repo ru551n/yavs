@@ -24,7 +24,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 |---|---|
 | `src/lib.rs` | Re-exports (the public API is exactly this list) |
 | `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`: `postponed`, `serial`, `several_waits`), `PortMode` |
-| `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
+| `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, wake-ups (`WakeId`, `Hook::wake_at`/`cancel`, `Observer::wake`), `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
 | `src/process.rs` | `Process` trait (`run`, `serial`, `several_waits`), `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`), `ProcId`, `Severity` |
 | `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
 | `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
@@ -55,6 +55,8 @@ the IR plugs in, error handling, open questions); read it before editing.
 | Exit status: 101 internal (also a caught panic in process code), 1 otherwise; `Idle` is terminal like `stop`/`finish` | Error motto | same; DESIGN.md "Error handling" |
 | `SimError` is boxed and latches | Hot-path `Result` one word | `docs/decisions.md` "Kernel round 2" |
 | Time is checked i64 fs with a runtime resolution | Rule 7 | `docs/plan.md` rule 7 |
+| Observer wake-ups are a separate ordered map, not queue entries; `Tn` includes the first one, so no `Idle` end while one is pending; past is E3005 (#268) | Cheap cancel and nothing to pay with no observer (plan rule 9); VHPI after-delay callbacks and DAP run-to-time | DESIGN.md "Data layout", "The cycle" |
+| Observers run serially on the kernel thread between phases | Callbacks and wake-up numbering identical at any thread count | DESIGN.md "Parallel evaluation" |
 | GC safepoint: the commit phase (no `Ctx` exists) | A deadlock class seen in other simulators | DESIGN.md "Parallel evaluation" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
@@ -92,7 +94,7 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 - Add a scenario test with hand-written processes (`tests/common/mod.rs` helpers); a
   thread-sensitive change also gets a case in `tests/determinism.rs`.
 - Codes owned: `E3000`-`E3099` (`ErrorKind::code`: E3001 time overflow, E3002 delta limit, E3003
-  postponed delta, E3004 invalid assignment, E3005 deadline in the past, E3006 bad reference,
+  postponed delta, E3004 invalid assignment, E3005 deadline in the past (wait or wake-up), E3006 bad reference,
   E3007 resolution, E3008 conversion, E3009 VHDL runtime error, E3010 usage), plus `E9999`.
 
 ## 6. Coordination

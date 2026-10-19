@@ -93,7 +93,10 @@ fn compiler() -> cc::Tool {
 
 /// Compiles the `yavs-vhpi` test plugin and analyses the design; returns (lib arg, plugin path).
 fn setup() -> (String, PathBuf) {
-    let tmp = std::env::temp_dir().join(format!("yavs-cli-{}-vhpi", std::process::id()));
+    // One directory per call: the tests run in parallel.
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("yavs-cli-{}-vhpi-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("tmp");
     let vhpi = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../yavs-vhpi");

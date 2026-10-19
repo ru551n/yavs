@@ -399,6 +399,9 @@ pub(crate) struct Cx {
     /// subprogram using one fails when it is called. `None` before the design is elaborated
     /// (elaboration-time calls): none is bound yet (#255).
     pub ext_unbound: Option<HashMap<DeclId, String>>,
+    /// A subprogram using external names was lowered before `ext_unbound` was known: it fails
+    /// on entry ([`Lowerer::externals_early`]).
+    pub ext_early: bool,
 }
 
 /// One kernel signal of a record signal.
@@ -558,6 +561,7 @@ impl<'a> Lowerer<'a> {
                 actuals: HashMap::new(),
                 ext_sigs: HashMap::new(),
                 ext_unbound: None,
+                ext_early: false,
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -579,9 +583,16 @@ impl<'a> Lowerer<'a> {
 
     /// The design is elaborated: the external aliases of subprograms are bound except
     /// `unbound` (alias, why), which make their subprograms fail when called (#255). Call it
-    /// before lowering anything.
+    /// before lowering any subprogram that uses external names.
     pub fn externals_bound(&mut self, unbound: HashMap<DeclId, String>) {
         self.cx.ext_unbound = Some(unbound);
+    }
+
+    /// Whether a subprogram using external names was lowered before
+    /// [`Lowerer::externals_bound`]: it fails on entry, which is right during elaboration but
+    /// not in the simulation.
+    pub fn externals_early(&self) -> bool {
+        self.cx.ext_early
     }
 
     /// Give the actual `expr` of port `port` in instance statement `stmt` (its port map or

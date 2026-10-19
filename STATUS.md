@@ -404,6 +404,9 @@ subprograms, #240), package signals (`:lib:pkg:s`, every
 signal of a loaded package, visible from every region), package data initialised once in
 analysis order with `yavs_interp::init_package` (shared variables, constants computed once,
 #183; a declaration constant calling its own package's function is E2114 before lowering, #197),
+objects of generic package instances (design units with their own package data; instances in
+packages, entities, architectures, blocks, generates, processes and subprograms add theirs to
+that region, #101),
 external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
@@ -467,8 +470,7 @@ process at once; check messages print reals as `%.15g`; runtime errors are coded
 (`E3001`-`E3010`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
 as `fatal` events. Normalisations for the reference simulator's free choices (default assert message without a
 path, per-test `ignore=order`) are in `docs/decisions.md`. The 9 failures wait for sem (#1, #3)
-and lowering (out signal parameters, `'stable`, `'path_name`, guarded blocks, instantiated
-package bodies #101).
+and lowering (out signal parameters, `'stable`, `'path_name`, guarded blocks).
 
 IEEE packages from source (`tests/corpus/ieee`, #94): std_logic_1164, numeric_std, numeric_bit,
 math_real, math_complex, fixed_pkg and float_pkg bodies, 2008 and 2019, equal the reference simulator at 1, 4 and 4

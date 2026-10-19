@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:pkg_generic_kinds:_p0	bool size=6 sum=4
+diag	note	0	0	:pkg_generic_kinds:_p0	char size=20 sum=141
+diag	note	0	0	:pkg_generic_kinds:_p0	user_bool total=15 size=7
+diag	note	0	0	:pkg_generic_kinds:_p0	user_char total=2040 size=21

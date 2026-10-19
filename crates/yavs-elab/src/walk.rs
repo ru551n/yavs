@@ -399,8 +399,8 @@ pub(crate) fn elaborate(
             .db
             .units
             .iter()
-            .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
-            .flat_map(|(_, u)| e.db.scopes[u.scope].order.iter().copied())
+            .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
+            .flat_map(|s| e.db.decls_with_instances(s))
             .filter(|&d| {
                 matches!(&e.db.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal)
             })
@@ -851,8 +851,7 @@ impl Elab<'_> {
 
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
-        let order = self.db.scopes[region].order.clone();
-        for d in order {
+        for d in self.db.decls_with_instances(region) {
             let db: &Db = self.db;
             let decl = &db.decls[d];
             if let Some(x) = db.external_signal_alias(d) {
@@ -2656,15 +2655,21 @@ impl Model {
         if o.class != ObjClass::Signal {
             return Ok(None);
         }
-        let region = decl.scope;
-        let Some(unit) = db.scopes[region]
-            .owner
-            .and_then(|ow| match db.decls[ow].kind {
-                DeclKind::Unit(u) if db.units[u].kind == UnitKind::Package => Some(u),
-                _ => None,
-            })
-        else {
-            return Ok(None);
+        // The package unit, through the package instances declared in it (#101).
+        let mut region = decl.scope;
+        let unit = loop {
+            let Some(ow) = db.scopes[region].owner else {
+                return Ok(None);
+            };
+            match db.decls[ow].kind {
+                DeclKind::Unit(u)
+                    if matches!(db.units[u].kind, UnitKind::Package | UnitKind::PackageInst) =>
+                {
+                    break u;
+                }
+                DeclKind::PackageInst(_) => region = db.decls[ow].scope,
+                _ => return Ok(None),
+            }
         };
         let ps = self.pkg_scope(db, unit);
         if let Some(&obj) = self.sigs.get(&(ps, d)) {

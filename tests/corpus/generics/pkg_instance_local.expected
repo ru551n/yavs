@@ -1,0 +1,11 @@
+exit	0
+diag	note	2000000	0	:pkg_instance_local:g(1):_p0	gen 1 first=1001 next=1
+diag	note	4000000	0	:pkg_instance_local:g(2):_p0	gen 2 first=2002 next=2
+diag	note	5000000	0	:pkg_instance_local:ig:_p0	if first=0
+diag	note	10000000	0	:pkg_instance_local:_p0	process first=33 next=4
+diag	note	10000000	0	:pkg_instance_local:_p0	process acc=505
+diag	note	10000000	0	:pkg_instance_local:_p0	func=10 16
+diag	note	10000000	0	:pkg_instance_local:_p0	proc=13
+diag	note	10000000	0	:pkg_instance_local:_p0	proc=15
+diag	note	10000000	0	:pkg_instance_local:_p0	fresh=7 7 17
+diag	note	10000000	0	:pkg_instance_local:_p0	shift=101 100

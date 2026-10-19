@@ -122,7 +122,7 @@ impl Elaborated {
         // (#197).
         for &u in &packages {
             let scope = db.units[u].scope;
-            for &d in &db.scopes[scope].order {
+            for d in db.decls_with_instances(scope) {
                 if let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind
                     && o.class == yavs_sem::decl::ObjClass::Constant
                     && let Some(init) = o.default
@@ -738,29 +738,21 @@ fn write_desc(
 /// files, or constants sem did not fold (in the declaration or the body).
 pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
     use yavs_sem::decl::{DeclKind, ObjClass};
-    use yavs_sem::hir::UnitHir;
-    let run_time = |scope: yavs_sem::ScopeId| {
-        db.scopes[scope]
-            .order
-            .iter()
-            .any(|&d| match &db.decls[d].kind {
-                DeclKind::Object(o) => match o.class {
-                    ObjClass::Constant => o.default.is_some_and(|e| db.exprs[e].value.is_none()),
-                    _ => true,
-                },
-                _ => false,
-            })
+    let run_time = |d: yavs_sem::DeclId| match &db.decls[d].kind {
+        DeclKind::Object(o) => match o.class {
+            ObjClass::Constant => o.default.is_some_and(|e| db.exprs[e].value.is_none()),
+            _ => true,
+        },
+        _ => false,
     };
     db.units
         .iter()
-        .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
         .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
-        .filter(|&(id, u)| {
-            run_time(u.scope)
-                || db.units.iter().any(|(_, b)| {
-                    matches!(b.hir, UnitHir::PackageBody { package } if package == id)
-                        && run_time(b.scope)
-                })
+        .filter(|&(id, _)| {
+            db.package_regions(id).is_some_and(|rs| {
+                rs.into_iter()
+                    .any(|s| db.decls_with_instances(s).into_iter().any(run_time))
+            })
         })
         .map(|(id, _)| id)
         .collect()

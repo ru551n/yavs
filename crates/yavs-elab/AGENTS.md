@@ -60,6 +60,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | `'stable`, `'quiet` and `'transaction` of a prefix over several leaves are one implicit leaf with the other leaves as extra sources (`Leaf::implicit_more`, kernel `implicit_source`); `'delayed` of one is one delayed leaf per leaf of the prefix | LRM 16.2.3: an event or activity on any scalar subelement counts, #215 | `docs/decisions.md` "Lowering" |
 | Implicit signals named in a process (sem: the process's scope) are registered under the region enclosing the process; those of a package body's subprograms are package signals of the package's scope, created after the packages' own signals | LRM 16.2.4, #240 | `docs/decisions.md` "Lowering" |
 | A converted association with several leaves on a side (record port, array of composites) is one `ConvPort` (kernel `port_parts`), the function's argument and result packed and unpacked by `whole::Map`; a type conversion of such a port and a composite converted in one direction only (inout) are E9999 | #74, LRM 6.5.7.1: the conversion is part of the port, in the same delta | ir.md 4.1 |
+| Package instances: a design unit instance is a run-time package (`run_time_packages`, `Db::package_regions`) whose signals live in its own package scope; objects of an instance declared in a region are elaborated with that region's (`Db::decls_with_instances`); generic packages have none | LRM 4.9, 14.4.2 (#101) | `docs/decisions.md` "Elaboration" |
 | Linkage ports are kernel `in` port edges; mode-view ports take each leaf's mode from `Db::port_mode_tree` (`leaf_modes`) | #75; LRM 6.5.2 | `docs/decisions.md` "Elaboration" |
 | Not-yet-supported constructs are `E9999` naming the slice; expressions elab cannot evaluate yet `E2106` | Fail early | crate docs, #77 |
 | Predefined operations elab does not evaluate structurally (shifts, array ordering, matching operators, `TO_STRING`, ...) run their yavs-interp native (`yavs_interp::call_native`, `Lowerer::implicit_native`) on the marshalled operands | One implementation of each operation, the simulation's | #220 |
@@ -105,5 +106,5 @@ python3 tools/difftest/difftest.py --candidate yavs
   `GenSelect::Index` evaluated without the generate's scope; #64 wire into `yavs run`; #68
   guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
   non-static actuals in port maps; #76 package signals, external names, user resolution, nested resolution; #220
-  the rest of E2106 (null multi-dimensional aggregates, `'PATH_NAME` in impure constants); #164 resolution functions in blocks; #93 external names; #101 package generics. Older
+  the rest of E2106 (null multi-dimensional aggregates, `'PATH_NAME` in impure constants); #164 resolution functions in blocks; #93 external names. Older
   unlabeled: #6 remaining elaboration features.

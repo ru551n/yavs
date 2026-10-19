@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:nested_generic_packages:_p0	outer_2=14 twice=40
+diag	note	0	0	:nested_generic_packages:_p0	outer_7=49 twice=14
+diag	note	0	0	:nested_generic_packages:_p0	outer_local=132 twice=22
+diag	note	0	0	:nested_generic_packages:_p0	total=10 twice=20

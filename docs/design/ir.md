@@ -327,7 +327,7 @@ covers ranges of several kernel signals. Such a reference keeps the two-register
 - **Type generics and generic subprograms** are runtime data too: a type generic is a descriptor
   plus a `TyId` class, a subprogram generic is a `FuncId` in the instance data called through
   `CallIndirect`. One body per unit; specialisation per actual is an optional later pass (Q4).
-- **Generic package instances** each get their own `InstData` and `Mangled` identity (rule 4); code is shared with the uninstantiated package.
+- **Generic package instances** each get their own `Mangled` identity and their own cloned HIR (rule 4, sem.md 5.1). A design unit instance has its own package data; an instance declared in another region adds its objects to that region's storage (instance data, frame or package data, `docs/decisions.md` "Objects of generic package instances", #101).
 - **Suspension:** a process is a frame stack `Vec<Frame>` owned by its `InterpProcess`. `Suspend`
   returns from `Process::run` with the stack intact; the next `run` continues at the top frame's
   `pc`. A `wait` inside a procedure therefore needs nothing special: the procedure frame is just

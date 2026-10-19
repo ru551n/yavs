@@ -586,6 +586,15 @@ a note and a help suggesting an access type, as the reference simulators reject 
   (`yavs_interp::init_package`), in analysis order (a package after those its declaration uses;
   ponytail: a body using a later-analyzed package would need dependency order), sharing the
   processes' `SharedState`. Every signal of a loaded package is elaborated, driven or not.
+- **Objects of generic package instances** (#101, 2026-10-19; LRM 4.9, 14.4.2): an
+  uninstantiated generic package has no objects; only its instances do. A package instance
+  that is a design unit is a package with run-time objects (its cloned visible part and body,
+  `Db::package_regions`), with its own package data and its own signals (`:lib:inst:s`). A
+  package instance declared in another region (package, package body, entity, architecture,
+  block, generate, process, subprogram) adds its objects to that region, in declaration order
+  at the instantiation (`Db::decls_with_instances`): instance data per elaborated architecture
+  instance, block or generate iteration, frame slots per process or call, package data of the
+  enclosing package. Every region kind therefore needs no separate instance storage.
 - **2019 signals with bounds from the initial value** (#187, elab agent, 2026-10-18; LRM
   6.4.2.3, LCS-2016-019): the elaborator evaluates the initial value first and fills every
   bound the subtype leaves open from it (`Model::shape_init`), element bounds from the first

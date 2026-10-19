@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:formal_packages:_p0	any_78=93
+diag	note	0	0	:formal_packages:_p0	any_dflt=15
+diag	note	0	0	:formal_packages:_p0	dflt_x=24
+diag	note	0	0	:formal_packages:_p0	full_x=46
+diag	note	0	0	:formal_packages:_p0	part_x=1092
+diag	note	0	0	:formal_packages:_p0	local_any=37 local_part=1092

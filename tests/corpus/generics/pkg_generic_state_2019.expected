@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:pkg_generic_state_2019:watcher	watch a=10 b=20
+diag	note	0	0	:pkg_generic_state_2019:main	log 10: 1
+diag	note	0	0	:pkg_generic_state_2019:main	log 10: 2
+diag	note	0	0	:pkg_generic_state_2019:main	log 20: 3
+diag	note	0	1	:pkg_generic_state_2019:watcher	watch a=11 b=20
+diag	note	1000000	1	:pkg_generic_state_2019:watcher	watch a=12 b=20
+diag	note	2000000	1	:pkg_generic_state_2019:watcher	watch a=12 b=21
+diag	note	5000000	0	:pkg_generic_state_2019:main	cnt a=13 b=25
+diag	note	5000000	0	:pkg_generic_state_2019:main	calls a=2 b=1
+diag	note	5000000	0	:pkg_generic_state_2019:main	v a=1111 b=10100101
+diag	note	5000000	0	:pkg_generic_state_2019:main	len a=4 b=8

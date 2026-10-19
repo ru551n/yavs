@@ -66,6 +66,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | Converted parameters (`Actual::Converted` of a call): a temporary formal holding sem's `copy_in` (or the subtype's default for `out`), `copy_out` stored to the actual after the call with the formal bound to the temporary | LRM 6.5.7.1; sem builds the conversions as HIR expressions (#229) | DESIGN.md "Contract with yavs-interp and yavs-elab", `docs/decisions.md` "Lowering" |
 | Individually associated parameters: a temporary formal of variable or constant class, parts copied in for every mode and back for `out`/`inout`; a signal formal of several parts is a reference of several parts (`SigParts`, one per leaf for a record formal), each part's offset found by lowering the formal part against the formal bound to a reference from element 0; unconstrained bounds lowest to highest index named, index subtype direction | LRM 6.5.7.1; one sub-element walk (rule 2); same bounds rule as elab's ports | DESIGN.md "Contract with yavs-interp and yavs-elab", ir.md 1.8, #71 |
 | Protected state initial values run on the new object (`self` and the state bound), except those giving a variable its constraint, which run before it exists | LRM 5.6.2: methods called from initial values act on the object being elaborated (#204) | DESIGN.md "Composites" |
+| Objects of a package instance are objects of the region declaring the instance: `Db::decls_with_instances` in architectures, blocks, generates, frames and packages; a design unit instance is lowered by `Lowerer::package` like a package (`Db::package_regions`), an uninstantiated generic package never | LRM 4.9, 14.4.2; one storage scheme per region kind (#101) | `docs/decisions.md` "Elaboration" |
 | A subprogram nested in a protected method takes the method's `self` through the static link and binds the state in its own frame | LRM 5.6.2: calls and names in it act on the enclosing method's object (#221) | DESIGN.md "Composites" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`
@@ -108,5 +109,5 @@ tools/difftest/report.sh                                        # rewrite tests/
   parameters; #68 guarded assignments, null waveforms, force/release, implicit signal
   attributes; #69 matching case, case over arrays, non-static choices; #70 expression gaps; #71
   generic and instantiated subprograms (foreign, open actuals, individual association, signal formals with several parts, conversions in calls #229: done); #72 remaining attributes; #89 composite arrays and aggregates; #93 external names;
-  #101 package generics; #160 fixed scratch dir in `tests/corpus.rs`. Older unlabeled: #5, #8,
+  #160 fixed scratch dir in `tests/corpus.rs`. Older unlabeled: #5, #8,
   #9, #13 to #17.

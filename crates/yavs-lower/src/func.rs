@@ -359,7 +359,7 @@ impl<'a, 'b> Fx<'a, 'b> {
     /// Objects declared in `scope` (variables, constants), initialised in order.
     pub fn decls(&mut self, scope: ScopeId) -> R<()> {
         let mut ok = true;
-        for &d in &self.db.scopes[scope].order {
+        for d in self.db.decls_with_instances(scope) {
             let decl = &self.db.decls[d];
             if let DeclKind::Alias(Alias::Object { target, subtype }) = &decl.kind {
                 // A signal alias has no storage: its uses lower the aliased name.
@@ -945,13 +945,13 @@ pub(crate) fn architecture(
     cx.arch_scopes = vec![e.scope, u.scope];
     let mut ok = true;
     let scopes = [e.scope, u.scope];
-    let decls = iface.iter().chain(
+    let decls = iface.iter().copied().chain(
         scopes
             .iter()
-            .flat_map(|&s| db.scopes[s].order.iter())
+            .flat_map(|&s| db.decls_with_instances(s))
             .filter(|d| !iface.contains(d)),
     );
-    for &d in decls {
+    for d in decls {
         ok &= inst_object(db, pb, cx, &mut ir, d).is_ok();
     }
     ok &= region(db, pb, cx, &mut ir, stmts, None).is_ok();
@@ -980,7 +980,7 @@ fn region(
     let decls =
         |cx: &mut Cx, pb: &mut ProgramBuilder, ir: &mut UnitIr, scope: yavs_sem::ScopeId| {
             let mut ok = true;
-            for &d in &db.scopes[scope].order {
+            for d in db.decls_with_instances(scope) {
                 ok &= inst_object(db, pb, cx, ir, d).is_ok();
             }
             ok
@@ -1593,14 +1593,9 @@ pub(crate) fn package(
     index: u32,
 ) -> R<crate::PackageIr> {
     let u = &db.units[unit];
-    if !matches!(u.hir, UnitHir::Package { .. }) {
-        return Err(cx.ice(u.span, "not a package"));
-    }
-    let mut scopes = vec![u.scope];
-    scopes.extend(db.units.iter().find_map(|(_, b)| match b.hir {
-        UnitHir::PackageBody { package } if package == unit => Some(b.scope),
-        _ => None,
-    }));
+    let Some(scopes) = db.package_regions(unit) else {
+        return Err(cx.ice(u.span, "not a package with objects"));
+    };
     let name = format!("{}'init", u.name.text);
     let f = pb.declare(&name, FuncKind::Thunk, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Thunk, name);
@@ -1610,7 +1605,7 @@ pub(crate) fn package(
     let mut signals = Vec::new();
     let mut ok = true;
     for s in scopes {
-        for &d in &db.scopes[s].order {
+        for d in db.decls_with_instances(s) {
             ok &= fx.pkg_object(d, index, &mut size, &mut signals).is_ok();
         }
     }

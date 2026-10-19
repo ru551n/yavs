@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	0	:pkg_generic_local_state:g(1):u:drv	unit 1 acc=102 sig=101
+diag	note	2000000	0	:pkg_generic_local_state:g(2):u:drv	unit 2 acc=204 sig=202
+diag	note	3000000	0	:pkg_generic_local_state:g(3):u:drv	unit 3 acc=306 sig=303

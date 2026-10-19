@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:pkg_instance_regions:u1:_p0	leaf w=3 first=6 next=6
+diag	note	0	0	:pkg_instance_regions:u2:_p0	leaf w=9 first=18 next=18
+diag	note	600000	0	:pkg_instance_regions:eg(1):_p0	elab gen 1
+diag	note	700000	0	:pkg_instance_regions:eg(2):_p0	elab gen 2
+diag	note	1000000	0	:pkg_instance_regions:b:_p0	block first=55
+diag	note	2000000	0	:pkg_instance_regions:g(1):gb:_p0	gen 1 first=1001 next=1
+diag	note	4000000	0	:pkg_instance_regions:g(2):gb:_p0	gen 2 first=2002 next=2
+diag	note	10000000	0	:pkg_instance_regions:_p0	at_elab=111 width=6
+diag	note	10000000	0	:pkg_instance_regions:_p0	entity first=3
+diag	note	10000000	0	:pkg_instance_regions:_p0	arch first=6 next=2
+diag	note	10000000	0	:pkg_instance_regions:_p0	outer inner=107 8
+diag	note	10000000	0	:pkg_instance_regions:_p0	body=23

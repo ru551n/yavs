@@ -373,7 +373,10 @@ impl<'a, 'b> Fx<'a, 'b> {
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };
-            if matches!(o.role, ObjRole::Param | ObjRole::LoopParam) {
+            if matches!(
+                o.role,
+                ObjRole::Param | ObjRole::LoopParam | ObjRole::ImplicitSignal
+            ) {
                 continue;
             }
             let r = match o.class {
@@ -1026,6 +1029,18 @@ fn region(
                     ok &= decls(cx, pb, ir, a.scope);
                     ok &= region(db, pb, cx, ir, &a.body, outer).is_ok();
                 }
+            }
+            HStmt::Process { scope, .. } => {
+                // Implicit signals named in the process (or a subprogram of it) belong to the
+                // enclosing region (LRM 16.2.4): instance signals bound by the elaborator.
+                for &d in &db.scopes[*scope].order {
+                    if let DeclKind::Object(o) = &db.decls[d].kind
+                        && o.role == ObjRole::ImplicitSignal
+                    {
+                        ok &= inst_object(db, pb, cx, ir, d).is_ok();
+                    }
+                }
+                ok &= process(db, pb, cx, ir, s, outer).is_ok();
             }
             _ => ok &= process(db, pb, cx, ir, s, outer).is_ok(),
         }

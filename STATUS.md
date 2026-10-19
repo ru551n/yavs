@@ -399,7 +399,8 @@ loaded before elaboration, a package needing a body without one (E2116), convers
 and type conversions in port maps (kernel converters; conversion functions of record ports and
 arrays of records convert all leaves in one call in the same delta, #74), individual
 association of unconstrained array ports, implicit signals (`'stable`,
-`'quiet`, `'delayed`, `'transaction`, kernel-maintained), package signals (`:lib:pkg:s`, every
+`'quiet`, `'delayed`, `'transaction`, kernel-maintained, also named in process bodies and
+subprograms, #240), package signals (`:lib:pkg:s`, every
 signal of a loaded package, visible from every region), package data initialised once in
 analysis order with `yavs_interp::init_package` (shared variables, constants computed once,
 #183; a declaration constant calling its own package's function is E2114 before lowering, #197),

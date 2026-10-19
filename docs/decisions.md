@@ -870,6 +870,15 @@ which tools/difftest parses.
   `'stable(T)`, `'quiet(T)` and `'transaction` of such a part are one kernel implicit signal
   with a source per leaf (`Builder::implicit_source`), `'delayed(T)` one delayed leaf per
   leaf of the prefix.
+- **Implicit signals named in a process** (#240, LRM 16.2.4): sem declares the implicit signal
+  of `'stable`, `'quiet`, `'delayed` or `'transaction` named in a process body, or in a
+  subprogram declared in the process, in the process's scope. Lowering makes it an instance
+  signal of the region enclosing the process (`region`), as for one named in a concurrent
+  statement, and yavs-elab binds it under that region, so the process reads and waits on it
+  like any other signal. Named in a subprogram of a region, it belongs to that region
+  (yavs-sem); in a package body, to the package: a package signal that yavs-elab creates in
+  the package's scope after the package's own signals. One reference simulator rejects all four in any subprogram body; LRM 4.2.2.2
+  forbids them only of formal signal parameters, which the other one and yavs follow.
 - **Arrays of arrays without records** (#89) stay one kernel signal of all their scalars, row
   major (logic mirrored). Every name of indices and slices below such a signal (`m(i)`,
   `m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`), as target, actual, alias or sensitivity, selects

@@ -1,0 +1,10 @@
+exit	0
+diag	note	1000000	1	:implicit_in_subprogram:mon	transaction 1 i'stable false i'quiet(1 ns) false i'delayed(2 ns) 0 r'quiet(1 ns) true r'delayed(2 ns).n 1 / i'stable(2 ns) false i'quiet false i'delayed(1 ns) 0 r'stable true
+diag	note	2000000	0	:implicit_in_subprogram:mon	1 ns later i'stable true i'quiet(1 ns) true i'delayed(2 ns) 0 r'quiet(1 ns) true r'delayed(2 ns).n 1 / i'stable(2 ns) false i'quiet true i'delayed(1 ns) 1 r'stable true
+diag	note	2000000	0	:implicit_in_subprogram:mon	package pk'stable true pk'quiet(1 ns) true pk'delayed(1 ns) 0
+diag	note	4000000	1	:implicit_in_subprogram:mon	transaction 2 i'stable true i'quiet(1 ns) false i'delayed(2 ns) 1 r'quiet(1 ns) false r'delayed(2 ns).n 1 / i'stable(2 ns) true i'quiet false i'delayed(1 ns) 1 r'stable false
+diag	note	5000000	0	:implicit_in_subprogram:mon	1 ns later i'stable true i'quiet(1 ns) true i'delayed(2 ns) 1 r'quiet(1 ns) true r'delayed(2 ns).n 1 / i'stable(2 ns) true i'quiet true i'delayed(1 ns) 1 r'stable true
+diag	note	5000000	0	:implicit_in_subprogram:mon	package pk'stable true pk'quiet(1 ns) true pk'delayed(1 ns) 3
+diag	note	7000000	1	:implicit_in_subprogram:mon	transaction 3 i'stable true i'quiet(1 ns) true i'delayed(2 ns) 1 r'quiet(1 ns) false r'delayed(2 ns).n 2 / i'stable(2 ns) true i'quiet true i'delayed(1 ns) 1 r'stable true
+diag	note	8000000	0	:implicit_in_subprogram:mon	1 ns later i'stable true i'quiet(1 ns) true i'delayed(2 ns) 1 r'quiet(1 ns) true r'delayed(2 ns).n 2 / i'stable(2 ns) true i'quiet true i'delayed(1 ns) 1 r'stable true
+diag	note	8000000	0	:implicit_in_subprogram:mon	package pk'stable true pk'quiet(1 ns) true pk'delayed(1 ns) 3

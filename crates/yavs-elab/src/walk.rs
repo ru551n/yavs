@@ -411,6 +411,27 @@ pub(crate) fn elaborate(
                 e.errors.push(*x);
             }
         }
+        // Implicit signals named in the subprograms of a package body belong to the package
+        // (LRM 16.2.4), after the signals they are of.
+        let implicit: Vec<(UnitId, DeclId)> =
+            e.db.units
+                .iter()
+                .filter_map(|(_, u)| match u.hir {
+                    UnitHir::PackageBody { package } => Some((package, u.scope)),
+                    _ => None,
+                })
+                .flat_map(|(p, s)| e.db.scopes[s].order.iter().map(move |&d| (p, d)))
+                .filter(|&(_, d)| {
+                    matches!(&e.db.decls[d].kind,
+                    DeclKind::Object(o) if o.role == ObjRole::ImplicitSignal)
+                })
+                .collect();
+        for (unit, d) in implicit {
+            let ps = e.m.pkg_scope(e.db, unit);
+            if let Err(x) = e.implicit_signal(ps, d) {
+                e.errors.push(*x);
+            }
+        }
     }
     if e.errors.is_empty() {
         e.check_sources();
@@ -1290,12 +1311,10 @@ impl Elab<'_> {
                     _ => None,
                 };
                 self.process(s, st, name, postponed, &lsps)?;
-                // Implicit signals ('stable, ...) are declared in the process's region.
+                // Implicit signals ('stable, ...) named in the process belong to its enclosing
+                // region (LRM 16.2.4), where the region's instance data finds them.
                 match pscope {
-                    Some(r) => {
-                        let ps = self.procs.last().expect("just added").scope;
-                        self.decls(ps, r)
-                    }
+                    Some(r) => self.decls(s, r),
                     None => Ok(()),
                 }
             }
@@ -2602,6 +2621,27 @@ impl Model {
             })
     }
 
+    /// The hierarchy scope of package `unit`, created on first use.
+    pub(crate) fn pkg_scope(&mut self, db: &Db, unit: UnitId) -> ScopeId {
+        if let Some(&p) = self.pkg_scopes.get(&unit) {
+            return p;
+        }
+        let lib = db.units[unit].lib;
+        let ls = match self.lib_scopes.get(&lib) {
+            Some(&l) => l,
+            None => {
+                let l = self.hier.add(None, ScopeKind::Library, db.libs[lib].name);
+                self.lib_scopes.insert(lib, l);
+                l
+            }
+        };
+        let p = self
+            .hier
+            .add(Some(ls), ScopeKind::Package { unit }, db.units[unit].name);
+        self.pkg_scopes.insert(unit, p);
+        p
+    }
+
     /// The signal object of `d` seen from `scope`; a signal declared in a package is
     /// elaborated on first use, in its package's scope.
     fn signal_or_package(
@@ -2631,25 +2671,7 @@ impl Model {
         else {
             return Ok(None);
         };
-        let ps = match self.pkg_scopes.get(&unit) {
-            Some(&p) => p,
-            None => {
-                let lib = db.units[unit].lib;
-                let ls = match self.lib_scopes.get(&lib) {
-                    Some(&l) => l,
-                    None => {
-                        let l = self.hier.add(None, ScopeKind::Library, db.libs[lib].name);
-                        self.lib_scopes.insert(lib, l);
-                        l
-                    }
-                };
-                let p = self
-                    .hier
-                    .add(Some(ls), ScopeKind::Package { unit }, db.units[unit].name);
-                self.pkg_scopes.insert(unit, p);
-                p
-            }
-        };
+        let ps = self.pkg_scope(db, unit);
         if let Some(&obj) = self.sigs.get(&(ps, d)) {
             return Ok(Some(obj));
         }

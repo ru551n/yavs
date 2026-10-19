@@ -172,6 +172,10 @@ pub struct Elaborated {
     pub model_vals: Vec<std::collections::HashMap<yavs_sem::DeclId, Val>>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
+    /// The declarative regions (yavs-sem scopes) of each elaborated scope, in elaboration
+    /// order: an instance's entity then architecture, a block's or generate's own. Processes
+    /// have none (their statement names their scope). VHPI lists declarations from it (#269).
+    pub regions: std::collections::HashMap<ScopeId, Vec<yavs_sem::ScopeId>>,
     /// The protected object of each 2019 variable port, by (scope of the formal, formal).
     pub var_ports: std::collections::BTreeMap<(ScopeId, yavs_sem::DeclId), VarObj>,
     /// Aliases of external shared variables by (region, alias): the region and declaration

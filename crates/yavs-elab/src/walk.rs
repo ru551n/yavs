@@ -556,6 +556,7 @@ pub(crate) fn elaborate(
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
         sigs: e.m.sigs,
+        regions: e.m.regions,
         var_ports: e.m.var_ports,
         ext_vars: e.m.ext_vars,
         ext_consts: e.m.ext_consts,

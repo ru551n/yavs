@@ -21,7 +21,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `var_ports`, `warnings`, `ir`; `signal`, `value`, `var_port`), `VarObj`, `codes` |
+| `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `regions` (the yavs-sem regions of each scope, read by VHPI), `var_ports`, `warnings`, `ir`; `signal`, `value`, `var_port`), `VarObj`, `codes` |
 | `src/walk.rs` | The elaborator: instances, generics, generates, blocks, binding (configuration declaration, then specification, then default binding), ports, processes, depth-first in statement order |
 | `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls of user functions (`call_values`); `-g` overrides via the yavs-std `'value` parser |
 | `src/value.rs` | Composite values: aggregates (any number of dimensions), indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; other predefined operations and `TO_STRING` through their yavs-interp natives (`implicit_call`); `encode`/`decode` between `Val` and IR memory (any composite, `Ty::layout`) |

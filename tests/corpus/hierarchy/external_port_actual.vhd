@@ -1,4 +1,7 @@
--- difftest: top=external_port_actual std=2008 stop=20ns
+-- difftest: top=external_port_actual std=2008 stop=20ns ref=hand
+-- ref=hand: an external name actual is a signal name actual (LRM 8.7; #186, user decision
+-- 2026-10-19): the port follows `hidden` in the same delta, as two of the three reference
+-- simulators do. The default reference simulator reports it one delta later.
 entity leaf is port (o : out bit); end;
 architecture a of leaf is
   signal hidden : bit := '0';

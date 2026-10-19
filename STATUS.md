@@ -409,8 +409,8 @@ signals, blocks with generics and ports, incremental binding, nested and record 
 resolution, user resolution functions (one declared in an entity or architecture reads its
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays
 resolved as a whole (every driving process drives every leaf, #193; nested in another
-composite: E9999), an external name as an `in` port actual driven by its equivalent process
-one delta later (#186), linkage ports and mode-view ports, entities with generic types,
+composite: E9999), an external name as an `in` port actual as a signal name actual, same
+delta (#186), linkage ports and mode-view ports, entities with generic types,
 subprograms and packages (yavs-sem `Db::instantiate_entity` clones the entity and architecture
 once per distinct map of those actuals, with its own mangled identity; generic constants stay
 instance data; #75; components and blocks with them, configuration specifications in such an

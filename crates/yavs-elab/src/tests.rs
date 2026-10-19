@@ -1014,10 +1014,10 @@ fn external_names() {
     assert_eq!(err.code, codes::EXTERNAL_NOT_FOUND);
 }
 
-/// An external name as an `in` port actual is an expression actual (#186): no port edge,
-/// the formal is driven by the equivalent process `i <= actual`.
+/// An external name as an `in` port actual is a signal name actual (#186, LRM 8.7): a port
+/// edge, no equivalent process.
 #[test]
-fn external_port_actual_is_an_expression() {
+fn external_port_actual_is_a_signal_name() {
     let src = "entity leaf is end; architecture a of leaf is signal hidden : bit; begin end;
       entity mon is port (i : in bit); end; architecture a of mon is begin end;
       entity t is end; architecture a of t is
@@ -1034,8 +1034,9 @@ fn external_port_actual_is_an_expression() {
     };
     let (hidden, i) = (id(":l:hidden"), id(":m:i"));
     let one = Range::new(0, 1);
-    assert_eq!(e.nets.copies, [((i, one), (hidden, one))]);
-    assert!(e.nets.ports.is_empty());
+    assert_eq!(e.nets.ports.len(), 1);
+    let p = &e.nets.ports[0];
+    assert_eq!((p.formal, p.actual), ((i, one), (hidden, one)));
 }
 
 /// Blocks with generic and port clauses (#75).

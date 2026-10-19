@@ -340,8 +340,7 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
    `PortActual::dope`. The original request follows.) An
    association `f => expr` (or `f => inertial expr`) whose actual is not a static signal name
    is a port driven by an equivalent process `f <= expr` in the instantiating region. An
-   external name actual is treated the same way (one delta later, #186); elab builds that
-   copy process itself (`NetGraph::copies`), so it needs nothing from lowering.
+   external name actual without `inertial` is a signal name actual, a plain port edge (#186).
    Elab will create the formal's signal object (bounds from its subtype, or from the
    expression's subtype when the formal is unconstrained) and one process instance in the
    instantiating region with one driver slot, the formal. Lowering would need, in the

@@ -392,10 +392,6 @@ pub struct NetGraph {
     pub ports: Vec<PortEdge>,
     pub conv_ports: Vec<ConvPort>,
     pub drivers: Vec<DriverDecl>,
-    /// Expression actuals elab builds without lowering (#186): `(formal, actual)` leaf
-    /// parts, each the equivalent process `formal <= actual` (LRM 6.5.6.3), one kernel
-    /// process per part after the IR processes.
-    pub copies: Vec<((LeafId, Range), (LeafId, Range))>,
 }
 
 /// One static selector of a name (sub-element map key).

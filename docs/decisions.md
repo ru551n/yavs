@@ -614,26 +614,21 @@ a note and a help suggesting an access type, as the reference simulators reject 
   calls the function through `call_values` and unpacks the result. `(f) t` with a composite
   element resolves each element as a whole. Not yet (E9999, #76): such a composite inside
   another composite, and resolved subelements below one.
-- **External name as a port actual** (#186, orchestrator, 2026-10-18; LRM 8.7, 6.5.6.3, 14.7;
-  `docs/design/lrm-checks.md` L49): `i => << signal ... >>` on an `in` port is an expression
-  actual, not a signal name actual, as the reference simulator does. The formal is its own
-  signal with its own initial value (its default, else the subtype's `'left`), driven by the
-  equivalent process `i <= actual;` sensitive to the actual (`NetGraph::copies`, one kernel
-  process per leaf part after the IR processes, named `<formal>'actual`). That process is the
-  extra delta: it runs at initialisation and on every event of the actual, and its zero-delay
-  transaction updates the formal in the next simulation cycle (14.7.5), where a signal-name
-  actual would hand its effective value down in the same update phase (14.7.3). So the formal
-  shows the actual's value from delta 1 on (from the formal's default at delta 0 when the two
-  differ). Only whole `in` associations; `out`/`inout`, individual and converted
-  associations with an external actual stay port edges. Not chosen: the formal as
-  `actual'delayed(0 ns)`, which has the right event delta but starts at the actual's value.
+- **External name as a port actual** (#186, user, 2026-10-19: same delta, majority of the
+  reference simulators; LRM 8.7, 6.5.7.1, 14.7.3; `docs/design/lrm-checks.md` L49):
+  `i => << signal ... >>` on an `in` port is a signal name actual, since the external name
+  denotes the signal itself (8.7). It is an ordinary port edge: the formal starts at the
+  actual's value and follows it in the same delta, as two of the three reference simulators
+  do. Replaces the orchestrator decision of 2026-10-18 (an expression actual driven by a copy
+  process, one delta later, as the third does). `inertial << signal ... >>` stays an
+  expression actual (6.5.6.3).
 - **Expression actuals of ports** (#74, elab agent, 2026-10-18; LRM 6.5.6.3, 6.5.7.1): an `in`
   port (or a part of one in an individual association) associated with an expression that is
   not a signal name gets the expression's value as its initial value when the expression is
   globally static. Otherwise it is driven by the equivalent process `formal <= expr` of the
   instantiating region, an ordinary IR process (yavs-lower `PortActual`, flag `IMPLICIT`)
   sensitive to the expression's signals, with one driver, the formal's part; the formal keeps
-  its own initial value until delta 1, as for #186 and the reference simulator. The process
+  its own initial value until delta 1, as the reference simulators do. The process
   runs with its region's instance data plus the formal as one more signal and, for an array,
   the formal's descriptor, against which the value is checked. A conversion function is only
   the syntax `name(signal)`: an operator such as `not s` is an expression actual (sem). Not

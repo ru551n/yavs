@@ -1,7 +1,8 @@
--- difftest: top=external_port_init std=2008 stop=20ns
--- An external name as an in-port actual is an expression actual (#186): the formal starts
--- at its own default ('1'), and the equivalent process `i <= actual` run at initialisation
--- gives it the actual's '0' in delta 1.
+-- difftest: top=external_port_init std=2008 stop=20ns ref=hand
+-- ref=hand: an external name as an in-port actual is a signal name actual (LRM 8.7; #186,
+-- user decision 2026-10-19): the formal starts at the actual's '0', not at its own default
+-- '1', and follows it in the same delta, as two of the three reference simulators do. The
+-- default reference simulator treats it as an expression actual, one delta later.
 entity leaf is port (o : out bit); end;
 architecture a of leaf is
   signal hidden : bit := '0';

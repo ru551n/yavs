@@ -1194,11 +1194,6 @@ impl Elab<'_> {
             .m
             .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
         let fl = self.m.select(fo, &[], span)?.0;
-        if mode == PortMode::In && matches!(a, A::Expr(e, _) if external_root(db, *e)) {
-            // An external name actual is an expression actual (#186, docs/decisions.md
-            // "Elaboration"): the formal is driven by `formal <= actual`, one delta later.
-            return self.m.copies(&fl, &al, aspan);
-        }
         let modes = self.m.leaf_modes(self.db, fo, hmode, span)?;
         self.m.edges(&fl, &al, &modes, aspan)
     }
@@ -2927,31 +2922,6 @@ impl Model {
             ));
         }
         Ok(())
-    }
-
-    /// The equivalent processes `formal <= actual` of an expression actual, per leaf part.
-    fn copies(&mut self, fl: &[(LeafId, Range)], al: &[(LeafId, Range)], span: Span) -> R<()> {
-        self.same_parts(fl, al, span)?;
-        self.nets.copies.extend(
-            fl.iter()
-                .zip(al)
-                .filter(|(f, _)| f.1.len != 0)
-                .map(|(f, a)| (*f, *a)),
-        );
-        Ok(())
-    }
-}
-
-/// Whether the signal name `e` is an external name or a selection of one.
-fn external_root(db: &Db, mut e: ExprId) -> bool {
-    loop {
-        match &db.exprs[e].kind {
-            ExprKind::External(_) => return true,
-            ExprKind::Index { prefix, .. }
-            | ExprKind::Slice { prefix, .. }
-            | ExprKind::Field { prefix, .. } => e = *prefix,
-            _ => return false,
-        }
     }
 }
 

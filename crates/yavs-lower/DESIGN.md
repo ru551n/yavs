@@ -108,8 +108,10 @@ a call into your module in a small commit.
   `yavs_interp::init_package` (constants that are not locally static, composites of static
   layout in place, composites with run-time bounds in package data appended by `PkgAlloc`; shared protected variables); package signals are the first entries of every
   unit's signal table (an array one's descriptor is in package data, `PackageIr::signals`
-  `dope`, written by the elaborator after `init`); package files live in the shared variables area
-  (`Lowered::shared_size`).
+  `dope`, written by the elaborator after `init`); package files and non-protected shared
+  variables (`--relaxed`) live in the shared variables area (`Lowered::shared_size`), the latter
+  in the slot layout of a process variable (`VarShape`, `Fx::var_init`, objects in the shared
+  heap), initialised by `init`.
 - `UnitIr` per architecture: `values` (generics, generate parameters and constants that are not
   locally static: the elaborator writes its value with `UnitIr::write_value`; arrays go after
   the fixed part, their element and descriptor offsets in the slot), `consts` (thunks for scalar
@@ -270,7 +272,10 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   buffer, `in` otherwise (LRM 10.5.2.1).
 - Shared variables of a protected type in an architecture: an instance cell with the object's
   handle; its thunk creates the object in the shared heap (yavs-elab runs instance thunks with
-  `call_shared`). Composite constants of an architecture elaboration did not fold are
+  `call_shared`). One of a non-protected type (`--relaxed`, #285): an instance cell with the
+  address of its slot (`VarShape`) in the shared heap, created and initialised by its thunk;
+  names of it are `Space::Region(cell)`, whose `Fx::addr` loads the cell and flags the function
+  `TOUCHES_SHARED`, so its processes are serial. A type holding access values is `E2001`. Composite constants of an architecture elaboration did not fold are
   computed once per region by a thunk returning their fat pair (`InstConst::comp`, #73).
   A 2019 variable port is an instance cell too (`UnitIr::var_ports`), with no thunk: yavs-elab
   writes the handle of the shared variable its actual chain ends at (#188).

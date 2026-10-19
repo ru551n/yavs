@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	1	:pkg_vars:checker	after delta: count=13 total=37
+diag	note	5000000	0	:pkg_vars:checker	name=abcd text=Jello bits=1101 t=10000000 fs
+diag	note	5000000	0	:pkg_vars:checker	pkg_vars ok
+diag	note	11000000	0	:pkg_vars:writer1	writer1 done

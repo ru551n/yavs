@@ -22,12 +22,15 @@ systemd-run for debugging.
 
 One line in the first 15 lines of each `.vhd`:
 
-    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [exit=N] [ref=hand] [ignore=a,b]
+    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [relaxed] [exit=N] [ref=hand] [ignore=a,b]
 
 - `top`: top-level entity (required). All design units in the file are analysed into one library.
 - `std`: default 2008. `stop`: passed as `--stop-time` (needed for free-running clocks).
 - `res`: time resolution limit, passed to yavs as `--resolution` (the reference simulators
   ignore it, so use it only with `ref=hand`).
+- `relaxed`: analyse, elaborate and run with each candidate's switch that relaxes LRM checks
+  (`--relaxed` for yavs and the reference simulator, `-frelaxed` for the second one; `{relaxed}`
+  in a template), e.g. for VHDL-93 style shared variables of non-protected types.
 - `exit`: expected process exit status of the reference (default 0). `--bless` refuses to write
   an `.expected` whose exit status differs, so a broken test cannot be blessed by accident.
 - `ignore`: fields added to the ignore set for this test only (below), e.g. `ignore=order` for a
@@ -85,7 +88,7 @@ is reported as an elaboration failure. `tools/difftest/report.sh` runs the corpu
 raw per-test results it summarises.
 
 Placeholders: `{file}` `{top}` `{std}` (2008) `{std2}` (08) `{stop}` `{stop_flag}`
-(`--stop-time=X` or empty) `{work}` (does not exist yet; ghdl needs `mkdir -p`) `{threads}`
+(`--stop-time=X` or empty) `{relaxed}` (the `relaxed` switch or empty) `{work}` (does not exist yet; ghdl needs `mkdir -p`) `{threads}`
 `{shuffle}` (seed) `{shuffle_flag}` (`--shuffle=SEED` or empty) `{shuffle_on}` (`--shuffle` or empty). The template runs in a fresh
 working directory, so textio files land there. Exit codes 97 (analysis) and 98 (elaboration) are
 reserved for the harness: make a multi-step template `|| exit 97` / `|| exit 98` as `NVC` does, so

@@ -266,6 +266,8 @@ const PASS: &[&str] = &[
     "scalar/subtype_range",
     "scalar/time_attrs",
     "scalar/time_bounds",
+    "shared/pkg_vars",
+    "shared/region_vars",
     "sigassign/assign_inertial",
     "sigassign/assign_reject",
     "sigassign/assign_transport",
@@ -298,6 +300,7 @@ const GROUPS: &[&str] = &[
     "composite",
     "access",
     "protected",
+    "shared",
     "resolution",
     "force",
     "textio",
@@ -310,7 +313,7 @@ fn corpus() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus"))
 }
 
-fn header(src: &str) -> (String, LangRev, Time) {
+fn header(src: &str) -> (String, LangRev, Time, bool) {
     let line = src
         .lines()
         .take(15)
@@ -319,6 +322,7 @@ fn header(src: &str) -> (String, LangRev, Time) {
     let mut top = String::new();
     let mut rev = LangRev::Vhdl2008;
     let mut stop = Time::MAX;
+    let relaxed = line.split_whitespace().any(|kv| kv == "relaxed");
     for kv in line.split_whitespace() {
         match kv.split_once('=') {
             Some(("top", v)) => top = v.to_string(),
@@ -330,7 +334,7 @@ fn header(src: &str) -> (String, LangRev, Time) {
             _ => {}
         }
     }
-    (top, rev, stop)
+    (top, rev, stop, relaxed)
 }
 
 /// (severity, time in fs, delta, process index, message).
@@ -364,10 +368,11 @@ fn escape(s: &str) -> String {
 /// canonical output, or the rendered diagnostics.
 fn simulate(file: &Path) -> Result<String, String> {
     let src = std::fs::read_to_string(file).unwrap();
-    let (top, rev, stop) = header(&src);
+    let (top, rev, stop, relaxed) = header(&src);
     // The checkout's own lib/ tree, not `default_stdlib()` (#7).
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(rev, lib);
+    opts.relaxed = relaxed;
     let dir = std::env::temp_dir().join(format!("yavs-lower-work-{}", std::process::id()));
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))

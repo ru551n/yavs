@@ -856,6 +856,11 @@ which tools/difftest parses.
   snippet instead of the `Process` line. yavs keeps its CLI format (cli-contract section 5: the
   `Process` line after every report), and the difftest normaliser drops the path of an
   `Assertion violation` event on both sides.
+- **`relaxed` header (#285):** a test of a construct only `--relaxed` accepts (VHDL-93 style
+  shared variables) runs each candidate with its own switch; analysis output is shown only when
+  analysis fails, and yavs also gets `-Wno-W1904` because it repeats analysis warnings when it
+  loads the units. The second reference simulator rejects these shared variables even with
+  `-frelaxed`.
 - **Exit 2 is not always an elaboration failure:** `stop(2)` exits 2 like the reference simulator, so the yavs template
   runs `yavs elab` first and maps only its failure to "elaboration failed".
 - **Report order within one cycle (#11), superseded by "Process order within a cycle" below
@@ -922,6 +927,17 @@ which tools/difftest parses.
   lower case (`:t:main:pr[integer]:x`, a subprogram's own name ends in `:`). Loops and
   sequential blocks add nothing. Ponytail: a subprogram declared in an enclosing region of the
   process's own region is named from the process's region.
+- **Shared variables of non-protected types** (`--relaxed`, W1904, #285): stored like a process
+  variable (a scalar in place; an array or record as its fat pair over an object in the shared
+  heap), in shared state. A package's lives in the shared variables area (`Space::Shared`),
+  initialised by the package's thunk. One of an architecture, block or generate is one object per
+  declaring region like a protected one (#249): its thunk creates the slot in the shared heap and
+  returns its address, which the elaborator writes into an instance cell; names reach it through
+  that cell (`Space::Region`). Every function naming either is `TOUCHES_SHARED`, so the processes
+  reaching it, through any chain of calls, are serial: output is identical at any `--threads`,
+  and `--shuffle` exposes testbenches that depend on process order (`docs/plan.md` "Parallel
+  kernel design"). A type holding access values is `E2001`: a process allocates in its private
+  heap, so another process could not follow the value.
 - **Signal aliases** (#203, LRM 6.6.2) get no storage and no slot: every use lowers the aliased
   name (`Fx::alias_target`), with the alias subtype's descriptor when it is constrained (a
   length check at each use, `SubtypeCheck`). Sem's LSP of a name through an alias with an array

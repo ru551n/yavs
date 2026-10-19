@@ -32,6 +32,7 @@ themselves are described in `tests/corpus/AGENTS.md`.
 |---|---|---|
 | The reference simulator is the reference; `ref=hand` marks tests where the reference simulator is wrong (hand-edited `.expected` to the LRM result) | LRM policy: the LRM wins where clear | README "Test header", `docs/plan.md` "Verification" |
 | yavs is compared strictly (no ignored fields by default); a test may opt into `ignore=order` with a comment | Same-cycle report order is unspecified by the LRM | README "Ignore set", `docs/decisions.md` |
+| Header `relaxed`: each candidate's relaxing switch (`{relaxed}`), yavs also `-Wno-W1904`; analysis output only when analysis fails | Tests of constructs only `--relaxed` accepts, compared without analysis warnings | README "Test header", #285 |
 | Exit codes 97 (analysis) and 98 (elaboration) are reserved for the harness | Compile failures reported as such | README "Plugging yavs in" |
 | yavs reports in the reference simulator's format on stdout; runtime errors are diagnostics on stderr (`error[E3xxx]`, `= note: at T, delta D`) | One canonical form | README; `docs/cli-contract.md` 5 |
 | Every run `timeout 300 systemd-run --user --scope -p MemoryMax=2G`, at most 8 at once; work dirs under `~/.cache/yavs-difftest/run-<pid>` (unique per process; `DIFFTEST_CACHE` overrides) | Root rule 15 | README |

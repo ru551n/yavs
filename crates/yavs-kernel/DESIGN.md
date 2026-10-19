@@ -151,7 +151,8 @@ Within a delta the kernel has two phases that never overlap:
 - **Serial processes** (`ProcFlags::serial`, or `Process::serial` returning true) run one at a
   time, in batch order, after the parallel batch. Through M3 every process that touches a
   non-protected shared variable, calls a protected type or touches a disk file is serial (user
-  decision; files #82); the kernel needs nothing else for that. `Process::serial` lets the
+  decision; files #82; non-protected shared variables under `--relaxed`, #285); the kernel needs
+  nothing else for that. `Process::serial` lets the
   process implementation (the interpreter, from the IR's `TOUCHES_SHARED`) say so itself, so
   no builder in between can drop it (#107).
 - **Shuffle** (`Config::shuffle`) permutes the execution order with a seeded splitmix64. Commit

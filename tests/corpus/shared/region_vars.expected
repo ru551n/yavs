@@ -1,0 +1,9 @@
+exit	0
+diag	note	10000000	0	:region_vars:c1:b:nested:p3	cell 1: local=2
+diag	note	13000000	0	:region_vars:c1:g(1):gp	cell 1 gen 1: gv=10
+diag	note	14000000	0	:region_vars:c1:g(2):gp	cell 1 gen 2: gv=20
+diag	note	15000000	0	:region_vars:c1:check	cell 1: hits=1109 rec.hits=4 tag=abc
+diag	note	20000000	0	:region_vars:c2:b:nested:p3	cell 2: local=2
+diag	note	23000000	0	:region_vars:c2:g(1):gp	cell 2 gen 1: gv=10
+diag	note	24000000	0	:region_vars:c2:g(2):gp	cell 2 gen 2: gv=20
+diag	note	25000000	0	:region_vars:c2:check	cell 2: hits=1209 rec.hits=4 tag=abc

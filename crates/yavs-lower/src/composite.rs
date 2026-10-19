@@ -10,7 +10,7 @@
 use yavs_diag::Span;
 use yavs_ir::{
     AddrSpace, CmpOp, ConstData, Dir, Field, Inst, IntOp, LogicKind, ProgramBuilder, Reg, RegTy,
-    RootKind, Ty, TyId, Width,
+    Ty, TyId, Width,
 };
 use yavs_sem::decl::DeclKind;
 use yavs_sem::hir::{AggAssoc, AggBounds, Choice, ExprKind};
@@ -20,7 +20,7 @@ use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
 
 use crate::expr::{Dr, Place, V};
 use crate::func::Fx;
-use crate::{Cx, Failed, Obj, R, Space, ty};
+use crate::{Cx, Failed, R, ty};
 
 // ---- types ----
 
@@ -1087,6 +1087,7 @@ impl Fx<'_, '_> {
         tid: TyId,
         desc: Reg,
         v: Option<V>,
+        shared: bool,
         span: Span,
     ) -> R<(Reg, Reg, Reg)> {
         let ds = self.desc_size(tid);
@@ -1127,7 +1128,7 @@ impl Fx<'_, '_> {
             ty: tid,
             init: buf,
             size: total,
-            shared: false,
+            shared,
         });
         let what = self.msg("object", Dir::To);
         let p = self.reg(RegTy::Ptr);
@@ -1140,20 +1141,18 @@ impl Fx<'_, '_> {
         Ok((h, data, p))
     }
 
-    /// A variable or constant of a record type or an array of composites: a frame slot
-    /// `[data, desc, handle]` over a private heap object (rule 6).
-    pub fn local_comp(&mut self, d: DeclId) -> R<()> {
+    /// The slot of a variable or constant of a record type or an array of composites:
+    /// `[data, desc, handle]` at `slot` over a heap object (rule 6), in the shared heap with
+    /// `shared`.
+    pub fn comp_init(&mut self, d: DeclId, slot: Reg, shared: bool) -> R<()> {
         let db = self.db;
         let decl = &db.decls[d];
         let DeclKind::Object(o) = &decl.kind else {
             return Err(self.cx.ice(decl.span, "not an object"));
         };
         let span = decl.span;
-        let name = decl.name.to_string();
         let t = db.base(o.subtype);
         let tid = self.ty(t, span)?;
-        let off = self.fb.local(&name, tid, 24, 8);
-        self.fb.root(off + 16, RootKind::Handle);
         let init = match o.default {
             Some(e) => Some(self.expr(e)?),
             None => None,
@@ -1169,20 +1168,12 @@ impl Fx<'_, '_> {
         if let Some(vd) = vd {
             self.check_desc(t, tid, vd, desc, &ty::obj_desc(db, d), span)?;
         }
-        let (h, data, p) = self.new_object(o.subtype, tid, desc, init, span)?;
-        let slot = self.addr(Space::Frame(self.depth), off);
+        let (h, data, p) = self.new_object(o.subtype, tid, desc, init, shared, span)?;
         self.store(slot, data, Width::B8);
         let ds = self.offset(slot, 8);
         self.store(ds, p, Width::B8);
         let hs = self.offset(slot, 16);
         self.store(hs, h, Width::B8);
-        self.cx.objs.insert(
-            d,
-            Obj::Array {
-                space: Space::Frame(self.depth),
-                off,
-            },
-        );
         Ok(())
     }
 

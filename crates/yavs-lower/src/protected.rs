@@ -439,21 +439,55 @@ pub(crate) fn shared_var(
         return Err(cx.ice(decl.span, "not an object"));
     };
     let t = db.base(o.subtype);
-    if !matches!(db.types[t].kind, TypeKind::Protected { .. }) {
-        return Err(cx.unsupported(decl.span, "shared variables of non-protected types"));
-    }
     let name = decl.name.to_string();
     let span = decl.span;
-    let init = crate::func::thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))?;
     let off = cx.inst_alloc(8);
-    cx.objs.insert(
-        d,
-        Obj::Scalar {
-            space: Space::Inst,
-            off,
-            w: Width::B8,
-        },
-    );
+    let init = if matches!(db.types[t].kind, TypeKind::Protected { .. }) {
+        cx.objs.insert(
+            d,
+            Obj::Scalar {
+                space: Space::Inst,
+                off,
+                w: Width::B8,
+            },
+        );
+        crate::func::thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))?
+    } else {
+        // `--relaxed` (W1904): the thunk creates the variable's slot in the shared heap and
+        // returns its address; names of it reach it through the cell (`Space::Region`).
+        let mut obj = None;
+        let f = crate::func::thunk(db, pb, cx, &name, span, |fx| {
+            let shape = fx.shared_shape(d, t, span)?;
+            let tid = fx.ty(t, span)?;
+            let buf = fx.alloc_n(shape.size());
+            let size = fx.int(i64::from(shape.size()));
+            let h = fx.reg(yavs_ir::RegTy::I64);
+            // ponytail: the block holds the slot, not a value of `tid`; fine while the shared
+            // heap is never collected and the type holds no access values.
+            fx.emit(yavs_ir::Inst::New {
+                dst: h,
+                ty: tid,
+                init: buf,
+                size,
+                shared: true,
+            });
+            let what = fx.msg(&name, yavs_ir::Dir::To);
+            let p = fx.reg(yavs_ir::RegTy::Ptr);
+            fx.emit(yavs_ir::Inst::Deref {
+                dst: p,
+                handle: h,
+                what,
+            });
+            fx.var_init(d, shape, p, true)?;
+            obj = Some(shape.obj(Space::Region(off), 0));
+            Ok(p)
+        })?;
+        let Some(obj) = obj else {
+            return Err(cx.ice(span, "shared variable without a slot"));
+        };
+        cx.objs.insert(d, obj);
+        f
+    };
     ir.consts.push(crate::InstConst {
         decl: d,
         name,

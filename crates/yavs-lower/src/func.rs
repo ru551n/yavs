@@ -11,7 +11,9 @@ use yavs_sem::scope::ScopeKind;
 use yavs_sem::{Db, DeclId, ScopeId, StmtId, SubtypeId, UnitId};
 
 use crate::expr::Place;
-use crate::{Cx, Failed, InstConst, InstValue, Obj, ProcessIr, R, SignalIr, Space, UnitIr, ty};
+use crate::{
+    Cx, Failed, InstConst, InstValue, Obj, ProcessIr, R, SignalIr, Space, UnitIr, VarShape, ty,
+};
 
 /// How a parameter is passed (DESIGN.md "Subprograms").
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -258,6 +260,13 @@ impl<'a, 'b> Fx<'a, 'b> {
             Space::Inst => AddrSpace::Inst,
             Space::Pkg(p) => AddrSpace::Pkg(p),
             Space::Shared => AddrSpace::Shared,
+            Space::Region(cell) => {
+                // The kernel runs this function's processes serially (ir.md 3.5).
+                self.fb.flag(yavs_ir::FuncFlags::TOUCHES_SHARED);
+                let c = self.addr(Space::Inst, cell);
+                let p = self.load(c, Width::B8, RegTy::Ptr);
+                return self.offset(p, off);
+            }
         };
         let dst = self.reg(RegTy::Ptr);
         self.emit(Inst::AddrOf { dst, space, off });
@@ -501,100 +510,151 @@ impl<'a, 'b> Fx<'a, 'b> {
                 return self.local_prot(d, t, decl.span);
             }
             yavs_sem::types::TypeKind::Access { .. } => return self.local_access(d),
-            _ if self.is_general(t, decl.span)? => return self.local_comp(d),
             _ => {}
         }
-        if ty::is_array(db, t) {
-            let tid = self.ty(t, decl.span)?;
-            let (_, dims) = ty::array_of(db, t).ok_or(Failed)?;
-            let dope_bytes = 24 * u32::from(dims);
-            let off = self.fb.local(&name, tid, 24 + dope_bytes, 8);
-            self.fb.root(off + 16, RootKind::Handle);
-            let init = o.default.map(|e| self.expr(e)).transpose()?;
-            let init = init.map(|v| self.arr(v, decl.span)).transpose()?;
-            let dope = match (self.subtype_dope(o.subtype, decl.span)?, init) {
-                (Some(dope), Some((_, vd))) => {
-                    let what = self.msg(&name, yavs_ir::Dir::To);
-                    self.emit(Inst::SubtypeCheck {
-                        dope: vd,
-                        want: dope,
-                        dims,
-                        what,
-                    });
-                    dope
-                }
-                (Some(dope), None) => dope,
-                (None, Some((_, vd))) => vd,
-                (None, None) => {
-                    return Err(self
-                        .cx
-                        .ice(decl.span, "unconstrained object without bounds"));
-                }
-            };
-            let (size, count) = self.layout(tid, dope);
-            let data = match init {
-                Some((data, _)) => data,
-                None => self.default_array(o.subtype, size, count, decl.span)?,
-            };
-            let h = self.reg(RegTy::I64);
-            self.emit(Inst::New {
-                dst: h,
-                ty: tid,
-                init: data,
-                size,
-                shared: false,
-            });
-            let slot = self.addr(Space::Frame(self.depth), off);
-            let hslot = self.offset(slot, 16);
-            self.store(hslot, h, Width::B8);
-            let what = self.msg(&name, yavs_ir::Dir::To);
-            let p = self.reg(RegTy::Ptr);
-            self.emit(Inst::Deref {
-                dst: p,
-                handle: h,
-                what,
-            });
-            self.store(slot, p, Width::B8);
-            let dslot = self.offset(slot, 24);
-            let n = self.int(i64::from(dope_bytes));
-            self.emit(Inst::Copy {
-                dst: dslot,
-                src: dope,
-                bytes: n,
-            });
-            let dp = self.offset(slot, 8);
-            self.store(dp, dslot, Width::B8);
-            self.cx.objs.insert(
-                d,
-                Obj::Array {
-                    space: Space::Frame(self.depth),
-                    off,
-                },
-            );
-            return Ok(());
-        }
-        let (tid, _, w) = self.scalar(o.subtype, decl.span)?;
-        let off = self.fb.local(&name, tid, w.bytes(), w.bytes());
-        let v = match o.default {
-            Some(e) => {
-                let v = self.scalar_expr(e)?;
-                let what = ty::obj_desc(db, d);
-                self.check_scalar(v, Some(db.exprs[e].subtype), o.subtype, &what, decl.span)?;
-                v
+        let tid = self.ty(t, decl.span)?;
+        let shape = self.var_shape(d)?;
+        let off = match shape {
+            VarShape::Scalar(w) => self.fb.local(&name, tid, w.bytes(), w.bytes()),
+            _ => {
+                let off = self.fb.local(&name, tid, shape.size(), 8);
+                self.fb.root(off + 16, RootKind::Handle);
+                off
             }
-            None => self.scalar_left(o.subtype, decl.span)?,
         };
-        let a = self.addr(Space::Frame(self.depth), off);
-        self.store(a, v, w);
-        self.cx.objs.insert(
-            d,
-            Obj::Scalar {
-                space: Space::Frame(self.depth),
-                off,
-                w,
-            },
-        );
+        let slot = self.addr(Space::Frame(self.depth), off);
+        self.var_init(d, shape, slot, false)?;
+        self.cx
+            .objs
+            .insert(d, shape.obj(Space::Frame(self.depth), off));
         Ok(())
+    }
+
+    /// How variable `d` (not of a protected or access type) is stored: its slot's shape.
+    pub fn var_shape(&mut self, d: DeclId) -> R<VarShape> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(self.cx.ice(decl.span, "not an object"));
+        };
+        let t = db.base(o.subtype);
+        if self.is_general(t, decl.span)? {
+            return Ok(VarShape::Comp);
+        }
+        if ty::is_array(db, t) {
+            let (_, dims) = ty::array_of(db, t).ok_or(Failed)?;
+            return Ok(VarShape::Array(dims));
+        }
+        let (_, _, w) = self.scalar(o.subtype, decl.span)?;
+        Ok(VarShape::Scalar(w))
+    }
+
+    /// The shape of non-protected shared variable `d` of type `t`. An access value in it
+    /// would designate an object in one process's private heap, so such types are not
+    /// lowered.
+    pub fn shared_shape(&mut self, d: DeclId, t: yavs_sem::TypeId, span: Span) -> R<VarShape> {
+        let tid = self.ty(t, span)?;
+        if holds_access(self.fb.program().types(), tid) {
+            return Err(self.cx.unsupported(
+                span,
+                "shared variables of non-protected types holding access values",
+            ));
+        }
+        self.var_shape(d)
+    }
+
+    /// Initialise variable `d` in its slot at `slot` (`shape.size()` bytes): a scalar's value;
+    /// for an array `[data, dope, handle, descriptor]` over a heap object (rule 6), for a
+    /// record or an array of composites `[data, desc, handle]`. With `shared` the heap object
+    /// is in the shared heap (shared variables, ir.md 3.5).
+    pub fn var_init(&mut self, d: DeclId, shape: VarShape, slot: Reg, shared: bool) -> R<()> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(self.cx.ice(decl.span, "not an object"));
+        };
+        let name = decl.name.to_string();
+        let t = db.base(o.subtype);
+        match shape {
+            VarShape::Comp => self.comp_init(d, slot, shared),
+            VarShape::Array(dims) => {
+                let tid = self.ty(t, decl.span)?;
+                let dope_bytes = 24 * u32::from(dims);
+                let init = o.default.map(|e| self.expr(e)).transpose()?;
+                let init = init.map(|v| self.arr(v, decl.span)).transpose()?;
+                let dope = match (self.subtype_dope(o.subtype, decl.span)?, init) {
+                    (Some(dope), Some((_, vd))) => {
+                        let what = self.msg(&name, yavs_ir::Dir::To);
+                        self.emit(Inst::SubtypeCheck {
+                            dope: vd,
+                            want: dope,
+                            dims,
+                            what,
+                        });
+                        dope
+                    }
+                    (Some(dope), None) => dope,
+                    (None, Some((_, vd))) => vd,
+                    (None, None) => {
+                        return Err(self
+                            .cx
+                            .ice(decl.span, "unconstrained object without bounds"));
+                    }
+                };
+                let (size, count) = self.layout(tid, dope);
+                let data = match init {
+                    Some((data, _)) => data,
+                    None => self.default_array(o.subtype, size, count, decl.span)?,
+                };
+                let h = self.reg(RegTy::I64);
+                self.emit(Inst::New {
+                    dst: h,
+                    ty: tid,
+                    init: data,
+                    size,
+                    shared,
+                });
+                let hslot = self.offset(slot, 16);
+                self.store(hslot, h, Width::B8);
+                let what = self.msg(&name, yavs_ir::Dir::To);
+                let p = self.reg(RegTy::Ptr);
+                self.emit(Inst::Deref {
+                    dst: p,
+                    handle: h,
+                    what,
+                });
+                self.store(slot, p, Width::B8);
+                let dslot = self.offset(slot, 24);
+                let n = self.int(i64::from(dope_bytes));
+                self.emit(Inst::Copy {
+                    dst: dslot,
+                    src: dope,
+                    bytes: n,
+                });
+                let dp = self.offset(slot, 8);
+                self.store(dp, dslot, Width::B8);
+                Ok(())
+            }
+            VarShape::Scalar(w) => {
+                let v = match o.default {
+                    Some(e) => {
+                        let v = self.scalar_expr(e)?;
+                        let what = ty::obj_desc(db, d);
+                        self.check_scalar(
+                            v,
+                            Some(db.exprs[e].subtype),
+                            o.subtype,
+                            &what,
+                            decl.span,
+                        )?;
+                        v
+                    }
+                    None => self.scalar_left(o.subtype, decl.span)?,
+                };
+                self.store(slot, v, w);
+                Ok(())
+            }
+        }
     }
 
     /// `size` bytes of `count` elements, each the element subtype's left bound.
@@ -1978,9 +2038,16 @@ impl Fx<'_, '_> {
                     db.types[t].kind,
                     yavs_sem::types::TypeKind::Protected { .. }
                 ) {
-                    return Err(self
-                        .cx
-                        .unsupported(span, "shared variables of non-protected types"));
+                    // `--relaxed` (W1904): one object in the shared variables area; the
+                    // functions naming it touch shared state, so their processes are serial.
+                    let shape = self.shared_shape(d, t, span)?;
+                    self.stmt_start(StmtKind::Decl, span);
+                    let off = self.cx.shared_size.next_multiple_of(8);
+                    self.cx.shared_size = off + shape.size();
+                    let slot = self.addr(Space::Shared, off);
+                    self.var_init(d, shape, slot, true)?;
+                    self.cx.objs.insert(d, shape.obj(Space::Shared, off));
+                    return Ok(());
                 }
                 self.stmt_start(StmtKind::Decl, span);
                 let h = self.prot_new(t, true, span)?;
@@ -2275,4 +2342,14 @@ pub(crate) fn lsp_fields(l: &hir::Lsp) -> Vec<u32> {
             _ => None,
         })
         .collect()
+}
+
+/// Whether values of `tid` contain access values.
+fn holds_access(types: &yavs_ir::IdVec<yavs_ir::TyId, yavs_ir::Ty>, tid: yavs_ir::TyId) -> bool {
+    match types.get(tid) {
+        Some(yavs_ir::Ty::Access { .. }) => true,
+        Some(yavs_ir::Ty::Array { elem, .. }) => holds_access(types, *elem),
+        Some(yavs_ir::Ty::Record { fields }) => fields.iter().any(|f| holds_access(types, f.ty)),
+        _ => false,
+    }
 }

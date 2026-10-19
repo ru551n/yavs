@@ -1762,3 +1762,37 @@ fn external_names_in_package_subprograms() {
         [codes::EXTERNAL_NOT_FOUND]
     );
 }
+
+#[test]
+fn shared_variable_holding_access_values_is_not_lowered() {
+    // `--relaxed` accepts it; an access value in it would designate an object in one
+    // process's private heap (#285).
+    let src = "
+      package p is
+        type ptr is access integer;
+        type rec is record n : integer; q : ptr; end record;
+        shared variable v : rec;
+      end package;
+      use work.p.all;
+      entity t is end;
+      architecture a of t is
+      begin
+        process begin v.n := 1; wait; end process;
+      end;";
+    let tmp = tempfile::tempdir().expect("scratch dir");
+    let path = tmp.path().join("t.vhd");
+    std::fs::write(&path, src).expect("write");
+    let mut opts = Options::new(LangRev::Vhdl2008, yavs_sem::default_stdlib());
+    opts.relaxed = true;
+    let mut db = Db::new(opts);
+    assert!(db.analyze_file("work", &path, LangRev::Vhdl2008).is_ok());
+    assert_eq!(db.error_count(), 0);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let mut e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let ds = e.lower(&mut db).expect_err("not lowered");
+    let d = ds.first().expect("a diagnostic");
+    assert_eq!(d.code, "E2001");
+    assert!(d.message.contains("holding access values"), "{}", d.message);
+    let at = d.primary.as_ref().expect("span").span;
+    assert_eq!(&src[at.start as usize..at.end as usize], "v");
+}

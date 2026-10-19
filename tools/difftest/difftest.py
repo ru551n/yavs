@@ -15,20 +15,26 @@ TIMEOUT = 300
 RC_ANALYSE, RC_ELAB = 97, 98
 
 # Candidate command templates (run with bash -c). Placeholders: {file} {top}
-# {std} {std2} {stop} {stop_flag} {res_flag} {work} {threads} {shuffle}.
-NVC = ("nvc --std={std} --work={work} -a {file} || exit 97; "
+# {std} {std2} {stop} {stop_flag} {res_flag} {relaxed} {work} {threads} {shuffle}.
+# {relaxed} is the candidate's own switch for the `relaxed` header (empty without it).
+# Analysis output is shown only when analysis fails: its warnings (those of `relaxed` tests)
+# are not simulation output.
+NVC = ("o=$(nvc --std={std} --work={work} -a {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
        "nvc --std={std} --work={work} -e {top} || exit 98; "
        "nvc --std={std} --work={work} -r {top} {stop_flag}")
-GHDL = ("mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file} || exit 97; "
-        "ghdl -e --std={std2} --workdir={work} {top} || exit 98; "
+GHDL = ("mkdir -p {work} && o=$(ghdl -a --std={std2} --workdir={work} {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
+        "ghdl -e --std={std2} --workdir={work} {relaxed} {top} || exit 98; "
         "ghdl -r --std={std2} --workdir={work} {top} {stop_flag}")
 # analyze fails -> 97; `yavs elab` fails (usage, elaboration, "not implemented") -> 98. `yavs run`
 # then passes its status through: `stop(2)` exits 2, the same code as an elaboration error.
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
-YAVS = ('R=${{YAVS_BIN:-yavs}}; "$R" analyze --std={std} --work=work:{work} {file} || exit 97; '
-        '"$R" elab --std={std} --work=work:{work} {top} || exit 98; '
-        '"$R" run --std={std} --work=work:{work} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
+YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} {relaxed} {file} 2>&1) || {{ printf \'%s\\n\' "$o" >&2; exit 97; }}; '
+        '"$R" elab --std={std} --work=work:{work} {relaxed} {top} || exit 98; '
+        '"$R" run --std={std} --work=work:{work} {relaxed} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
 TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS}
+# yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
+# non-protected type) is the warning `relaxed` tests are about.
+RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904"}
 # Fields masked by default per builtin candidate (reference prints them all).
 DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": ""}
 
@@ -48,7 +54,8 @@ HDR = re.compile(r"^--\s*difftest:\s*(.*)$")
 
 
 def parse_header(path):
-    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": "", "res": ""}
+    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": "", "res": "",
+         "relaxed": None}
     for line in path.read_text().splitlines()[:15]:
         m = HDR.match(line)
         if m:
@@ -57,6 +64,8 @@ def parse_header(path):
                 if k not in h:
                     raise SystemExit(f"{path}: unknown header key {k!r}")
                 h[k] = int(v) if k == "exit" else v
+                if k == "relaxed" and v:
+                    raise SystemExit(f"{path}: header key 'relaxed' takes no value")
     if not h["top"]:
         raise SystemExit(f"{path}: missing '-- difftest: top=NAME' header")
     return h
@@ -71,7 +80,7 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
         file=shlex.quote(str(vhd)), top=hdr["top"], std=std,
         std2={"1993": "93", "2002": "02", "2008": "08", "2019": "19"}[std],
         stop=hdr["stop"], stop_flag=f"--stop-time={hdr['stop']}" if hdr["stop"] else "",
-        res_flag=f"--resolution={hdr['res']}" if hdr["res"] else "",
+        res_flag=f"--resolution={hdr['res']}" if hdr["res"] else "", relaxed=hdr.get("relaxed_flag", ""),
         work=shlex.quote(str(work / "lib")), threads=threads, shuffle=shuffle or "",
         shuffle_flag=f"--shuffle={shuffle}" if shuffle else "",
         shuffle_on="--shuffle" if shuffle else "")
@@ -256,6 +265,8 @@ def one(vhd, args, template, ignore):
     res = {"name": str(rel), "ok": True, "msg": ""}
     hand = hdr["ref"] == "hand"  # .expected maintained by hand: NVC is known wrong here
     ignore = ignore | set(hdr["ignore"].split(",")) - {""}  # per-test additions
+    if hdr["relaxed"] is not None:  # a bash template gets the yavs switch
+        hdr["relaxed_flag"] = RELAXED.get(args.candidate, "--relaxed")
     if hand and args.candidate == "nvc":
         return {**res, "msg": "skipped, hand-maintained .expected"}
     try:

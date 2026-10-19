@@ -239,7 +239,8 @@ pub struct Lowered {
     /// Packages with run-time objects, in the order [`Lowerer::package`] was called; the
     /// `index` of each is its `AddrSpace::Pkg` number.
     pub packages: Vec<PackageIr>,
-    /// Bytes of the shared variables area (`SharedState::vars`): file objects of packages.
+    /// Bytes of the shared variables area (`SharedState::vars`): file objects and
+    /// non-protected shared variables of packages.
     pub shared_size: u32,
 }
 
@@ -306,6 +307,38 @@ pub(crate) enum Space {
     Pkg(u32),
     /// The shared variables area (`AddrSpace::Shared`, serial processes only).
     Shared,
+    /// The shared heap block whose address is in the instance cell at this offset: a
+    /// non-protected shared variable of an architecture, block or generate, one per declaring
+    /// region (serial processes only, like `Shared`).
+    Region(u32),
+}
+
+/// The slot of a variable that is not of a protected or access type ([`func::Fx::var_init`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum VarShape {
+    Scalar(Width),
+    /// An array of scalars with this many dimensions: `[data, dope, handle, descriptor]`.
+    Array(u8),
+    /// A record or an array of composites: `[data, desc, handle]`.
+    Comp,
+}
+
+impl VarShape {
+    pub fn size(self) -> u32 {
+        match self {
+            VarShape::Scalar(w) => w.bytes(),
+            VarShape::Array(dims) => 24 + 24 * u32::from(dims),
+            VarShape::Comp => 24,
+        }
+    }
+
+    /// The object of a slot of this shape at `off` in `space`.
+    pub fn obj(self, space: Space, off: u32) -> Obj {
+        match self {
+            VarShape::Scalar(w) => Obj::Scalar { space, off, w },
+            VarShape::Array(_) | VarShape::Comp => Obj::Array { space, off },
+        }
+    }
 }
 
 /// State shared by the functions being lowered.
@@ -340,7 +373,8 @@ pub(crate) struct Cx {
     pub pkg_sigs: Vec<SignalIr>,
     /// The entity and architecture regions of the architecture being lowered.
     pub arch_scopes: Vec<ScopeId>,
-    /// Bytes of the shared variables area allocated so far (package files).
+    /// Bytes of the shared variables area allocated so far (package files and non-protected
+    /// shared variables).
     pub shared_size: u32,
     /// The leaves of record signals, in leaf order.
     pub rec_leaves: HashMap<DeclId, Vec<RecLeaf>>,

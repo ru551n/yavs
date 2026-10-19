@@ -33,38 +33,40 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 
 ### Verification library: its own testbenches (#277)
 
-`tools/suites/uvvm.py --private-copies`, release build of main at 9c853ae6, `-j 4`; one run per testbench
+`tools/suites/uvvm.py --private-copies`, release build with #285 (on main at f74b9821), `-j 4`; one run per testbench
 entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. Every run stops before time 0;
-only the first root cause of each run is counted, so deeper causes are still hidden behind #285.
-Without `--private-copies`, 7 runs (the uart testbenches) fail in analysis on #290 instead.
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. Non-protected shared
+variables (#285) are no longer a root cause; every run still stops before time 0, most on a
+`report` in a function evaluated during elaboration (#299, the library's licence banner). Only
+the first root cause of each run is counted. Without `--private-copies`, 7 runs (the uart
+testbenches) fail in analysis on #290 instead.
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 0 | 36 | 0 | non-protected shared variables #285 (35); `'delayed(0 ns)'last_event` actual #286 (1, then #285) |
-| uvvm_assertions | 0 | 2 | 0 | #285 |
-| uvvm_vvc_framework | 0 | 3 | 0 | #285 |
-| bitvis_irqc | 0 | 2 | 0 | #285 |
-| bitvis_uart | 0 | 3 | 0 | #285 |
-| bitvis_vip_scoreboard | 0 | 3 | 0 | #285 |
-| bitvis_vip_avalon_mm | 0 | 5 | 0 | #285 |
-| bitvis_vip_avalon_st | 0 | 6 | 0 | #285 |
+| uvvm_util | 0 | 36 | 0 | report during elaboration #299 (22); alias of a locally static constant in a subprogram #300 (12); record aggregate target #302 (1); `'delayed(0 ns)'last_event` actual #286 (1) |
+| uvvm_assertions | 0 | 2 | 0 | #299 |
+| uvvm_vvc_framework | 0 | 3 | 0 | #299 |
+| bitvis_irqc | 0 | 2 | 0 | #299 |
+| bitvis_uart | 0 | 3 | 0 | #299 (2); entity statements #301 (1) |
+| bitvis_vip_scoreboard | 0 | 3 | 0 | #299 (2); #301 (1) |
+| bitvis_vip_avalon_mm | 0 | 5 | 0 | #299 |
+| bitvis_vip_avalon_st | 0 | 6 | 0 | #299 |
 | bitvis_vip_axi | 0 | 2 | 0 | individual association of an unconstrained record port #288 |
-| bitvis_vip_axilite | 0 | 2 | 0 | #285 |
-| bitvis_vip_axistream | 0 | 22 | 0 | #285 |
-| bitvis_vip_clock_generator | 0 | 1 | 0 | #285 |
-| bitvis_vip_error_injection | 0 | 2 | 0 | #285 |
-| bitvis_vip_gmii | 0 | 2 | 0 | #285 |
-| bitvis_vip_sbi | 0 | 2 | 0 | #285 (1); `'range` of a record element of a signal #287 (1) |
-| bitvis_vip_ethernet | 0 | 3 | 1 | #285; 1 skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_gpio | 0 | 1 | 0 | aggregate actual for a generic whose subtype uses an earlier generic #289 |
+| bitvis_vip_axilite | 0 | 2 | 0 | #299 |
+| bitvis_vip_axistream | 0 | 22 | 0 | #299 |
+| bitvis_vip_clock_generator | 0 | 1 | 0 | #299 |
+| bitvis_vip_error_injection | 0 | 2 | 0 | #299 |
+| bitvis_vip_gmii | 0 | 2 | 0 | #299 |
+| bitvis_vip_sbi | 0 | 2 | 0 | #299 (1); `'range` of a record element of a signal #287 (1) |
+| bitvis_vip_ethernet | 0 | 3 | 1 | #299; 1 skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_gpio | 0 | 1 | 0 | #299 |
 | bitvis_vip_i2c | 0 | 0 | 1 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_rgmii | 0 | 2 | 0 | #285 |
-| bitvis_vip_spec_cov | 0 | 1 | 0 | #285 |
+| bitvis_vip_rgmii | 0 | 2 | 0 | #299 |
+| bitvis_vip_spec_cov | 0 | 1 | 0 | shared variable whose type holds access values #303 |
 | bitvis_vip_spi | 0 | 0 | 24 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_uart | 0 | 3 | 0 | #285 |
-| bitvis_vip_wishbone | 0 | 2 | 0 | #285 |
-| external_vip_apb | 0 | 6 | 0 | #285 |
+| bitvis_vip_uart | 0 | 3 | 0 | #299 |
+| bitvis_vip_wishbone | 0 | 2 | 0 | #299 |
+| external_vip_apb | 0 | 6 | 0 | #299 |
 | Total | 0 | 111 | 26 | |
 
 No run is over 5 minutes (none reaches simulation). The generated-VIP tests of the framework
@@ -276,7 +278,9 @@ positional aggregates as values and targets, of named aggregate targets with ran
 element subtypes as values (#89, #230; without a constrained context they take the direction of their range choices, a mix is `E1334`; an array value under `others` is `E1323`, #242); `&` on arrays of arrays and of records (#234); package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
 bounds too, shared protected variables, package signals and files); composite architecture
-constants evaluated once per region (#73); aliases of record elements of ports (#292) and of static logic elements and slices of variables (#296); `'range` of a package signal in subtypes (#294); a lowering failure without a diagnostic is an ICE. `tests/corpus.rs` runs every corpus group plus
+constants evaluated once per region (#73); aliases of record elements of ports (#292) and of static logic elements and slices of variables (#296); `'range` of a package signal in subtypes (#294); a lowering failure without a diagnostic is an ICE; non-protected shared variables (`--relaxed`) in
+packages, architectures, blocks and generates, one per declaring region, whose processes run
+serially (#285; types holding access values are `E2001`, #303). `tests/corpus.rs` runs every corpus group plus
 `crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 `'element` attributes of objects with open element bounds (unconstrained ports, aliases of external names, parameters) read the object's descriptor (#235, #243; difftest `composite/element_attr_open`).

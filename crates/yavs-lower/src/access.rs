@@ -65,7 +65,7 @@ impl Fx<'_, '_> {
                         "allocator of an unconstrained subtype without a value",
                     ));
                 };
-                self.new_object(*s, tid, desc, None, span)?
+                self.new_object(*s, tid, desc, None, false, span)?
             }
             NewInit::Value(e) => {
                 let v = self.expr(*e)?;
@@ -90,7 +90,7 @@ impl Fx<'_, '_> {
                     (V::A(d, _), None) => V::A(d, desc),
                     (v, _) => v,
                 };
-                self.new_object(des, tid, desc, Some(v), span)?
+                self.new_object(des, tid, desc, Some(v), false, span)?
             }
         };
         Ok(V::S(h))

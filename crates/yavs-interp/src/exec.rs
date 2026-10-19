@@ -224,6 +224,24 @@ pub(crate) struct Machine {
     spare: Vec<(Vec<u8>, Vec<u64>)>,
     /// Argument cells of the call being made (`call_with`).
     cells: Vec<u64>,
+    /// `regs`, `temp` and `spare` went to the thread's scratch at the last suspension
+    /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
+    released: bool,
+}
+
+/// The working vectors of the process running on this thread: registers, temporaries and
+/// spare frame vectors. A suspended process owns none of them (no register or temporary is
+/// live across a suspension, ir.md 1.2), so a design of thousands of processes keeps one set
+/// per thread instead of a set each (#409).
+#[derive(Default)]
+struct Scratch {
+    regs: Vec<u64>,
+    temp: Vec<u8>,
+    spare: Vec<(Vec<u8>, Vec<u64>)>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
 }
 
 /// Returned frames whose vectors `Machine::spare` keeps.
@@ -434,7 +452,46 @@ impl Machine {
             layouts: Vec::new(),
             spare: Vec::new(),
             cells: Vec::new(),
+            released: false,
         }
+    }
+
+    /// Before a process runs again: take this thread's scratch vectors back.
+    pub(crate) fn borrow_scratch(&mut self) {
+        if !self.released {
+            return;
+        }
+        self.released = false;
+        let n = self
+            .frames
+            .first()
+            .and_then(|fr| self.rt.prog.func(fr.func))
+            .map_or(0, |f| f.reg_ty.len());
+        SCRATCH.with(|s| {
+            let mut s = s.borrow_mut();
+            std::mem::swap(&mut self.regs, &mut s.regs);
+            std::mem::swap(&mut self.temp, &mut s.temp);
+            std::mem::swap(&mut self.spare, &mut s.spare);
+        });
+        // Registers are written before they are read: stale values are harmless.
+        self.regs.resize(n, 0);
+        self.temp.clear();
+    }
+
+    /// At a suspension in the root frame: hand the working vectors to this thread's scratch.
+    /// Deeper frames keep theirs (their registers and temporaries are not touched, so a
+    /// procedure that waits resumes as before).
+    pub(crate) fn release_scratch(&mut self) {
+        if self.frames.len() != 1 || self.released || self.dbg.is_some() {
+            return;
+        }
+        self.released = true;
+        SCRATCH.with(|s| {
+            let mut s = s.borrow_mut();
+            s.regs = std::mem::take(&mut self.regs);
+            s.temp = std::mem::take(&mut self.temp);
+            s.spare = std::mem::take(&mut self.spare);
+        });
     }
 
     pub(crate) fn attach(&mut self, session: Arc<DebugSession>, index: usize) {

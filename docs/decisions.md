@@ -598,6 +598,14 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   handles cannot be located. Handles inside objects are found through the object's descriptor,
   so arrays whose elements need their own descriptor are scanned too (#80). The shared heap is
   collected between cycles (#303, "Shared heap collection" below).
+- **A suspended process owns no registers or temporaries** (#409, yavs-interp). The IR keeps no
+  register live across a suspension (ir.md 1.2) and temporaries are per statement, so at a
+  suspension in the root frame the process hands its register file, temporary area and spare
+  frame vectors to a per-thread scratch and takes the scratch's back before it runs again.
+  Memory is then proportional to the threads, not to the processes (a design with 20000
+  small processes dropped 45 MB). A debugged process keeps its own (the debugger reads frames
+  between steps) and so does a process waiting inside a procedure (its callers' frames are
+  below the root).
 - **Heap addresses carry no generation; deallocated slots are quarantined instead** (#81,
   yavs-interp). The address format has no room for a generation next to a 24-bit slot index
   and a 32-bit offset, so a deallocated slot is not reused until its process suspends

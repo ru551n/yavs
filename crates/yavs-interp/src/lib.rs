@@ -733,10 +733,12 @@ impl Process for InterpProcess {
                 return Err(self.m.error(e, Some(ctx)));
             }
         }
+        self.m.borrow_scratch();
         let r = self.exec(Some(&mut *ctx));
         match r {
             Ok(Outcome::Suspended) => {
                 self.m.after_suspend();
+                self.m.release_scratch();
                 Ok(())
             }
             Ok(Outcome::Returned(_)) => {

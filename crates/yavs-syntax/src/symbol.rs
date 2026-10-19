@@ -79,7 +79,7 @@ mod tests {
 // Images (the compilation cache): symbols are written as indices into a table of
 // their texts, so one image holds each text once and loads without hashing it per use.
 
-type EncTable = (HashMap<Symbol, u32>, Vec<Symbol>);
+type EncTable = (FxHashMap<Symbol, u32>, Vec<Symbol>);
 
 thread_local! {
     static ENC: std::cell::RefCell<Option<EncTable>> = const { std::cell::RefCell::new(None) };

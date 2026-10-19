@@ -112,14 +112,16 @@ impl<I: Id, T> Arena<I, T> {
 
 impl<I, T: serde::Serialize> serde::Serialize for Arena<I, T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        self.items.serialize(s)
+        (self.track, &self.items).serialize(s)
     }
 }
 
 impl<'de, I, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Arena<I, T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (track, items) = <(bool, Vec<T>)>::deserialize(d)?;
         Ok(Arena {
-            items: Vec::deserialize(d)?,
+            items,
+            track,
             _id: PhantomData,
         })
     }

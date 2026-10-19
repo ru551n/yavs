@@ -637,6 +637,54 @@ fn vhpi_foreign_architecture() {
     assert!(err.contains("`plug lost`"), "{err}");
 }
 
+/// Runs entity `top` of `yavs-vhpi/tests/libapp/design.vhd` with the `libapp` plugin.
+fn libapp(top: &str, extra: &[&str]) -> (i32, String, String) {
+    let vhdl = std::fs::read_to_string(vhpi_dir().join("tests/libapp/design.vhd")).expect("design");
+    let (lib, so) = setup_with("libapp", &vhdl);
+    let spec = format!("--vhpi={}", so.display());
+    let mut args = vec!["run", &lib, &spec];
+    args.extend_from_slice(extra);
+    args.push(top);
+    yavs(&args)
+}
+
+/// Library and application foreign models (#357): a library model's `elabf` runs when a
+/// foreign model of its library is bound and its `execf` at the start of the simulation; an
+/// application model's `elabf` and `execf` run at the start of the simulation, with or
+/// without foreign models in the design; both before the start-of-simulation callbacks; a
+/// library model whose library the design does not use never runs. The same at 4 threads.
+#[test]
+fn vhpi_library_and_application_models() {
+    let lines = |out: &str| -> Vec<String> {
+        out.lines()
+            .filter(|l| !l.starts_with("**") && !l.starts_with("    Process"))
+            .map(str::to_string)
+            .collect()
+    };
+    let (code, err, out) = libapp("top", &[]);
+    assert_eq!(code, 0, "{err}");
+    let expected = vhpi_dir().join("tests/libapp/expected.txt");
+    let got: String = lines(&out).iter().map(|l| format!("{l}\n")).collect();
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &got).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected trace")
+        .replace("\r\n", "\n");
+    assert_eq!(got, want);
+    assert!(!out.contains("idle"), "{out}");
+    let (code, _, again) = libapp("top", &["--threads=4"]);
+    assert_eq!(code, 0);
+    assert_eq!(again, out);
+    // No foreign model in the design: the application model still runs, the library model
+    // does not.
+    let (code, err, out) = libapp("none", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("app elabf"), "{out}");
+    assert!(out.contains("app execf"), "{out}");
+    assert!(!out.contains("used"), "{out}");
+}
+
 /// Process and shared variables (#309): read at the end of initialization and in callbacks,
 /// deposited (scalars, a logic vector and one of its elements, record fields, a string, a
 /// variable of a process suspended in a procedure, an architecture's and a package's shared

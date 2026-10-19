@@ -400,6 +400,14 @@ them with ``vhpi_schedule_transaction(driver, value, 1, delay, vhpiInertial or v
 pulse_rejection)``, from ``execf`` or from callbacks such as ``vhpiCbValueChange`` on its
 ``in`` ports. An instance whose model no plugin registered is error ``E0905``.
 
+Two more kinds of model are not tied to a declaration. A ``vhpiLibF`` (library) model's ``elabf``
+runs once when the first foreign subprogram or architecture whose library word equals its
+``libraryName`` is bound, and its ``execf`` once at the start of the simulation. A ``vhpiAppF``
+(application) model's ``elabf`` and ``execf`` run once at the start of the simulation, whatever
+the design contains. All of them run before the ``vhpiCbStartOfSimulation`` callbacks, with
+``obj`` the registration (``vhpi_get_foreignf_info`` on it returns the registration). A library
+no foreign model of the design names never runs.
+
 Plusargs
 --------
 

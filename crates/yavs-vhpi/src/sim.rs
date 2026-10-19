@@ -182,6 +182,16 @@ impl yavs_kernel::Observer for VhpiObserver {
         );
         // Puts from before the update are handed over at `StartOfProcesses` (#319).
         let early = matches!(phase, Phase::NextTimeStep | Phase::NextCycle);
+        if phase == Phase::StartOfSim {
+            // Library and application models (#357) run before the phase's callbacks.
+            with_state(|s| {
+                s.clock.now = hook.now();
+                s.clock.delta = hook.delta();
+                s.read_only = false;
+            });
+            hooked(hook, crate::foreign::start_models);
+            with_state(|s| requests(s, hook, false));
+        }
         for &r in reasons {
             Self::dispatch(hook, read_only, early, |s| s.cbs.due(r));
         }

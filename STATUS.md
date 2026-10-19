@@ -755,8 +755,12 @@ on `out`/`inout` parameters and on the call for the function result; `elabf` run
 subprogram; an unregistered model is `W0108` then `E0107` at the call. Scalars and arrays of scalars
 only. `crates/yavs/tests/vhpi_run.rs` `vhpi_foreign_subprograms` (functions of integer, real, time,
 logic vector, boolean; procedures with `out`, `inout` and array `inout`; identical at `--threads 4`,
-`tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing: `vhpiLibF`
-and `vhpiAppF` models (stored and queryable only, #357), `vhpi_get_data`/`vhpi_put_data`.
+`tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing:
+`vhpi_get_data`/`vhpi_put_data`.
+Done (#357): `vhpiLibF` and `vhpiAppF` models run: a library model's `elabf` when a foreign model of its
+library is bound, its `execf` and an application model's `elabf` and `execf` at the start of the
+simulation (`vhpi_library_and_application_models`, `tests/libapp/expected.txt`, same at `--threads 4`;
+conformance case `libapp`, no reference runs them).
 Done (#330, array results): a foreign function may return a one-dimensional array of scalars, sized
 with `vhpiSizeConstraint` (unconstrained, indexed `1 to n`) or by its constrained result subtype;
 tests in `vhpi_foreign_subprograms` (`rev`, `iota`, `word`, `nibble`) and

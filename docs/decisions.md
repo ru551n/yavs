@@ -1402,6 +1402,16 @@ which tools/difftest parses.
   no behaviour otherwise). The one reference that runs foreign architectures preempts a vector
   transaction as a whole; yavs preempts per element as for every signal assignment (LRM
   10.5.2.2), recorded in the catalogue (`farch`).
+- **VHPI library and application models (#357, 2026-10-19):** `vhpiLibF` and `vhpiAppF`
+  registrations are run, which they were not before. A library model's `elabf` runs once when
+  the first foreign subprogram or architecture of its library (the `'FOREIGN` library word) is
+  bound, its `execf` once at the start of the simulation; an application model's `elabf` and
+  `execf` run once at the start of the simulation, with or without foreign models in the
+  design; all before the start-of-simulation callbacks, with the registration as `obj`. A library
+  no foreign model of the design names never runs. No reference simulator runs these (one
+  refuses the registration, one accepts it and never calls either function, the third has no
+  foreign models), so there is no majority to follow and the standard's description decides.
+  Catalogue: `libapp`.
 
 ## Binary files (yavs-interp `binfile.rs`, #79, 2026-10-18)
 

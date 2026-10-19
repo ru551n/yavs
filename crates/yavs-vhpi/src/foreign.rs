@@ -50,6 +50,9 @@ pub(crate) struct Foreign {
     /// Transactions scheduled before the simulation (driver, transaction): made at the first
     /// observer call.
     pending: Vec<(usize, ModelTxn)>,
+    /// `vhpiLibF` registrations whose `elabf` ran (#357), in that order: their `execf` runs
+    /// at the start of the simulation.
+    libs: Vec<usize>,
 }
 
 /// A driver a foreign architecture's model created.
@@ -660,6 +663,7 @@ pub(crate) fn model(
     let Some((_, kind, elabf, execf, h)) = found else {
         return Ok(None);
     };
+    elab_libs(library);
     if (kind == vhpiFuncF) != function {
         return Err(format!(
             "`{library} {model}` is registered as a {} but declared as a {}",
@@ -711,6 +715,9 @@ pub(crate) fn elaborate(e: &yavs_elab::Elaborated) -> Result<Vec<yavs_elab::ExtP
             ));
         };
         insts.push((path, f));
+    }
+    for fa in &e.foreign_archs {
+        elab_libs(&fa.library);
     }
     for pass in 0..2 {
         for (_, (n, elabf, execf)) in &insts {
@@ -776,5 +783,64 @@ pub(crate) fn pending(s: &mut State, hook: &mut Hook<'_>) {
         if let Err(m) = r {
             s.fail(Fault::Misuse, format!("vhpi_schedule_transaction: {m}"));
         }
+    }
+}
+
+/// Calls `f` of registration `i` with the registration handle as `obj` (library and
+/// application models, #357).
+fn call_reg(i: usize, f: vhpiCbRoutineT) {
+    let Some(f) = f else { return };
+    let h = with_state(|s| s.handles.alloc(Object::Foreign(i)));
+    let data = vhpiCbDataT {
+        reason: 0,
+        cb_rtn: None,
+        obj: h,
+        time: std::ptr::null_mut(),
+        value: std::ptr::null_mut(),
+        user_data: std::ptr::null_mut(),
+    };
+    // SAFETY: the plugin registered `f` for this registration.
+    unsafe { f(&data) };
+    with_state(|s| s.handles.release(h));
+}
+
+/// A foreign model of library `library` is being bound or elaborated: the `elabf` of its
+/// `vhpiLibF` registrations runs, once each (#357).
+fn elab_libs(library: &str) {
+    let due: Vec<(usize, vhpiCbRoutineT)> = with_state(|s| {
+        let due: Vec<usize> = (0..s.foreign.regs.len())
+            .filter(|i| {
+                let r = &s.foreign.regs[*i];
+                r.kind == vhpiLibF && r.library == library && !s.foreign.libs.contains(i)
+            })
+            .collect();
+        s.foreign.libs.extend(&due);
+        due.iter().map(|&i| (i, s.foreign.regs[i].elabf)).collect()
+    });
+    for (i, f) in due {
+        call_reg(i, f);
+    }
+}
+
+/// At the start of the simulation (#357): the `execf` of the library models whose `elabf`
+/// ran, then the `elabf` and `execf` of every application model, in registration order.
+/// Called inside a `hooked` observer call, before the start-of-simulation callbacks.
+pub(crate) fn start_models() {
+    let (libs, apps): (Vec<_>, Vec<_>) = with_state(|s| {
+        let regs = &s.foreign.regs;
+        (
+            s.foreign.libs.iter().map(|&i| (i, regs[i].execf)).collect(),
+            (0..regs.len())
+                .filter(|&i| regs[i].kind == vhpiAppF)
+                .collect(),
+        )
+    });
+    for (i, f) in libs {
+        call_reg(i, f);
+    }
+    for i in apps {
+        let (e, x) = with_state(|s| (s.foreign.regs[i].elabf, s.foreign.regs[i].execf));
+        call_reg(i, e);
+        call_reg(i, x);
     }
 }

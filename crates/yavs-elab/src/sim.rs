@@ -56,6 +56,10 @@ pub struct Ir {
     /// The slot thunk (packages) and value type of each non-protected shared variable
     /// (`Lowerer::var_slots`), for [`Built::vars`].
     pub var_slots: Vec<yavs_lower::VarSlot>,
+    /// The package state elaboration left (the program extends the session's): the
+    /// simulation starts from a copy of it instead of initialising the packages and replaying
+    /// the elaboration-time calls (#383).
+    pub start: Option<Arc<crate::pkgcall::StartState>>,
 }
 
 /// The interpreter side of a built simulation (`Elaborated::build_full`).
@@ -191,15 +195,36 @@ impl Elaborated {
         if archs.is_empty() {
             return Ok(());
         }
-        let mut l = Lowerer::new(db, opts);
-        l.externals_bound(self.ext_unbound.clone());
-        // Package objects first (#183), in analysis order, which puts a package after those
-        // its declaration uses (LRM 14.4.2).
-        // ponytail: a body using a package analyzed after its declaration is initialised too
-        // early; order by the dependency graph if a design needs it.
-        for u in packages {
-            l.package(u)?;
+        // The program goes on from the elaboration session's when it can, so that the
+        // simulation starts from the package state elaboration left (#383): same packages, no
+        // coverage counters, no subprogram with external names lowered before they were bound.
+        let mut start = None;
+        let mut resumed = None;
+        if let Some(s) = self.start.take()
+            && !opts.coverage
+            && s.pkgs == packages
+        {
+            let l = Lowerer::resume(db, s.lowerer);
+            if !l.externals_early() {
+                start = Some(s.state);
+                resumed = Some(l);
+            }
         }
+        let mut l = match resumed {
+            Some(l) => l,
+            None => {
+                let mut l = Lowerer::new(db, opts);
+                // Package objects first (#183), in analysis order, which puts a package after
+                // those its declaration uses (LRM 14.4.2).
+                // ponytail: a body using a package analyzed after its declaration is
+                // initialised too early; order by the dependency graph if a design needs it.
+                for u in packages {
+                    l.package(u)?;
+                }
+                l
+            }
+        };
+        l.externals_bound(self.ext_unbound.clone());
         for p in &self.procs {
             if let Some(a) = &p.actual {
                 l.port_actual(p.stmt, a.expr, a.formal, a.port);
@@ -297,6 +322,7 @@ impl Elaborated {
             var_pkgs,
             elab_sigs,
             var_slots,
+            start,
         });
         Ok(())
     }
@@ -463,10 +489,14 @@ impl Elaborated {
                 "the design has processes but was not lowered".into(),
             ));
         };
-        let shared = Arc::new(Mutex::new(SharedState::new(vec![
-            0;
-            ir.shared_size as usize
-        ])));
+        let shared = Arc::new(Mutex::new(match &ir.start {
+            Some(s) => {
+                let mut st = s.shared.clone();
+                st.vars.resize(ir.shared_size as usize, 0);
+                st
+            }
+            None => SharedState::new(vec![0; ir.shared_size as usize]),
+        }));
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), CallVal> = HashMap::new();
         // Package data, created once in order: each initialisation sees the packages before it.
@@ -481,6 +511,7 @@ impl Elaborated {
             &shared,
             time_resolution(cfg.resolution),
             ir.revision,
+            ir.start.as_ref().map(|s| &s.data[..]),
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an
                 // external signal: its subprogram fails when called).
@@ -508,9 +539,14 @@ impl Elaborated {
                 Ok(())
             },
         )?;
-        // The side effects of elaboration-time calls on package state, in their order (#77).
-        crate::pkgcall::replay(&rt, &shared, &ir.elab_sigs, &self.elab_calls)
-            .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?;
+        match &ir.start {
+            // The packages hold what elaboration-time calls left; so does the assert state.
+            Some(s) => rt.inherit(&s.rt),
+            // The side effects of elaboration-time calls on package state, in their order
+            // (#77).
+            None => crate::pkgcall::replay(&rt, &shared, &ir.elab_sigs, &self.elab_calls)
+                .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?,
+        }
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         // Instance data waiting for its external shared variables (#93).
         let mut base: HashMap<ScopeId, InstData> = HashMap::new();

@@ -116,7 +116,8 @@ pub(crate) fn run(
 
 /// Initialise `packages` of `prog` in order (each sees those before it, LRM 14.4.2) with
 /// `shared`, `fix` completing each package's data, and return the runtime with all of them
-/// bound.
+/// bound. With `start`, the packages' data is a copy of it instead (initialised already, by
+/// the elaboration session, [`Start`]).
 #[allow(clippy::too_many_arguments)] // ponytail: one more setting; bundle into a struct when the next one comes
 pub(crate) fn init_packages(
     prog: &Arc<Program>,
@@ -129,6 +130,7 @@ pub(crate) fn init_packages(
     shared: &Arc<Mutex<SharedState>>,
     resolution: yavs_std::arith::TimeResolution,
     revision: yavs_std::types::Revision,
+    start: Option<&[InstData]>,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
@@ -143,9 +145,19 @@ pub(crate) fn init_packages(
         cov_counters: Some(cov_counters),
         ..Default::default()
     };
-    for p in packages {
-        let rt = Runtime::new(prog.clone(), bind(&data))?;
-        let mut d = yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(shared))?;
+    if start.is_some_and(|s| s.len() != packages.len()) {
+        return Err(SimError::new(yavs_kernel::ErrorKind::Internal(
+            "the elaboration session has other packages".into(),
+        )));
+    }
+    for (i, p) in packages.iter().enumerate() {
+        let mut d = match start {
+            Some(s) => s[i].clone(),
+            None => {
+                let rt = Runtime::new(prog.clone(), bind(&data))?;
+                yavs_interp::init_package(rt, p.init, p.index, p.size as usize, Some(shared))?
+            }
+        };
         fix(p, &mut d)?;
         data.push(Arc::new(d));
     }
@@ -225,6 +237,23 @@ struct Live {
     shared_size: u32,
 }
 
+/// The package state elaboration left, for the simulation to start from instead of
+/// initialising the packages again and replaying the calls: its program extends the
+/// session's (`lowerer`), so the data is valid there.
+pub(crate) struct Start {
+    pub(crate) lowerer: yavs_lower::Suspended,
+    pub(crate) pkgs: Vec<UnitId>,
+    pub(crate) state: Arc<StartState>,
+}
+
+/// [`Start`]'s state, copied by every build.
+pub struct StartState {
+    pub(crate) data: Vec<InstData>,
+    pub(crate) shared: SharedState,
+    /// The session's runtime, for its VHDL assert state.
+    pub(crate) rt: Arc<Runtime>,
+}
+
 /// Package state during elaboration and the calls made with it.
 #[derive(Default)]
 pub(crate) struct Session {
@@ -248,6 +277,35 @@ impl Session {
             result: result.clone(),
         });
         Ok(result)
+    }
+
+    /// The package state at the end of elaboration, if the simulation can start from it: no
+    /// call failed without being undone, the lowering can go on, no file was opened.
+    pub(crate) fn finish(&mut self) -> Option<Start> {
+        if self.dirty {
+            return None;
+        }
+        let live = self.live.take()?;
+        let (lowerer, pkgs) = live.lowerer?;
+        if live.rt.files_touched() {
+            return None;
+        }
+        let data = live
+            .rt
+            .package_data()
+            .iter()
+            .map(|d| (**d).clone())
+            .collect();
+        let shared = live.shared.lock().ok()?.clone();
+        Some(Start {
+            lowerer,
+            pkgs,
+            state: Arc::new(StartState {
+                data,
+                shared,
+                rt: live.rt,
+            }),
+        })
     }
 
     /// A point to return to with [`Session::undo`].
@@ -353,6 +411,7 @@ impl Session {
             &shared,
             yavs_std::arith::TimeResolution::Fs,
             revision_of(db),
+            None,
             |_, _| Ok(()),
         )
         .map_err(runtime)?;
@@ -408,8 +467,7 @@ fn add(live: &mut Live, db: &Db, d: DeclId, constant: bool) -> Option<Result<(),
     }
     let rt = Arc::get_mut(&mut live.rt)?;
     let prog = Arc::new(lw.program);
-    let sources = Sources::of(&prog, &db.sources);
-    if let Err(e) = rt.extend(prog, sources) {
+    if let Err(e) = rt.extend(prog, &db.sources) {
         return Some(Err(runtime(e)));
     }
     live.sigs.insert(d, s);

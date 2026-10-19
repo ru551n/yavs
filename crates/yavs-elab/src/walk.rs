@@ -586,6 +586,7 @@ pub(crate) fn elaborate(
         var_shapes: e.m.var_shapes,
         warnings: e.warnings,
         ir: None,
+        start: e.m.session.finish(),
         elab_calls: std::mem::take(&mut e.m.session.log),
     })
 }

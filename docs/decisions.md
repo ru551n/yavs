@@ -746,6 +746,12 @@ a note and a help suggesting an access type, as the reference simulators reject 
   are (`Runtime::extend`). Lowering every run-time package again, initialising them and replaying
   the log per new function was most of elaboration on library testbenches. A full rebuild stays
   for `Session::undo`, a failed lowering or call, and a change of the run-time packages.
+  The simulation's program then goes on from the session's lowering, and every build starts
+  from a copy of the package data, shared state and assert state elaboration left, instead of
+  initialising the packages and replaying the calls once more. Both stay as the fallback with
+  coverage counters (another program), other run-time packages, a subprogram with external
+  names lowered during elaboration (it fails on entry there), a file opened during elaboration
+  (open files cannot be copied) or a failed call not undone.
 - **Element order inside a kernel leaf:** composites flatten row major, leftmost first; a logic
   leaf (bit-planes) mirrors it, kernel offset `n - 1 - p` for row-major position `p` (element 0 of
   yavs-logic is the rightmost element). `NetGraph::select` is the one implementation; lowering

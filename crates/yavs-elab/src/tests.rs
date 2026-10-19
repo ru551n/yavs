@@ -581,7 +581,8 @@ fn interpreted_processes_restart() {
 }
 
 /// Impure calls during elaboration run against package state in order (#77, LRM 14.4), and
-/// every build replays them, so the processes see their side effects after a restart too.
+/// every build starts from that state (#383), or replays the calls on fresh packages where it
+/// cannot (coverage counters), so the processes see their side effects after a restart too.
 #[test]
 fn elaboration_calls_with_package_state_restart() {
     let src = "package reg is
@@ -629,6 +630,13 @@ fn elaboration_calls_with_package_state_restart() {
     };
     let first = run(&e);
     assert_eq!(first, ["0 0 id=2", "0 1 ids=2"]);
+    assert_eq!(first, run(&e));
+    assert!(e.ir.as_ref().is_some_and(|ir| ir.start.is_some()));
+    let (mut db, mut e) = elab("pkgcalls_cov", src, "t", &[]);
+    e.lower_with(&mut db, yavs_lower::LowerOptions { coverage: true })
+        .expect("lower");
+    assert!(e.ir.as_ref().is_some_and(|ir| ir.start.is_none()));
+    assert_eq!(first, run(&e));
     assert_eq!(first, run(&e));
 }
 

@@ -235,6 +235,8 @@ pub struct Elaborated {
     /// Calls that ran with package state during elaboration, in order: replayed when the
     /// simulation is built (#77).
     pub(crate) elab_calls: Vec<pkgcall::Call>,
+    /// The package state those calls left, for the simulation to start from (#383).
+    pub(crate) start: Option<pkgcall::Start>,
 }
 
 /// The protected object a 2019 variable port denotes (LRM 6.5.2, #188): the shared

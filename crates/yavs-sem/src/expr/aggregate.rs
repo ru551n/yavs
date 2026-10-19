@@ -1778,11 +1778,42 @@ fn array_agg(
             None => index_range.map_or(Direction::To, |r| r.dir),
         }
     };
+    // 2008 pieces under range choices: without a constrained context the
+    // aggregate takes their direction, and they must agree (the reference
+    // simulators; lrm-checks L84).
+    let mut piece_dir: Option<(Direction, Span)> = None;
+    for (v, cs) in vals.iter().zip(&choices) {
+        if let (Val::Piece(_), [c @ Choice::Range(rc)]) = (v, cs.as_slice()) {
+            let d = dir_of(db, &Some(rc.clone()));
+            let sp = choice_span(db, c, span);
+            match piece_dir {
+                Some((first, fsp)) if first != d => {
+                    return Err(db.error(
+                        Diagnostic::error(
+                            diag::AGG_PIECE_DIRECTION,
+                            "the range choices of array values in this aggregate have different directions",
+                        )
+                        .with_primary(sp, "direction differs")
+                        .with_secondary(fsp, "first range choice with an array value")
+                        .with_note(
+                            "without a constrained context the aggregate takes the direction of these choices",
+                        ),
+                    ));
+                }
+                Some(_) => {}
+                None => piece_dir = Some((d, sp)),
+            }
+        }
+    }
+    let piece_dir = piece_dir.map(|p| p.0);
     let (bounds, this): (AggBounds, Option<StaticRange>) = if has_others {
         let rc = ctx_dim.as_ref().expect("checked above");
         (AggBounds::Context, range_value(db, rc))
     } else if named > 0 {
-        let dir = dir_of(db, &ctx_dim);
+        let dir = match (&ctx_dim, piece_dir) {
+            (None, Some(d)) => d,
+            _ => dir_of(db, &ctx_dim),
+        };
         match &named_items {
             Some(items) => {
                 let lo = items.iter().map(|i| i.lo).min().expect("named choices");
@@ -1910,7 +1941,7 @@ fn array_agg(
 
     // Result subtype: refined only for the outermost aggregate (see module doc).
     let subtype = if dim == 0 && !matches!(bounds, AggBounds::Context) {
-        result_subtype(db, cx, &dims, &bounds, span)
+        result_subtype(db, cx, &dims, &bounds, piece_dir, span)
     } else {
         cx.ctx
     };
@@ -2354,6 +2385,7 @@ fn result_subtype(
     cx: &ArrCx,
     dims: &Option<Vec<StaticRange>>,
     bounds: &AggBounds,
+    piece_dir: Option<Direction>,
     span: Span,
 ) -> SubtypeId {
     let elem = match &db.subtypes[cx.ctx].constraint {
@@ -2379,7 +2411,9 @@ fn result_subtype(
         ),
         // 1-D named aggregate with one non-static choice.
         (None, AggBounds::Named { low, high }) if cx.indexes.len() == 1 => {
-            let dir = subtype_range(db, cx.indexes[0], 0).map_or(Direction::To, |r| r.dir);
+            let dir = piece_dir.unwrap_or_else(|| {
+                subtype_range(db, cx.indexes[0], 0).map_or(Direction::To, |r| r.dir)
+            });
             let (left, right) = match dir {
                 Direction::To => (*low, *high),
                 Direction::Downto => (*high, *low),

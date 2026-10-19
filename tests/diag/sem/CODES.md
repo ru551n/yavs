@@ -85,6 +85,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1326 | mixed named/positional, non-static choice misuse | 3.4 |
 | E1327 | duplicate or overlapping aggregate choice | 3.4 |
 | E1328 | index not covered | 3.4 |
+| E1334 | array values under range choices of different directions in one aggregate (L84) | 3.4 |
 | E1330 | character not in type | 8.1 |
 | E1331 | bit string loses digits | 8.1 |
 | E1340 | condition not BOOLEAN | 3.6 |

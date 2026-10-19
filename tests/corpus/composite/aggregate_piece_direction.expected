@@ -1,0 +1,15 @@
+exit	0
+diag	note	0	0	:aggregate_piece_direction:_p0	0110 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	0110 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	1010 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	0100 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	0100 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	0100 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	0110 1:4 true
+diag	note	0	0	:aggregate_piece_direction:_p0	01 1:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	01 4:3 false
+diag	note	0	0	:aggregate_piece_direction:_p0	01 4:5 true
+diag	note	0	0	:aggregate_piece_direction:_p0	1,7 5:3
+diag	note	0	0	:aggregate_piece_direction:_p0	0110 3:0 false 011001 0:5 true
+diag	note	0	0	:aggregate_piece_direction:_p0	0110 3:0 false
+diag	note	0	0	:aggregate_piece_direction:_p0	0011 0:3 true

@@ -154,6 +154,23 @@ elements, and simulators disagree on whether it is legal. Standard: 10.5.2.1.
 
 *Portable:* assign slices: ``hi := v(5 downto 2); lo := v(1 downto 0);``.
 
+Array values under range choices in aggregates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: vhdl
+
+   f((3 downto 2 => a, 1 downto 0 => b));   -- f takes an unconstrained bit_vector
+   v := (1 downto 0 => a, 2 to 3 => b);     -- E1334
+
+Without a constrained context, such an aggregate takes the direction of its range choices
+(here ``3 downto 0``), so ``a`` fills elements 3 and 2. Choices of different directions are
+rejected at analysis (``E1334``). Against the direction of a constrained target the choices are
+accepted and each range is filled in the target's order; some simulators reject that.
+Standard: 9.3.3.3.
+
+*Portable:* give every such choice the direction of the target, or qualify the aggregate with a
+constrained subtype.
+
 Generics, packages and subprograms
 ----------------------------------
 

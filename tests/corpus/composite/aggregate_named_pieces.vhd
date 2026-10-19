@@ -41,7 +41,7 @@ begin
     v := (7 downto 4 => a, others => '0');
     report to_string(v);
     v := (0 to 3 => a, others => '0');
-    u := (7 downto 4 => a, 0 to 1 => b, others => '1');
+    u := (7 downto 4 => a, 1 downto 0 => b, others => '1');
     report to_string(v) & " " & to_string(u);
     u := (0 to 3 => a, 4 => '1', 5 to 6 => b, 7 => '0');
     v := (7 downto 6 => b, 5 downto 4 => '1', 3 downto 0 => a);

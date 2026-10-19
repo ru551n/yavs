@@ -928,7 +928,10 @@ which tools/difftest parses.
   (checked before anything is assigned). A piece under a range choice
   (`(7 downto 4 => a, others => '0')`, #230) fills the range's elements in the aggregate's
   order whatever the choice's direction, as both reference simulators do; its length must
-  match the range. An element subtype the type leaves open takes its constraint from a fully
+  match the range. Without a constrained context such an aggregate takes the direction of
+  those range choices, not of the index subtype, so `(3 downto 2 => a, 1 downto 0 => b)` is
+  `3 downto 0`; choices of different directions are `E1334` (all three reference simulators
+  take the choices' direction, two reject a mix; lrm-checks L84). An element subtype the type leaves open takes its constraint from a fully
   constrained context, else from the first value, and every value is checked against it.
   Pieces exist in 1-D aggregates only (LRM 9.3.3.3; sem rejects them in more dimensions, as
   the reference simulators do). A range choice in an aggregate *target* is `E1333` at analysis

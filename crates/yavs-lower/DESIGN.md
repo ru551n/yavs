@@ -282,7 +282,7 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   first (#89). A piece under a range choice fills the range in the aggregate's order
   (`put_at`); an element subtype the type leaves open takes its constraint from the context
   or the first value (#230). Named bounds come from sem's result subtype (direction of a
-  constrained context).
+  constrained context, else of the range choices with pieces, L84).
 - `&` on arrays of composites (#234): every operand is a piece of `put_pieces`, an element
   operand one row; an element subtype the type leaves open takes the left operand's (its
   element part, or the element itself), every operand checked against it.

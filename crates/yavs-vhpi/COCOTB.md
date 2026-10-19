@@ -1,7 +1,7 @@
 # What the Python testbench framework needs from yavs
 
 Read from the `master` branch of a widely used Python testbench framework over VHPI at `ae55ced`
-(2026-10-15), shallow clone in `~/.cache/rsim-vhpi/cocotb`. File names below are relative to that
+(2026-10-15), from a shallow clone kept outside the repository. File names below are relative to that
 framework's repository and are named by role ("bootstrap library", "VHPI implementation").
 
 ## How the Python testbench framework starts under a VHPI simulator
@@ -63,10 +63,9 @@ Behaviour the Python testbench framework relies on, for M5:
   with MSVC, `dlltool -d` with MinGW; the `WIN32` block of its CMake file).
   The primary reference simulator is the precedent for an executable: its `.def` starts with
   `LIBRARY "<simulator>.exe"`. (A commercial simulator's `.def` names a DLL instead.)
-- So the Python testbench framework does not need yavs's shipped `yavs.lib`; it needs an `yavs.def`
-  with `LIBRARY "yavs.exe"` and the export list above. Our generated
-  `exports.def` plus that line is exactly it. No `yavs.lib` is shipped
-  (user decision); a plugin brings its own.
+- yavs ships no import library (user decision, 2026-10-18); a plugin brings its own. The framework
+  therefore needs a `yavs.def` with `LIBRARY "yavs.exe"` and the export list above, and builds the
+  import library from it. yavs's generated `exports.def` plus that line is exactly it.
 - The import names `yavs.exe`, so the loader binds to the running
   executable only if it is called `yavs.exe`. A renamed binary breaks VHPI
   plugins; document it next to the install instructions.
@@ -100,7 +99,7 @@ Behaviour the Python testbench framework relies on, for M5:
 ## A Rust VHPI plugin crate as a second conformance client (M5)
 
 The `vhpi` crate family on crates.io (MIT OR Apache-2.0, by the primary reference simulator's
-author; read-only clone in `~/.cache/rust-vhpi/repo`, commit `65484e3`) is
+author; read-only clone kept outside the repository, commit `65484e3`) is
 the plugin side of VHPI in Rust: `vhpi-sys` (bindings to the IEEE header we
 vendor), `vhpi` 0.6.0 (safe wrapper), `vhpi-shim`, and cdylib plugins with
 testbenches:

@@ -6,10 +6,11 @@
 |---|---|
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
-| M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
+| M2: IR, interpreter, elaboration, kernel | done: the differential corpus passes at 1 thread, 4 threads and 4 shuffled threads (`tests/corpus/RESULTS.md`); see the lower, ir and interp, elab and kernel sections. Not done: binary file read/write of records and arrays of composites (ir and interp section) |
 | M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 10 of 11 pass completely, `check` has one failure (#281, process order in a delta), table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
-| M3, M5, M6, M8 to M10 | not started (crate spikes below) |
+| M3: full types and libraries | done per `docs/plan.md`: arrays, records, access and protected types, resolution (composite, access, protected and resolution groups in `tests/corpus/RESULTS.md`); `numeric_std`, fixed and float from source (#94); textio, `env`, package generics, external names; `--load` foreign subprograms (#95); bit-plane layout (user, 2026-10-18). Not done: binary file read/write of records and arrays of composites (ir and interp section) |
+| M5, M6, M8 to M10 | not started (M5: the `vhpi_*` export surface is done, #266; the object model is a stub, `crates/yavs-vhpi`) |
 
 ### External test runner: its own VHDL suites (#112)
 
@@ -462,8 +463,7 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in the reference simulator's
-format on stdout). Difftest: see `tests/corpus/RESULTS.md` (122 of 123 at 1, 4 and 4 shuffled
-threads on 2026-10-18; `generics/generic_types_2019` and the other generic-type cases pass since #75).
+format on stdout). Difftest: see `tests/corpus/RESULTS.md`; `generics/generic_types_2019` and the other generic-type cases pass since #75.
 
 ## ffi (`crates/yavs-ffi`)
 
@@ -499,7 +499,7 @@ runs the test as written.
 Done (#266): the `yavs` executable exports the full `vhpi_*` C ABI of `vhpi_user.h` (42 symbols,
 functions and the `vhpiFS`..`vhpiS` time constants) on Linux x86_64 and aarch64 (also in the
 glibc 2.17 cargo-zigbuild release builds, where the linker exports more than the list) and in the
-Windows `.exe` export table (MinGW checked; MSVC `/DEF:` still never run, #124). No `yavs.lib`.
+Windows `.exe` export table (MinGW checked; MSVC `/DEF:` still never run, #124). No import library is built or shipped (user decision, 2026-10-18): a VHPI plugin brings its own.
 `crates/yavs/tests/vhpi_exports.rs` checks the ELF `.dynsym` against the header (Linux only).
 
 ## discrepancies (simulator catalogue)
@@ -518,13 +518,12 @@ user page `docs/language-choices.rst` is the user-facing subset.
 ## difftest (yavs candidate)
 
 `python3 tools/difftest/difftest.py --candidate yavs` drives `yavs analyze`, `yavs elab` and
-`yavs run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md`: 69 of 78 at 1 thread,
-4 threads (identical to 1) and 4 threads shuffled. `std.env.stop`/`finish` end the calling
+`yavs run`; `tools/difftest/report.sh` writes `tests/corpus/RESULTS.md`, which has the current pass counts per
+group (249 of 249 at 1 thread, 4 threads (identical to 1) and 4 threads shuffled). `std.env.stop`/`finish` end the calling
 process at once; check messages print reals as `%.15g`; runtime errors are coded diagnostics
 (`E3001`-`E3010`, kernel `ErrorKind::code`) with the VHDL call stack, which difftest reads back
 as `fatal` events. Normalisations for the reference simulator's free choices (default assert message without a
-path, per-test `ignore=order`) are in `docs/decisions.md`. The 9 failures wait for sem (#1, #3)
-and lowering (out signal parameters, `'stable`, `'path_name`, guarded blocks).
+path, per-test `ignore=order`) are in `docs/decisions.md`.
 
 IEEE packages from source (`tests/corpus/ieee`, #94): std_logic_1164, numeric_std, numeric_bit,
 math_real, math_complex, fixed_pkg and float_pkg bodies, 2008 and 2019, equal the reference simulator at 1, 4 and 4

@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "yavs",
+      "request": "launch",
+      "name": "Debug tb",
+      "top": "tb",
+      "work": "work:${workspaceFolder}/.yavs/work",
+      "sources": ["${workspaceFolder}/tb.vhd"],
+      "generics": { "N": "3" },
+      "stopOnEntry": false
+    }
+  ]
+}

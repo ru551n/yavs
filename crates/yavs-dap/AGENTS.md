@@ -22,6 +22,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | `src/lib.rs` | `serve` (transport, session, run loop, end of run), `Transport`/`parse_transport`, `Shared` state, reader-thread requests (`handle`, `set_breakpoints`, `parse_hit`), stop-time requests (`Front::on_stop`, `serve_stop`, `stack_trace`, `scopes`, `variables`, `evaluate`), `Output` observer |
 | `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, signals (`Sig`, value text from kernel leaves), per process its regions, signals and generics |
 | `src/wire.rs` | `Content-Length` framing (`read_message`, `write_message`) |
+| `../../editors/vscode/` | The VS Code extension and its client and in-editor tests (run them after changing this crate, `editors/vscode/AGENTS.md`) |
 | `../yavs/tests/dap.rs`, `../yavs/tests/dap/` | Scripted sessions over stdio (`NAME.script` in, `NAME.expected` transcript, `YAVS_BLESS=1`), pause, TCP |
 
 ## 3. Design decisions that bind this module

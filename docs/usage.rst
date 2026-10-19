@@ -251,6 +251,51 @@ the debugger themselves. The design given on the command line is the one debugge
 
 In the editor, attach to the port (for example with a ``debugServer`` launch setting).
 
+VS Code
+~~~~~~~
+
+The extension in ``editors/vscode`` adds a ``yavs`` debugger: it analyzes the files you list,
+starts ``yavs run --dap=stdio`` and lets you set breakpoints in ``.vhd`` and ``.vhdl`` files.
+yavs must be on ``PATH`` (or set ``yavsPath``). Build and install it once:
+
+.. code-block:: bash
+
+    cd editors/vscode
+    npx @vscode/vsce package --out yavs-debug.vsix
+    code --install-extension yavs-debug.vsix
+
+(or open ``editors/vscode`` in VS Code and press F5 to try it from source). Then add a launch
+configuration to the testbench's workspace, ``.vscode/launch.json``:
+
+.. code-block:: json
+
+    {
+      "version": "0.2.0",
+      "configurations": [
+        {
+          "type": "yavs",
+          "request": "launch",
+          "name": "Debug tb",
+          "top": "tb",
+          "work": "work:${workspaceFolder}/.yavs/work",
+          "sources": ["${workspaceFolder}/pkg.vhd", "${workspaceFolder}/tb.vhd"],
+          "libraries": [],
+          "std": "2008",
+          "generics": { "WIDTH": "8" },
+          "args": ["--stop-time=1ms"],
+          "stopOnEntry": false
+        }
+      ]
+    }
+
+``sources`` are analyzed into ``work`` in order before every session (leave it empty to analyze
+yourself); ``libraries`` are more ``NAME:PATH`` mappings, ``generics`` become ``-gNAME=VALUE`` and
+``args`` go to ``yavs run`` as they are. Set a breakpoint in the testbench, pick "Debug tb" in the
+Run and Debug view and press F5: the call stack lists one thread per process, the Variables view
+shows locals, signals and generics, hovering a signal shows its value, and reports go to the
+Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs run
+--dap=4711`` started by hand.
+
 * **Threads are processes**, named by their path such as ``:tb:u1:p``.
 * **Line breakpoints** stop at the statements that start on the line, or on the next line that
   has one; a hit condition (``3``, ``>= 3``, ``% 3``) is supported.

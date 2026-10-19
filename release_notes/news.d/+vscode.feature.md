@@ -1,0 +1,1 @@
+A VS Code extension in `editors/vscode` debugs VHDL testbenches with yavs: it analyzes the listed files, starts the simulation under the debugger and supports breakpoints in VHDL files, configured in `launch.json`.

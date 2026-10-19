@@ -53,6 +53,7 @@ to, and those documents win over your memory.
 | `tests/discrepancies/` | Reproducers of every known simulator discrepancy; catalogue `docs/design/simulator-discrepancies.md`, runner `tools/discrepancies/run.py` |
 | `tools/corpus/` | Analysis corpus manifests (external libraries, `lib`), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |
+| `editors/vscode/` | VS Code extension contributing the `yavs` debugger (plain JS) |
 
 ## 3. Rules (mandatory)
 

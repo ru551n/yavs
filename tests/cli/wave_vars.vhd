@@ -40,6 +40,7 @@ architecture rtl of wv_sub is
   end record;
   type ints_t is array (natural range <>) of integer;
   shared variable acc : integer := 0;
+  shared variable tab : ints_t(1 to 30) := (others => 0);
   shared variable cell : cell_t;
 begin
   main : process
@@ -48,6 +49,7 @@ begin
     variable bv   : bit_vector(0 to 2) := "001";
     variable pr   : pair_t := ('U', 0);
     variable ints : ints_t(1 to 2) := (others => 0);
+    variable big  : ints_t(1 to 30) := (others => 0);
     variable s    : string(1 to 2) := "ab";
     variable l    : line;
     variable dyn  : bit_vector(bump_width - 1 downto 0);
@@ -60,6 +62,15 @@ begin
       ints(k mod 2 + 1) := k * 10;
       s(1) := character'val(character'pos('a') + k);
       acc := acc + k;
+      -- Written in some steps only; the last write stores the value already there.
+      if k = 2 then
+        big(7) := 77;
+      elsif k = 3 then
+        big(7) := 77;
+        tab(3) := 6;
+      elsif k = 1 then
+        tab(3) := 5;
+      end if;
       pcount := pcount + 1;
       cell.bump;
       wait for 10 ns;

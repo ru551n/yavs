@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yavs_elab::{Built, Elaborated, ObjKind, ScopeId, Shape, Val};
-use yavs_interp::{CallVal, InterpProcess};
+use yavs_interp::{CallVal, InterpProcess, Stamp};
 use yavs_kernel::{
     Elem, Hook, Observer, Phase, PortMode, ProcId, SigRef, SimControl, SimError, Value,
 };
@@ -73,6 +73,8 @@ struct Var {
     execs: u64,
     /// The raw value at the last read: an equal one needs no decoding.
     raw: Option<CallVal>,
+    /// The stamp of the data when `raw` was read.
+    stamp: Option<Stamp>,
 }
 
 struct Entry {
@@ -345,13 +347,7 @@ impl State {
         let bug =
             |what: &str| format!("this is a bug in yavs: reading a recorded variable: {what}");
         let var = &mut self.vars[k];
-        let (execs, raw) = (&mut var.execs, &mut var.raw);
-        let fresh = |cv: CallVal, raw: &mut Option<CallVal>| {
-            if raw.as_ref() == Some(&cv) {
-                return None;
-            }
-            Some(cv)
-        };
+        let (execs, raw, stamp) = (&mut var.execs, &mut var.raw, &mut var.stamp);
         let (ty, prog, cv) = match &var.at {
             VarAt::Proc { proc, name } => {
                 let r = hook
@@ -363,11 +359,15 @@ impl State {
                         if !p.has_vars() || p.execs() == *execs {
                             return Ok(None);
                         }
+                        // Compared in place: most variables of a process that ran are unchanged.
+                        if let Some(r) = raw.as_ref()
+                            && p.var_is(name, r, stamp).map_err(|m| bug(&m))?
+                        {
+                            *execs = p.execs();
+                            return Ok(None);
+                        }
                         let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
                         *execs = p.execs();
-                        let Some(cv) = fresh(cv, raw) else {
-                            return Ok(None);
-                        };
                         let v = yavs_elab::ir_decode(p.program(), ty, &cv)
                             .ok_or_else(|| bug("value not decoded"))?;
                         *raw = Some(cv);
@@ -378,13 +378,16 @@ impl State {
             }
             VarAt::Shared { slot, ty } => {
                 let b = self.built.as_ref().ok_or_else(|| bug("no shared state"))?;
+                if let Some(r) = raw.as_ref()
+                    && yavs_interp::shared_var_is(&b.rt, &b.shared, *slot, *ty, r, stamp)
+                        .map_err(|m| bug(&m))?
+                {
+                    return Ok(None);
+                }
                 let cv =
                     yavs_interp::shared_var(&b.rt, &b.shared, *slot, *ty).map_err(|m| bug(&m))?;
                 (*ty, &b.rt.prog, cv)
             }
-        };
-        let Some(cv) = fresh(cv, raw) else {
-            return Ok(None);
         };
         let v = yavs_elab::ir_decode(prog, ty, &cv).ok_or_else(|| bug("value not decoded"))?;
         *raw = Some(cv);
@@ -952,6 +955,7 @@ impl Design<'_> {
                 last: vec![Vec::new(); (last - first) as usize],
                 execs: u64::MAX,
                 raw: None,
+                stamp: None,
             });
         }
     }

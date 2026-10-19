@@ -606,6 +606,20 @@ fn wave_composite_and_shared_variables() {
         changes(&s, "wave_vars_tb.u.main.s.(1)"),
         format!("0={:08b} 10000000={:08b} 20000000={:08b}", b'b', b'c', b'd')
     );
+    // Large composites are compared before they are decoded: a write that stores the value
+    // already there records nothing.
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.big.(1)"),
+        format!("0={:032b}", 0)
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.big.(7)"),
+        format!("0={:032b} 10000000={:032b}", 0, 77)
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.tab.(3)"),
+        format!("0={:032b} 20000000={:032b}", 5, 6)
+    );
     // Shared variables: an architecture's in its instance, a package's in its package.
     assert_eq!(
         changes(&s, "wave_vars_tb.u.acc"),

@@ -985,6 +985,21 @@ impl Machine {
         })
     }
 
+    /// The [`crate::Stamp`] of the heap object at address `a`; `None` for other memory.
+    pub(crate) fn stamp(&self, a: u64) -> Option<crate::Stamp> {
+        let (sp, idx, _) = split(a);
+        let (generation, writes) = match sp {
+            HEAP => self.heap.stamp(idx)?,
+            SHARED_HEAP => self.sh.as_ref()?.heap.as_ref()?.stamp(idx)?,
+            _ => return None,
+        };
+        Some(crate::Stamp {
+            addr: a,
+            generation,
+            writes,
+        })
+    }
+
     pub(crate) fn put(&mut self, a: u64, bytes: &[u8]) -> R<()> {
         self.wr(a, bytes.len() as u64)?.copy_from_slice(bytes);
         Ok(())

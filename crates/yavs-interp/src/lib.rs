@@ -540,6 +540,21 @@ impl InterpProcess {
         Ok((ty, v))
     }
 
+    /// Whether variable `name` holds exactly `v` (as [`InterpProcess::var`] would return it),
+    /// compared in place without copying the value (the waveform recorder's per-step check).
+    /// `stamp` is the [`Stamp`] of the data when `v` was read; a composite whose data is an
+    /// object of a heap and has the same stamp is unchanged without comparing its bytes.
+    /// On return `stamp` is the data's current one.
+    pub fn var_is(
+        &mut self,
+        name: &str,
+        v: &CallVal,
+        stamp: &mut Option<Stamp>,
+    ) -> Result<bool, String> {
+        let (ty, a) = self.var_slot(name)?;
+        self.with_sh(|m| slot_is(m, ty, a, v, stamp))
+    }
+
     /// Writes `v` into variable `name` (see [`InterpProcess::var`]); a composite keeps its
     /// bounds, so `v`'s data must have the size of the current value's.
     pub fn set_var(&mut self, name: &str, v: &CallVal) -> Result<(), String> {
@@ -608,6 +623,19 @@ pub fn shared_var(
     with_shared(rt, shared, |m| read_slot(m, ty, slot))
 }
 
+/// Whether the shared variable holds exactly `v`, compared in place (see
+/// [`InterpProcess::var_is`]).
+pub fn shared_var_is(
+    rt: &Arc<Runtime>,
+    shared: &Mutex<SharedState>,
+    slot: u64,
+    ty: yavs_ir::TyId,
+    v: &CallVal,
+    stamp: &mut Option<Stamp>,
+) -> Result<bool, String> {
+    with_shared(rt, shared, |m| slot_is(m, ty, slot, v, stamp))
+}
+
 /// Writes `v` into a shared variable (see [`shared_var`]); a composite keeps its bounds.
 pub fn set_shared_var(
     rt: &Arc<Runtime>,
@@ -648,6 +676,43 @@ pub(crate) fn read_slot(m: &Machine, ty: yavs_ir::TyId, a: u64) -> exec::R<CallV
         data: m.rd(data, n)?.to_vec(),
         desc,
     })
+}
+
+/// Whether [`read_slot`] would return `v`, without building it.
+fn slot_is(
+    m: &Machine,
+    ty: yavs_ir::TyId,
+    a: u64,
+    v: &CallVal,
+    stamp: &mut Option<Stamp>,
+) -> exec::R<bool> {
+    if let Some(n) = m.rt.prog.types.get(ty).and_then(yavs_ir::Ty::scalar_size) {
+        return Ok(matches!(v, CallVal::Cell(c) if *c == m.load(a, width(n))?));
+    }
+    let CallVal::Composite { data: d, desc: dd } = v else {
+        return Ok(false);
+    };
+    let prog = &m.rt.prog;
+    let data = m.load(a, yavs_ir::Width::B8)?;
+    let dn = yavs_ir::Ty::desc_size(&prog.types, ty)
+        .ok_or_else(|| exec::Fault::Internal("variable of a cyclic type".into()))?;
+    let desc = if dn == 0 {
+        &[][..]
+    } else {
+        m.rd(m.load(exec::add_addr(a, 8)?, yavs_ir::Width::B8)?, dn)?
+    };
+    let now = m.stamp(data);
+    let before = std::mem::replace(stamp, now);
+    if desc != dd.as_slice() {
+        return Ok(false);
+    }
+    // Same descriptor, same layout: an unwritten heap object needs no further look.
+    if now.is_some() && now == before {
+        return Ok(true);
+    }
+    let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, desc)
+        .map_err(|e| exec::Fault::Internal(format!("variable layout: {e:?}")))?;
+    Ok(l.size == d.len() as u64 && m.rd(data, l.size)? == d.as_slice())
 }
 
 /// Writes `v` into the variable slot at `a` (see [`read_slot`]).
@@ -898,6 +963,15 @@ pub fn init_package(
         )),
         Err(e) => Err(m.error(e, None)),
     }
+}
+
+/// Identity and write count of the heap object a composite variable's data lives in (see
+/// [`InterpProcess::var_is`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    addr: u64,
+    generation: u32,
+    writes: u32,
 }
 
 /// An argument or result of [`call_values`]: a register cell, or a composite (array or

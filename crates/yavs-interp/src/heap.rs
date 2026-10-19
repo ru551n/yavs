@@ -59,6 +59,8 @@ struct Slot {
     data: Option<Vec<u8>>,
     /// The object is `data[start..]`: a READ drops a line's prefix in O(1) (#196).
     start: usize,
+    /// How often [`Heap::data_mut`] handed the bytes out since the allocation.
+    writes: u32,
 }
 
 #[derive(Clone)]
@@ -128,6 +130,7 @@ impl Heap {
                     ty: Obj::Bytes,
                     data: None,
                     start: 0,
+                    writes: 0,
                 });
                 i
             }
@@ -137,6 +140,7 @@ impl Heap {
         s.ty = ty;
         s.data = Some(data);
         s.start = start;
+        s.writes = 0;
         Ok(pack(self.tag, index, s.generation))
     }
 
@@ -215,7 +219,17 @@ impl Heap {
 
     pub fn data_mut(&mut self, index: u32) -> Option<&mut [u8]> {
         let s = self.slots.get_mut(index as usize)?;
+        s.writes = s.writes.wrapping_add(1);
         s.data.as_deref_mut()?.get_mut(s.start..)
+    }
+
+    /// The generation and write count of live object `index`: equal stamps mean its bytes
+    /// are unchanged, because every write goes through [`Heap::data_mut`]. ponytail: the
+    /// count wraps after 2^32 writes between two stamps.
+    pub fn stamp(&self, index: u32) -> Option<(u32, u32)> {
+        let s = self.slots.get(index as usize)?;
+        s.data.as_ref()?;
+        Some((s.generation, s.writes))
     }
 
     /// Make every live object a root for good. The shared heap is sealed when the simulation

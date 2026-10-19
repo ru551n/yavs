@@ -7,23 +7,26 @@
 //! library is built or shipped. `build.rs` generates
 //! those files; see `docs/decisions.md` for the reasoning.
 //!
-//! The object model behind the ABI is a stub (a design root, the tool
-//! and start/end of simulation callbacks) until M5 puts the real one on
-//! the kernel.
+//! The object model behind the ABI is a stub (a design root and the
+//! tool) until M5 puts the real one on the kernel. Simulation-phase and
+//! after-delay callbacks run from a kernel observer (`VhpiObserver`).
 //!
 //! Unsafe code: a C ABI cannot be written without it, so this crate does
 //! not inherit the workspace `forbid(unsafe_code)` (see Cargo.toml). It is
 //! confined to `abi` (the exported functions) and `plugin` (dlopen and
-//! calling the plugin's entry points); `model` and `sys` hold no unsafe.
+//! calling the plugin's entry points); the other modules hold no unsafe.
 
 pub mod sys;
 
 mod abi;
+mod callbacks;
 mod model;
 mod plugin;
+mod sim;
 
 pub use model::Control;
 pub use plugin::{ForeignLib, LoadError, PluginSpec, bind_foreign, load, load_foreign};
+pub use sim::VhpiObserver;
 
 /// Keeps every exported `vhpi_*` symbol linked into the executable. An
 /// executable that exports them calls this once at startup; without a
@@ -37,10 +40,17 @@ pub fn set_design_root(name: &str) {
     abi::with_state(|s| s.root_name = name.to_owned());
 }
 
-/// Runs the callbacks registered for `reason` (a `vhpiCb*` constant) and
-/// returns how many ran.
+/// Sets the resolution limit (`yavs run --resolution`): VHPI times count in
+/// this unit. Femtoseconds until set.
+pub fn set_resolution(unit: yavs_kernel::Unit) {
+    abi::with_state(|s| s.clock.resolution = unit);
+}
+
+/// Runs the enabled callbacks of the phase `reason` (a `vhpiCb*` constant
+/// without `Rep`) outside a simulation, and returns how many ran. A
+/// simulation uses `VhpiObserver` instead.
 pub fn run_callbacks(reason: i32) -> usize {
-    abi::fire(reason)
+    abi::fire(&abi::with_state(|s| s.cbs.due(reason)))
 }
 
 /// Takes the pending `vhpi_control` request, if a plugin made one.

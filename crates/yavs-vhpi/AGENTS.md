@@ -11,16 +11,17 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
   `#[repr(C)]` types and constants (`sys.rs`), the exported `vhpi_*` functions (`abi.rs`), the
   variadic shim (`shim.c`), plugin loading via `vhpi_startup_routines` or `LIB:ENTRY`
   (`plugin.rs`), and export files for the executable (`build.rs`; the `yavs` CLI passes them to its link, #266).
-- **The object model is a stub** (a design root, tool info, start/end-of-simulation callbacks)
-  until M5 puts the real one on `SimControl` and the event bus (#121).
+- **The object model is a stub** (a design root, tool info) until M5 puts the real one on
+  `SimControl` and the event bus (#121). Simulation-phase and after-delay callbacks are real
+  (#272): `VhpiObserver` (`sim.rs`) is a kernel `Observer`.
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
-  or ship a separate VHPI DLL. `yavs run --vhpi` (#267, `crates/yavs/src/elab.rs`) loads plugins
-  with `load`, sets the root with `set_design_root`, and a kernel `Observer` there calls
-  `run_callbacks` at `Phase::StartOfSim`/`EndOfSim` and turns `take_control` into
+  or ship a separate VHPI DLL. `yavs run --vhpi` (#267, `crates/yavs/src/elab.rs`) sets the
+  resolution limit (`set_resolution`) and the root (`set_design_root`), loads plugins with
+  `load` and subscribes `VhpiObserver`, which runs the callbacks and turns `vhpi_control` into
   `Hook::end(Finish|Stop(0))`.
 - Also loads `--load` libraries and binds VHPIDIRECT symbols (`load_foreign`, `bind_foreign`,
   #95), since it already owns `libloading` and the plugin path rules.
-- Depends on: `yavs-diag`, `yavs-ffi`, `libloading`; build: `cc`. Called by: the `yavs` CLI
+- Depends on: `yavs-diag`, `yavs-ffi`, `yavs-kernel` (`Observer`, `Hook`, `Time`), `libloading`; build: `cc`. Called by: the `yavs` CLI
   (`--load`, `--vhpi`) and its spike binary `src/bin/yavs-vhpi-host.rs`.
 
 ## 2. Map
@@ -31,12 +32,15 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `src/sys.rs` | `#[repr(C)]` types and one constant per enumerator (no bindgen), no unsafe |
 | `src/abi.rs` | Exported `extern "C"` VHPI functions, process-wide state behind a mutex (`with_state`, `fire`); unsafe confined here and in `plugin.rs` |
 | `src/model.rs` | Safe object model stub, handles, `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting |
+| `src/callbacks.rs` | Callback registry: registration, enable/disable/remove, per-reason sets of enabled callbacks, after-delay wake-up bookkeeping, `Clock` (time in resolution units) |
+| `src/sim.rs` | `VhpiObserver`: phase callbacks at the matching `Phase`, after-delay callbacks on `Observer::wake`, kernel requests (wake-ups, cancels, end) after each batch |
 | `src/plugin.rs` | `PluginSpec`, `load`, `LoadError` (`E0901` cannot load, `E0902` no entry point); `ForeignLib`, `load_foreign`, `bind_foreign` (`--load`: libraries in order, then the executable; never unloaded) |
 | `src/shim.c` | `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` (C variadics) |
 | `src/exports.txt` | The one list of exported symbols |
 | `build.rs` | Generates the Linux version script, the Windows `.def`, the test import library `yavs-vhpi-host.lib` (no `yavs.lib`) and a Rust table referencing every symbol; exports `DEP_YAVS_VHPI_VERSION_SCRIPT`, `_DEF`, `_IMPORT_LIB_DIR` |
-| `src/lib.rs` | `set_design_root`, `run_callbacks`, `take_control` |
+| `src/lib.rs` | `set_design_root`, `set_resolution`, `run_callbacks` (outside a simulation, the spike host), `take_control` |
 | `tests/vhpi.rs`, `tests/plugin/plugin.c` | ABI vs C header (`abi_matches_c_header`, all ~610 constants, sizes, offsets), C plugin loaded both ways, missing file/entry/symbol errors |
+| `tests/plugin/sched.c` | Callback scenarios (one entry each) run by `crates/yavs/tests/vhpi_run.rs` through `yavs run --vhpi` |
 
 ## 3. Design decisions that bind this module
 
@@ -57,17 +61,39 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
 Callback reasons map to kernel observer calls (`crates/yavs-kernel/DESIGN.md` "The cycle"; kernel
-side #268, the callbacks themselves #272):
+side #268, the callbacks #272). Each `Rep` reason maps like its one-shot form and stays until
+removed. There is no read-write or read-only synch reason in IEEE VHPI (`vhpi_user.h`): Python
+testbench frameworks use `vhpiCbRepLastKnownDeltaCycle` for their read-write phase and
+`vhpiCbRepEndOfTimeStep` for their read-only phase, as the reference simulator implements them.
 
 | VHPI reason | Kernel |
 |---|---|
-| `vhpiCbStartOfSimulation`, `vhpiCbEndOfSimulation` | `Phase::StartOfSim`, `Phase::EndOfSim` |
+| `vhpiCbStartOfSimulation`, `vhpiCbStartOfInitialization` | `Phase::StartOfSim`, in that order |
+| `vhpiCbEndOfInitialization` | `Phase::EndOfInit` (every process ran once, before the first cycle) |
+| `vhpiCbEndOfSimulation` | `Phase::EndOfSim` |
 | `vhpiCbNextTimeStep` | `Phase::NextTimeStep` |
-| `vhpiCbAfterDelay` | `Hook::wake_at(now + delay)`, then `Observer::wake` with that `WakeId`; removing the callback is `Hook::cancel` |
-| `vhpiCbReadWriteSynch` | `Observer::wake` of a `Hook::wake_at(now)`: the next delta at this time, before its update, so `vhpi_put_value` applies in that delta |
-| `vhpiCbLastKnownDeltaCycle` | `Phase::LastKnownDelta` (puts queued here create one more delta) |
-| `vhpiCbReadOnlySynch`, `vhpiCbEndOfTimeStep` | `Phase::EndOfTimeStep` (after postponed processes; no puts) |
-| `vhpiCbValueChange` | `Observer::value_change` |
+| `vhpiCbStartOfNextCycle` | `Phase::NextCycle` (every cycle, before its wake-ups and update) |
+| `vhpiCbAfterDelay` | `Hook::wake_at(now + delay)`, then `Observer::wake` with that `WakeId`; removing the callback is `Hook::cancel`. A delay of 0 is the next delta. A disabled one is skipped when due (a one-shot then matures) |
+| `vhpiCbLastKnownDeltaCycle` (read-write) | `Phase::LastKnownDelta` (puts queued here create one more delta) |
+| `vhpiCbEndOfTimeStep` (read-only) | `Phase::EndOfTimeStep` (after postponed processes; no puts) |
+| `vhpiCbValueChange` (#269, not yet) | `Observer::value_change`; register it in `callbacks.rs` keyed by signal, dispatch in `sim.rs` |
+
+Callback rules (#272, #123):
+
+- Only enabled phase callbacks are in the per-reason sets that a phase looks at, so disabled
+  callbacks cost nothing per cycle, however many there are (100000 disabled ones: no measurable
+  change over 200000 cycles). Disable and enable move a callback out of and into its set.
+- A phase runs a snapshot of its set in registration order: a callback registered from inside a
+  callback for the same phase fires at the next occurrence, not the current one; one disabled
+  or removed by an earlier callback of the batch does not run.
+- A one-shot callback matures when it runs; it is dropped then unless a `vhpiReturnCb` handle
+  refers to it, and dropped when that handle is released. Removing a matured callback is legal
+  (returns 0).
+- VHPI times are in units of the resolution limit (`set_resolution`, from `--resolution`);
+  `vhpi_get_phys(vhpiResolutionLimitP)` returns it, `vhpi_get_time` gives the delta as `cycles`,
+  and the `time` field passed to every callback points at the current time.
+- Registering or removing an after-delay callback outside an observer call (at load time)
+  queues the kernel request until the next observer call (`StartOfSim`).
 
 ## 4. Invariants and pitfalls
 
@@ -100,4 +126,5 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 - The Python testbench framework itself is not installed; installing it needs the user's approval (#122).
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
   object model over `SimControl` and the event bus; #122 Python testbench framework regression (install needs
-  approval); #123 disabled callbacks stay cheap.
+  approval); #269 to #271 object model, values, puts (value-change
+  callbacks of #272 wait for #269). #123 (disabled callbacks stay cheap) is done.

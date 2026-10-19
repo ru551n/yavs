@@ -213,6 +213,16 @@ milestone users care about works.
   Each failed VHPI call sets the `vhpi_check_error` info (cleared by the next call, printf
   included). API misuse (NULL arguments, stale or wrong handles) is also reported on stderr every
   time as `W0903`; calls yavs does not implement yet as `W0904`, once per distinct message.
+- **Simulation callbacks (#272):** a kernel `Observer` in the crate (`VhpiObserver`) runs them;
+  the kernel got two phases for it, `EndOfInit` and `NextCycle`. IEEE VHPI has no read-write or
+  read-only synch reason: the read-write phase is `vhpiCb[Rep]LastKnownDeltaCycle`
+  (`Phase::LastKnownDelta`, puts there make one more delta) and the read-only phase
+  `vhpiCb[Rep]EndOfTimeStep` (`Phase::EndOfTimeStep`, after postponed processes), which is what
+  Python testbench frameworks register and what the reference simulator fires; the earlier plan
+  of a wake-up at `now` for read-write was dropped because it always costs one extra delta and
+  runs before the deltas still due at this time have settled. VHPI times count in units of `--resolution`. Disabled
+  callbacks are kept out of the per-phase sets, so they cost nothing per cycle (#123, plan rule 9).
+  Full rules: `crates/yavs-vhpi/AGENTS.md` section 3.
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.

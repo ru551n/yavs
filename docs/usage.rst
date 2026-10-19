@@ -104,11 +104,18 @@ VHPI plugins
 
 ``--vhpi=LIB[:ENTRY]`` (repeatable, loaded in order) loads a VHPI plugin after elaboration and
 before the simulation starts. Without ``ENTRY`` every routine of the library's NULL-terminated
-``vhpi_startup_routines`` array runs; with it, that function runs. The plugin's start and end of
-simulation callbacks fire, and ``vhpi_control`` with ``vhpiStop`` or ``vhpiFinish`` ends the run
-like ``std.env.stop`` or ``std.env.finish`` with status 0. A plugin that cannot be loaded is error
-``E0901`` or ``E0902`` and exit code 2, before time 0. The object model behind the plugin API is
-still a stub: it offers the design root, the tool and these callbacks.
+``vhpi_startup_routines`` array runs; with it, that function runs. ``vhpi_control`` with
+``vhpiStop`` or ``vhpiFinish`` ends the run like ``std.env.stop`` or ``std.env.finish`` with
+status 0. A plugin that cannot be loaded is error ``E0901`` or ``E0902`` and exit code 2, before
+time 0.
+
+Callbacks for the phases of the simulation run: start and end of simulation, start and end of
+initialization, next time step, start of each cycle, last known delta cycle (the read-write
+phase: values put here take effect in one more delta), end of time step (the read-only phase,
+after postponed processes), each also in its repeating ``Rep`` form, and after a delay. They can
+be disabled, enabled again and removed; a disabled callback costs nothing while it waits. VHPI
+times count in units of ``--resolution``. The object model behind the plugin API is still a
+stub: it offers the design root and the tool, not yet signals or value-change callbacks.
 
 Not implemented yet
 -------------------

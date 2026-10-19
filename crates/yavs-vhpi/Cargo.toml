@@ -12,6 +12,7 @@ links = "yavs_vhpi"
 [dependencies]
 yavs-diag.workspace = true
 yavs-ffi = { path = "../yavs-ffi" }
+yavs-kernel = { path = "../yavs-kernel" }
 libloading = "0.9.0"
 
 [build-dependencies]

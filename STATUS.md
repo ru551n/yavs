@@ -579,7 +579,18 @@ fires start/end of simulation (and start of initialization) callbacks through a 
 `Observer`, and ends the run on `vhpi_control(vhpiStop | vhpiFinish)` (status 0, new
 `Hook::end`); load failures are `E0901`/`E0902` with exit 2. `crates/yavs/tests/vhpi_run.rs`
 (2 tests, Unix only) loads the `yavs-vhpi` C test plugin through the CLI, both entry forms.
-Missing: end-of-initialization and timed callbacks, the real object model (#121).
+
+Done (#272, object-independent part; #123): simulation-phase and after-delay callbacks through
+`yavs_vhpi::VhpiObserver` and two new kernel phases (`EndOfInit`, `NextCycle`): start/end of
+initialization, next time step, start of next cycle, last known delta cycle (read-write), end
+of time step (read-only), after delay, each with its `Rep` form; `vhpi_remove_cb`,
+`vhpi_enable_cb`, `vhpi_disable_cb`, `vhpi_get_cb_info` (removing a matured callback is legal);
+disabled callbacks sit outside the per-phase sets and cost nothing per cycle. `vhpi_get_time`
+and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs` (7 tests) runs
+`tests/plugin/sched.c` scenarios: timed finish at T in resolution units, after-delay chains and
+a removed repeating one, read-write before postponed before read-only, enable/disable with
+100000 disabled callbacks, misuse; output identical at `--threads 1` and `4`.
+Missing: value-change callbacks and the real object model (#269 to #271, #121).
 
 ## discrepancies (simulator catalogue)
 

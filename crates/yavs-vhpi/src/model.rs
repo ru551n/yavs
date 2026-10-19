@@ -11,6 +11,7 @@ use std::ffi::{CStr, CString};
 
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, SourceMap, render};
 
+use crate::callbacks::{Callbacks, Clock};
 use crate::sys::*;
 
 /// What a handle points at.
@@ -18,8 +19,8 @@ use crate::sys::*;
 pub(crate) enum Object {
     Tool,
     Root,
-    /// Index into `State::callbacks`.
-    Callback(usize),
+    /// Id in `State::cbs`.
+    Callback(u64),
 }
 
 /// Handle arena (design rule 9). A handle is `(index, generation)`
@@ -88,12 +89,6 @@ impl Handles {
     }
 }
 
-pub(crate) struct Callback {
-    pub(crate) data: vhpiCbDataT,
-    pub(crate) state: vhpiStateT,
-    pub(crate) removed: bool,
-}
-
 /// The pending request from `vhpi_control`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -125,7 +120,8 @@ pub(crate) enum Fault {
 #[derive(Default)]
 pub(crate) struct State {
     pub(crate) handles: Handles,
-    pub(crate) callbacks: Vec<Callback>,
+    pub(crate) cbs: Callbacks,
+    pub(crate) clock: Clock,
     pub(crate) root_name: String,
     pub(crate) control: Option<Control>,
     pub(crate) error: Option<Error>,
@@ -205,8 +201,8 @@ impl State {
             (Object::Tool, vhpiKindP) => vhpiToolK,
             (Object::Root, vhpiKindP) => vhpiRootInstK,
             (Object::Callback(_), vhpiKindP) => vhpiCallbackK,
-            (Object::Callback(i), vhpiStateP) => self.callbacks[i].state,
-            (Object::Callback(i), vhpiReasonP) => self.callbacks[i].data.reason,
+            (Object::Callback(i), vhpiStateP) => self.cbs.get(i)?.state,
+            (Object::Callback(i), vhpiReasonP) => self.cbs.get(i)?.data.reason,
             (Object::Tool, vhpiArgcP) => 0,
             _ => return None,
         })

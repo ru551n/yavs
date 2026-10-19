@@ -14,7 +14,8 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::io::Write;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::model::{Callback, Control, Fault, Object, State};
+use crate::callbacks::{Callback, RegisterError};
+use crate::model::{Control, Fault, Object, State};
 use crate::sys::*;
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -206,7 +207,11 @@ pub extern "C" fn vhpi_handle(kind: vhpiOneToOneT, reference: vhpiHandleT) -> vh
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_release_handle(h: vhpiHandleT) -> c_int {
     with_state(|s| {
+        let obj = s.handles.get(h);
         if s.handles.release(h) {
+            if let Some(Object::Callback(id)) = obj {
+                s.cbs.handle_released(id);
+            }
             0
         } else {
             s.fail(
@@ -279,7 +284,7 @@ pub extern "C" fn vhpi_get_real(_prop: vhpiRealPropertyT, _h: vhpiHandleT) -> vh
 pub extern "C" fn vhpi_get_phys(prop: vhpiPhysPropertyT, h: vhpiHandleT) -> vhpiPhysT {
     with_state(|s| {
         if prop == vhpiResolutionLimitP && h.is_null() {
-            return vhpiFS;
+            return phys(s.clock.resolution.fs());
         }
         s.fail(
             Fault::Unsupported,
@@ -291,10 +296,11 @@ pub extern "C" fn vhpi_get_phys(prop: vhpiPhysPropertyT, h: vhpiHandleT) -> vhpi
 
 // ---- Callbacks --------------------------------------------------------
 
-/// Registers a callback. Supports the start and end of simulation for now.
+/// Registers a callback for a simulation phase or after a delay (see `callbacks.rs` for
+/// the reasons).
 ///
 /// # Safety
-/// `cb` is NULL or points to a valid `vhpiCbDataT`.
+/// `cb` is NULL or points to a valid `vhpiCbDataT` whose `time` is NULL or readable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vhpi_register_cb(cb: *mut vhpiCbDataT, flags: i32) -> vhpiHandleT {
     // SAFETY: NULL or valid per the contract; the struct is copied.
@@ -302,44 +308,40 @@ pub unsafe extern "C" fn vhpi_register_cb(cb: *mut vhpiCbDataT, flags: i32) -> v
         with_state(|s| s.fail(Fault::Misuse, "vhpi_register_cb: NULL callback data"));
         return std::ptr::null_mut();
     };
+    // SAFETY: NULL or readable per the contract; copied.
+    let delay = unsafe { data.time.as_ref() }.copied();
     with_state(|s| {
         if data.cb_rtn.is_none() {
             s.fail(Fault::Misuse, "vhpi_register_cb: NULL cb_rtn");
             return std::ptr::null_mut();
         }
-        if !matches!(data.reason, vhpiCbStartOfSimulation | vhpiCbEndOfSimulation) {
-            s.fail(
-                Fault::Unsupported,
-                format!(
-                    "vhpi_register_cb: reason {}: {NOT_IMPLEMENTED}",
-                    data.reason
-                ),
-            );
-            return std::ptr::null_mut();
-        }
-        let state = if flags & vhpiDisableCb != 0 {
-            vhpiDisable
-        } else {
-            vhpiEnable
-        };
-        s.callbacks.push(Callback {
-            data,
-            state,
-            removed: false,
-        });
-        if flags & vhpiReturnCb != 0 {
-            s.handles.alloc(Object::Callback(s.callbacks.len() - 1))
-        } else {
-            std::ptr::null_mut()
+        match s.cbs.register(data, flags, delay, &s.clock) {
+            Ok(id) if flags & vhpiReturnCb != 0 => s.handles.alloc(Object::Callback(id)),
+            Ok(_) => std::ptr::null_mut(),
+            Err(RegisterError::Misuse(why)) => {
+                s.fail(Fault::Misuse, format!("vhpi_register_cb: {why}"));
+                std::ptr::null_mut()
+            }
+            Err(RegisterError::Unsupported) => {
+                s.fail(
+                    Fault::Unsupported,
+                    format!(
+                        "vhpi_register_cb: reason {}: {NOT_IMPLEMENTED}",
+                        data.reason
+                    ),
+                );
+                std::ptr::null_mut()
+            }
         }
     })
 }
 
-fn with_callback(h: vhpiHandleT, func: &str, f: impl FnOnce(&mut Callback) -> c_int) -> c_int {
+/// Runs `f` on the callback behind `h`. Matured callbacks count: removing one is legal.
+fn with_callback(h: vhpiHandleT, func: &str, f: impl FnOnce(&mut State, u64) -> c_int) -> c_int {
     with_state(|s| match get_obj(s, h, func) {
-        Some(Object::Callback(i)) if !s.callbacks[i].removed => f(&mut s.callbacks[i]),
+        Some(Object::Callback(id)) => f(s, id),
         Some(_) => {
-            s.fail(Fault::Misuse, format!("{func}: not a live callback handle"));
+            s.fail(Fault::Misuse, format!("{func}: not a callback handle"));
             1
         }
         None => 1,
@@ -348,32 +350,25 @@ fn with_callback(h: vhpiHandleT, func: &str, f: impl FnOnce(&mut Callback) -> c_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_remove_cb(h: vhpiHandleT) -> c_int {
-    let rc = with_callback(h, "vhpi_remove_cb", |cb| {
-        cb.removed = true;
+    with_callback(h, "vhpi_remove_cb", |s, id| {
+        s.cbs.remove(id);
+        s.handles.release(h);
         0
-    });
-    if rc == 0 {
-        with_state(|s| s.handles.release(h));
-    }
-    rc
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_disable_cb(h: vhpiHandleT) -> c_int {
-    with_callback(h, "vhpi_disable_cb", |cb| {
-        if cb.state == vhpiEnable {
-            cb.state = vhpiDisable;
-        }
+    with_callback(h, "vhpi_disable_cb", |s, id| {
+        s.cbs.set_enabled(id, false);
         0
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_enable_cb(h: vhpiHandleT) -> c_int {
-    with_callback(h, "vhpi_enable_cb", |cb| {
-        if cb.state == vhpiDisable {
-            cb.state = vhpiEnable;
-        }
+    with_callback(h, "vhpi_enable_cb", |s, id| {
+        s.cbs.set_enabled(id, true);
         0
     })
 }
@@ -383,8 +378,8 @@ pub extern "C" fn vhpi_enable_cb(h: vhpiHandleT) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vhpi_get_cb_info(h: vhpiHandleT, out: *mut vhpiCbDataT) -> c_int {
     let mut data = None;
-    let rc = with_callback(h, "vhpi_get_cb_info", |cb| {
-        data = Some(cb.data);
+    let rc = with_callback(h, "vhpi_get_cb_info", |s, id| {
+        data = s.cbs.get(id).map(|cb| cb.data);
         0
     });
     if let Some(d) = data {
@@ -400,28 +395,25 @@ pub unsafe extern "C" fn vhpi_get_cb_info(h: vhpiHandleT, out: *mut vhpiCbDataT)
     rc
 }
 
-/// Calls the enabled callbacks registered for `reason`, without holding
-/// the state lock. One-shot callbacks become mature. Returns the count.
-pub(crate) fn fire(reason: i32) -> usize {
-    let due: Vec<vhpiCbDataT> = with_state(|s| {
-        s.callbacks
-            .iter_mut()
-            .filter(|cb| !cb.removed && cb.state == vhpiEnable && cb.data.reason == reason)
-            .map(|cb| {
-                cb.state = vhpiMature;
-                cb.data
-            })
-            .collect()
-    });
-    for mut data in due.iter().copied() {
-        let mut time = vhpiTimeT::default();
+/// Calls callbacks `ids` in order, each only if it is still enabled when its turn comes,
+/// without holding the state lock. The `time` field points at the current time. Returns
+/// how many ran.
+pub(crate) fn fire(ids: &[u64]) -> usize {
+    let mut ran = 0;
+    for &id in ids {
+        let Some((mut data, mut time)) =
+            with_state(|s| Some((s.cbs.fire(id, s.clock.now)?, s.clock.vhpi_now())))
+        else {
+            continue;
+        };
         data.time = &mut time;
         if let Some(rtn) = data.cb_rtn {
             // SAFETY: the plugin registered `rtn` for exactly this call.
             unsafe { rtn(&data) };
+            ran += 1;
         }
     }
-    due.len()
+    ran
 }
 
 // ---- Time, errors, utilities -----------------------------------------
@@ -430,14 +422,14 @@ pub(crate) fn fire(reason: i32) -> usize {
 /// Both pointers are NULL or writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vhpi_get_time(time: *mut vhpiTimeT, cycles: *mut c_long) {
-    with_state(|_| ());
-    // SAFETY: NULL or writable per the contract. The stub never advances.
+    let (now, delta) = with_state(|s| (s.clock.vhpi_now(), s.clock.delta));
+    // SAFETY: NULL or writable per the contract.
     unsafe {
         if let Some(t) = time.as_mut() {
-            *t = vhpiTimeT::default();
+            *t = now;
         }
         if let Some(c) = cycles.as_mut() {
-            *c = 0;
+            *c = delta as c_long; // at most the delta limit
         }
     }
 }

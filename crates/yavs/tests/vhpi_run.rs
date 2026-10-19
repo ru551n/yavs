@@ -7,6 +7,14 @@ use std::process::Command;
 const VHDL: &str = "entity top is end;\n\
     architecture a of top is begin\n\
     process begin report \"design ran\"; wait; end process;\n\
+    end;\n\
+    entity tb is end;\n\
+    architecture a of tb is\n\
+    signal s : bit := '0';\n\
+    begin\n\
+    s <= '1' after 10 ns, '0' after 20 ns;\n\
+    process (s) begin report \"s=\" & bit'image(s); end process;\n\
+    postponed process (s) begin report \"postponed s=\" & bit'image(s); end process;\n\
     end;\n";
 
 fn yavs(args: &[&str]) -> (i32, String, String) {
@@ -23,13 +31,13 @@ fn yavs(args: &[&str]) -> (i32, String, String) {
 }
 
 #[cfg(unix)]
-fn build_plugin(vhpi: &std::path::Path, _tmp: &std::path::Path, so: &std::path::Path) {
+fn build_plugin(vhpi: &std::path::Path, _tmp: &std::path::Path, so: &std::path::Path, name: &str) {
     let tool = compiler();
     let status = tool
         .to_command()
         .args(["-shared", "-fPIC", "-I"])
         .arg(vhpi.join("include"))
-        .arg(vhpi.join("tests/plugin/plugin.c"))
+        .arg(vhpi.join(format!("tests/plugin/{name}.c")))
         .arg("-o")
         .arg(so)
         .status()
@@ -40,7 +48,7 @@ fn build_plugin(vhpi: &std::path::Path, _tmp: &std::path::Path, so: &std::path::
 /// Windows: import library for `yavs.exe` from the generated `.def` (test time only), then the
 /// plugin DLL linked against it.
 #[cfg(windows)]
-fn build_plugin(vhpi: &std::path::Path, tmp: &std::path::Path, so: &std::path::Path) {
+fn build_plugin(vhpi: &std::path::Path, tmp: &std::path::Path, so: &std::path::Path, name: &str) {
     let tool = compiler();
     let implib = tmp.join("yavs.lib");
     let def = env!("YAVS_VHPI_DEF");
@@ -62,7 +70,7 @@ fn build_plugin(vhpi: &std::path::Path, tmp: &std::path::Path, so: &std::path::P
     if tool.is_like_msvc() {
         cmd.arg("/nologo")
             .arg(format!("/I{}", vhpi.join("include").display()))
-            .arg(vhpi.join("tests/plugin/plugin.c"))
+            .arg(vhpi.join(format!("tests/plugin/{name}.c")))
             .arg(format!("/Fe{}", so.display()))
             .arg("/LD")
             .arg("/link")
@@ -71,7 +79,7 @@ fn build_plugin(vhpi: &std::path::Path, tmp: &std::path::Path, so: &std::path::P
         cmd.arg("-shared")
             .arg("-I")
             .arg(vhpi.join("include"))
-            .arg(vhpi.join("tests/plugin/plugin.c"))
+            .arg(vhpi.join(format!("tests/plugin/{name}.c")))
             .arg("-o")
             .arg(so)
             .arg(&implib);
@@ -93,6 +101,11 @@ fn compiler() -> cc::Tool {
 
 /// Compiles the `yavs-vhpi` test plugin and analyses the design; returns (lib arg, plugin path).
 fn setup() -> (String, PathBuf) {
+    setup_plugin("plugin")
+}
+
+/// Compiles `yavs-vhpi/tests/plugin/<name>.c` and analyses the design.
+fn setup_plugin(name: &str) -> (String, PathBuf) {
     // One directory per call: the tests run in parallel.
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -101,11 +114,11 @@ fn setup() -> (String, PathBuf) {
     std::fs::create_dir_all(&tmp).expect("tmp");
     let vhpi = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../yavs-vhpi");
     let so = tmp.join(if cfg!(windows) {
-        "plugin.dll"
+        format!("{name}.dll")
     } else {
-        "libplugin.so"
+        format!("lib{name}.so")
     });
-    build_plugin(&vhpi, &tmp, &so);
+    build_plugin(&vhpi, &tmp, &so, name);
     let src = tmp.join("top.vhd");
     std::fs::write(&src, VHDL).expect("write");
     let lib = format!("--work=work:{}", tmp.join("lib").display());
@@ -162,4 +175,157 @@ fn plugin_load_errors_fail_early() {
     assert_eq!(code, 2);
     assert!(err.contains("error[E0902]"), "{err}");
     assert!(!out.contains("design ran"), "{out}");
+}
+
+/// Runs `tb` with the scheduling plugin entry `entry`; returns (exit code, stderr, stdout).
+fn sched(entry: &str, extra: &[&str]) -> (i32, String, String) {
+    let (lib, so) = setup_plugin("sched");
+    let spec = format!("--vhpi={}:{entry}", so.display());
+    let mut args = vec!["run", &lib, &spec];
+    args.extend_from_slice(extra);
+    args.push("tb");
+    yavs(&args)
+}
+
+/// The `vhpi:` lines and reports of a run, without the report process lines.
+fn trace(out: &str) -> String {
+    out.lines()
+        .filter(|l| !l.starts_with("    Process"))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+#[test]
+fn after_delay_finishes_at_t_in_resolution_units() {
+    let (code, err, out) = sched("timed_finish", &["--resolution=ns"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("vhpi: resolution=1000000\n"), "{out}");
+    assert!(out.contains("vhpi: finish t=30 d=0 cb_time=30\n"), "{out}");
+    assert!(out.contains("FINISH called with status 0"), "{out}");
+    assert!(out.contains("vhpi: end t=30 d=0"), "{out}");
+    // Without --resolution times count in femtoseconds: 30 fs, before the first event.
+    let (code, err, out) = sched("timed_finish", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("vhpi: resolution=1\n"), "{out}");
+    assert!(out.contains("vhpi: finish t=30 d=0"), "{out}");
+    assert!(!out.contains("s='1'"), "{out}");
+}
+
+#[test]
+fn after_delay_chains_and_repeats() {
+    let (code, err, out) = sched("chain", &["--resolution=ns"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        trace(&out),
+        "vhpi: start t=0 d=0 cb_time=0\n\
+         vhpi: remove pending=0\n\
+         ** Note: 0fs+0: s='0'\n\
+         ** Note: 0fs+0: postponed s='0'\n\
+         vhpi: rep t=7 d=0 cb_time=7\n\
+         vhpi: link t=10 d=0 cb_time=10\n\
+         ** Note: 10000000fs+0: s='1'\n\
+         ** Note: 10000000fs+0: postponed s='1'\n\
+         vhpi: rep t=14 d=0 cb_time=14\n\
+         vhpi: link t=20 d=0 cb_time=20\n\
+         ** Note: 20000000fs+0: s='0'\n\
+         ** Note: 20000000fs+0: postponed s='0'\n\
+         vhpi: rep t=21 d=0 cb_time=21\n\
+         vhpi: remove rep=0\n\
+         vhpi: link t=30 d=0 cb_time=30\n\
+         vhpi: link t=40 d=0 cb_time=40\n\
+         vhpi: end t=40 d=0 cb_time=40\n"
+    );
+}
+
+#[test]
+fn read_write_before_read_only_and_phase_order() {
+    let (code, err, out) = sched("order", &["--resolution=ns"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(trace(&out), ORDER);
+    for threads in ["--threads=1", "--threads=4"] {
+        let (code, err, again) = sched("order", &["--resolution=ns", threads]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(again, out, "{threads}");
+    }
+}
+
+/// Every phase once per occurrence. The read-write phase (last known delta) runs before the
+/// postponed processes and the read-only phase (end of time step) after them; an after-delay of
+/// 0 from it creates one more delta; a callback registered in the read-only phase for the same
+/// phase runs at the next time step.
+const ORDER: &str = "vhpi: start_of_sim t=0 d=0 cb_time=0\n\
+     vhpi: start_of_init t=0 d=0 cb_time=0\n\
+     ** Note: 0fs+0: s='0'\n\
+     ** Note: 0fs+0: postponed s='0'\n\
+     vhpi: end_of_init t=0 d=0 cb_time=0\n\
+     vhpi: next_time_step_once t=10 d=0 cb_time=10\n\
+     vhpi: next_time_step t=10 d=0 cb_time=10\n\
+     vhpi: next_cycle t=10 d=0 cb_time=10\n\
+     ** Note: 10000000fs+0: s='1'\n\
+     vhpi: read_write t=10 d=0 cb_time=10\n\
+     vhpi: next_cycle t=10 d=1 cb_time=10\n\
+     vhpi: after0 t=10 d=1 cb_time=10\n\
+     vhpi: read_write t=10 d=1 cb_time=10\n\
+     ** Note: 10000000fs+1: postponed s='1'\n\
+     vhpi: read_only t=10 d=1 cb_time=10\n\
+     vhpi: next_time_step t=20 d=0 cb_time=20\n\
+     vhpi: next_cycle t=20 d=0 cb_time=20\n\
+     ** Note: 20000000fs+0: s='0'\n\
+     vhpi: read_write t=20 d=0 cb_time=20\n\
+     ** Note: 20000000fs+0: postponed s='0'\n\
+     vhpi: read_only t=20 d=0 cb_time=20\n\
+     vhpi: late_eots t=20 d=0 cb_time=20\n\
+     vhpi: end t=20 d=0 cb_time=20\n";
+
+#[test]
+fn enable_disable_and_cheap_disabled_callbacks() {
+    let (code, err, out) = sched("toggle", &["--resolution=ns"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(trace(&out), TOGGLE);
+    let (code, err, again) = sched("toggle", &["--resolution=ns", "--threads=4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out);
+}
+
+/// The disabled callback runs from 25 to 40 ns only: it is enabled after the 20 ns time step
+/// began and disabled after the 40 ns one; the 100000 disabled callbacks never run.
+const TOGGLE: &str = "vhpi: registered state=1\n\
+     vhpi: get_cb_info=0\n\
+     vhpi: info reason=1013 user_data=next_time_step\n\
+     vhpi: start_of_sim t=0 d=0 cb_time=0\n\
+     ** Note: 0fs+0: s='0'\n\
+     ** Note: 0fs+0: postponed s='0'\n\
+     ** Note: 10000000fs+0: s='1'\n\
+     ** Note: 10000000fs+0: postponed s='1'\n\
+     vhpi: enable t=20 d=0 cb_time=20\n\
+     vhpi: enable=0\n\
+     vhpi: enabled state=0\n\
+     vhpi: matured state=2 remove=0\n\
+     ** Note: 20000000fs+0: s='0'\n\
+     ** Note: 20000000fs+0: postponed s='0'\n\
+     vhpi: next_time_step t=25 d=0 cb_time=25\n\
+     vhpi: next_time_step t=30 d=0 cb_time=30\n\
+     vhpi: next_time_step t=35 d=0 cb_time=35\n\
+     vhpi: next_time_step t=40 d=0 cb_time=40\n\
+     vhpi: disable t=40 d=0 cb_time=40\n\
+     vhpi: disable=0\n\
+     vhpi: disabled state=1\n\
+     vhpi: stop t=60 d=0 cb_time=60\n\
+     vhpi: ticks=11\n\
+     ** Note: 60000000fs+0: FINISH called with status 0\n";
+
+#[test]
+fn callback_misuse_is_reported() {
+    let (code, err, out) = sched("errors", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("vhpi: no time=null\n"), "{out}");
+    assert!(
+        out.contains("vhpi: error: vhpi_register_cb: after-delay callback without time"),
+        "{out}"
+    );
+    assert!(err.contains("warning[W0903]"), "{err}");
+    assert!(
+        out.contains("vhpi: remove=0\nvhpi: remove again=1\n"),
+        "{out}"
+    );
 }

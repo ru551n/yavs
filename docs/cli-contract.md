@@ -252,9 +252,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   before time 0. `vhpiCbStartOfSimulation` and `vhpiCbStartOfInitialization` fire before
   initialisation, `vhpiCbEndOfSimulation` once when the run ends (also after a stop or finish).
   `vhpi_control(vhpiStop | vhpiFinish)` ends the run between cycles with status 0 (prints the
-  same `STOP`/`FINISH called` note as `std.env`); other commands are `W0904`. The object model
-  is a stub (design root named after the top-level entity, tool); `vhpiCbEndOfInitialization` and
-  the rest need M5 (#121).
+  same `STOP`/`FINISH called` note as `std.env`); other commands are `W0904`. Simulation
+  callbacks (#272): `vhpiCbEndOfInitialization` after every process ran once,
+  `vhpiCb[Rep]NextTimeStep`, `vhpiCb[Rep]StartOfNextCycle`, `vhpiCb[Rep]LastKnownDeltaCycle`
+  (the read-write phase), `vhpiCb[Rep]EndOfTimeStep` (the read-only phase, after postponed
+  processes) and `vhpiCb[Rep]AfterDelay`. VHPI times (`vhpi_get_time`, callback delays, the
+  `time` field passed to callbacks) count in units of `--resolution`, which is what
+  `vhpi_get_phys(vhpiResolutionLimitP)` returns; `vhpi_get_time` gives the delta count as `cycles`. The
+  object model is a stub (design root named after the top-level entity, tool): value-change
+  callbacks and signal access need #269 to #271.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

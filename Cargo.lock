@@ -1566,6 +1566,7 @@ dependencies = [
  "libloading",
  "yavs-diag",
  "yavs-ffi",
+ "yavs-kernel",
 ]
 
 [[package]]

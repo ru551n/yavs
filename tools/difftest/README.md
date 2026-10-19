@@ -22,10 +22,12 @@ systemd-run for debugging.
 
 One line in the first 15 lines of each `.vhd`:
 
-    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [exit=N] [ref=hand] [ignore=a,b]
+    -- difftest: top=NAME [std=2008|2019|1993|2002] [stop=55ns] [res=ps] [exit=N] [ref=hand] [ignore=a,b]
 
 - `top`: top-level entity (required). All design units in the file are analysed into one library.
 - `std`: default 2008. `stop`: passed as `--stop-time` (needed for free-running clocks).
+- `res`: time resolution limit, passed to yavs as `--resolution` (the reference simulators
+  ignore it, so use it only with `ref=hand`).
 - `exit`: expected process exit status of the reference (default 0). `--bless` refuses to write
   an `.expected` whose exit status differs, so a broken test cannot be blessed by accident.
 - `ignore`: fields added to the ignore set for this test only (below), e.g. `ignore=order` for a

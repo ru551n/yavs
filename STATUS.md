@@ -368,7 +368,7 @@ binary file read/write of records and arrays of composites, the PSL natives, `Se
 std.reflection (`yavs-interp/src/reflect.rs`, `yavs-lower/src/reflect.rs`): all 123 mirror
 methods and `'reflect` (value and subtype mirrors, built from the value and its descriptor;
 private-heap mirror objects traced by the GC). End to end through `yavs run` for every class:
-enumeration, integer, floating, physical (TIME in resolution-limit units), record, array
+enumeration, integer, floating, physical (TIME in resolution-limit units, `yavs run --resolution`, #253), record, array
 (multi-dimensional, unconstrained parameters, null), access, file and protected mirrors, of
 variables, constants, signals, ports and type marks, with mirror variables and generic
 subprogram instances (`tests/corpus/reflect`, 12/12 at 1, 4 and 4 shuffled threads; 6 against

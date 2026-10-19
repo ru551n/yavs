@@ -43,6 +43,9 @@ otherwise.
   cleared the assert counts since.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
+  ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME
+  values in ``std.reflection`` mirrors.
 * ``--wave out.fst`` records the whole design as an FST file that waveform viewers read. It is
   finished on normal end, on ``--stop-time`` and on Ctrl-C. ``--wave-include GLOB`` and
   ``--wave-exclude GLOB`` (repeatable, matching paths such as ``tb.u1.count``) choose what is

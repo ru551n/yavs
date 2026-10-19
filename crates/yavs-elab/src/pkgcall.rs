@@ -109,6 +109,7 @@ pub(crate) fn run(
 /// Initialise `packages` of `prog` in order (each sees those before it, LRM 14.4.2) with
 /// `shared`, `fix` completing each package's data, and return the runtime with all of them
 /// bound.
+#[allow(clippy::too_many_arguments)] // ponytail: one more setting; bundle into a struct when the next one comes
 pub(crate) fn init_packages(
     prog: &Arc<Program>,
     packages: &[PackageIr],
@@ -116,6 +117,7 @@ pub(crate) fn init_packages(
     foreign: &[(yavs_ir::ForeignId, yavs_ffi::ForeignFn)],
     searched: &str,
     shared: &Arc<Mutex<SharedState>>,
+    resolution: yavs_std::arith::TimeResolution,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
@@ -124,6 +126,7 @@ pub(crate) fn init_packages(
         sources: sources.clone(),
         foreign: foreign.to_vec(),
         searched: searched.to_string(),
+        resolution,
         ..Default::default()
     };
     for p in packages {
@@ -300,9 +303,16 @@ impl Session {
         let sources = Sources::of(&prog, &db.sources);
         // ponytail: foreign subprograms are bound only for the simulation (`yavs run
         // --load`), so calling one during elaboration is a runtime error.
-        let rt = init_packages(&prog, &lw.packages, &sources, &[], "", &shared, |_, _| {
-            Ok(())
-        })
+        let rt = init_packages(
+            &prog,
+            &lw.packages,
+            &sources,
+            &[],
+            "",
+            &shared,
+            yavs_std::arith::TimeResolution::Fs,
+            |_, _| Ok(()),
+        )
         .map_err(runtime)?;
         replay(&rt, &shared, &sigs, &self.log).map_err(Fail::Runtime)?;
         Ok(Live { rt, shared, sigs })

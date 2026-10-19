@@ -575,6 +575,47 @@ fn run_exit_after_clear_vhdl_assert() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// `--resolution` sets `std.env.resolution_limit`; the default is one femtosecond, an unknown
+/// unit is a usage error (#253).
+#[test]
+fn run_resolution() {
+    let tmp = tempdir("resolution");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "use std.env.all; entity t is end;\n\
+         architecture a of t is begin process begin\n\
+           report integer'image(resolution_limit / 1 fs); wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let o = run(&["analyze", "--std=2019", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for (arg, want) in [
+        (None, "1"),
+        (Some("--resolution=fs"), "1"),
+        (Some("--resolution=ps"), "1000"),
+        (Some("--resolution=ns"), "1000000"),
+    ] {
+        let mut a = vec!["run", &lib, "t"];
+        a.extend(arg);
+        let o = run(&a);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(out.contains(&format!("0fs+0: {want}\n")), "{arg:?}: {out}");
+    }
+    let o = run(&["run", &lib, "t", "--resolution=xs"]);
+    assert_eq!(o.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// One `yavs analyze` process per file, as VUnit runs it (`tools/corpus/run.py`): units of
 /// earlier calls load from the manifests of every mapped library, including the work library,
 /// whatever the case of their names; a failed file is not recorded, so its dependents fail

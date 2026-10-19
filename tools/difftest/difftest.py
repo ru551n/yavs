@@ -15,7 +15,7 @@ TIMEOUT = 300
 RC_ANALYSE, RC_ELAB = 97, 98
 
 # Candidate command templates (run with bash -c). Placeholders: {file} {top}
-# {std} {std2} {stop} {stop_flag} {work} {threads} {shuffle}.
+# {std} {std2} {stop} {stop_flag} {res_flag} {work} {threads} {shuffle}.
 NVC = ("nvc --std={std} --work={work} -a {file} || exit 97; "
        "nvc --std={std} --work={work} -e {top} || exit 98; "
        "nvc --std={std} --work={work} -r {top} {stop_flag}")
@@ -27,7 +27,7 @@ GHDL = ("mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file} || exit
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
 YAVS = ('R=${{YAVS_BIN:-yavs}}; "$R" analyze --std={std} --work=work:{work} {file} || exit 97; '
         '"$R" elab --std={std} --work=work:{work} {top} || exit 98; '
-        '"$R" run --std={std} --work=work:{work} {stop_flag} --threads={threads} {shuffle_on} {top}')
+        '"$R" run --std={std} --work=work:{work} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
 TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS}
 # Fields masked by default per builtin candidate (reference prints them all).
 DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": ""}
@@ -48,7 +48,7 @@ HDR = re.compile(r"^--\s*difftest:\s*(.*)$")
 
 
 def parse_header(path):
-    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": ""}
+    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": "", "res": ""}
     for line in path.read_text().splitlines()[:15]:
         m = HDR.match(line)
         if m:
@@ -71,6 +71,7 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
         file=shlex.quote(str(vhd)), top=hdr["top"], std=std,
         std2={"1993": "93", "2002": "02", "2008": "08", "2019": "19"}[std],
         stop=hdr["stop"], stop_flag=f"--stop-time={hdr['stop']}" if hdr["stop"] else "",
+        res_flag=f"--resolution={hdr['res']}" if hdr["res"] else "",
         work=shlex.quote(str(work / "lib")), threads=threads, shuffle=shuffle or "",
         shuffle_flag=f"--shuffle={shuffle}" if shuffle else "",
         shuffle_on="--shuffle" if shuffle else "")

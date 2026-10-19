@@ -49,6 +49,16 @@ pub struct Common {
     generics: Vec<(String, String)>,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ResolutionArg {
+    Fs,
+    Ps,
+    Ns,
+    Us,
+    Ms,
+    Sec,
+}
+
 #[derive(ClapArgs)]
 pub struct RunArgs {
     #[command(flatten)]
@@ -75,6 +85,9 @@ pub struct RunArgs {
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
+    /// Time resolution limit (`std.env.resolution_limit`, TIME values in reflection).
+    #[arg(long, value_enum, default_value = "fs")]
+    resolution: ResolutionArg,
     /// Worker threads for process evaluation.
     #[arg(long, default_value = "1")]
     threads: usize,
@@ -350,6 +363,14 @@ pub fn run(
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),
         shuffle: a.shuffle,
+        resolution: match a.resolution {
+            ResolutionArg::Fs => yavs_kernel::Unit::Fs,
+            ResolutionArg::Ps => yavs_kernel::Unit::Ps,
+            ResolutionArg::Ns => yavs_kernel::Unit::Ns,
+            ResolutionArg::Us => yavs_kernel::Unit::Us,
+            ResolutionArg::Ms => yavs_kernel::Unit::Ms,
+            ResolutionArg::Sec => yavs_kernel::Unit::Sec,
+        },
         stop_severity: match a.exit_severity {
             SeverityArg::Note => yavs_kernel::Severity::Note,
             SeverityArg::Warning => yavs_kernel::Severity::Warning,

@@ -225,6 +225,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   skip those that match. `--wave-max-array=N` (default 65536): arrays and vectors
   with more elements are left out with warning `W0802`. The test runner does not
   pass these; use `yavs.sim_flags`.
+- `--resolution=fs|ps|ns|us|ms|sec` (`run`, default `fs`): the time resolution limit, a run-time
+  setting (plan rule 7). It is the value of `std.env.resolution_limit`, the unit of TIME
+  values in `std.reflection` mirrors (decisions.md "Reflection: TIME values in mirrors") and the
+  unit delays are truncated to (the kernel). Any other value is a usage error (exit 2). Not
+  applied to `yavs elab` (evaluation during elaboration uses `fs`).
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).

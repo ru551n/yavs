@@ -377,6 +377,7 @@ impl Elaborated {
             &ir.foreign,
             &ir.foreign_searched,
             &shared,
+            time_resolution(cfg.resolution),
             |p, d| {
                 // Descriptors of the package's array signals.
                 for s in &p.signals {
@@ -886,4 +887,19 @@ fn local_prefix(db: &Db, scope: yavs_sem::ScopeId) -> String {
         sc = sd.parent;
     }
     parts.iter().rev().map(String::as_str).collect()
+}
+
+/// The interpreter's `resolution_limit` for the kernel's resolution (`yavs run --resolution`).
+fn time_resolution(u: yavs_kernel::Unit) -> yavs_std::arith::TimeResolution {
+    use yavs_kernel::Unit;
+    use yavs_std::arith::TimeResolution as R;
+    match u {
+        Unit::Fs => R::Fs,
+        Unit::Ps => R::Ps,
+        Unit::Ns => R::Ns,
+        Unit::Us => R::Us,
+        Unit::Ms => R::Ms,
+        // ponytail: the CLI offers fs..sec only; min and hr do not occur
+        Unit::Sec | Unit::Min | Unit::Hr => R::Sec,
+    }
 }

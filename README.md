@@ -47,3 +47,8 @@ grant; they are redistributed unmodified, as GHDL and NVC do (`lib/LICENSE-IEEE-
 built-in Synopsys packages (`ieee.std_logic_arith`, `std_logic_unsigned`, `std_logic_signed`,
 `std_logic_misc`) are Synopsys copyright, redistributable without restriction when the notice is
 kept, and are also shipped unmodified (`lib/LICENSE-SYNOPSYS`).
+
+The graphical debugger `yavs-gui` (`gui/`) is a separate program under the EUPL-1.2
+(`gui/LICENSE`), because the waveform viewer library it embeds (libsurfer) is. It talks to yavs
+over the Debug Adapter Protocol and links no yavs code. In the release archives its licence is
+`LICENSE-EUPL-1.2-yavs-gui`, which applies to the `yavs-gui` binary only.

@@ -8,6 +8,7 @@ mod analyze;
 mod cov;
 mod elab;
 mod explain;
+mod gui;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
@@ -145,7 +146,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let cli = Cli::parse_from(args);
+    let cli = Cli::parse_from(&args);
     if let Some(code) = &cli.explain {
         return match explain::explain(&code.to_ascii_uppercase()) {
             Some(text) => {
@@ -196,6 +197,7 @@ fn main() -> ExitCode {
         } => (std, defines, psl, dump_ast, files),
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
         Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color, encoding)),
+        Command::Run(a) if a.gui => return gui::launch(&args, format, color),
         Command::Run(a) => return guard(format, color, || elab::run(a, format, color, encoding)),
         Command::Cov(c) => return guard(format, color, || cov::run(c, format, color)),
     };

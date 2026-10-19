@@ -1,9 +1,9 @@
 # M10 GUI: yavs-gui
 
-Status: proposal, nothing implemented (#384, epic #148, #133). Binding inputs: `docs/plan.md`
+Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Slice G1
+(#388) is implemented in `gui/` (see `gui/AGENTS.md`). Binding inputs: `docs/plan.md`
 (the `yavs-gui` row of the architecture table, "Designed for the GUI from the start", M10) and the
-M8 DAP server as it is on main (`crates/yavs-dap/AGENTS.md`). Section 12 lists what the user
-decides before work starts.
+M8 DAP server as it is on main (`crates/yavs-dap/AGENTS.md`).
 
 The plan's requirement, restated as the acceptance list for M10:
 
@@ -53,7 +53,8 @@ together with `--dap` (#325) are in (section 5.1).
 ```
 
 - **Launch** (default): `yavs-gui [--yavs PATH] -- <yavs run arguments>`. The GUI spawns
-  `yavs <arguments> --dap=stdio` as a child with piped stdin, stdout and stderr. The yavs command
+  `yavs run <arguments> --dap=stdio` as a child (the arguments are those of `yavs run`, without
+  the subcommand) with piped stdin, stdout and stderr. The yavs command
   line stays the one contract for the design, as for the editor extension
   (`editors/vscode/AGENTS.md` section 3). The binary is `--yavs`, else `yavs` next to the
   `yavs-gui` executable, else `yavs` on `PATH`; none found is an error naming the three places
@@ -257,8 +258,10 @@ out, F9 toggle breakpoint, configurable through the eframe storage.
   `git` to stamp its version, which a git dependency checkout satisfies.
 - The root workspace (`members = ["crates/*"]`) does not include `gui/`, so the rule 13 checks of
   every agent do not build libsurfer. `gui/` gets its own checks (section 9).
-- Release archives: either a separate `yavs-gui` archive or the same archive with `LICENSE-EUPL`
-  next to the binary; the user decides (section 12).
+- Release archives: the same archive as `yavs`, with `yavs-gui` next to `yavs` and its licence
+  as `LICENSE-EUPL-1.2-yavs-gui`, which applies to the `yavs-gui` binary only (section 12).
+- `yavs run --gui <arguments>` starts `yavs-gui --yavs <this yavs> -- <arguments>` (a process
+  start, no linking): `yavs-gui` next to the `yavs` executable, else on PATH, else `E0122`.
 
 ## 8. Platforms
 
@@ -322,17 +325,22 @@ are on main.
   each can be one more panel over one more request later.
 - No editing of sources in the GUI.
 
-## 12. Decisions for the user
+## 12. Decisions (user, 2026-10-19)
 
-1. **libsurfer as a git dependency** pinned to a revision of its main branch, instead of the local
-   checkout #133 asks about (it is not published on crates.io). It brings tokio and the egui stack;
-   `default-features = false` turns off its HTTPS feature.
-2. **`gui/` as its own workspace** outside `crates/*`, with its own CI job, so the simulator's
-   checks never build the GUI.
-3. **Live waves streamed over DAP into an in-memory wellen store** (section 5), not a growing FST.
-4. **`egui_dock`** for docking (MIT; tabs, drag to dock, saved layouts) rather than `egui_tiles`
-   (MIT or Apache-2.0). Both follow egui 0.36.
-5. **Shipping**: the GUI in the same release archive with its EUPL-1.2 licence file, or as a
-   separate archive.
-6. Whether `yavs run --gui` should exist as a convenience that starts `yavs-gui` with the same
-   arguments (a process start only, no linking), or the GUI is always started as `yavs-gui`.
+Answered on #384; recorded in `docs/decisions.md` "GUI (M10)".
+
+1. **libsurfer as a git dependency** pinned to a revision of its main branch (`gui/Cargo.toml`),
+   not a local checkout (#133); it is not published on crates.io. `default-features = false`
+   turns off its HTTPS and performance-plot features.
+2. **`gui/` is its own workspace** outside `crates/*`, EUPL-1.2, with its own CI workflow
+   (`.github/workflows/gui.yml`); it depends on no yavs crate and talks DAP only, so the
+   simulator's checks never build the GUI.
+3. **Live waves stream over DAP** into an in-memory wellen store (section 5), not a growing FST.
+4. **`egui_dock`** for docking, as recommended in section 6 (the user left the choice open; the
+   recommendation stands).
+5. **Shipping**: `yavs-gui` is in the same release archive as `yavs`, with its EUPL-1.2 licence
+   file alongside (`LICENSE-EUPL-1.2-yavs-gui`), marked as applying to the `yavs-gui` binary
+   only.
+6. **`yavs run --gui` exists** as a shortcut that starts `yavs-gui` on the run: `yavs-gui` next to
+   the `yavs` binary or on PATH, else error `E0122` (exit 2). The GUI is always a separate
+   process.

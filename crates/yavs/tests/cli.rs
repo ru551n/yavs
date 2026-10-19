@@ -930,3 +930,49 @@ fn same_file_in_two_libraries() {
     assert!(String::from_utf8_lossy(&o.stdout).contains("ok"));
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// `run --gui` starts `yavs-gui` with `--yavs <this yavs> -- <run arguments>` and exits with its
+/// status; without one next to yavs or on PATH it is E0122, exit 2.
+#[test]
+fn run_gui() {
+    let dir = tempdir("gui");
+    let yavs = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.env("PATH", &dir).env("NO_COLOR", "1");
+        c.args(["run", "--gui", "--work=work:w", "tb", "--stop-time=1ns"]);
+        c
+    };
+    let o = yavs().output().expect("yavs");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(
+        err.contains("error[E0122]: `yavs-gui` was not found"),
+        "{err}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let gui = dir.join("yavs-gui");
+        let log = dir.join("args");
+        std::fs::write(
+            &gui,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 7\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gui, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = yavs().output().expect("yavs");
+        assert_eq!(o.status.code(), Some(7));
+        let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_yavs")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            format!(
+                "--yavs\n{}\n--\n--work=work:w\ntb\n--stop-time=1ns\n",
+                exe.display()
+            )
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

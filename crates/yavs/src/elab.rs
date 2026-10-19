@@ -141,6 +141,10 @@ pub struct RunArgs {
     /// on standard input and output (`stdio`).
     #[arg(long, value_name = "PORT|stdio", value_parser = yavs_dap::parse_transport)]
     dap: Option<yavs_dap::Transport>,
+    /// Open the run in the graphical debugger: starts `yavs-gui` (next to this executable, else
+    /// on PATH) with these run arguments.
+    #[arg(long, conflicts_with = "dap")]
+    pub(crate) gui: bool,
     /// Plusargs `+NAME[=VALUE]` after the top level, seen by VHPI plugins as tool arguments.
     #[arg(value_name = "+NAME[=VALUE]", value_parser = plusarg)]
     plusargs: Vec<String>,

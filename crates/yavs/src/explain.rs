@@ -86,6 +86,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0121",
         "The LLVM tier could not compile the design for `--tier=llvm`. This is a bug in yavs; `--tier=interp` runs the design.",
     ),
+    (
+        "E0122",
+        "`yavs run --gui` cannot start the graphical debugger `yavs-gui`: it is neither next to the yavs executable nor on PATH, or it cannot be executed. The release archives ship it next to `yavs`.",
+    ),
     // yavs-wave
     (
         "E0801",

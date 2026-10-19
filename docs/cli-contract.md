@@ -411,6 +411,12 @@ The test runner's `-g/--gui` option (until `yavs-gui` exists): the test runner r
 `--script FILE`. Only FST is written; the test runner warns and ignores `--viewer-fmt`
 values other than `fst`.
 
+`yavs run --gui <arguments>` opens the run in the graphical debugger: it starts `yavs-gui
+--yavs <this yavs> -- <arguments>` (the run arguments without `--gui`), which runs `yavs run
+<arguments> --dap=stdio` and drives it. `yavs-gui` is looked for next to the yavs executable,
+then on PATH; neither is error `E0122` (exit 2). The exit status is the GUI's. `--gui` and
+`--dap` together are a usage error (exit 2).
+
 Later: when `yavs-gui` lands, `-g` will run `yavs run --dap=0 ...` and start
 `yavs-gui` attached to it. `--dap=0` makes yavs pick a free port, and its first
 line on stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>` (implemented, section

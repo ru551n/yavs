@@ -26,6 +26,7 @@ to, and those documents win over your memory.
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
 | FFI, VHPI, waves, DAP, coverage, LLVM | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
+| the GUI (`gui/`) | `gui/AGENTS.md`, `docs/design/gui.md` |
 | tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
 
 ## 2. Repository map
@@ -55,6 +56,7 @@ to, and those documents win over your memory.
 | `tools/corpus/` | Analysis corpus manifests (external libraries, `lib`), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |
 | `editors/vscode/` | VS Code extension contributing the `yavs` debugger (plain JS) |
+| `gui/` | `yavs-gui`, the graphical debugger: its own workspace, EUPL-1.2, DAP client only (`gui/AGENTS.md`) |
 
 ## 3. Rules (mandatory)
 

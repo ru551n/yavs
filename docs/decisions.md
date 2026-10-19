@@ -1758,3 +1758,29 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Rank:** greedy (the test adding the most items not yet hit, ties to the first name), which
   is within a log factor of the minimal set; an exact set cover is NP-hard. Items no test hit
   are not counted; `--exclude` applies before ranking.
+
+## GUI (M10, #384, #388, user, 2026-10-19)
+
+Design: `docs/design/gui.md` (section 12 lists the same decisions).
+
+- **libsurfer as a git dependency pinned to a revision** (user, 2026-10-19), not a local
+  checkout. Why: it is not on crates.io, and a pinned revision builds the same everywhere with
+  nothing installed by hand.
+- **`gui/` is its own Cargo workspace, EUPL-1.2, with its own CI workflow** (user, 2026-10-19).
+  It depends on no yavs crate and talks only DAP. Why: libsurfer is EUPL-1.2, so the licence
+  boundary is a process boundary, and the simulator's checks never build the GUI.
+- **Live waves stream over DAP** into an in-memory store in the GUI, not a growing FST (user,
+  2026-10-19). Why: the FST writer flushes late and patches its header, and reloading re-reads
+  the whole file (`docs/design/gui.md` 5).
+- **`egui_dock` for docking** (the user left it open, 2026-10-19; the design's recommendation
+  stands). Why: tabs, drag to dock and saved layouts out of the box.
+- **One release archive** (user, 2026-10-19): `yavs-gui` ships next to `yavs` in the same
+  archive, with its licence as `LICENSE-EUPL-1.2-yavs-gui`, which applies to the `yavs-gui`
+  binary only. Why: one download; the file name says which binary the EUPL covers.
+- **`yavs run --gui`** (user, 2026-10-19) starts `yavs-gui --yavs <this yavs> -- <run
+  arguments>`: `yavs-gui` next to the yavs executable, else on PATH, else `E0122` (exit 2); the
+  exit status is the GUI's. A process start only, never linking. `--gui` conflicts with `--dap`.
+- **`yavs-gui` command line:** `yavs-gui [--yavs PATH] -- <yavs run arguments>` starts `yavs run
+  <arguments> --dap=stdio` (`yavs` from `--yavs`, else next to `yavs-gui`, else PATH);
+  `yavs-gui --attach HOST:PORT` connects to a `yavs run --dap=PORT`. Closing the window sends
+  `disconnect` and kills the child if it has not exited after 2 s.

@@ -1,0 +1,48 @@
+# yavs-gui (gui/, its own workspace, EUPL-1.2): docs/design/gui.md section 9, #388. Separate from
+# ci.yml so a libsurfer update never blocks the simulator's checks (user, 2026-10-19, #384).
+# Linux x86_64: fmt, clippy and the tests (headless egui_kittest against a scripted DAP server,
+# no GPU or display). Linux aarch64 and Windows: build only, tests included.
+name: GUI
+
+on:
+  push:
+    branches: [main]
+    paths: ["gui/**", ".github/workflows/gui.yml"]
+  pull_request:
+    paths: ["gui/**", ".github/workflows/gui.yml"]
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  gui:
+    name: gui (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui
+      - if: matrix.os == 'ubuntu-24.04'
+        run: cargo fmt --all --check
+      - if: matrix.os == 'ubuntu-24.04'
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - if: matrix.os == 'ubuntu-24.04'
+        run: cargo test --locked --no-fail-fast
+      - if: matrix.os != 'ubuntu-24.04'
+        run: cargo build --all-targets --locked

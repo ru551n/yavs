@@ -434,6 +434,22 @@ the debugger themselves. The design given on the command line is the one debugge
 
 In the editor, attach to the port (for example with a ``debugServer`` launch setting).
 
+Graphical debugger
+~~~~~~~~~~~~~~~~~~
+
+``yavs run --gui`` opens the run in ``yavs-gui``, the graphical debugger shipped next to ``yavs``
+(found there, else on ``PATH``; missing is error ``E0122``). The other run arguments are passed on
+unchanged:
+
+.. code-block:: bash
+
+    yavs run --gui --work=lib:out/lib tb --stop-time=1ms
+
+``yavs-gui -- <run arguments>`` does the same, and ``yavs-gui --attach 127.0.0.1:4711`` connects to
+a ``yavs run --dap=4711`` started by hand. The window has Run, Pause and Stop, a console with the
+run's reports, and docked panels for the hierarchy, source, waves, call stack and variables, which
+are being filled in step by step; closing the window ends the simulation.
+
 VS Code
 ~~~~~~~
 

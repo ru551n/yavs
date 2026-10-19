@@ -3,7 +3,7 @@
 //! One `Db` per session. Ids are deterministic for a given input because
 //! analysis order is deterministic; they are not stable across inputs.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::PathBuf;
 
 use yavs_diag::{Diagnostic, Severity, SourceMap, Span};
@@ -233,7 +233,7 @@ impl Db {
     /// The recorded uses of a TIME unit smaller than `limit_fs` femtoseconds, in source order
     /// of analysis, each location once.
     pub fn fine_time_units(&self, limit_fs: i64) -> Vec<TimeUnitUse> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         self.time_units
             .iter()
             .filter(|u| u.fs < limit_fs && seen.insert((u.span.file, u.span.start)))
@@ -325,12 +325,12 @@ impl Db {
             views: Arena::new(),
             externals: Arena::new(),
             attr_values: Arena::new(),
-            attr_index: HashMap::new(),
-            forwarding: HashMap::new(),
-            disconnect_times: HashMap::new(),
-            ret_names: HashMap::new(),
+            attr_index: HashMap::default(),
+            forwarding: HashMap::default(),
+            disconnect_times: HashMap::default(),
+            ret_names: HashMap::default(),
             time_units: Vec::new(),
-            attr_closed: HashSet::new(),
+            attr_closed: HashSet::default(),
             pending_label_attrs: Vec::new(),
             pending_inst_checks: Vec::new(),
             pending_groups: Vec::new(),
@@ -342,14 +342,14 @@ impl Db {
                 expr,
             },
             root,
-            lib_by_key: HashMap::new(),
-            files: HashMap::new(),
+            lib_by_key: HashMap::default(),
+            files: HashMap::default(),
             stack: Vec::new(),
-            undeclared: HashSet::new(),
-            rev_reported: HashSet::new(),
-            lookup_cache: HashMap::new(),
-            memo: HashMap::new(),
-            name_memo: HashMap::new(),
+            undeclared: HashSet::default(),
+            rev_reported: HashSet::default(),
+            lookup_cache: HashMap::default(),
+            memo: HashMap::default(),
+            name_memo: HashMap::default(),
             pending_implicit: Vec::new(),
             validated: Default::default(),
             overflow: Vec::new(),
@@ -358,17 +358,17 @@ impl Db {
             hidden_types: Vec::new(),
             param_anon: Vec::new(),
             anon_reuse: Default::default(),
-            ext_memo: HashMap::new(),
-            ext_uses: HashMap::new(),
-            pkg_targets: HashMap::new(),
-            written_marks: HashMap::new(),
+            ext_memo: HashMap::default(),
+            ext_uses: HashMap::default(),
+            pkg_targets: HashMap::default(),
+            written_marks: HashMap::default(),
             incomplete_ok: false,
             context_subtype: None,
             top_context: None,
-            tainted: HashSet::new(),
+            tainted: HashSet::default(),
             stmt_owners: Vec::new(),
-            config_specs: HashMap::new(),
-            range_records: HashMap::new(),
+            config_specs: HashMap::default(),
+            range_records: HashMap::default(),
             pending_specs: Vec::new(),
             generic: Default::default(),
             diags: Vec::new(),

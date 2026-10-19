@@ -1618,6 +1618,7 @@ version = "0.8.0"
 dependencies = [
  "postcard",
  "serde",
+ "rustc-hash",
  "tempfile",
  "yavs-diag",
  "yavs-lib",
@@ -1638,6 +1639,7 @@ name = "yavs-syntax"
 version = "0.8.0"
 dependencies = [
  "serde",
+ "rustc-hash",
  "yavs-diag",
 ]
 

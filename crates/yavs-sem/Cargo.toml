@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 postcard.workspace = true
+rustc-hash.workspace = true
 yavs-diag.workspace = true
 yavs-lib = { path = "../yavs-lib" }
 yavs-std = { path = "../yavs-std" }

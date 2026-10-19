@@ -3,7 +3,7 @@
 //! Analysis is sequential in textual order, so inserting declarations as they
 //! are analyzed gives the LRM scope rule (12.2) without position bookkeeping.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use yavs_syntax::Symbol;
 
@@ -60,7 +60,7 @@ impl Scope {
             kind,
             parent,
             owner,
-            names: HashMap::new(),
+            names: HashMap::default(),
             order: Vec::new(),
             uses: Vec::new(),
             outer: None,
@@ -458,7 +458,7 @@ impl Db {
 
         // 2. Potential visibility through use clauses of every enclosing region.
         let mut pot: Vec<DeclId> = Vec::new();
-        let mut seen: HashSet<DeclId> = HashSet::new();
+        let mut seen: HashSet<DeclId> = HashSet::default();
         for &s in &regions {
             for i in 0..self.scopes[s].uses.len() {
                 let found: Vec<DeclId> = match &self.scopes[s].uses[i] {
@@ -502,7 +502,7 @@ impl Db {
         // (b) of two potentially visible homographs, explicit beats implicit. Explicit
         // overloadables are bucketed by profile shape, so only equal shapes are compared.
         if pot.iter().any(|&p| self.decls[p].implicit) {
-            let mut by_shape: HashMap<Shape, Vec<DeclId>> = HashMap::new();
+            let mut by_shape: HashMap<Shape, Vec<DeclId>> = HashMap::default();
             let mut explicit_other: Vec<DeclId> = Vec::new();
             for &q in &pot {
                 if self.decls[q].implicit || self.is_poison(q) {

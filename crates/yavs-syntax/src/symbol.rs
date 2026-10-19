@@ -1,12 +1,13 @@
 //! A global string interner.
 //!
 //! Strings are leaked, so [`Symbol::as_str`] returns `&'static str`. The table
-//! sits behind a mutex: parsing is single-threaded, so the lock is never
-//! contended, and symbols stay valid on every thread (the runtime will read
+//! sits behind a read-write lock (hits and `as_str` only read; the hash is
+//! not DoS-hardened because names come from the user's own sources), and symbols stay valid on every thread (the runtime will read
 //! names from worker threads).
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{OnceLock, RwLock};
+
+use rustc_hash::FxHashMap;
 
 /// An interned string.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -14,18 +15,26 @@ pub struct Symbol(u32);
 
 #[derive(Default)]
 struct Interner {
-    map: HashMap<&'static str, Symbol>,
+    map: FxHashMap<&'static str, Symbol>,
     strings: Vec<&'static str>,
 }
 
-fn interner() -> &'static Mutex<Interner> {
-    static I: OnceLock<Mutex<Interner>> = OnceLock::new();
+fn interner() -> &'static RwLock<Interner> {
+    static I: OnceLock<RwLock<Interner>> = OnceLock::new();
     I.get_or_init(Default::default)
 }
 
 impl Symbol {
     pub fn intern(s: &str) -> Symbol {
-        let mut i = interner().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&sym) = interner()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .map
+            .get(s)
+        {
+            return sym;
+        }
+        let mut i = interner().write().unwrap_or_else(|e| e.into_inner());
         if let Some(&sym) = i.map.get(s) {
             return sym;
         }
@@ -37,7 +46,7 @@ impl Symbol {
     }
 
     pub fn as_str(self) -> &'static str {
-        interner().lock().unwrap_or_else(|e| e.into_inner()).strings[self.0 as usize]
+        interner().read().unwrap_or_else(|e| e.into_inner()).strings[self.0 as usize]
     }
 }
 

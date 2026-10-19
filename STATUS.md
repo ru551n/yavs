@@ -786,6 +786,8 @@ runs them all (yavs plus the configured simulators; the label mapping is local) 
 or a recorded verdict drifts. A fourth simulator is added with one template and `--record`. The
 user page `docs/language-choices.rst` is the user-facing subset.
 
+`docs/design/vhdl2019-support.md` is the VHDL-2019 support matrix: one row per approved LCS with yavs's status and the result of the four references on a small probe (2026-10-19: 34 supported, 4 partial, 3 unsupported, 5 not tested or not applicable; gaps #360 to #363, #29).
+
 ## test runner recipes
 
 `docs/recipes.rst` (user page): CLI use from an external Python test runner, libraries from source, per-file `--std`, response files, exit codes, and the vendor-library pattern (#275).

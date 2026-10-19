@@ -6,7 +6,7 @@ standard is clear, yavs follows it and reports a violation early. Where it is un
 yavs is permissive and takes the reading that lets the most designs elaborate; the choices below
 are the ones a design can run into. Each entry gives the construct, what yavs does, the standard
 section (VHDL-2008 unless marked 2019) and, where one exists, a form that behaves the same in
-every simulator.
+every simulator. The VHDL-2019 feature status is in ``docs/design/vhdl2019-support.md``.
 
 Elaboration and delta timing
 ----------------------------

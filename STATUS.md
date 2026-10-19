@@ -190,6 +190,14 @@ dispatch itself (about 5 ns for a simple instruction, 8 ns in call-heavy code); 
 tests is spent inside a few ieee subprograms run from their VHDL bodies, which R1 of
 `docs/design/performance.md` addresses (#395).
 
+Analysis speed (#405), one `yavs run` of `vunit_vc30` (`tb_axi_stream`, one test case; median CPU seconds of 7
+interleaved runs, release build, loaded host): analyze 0.49 -> 0.19, total 1.65 -> 1.15. Changes: overload sets
+indexed by profile shape instead of pairwise scans (no profile vectors per comparison), an epoch-validated lookup
+cache (`Db::lookup`; tracked arenas bump `ids::epoch()`, debug builds assert every hit against a fresh lookup),
+a read-lock interner and a fast hasher for the scope, memo and cache tables, cached operator and character keys.
+Still open: parse is about 8% and subprogram bodies of units that are never called about half of the remaining
+analysis; analyzing bodies on demand needs a scope snapshot per body (visibility is positional) and is not done.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

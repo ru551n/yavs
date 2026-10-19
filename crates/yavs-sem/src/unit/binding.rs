@@ -2206,13 +2206,19 @@ impl Db {
                     let region = regions.first().copied().unwrap_or(scope);
                     let (msg, help) = if self.default_binding(region, comp).is_some() {
                         (
-                            format!("component `{cn}` is only default-bound, so a block configuration cannot configure its architecture"),
+                            format!(
+                                "component `{cn}` is only default-bound, so a block configuration cannot configure its architecture"
+                            ),
                             format!("bind it explicitly with `use entity lib.{cn}`"),
                         )
                     } else {
                         (
-                            format!("no entity is bound to component `{cn}`, so it has no architecture to configure"),
-                            format!("bind it with `use entity lib.{cn}` or analyze an entity `{cn}`"),
+                            format!(
+                                "no entity is bound to component `{cn}`, so it has no architecture to configure"
+                            ),
+                            format!(
+                                "bind it with `use entity lib.{cn}` or analyze an entity `{cn}`"
+                            ),
                         )
                     };
                     return Err(self.error(

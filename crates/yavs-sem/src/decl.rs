@@ -544,7 +544,9 @@ impl Db {
             self.check_not_sequential(scope, first, None)?;
         }
         match class {
-            ObjClass::Constant => self.check_not_access_or_file("constant", subtype, first, false)?,
+            ObjClass::Constant => {
+                self.check_not_access_or_file("constant", subtype, first, false)?
+            }
             ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first, false)?,
             _ => {}
         }

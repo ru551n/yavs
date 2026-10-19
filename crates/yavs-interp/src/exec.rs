@@ -550,6 +550,12 @@ impl Machine {
     /// the next safepoint (`crate::SharedGc`), and make the shared heap's deallocated slots
     /// reusable that no serial process's frames still address.
     pub(crate) fn publish_shared(&mut self, slot: &mut Option<usize>) {
+        // Checked first: a process without the shared state builds no roots (#356).
+        if self.sh.is_none() {
+            return;
+        }
+        #[cfg(test)]
+        ROOT_BUILDS.with(|c| c.set(c.get() + 1));
         let handles = self.frame_roots().map(|mut v| {
             v.retain(|&h| heap::tag_of(h) == heap::SHARED);
             v
@@ -2402,4 +2408,28 @@ fn expand_const(c: &ConstData) -> R<Vec<u8>> {
             bytes_of(&blocks)
         }
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Calls of `Machine::publish_shared` that went on to build roots (#356).
+    static ROOT_BUILDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A suspension of a process without the shared state builds no roots (#356).
+    #[test]
+    fn publish_shared_needs_shared_state() {
+        let rt = Runtime::new(Arc::new(Program::default()), crate::Bindings::default()).unwrap();
+        let mut m = Machine::new(rt, Arc::default(), vec![], FuncId(0));
+        let mut slot = None;
+        m.publish_shared(&mut slot);
+        assert_eq!((ROOT_BUILDS.get(), slot), (0, None));
+        m.sh = Some(SharedState::new(vec![]));
+        m.publish_shared(&mut slot);
+        assert_eq!((ROOT_BUILDS.get(), slot), (1, Some(0)));
+    }
 }

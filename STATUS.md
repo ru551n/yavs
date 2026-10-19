@@ -523,7 +523,8 @@ Findings:
   shared host. The counters bound it: collection time is at most 0.6% of a run (c2), typically
   below 0.05%; `publish_shared` (run at every process suspension) costs 70 to 130 ns per call,
   below 0.1% even for the non-serial design (a, 30k calls, 2 ms). It builds the frame roots
-  before it checks for the shared state, so non-serial processes pay it too; harmless.
+  before it checks for the shared state, so non-serial processes pay it too; harmless, and
+  since #356 it checks first.
 - Per collection: mark is proportional to the live set (about 1.1 ms per MB of live data
   when one large object holds handles: c2 marks 33 MB in 38 ms; c1b marks 150k objects, 8 MB,
   in 11 ms; small scoreboards 35 us). Sweep and recycle are proportional to the slot count,

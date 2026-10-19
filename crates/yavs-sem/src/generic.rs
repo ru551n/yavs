@@ -1185,6 +1185,7 @@ impl Db {
 
     /// Complete instance `d` of subprogram `g` (region `new_scope`) once `r` maps its
     /// generics: the cloned profile, the instance and its body. `scope` declares `d`.
+    #[allow(clippy::too_many_arguments)]
     fn clone_subprogram(
         &mut self,
         scope: ScopeId,
@@ -1253,7 +1254,10 @@ impl Db {
 
     /// Whether `t` is an anonymous parameter type of subprogram `e` (#283).
     pub(crate) fn anonymous_param(&self, e: DeclId, t: TypeId) -> bool {
-        self.generic.implicit.get(&e).is_some_and(|v| v.contains(&t))
+        self.generic
+            .implicit
+            .get(&e)
+            .is_some_and(|v| v.contains(&t))
     }
 
     /// Whether an actual of type `ty` can belong to the class of generic type `t`; the
@@ -1343,7 +1347,11 @@ impl Db {
             return Some((e, pre));
         }
         if bound.iter().any(|b| types.contains(&self.base(b.1))) {
-            self.unsupported(span, "a call mixing the anonymous types of its own subprogram", "S7");
+            self.unsupported(
+                span,
+                "a call mixing the anonymous types of its own subprogram",
+                "S7",
+            );
             return None;
         }
         let key: Box<[SubtypeId]> = bound.iter().map(|b| b.1).collect();

@@ -847,9 +847,7 @@ impl Db {
             if !self.hidden_type(h) {
                 continue;
             }
-            let has = |o: &DeclId| {
-                matches!(&self.decls[*o].kind, DeclKind::Object(x) if self.base(x.subtype) == t)
-            };
+            let has = |o: &DeclId| matches!(&self.decls[*o].kind, DeclKind::Object(x) if self.base(x.subtype) == t);
             let (args, i, o) = if let Some(i) = gens.iter().position(has) {
                 (&g0[..], i, gens[i])
             } else if let Some(i) = ports.iter().position(has) {
@@ -1095,7 +1093,11 @@ impl Db {
         }
         let id = match anon {
             Some(_) if formal_conv.is_some() => {
-                return Err(self.unsupported(fspan, "a conversion of a formal of an anonymous type", "S7"));
+                return Err(self.unsupported(
+                    fspan,
+                    "a conversion of a formal of an anonymous type",
+                    "S7",
+                ));
             }
             Some(t) => {
                 let id = self.anonymous_actual(scope, e, t)?;

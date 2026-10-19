@@ -1031,13 +1031,10 @@ impl Db {
     /// parameters have anonymous types: same designator, parameter and anonymous counts.
     fn anonymous_spec(&self, regions: &[ScopeId], spec: &ast::SubprogramSpec) -> Option<DeclId> {
         let objs = || {
-            spec.params
-                .iter()
-                .flatten()
-                .filter_map(|p| match p {
-                    ast::InterfaceDecl::Object(o) => Some(o),
-                    _ => None,
-                })
+            spec.params.iter().flatten().filter_map(|p| match p {
+                ast::InterfaceDecl::Object(o) => Some(o),
+                _ => None,
+            })
         };
         let anon: usize = objs()
             .filter(|o| matches!(o.subtype, Some(ast::IncompleteSubtype::Anonymous(..))))
@@ -1491,7 +1488,14 @@ impl Db {
                     st,
                     o.span,
                 )?;
-                return Ok(self.declare_interface(scope, o, role, ObjClass::Signal, mode, &[subtype]));
+                return Ok(self.declare_interface(
+                    scope,
+                    o,
+                    role,
+                    ObjClass::Signal,
+                    mode,
+                    &[subtype],
+                ));
             }
             Some(ast::Mode::View { .. }) => {
                 return Err(self.unsupported(o.span, "mode views outside port clauses", "S7"));

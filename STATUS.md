@@ -167,6 +167,43 @@ instructions per element). Equal elements are now written by one `Fill` or by do
 `elab_heavy` init (0.60 s) is the kernel model build (`Builder::build`, about 0.54 s of it for 20000 instances), not
 package or instance data; it belongs to the kernel work. The UVVM and OSVVM benchmarks have no init cost (0.01 s).
 
+### Memory footprint (#409)
+
+Peak RSS is now in every harness result (`peak MiB`, measured by `time -f %M`). Findings and fixes, in the
+order they were found with a counting heap profile:
+
+- A testbench whose main process never waits (a queue and random-value testbench) runs in one delta cycle,
+  and the shared heap was collected only at the start of a cycle: its slot table and dropped objects grew to
+  400 MB. The heap is now also collected inside an activation, before a `new` or a native call, once the
+  simulation has started (`Machine::gc_inline`, `docs/decisions.md` "Shared heap collection").
+- A plain `yavs run` keeps the analysis results (HIR, scopes, lookup caches: about 30 MB for a project
+  testbench) until it exits though it needs only the source map: `Db::release_analysis` frees them before the
+  runtime is built (runs with a plugin, a waveform or coverage keep them). The package state elaboration leaves
+  for the simulation to start from was copied twice; it is now moved.
+- A suspended process held a register file of its own (1.6 KB for a small entity, dead between activations):
+  at a suspension in the root frame it goes to a per-thread scratch (`Machine::release_scratch`).
+
+Peak RSS (MiB) and total CPU (s), median of 3, release build, `--threads 1`; before is main at `a561b34a`,
+after is main at `47407de9` (the CPU difference is noise plus other agents' commits in between):
+
+| Benchmark | peak before | peak after | CPU before | CPU after |
+|---|---|---|---|---|
+| `uvvm_util_rand_tb` | 297 | 46 | 5.74 | 5.72 |
+| `elab_heavy` | 388 | 335 | 0.63 | 0.57 |
+| `uvvm_axistream_vvc_tb` | 121 | 93 | 5.20 | 5.25 |
+| `vunit_vc30` (largest of 30 runs) | 97 | 74 | 6.73 | 5.09 |
+| `vai_window_gen` | 79 | 53 | 2.09 | 2.05 |
+| `vai_pe_array` | 65 | 51 | 0.31 | 0.27 |
+| `osvvm_axistream` | 60 | 53 | 2.01 | 2.04 |
+| `ff_rtl` | 20 | 14 | 0.07 | 0.05 |
+
+Where the rest is: a project testbench peaks at the end of elaboration with the analysis results (about 29 MB,
+restored from the compilation cache: 128 B per declaration, 56 B per expression, 152 B per statement), the
+lowered IR (about 11 MB) and the package state; the run itself adds little. A design of 20000 small
+instances needs about 17 KB per instance (kernel signals about 1.2 KB each with 25 allocations, the
+elaborated model about 9 KB per instance); the shared heap of a long verification testbench is genuinely
+live data (about 20 MB). A global allocator that keeps freed memory mapped (one was tried) doubled the peak.
+
 ### Interpreter run time (#386)
 
 Interpreter hot paths (`crates/yavs-interp`, commits of #386): constant expansions and layouts

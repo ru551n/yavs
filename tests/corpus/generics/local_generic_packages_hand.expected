@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:local_generic_packages_hand:main	via_body=25
+diag	note	0	0	:local_generic_packages_hand:main	by2=42
+diag	note	0	0	:local_generic_packages_hand:main	l1_2=16
+diag	note	0	0	:local_generic_packages_hand:main	l1_local=24
+diag	note	0	0	:local_generic_packages_hand:main	l2=12
+diag	note	0	0	:local_generic_packages_hand:main	sq6=36
+diag	note	0	0	:local_generic_packages_hand:main	cube(3)=27 cube(4)=64
+diag	note	1000000	0	:local_generic_packages_hand:g(1):_p0	g1 get=11 s=11
+diag	note	1000000	0	:local_generic_packages_hand:g(2):_p0	g2 get=22 s=22
+diag	note	1000000	0	:local_generic_packages_hand:main	acc1=101 s=11
+diag	note	1000000	0	:local_generic_packages_hand:main	acc2=202 s=22
+diag	note	1000000	0	:local_generic_packages_hand:main	by3.s=33 by2.s=2

@@ -58,11 +58,17 @@ The reference simulator (the primary reference). Every file the reference simula
 | `v2019/method_alias_ok` | rejects @12 | rejects @10,11,15,16 | The reference simulator crashes (internal error) on the call of the method alias `set` with the implicit object inside the protected body; LRM 2019 5.6.2 allows the alias (L15). The second reference simulator lacks private variables. |
 | `v2019/method_alias_of_dereference` | accepts | rejects | Not implemented in yavs (`E9999`): an alias of a method through a prefix that is not an object name (`ptr.all.set`), #237. |
 | `v2019/method_alias_of_objects_ok` | rejects @27 | accepts | The reference simulator crashes (internal error) on the first call through an alias of a method of a shared variable; LRM 2019 6.6.3 allows the alias and the call runs on the aliased object (L15, #237). |
+| `gen/nested_package_body_missing` | accepts | rejects @6 | LRM 4.8 is clear: a package declaring a subprogram needs a body with its body (#34). The reference simulator does not check nested packages; the second reference simulator reports at the package, yavs at the subprogram (as for library packages). |
+| `gen/nested_package_body_twice` | accepts | accepts | LRM 4.8, 12.1: a package has one body; both accept a second nested one silently (#34). |
+| `gen/nested_package_signal_in_process` | rejects @8 | rejects @9 | The reference simulator does not parse a package in a process at all (rejects at the package line); the second reference simulator rejects the signal (LRM 4.7, 11.3, #34). |
+| `gen/nested_generic_unused_generic` | accepts | accepts | yavs-only warning (W1501), as `gen/unused_generic_warning`. |
+| `gen/nested_packages_ok` | rejects @23 | accepts | The reference simulator instantiates a generic package declared in a declarative part only after the enclosing unit is analysed ("cannot be instantiated until its body has been analysed"); the LRM has no such rule (4.9), permissive, the second reference simulator accepts (#34, L81). |
 
 The second reference simulator as second opinion: files where the second reference simulator disagrees but the reference simulator agrees.
 
 | File | The second reference simulator | Reason |
 |---|---|---|
+| `gen/nested_instance_signal_in_process` | accepts | Accepts at analysis and fails with an internal error at elaboration; LRM 4.9: the instance is a package declaration in the process, so 4.7 and 11.3 apply (#34) |
 | `expr/condition_std_logic_type_only_ok` | rejects @11 | LRM 9.2.9 does not say where the implicit `??` is looked up; permissive, as the reference simulator (the reference simulators reject) |
 | `ext/external_type_mismatch` | accepts | The second reference simulator accepts (lenient or deferred to elaboration) |
 | `gen/generic_discrete_has_pos_ok` | rejects @5,6,7 | The second reference simulator 2019 support is partial (generic type classes, conditional expressions, `image` on records, views) |

@@ -358,11 +358,16 @@ fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
     if !errs.is_empty() {
         return Err(errs);
     }
-    // Bodies of generic package and subprogram instances (cloned from the generic body).
-    let insts: Vec<yavs_sem::InstId> = db.insts.iter().map(|(i, _)| i).collect();
-    for i in insts {
-        if db.instance_body(i).is_err() {
-            return Err(db.take_diagnostics());
+    // Bodies of generic package and subprogram instances (cloned from the generic body),
+    // also of the instances a cloned body declares.
+    let mut done = 0;
+    while done < db.insts.len() {
+        let insts: Vec<yavs_sem::InstId> = db.insts.iter().skip(done).map(|(i, _)| i).collect();
+        done = db.insts.len();
+        for i in insts {
+            if db.instance_body(i).is_err() {
+                return Err(db.take_diagnostics());
+            }
         }
     }
     // A body can load more packages (fixed_generic_pkg's body uses math_real): visit them too.
@@ -3034,7 +3039,7 @@ impl Model {
                 {
                     break u;
                 }
-                DeclKind::PackageInst(_) => region = db.decls[ow].scope,
+                DeclKind::PackageInst(_) | DeclKind::Package { .. } => region = db.decls[ow].scope,
                 _ => return Ok(None),
             }
         };

@@ -100,6 +100,7 @@ impl Db {
                             DeclKind::Unit(_)
                             | DeclKind::PackageInst(_)
                             | DeclKind::GenericPackage(_)
+                            | DeclKind::Package { .. }
                                 if !matches!(
                                     self.package_region(d),
                                     crate::generic::PkgRegion::No

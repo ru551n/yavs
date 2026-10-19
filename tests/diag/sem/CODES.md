@@ -68,6 +68,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1234 | type, subprogram or package interface in a port list | 6.5.6.3 |
 | E1235 | generic list or generic map on a formal generic subprogram | 6.5.4 |
 | E1236 | subprogram parameter of mode `buffer` or `linkage` | 4.2.2.1 |
+| E1237 | signal or shared variable in a process or subprogram, also in a package or package instance there (#34) | 11.3, 4.3, 4.7, 4.9 |
 | E1300 | type mismatch | 8.1 |
 | E1301 | no matching overload | 8.1 |
 | E1302 | ambiguous | 8.1 |

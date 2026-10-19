@@ -152,6 +152,14 @@ pub enum DeclKind {
     Component(Component),
     View(ViewId),
     PackageInst(InstId),
+    /// A package declared in a declarative part (4.7, 2008).
+    Package {
+        scope: ScopeId,
+        /// Its generic list: an uninstantiated generic package, objects only in its instances.
+        generics: Option<Box<[DeclId]>>,
+        /// Its body region once analyzed.
+        body: Option<ScopeId>,
+    },
     /// A generic type (its `TypeKind::Generic` carries the class).
     GenericType(TypeId),
     /// Formal generic subprogram (`Subprogram.body == Body::Interface`).
@@ -323,14 +331,7 @@ impl Db {
             }
             K::PackageBody => {
                 // A package's subprograms get their bodies in the package body (4.8).
-                // Its parent is the body's context region, whose parent is the package.
-                let mut up = self.scopes[scope].parent;
-                while let Some(u) = up
-                    && self.scopes[u].kind != K::Package
-                {
-                    up = self.scopes[u].parent;
-                }
-                if let Some(pkg) = up {
+                if let Some(pkg) = self.body_package(scope) {
                     self.check_subprogram_bodies(pkg, end);
                     self.check_deferred_completed(pkg, scope, end);
                 }
@@ -357,8 +358,20 @@ impl Db {
             .filter(|&e| self.scopes[e].kind == crate::scope::ScopeKind::Entity)
     }
 
-    /// `E1230`: a subprogram declared in this region has no body in it (4.2, 4.3).
+    /// `E1230`: a subprogram declared in this region has no body in it (4.2, 4.3), also in a
+    /// package declared here without a body (which then also gets its `W1501`).
     fn check_subprogram_bodies(&mut self, scope: ScopeId, end: Span) {
+        for (d, pkg) in self.bodiless_packages(scope) {
+            self.check_subprogram_bodies(pkg, end);
+            let _ = self.check_protected_bodies(pkg, end);
+            if let DeclKind::Package {
+                generics: Some(g), ..
+            } = &self.decls[d].kind
+            {
+                let g = g.clone();
+                self.report_unused_generics(&g);
+            }
+        }
         let missing: Vec<DeclId> = self.scopes[scope]
             .order
             .iter()
@@ -500,8 +513,8 @@ impl Db {
             D::Alias(a) => self.alias_decl(scope, a),
             D::Component(c) => self.component_decl(scope, c),
             D::SubprogramInstance(x) => self.subprogram_instance(scope, x),
-            D::Package(x) => Err(self.unsupported(x.span, "nested packages", "S4")),
-            D::PackageBody(x) => Err(self.unsupported(x.span, "nested package bodies", "S4")),
+            D::Package(x) => self.nested_package(scope, x),
+            D::PackageBody(x) => self.nested_package_body(scope, x),
             D::PackageInstance(x) => self.package_instance_decl(scope, x),
             D::Group(x) => Err(self.unsupported(x.span, "groups", "S6")),
             D::GroupTemplate(x) => Err(self.unsupported(x.span, "group templates", "S6")),
@@ -527,6 +540,9 @@ impl Db {
             ast::ObjectClass::SharedVariable => ObjClass::SharedVariable,
         };
         let first = o.names.first().map_or(o.subtype.span, |n| n.span);
+        if matches!(class, ObjClass::Signal | ObjClass::SharedVariable) {
+            self.check_not_sequential(scope, first, None)?;
+        }
         match class {
             ObjClass::Constant => self.check_not_access_or_file("constant", subtype, first)?,
             ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first)?,
@@ -927,13 +943,7 @@ impl Db {
         let key = self.decls[new].name.key();
         let mut regions = vec![scope];
         match self.scopes[scope].kind {
-            crate::scope::ScopeKind::PackageBody => {
-                if let Some(c) = self.scopes[scope].parent
-                    && let Some(p) = self.scopes[c].parent
-                {
-                    regions.push(p);
-                }
-            }
+            crate::scope::ScopeKind::PackageBody => regions.extend(self.body_package(scope)),
             crate::scope::ScopeKind::ProtectedBody => regions.extend(self.scopes[scope].parent),
             crate::scope::ScopeKind::Architecture => regions.extend(self.entity_of_arch(scope)),
             _ => {}

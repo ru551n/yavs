@@ -266,6 +266,14 @@ impl<'a> Cx<'a> {
                 UnitHir::PackageBody { package } => Some(self.db.units[package].scope),
                 _ => None,
             })
+            .chain(self.db.decls.iter().filter_map(|(_, d)| match d.kind {
+                DeclKind::Package {
+                    scope,
+                    body: Some(_),
+                    ..
+                } => Some(scope),
+                _ => None,
+            }))
             .collect();
         for (_, decl) in self.db.decls.iter() {
             let DeclKind::Subprogram(sp) = &decl.kind else {

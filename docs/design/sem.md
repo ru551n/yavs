@@ -944,6 +944,18 @@ visible part and body) and `Db::decls_with_instances` a region's declarations wi
 instance's declarations in place, so an instance's objects are stored with the region declaring
 it (#101).
 
+Packages declared in declarative parts (2008, #34) are `DeclKind::Package { scope, generics,
+body }`: the package region is a `Package` child of the declaring region, the body a
+`PackageBody` child of the package region, written in the same region or, for a package
+declared in a package declaration, in that package's body (lookup then continues in the body's
+own region through `Scope::outer`). `decls_with_instances` puts a non-generic one's
+declarations in place like an instance's. A generic one instantiates like a library generic
+package, its body cloned from `body` by `instance_body`; inside a clone of an enclosing generic
+package the nested generic is cloned too (its body by `fix_bodies` with the enclosing body), and
+an instance of it instantiates that clone (`r_instance`, keys of the composed remap mapped as
+well). A signal or shared variable in a process or subprogram is `E1237`, also in a package or
+package instance there (L82); instances may precede the generic body in the region (L81).
+
 A design entity with generic types, subprograms or packages is cloned with its architecture by
 `Db::instantiate_entity` (`generic/entity.rs`, #75), which elab calls per instance: one clone per
 distinct (entity, architecture, map of those actuals), like an ordinary architecture whose code
@@ -1261,7 +1273,7 @@ Sem takes `E1xxx` / `W1xxx`:
 |---|---|---|
 | E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration or construct not available under the file's or the design's revision (0.1) |
 | E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1104 prefix of a use clause, context reference or expanded name is not a library, package, package instance or context declaration (a missing suffix in a package is E1100), E1105 private/not in visible part, E1106 end label mismatch |
-| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1223 constant, signal, generic, port or constant/signal parameter of an access or file type, E1224 constant without a value outside a package declaration, E1225 bad resolution function, E1230 missing body, E1232 type, subprogram or package interface in a parameter list (4.2.2.1), E1233 named return value of a scalar type (2019, 4.2.1), E1236 parameter of mode `buffer` or `linkage` (4.2.2.1) |
+| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1223 constant, signal, generic, port or constant/signal parameter of an access or file type, E1224 constant without a value outside a package declaration, E1225 bad resolution function, E1230 missing body, E1232 type, subprogram or package interface in a parameter list (4.2.2.1), E1233 named return value of a scalar type (2019, 4.2.1), E1236 parameter of mode `buffer` or `linkage` (4.2.2.1), E1237 signal or shared variable in a process or subprogram, also in a package or package instance there (11.3, 4.7) |
 | E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1304 named return value without a constrained context subtype (2019, 4.2.1), E1310 formal associated twice, E1311 missing actual, E1312 conversion on an unconstrained formal (F8: rejected like the reference simulators), E1313 conversion the formal's class or mode does not allow, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
 | E14xx | static evaluation | E1401 overflow, E1402 literal out of range, E1403 static value outside subtype, E1405 static length mismatch, E1410 choice/range not locally static where required |
 | E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |

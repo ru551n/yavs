@@ -1086,7 +1086,7 @@ pub fn entity_class(db: &Db, d: DeclId) -> Option<Kw> {
             UnitKind::Package | UnitKind::PackageInst => Kw::Package,
             UnitKind::PackageBody | UnitKind::Context => return None,
         },
-        DeclKind::PackageInst(_) => Kw::Package,
+        DeclKind::PackageInst(_) | DeclKind::Package { .. } => Kw::Package,
         DeclKind::Subprogram(s) | DeclKind::GenericSubprogram(s) => match s.kind {
             SubprogramKind::Function { .. } => Kw::Function,
             SubprogramKind::Procedure => Kw::Procedure,

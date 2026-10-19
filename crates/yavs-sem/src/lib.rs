@@ -40,6 +40,7 @@ pub mod implicit;
 pub mod loader;
 pub mod lsp;
 pub mod mangle;
+mod package;
 pub mod protected;
 pub mod reflect;
 pub mod rev;

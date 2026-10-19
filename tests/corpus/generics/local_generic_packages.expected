@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:local_generic_packages:main	ent5.twice=10
+diag	note	0	0	:local_generic_packages:main	outer2.fixed.prod=20
+diag	note	0	0	:local_generic_packages:main	outer3.fixed.prod=30
+diag	note	0	0	:local_generic_packages:main	inner5.prod=15
+diag	note	2000000	0	:local_generic_packages:b:_p1	c3.s=303 c3.c=301
+diag	note	2000000	0	:local_generic_packages:main	c1.s=101 c2.s=202

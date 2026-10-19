@@ -101,7 +101,11 @@ An installed binary finds `lib/` next to itself (#43).
   body has its bounds from the one subtype representation.
 - Declarations: objects, subprograms (operator arity `E1303`, function parameter modes, missing
   bodies `E1230`), components, generic and port clauses (components, blocks), attribute
-  declarations and specifications, aliases, protected types.
+  declarations and specifications, aliases, protected types; packages and package bodies declared
+  in declarative parts (2008, generic ones too; a nested body in the outer package's body),
+  signals and shared variables in processes and subprograms `E1237`, also through a nested
+  package or a package instance (#34; groups, group templates and disconnection specifications
+  are still E9999, #260).
 - Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
   indications, file element checks; the rule 1 representation is pinned on numeric_std
   (`numeric_std_subtypes_rule_1`, `numeric_std_body_rule_1`) and reviewed for the composite cases
@@ -425,7 +429,10 @@ analysis order with `yavs_interp::init_package` (shared variables, constants com
 #183; a declaration constant calling its own package's function is E2114 before lowering, #197),
 objects of generic package instances (design units with their own package data; instances in
 packages, entities, architectures, blocks, generates, processes and subprograms add theirs to
-that region, #101), shared variables of blocks and generates one object per block, generate
+that region, #101), objects of packages declared in those regions (generic or not, instances of
+local generic packages in the same and nested regions and through an instance of an enclosing
+generic package; `generics/nested_packages`, `local_generic_packages`,
+`local_generic_packages_hand`, #34), shared variables of blocks and generates one object per block, generate
 alternative or iteration, shared by the nested regions (#249),
 external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), external names used directly in processes, concurrent statements and expression or `inertial` port actuals (bound once the hierarchy exists), external constants, external shared variables of protected types (method calls), external signals with records and aliases of parts of external names (#93; not yet: external names in subprograms and packages), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element

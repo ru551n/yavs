@@ -621,7 +621,10 @@ impl Db {
         }
         match self.decls[d].kind {
             DeclKind::Library(l) => Ok(Region::Library(l)),
-            DeclKind::Unit(_) | DeclKind::PackageInst(_) | DeclKind::GenericPackage(_)
+            DeclKind::Unit(_)
+            | DeclKind::PackageInst(_)
+            | DeclKind::GenericPackage(_)
+            | DeclKind::Package { .. }
                 if !matches!(self.package_region(d), crate::generic::PkgRegion::No) =>
             {
                 match self.package_region(d) {

@@ -633,6 +633,13 @@ a note and a help suggesting an access type, as the reference simulators reject 
   at the instantiation (`Db::decls_with_instances`): instance data per elaborated architecture
   instance, block or generate iteration, frame slots per process or call, package data of the
   enclosing package. Every region kind therefore needs no separate instance storage.
+- **Objects of nested packages** (#34, 2026-10-19; LRM 4.7, 4.8): a package declared in a
+  declarative part (`DeclKind::Package`) adds the objects of its declaration and body to the
+  declaring region, like a package instance (`Db::decls_with_instances`); a generic one has
+  none, its instances do. An instance of a generic package nested in a generic package
+  instantiates the clone made with the enclosing instance, so the inner body sees the outer
+  actuals; elab clones instance bodies until no new instance appears (a cloned body declares
+  instances of its own).
 - **2019 signals with bounds from the initial value** (#187, elab agent, 2026-10-18; LRM
   6.4.2.3, LCS-2016-019): the elaborator evaluates the initial value first and fills every
   bound the subtype leaves open from it (`Model::shape_init`), element bounds from the first

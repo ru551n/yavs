@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:nested_packages:main	inner.base=10
+diag	note	0	0	:nested_packages:main	via_inner(2)=30
+diag	note	0	0	:nested_packages:main	work.outer.inner.scaled(3)=31
+diag	note	0	0	:nested_packages:main	ent_pkg.e=3
+diag	note	0	0	:nested_packages:main	plus(1)=10
+diag	note	0	0	:nested_packages:main	in_sub(5)=20
+diag	note	1000000	0	:nested_packages:b:_p0	blk.t=8
+diag	note	1000000	0	:nested_packages:g(1):_p0	g1 t=101
+diag	note	1000000	0	:nested_packages:g(2):_p0	g2 t=202
+diag	note	2000000	0	:nested_packages:main	s=42 cnt=2

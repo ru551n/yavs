@@ -263,7 +263,7 @@ impl Db {
     }
 
     /// The declarations of `scope` in order, each package instance declared there (LRM 4.9)
-    /// followed by the declarations of its regions, recursively: the objects an instance adds
+    /// and each nested package (4.7) followed by the declarations of its regions, recursively: the objects an instance adds
     /// to the region that declares it (#101). The generic constants of an instance are left
     /// out: references to them were replaced by the actuals.
     pub fn decls_with_instances(&self, scope: ScopeId) -> Vec<DeclId> {
@@ -280,6 +280,18 @@ impl Db {
                     out.push(d);
                     for s in self.instance_regions(*i) {
                         self.push_decls(s, true, out);
+                    }
+                }
+                // A nested package's objects belong to the declaring region too; a generic
+                // one has none (only its instances).
+                DeclKind::Package {
+                    scope,
+                    generics: None,
+                    body,
+                } => {
+                    out.push(d);
+                    for &s in std::iter::once(scope).chain(body) {
+                        self.push_decls(s, inner, out);
                     }
                 }
                 _ => out.push(d),
@@ -302,7 +314,28 @@ impl Db {
             DeclKind::PackageInst(i) | DeclKind::GenericPackage(i) => {
                 PkgRegion::Scope(self.insts[i].scope)
             }
+            DeclKind::Package {
+                generics: Some(_), ..
+            } => PkgRegion::Generic,
+            DeclKind::Package { scope, .. } => PkgRegion::Scope(scope),
             _ => PkgRegion::No,
+        }
+    }
+
+    /// The region and generic list of uninstantiated generic package `g` (a design unit or a
+    /// nested package).
+    fn generic_package(&self, g: DeclId) -> Option<(ScopeId, Box<[DeclId]>)> {
+        match &self.decls[g].kind {
+            DeclKind::Unit(u) => match &self.units[*u].hir {
+                UnitHir::Package { generics: Some(f) } => Some((self.units[*u].scope, f.clone())),
+                _ => None,
+            },
+            DeclKind::Package {
+                scope,
+                generics: Some(f),
+                ..
+            } => Some((*scope, f.clone())),
+            _ => None,
         }
     }
 
@@ -537,10 +570,9 @@ impl Db {
             }
             ast::InterfaceDecl::Package(p) => {
                 let g = self.generic_package_of(scope, &p.package)?;
-                let DeclKind::Unit(u) = self.decls[g].kind else {
-                    return Err(self.ice(p.span, "generic package is not a unit"));
+                let Some((gscope, _)) = self.generic_package(g) else {
+                    return Err(self.ice(p.span, "generic package without generics"));
                 };
-                let gscope = self.units[u].scope;
                 let wants = match &p.generic_map {
                     ast::InterfacePackageMap::Assoc(assocs) => {
                         let Some(formals) = self.generic.lists.get(&gscope).cloned() else {
@@ -841,6 +873,14 @@ impl Db {
         let inst = self.package_instance(scope, s, d, p)?;
         self.decls[d].kind = DeclKind::PackageInst(inst);
         self.declare(scope, d);
+        // ponytail: the visible part only; a shared variable of the body is E2001 in lowering.
+        let signal = self.decls_with_instances(s).into_iter().find(|&o| {
+            matches!(&self.decls[o].kind, DeclKind::Object(x)
+                if matches!(x.class, ObjClass::Signal | ObjClass::SharedVariable))
+        });
+        if let Some(o) = signal {
+            self.check_not_sequential(scope, p.name.span, Some(o))?;
+        }
         Ok(())
     }
 
@@ -852,17 +892,9 @@ impl Db {
         p: &ast::PackageInstance,
     ) -> Result<InstId, Reported> {
         let g = self.generic_package_of(scope, &p.package)?;
-        let DeclKind::Unit(u) = self.decls[g].kind else {
-            return Err(self.ice(p.span, "generic package is not a unit"));
-        };
-        let gscope = self.units[u].scope;
-        let UnitHir::Package {
-            generics: Some(formals),
-        } = &self.units[u].hir
-        else {
+        let Some((gscope, formals)) = self.generic_package(g) else {
             return Err(self.ice(p.span, "generic package without generics"));
         };
-        let formals = formals.clone();
         let what = format!("package `{}`", self.decls[g].name);
         let assocs = p.generic_map.as_deref().unwrap_or(&[]);
         let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
@@ -1992,6 +2024,18 @@ impl Db {
                 self.fix_bodies(r);
                 Some(s)
             }
+            // ponytail: a nested generic package cloned with an instance of its enclosing
+            // generic package gets its body when that instance's body is cloned, which runs
+            // first (instances are cloned in creation order); `None` before that.
+            DeclKind::Package {
+                body: Some(bscope), ..
+            } => {
+                let bscope = *bscope;
+                r.decls.insert(g, site);
+                let s = self.r_scope(r, bscope);
+                self.fix_bodies(r);
+                Some(s)
+            }
             DeclKind::Subprogram(sp) => {
                 let Body::Hir { scope, stmts } = &sp.body else {
                     return Err(self.error(
@@ -2022,9 +2066,20 @@ impl Db {
     /// After cloning a package body: give cloned specs their cloned bodies and
     /// protected types their cloned bodies.
     fn fix_bodies(&mut self, r: &mut Remap) {
-        let pairs: Vec<(DeclId, DeclId)> = r.decls.iter().map(|(a, b)| (*a, *b)).collect();
+        let mut pairs: Vec<(DeclId, DeclId)> = r.decls.iter().map(|(a, b)| (*a, *b)).collect();
+        pairs.sort();
         for (orig, new) in pairs {
             if orig == new {
+                continue;
+            }
+            // A nested package's body written in the cloned body.
+            if let DeclKind::Package { body: Some(b), .. } = self.decls[orig].kind
+                && matches!(self.decls[new].kind, DeclKind::Package { body: None, .. })
+            {
+                let nb = self.r_scope(r, b);
+                if let DeclKind::Package { body, .. } = &mut self.decls[new].kind {
+                    *body = Some(nb);
+                }
                 continue;
             }
             let Some(Body::Hir { scope, stmts }) =
@@ -2235,6 +2290,30 @@ impl Db {
                 index: *index,
             },
             DeclKind::PackageInst(i) => DeclKind::PackageInst(self.r_instance(r, new, *i)),
+            DeclKind::Package {
+                scope,
+                generics,
+                body,
+            } => {
+                let scope = self.r_scope(r, *scope);
+                let generics: Option<Box<[DeclId]>> = generics
+                    .as_ref()
+                    .map(|g| g.iter().map(|&d| self.r_decl(r, d)).collect());
+                if let Some(g) = &generics {
+                    self.generic.lists.insert(scope, g.clone());
+                }
+                // A body in the same region is cloned with it; one in the enclosing package's
+                // body by `fix_bodies`.
+                let body = match body {
+                    Some(b) if r.bodies => Some(self.r_scope(r, *b)),
+                    _ => None,
+                };
+                DeclKind::Package {
+                    scope,
+                    generics,
+                    body,
+                }
+            }
             DeclKind::View(v) => {
                 let record = self.r_subtype(r, self.views[*v].record);
                 let elems = self.views[*v].elems.clone();
@@ -2287,12 +2366,19 @@ impl Db {
     }
 
     /// A package instance declared inside the generic unit: its region is cloned
-    /// with the rest, and its body remap is the inner remap followed by `r`.
+    /// with the rest, and its body remap is the inner remap followed by `r`. An instance of
+    /// a generic package nested in the cloned region instantiates that package's clone.
     fn r_instance(&mut self, r: &mut Remap, site: DeclId, i: InstId) -> InstId {
         let (generic, scope) = (self.insts[i].generic, self.insts[i].scope);
         if !self.r_inside(r, scope) {
             return i;
         }
+        let rekey = self.r_inside(r, self.decls[generic].scope);
+        let generic = if rekey {
+            self.r_decl(r, generic)
+        } else {
+            generic
+        };
         let scope = self.r_scope(r, scope);
         let old = &self.insts[i].map;
         let (types, consts, subprograms, packages) = (
@@ -2317,7 +2403,7 @@ impl Db {
             packages,
         };
         let inner = self.generic.maps.get(&i).cloned().unwrap_or_default();
-        let composed = self.r_compose(r, &inner);
+        let composed = self.r_compose(r, &inner, rekey);
         let mangled = Symbol::intern(&crate::mangle::region(self, scope));
         let n = self.insts.push(Instance {
             generic,
@@ -2331,29 +2417,62 @@ impl Db {
         n
     }
 
-    /// `inner` followed by `r`: what `inner` maps to, as `r` clones it.
-    fn r_compose(&mut self, r: &mut Remap, inner: &Remap) -> Remap {
+    /// `inner` followed by `r`: what `inner` maps to, as `r` clones it. With `rekey` the
+    /// generic itself is cloned by `r`, so the keys are mapped too.
+    fn r_compose(&mut self, r: &mut Remap, inner: &Remap, rekey: bool) -> Remap {
         let mut c = Remap {
-            roots: inner.roots.clone(),
             formal_firsts: inner.formal_firsts.clone(),
             ..Default::default()
         };
-        for (&a, &b) in &inner.decls {
+        fn sorted<K: Copy + Ord, V: Copy>(m: &HashMap<K, V>) -> Vec<(K, V)> {
+            let mut v: Vec<_> = m.iter().map(|(&a, &b)| (a, b)).collect();
+            v.sort_by_key(|p| p.0);
+            v
+        }
+        let (decls, types, subtypes) = (
+            sorted(&inner.decls),
+            sorted(&inner.types),
+            sorted(&inner.subtypes),
+        );
+        let (scopes, exprs, consts) = (
+            sorted(&inner.scopes),
+            sorted(&inner.exprs),
+            sorted(&inner.consts),
+        );
+        c.roots = if rekey {
+            inner.roots.iter().map(|&s| self.r_scope(r, s)).collect()
+        } else {
+            inner.roots.clone()
+        };
+        if rekey {
+            c.formal_firsts = inner
+                .formal_firsts
+                .iter()
+                .map(|&s| self.r_subtype(r, s))
+                .collect();
+        }
+        for (a, b) in decls {
+            let a = if rekey { self.r_decl(r, a) } else { a };
             c.decls.insert(a, self.r_decl(r, b));
         }
-        for (&a, &b) in &inner.types {
+        for (a, b) in types {
+            let a = if rekey { self.r_ty(r, a) } else { a };
             c.types.insert(a, self.r_ty(r, b));
         }
-        for (&a, &b) in &inner.subtypes {
+        for (a, b) in subtypes {
+            let a = if rekey { self.r_subtype(r, a) } else { a };
             c.subtypes.insert(a, self.r_subtype(r, b));
         }
-        for (&a, &b) in &inner.scopes {
+        for (a, b) in scopes {
+            let a = if rekey { self.r_scope(r, a) } else { a };
             c.scopes.insert(a, self.r_scope(r, b));
         }
-        for (&a, &b) in &inner.exprs {
+        for (a, b) in exprs {
+            let a = if rekey { self.r_expr(r, a) } else { a };
             c.exprs.insert(a, self.r_expr(r, b));
         }
-        for (&a, &b) in &inner.consts {
+        for (a, b) in consts {
+            let a = if rekey { self.r_decl(r, a) } else { a };
             c.consts.insert(a, self.r_expr(r, b));
         }
         // Statements of an inner body already cloned are cloned again with that body.
@@ -3289,13 +3408,7 @@ impl Db {
         let key = crate::alias::designator(&spec.designator).key();
         let mut regions = vec![scope];
         match self.scopes[scope].kind {
-            ScopeKind::PackageBody => {
-                if let Some(c) = self.scopes[scope].parent
-                    && let Some(p) = self.scopes[c].parent
-                {
-                    regions.push(p);
-                }
-            }
+            ScopeKind::PackageBody => regions.extend(self.body_package(scope)),
             ScopeKind::ProtectedBody => regions.extend(self.scopes[scope].parent),
             _ => {}
         }

@@ -10,9 +10,9 @@ PASS work vhdl-ideas/interfaces/ethernet/rmii.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/sfp.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/sgmii.vhdl
 PASS work vhdl-ideas/interfaces/ethernet/xaui.vhdl
-FAIL work vhdl-ideas/interfaces/io.vhdl
-FAIL work vhdl-ideas/interfaces/adi/ad9361.vhdl
-FAIL work vhdl-ideas/interfaces/pcie.vhdl
+PASS work vhdl-ideas/interfaces/io.vhdl
+PASS work vhdl-ideas/interfaces/adi/ad9361.vhdl
+PASS work vhdl-ideas/interfaces/pcie.vhdl
 FAIL work vhdl-ideas/poc/rangetest.vhdl
 FAIL work vhdl-ideas/sim/frequency.vhdl
 FAIL work vhdl-ideas/util/generic_mux.vhdl

@@ -35,6 +35,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | HIR invariants (sem.md 7.3) | `src/validate.rs` |
 | Static folding, `ConstValue`, `Db::fold_with` (used by elab) | `src/stat.rs` |
 | Generics, instances by HIR cloning, `Db::instance_body`; for M2 `Db::package_regions` and `Db::decls_with_instances` (an instance's objects belong to the region declaring it, #101) | `src/generic.rs` |
+| Packages and package bodies in declarative parts, `E1237` (#34) | `src/package.rs` |
 | Units, configurations, `Db::default_binding` | `src/unit.rs`, `src/unit/binding.rs` |
 | Codes and `--explain` texts (`codes!` macro, `EXPLAIN`) | `src/diag.rs` |
 | Names, overloads, literals, aggregates | `src/expr/{names,cands,resolve,literal,aggregate}.rs` |
@@ -82,6 +83,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | A subprogram header with a generic list and a generic map declares an instance (`generic.rs` `header_instance`, through the `is new` path); the uninstantiated subprogram stays undeclared, a body repeating the header completes it (`header_generic`); a non-object parameter is `E1232` (#227) | LRM 4.2.1 and 4.2.2.1 are clear; the reference simulators reject the calls | `docs/design/lrm-checks.md` L61 |
 | 2019 named return values (`return r of t`): `r` is a `FromObject` subtype of a hidden constant (`Db::ret_names`); the call's `Expr::subtype` is its constrained context subtype, else `E1304`; array and record types and generic types checked per instance (`fill_scope`), scalar types `E1233` (#33, #239) | M2 passes the descriptor; no HIR shape change | `src/decl.rs` (`named_return`), `src/expr/resolve.rs` (`named_return_context`), `docs/design/lrm-checks.md` L62, L77 |
 | An expanded name with a protected type prefix (`pt.n`, `pt.get`) is legal inside the type's declaration and body: the suffix is a declaration of that region (`protected_expanded`); outside it `E1103` (#250) | 8.3, 12.1: one declarative region; LRM clear, two of the reference simulators accept | `docs/design/lrm-checks.md` L74 |
+| Packages in declarative parts (`DeclKind::Package`, `src/package.rs`): a `ScopeKind::Package` child of the declaring region, its body a `PackageBody` child of the package's region (`Db::body_package`), in the same region or, for a package in a package declaration, in its body (lookup continues in that body through `Scope::outer`); generic ones instantiate through the same path as library generic packages (#34) | LRM 4.7, 4.8, 12.1 (2008) | sem.md 5.3, `docs/design/lrm-checks.md` L81, L82 |
 | Unimplemented constructs report `Db::unsupported(span, what, "S<n>")` (`E9999`) | Fail early, no `todo!()` | CONTRIBUTING "Conventions" |
 
 Module-local decisions go in this section and in the matching sem.md section, LRM readings in

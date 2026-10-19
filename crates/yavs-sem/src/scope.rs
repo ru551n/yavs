@@ -222,11 +222,14 @@ impl Db {
         if self.decls[d].implicit {
             return false;
         }
-        let Some(entity) = self.scopes[scope]
-            .parent
-            .and_then(|c| self.scopes[c].parent)
-            .filter(|&e| self.scopes[e].kind == head_kind)
-        else {
+        let head = if is_body {
+            self.body_package(scope)
+        } else {
+            self.scopes[scope]
+                .parent
+                .and_then(|c| self.scopes[c].parent)
+        };
+        let Some(entity) = head.filter(|&e| self.scopes[e].kind == head_kind) else {
             return false;
         };
         let key = self.decls[d].name.key();
@@ -272,13 +275,16 @@ impl Db {
         true
     }
 
-    /// The next enclosing region for visibility: a protected body continues with
-    /// its declaration region, then with the region the body is written in.
+    /// The next enclosing region for visibility: a protected body (or a nested package
+    /// body in its outer package's body) continues with its declaration region, then with
+    /// the region the body is written in.
     fn next_region(&self, s: ScopeId, outer: &mut Option<ScopeId>) -> Option<ScopeId> {
         let sc = &self.scopes[s];
-        if sc.kind == ScopeKind::ProtectedBody && sc.outer.is_some() {
+        if matches!(sc.kind, ScopeKind::ProtectedBody | ScopeKind::PackageBody)
+            && sc.outer.is_some()
+        {
             *outer = sc.outer;
-        } else if sc.kind == ScopeKind::Protected && outer.is_some() {
+        } else if matches!(sc.kind, ScopeKind::Protected | ScopeKind::Package) && outer.is_some() {
             return outer.take();
         }
         sc.parent

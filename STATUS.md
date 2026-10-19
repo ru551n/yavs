@@ -49,7 +49,8 @@ An installed binary finds `lib/` next to itself (#43).
   (t => integer) parameter (v : t) return t`) declares an instance through the `is new` path, also
   with a separate body that repeats the header (#227, L61): `tests/diag/sem/gen/subprogram_header_map_*`,
   difftest `generics/subprog_header_map_2019`. A type, subprogram or package interface in a
-  parameter list is `E1232` (4.2.2.1).
+  parameter list is `E1232` (4.2.2.1), in a port clause `E1234` (6.5.6.3); a generic list or map on a formal generic
+  subprogram is `E1235` (6.5.4, #236).
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

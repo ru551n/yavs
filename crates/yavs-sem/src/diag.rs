@@ -47,6 +47,8 @@ codes! {
     BAD_TYPE_DECL = "E1231", "The type definition is not legal, for example a range whose bounds are not of an integer or floating point type.";
     NON_OBJECT_PARAM = "E1232", "A subprogram's parameter list declares only interface constants, signals, variables and files (LRM 4.2.2.1). Type, subprogram and package interfaces belong in its generic list: `function f generic (type t) parameter (x : t) return t`.";
     NAMED_RETURN_TYPE = "E1233", "The type mark after the return identifier of a VHDL-2019 named return value (`return r of t`) denotes an array or record type: `r` takes the bounds of the call's target, which a scalar type does not have (a generic type is checked in each instance).";
+    NON_SIGNAL_PORT = "E1234", "A port clause declares only interface signals (LRM 6.5.6.3). Types, subprograms and packages are generics: put them in a `generic (...)` list.";
+    GENERIC_HEADER_FORMAL = "E1235", "A formal generic subprogram has no generic list or generic map of its own (LRM 6.5.4): `generic (function f (x : t) return t)` takes its profile from its parameters and return type alone.";
     // E13xx expressions and overloading
     TYPE_MISMATCH = "E1300", "The expression has a different type than the context requires.";
     NO_OVERLOAD = "E1301", "None of the visible subprograms or literals with this name accepts these operands.";

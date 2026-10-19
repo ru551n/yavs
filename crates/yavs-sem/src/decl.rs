@@ -1261,17 +1261,25 @@ impl Db {
                 continue;
             }
             let ast::InterfaceDecl::Object(o) = i else {
-                let sp = match i {
-                    ast::InterfaceDecl::Type(t) => t.span,
-                    ast::InterfaceDecl::Subprogram(s) => s.spec.span,
-                    ast::InterfaceDecl::Package(p) => p.span,
-                    ast::InterfaceDecl::Object(o) => o.span,
+                // Only generic clauses take these (taken above); 6.5.6.3: a port is a signal.
+                let (what, sp) = match i {
+                    ast::InterfaceDecl::Type(t) => ("type", t.span),
+                    ast::InterfaceDecl::Subprogram(s) => ("subprogram", s.spec.span),
+                    ast::InterfaceDecl::Package(p) => ("package", p.span),
+                    ast::InterfaceDecl::Object(o) => ("object", o.span),
                 };
-                failed = Some(self.unsupported(
-                    sp,
-                    "generic types, subprograms and packages of components and blocks",
-                    "S4",
-                ));
+                failed = Some(
+                    self.error(
+                        yavs_diag::Diagnostic::error(
+                            crate::diag::NON_SIGNAL_PORT,
+                            format!("a {what} interface declaration is not a port"),
+                        )
+                        .with_primary(sp, "not a signal")
+                        .with_help(format!(
+                            "declare the {what} in a generic list: `generic (...)`"
+                        )),
+                    ),
+                );
                 continue;
             };
             match self.interface_object(scope, o, role.clone()) {

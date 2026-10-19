@@ -480,11 +480,14 @@ impl Db {
                 Ok(vec![decl])
             }
             ast::InterfaceDecl::Subprogram(s) => {
-                if s.spec.generic_map.is_some() {
-                    return Err(self.unsupported(
-                        s.spec.span,
-                        "generic subprograms with a generic map as a generic",
-                        "S4",
+                if s.spec.generics.is_some() || s.spec.generic_map.is_some() {
+                    return Err(self.error(
+                        yavs_diag::Diagnostic::error(
+                            crate::diag::GENERIC_HEADER_FORMAL,
+                            "a formal generic subprogram has no generic list or generic map",
+                        )
+                        .with_primary(s.spec.span, "generic header not allowed here")
+                        .with_help("write only the profile: `function f (x : t) return t`"),
                     ));
                 }
                 let d = self.subprogram_spec(scope, &s.spec)?;

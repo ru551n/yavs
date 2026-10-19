@@ -17,8 +17,8 @@
 
 ### External test runner: its own VHDL suites (#112)
 
-`VUNIT_SIMULATOR=yavs`, `-p 2`, release build of main at 92dfc349; pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. All 11 suites pass: 1357 tests, no failure, no skip (the one failure of the previous measurement, #281, is fixed).
+`VUNIT_SIMULATOR=yavs`, `-p 2`, release build of main at b9dcddb6 (re-measured 2026-10-19); pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. All 11 suites pass: 1357 tests, no failure, no skip (the one failure of the previous measurement, #281, is fixed). Wall time per suite at `-p 2`: check 24 s, com 26 s, data_types 46 s, logging 16 s, string_ops 2 s, the rest under 6 s, verification_components 224 s plus 20 s for its protocol checker configurations (the previous measurement: 671 s at `-p 4`).
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
@@ -38,7 +38,7 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 
 `tools/suites/uvvm.py` (without `--private-copies`), release build of main at 92dfc349 (#328, #329, #303 and the force of composite signals in), `-j 2`; one run per testbench
 entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 73 runs pass (45 at ba53e23d). Only the first root cause of each run is counted.
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 76 runs pass (73 at 92dfc349, 45 at ba53e23d); re-measured at b9dcddb6 with `-j 2`, 1560 s wall. Only the first root cause of each run is counted.
 No run fails at elaboration on the record-resolution or composite-force cause any more; the remaining failures have four causes (#391 to #394).
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
@@ -53,7 +53,7 @@ No run fails at elaboration on the record-resolution or composite-force cause an
 | bitvis_vip_avalon_st | 6 | 0 | 0 | none |
 | bitvis_vip_axi | 2 | 0 | 0 | none |
 | bitvis_vip_axilite | 1 | 1 | 0 | force through an external name of a child's output port has no effect #391 |
-| bitvis_vip_axistream | 7 | 0 | 15 | 15 skipped: over 5 minutes, 14 us simulated in 300 s #394 |
+| bitvis_vip_axistream | 7 | 13 | 2 | 13 `axistream_vvc_tb` configurations used to be skipped (over 5 minutes) and now finish, failing the unwanted-activity checks (6 of 7 alerts, as in `uart_vvc_tb`, probably #391); 2 skipped: over 5 minutes #394 |
 | bitvis_vip_clock_generator | 1 | 0 | 0 | none |
 | bitvis_vip_error_injection | 2 | 0 | 0 | none |
 | bitvis_vip_gmii | 2 | 0 | 0 | none |
@@ -67,7 +67,7 @@ No run fails at elaboration on the record-resolution or composite-force cause an
 | bitvis_vip_uart | 1 | 2 | 0 | #392 (1); the unwanted-activity checks of `uart_vvc_tb` see 6 of 7 alerts, probably #391, not reduced separately (1) |
 | bitvis_vip_wishbone | 0 | 2 | 0 | #391 |
 | external_vip_apb | 3 | 3 | 0 | #391 |
-| Total | 73 | 20 | 44 | |
+| Total | 76 | 33 | 28 | |
 
 The generated-VIP tests of the framework component (generator output compiled and simulated) are not run by the driver.
 
@@ -76,8 +76,8 @@ The generated-VIP tests of the framework component (generator output compiled an
 `tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
 521 files in script order and runs each test (`yavs run`, release build of main, 2 in parallel). Pass = exit 0 and the
 library's own `DONE PASSED` summary line. The script settings package body is generated with the scripts' release as settings
-revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 (re-measured at 92dfc349) and 2019 (at 8bbefaed):
-all 314 tests pass, the same test for test; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
+revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 (re-measured at b9dcddb6, 178 s wall at 2 in parallel) and 2019 (at 8bbefaed):
+all 314 tests pass, the same test for test; 2019 at b9dcddb6 passes 272 of 314, 42 fail with an overflow in the native `to_integer` of 64-bit INTEGERs (#416, introduced by the native ieee operators); the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
 Root causes fixed on the way: #291, #292, #294, #295, #296, #304, #311 (= #313), #314, #315 (= #312).
 
 ### Reference simulators' own regression tests, run time (#354)
@@ -100,6 +100,8 @@ second-suite scripts with control flow or tool options, negative analysis tests)
 tests are listed in `tools/difftest/external-{nvc,ghdl}.pass`; the CI `corpus` job checks them
 against the suites' own verdicts (exit status) without a reference simulator. Every listed test gives
 identical output at `--threads 1` and `--threads 4`.
+
+Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 
 Remaining run-time causes, ranked by tests (yavs bugs have issues): reports in resolution and
 conversion functions during the run print `(init)` and bypass the report path, #372 (12);

@@ -1,6 +1,7 @@
 exit	0
 diag	note	1000000	1	:implicit_in_process:drv	1ns+1 i'stable(2 ns) false i'quiet false i'delayed(1 ns) 0
-diag	note	1000000	1	:implicit_in_process:tr	b'transaction toggled, b'quiet false b'stable true
+diag	note	1000000	1	:implicit_in_process:tr	b'transaction toggled, b'quiet false b'stable true 1
+diag	note	1000000	1	:implicit_in_process:tr	b'transaction toggled, b'quiet false b'stable true 2
 diag	note	3000000	0	:implicit_in_process:drv	3ns+1 i'stable(2 ns) true i'quiet true i'delayed(1 ns) 1
 diag	note	3000000	1	:implicit_in_process:gen(1):p	s(1) active, stable true
 diag	note	5000000	0	:implicit_in_process:mon	5ns i'stable true i'quiet(1 ns) true i'delayed(2 ns) 1 b'quiet true r'stable(2 ns) true s(1)'quiet(1 ns) true s(1)'stable true s'delayed(1 ns)(1).ok true

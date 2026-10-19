@@ -1,7 +1,7 @@
 -- difftest: top=implicit_in_process std=2008
 -- 'stable, 'quiet, 'delayed and 'transaction named inside process bodies (LRM 16.2.4: the
 -- implicit signal belongs to the region enclosing the process), for scalars, a record and a
--- part of an array of records, in reads and in waits, also inside a for-generate (#240).
+-- part of an array of records, in reads and in waits, in a loop and inside a for-generate (#240).
 entity implicit_in_process is
 end entity;
 
@@ -75,9 +75,12 @@ begin
     wait for 1 ns;
     last := b'transaction;
     wait for 0 ns;
-    assert b'transaction /= last report "b'transaction did not toggle" severity failure;
-    report "b'transaction toggled, b'quiet " & boolean'image(b'quiet)
-      & " b'stable " & boolean'image(b'stable);
+    -- Named in a loop: the implicit signals still belong to the architecture.
+    for k in 1 to 2 loop
+      assert b'transaction /= last report "b'transaction did not toggle" severity failure;
+      report "b'transaction toggled, b'quiet " & boolean'image(b'quiet)
+        & " b'stable " & boolean'image(b'stable) & " " & integer'image(k);
+    end loop;
     wait;
   end process;
 

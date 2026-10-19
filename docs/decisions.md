@@ -871,8 +871,9 @@ which tools/difftest parses.
   with a source per leaf (`Builder::implicit_source`), `'delayed(T)` one delayed leaf per
   leaf of the prefix.
 - **Implicit signals named in a process** (#240, LRM 16.2.4): sem declares the implicit signal
-  of `'stable`, `'quiet`, `'delayed` or `'transaction` named in a process body, or in a
-  subprogram declared in the process, in the process's scope. Lowering makes it an instance
+  of `'stable`, `'quiet`, `'delayed` or `'transaction` named in a process body (also inside
+  a loop or sequential block), or in a subprogram declared in the process, in the process's
+  scope. Lowering makes it an instance
   signal of the region enclosing the process (`region`), as for one named in a concurrent
   statement, and yavs-elab binds it under that region, so the process reads and waits on it
   like any other signal. Named in a subprogram of a region, it belongs to that region

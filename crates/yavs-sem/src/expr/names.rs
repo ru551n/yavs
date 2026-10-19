@@ -2083,8 +2083,14 @@ impl Db {
             } else {
                 subtype
             };
+            // The implicit signal belongs to the enclosing concurrent region or process, never
+            // to a subprogram, loop or sequential block.
             let mut region = scope;
-            while self.in_subprogram(region)
+            while (self.in_subprogram(region)
+                || matches!(
+                    self.scopes[region].kind,
+                    crate::scope::ScopeKind::Loop | crate::scope::ScopeKind::SeqBlock
+                ))
                 && let Some(up) = self.scopes[region].parent
             {
                 region = up;

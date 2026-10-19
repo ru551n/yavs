@@ -1534,6 +1534,14 @@ impl Machine {
                         continue;
                     }};
                 }
+                // The next instruction that is not skipped, with its pc.
+                macro_rules! peek {
+                    ($p:expr) => {
+                        pre.next
+                            .get($p)
+                            .and_then(|&n| f.code.get(n as usize).map(|i| (n as usize, i)))
+                    };
+                }
                 match *inst {
                     Inst::Br { to } => jump!(to),
                     Inst::CondBr { c, t, f: e } => jump!(if self.r(c) != 0 { t } else { e }),
@@ -1552,6 +1560,36 @@ impl Machine {
                     Inst::Load { dst, addr, w } => {
                         self.do_load(dst, addr, w)?;
                         pc += 1;
+                        // A load, an offset from what it loaded, a load through that: the
+                        // field of a descriptor or a record behind a pointer.
+                        if !DEBUG
+                            && let Some((
+                                n1,
+                                &Inst::Index {
+                                    dst: d1,
+                                    base,
+                                    pos,
+                                    stride,
+                                },
+                            )) = peek!(pc)
+                            && base == dst
+                        {
+                            self.do_index(d1, base, pos, stride)?;
+                            pc = n1 + 1;
+                            if let Some((
+                                n2,
+                                &Inst::Load {
+                                    dst: d2,
+                                    addr: a2,
+                                    w: w2,
+                                },
+                            )) = peek!(pc)
+                                && a2 == d1
+                            {
+                                self.do_load(d2, a2, w2)?;
+                                pc = n2 + 1;
+                            }
+                        }
                         continue;
                     }
                     Inst::Store { addr, src, w } => {
@@ -1567,6 +1605,13 @@ impl Machine {
                     } => {
                         self.do_index(dst, base, pos, stride)?;
                         pc += 1;
+                        if !DEBUG
+                            && let Some((n1, &Inst::Load { dst: d1, addr, w })) = peek!(pc)
+                            && addr == dst
+                        {
+                            self.do_load(d1, addr, w)?;
+                            pc = n1 + 1;
+                        }
                         continue;
                     }
                     Inst::Pos {
@@ -1602,6 +1647,13 @@ impl Machine {
                         let v = cmp(op, self.ri(a).cmp(&self.ri(b)));
                         self.set(dst, v.into());
                         pc += 1;
+                        // The branch on the result.
+                        if !DEBUG
+                            && let Some((_, &Inst::CondBr { c, t, f: e })) = peek!(pc)
+                            && c == dst
+                        {
+                            jump!(if v { t } else { e });
+                        }
                         continue;
                     }
                     Inst::Check {

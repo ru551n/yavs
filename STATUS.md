@@ -464,6 +464,20 @@ One commit per change; each table is an interleaved A/B of the binary before and
 | `protected_scoreboard` | 0.27 | 0.23 | 0.84 |
 | `uvvm_util_rand_tb` | 12.39 | 11.70 | 0.94 |
 
+4. Unconditional jumps cost nothing (the skip table leads to the jump's target), a compare is executed
+   together with the branch on its result, and a load, the offset from what it loaded and the load through
+   that (a field of a descriptor or of a record behind a pointer) are one dispatch.
+
+| Benchmark | before | after | ratio |
+|---|---|---|---|
+| `compute_loop` | 0.39 | 0.34 | 0.86 |
+| `ff_rtl` | 0.92 | 0.79 | 0.85 |
+| `resolved_bus` | 0.34 | 0.33 | 0.98 |
+| `delta_chain` | 0.20 | 0.20 | 0.99 |
+| `textio_heavy` | 0.38 | 0.39 | 1.03 |
+| `protected_scoreboard` | 0.30 | 0.28 | 0.92 |
+| `uvvm_util_rand_tb` | 12.25 | 11.70 | 0.95 |
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

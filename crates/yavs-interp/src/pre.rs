@@ -4,7 +4,8 @@
 //! whenever it is read, so a new frame starts with it instead of every pass over the
 //! instruction executing it again (lowering emits these at each use, in loops too). The
 //! instruction stays in the code, so compiled code, pc numbering and the debug loop are
-//! unchanged; the dispatch loop skips it through `next`.
+//! unchanged; the dispatch loop skips it through `next`. An unconditional jump is skipped
+//! the same way: `next` leads to its target.
 
 use yavs_ir::{AddrSpace, Func, Inst, Role};
 
@@ -92,7 +93,35 @@ impl Pre {
             };
             next[pc] = if hit { next[pc + 1] } else { pc as u32 };
         }
-        let sparse = set.iter().map(|&r| (r, init[r as usize])).collect();
+        // An unconditional jump costs nothing: execution goes on at its target (through
+        // other jumps and definitions the frame started with). Not to the block a machine
+        // pauses at.
+        let jump = |pc: usize| match f.code.get(pc) {
+            Some(&Inst::Br { to }) if f.body != Some(to) => f.blocks.get(to).map(|b| b.start),
+            _ => None,
+        };
+        let thread: Vec<Option<u32>> = (0..f.code.len())
+            .map(|pc| {
+                let (mut at, mut hops) = (pc, 0);
+                while let Some(start) = jump(at) {
+                    at = next[start as usize] as usize;
+                    hops += 1;
+                    if hops > 32 || at == pc {
+                        return None;
+                    }
+                }
+                (hops > 0).then_some(at as u32)
+            })
+            .collect();
+        for n in &mut next {
+            if let Some(Some(t)) = thread.get(*n as usize) {
+                *n = *t;
+            }
+        }
+        let sparse = (0..n as u32)
+            .filter(|&r| init[r as usize] != 0)
+            .map(|r| (r, init[r as usize]))
+            .collect();
         Pre {
             init,
             sparse,

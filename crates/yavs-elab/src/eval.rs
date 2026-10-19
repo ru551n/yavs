@@ -881,6 +881,19 @@ impl Model {
             return Ok(Some(self.nets.obj(o).shape.clone()));
         }
         let span = db.exprs[e].span;
+        // A signal of a package has no value during elaboration, but a constrained subtype
+        // has bounds (`gIntReq'range` in a port subtype).
+        if let ExprKind::Obj(d) = &db.exprs[e].kind
+            && let DeclKind::Object(o) = &db.decls[*d].kind
+            && o.class == ObjClass::Signal
+            && matches!(
+                db.scopes[db.decls[*d].scope].kind,
+                SemScope::Package | SemScope::PackageBody
+            )
+            && let Some(sh) = self.shape(db, o.subtype, None, span)?
+        {
+            return Ok(Some(sh));
+        }
         match self.eval(db, e, scope)? {
             Val::Array(ArrayConst { bounds, .. }) => Ok(Some(Shape::Array {
                 ty: db.base(db.exprs[e].subtype),

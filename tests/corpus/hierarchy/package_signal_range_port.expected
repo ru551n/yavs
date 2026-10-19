@@ -1,0 +1,2 @@
+exit	0
+diag	note	1000000	0	:package_signal_range_port:u:_p0	len 8

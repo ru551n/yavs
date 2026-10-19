@@ -275,7 +275,7 @@ fn edge<const RISING: bool>(
         .get((c0 >> 32) as usize)
         .copied()
         .ok_or_else(|| ice(format!("no instance signal {}", c0 >> 32)))?;
-    let sr = s.signal.slice(c0 as u32, c1 as u32);
+    let sr = s.signal.slice(s.off + c0 as u32, c1 as u32);
     let Some(c) = ctx.as_deref_mut() else {
         return rt_err("signal read during elaboration");
     };

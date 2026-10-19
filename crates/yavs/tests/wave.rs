@@ -511,7 +511,7 @@ fn corpus_wave(f: &Path) -> bool {
         args.push(format!("--stop-time={t}"));
     }
     args.push(top.to_string());
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = run(&d, &args);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -523,7 +523,27 @@ fn corpus_wave(f: &Path) -> bool {
         assert_eq!(out.status.code(), Some(2), "{f:?}: {stderr}");
         return false;
     }
-    dump(&fst);
+    let collapsed = dump(&fst);
+    // Ports collapsed into their actuals (the default) show the same waves as ports kept
+    // apart (#413): the groups with port hierarchies.
+    let group = f.parent().and_then(Path::file_name).unwrap_or_default();
+    if group == "hierarchy" || group == "force" {
+        let apart = d.join("b.fst");
+        let wave = format!("--wave={}", apart.display());
+        args[0] = &wave;
+        args.insert(1, "--no-collapse-ports");
+        let out = run(&d, &args);
+        assert!(
+            apart.exists(),
+            "{f:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            collapsed,
+            dump(&apart),
+            "{f:?}: waves differ with --no-collapse-ports"
+        );
+    }
     let _ = std::fs::remove_dir_all(&d);
     true
 }

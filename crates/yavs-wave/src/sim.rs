@@ -83,8 +83,9 @@ struct Entry {
 struct State {
     writer: Option<Box<dyn Sink>>,
     entries: Vec<Entry>,
-    /// Per kernel leaf: its entries, by offset (disjoint).
-    by_leaf: Vec<Vec<u32>>,
+    /// Per kernel leaf: its entries in layers, each by offset and disjoint (a port collapsed
+    /// into its actual shares the actual's elements: another layer).
+    by_leaf: Vec<Vec<Vec<u32>>>,
     dirty: Vec<bool>,
     pending: Vec<u32>,
     /// The time of the pending changes, fs.
@@ -185,15 +186,32 @@ pub fn record_to(
     } = d;
     let h = b.finish();
     let writer = sink(&h)?;
-    let mut by_leaf = vec![Vec::new(); e.nets.leaves.len()];
+    let mut flat = vec![Vec::new(); e.nets.leaves.len()];
     for (i, en) in entries.iter().enumerate() {
         if let Src::Sig { leaf, .. } = &en.src {
-            by_leaf[*leaf as usize].push(i as u32);
+            flat[*leaf as usize].push(i as u32);
         }
     }
-    for v in &mut by_leaf {
-        v.sort_by_key(|&i| entries[i as usize].span().0);
-    }
+    let by_leaf: Vec<Vec<Vec<u32>>> = (flat.into_iter())
+        .map(|mut v| {
+            v.sort_by_key(|&i| entries[i as usize].span());
+            let mut layers: Vec<Vec<u32>> = Vec::new();
+            for i in v {
+                let (a, _) = entries[i as usize].span();
+                let end = |l: &Vec<u32>| {
+                    l.last().map_or(0, |&j| {
+                        let (b, n) = entries[j as usize].span();
+                        b + n
+                    })
+                };
+                match layers.iter_mut().find(|l| end(l) <= a) {
+                    Some(l) => l.push(i),
+                    None => layers.push(vec![i]),
+                }
+            }
+            layers
+        })
+        .collect();
     let n = entries.len();
     let st = State {
         writer: Some(writer),
@@ -525,19 +543,21 @@ impl Observer for Recorder {
     ) {
         let mut st = self.lock();
         st.at = hook.now().as_fs();
-        let Some(ids) = st.by_leaf.get(signal.0 as usize) else {
+        let Some(layers) = st.by_leaf.get(signal.0 as usize) else {
             return;
         };
         let (lo, hi) = (range.offset, range.offset + range.len);
-        let first = ids.partition_point(|&i| {
-            let en = &st.entries[i as usize];
-            en.span().0 + en.span().1 <= lo
-        });
-        let hit: Vec<u32> = ids[first..]
-            .iter()
-            .copied()
-            .take_while(|&i| st.entries[i as usize].span().0 < hi)
-            .collect();
+        let mut hit = Vec::new();
+        for ids in layers {
+            let first = ids.partition_point(|&i| {
+                let en = &st.entries[i as usize];
+                en.span().0 + en.span().1 <= lo
+            });
+            hit.extend(
+                (ids[first..].iter().copied())
+                    .take_while(|&i| st.entries[i as usize].span().0 < hi),
+            );
+        }
         for i in hit {
             st.mark(i);
         }
@@ -561,8 +581,14 @@ struct Design<'a> {
 /// Where a node's values come from.
 #[derive(Clone)]
 enum At {
-    /// Row-major instance `k` of the node in the leaves from `leaf` on.
-    Sig { leaf: u32, k: u64 },
+    /// Row-major instance `k` of the node in the leaves from `leaf` on; `part`: the kernel
+    /// range of `leaf` an `in` port collapsed into part of its actual's leaf covers
+    /// (yavs-elab `SigObj::part`).
+    Sig {
+        leaf: u32,
+        k: u64,
+        part: Option<yavs_kernel::Range>,
+    },
     /// Sub-element `path` of a variable (`Src::Var`).
     Var { path: Vec<u64> },
 }
@@ -571,9 +597,10 @@ impl At {
     /// Element `j` of an array node of `n` elements.
     fn elem(&self, n: u64, j: u64) -> At {
         match self {
-            At::Sig { leaf, k } => At::Sig {
+            At::Sig { leaf, k, part } => At::Sig {
                 leaf: *leaf,
                 k: k * n + j,
+                part: *part,
             },
             At::Var { path } => At::Var {
                 path: [path.as_slice(), &[j]].concat(),
@@ -584,9 +611,10 @@ impl At {
     /// Field `i` of a record node, whose leaves start `skip` leaves after its own.
     fn field(&self, i: u64, skip: u32) -> At {
         match self {
-            At::Sig { leaf, k } => At::Sig {
+            At::Sig { leaf, k, part } => At::Sig {
                 leaf: leaf + skip,
                 k: *k,
+                part: *part,
             },
             At::Var { path } => At::Var {
                 path: [path.as_slice(), &[i]].concat(),
@@ -741,6 +769,7 @@ impl Design<'_> {
         let at = At::Sig {
             leaf: obj.leaves.0.0,
             k: 0,
+            part: obj.part,
         };
         self.node(
             &obj.shape,
@@ -847,13 +876,17 @@ impl Design<'_> {
             return;
         }
         let src = match at {
-            At::Sig { leaf, k } => {
-                let n = self.e.nets.leaves[leaf as usize].ty.len as u64;
-                let first = k * len;
-                let offset = match conv {
-                    Conv::Logic { .. } | Conv::Bool => n - first - len,
-                    _ => first,
+            At::Sig { leaf, k, part } => {
+                let (base, n) = match part {
+                    Some(r) => (r.offset as u64, r.len as u64),
+                    None => (0, self.e.nets.leaves[leaf as usize].ty.len as u64),
                 };
+                let first = k * len;
+                let offset = base
+                    + match conv {
+                        Conv::Logic { .. } | Conv::Bool => n - first - len,
+                        _ => first,
+                    };
                 Src::Sig {
                     leaf,
                     offset: offset as u32,

@@ -345,7 +345,7 @@ fn ports_take_unconstrained_bounds_from_the_actual() {
         signal s : bit_vector(7 downto 4);
         signal r : bit_vector(0 to 9);
       begin u : entity work.c port map (i => s(6 downto 5), o => r(2 to 3)); end;";
-    let (_, e) = elab("unconstrained", src, "t", &[]);
+    let (_, e) = elab_ports("unconstrained", src, "t", &[]);
     let i = &e.nets.objs[2];
     assert_eq!(i.name.key.as_str(), "i");
     let crate::Shape::Array { dims, .. } = &i.shape else {
@@ -1949,8 +1949,8 @@ fn clocked_processes_get_edge_triggers() {
     assert_eq!(t, [Some((true, 0)), Some((false, 0)), None, None, None]);
 }
 
-/// R4: an `in` port whose actual is whole signal leaves is an alias of the actual (through
-/// the component port too); a part of a leaf, a forced port and an `out` port keep their
+/// R4: an `in` port whose actual is whole signal leaves, or part of one leaf, is an alias of
+/// the actual (through the component port too); a forced port and an `out` port keep their
 /// edges.
 #[test]
 fn in_ports_collapse() {
@@ -1976,18 +1976,20 @@ end;
 ";
     let obj = |e: &Elaborated, path: &str| {
         let k = sig_paths(e).iter().position(|p| p == path).expect(path);
-        e.nets.objs[k].leaves
+        (e.nets.objs[k].leaves, e.nets.objs[k].part)
     };
     let (_, apart) = elab_ports("collapse", src, "top", &[]);
     let (_, e) = elab("collapse", src, "top", &[]);
     assert_eq!(obj(&e, ":top:u:a"), obj(&e, ":top:x"));
     assert_eq!(obj(&e, ":top:u:v"), obj(&e, ":top:w"));
-    assert_ne!(obj(&e, ":top:u:p"), obj(&e, ":top:link"));
-    assert_ne!(obj(&e, ":top:u:f"), obj(&e, ":top:z"));
-    // Component and entity ports of `a` and `v`, the entity's `p` (its actual is the whole
-    // component port) and the component's `f` (only the entity's is forced).
-    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 6);
-    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 6);
+    // `link(1)`: the rightmost element of a logic leaf is kernel offset 0.
+    let (link, _) = obj(&e, ":top:link");
+    assert_eq!(obj(&e, ":top:u:p"), (link, Some(Range::new(0, 1))));
+    assert_ne!(obj(&e, ":top:u:f").0, obj(&e, ":top:z").0);
+    // Component and entity ports of `a`, `v` and `p`, and the component's `f` (only the
+    // entity's is forced).
+    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 7);
+    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 7);
     for p in &e.nets.ports {
         assert!(
             p.formal.0.index() < e.nets.leaves.len() && p.actual.0.index() < e.nets.leaves.len()

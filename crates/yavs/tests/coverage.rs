@@ -601,3 +601,37 @@ fn html_toggles() {
     assert!(page(&tmp, "index.html").contains("toggles"));
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// Ports collapsed into their actuals, whole or part of a vector (#413), count the same
+/// toggles as ports kept apart.
+#[test]
+fn toggles_of_collapsed_ports() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpus/hierarchy/in_port_collapse_part.vhd");
+    let tmp = tempdir("collapse");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    assert!(
+        yavs(&tmp, &["analyze", &lib, src.to_str().expect("utf-8")])
+            .status
+            .success()
+    );
+    let run = |db: &str, extra: &[&str]| {
+        let cov = format!("--cov={db}");
+        let o = yavs(
+            &tmp,
+            &[&["run", &lib, &cov][..], extra, &["in_port_collapse_part"]].concat(),
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        toggles(&read(&tmp.join(db)))
+    };
+    let collapsed = run("a.ycov", &[]);
+    assert!(
+        collapsed
+            .iter()
+            .any(|t| t.0 == ":in_port_collapse_part:g(1):u"
+                && t.1 == "s(1)"
+                && (t.2, t.3) == (1, 1)),
+        "{collapsed:?}"
+    );
+    assert_eq!(collapsed, run("b.ycov", &["--no-collapse-ports"]));
+}

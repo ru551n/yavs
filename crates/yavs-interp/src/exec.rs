@@ -1153,7 +1153,7 @@ impl Machine {
             .sigs
             .get(base as usize)
             .ok_or_else(|| ice(format!("no instance signal {base}")))?;
-        Ok((s.signal.slice(off, len), s.ty))
+        Ok((s.signal.slice(s.off + off, len), s.ty))
     }
 
     /// The raw entries `[lo, len, slot]` of signal reference `(lo, hi)` in its two registers:
@@ -1191,7 +1191,7 @@ impl Machine {
                     (true, Ok(s)) => Some(s),
                     _ => None,
                 };
-                Ok((s.signal.slice(off, len as u32), s.ty, slot))
+                Ok((s.signal.slice(s.off + off, len as u32), s.ty, slot))
             })
             .collect()
     }
@@ -1302,7 +1302,10 @@ impl Machine {
             .sigs
             .get(d.sig as usize)
             .ok_or_else(|| ice(format!("no instance signal {}", d.sig)))?;
-        Ok((s.signal.slice(d.range.offset, d.range.len), s.ty.elem))
+        Ok((
+            s.signal.slice(s.off + d.range.offset, d.range.len),
+            s.ty.elem,
+        ))
     }
 
     fn msg(&self, m: yavs_ir::CheckMsgId) -> yavs_ir::CheckMsg {

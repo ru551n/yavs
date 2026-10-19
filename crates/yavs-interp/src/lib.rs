@@ -61,6 +61,9 @@ pub struct InstData {
 pub struct InstSig {
     pub signal: SignalId,
     pub ty: SignalType,
+    /// Kernel offset of the object in `signal`: 0, or where an `in` port collapsed into part
+    /// of its actual's leaf starts (yavs-elab `SigObj::part`). Every element offset adds it.
+    pub off: u32,
 }
 
 /// A driver slot of a process: the kernel driver and the signal elements it drives.

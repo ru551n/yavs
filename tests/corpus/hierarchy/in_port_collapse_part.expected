@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:in_port_collapse_part:g(0):u:_p1	s=00 last=00 event=false stable=true n=0 n'delayed=0
+diag	note	0	0	:in_port_collapse_part:g(1):u:_p1	s=00 last=00 event=false stable=true n=0 n'delayed=0
+diag	note	0	0	:in_port_collapse_part:g(2):u:_p1	s=00 last=00 event=false stable=true n=0 n'delayed=0
+diag	note	1000000	1	:in_port_collapse_part:g(2):u:_p1	s=01 last=00 event=true stable=false n=0 n'delayed=0
+diag	note	1000000	1	:in_port_collapse_part:g(1):u:_p1	s=10 last=00 event=true stable=false n=7 n'delayed=0
+diag	note	1000000	1	:in_port_collapse_part:g(0):u:_p1	s=11 last=00 event=true stable=false n=0 n'delayed=0
+diag	note	2000000	0	:in_port_collapse_part:_p0	link=11UU
+diag	note	4000000	0	:in_port_collapse_part:_p0	link=111U
+diag	note	6000000	0	:in_port_collapse_part:_p0	link=1111
+diag	note	8000000	0	:in_port_collapse_part:_p0	link=1111
+diag	note	9000000	1	:in_port_collapse_part:g(1):u:_p1	s=01 last=10 event=true stable=false n=7 n'delayed=7
+diag	note	9000000	1	:in_port_collapse_part:g(2):u:_p1	s=01 last=00 event=false stable=true n=5 n'delayed=0

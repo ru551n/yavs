@@ -842,6 +842,7 @@ impl Elaborated {
             inst.sigs.push(InstSig {
                 signal: yavs_kernel::SignalId(leaf.0),
                 ty: self.nets.leaf(leaf).ty,
+                off: 0,
             });
         }
         InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)
@@ -1095,6 +1096,7 @@ impl Elaborated {
                 inst.sigs.push(InstSig {
                     signal: yavs_kernel::SignalId(u32::MAX),
                     ty: yavs_kernel::SignalType::bytes(1, 0),
+                    off: 0,
                 });
                 continue;
             };
@@ -1121,9 +1123,16 @@ impl Elaborated {
                     s.name, s.path
                 )));
             };
+            // A port collapsed into part of its actual's leaf: that part (`collapse.rs`).
+            let mut ty = self.nets.leaf(leaf).ty;
+            let off = obj.part.map_or(0, |r| {
+                ty.len = r.len;
+                r.offset
+            });
             inst.sigs.push(InstSig {
                 signal: yavs_kernel::SignalId(leaf.0),
-                ty: self.nets.leaf(leaf).ty,
+                ty,
+                off,
             });
         }
         // Variable ports before the constants, whose thunks may call their methods. A port

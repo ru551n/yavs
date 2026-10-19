@@ -101,6 +101,8 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
             let line = f.line_col(span.start).0 as u32;
             for (sig, leaf, k) in out {
                 let n = e.nets.leaves[leaf as usize].ty.len;
+                // A port collapsed into part of its actual's leaf counts that part's bins.
+                let (off, own) = obj.part.map_or((0, n), |r| (r.offset, r.len));
                 let base = *st.base[leaf as usize].get_or_insert_with(|| {
                     let b = st.prev.len() as u32;
                     st.prev.resize(st.prev.len() + n as usize, 2);
@@ -113,7 +115,7 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
                     file: f.path.clone(),
                     line,
                     // Kernel offset 0 is the rightmost element.
-                    bit: base + (n as u64 - 1 - k) as u32,
+                    bit: base + off + (own as u64 - 1 - k) as u32,
                 });
             }
         }

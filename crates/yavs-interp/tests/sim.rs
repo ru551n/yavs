@@ -1372,6 +1372,7 @@ fn elaboration_call() {
         sigs: vec![yavs_interp::InstSig {
             signal: SignalId(0),
             ty: SignalType::bytes(1, 1),
+            off: 0,
         }],
         ..Default::default()
     });

@@ -359,6 +359,7 @@ impl Design {
             sigs.push(InstSig {
                 signal: id,
                 ty: *ty,
+                off: 0,
             });
         }
         let inst = Arc::new(InstData {

@@ -32,6 +32,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 
 | Decision | Why | Source |
 |---|---|---|
+| A signal's entries are kept per kernel leaf in layers of disjoint ranges: a port collapsed into its actual (yavs-elab `collapse.rs`) shares the actual's elements, a part of a leaf (`SigObj::part`) included; each object is still recorded under its own name | #413: the same waves with ports collapsed or kept apart (`tests/wave.rs` `corpus_waves` compares the `hierarchy` and `force` groups both ways) | `docs/decisions.md` "Elaboration" |
 | `wavefst` 0.4.0 for FST, behind our own `WaveWriter` API; no FST code of our own | Enum tables, VHDL var types, reals, header-patching flush | `docs/decisions.md` "Waveform writer: wavefst" |
 | std_logic family and bit written as characters with the VHDL data type set; other enums as bit vectors with an FST enum table (original spelling); integers/time two's complement; reals doubles; vector bounds in the name (`data[7:0]`, left first) | Viewers show `U`, `X`, direction kept | same, "FST mapping" |
 | Records and arrays are scopes with one signal per sub-element | Rule 11 (same sub-element events as everything else) | `docs/plan.md` rule 11 |

@@ -765,9 +765,12 @@ a note and a help suggesting an access type, as the reference simulators reject 
 
 - **`in` ports collapse into their actuals** (R4 of `docs/design/performance.md`, #413, user,
   2026-10-19; plan rule 3): after `bind_late` (`collapse.rs`), the formal of an `in` port (or a
-  component port) whose actual is whole kernel leaves of the same type, one consecutive range,
-  with no conversion, takes the actual's leaves: its own leaves, port edges and the copy per
-  delta are gone, and the leaves are renumbered in their old order. The formal object keeps its
+  component port) whose actual is whole kernel leaves of the same type (one consecutive range
+  of one object), or, for a formal of one leaf, part of one leaf (`d => v(i)`, `s => b(3 downto
+  2)`: `SigObj::part`, the kernel range; yavs-interp `InstSig::off` and every reader of an
+  object's elements add its offset), with no conversion, takes the actual's leaves: its own
+  leaves, port edges and the copy per delta are gone, and the leaves are renumbered in their
+  old order. The formal object keeps its
   name, scope and shape, so waves, `'path_name` and instance data name it as before; a chain
   through a component port collapses to the signal at its end. The effective value of an `in`
   formal is its actual's (LRM 14.7.3.3), so values, events, activity, `'last_value` and implicit
@@ -775,8 +778,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   VHDL force or release names (directly, through an alias or an external name: LRM 10.5.2.1, a
   force of an `in` port acts on the port only; a force of a signal parameter keeps every port
   apart), a formal with a driver, a guard, a user resolution function or in a composite resolved
-  as a whole, an actual that is part of a leaf (`d => v(i)`; it needs a leaf offset in the
-  instance signals), and every port under `--dap` or `--vhpi` (a debugger or plugin may force or
+  as a whole, and every port under `--dap` or `--vhpi` (a debugger or plugin may force or
   deposit any port; edge triggers make the same choice). On by default, `--no-collapse-ports`
   (`ElabConfig::collapse_ports`) keeps every port apart; the difftest corpus runs both ways
   (`YAVS_RUN_FLAGS=--no-collapse-ports`).

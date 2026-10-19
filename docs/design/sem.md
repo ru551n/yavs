@@ -1102,7 +1102,12 @@ pub enum ElemMode { Simple(Mode), View { view: ViewId, converse: bool, array: bo
   on first use.
 - Ports `p : view v` (record) and `p : view (v) of arr_t` (array of record) carry a **mode tree**:
   per element the effective mode. Port association checks per element (an `in` element is not
-  driven inside, etc.) use the same mode tree.
+  driven inside, etc.) use the same mode tree, by the target name's own steps (a non-static
+  `bs(i).ready` drives only `ready`).
+- A call with a view signal parameter drives, in the calling process, one longest static prefix
+  per `out`/`inout`/`buffer` element of the mode tree (`Db::view_driven_paths`, `call_drivers`):
+  the actual's prefix plus the element's field steps, a `Field` after an array meaning that
+  element of every array element (#254).
 - `'converse` of anything but a mode view is `E1621` at the attribute. A nested element view of
   another record type is `E1901` at the view name.
 - In generic units views are cloned with their declaration (record subtype and nested views
@@ -1256,7 +1261,7 @@ Sem takes `E1xxx` / `W1xxx`:
 |---|---|---|
 | E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration or construct not available under the file's or the design's revision (0.1) |
 | E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1104 prefix of a use clause, context reference or expanded name is not a library, package, package instance or context declaration (a missing suffix in a package is E1100), E1105 private/not in visible part, E1106 end label mismatch |
-| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1223 constant, signal, generic, port or constant/signal parameter of an access or file type, E1224 constant without a value outside a package declaration, E1225 bad resolution function, E1230 missing body, E1232 type, subprogram or package interface in a parameter list (4.2.2.1), E1233 named return value of a scalar type (2019, 4.2.1) |
+| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1223 constant, signal, generic, port or constant/signal parameter of an access or file type, E1224 constant without a value outside a package declaration, E1225 bad resolution function, E1230 missing body, E1232 type, subprogram or package interface in a parameter list (4.2.2.1), E1233 named return value of a scalar type (2019, 4.2.1), E1236 parameter of mode `buffer` or `linkage` (4.2.2.1) |
 | E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1304 named return value without a constrained context subtype (2019, 4.2.1), E1310 formal associated twice, E1311 missing actual, E1312 conversion on an unconstrained formal (F8: rejected like the reference simulators), E1313 conversion the formal's class or mode does not allow, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
 | E14xx | static evaluation | E1401 overflow, E1402 literal out of range, E1403 static value outside subtype, E1405 static length mismatch, E1410 choice/range not locally static where required |
 | E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |

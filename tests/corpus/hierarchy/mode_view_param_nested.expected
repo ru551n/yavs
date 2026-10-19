@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	1	:mode_view_param_nested:dst	get 5 count=1
+diag	note	0	2	:mode_view_param_nested:src	put 5 tag='1' count=1
+diag	note	3000000	1	:mode_view_param_nested:dst	get 6 count=2
+diag	note	3000000	2	:mode_view_param_nested:src	put 6 tag='0' count=2

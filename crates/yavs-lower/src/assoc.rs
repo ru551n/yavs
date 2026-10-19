@@ -32,6 +32,12 @@ impl Fx<'_, '_> {
         };
         let sh = shape(db, self.cx, p, span)?;
         if let Shape::RecSig(out) = sh {
+            if let yavs_sem::hir::Mode::View { .. } = p.mode {
+                return Err(self.cx.unsupported(
+                    span,
+                    "individual association of a signal parameter with a mode view",
+                ));
+            }
             return self.rec_sig_parts(f, p, parts, out, span, cells);
         }
         let dope = self.formal_dope(p, parts, span)?;

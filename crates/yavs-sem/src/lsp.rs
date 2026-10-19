@@ -710,17 +710,29 @@ impl Db {
     fn call_drivers(&self, c: &Call, out: &mut Vec<Lsp>) {
         for a in c.args.iter() {
             let (mode, class) = self.formal_mode(c.callee, a.formal);
-            if class != ObjClass::Signal || !matches!(mode, Mode::Out | Mode::Inout | Mode::Buffer)
-            {
+            if class != ObjClass::Signal {
                 continue;
             }
+            // A mode view drives the actual's `out`, `inout` and `buffer` elements only
+            // (6.5.2): one driver per such element of the view's mode tree.
+            let driven: Vec<Vec<LspStep>> = match mode {
+                Mode::Out | Mode::Inout | Mode::Buffer => vec![Vec::new()],
+                Mode::View { .. } => self.view_driven_paths(mode),
+                _ => continue,
+            };
             let mut es = Vec::new();
             self.walk_actual_top(&a.actual, Use::Target, &mut |e, _| es.push(e));
             for e in es {
                 if let Some(l) = self.signal_lsp(e)
                     && !self.is_param(l.root)
                 {
-                    push_unique(self, out, l);
+                    for p in &driven {
+                        let mut l = l.clone();
+                        if !p.is_empty() {
+                            l.path = l.path.iter().chain(p).cloned().collect();
+                        }
+                        push_unique(self, out, l);
+                    }
                 }
             }
         }

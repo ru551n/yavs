@@ -1,0 +1,11 @@
+exit	0
+diag	note	2000000	1	:mode_view_param_array:low	answer 1 data=101
+diag	note	2000000	2	:mode_view_param_array:g(1):_p0	ready 1
+diag	note	4000000	1	:mode_view_param_array:low	answer 2 data=102
+diag	note	4000000	1	:mode_view_param_array:low	low answered
+diag	note	4000000	2	:mode_view_param_array:g(2):_p0	ready 2
+diag	note	6000000	1	:mode_view_param_array:high	answer 3 data=103
+diag	note	6000000	2	:mode_view_param_array:g(3):_p0	ready 3
+diag	note	8000000	1	:mode_view_param_array:high	answer 4 data=104
+diag	note	8000000	1	:mode_view_param_array:high	high answered
+diag	note	8000000	2	:mode_view_param_array:g(4):_p0	ready 4

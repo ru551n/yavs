@@ -1257,7 +1257,7 @@ impl Db {
         };
         if let ObjRoot::Decl(d) = l.root {
             // Ports with a mode view: no `in` element below the target (E1903).
-            self.check_view_drive(d, &l.path, span)?;
+            self.check_view_drive(d, &self.view_name_path(e), span)?;
         }
         Ok(Box::new([l]))
     }

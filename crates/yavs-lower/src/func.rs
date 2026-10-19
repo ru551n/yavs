@@ -35,8 +35,12 @@ pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
     match p.class {
         ObjClass::Signal if ty::has_record(db, db.base(p.subtype)) => match p.mode {
             HMode::In => return Ok(Shape::RecSig(false)),
-            HMode::Out | HMode::Inout => return Ok(Shape::RecSig(true)),
-            _ => return Err(cx.unsupported(span, "buffer, linkage and view signal parameters")),
+            // A mode view drives only its `out`, `inout` and `buffer` leaves, each through
+            // the slot its reference carries (`Fx::view_leaves`).
+            HMode::Out | HMode::Inout | HMode::View { .. } => return Ok(Shape::RecSig(true)),
+            HMode::Buffer | HMode::Linkage => {
+                return Err(cx.ice(span, "buffer or linkage parameter (sem reports E1236)"));
+            }
         },
         ObjClass::Signal
             if !ty::is_array(db, db.base(p.subtype))
@@ -49,7 +53,10 @@ pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
             return Ok(Shape::SigOut);
         }
         ObjClass::Signal => {
-            return Err(cx.unsupported(span, "buffer, linkage and view signal parameters"));
+            return Err(cx.ice(
+                span,
+                "buffer, linkage or view parameter of a scalar or array",
+            ));
         }
         // A file object is passed as the address of its cell (yavs-ir README, natives).
         ObjClass::File => return Ok(Shape::Ref),
@@ -77,7 +84,7 @@ pub(crate) fn shape(db: &Db, cx: &mut Cx, p: &Param, span: Span) -> R<Shape> {
     match p.mode {
         HMode::In => Ok(Shape::Val),
         HMode::Out | HMode::Inout => Ok(Shape::Ref),
-        _ => Err(cx.unsupported(span, "buffer, linkage and view parameters")),
+        _ => Err(cx.ice(span, "buffer or linkage parameter (sem reports E1236)")),
     }
 }
 

@@ -979,6 +979,16 @@ impl Fx<'_, '_> {
     /// The driver slot of a target's longest static prefix: the `ProcessInfo::drivers` entry
     /// with the same root and path (slots are 1:1 with those entries, as yavs-elab expects).
     pub(crate) fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
+        match self.driver_index(lsp) {
+            Some(k) => Ok(self.driver_base.get(k).copied().unwrap_or(k as u32)),
+            None => Err(self
+                .cx
+                .ice(lsp.span, "signal target without a driver of the process")),
+        }
+    }
+
+    /// The `ProcessInfo::drivers` entry through which `lsp` is driven.
+    pub(crate) fn driver_index(&self, lsp: &Lsp) -> Option<usize> {
         let key = format!("{:?}{:?}", lsp.root, lsp.path);
         let exact = self
             .drivers
@@ -995,12 +1005,7 @@ impl Fx<'_, '_> {
         };
         // The same prefix written again (`s(1) <= ..` twice): sem kept the first one.
         let same = || self.drivers.iter().position(|l| self.db.same_lsp(l, lsp));
-        match exact.or_else(same).or_else(prefix) {
-            Some(k) => Ok(self.driver_base.get(k).copied().unwrap_or(k as u32)),
-            None => Err(self
-                .cx
-                .ice(lsp.span, "signal target without a driver of the process")),
-        }
+        exact.or_else(same).or_else(prefix)
     }
 
     /// A composite signal part with records (or several leaves) as a target: each leaf is

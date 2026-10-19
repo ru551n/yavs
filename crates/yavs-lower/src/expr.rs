@@ -708,6 +708,100 @@ impl<'a> Fx<'a, '_> {
         Ok(self.int(i64::from(base + k as u32)))
     }
 
+    /// The leaf references of actual `e` (part `part` of signal `d`) for a signal formal
+    /// `p` with a mode view, then the unused slot cell: a leaf the view drives (`out`,
+    /// `inout`, `buffer`) is a reference of one part carrying its own driver slot, since
+    /// the process drives only those leaves and their slots need not be consecutive.
+    fn view_leaves(
+        &mut self,
+        p: &Param,
+        d: DeclId,
+        e: ExprId,
+        part: &SigPart,
+        span: Span,
+        cells: &mut Vec<Reg>,
+    ) -> R<()> {
+        let db = self.db;
+        let tree = db.port_mode_tree(p.mode);
+        let lsp = match self.cx.objs.get(&d) {
+            Some(Obj::RecSignal(Some(_))) => None,
+            _ => Some(self.db.lsp(e).ok_or_else(|| {
+                self.cx
+                    .ice(span, "signal actual without a longest static prefix")
+            })?),
+        };
+        for (leaf, r, _) in &part.leaves {
+            let rel = &leaf.path[part.path.len().min(leaf.path.len())..];
+            let mode = tree.leaf_mode(rel);
+            if !matches!(
+                mode,
+                Some(
+                    yavs_sem::hir::Mode::Out
+                        | yavs_sem::hir::Mode::Inout
+                        | yavs_sem::hir::Mode::Buffer
+                )
+            ) {
+                cells.push(*r);
+                continue;
+            }
+            let slot = match &lsp {
+                // A signal parameter passed on: its slot cell plus the leaf's index (a leaf
+                // that came with its own slot keeps it, `Inst::SigParts`).
+                None => {
+                    let Some(Obj::RecSignal(Some(rp))) = self.cx.objs.get(&d).copied() else {
+                        return Err(self.cx.ice(span, "signal parameter without its cells"));
+                    };
+                    let a = self.addr(rp.space, rp.slot_off());
+                    let base = self.load(a, Width::B8, RegTy::I64);
+                    let k = self.int(i64::from(leaf.sig));
+                    self.bin(IntOp::Add, base, k)
+                }
+                // The driver sem collected for this leaf of the actual, and the leaf's
+                // position below it.
+                Some(l) => {
+                    let mut l = l.clone();
+                    l.path = l
+                        .path
+                        .iter()
+                        .cloned()
+                        .chain(rel.iter().map(|&f| yavs_sem::hir::LspStep::Field(f)))
+                        .collect();
+                    let Some(k) = self.driver_index(&l) else {
+                        return Err(self
+                            .cx
+                            .ice(span, "view element without a driver of the process"));
+                    };
+                    let base = self.driver_base.get(k).copied().unwrap_or(k as u32);
+                    let under = crate::func::lsp_fields(&self.drivers[k]);
+                    let covered = self.leaves_under(d, &under);
+                    let Some(j) = covered.iter().position(|c| c.path == leaf.path) else {
+                        return Err(self.cx.ice(span, "view element outside its driver"));
+                    };
+                    self.int(i64::from(base + j as u32))
+                }
+            };
+            let table = self.alloc_n(yavs_ir::SIG_PART_BYTES);
+            self.store(table, *r, Width::Sig);
+            let s = self.offset(table, 16);
+            self.store(s, slot, Width::B8);
+            let f = self.offset(table, 24);
+            let z = self.int(0);
+            self.store(f, z, Width::B8);
+            let dst = self.reg(RegTy::Sig);
+            let one = self.int(1);
+            self.emit(Inst::SigParts {
+                dst,
+                parts: table,
+                n: one,
+            });
+            cells.push(dst);
+        }
+        // Every driven leaf carries its slot.
+        let none = self.int(-1);
+        cells.push(none);
+        Ok(())
+    }
+
     /// The signal an expression names.
     pub fn sig_expr(&mut self, e: ExprId) -> R<Reg> {
         Ok(self.sig_name(e)?.1)
@@ -2207,10 +2301,14 @@ impl<'a> Fx<'a, '_> {
                     if part.leaves.len() != ty::leaves(db, p.subtype).len() {
                         return Err(self.cx.ice(es, "record signal actual of another type"));
                     }
-                    cells.extend(part.leaves.iter().map(|(_, r, _)| *r));
-                    if out {
-                        let slot = self.leaf_slot(d, e, &part, es)?;
-                        cells.push(slot);
+                    if let yavs_sem::hir::Mode::View { .. } = p.mode {
+                        self.view_leaves(p, d, e, &part, es, &mut cells)?;
+                    } else {
+                        cells.extend(part.leaves.iter().map(|(_, r, _)| *r));
+                        if out {
+                            let slot = self.leaf_slot(d, e, &part, es)?;
+                            cells.push(slot);
+                        }
                     }
                     let t = self.ty(db.base(p.subtype), es)?;
                     if Ty::needs_desc(self.fb.program().types(), t) {

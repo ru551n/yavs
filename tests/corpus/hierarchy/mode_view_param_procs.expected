@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	1	:mode_view_param_procs:ack(0):_p0	ack 0 data=10
+diag	note	0	4	:mode_view_param_procs:p0	p0 done
+diag	note	1000000	1	:mode_view_param_procs:ack(1):_p0	ack 1 data=20
+diag	note	1000000	4	:mode_view_param_procs:p1	p1 done
+diag	note	2000000	1	:mode_view_param_procs:ack(2):_p0	ack 2 data=30
+diag	note	2000000	5	:mode_view_param_procs:ack(2):_p0	ack 2 data=31
+diag	note	2000000	8	:mode_view_param_procs:p2	p2 done

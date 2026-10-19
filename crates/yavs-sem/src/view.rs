@@ -13,8 +13,8 @@ use crate::LangRev;
 use crate::db::{Db, Reported};
 use crate::decl::{Decl, DeclKind};
 use crate::diag;
-use crate::hir::LspStep;
-use crate::ids::{DeclId, ScopeId, SubtypeId, TypeId, ViewId};
+use crate::hir::{ExprKind, LspStep};
+use crate::ids::{DeclId, ExprId, ScopeId, SubtypeId, TypeId, ViewId};
 use crate::types::TypeKind;
 
 pub use crate::hir::Mode;
@@ -87,6 +87,24 @@ impl ModeTree {
         let mut out = Vec::new();
         walk(self, &mut Vec::new(), &mut out);
         out
+    }
+
+    /// The mode of the leaf at field path `path` (array levels are passed through), `None`
+    /// when the path leaves the tree.
+    pub fn leaf_mode(&self, path: &[u32]) -> Option<Mode> {
+        let mut t = self;
+        let mut p = path;
+        loop {
+            match t {
+                ModeTree::Leaf(m) => return Some(*m),
+                ModeTree::Array(e) => t = e,
+                ModeTree::Record { elems, .. } => {
+                    let (&f, rest) = p.split_first()?;
+                    t = elems.get(f as usize)?;
+                    p = rest;
+                }
+            }
+        }
     }
 
     /// The subtree a longest static prefix path selects. Index and slice
@@ -450,6 +468,29 @@ impl Db {
         }
     }
 
+    /// The paths below a signal with mode view `m` to the elements it drives (`out`,
+    /// `inout`, `buffer`), outermost first. A `Field` step after an array (`view (v) of
+    /// arr_t`) names that element of every array element.
+    pub fn view_driven_paths(&self, m: Mode) -> Vec<Vec<LspStep>> {
+        fn walk(t: &ModeTree, path: &mut Vec<LspStep>, out: &mut Vec<Vec<LspStep>>) {
+            match t {
+                ModeTree::Leaf(Mode::Out | Mode::Inout | Mode::Buffer) => out.push(path.clone()),
+                ModeTree::Leaf(_) => {}
+                ModeTree::Record { elems, .. } => {
+                    for (i, e) in elems.iter().enumerate() {
+                        path.push(LspStep::Field(i as u32));
+                        walk(e, path, out);
+                        path.pop();
+                    }
+                }
+                ModeTree::Array(e) => walk(e, path, out),
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.port_mode_tree(m), &mut Vec::new(), &mut out);
+        out
+    }
+
     /// The mode tree of view `v`, `converse` applied to every leaf.
     pub fn view_tree(&self, v: ViewId, converse: bool) -> ModeTree {
         let vd = &self.views[v];
@@ -475,6 +516,35 @@ impl Db {
         ModeTree::Record {
             ty: self.base(vd.record),
             elems,
+        }
+    }
+
+    /// The steps of name `e` below its root object, through object aliases, static or
+    /// not: a target `bs(i).ready` drives only `ready`, whatever its longest static prefix.
+    pub fn view_name_path(&self, e: ExprId) -> Vec<LspStep> {
+        match &self.exprs[e].kind {
+            ExprKind::Obj(d) => match &self.decls[*d].kind {
+                DeclKind::Alias(crate::decl::Alias::Object { target, .. }) => {
+                    self.view_name_path(*target)
+                }
+                _ => Vec::new(),
+            },
+            ExprKind::Field { prefix, elem } => {
+                let mut p = self.view_name_path(*prefix);
+                p.push(LspStep::Field(*elem));
+                p
+            }
+            ExprKind::Index { prefix, indices } => {
+                let mut p = self.view_name_path(*prefix);
+                p.push(LspStep::Index(indices.clone()));
+                p
+            }
+            ExprKind::Slice { prefix, range } => {
+                let mut p = self.view_name_path(*prefix);
+                p.push(LspStep::Slice(range.clone()));
+                p
+            }
+            _ => Vec::new(),
         }
     }
 

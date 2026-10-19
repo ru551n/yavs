@@ -493,6 +493,24 @@ impl NetGraph {
                     window = Some((*ty, b, base));
                     shape = elem;
                 }
+                // That element of every element of an array of records: a driver of a mode
+                // view signal parameter of an array (`view (v) of arr_t`, sem
+                // `view_driven_paths`). The shape returned is the element's, not an array.
+                (Sel::Field(f), _) if window.is_some() || matches!(shape, Shape::Array { .. }) => {
+                    if window.take().is_none() {
+                        while let Shape::Array { elem, .. } = shape {
+                            let n = shape.len();
+                            (offset, count, outer) = (offset * n, count * n, outer * n);
+                            shape = elem;
+                        }
+                    }
+                    let Shape::Record { fields, .. } = shape else {
+                        return Err("selector does not apply to this subtype".into());
+                    };
+                    let (_, fs) = fields.get(*f as usize).ok_or("no such record element")?;
+                    path.push(*f);
+                    shape = fs;
+                }
                 _ => return Err("selector does not apply to this subtype".into()),
             }
         }

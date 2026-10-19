@@ -940,6 +940,19 @@ which tools/difftest parses.
   or other such parameters. A part of a composite signal as an `out` actual (of either
   kind of formal) drives its first leaf through the slot of the actual's longest static
   prefix plus the leaf's position below that prefix (`Fx::leaf_slot`).
+- **Signal parameters with a mode view** (#254, LRM 6.5.2): a call drives only the actual's
+  `out`, `inout` and `buffer` elements, so sem gives the calling process one driver per such
+  element of the view's mode tree (`Db::view_driven_paths`: the actual's longest static prefix
+  plus the element's field steps; after an array the `Field` step means that element of every
+  array element, which `NetGraph::select` maps to the leaf's elements over the whole array).
+  The formal is passed like an `inout` record signal parameter, except that each driven leaf is
+  a reference of one part carrying its own driver slot (`Inst::SigParts`) and the slot cell is
+  `-1`: the driven leaves' slots need not be consecutive. A view parameter passed on keeps those
+  slots. Individual association of a view formal is `E2001`. Driving a non-static name below a
+  view (`bs(i).ready`) is checked against the view by the name's own steps, not its longest
+  static prefix (`E1903` only for an `in` element below the name).
+- **`buffer` and `linkage` subprogram parameters** are `E1236` (LRM 4.2.2.1; the reference
+  simulators reject them too); a view may still give an element those modes.
 - **Package signals with records in their type** are one package signal per leaf, like
   architecture signals; the whole type's descriptor is in package data (#215).
 - **Attributes of a part over several leaves** (#215, LRM 16.2.4): `'event` and `'active`

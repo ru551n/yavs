@@ -136,6 +136,7 @@ An installed binary finds `lib/` next to itself (#43).
   architecture. Initializer-bound signals elaborate and run (#187; records and arrays of records with such fields, #215);
   variable ports elaborate and run (#188): the actual is a shared variable or a variable port
   of the same type, never `open` or unassociated (`E1311`).
+- Differential corpus (#163, #181): `implicit/` covers the implicit operations end to end (radix strings, arithmetic and logic, access and file operations, edges, record equality, `hand_edges` for the LRM cases where the reference simulator deviates); `hierarchy/external_*` covers external names as port actuals (absolute, relative, generate-indexed, package). Implicit native symbols separate the operand-shape form with `#`.
 - 2019 conditional expressions (`a when c else b` in initial values, assignments, actuals,
   `return` and parentheses), the conditional `return` and `unaffected` in variable and force
   assignments analyze, lower and run (#33; difftest `process/conditional_expr_2019`,

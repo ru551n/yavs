@@ -48,7 +48,7 @@ use crate::types::{Constraint, TypeKind};
 #[cfg(test)]
 mod tests;
 
-/// The native link of an implicit op is `yavs.implicit.<family>.<type mangled>[.<form>]`
+/// The native link of an implicit op is `yavs.implicit.<family>.<type mangled>[#<form>]`
 /// (`mangle::implicit_native`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImplicitOp {

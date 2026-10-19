@@ -761,6 +761,11 @@ which tools/difftest parses.
 
 ## Implicit operation natives (yavs-interp `implicit.rs`)
 
+- **Symbol form separator** (#163): the operand-shape suffix of an implicit native follows `#`
+  (`yavs.implicit.cat.<type>#ss`), because a dot made a type named `pi`, `ss` or `reduce`
+  ambiguous with a form. Records never reach the natives: lowering inlines record equality.
+  Contracts for calls that do reach a native (`cat`, `rising_edge`, `deallocate`) are in
+  `crates/yavs-lower/DESIGN.md` "Requests from yavs-interp".
 - **Shifts with a negative count** follow LRM 9.2.4 (`sla -k` is `sra k`, `sra -k` is `sla k`),
   as the second reference simulator does. The reference simulator fills from the wrong end for negative arithmetic shifts.
 - **Concatenation bounds** follow LRM 2008 9.2.5: two null operands give the right operand;

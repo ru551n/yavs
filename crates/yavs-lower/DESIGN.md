@@ -364,7 +364,7 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
 
 From yavs-interp (2026-10-18, #163), the implicit natives (`yavs-interp/src/implicit.rs`):
 
-1. **Null concatenation bounds.** The inline `&` takes `S'LEFT` as the left bound also when
+1. **Null concatenation bounds** (done; `implicit/hand_edges` checks it end to end). The inline `&` takes `S'LEFT` as the left bound also when
    both operands are null arrays; LRM 2008 9.2.5 says the result is then the right operand.
    `x & y` with `x : bit_vector(5 to 4)` and `y : bit_vector(9 downto 10)` gives `0 to -1`,
    the LRM wants `9 downto 10` (the reference simulator 1.23 fails on this case, so a corpus test needs

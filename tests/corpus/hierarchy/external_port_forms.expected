@@ -1,0 +1,9 @@
+exit	0
+diag	note	3000000	0	:external_port_forms:p:m:_p0	rel early=3
+diag	note	3000000	0	:external_port_forms:p:mu:_p0	up early=3
+diag	note	3000000	0	:external_port_forms:mg:_p0	gen2 early=200
+diag	note	3000000	0	:external_port_forms:mk:_p0	pkg early=1
+diag	note	7000000	0	:external_port_forms:mk:_p0	pkg late=7
+diag	note	7000000	0	:external_port_forms:p:m:_p0	rel late=13
+diag	note	7000000	0	:external_port_forms:p:mu:_p0	up late=13
+diag	note	7000000	0	:external_port_forms:mg:_p0	gen2 late=210

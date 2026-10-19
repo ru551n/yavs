@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:hand_edges:_p0	v sra -1 = 0111
+diag	note	0	0	:hand_edges:_p0	v sla -1 = 1101
+diag	note	0	0	:hand_edges:_p0	null cat: 9 10

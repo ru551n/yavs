@@ -1,4 +1,4 @@
-//! Natives of the implicitly declared operations: `yavs.implicit.<family>.<type>[.<form>]`
+//! Natives of the implicitly declared operations: `yavs.implicit.<family>.<type>[#<form>]`
 //! (lib/NATIVE.md section 2; families and forms are yavs-sem's `implicit::Family`/`Form`).
 //! The file families (`file_open` .. `file_canseek`) are in `textio.rs`.
 //!
@@ -16,7 +16,7 @@
 //! BIT and BOOLEAN elements of bit-plane arrays are read as positions 0/1 or as the codes of
 //! '0'/'1', and written as the codes 2/3 (docs/decisions.md). Only arrays of scalar elements
 //! are handled; others are a "not implemented" runtime error, as lowering does not produce them
-//! yet.
+//! (record equality is inlined, tests/corpus/implicit/record_eq).
 
 use std::cmp::Ordering;
 
@@ -33,9 +33,8 @@ use crate::native::{NativeFn, lit, scalar_text};
 pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
     let rest = symbol.strip_prefix("yavs.implicit.")?;
     let (fam, ty) = rest.split_once('.')?;
-    // ponytail: the form is the last segment when it is a form suffix; sem's mangling makes a
-    // type named like a suffix (`pi`) ambiguous, give implicit symbols a separator if that bites.
-    let form = ty.rsplit('.').next().filter(|f| FORMS.contains(f));
+    // The form follows `#`, which no type name contains.
+    let form = ty.split_once('#').map(|(_, f)| f).filter(|f| FORMS.contains(f));
     let f: NativeFn = match (fam, form.unwrap_or("")) {
         ("eq", "") => |m, _, t, a| rel(m, t, a, Rel::Eq),
         ("neq", "") => |m, _, t, a| rel(m, t, a, Rel::Ne),
@@ -373,7 +372,7 @@ fn rel(m: &mut Machine, t: Option<TyId>, a: &[u64], r: Rel) -> R<Option<u64>> {
             }
         }
         Ty::Record { .. } => {
-            return rt_err("predefined \"=\" on record types is not implemented yet (M3)");
+            return rt_err("predefined \"=\" on record types is not a native (lowering inlines it)");
         }
         _ => r.holds(order(scalar(m, t)?, x, y)?),
     };
@@ -1094,7 +1093,7 @@ mod tests {
         assert_eq!(text(&mut t, BV, r), ("1010".into(), (0, 3, false)));
         let r = call(
             &mut t,
-            "yavs.implicit.cat.std.standard.bit_vector.ss",
+            "yavs.implicit.cat.std.standard.bit_vector#ss",
             BV,
             &[1, 0, 10, 0, 1],
         )
@@ -1102,7 +1101,7 @@ mod tests {
         assert_eq!(text(&mut t, BV, r), ("10".into(), (10, 9, true)));
         let r = call(
             &mut t,
-            "yavs.implicit.cat.std.standard.bit_vector.as",
+            "yavs.implicit.cat.std.standard.bit_vector#as",
             BV,
             &[n1, 1, 0, 2147483647, 0],
         )
@@ -1128,20 +1127,20 @@ mod tests {
             ("nor", 1, 0),
             ("xnor", 1, 1),
         ] {
-            let s = format!("yavs.implicit.{op}.std.standard.bit_vector.reduce");
+            let s = format!("yavs.implicit.{op}.std.standard.bit_vector#reduce");
             assert_eq!(call(&mut t, &s, BV, &[e]), Ok(empty), "{op}");
             assert_eq!(call(&mut t, &s, BV, &[v]), Ok(full), "{op}");
         }
         let r = call(
             &mut t,
-            "yavs.implicit.xor.std.standard.bit_vector.sa",
+            "yavs.implicit.xor.std.standard.bit_vector#sa",
             BV,
             &[1, v],
         );
         assert_eq!(text(&mut t, BV, r.unwrap()).0, "01001101");
         let r = call(
             &mut t,
-            "yavs.implicit.nand.std.standard.bit_vector.as",
+            "yavs.implicit.nand.std.standard.bit_vector#as",
             BV,
             &[v, 1],
         );
@@ -1234,11 +1233,11 @@ mod tests {
             let el = v.iter().map(|&x| x as u64).collect();
             write_arr(&mut t.m, IV, &Arr::one(0, v.len() as i64 - 1, false, el)).unwrap()
         };
-        let red = "yavs.implicit.minimum.std.standard.integer_vector.reduce";
+        let red = "yavs.implicit.minimum.std.standard.integer_vector#reduce";
         let (a, e) = (iv(&mut t, &[3, -2, 7]), iv(&mut t, &[]));
         assert_eq!(call(&mut t, red, IV, &[a]), Ok(i(-2)));
         assert_eq!(call(&mut t, red, IV, &[e]), Ok(2147483647));
-        let red = "yavs.implicit.maximum.std.standard.integer_vector.reduce";
+        let red = "yavs.implicit.maximum.std.standard.integer_vector#reduce";
         assert_eq!(call(&mut t, red, IV, &[e]), Ok(i(-2147483648)));
         let lt = "yavs.implicit.lt.std.standard.integer_vector";
         let (p, q) = (iv(&mut t, &[1, 2]), iv(&mut t, &[1, 2, 0]));
@@ -1280,7 +1279,7 @@ mod tests {
         .unwrap();
         let s = "yavs.implicit.to_string.std.standard.integer_vector";
         assert_eq!(to_s(&mut t, s, IV, &[iv]), "(1,-2,3)");
-        let d = "yavs.implicit.to_string.std.standard.real.digits";
+        let d = "yavs.implicit.to_string.std.standard.real#digits";
         assert_eq!(to_s(&mut t, d, REAL, &[1.5f64.to_bits(), 3]), "1.500");
     }
 
@@ -1289,5 +1288,13 @@ mod tests {
         assert!(lookup("yavs.implicit.file_open.std.textio.text").is_none());
         assert!(lookup("yavs.env.stop.void").is_none());
         assert!(lookup("yavs.implicit.eq.work.p.t").is_some());
+    }
+
+    #[test]
+    fn a_type_named_like_a_form_is_not_a_form() {
+        // `mul` of a user type `pi` is the plain one; `mul` of `bit#pi` is the physical form.
+        assert!(lookup("yavs.implicit.mul.work.p.pi").is_some());
+        assert!(lookup("yavs.implicit.cat.work.p.ss").is_some());
+        assert!(lookup("yavs.implicit.cat.work.p.ss#ss").is_some());
     }
 }

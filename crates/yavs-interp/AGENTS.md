@@ -26,7 +26,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | `src/exec.rs` | `Machine`: instruction dispatch, checked arithmetic via `yavs-std`, checks with reference-simulator-compatible texts, signal ops mapped 1:1 to `Ctx`, faults (`rt_err`, `ice`) |
 | `src/heap.rs` | `Heap`: generational handles `{tag: u8, index: u24, generation: u32}` in a u64 (private `PRIVATE`, shared `SHARED`), mark and sweep from explicit roots and pinned slots, quarantine of deallocated slots (`recycle`) |
 | `src/native.rs` | Native dispatch keyed by `lib/NATIVE.md` symbol |
-| `src/implicit.rs` | `yavs.implicit.<family>.<type>[.<form>]` operations |
+| `src/implicit.rs` | `yavs.implicit.<family>.<type>[#<form>]` operations |
 | `src/textio.rs` | std.textio and TEXT file natives, `FILE_INPUT`/`FILE_OUTPUT`, std.env glue |
 | `src/binfile.rs` | `read`/`write` on files of scalars and arrays of scalars (on-disk format: decisions.md "Binary files") |
 | `src/env.rs` | 2019 std.env: call paths (`Sources`), the VHDL assert state (`Asserts`, cycle-deterministic), time_record |

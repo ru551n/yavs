@@ -77,7 +77,7 @@ pub fn subprogram(
     )
 }
 
-/// The native link of an implicit operation: `yavs.implicit.<family>.<type>[.<form>]`.
+/// The native link of an implicit operation: `yavs.implicit.<family>.<type>[#<form>]`.
 pub fn implicit_native(db: &Db, op: &ImplicitOp) -> String {
     let mut s = format!(
         "yavs.implicit.{}.{}",
@@ -85,7 +85,7 @@ pub fn implicit_native(db: &Db, op: &ImplicitOp) -> String {
         type_name(db, op.ty)
     );
     if let Some(f) = op.form.suffix() {
-        s.push('.');
+        s.push('#');
         s.push_str(f);
     }
     s

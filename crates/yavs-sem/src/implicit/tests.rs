@@ -763,8 +763,8 @@ fn natives_names_and_revisions() {
         "yavs.implicit.eq.work.p.i",
         "yavs.implicit.exp.work.p.i",
         "yavs.implicit.file_open.work.p.fi",
-        "yavs.implicit.file_open.work.p.fi.status",
-        "yavs.implicit.file_open.work.p.fi.function",
+        "yavs.implicit.file_open.work.p.fi#status",
+        "yavs.implicit.file_open.work.p.fi#function",
     ] {
         assert!(natives.iter().any(|n| n == want), "{want} in {natives:#?}");
     }

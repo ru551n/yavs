@@ -289,7 +289,9 @@ These have no source declaration at all (the IEEE `standard.vhdl` lists them in 
 The semantic analyzer creates them with every type declaration (LRM 5.2.6, 5.3.2.4, 5.4.2, 5.5.2,
 5.6.2, 7.2 and 16.3 `TO_STRING` rules); yavs-std provides one generic implementation
 per family, keyed by the type class, with the family symbol below. Individual symbols are
-`yavs.implicit.<family>.<type>`.
+`yavs.implicit.<family>.<type>[#<form>]`: the optional form after `#` (operand shapes such as
+`as`, `sa`, `ss`, `reduce`, `pi`; `status`, `function`, `digits`) is separated by a character no
+type name contains, so a type named like a form stays unambiguous.
 
 | Family symbol | Applies to | Revision |
 |---|---|---|

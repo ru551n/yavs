@@ -6,6 +6,7 @@ macro_rules! keywords {
     ($($kw:ident = $s:literal,)*) => {
         /// A reserved word.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(serde::Serialize, serde::Deserialize)]
         pub enum Kw { $($kw,)* }
 
         impl Kw {

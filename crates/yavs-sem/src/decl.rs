@@ -15,7 +15,7 @@ use crate::implicit::ImplicitOp;
 use crate::types::BoundsFrom;
 
 /// The name of a declaration, original spelling kept (rule 8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Designator {
     Ident(Ident),
     /// Operator symbol as written between the quotes (`"AND"`), plus its folded key.
@@ -108,6 +108,7 @@ pub fn char_key(c: char) -> Symbol {
     Symbol::intern(&format!("'{c}'"))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Decl {
     pub name: Designator,
     pub kind: DeclKind,
@@ -129,6 +130,7 @@ impl Decl {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum DeclKind {
     Library(LibId),
     Unit(UnitId),
@@ -186,7 +188,7 @@ pub enum DeclKind {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ObjClass {
     Constant,
     Signal,
@@ -196,7 +198,7 @@ pub enum ObjClass {
 }
 
 /// What kind of declaration made the object.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ObjRole {
     Plain,
     /// `constant c : t;` in a package, completed in the body.
@@ -212,6 +214,7 @@ pub enum ObjRole {
     Guard,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Object {
     pub class: ObjClass,
     pub role: ObjRole,
@@ -224,12 +227,13 @@ pub struct Object {
     pub file_open: Option<(Option<ExprId>, ExprId)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubprogramKind {
     Function { pure: bool },
     Procedure,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Subprogram {
     pub kind: SubprogramKind,
     pub params: Box<[Param]>,
@@ -243,6 +247,7 @@ pub struct Subprogram {
     pub mangled: Symbol,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Param {
     pub name: Ident,
     pub class: ObjClass,
@@ -253,6 +258,7 @@ pub struct Param {
     pub decl: Option<DeclId>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Body {
     /// Spec analyzed, body not yet seen.
     Pending,
@@ -272,6 +278,7 @@ pub enum Body {
     Interface,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Alias {
     Object {
         /// A static name.
@@ -282,6 +289,7 @@ pub enum Alias {
     NonObject { target: DeclId },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Component {
     pub scope: ScopeId,
     pub generics: Box<[DeclId]>,

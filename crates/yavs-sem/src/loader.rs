@@ -20,7 +20,7 @@ use crate::diag;
 use crate::hir::UnitHir;
 use crate::ids::{DeclId, LibId, ScopeId, UnitId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum UnitKey {
     /// Primary units share one namespace per library.
     Primary(Symbol),
@@ -55,6 +55,7 @@ impl UnitKey {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum UnitSlot {
     NotLoaded {
         file: PathBuf,
@@ -64,6 +65,33 @@ pub enum UnitSlot {
     Done(UnitId),
     /// Its errors were reported; dependents stay silent (8.2).
     Failed,
+}
+
+/// An image stores only which kind of source a library has; `Db::from_image` attaches the
+/// current manifest or std tree again (image.rs).
+mod source_tag {
+    use super::LibSource;
+
+    pub fn serialize<S: serde::Serializer>(v: &LibSource, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(match v {
+            LibSource::Manifest(_) => 0,
+            LibSource::StdDir(_) => 1,
+            LibSource::Files => 2,
+        })
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibSource, D::Error> {
+        Ok(match <u8 as serde::Deserialize>::deserialize(d)? {
+            0 => LibSource::Manifest(yavs_lib::Manifest {
+                format: 0,
+                name: String::new(),
+                files: Vec::new(),
+            }),
+            1 => LibSource::StdDir(std::path::PathBuf::new()),
+            2 => LibSource::Files,
+            _ => return Err(serde::de::Error::custom("bad library source tag")),
+        })
+    }
 }
 
 pub enum LibSource {
@@ -78,15 +106,17 @@ pub enum LibSource {
     Files,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Library {
     pub name: Ident,
     /// The library's own `DeclKind::Library` entity.
     pub decl: DeclId,
+    #[serde(with = "source_tag")]
     pub source: LibSource,
     pub units: HashMap<UnitKey, UnitSlot>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnitKind {
     Entity,
     Architecture,
@@ -97,6 +127,7 @@ pub enum UnitKind {
     Configuration,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub lib: LibId,
     pub key: UnitKey,

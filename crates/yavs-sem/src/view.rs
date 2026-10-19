@@ -19,6 +19,7 @@ use crate::types::TypeKind;
 
 pub use crate::hir::Mode;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ViewDef {
     pub decl: DeclId,
     pub record: SubtypeId,
@@ -28,7 +29,7 @@ pub struct ViewDef {
     pub converse: Option<ViewId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ElemMode {
     Simple(Mode),
     View {

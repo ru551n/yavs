@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
-  `yavs-kernel`, `yavs-wave`, `yavs-dap` (`--dap`), `yavs-cov` (`--cov`, `cov`), `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
+  `yavs-kernel`, `yavs-wave`, `yavs-cache`, `yavs-dap` (`--dap`), `yavs-cov` (`--cov`, `cov`), `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
   `yavs-llvm` (M6). Nothing depends on this crate.
 
 ## 2. Map
@@ -21,10 +21,12 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
 | `src/cov.rs` | `yavs cov merge`, `yavs cov report` (`--exclude`, `--uncovered`, `--tests`, `--html`, `-W`; E0110, E0111, E0112, E0113) and `yavs cov rank` |
 | `src/gui.rs` | `run --gui`: starts `yavs-gui --yavs <this exe> -- <run args>` (next to the exe, else PATH; E0122), exit status passed through |
+| `src/cache.rs` | The compilation cache in front of analysis (`analyze_closure`: key from options and closure files, `yavs_cache::Store` of the work library, `Db::from_image` or analysis from source then `to_image`), `yavs cache clean` (E0123) |
 | `src/timing.rs` | `--time-report`: phase marks (`mark`, one atomic load when off), `report` to stderr; CPU from `/proc/self/stat` (10 ms steps, no new dependency) |
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
 | `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107), `use_llvm` (`--tier=llvm`, `--verbose`, E0120/E0121) |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
+| `tests/cache.rs` | The compilation cache: warm run identical to cold (also `--threads 4`, `-Werror`), editing a dependency invalidates, damaged entries, read-only library, `cache clean`, parallel cold runs |
 | `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd` and toggles of `tests/cli/cov_toggle.vhd` (`--cov-kind`, W0115), `--threads 4` identity, `cov merge`, per-test attribution (`--cov-test`, default names, `cov rank`, `--tests`), `cov report` and Cobertura, E0111, exclusions (pragmas, report rows round trip, moved/stale/hit warnings) |
 | `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
@@ -54,6 +56,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `--time-report` marks phases with `timing::mark` at fixed places (after analysis, after lowering, before `run_until`, after it) and prints at the end of `run`; CPU time is read from `/proc` (10 ms steps) because a safe cross-platform CPU clock needs a new dependency | Zero cost off; one shared benchmark harness (`tools/bench`) needs phase times (#387) | `docs/cli-contract.md` 5 |
 | `--tier=interp` default; `--tier=llvm` sets the LLVM tier on the runtime after package initialisation (feature `llvm`, else `E0120`); `--verbose` notes go to stderr | Default build needs no LLVM; elaboration stays interpreted | `docs/cli-contract.md` 5, `docs/decisions.md` "LLVM tier: side exits" |
 | `run --gui` only starts the `yavs-gui` process (never links it) on the run arguments minus `run` and `--gui`; it conflicts with `--dap` | The GUI is EUPL-1.2 and drives `yavs run --dap=stdio` itself (user, 2026-10-19) | `docs/cli-contract.md` 6, `docs/decisions.md` "GUI (M10)" |
+| `elab`/`run` read the analysis of the closure from `<work dir>/yavs-cache/` when the key and the source bytes match, else analyze and store it (error-free only); `--no-cache` skips both; `analyze` never touches it; custom `$YAVS_STDLIB` disables it | Short test runs spent most of their CPU analyzing (#405); the cache is an optimisation that can only miss (user, 2026-10-19) | `docs/decisions.md` "Compilation cache", `docs/cli-contract.md` 3 |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
 Module-local decisions go in this section in the same commit; CLI or test-runner-facing behaviour goes
@@ -96,7 +99,7 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
   `--threads` ignored with `--dap`, E0110 coverage file cannot be written, E0111 coverage database
   cannot be read, E0112 exclusion file, W0110-W0114 exclusions and pragmas, W0115 signal over
   `--cov-toggle-max`, E0120 `--tier=llvm` without the LLVM tier, E0121 the LLVM tier cannot
-  compile the design, E0122 `yavs-gui` not found or not startable).
+  compile the design, E0122 `yavs-gui` not found or not startable, E0123 `yavs cache clean` cannot remove an entry).
 
 ## 6. Coordination
 

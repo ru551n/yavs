@@ -11,9 +11,9 @@ A library is a directory, given as ``NAME:PATH``. ``--work`` is the library a co
 ``--map`` adds another one (repeatable). A missing or empty directory is an empty library;
 ``analyze`` creates it. ``std`` and ``ieee`` are always available and cannot be mapped.
 
-Analysis is cheap to repeat: a library records which file holds which unit, and ``elab`` and
-``run`` analyze the units the top level needs from source, so there is no compiled library to
-keep up to date.
+A library records which file holds which unit, and ``elab`` and ``run`` analyze the units the top
+level needs. They keep the result in a cache next to the library, see `Compilation cache`_, so
+there is no compiled library to keep up to date and nothing to rebuild by hand.
 
 Analyze
 -------
@@ -58,6 +58,25 @@ otherwise.
   and so is ``0.4 ns``, because the rule is about the unit and not the value.
 * ``--wave out.fst`` records waveforms, see `Waveforms`_.
 * ``--cov[=FILE]`` counts code and toggle coverage, see `Code coverage`_.
+
+Compilation cache
+-----------------
+
+The first ``elab`` or ``run`` of a design analyzes its files and stores the result in the work
+library, in ``yavs-cache/`` beside the manifest. Every later run of the same design reads it back,
+which is much faster for a short simulation (a test case of a large verification library mostly
+spends its time analyzing). Nothing changes in the results: the output, warnings and exit status
+are the same with and without it, at any ``--threads``.
+
+An entry is used only when it fits the run exactly: the same yavs, the same options (``--std``,
+``--relaxed``, ``--psl``, ``--encoding``) and the same files with the same contents. Edit a file,
+or a file it depends on, and the next run analyzes again and stores a new entry. A library
+directory that cannot be written is not cached into and works as before; entries that are
+damaged or from another yavs are ignored.
+
+* ``--no-cache`` (``elab``, ``run``) neither reads nor writes the cache.
+* ``yavs cache clean --work=lib:out/lib [--map=NAME:PATH ...]`` removes the entries of those
+  libraries. Deleting ``yavs-cache/`` by hand does the same.
 
 Waveforms
 ---------

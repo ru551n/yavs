@@ -37,6 +37,7 @@ pub mod generic;
 mod group;
 pub mod hir;
 pub mod ids;
+pub mod image;
 pub mod implicit;
 pub mod loader;
 pub mod lsp;

@@ -23,6 +23,7 @@ use crate::ids::{
 // ---------------------------------------------------------------------------
 // Expressions (7.1)
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
     /// The result subtype; the type is `subtype.base`.
@@ -33,6 +34,7 @@ pub struct Expr {
     pub value: Option<ConstId>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum ExprKind {
     /// Literals and folded enum literals.
     Const(ConstId),
@@ -111,7 +113,7 @@ pub enum ExprKind {
 }
 
 /// The prefix of a predefined attribute or a range attribute.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AttrPrefix {
     /// A type mark.
     Subtype(SubtypeId),
@@ -121,7 +123,7 @@ pub enum AttrPrefix {
     Entity(DeclId),
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Arg {
     /// Index into the callee's formals.
     pub formal: u16,
@@ -135,7 +137,7 @@ pub struct Arg {
 /// was written `inertial` (an expression actual even for a signal name, LRM 6.5.6.3).
 pub type IndividualPart = (Box<[LspStep]>, ExprId, ExprId, bool);
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum Actual {
     Expr(ExprId),
     /// The formal's default.
@@ -166,6 +168,7 @@ pub enum Actual {
     Package(InstId),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct AggAssoc {
     pub choices: Box<[Choice]>,
     pub value: ExprId,
@@ -174,6 +177,7 @@ pub struct AggAssoc {
 }
 
 /// Bounds of an aggregate's result (3.4), stored so M2 does not recompute them.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum AggBounds {
     /// A fully constrained context subtype gives them.
     Context,
@@ -187,6 +191,7 @@ pub enum AggBounds {
     Record,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum NewInit {
     Subtype(SubtypeId),
     Value(ExprId),
@@ -195,7 +200,7 @@ pub enum NewInit {
 // ---------------------------------------------------------------------------
 // Longest static prefixes (6.9)
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Lsp {
     pub root: ObjRoot,
     pub path: Box<[LspStep]>,
@@ -204,14 +209,14 @@ pub struct Lsp {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ObjRoot {
     Decl(DeclId),
     External(ExternalId),
     ImplicitSignal(DeclId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum LspStep {
     Field(u32),
     Index(Box<[ExprId]>),
@@ -224,7 +229,7 @@ pub enum LspStep {
 
 /// Drivers and `all` sensitivity of a process or of a concurrent statement's
 /// equivalent process (M2 builds the process, rule 3).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProcessInfo {
     pub drivers: Vec<Lsp>,
     /// For `process (all)`: the signals read (11.3).
@@ -234,7 +239,7 @@ pub struct ProcessInfo {
 // ---------------------------------------------------------------------------
 // Modes and views
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Mode {
     In,
     Out,
@@ -251,6 +256,7 @@ pub enum Mode {
 // ---------------------------------------------------------------------------
 // Statements (7.2)
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Stmt {
     pub id: StmtId,
     pub label: Option<Ident>,
@@ -260,11 +266,13 @@ pub struct Stmt {
 
 /// A signal or variable target: the name and, for signals, its longest static
 /// prefix (an aggregate target has one per element).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Target {
     pub expr: ExprId,
     pub lsps: Box<[Lsp]>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Rhs<T> {
     Simple(T),
     /// The last condition may be absent.
@@ -276,17 +284,20 @@ pub enum Rhs<T> {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Waveform {
     Elements(Box<[WaveElem]>),
     Unaffected,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct WaveElem {
     /// `None` is `null` (disconnect a guarded signal).
     pub value: Option<ExprId>,
     pub after: Option<ExprId>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Delay {
     /// No delay mechanism given: inertial without reject limit.
     Default,
@@ -296,12 +307,14 @@ pub enum Delay {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ChoiceSet {
     pub choices: Box<[Choice]>,
     /// Folded sorted position intervals, when every choice is locally static.
     pub intervals: Option<Box<[(i64, i64)]>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Choice {
     Expr(ExprId),
     Range(RangeC),
@@ -310,12 +323,14 @@ pub enum Choice {
     Others,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum LoopScheme {
     Forever,
     While(ExprId),
     For { param: DeclId, range: RangeC },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Call {
     pub callee: DeclId,
     pub args: Box<[Arg]>,
@@ -323,18 +338,21 @@ pub struct Call {
     pub span: Span,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Sensitivity {
     None,
     All,
     List(Box<[Lsp]>),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum InstTarget {
     Component(DeclId),
     Entity { unit: UnitId, arch: Option<Ident> },
     Configuration(UnitId),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct GenAlt {
     pub label: Option<Ident>,
     /// `None` for the final `else`.
@@ -343,6 +361,7 @@ pub struct GenAlt {
     pub body: Box<[StmtId]>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum StmtKind {
     // Sequential.
     Wait {
@@ -472,6 +491,7 @@ pub enum StmtKind {
 // ---------------------------------------------------------------------------
 // External names (6.1): the path is data, bound by elab (rule 4).
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct External {
     pub class: ExternalClass,
     pub path_kind: PathKind,
@@ -485,6 +505,7 @@ pub struct External {
 // Design units (7.2)
 
 /// Kind-specific HIR of a design unit.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum UnitHir {
     /// Not analyzed yet (or its analysis failed).
     Pending,
@@ -508,12 +529,14 @@ pub enum UnitHir {
     Configuration(BlockConfig),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BlockConfig {
     pub target: BlockTarget,
     pub items: Vec<ConfigItem>,
     pub span: Span,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum BlockTarget {
     Architecture(UnitId),
     Block(StmtId),
@@ -524,23 +547,27 @@ pub enum BlockTarget {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum GenSelect {
     Index(ExprId),
     Range(RangeC),
     Alternative(Symbol),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum ConfigItem {
     Block(BlockConfig),
     Component(ComponentConfig),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum InstanceSel {
     Labels(Box<[StmtId]>),
     All,
     Others,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ComponentConfig {
     pub instances: InstanceSel,
     pub component: DeclId,
@@ -549,12 +576,14 @@ pub struct ComponentConfig {
     pub span: Span,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Binding {
     pub aspect: Option<EntityAspect>,
     pub generic_map: Box<[Arg]>,
     pub port_map: Box<[Arg]>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum EntityAspect {
     Entity { unit: UnitId, arch: Option<Ident> },
     Configuration(UnitId),

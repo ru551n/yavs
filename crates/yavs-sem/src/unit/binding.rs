@@ -20,6 +20,7 @@ use crate::scope::{ScopeKind, UseItem, Visible};
 
 /// A configuration specification whose instance labels are resolved once
 /// the statement part of its region has been analyzed.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingSpec {
     unit: UnitId,
     /// The region the specification is declared in (its labels are declared there).
@@ -30,6 +31,7 @@ pub(crate) struct PendingSpec {
     span: Span,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 enum Labels {
     Some(Vec<Ident>),
     All,

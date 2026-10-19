@@ -9,7 +9,7 @@ use yavs_syntax::Symbol;
 
 use crate::ids::{DeclId, LibId, ScopeId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ScopeKind {
     /// The session root: owns poison and universal entities, never searched by lookup.
     Root,
@@ -33,6 +33,7 @@ pub enum ScopeKind {
     SeqBlock,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Scope {
     pub kind: ScopeKind,
     /// Lexical parent; a package body's parent is its package, an architecture's its entity.
@@ -68,7 +69,7 @@ impl Scope {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum UseItem {
     /// `use p.all`: every declaration of the region.
     All(ScopeId),

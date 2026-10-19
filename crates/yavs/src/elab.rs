@@ -41,6 +41,9 @@ pub struct Common {
     /// Warning control: `-Werror`, `-Werror=CODE`, `-Wno-CODE`, `-WCODE` (docs/cli-contract.md 4).
     #[arg(short = 'W', value_name = "FLAG")]
     warn: Vec<String>,
+    /// Neither read nor write the compilation cache of the work library.
+    #[arg(long)]
+    no_cache: bool,
     /// Print the elaborated hierarchy (for debugging yavs).
     #[arg(long, hide = true)]
     print_hierarchy: bool,
@@ -262,8 +265,9 @@ fn elaborate(
     opts.relaxed = c.relaxed;
     opts.psl = c.psl;
     opts.encoding = encoding;
-    let mut db = Db::new(opts);
-    let analyzed = db.analyze_closure(&files);
+    let work_dir = c.work.split_once(':').map_or("", |(_, d)| d);
+    let (mut db, analyzed) =
+        crate::cache::analyze_closure(opts, &files, work_dir.as_ref(), !c.no_cache);
     let diags = db.take_diagnostics();
     for d in &diags {
         out.emit(&db.sources, d);

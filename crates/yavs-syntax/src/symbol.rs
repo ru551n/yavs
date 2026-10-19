@@ -65,3 +65,59 @@ mod tests {
         assert_eq!(a.as_str(), "Foo");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Images (the compilation cache): symbols are written as indices into a table of
+// their texts, so one image holds each text once and loads without hashing it per use.
+
+type EncTable = (HashMap<Symbol, u32>, Vec<Symbol>);
+
+thread_local! {
+    static ENC: std::cell::RefCell<Option<EncTable>> = const { std::cell::RefCell::new(None) };
+    static DEC: std::cell::RefCell<Option<Vec<Symbol>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` (which serializes values holding symbols) and return its result with the table of
+/// the symbol texts it used; the written indices refer to that table.
+pub fn encode_table<R>(f: impl FnOnce() -> R) -> (R, Vec<&'static str>) {
+    ENC.with(|e| *e.borrow_mut() = Some(Default::default()));
+    let r = f();
+    let (_, list) = ENC.with(|e| e.borrow_mut().take()).unwrap_or_default();
+    (r, list.into_iter().map(Symbol::as_str).collect())
+}
+
+/// Run `f` (which deserializes values holding symbols) against the table `encode_table` made.
+pub fn decode_table<R, S: AsRef<str>>(table: &[S], f: impl FnOnce() -> R) -> R {
+    let syms = table.iter().map(|t| Symbol::intern(t.as_ref())).collect();
+    DEC.with(|d| *d.borrow_mut() = Some(syms));
+    let r = f();
+    DEC.with(|d| *d.borrow_mut() = None);
+    r
+}
+
+impl serde::Serialize for Symbol {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let i = ENC.with(|e| {
+            let mut e = e.borrow_mut();
+            let (ids, list) = e.as_mut()?;
+            Some(*ids.entry(*self).or_insert_with(|| {
+                list.push(*self);
+                list.len() as u32 - 1
+            }))
+        });
+        match i {
+            Some(i) => s.serialize_u32(i),
+            None => Err(serde::ser::Error::custom(
+                "symbol written outside encode_table",
+            )),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Symbol {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let i = <u32 as serde::Deserialize>::deserialize(d)?;
+        DEC.with(|t| t.borrow().as_ref().and_then(|t| t.get(i as usize).copied()))
+            .ok_or_else(|| serde::de::Error::custom("symbol outside decode_table or out of range"))
+    }
+}

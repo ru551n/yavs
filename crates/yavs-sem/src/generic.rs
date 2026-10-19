@@ -50,7 +50,7 @@ mod entity;
 pub use entity::GenericActual;
 
 /// The class of a generic type (2.9; M0 `GenericTypeDef`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum GenericClass {
     /// `type T` (2008) and `type T is private` (2019).
     Private,
@@ -72,6 +72,7 @@ pub enum GenericClass {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Instance {
     /// The uninstantiated package or subprogram.
     pub generic: DeclId,
@@ -82,11 +83,12 @@ pub struct Instance {
     /// (<>)`) this is the generic package's own region: its formals stay opaque.
     pub scope: ScopeId,
     /// Cloned body (lazy, when M2 asks: [`Db::instance_body`]).
+    #[serde(with = "once_scope")]
     pub body: OnceLock<ScopeId>,
     pub mangled: Symbol,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericMap {
     /// Formal generic type to actual subtype.
     pub types: HashMap<TypeId, SubtypeId>,
@@ -99,7 +101,7 @@ pub struct GenericMap {
 }
 
 /// Default of a formal generic subprogram (6.5.6.2).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum SubpDefault {
     /// `is <>`: looked up at the instantiation.
     Box,
@@ -107,8 +109,28 @@ pub enum SubpDefault {
     Name { cands: Vec<DeclId>, span: Span },
 }
 
+/// An `OnceLock` as an `Option`.
+mod once_scope {
+    use super::{OnceLock, ScopeId};
+
+    pub fn serialize<S: serde::Serializer>(v: &OnceLock<ScopeId>, s: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&v.get(), s)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<OnceLock<ScopeId>, D::Error> {
+        let v = <Option<ScopeId> as serde::Deserialize>::deserialize(d)?;
+        let l = OnceLock::new();
+        if let Some(v) = v {
+            let _ = l.set(v);
+        }
+        Ok(l)
+    }
+}
+
 /// Generic bookkeeping kept on `Db` (sem.md 5).
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericState {
     pub(crate) defaults: HashMap<DeclId, SubpDefault>,
     /// The generic list analyzed into a region (a package scope or a subprogram's
@@ -155,7 +177,7 @@ pub struct GenericState {
 }
 
 /// One association of a formal package's generic map (6.5.6.3).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Want {
     Const(ExprId),
     Type(SubtypeId),
@@ -163,7 +185,7 @@ pub(crate) enum Want {
 }
 
 /// Original to clone ids of one instance (5.1).
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Remap {
     /// Regions whose content is cloned.
     roots: Vec<ScopeId>,

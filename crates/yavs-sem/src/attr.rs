@@ -32,7 +32,7 @@ use crate::stat::Staticness;
 use crate::types::{BoundsFrom, TypeKind};
 
 /// Predefined attributes (H5: an enum on a resolved prefix).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PredefAttr {
     // Scalar types and array objects/types.
     Left,
@@ -1012,6 +1012,7 @@ pub fn implicit_signal(
 // User-defined attributes (6.7, 7.2)
 
 /// A user-defined attribute attached to one named entity.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct AttrValue {
     pub attr: DeclId,
     pub entity: DeclId,
@@ -1336,6 +1337,7 @@ fn attach(
 
 /// A label specification waiting for its statement (7.2: it is written in
 /// the declarative part of the construct whose statement part holds it).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingLabel {
     scope: ScopeId,
     key: Symbol,

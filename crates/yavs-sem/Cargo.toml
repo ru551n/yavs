@@ -7,6 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde.workspace = true
+postcard.workspace = true
 yavs-diag.workspace = true
 yavs-lib = { path = "../yavs-lib" }
 yavs-std = { path = "../yavs-std" }

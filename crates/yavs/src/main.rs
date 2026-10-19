@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod analyze;
+mod cache;
 mod cov;
 mod elab;
 mod explain;
@@ -70,6 +71,9 @@ enum Command {
     /// Merge coverage databases and write reports.
     #[command(subcommand)]
     Cov(cov::Command),
+    /// Manage the compilation cache kept in library directories.
+    #[command(subcommand)]
+    Cache(cache::Command),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -201,6 +205,7 @@ fn main() -> ExitCode {
         Command::Run(a) if a.gui => return gui::launch(&args, format, color),
         Command::Run(a) => return guard(format, color, || elab::run(a, format, color, encoding)),
         Command::Cov(c) => return guard(format, color, || cov::run(c, format, color)),
+        Command::Cache(c) => return guard(format, color, || cache::run(c, format, color)),
     };
     let opts = Options {
         std: match std {

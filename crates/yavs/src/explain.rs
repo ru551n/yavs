@@ -90,6 +90,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0122",
         "`yavs run --gui` cannot start the graphical debugger `yavs-gui`: it is neither next to the yavs executable nor on PATH, or it cannot be executed. The release archives ship it next to `yavs`.",
     ),
+    (
+        "E0123",
+        "`yavs cache clean` could not remove a compilation cache entry of a library directory (permissions, or the directory is in use by a read-only mount). Entries are only ever an optimisation: the next run analyzes from source.",
+    ),
     // yavs-wave
     (
         "E0801",

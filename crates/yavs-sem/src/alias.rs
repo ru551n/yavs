@@ -28,7 +28,7 @@ use crate::types::TypeKind;
 
 /// A resolved signature `[t1, t2 return r]` (4.5.3): the base types of its
 /// type marks. `ret` is `Some` exactly when `return` was written.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Signature {
     pub params: Box<[TypeId]>,
     pub ret: Option<TypeId>,

@@ -15,6 +15,8 @@ yavs-syntax = { path = "crates/yavs-syntax" }
 annotate-snippets = "0.12.16"
 clap = { version = "4.6.7", features = ["derive"] }
 rayon = "1.12"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 yavs-logic = { path = "crates/yavs-logic" }
 
 [workspace.lints.rust]

@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 yavs-diag.workspace = true
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
 sha2 = "0.11"
 toml = "1.1"
 

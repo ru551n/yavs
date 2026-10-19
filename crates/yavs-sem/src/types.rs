@@ -13,6 +13,7 @@ use yavs_diag::Span;
 
 pub use yavs_syntax::ast::Direction;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TypeDef {
     pub decl: DeclId,
     /// For an anonymous base type: the declared name, with `anonymous = true`.
@@ -28,6 +29,7 @@ pub struct TypeDef {
     pub base_subtype: SubtypeId,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum TypeKind {
     UniversalInteger,
     UniversalReal,
@@ -73,17 +75,19 @@ pub enum TypeKind {
 }
 
 /// A unit of a physical type; `scale` is in base units.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PhysUnit {
     pub decl: DeclId,
     pub scale: i64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct RecordElem {
     pub name: Ident,
     pub subtype: SubtypeId,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SubtypeDef {
     pub base: TypeId,
     /// `None`: an anonymous subtype indication.
@@ -97,7 +101,7 @@ pub struct SubtypeDef {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Constraint {
     /// Scalars: the base range; composites: nothing added at this level.
     None,
@@ -118,7 +122,7 @@ pub enum Constraint {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RangeC {
     Explicit {
         left: ExprId,
@@ -134,7 +138,7 @@ pub enum RangeC {
 }
 
 /// Resolution indication (6.3).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Resolution {
     /// `resolved std_ulogic`
     Function(DeclId),
@@ -145,7 +149,7 @@ pub enum Resolution {
 }
 
 /// Where an object's bounds come from (2.2), stored on the object so M2 never guesses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BoundsFrom {
     /// Fully constrained subtype indication.
     Subtype,

@@ -3,14 +3,16 @@
 use crate::types::Direction;
 
 /// 9.4. Ordered: `None < Globally < Locally`, so `min` combines operands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Staticness {
     None,
     Globally,
     Locally,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConstValue {
     Int(i64),
     Real(f64),
@@ -23,7 +25,7 @@ pub enum ConstValue {
     Null,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ArrayConst {
     /// One per dimension.
     pub bounds: Box<[(i64, Direction, i64)]>,
@@ -55,7 +57,7 @@ impl ArrayConst {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Elems {
     /// 1-D arrays of enums with at most 256 literals: strings, bit and std_ulogic vectors.
     Bytes(Box<[u8]>),

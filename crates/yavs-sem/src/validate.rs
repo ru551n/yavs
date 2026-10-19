@@ -37,7 +37,7 @@ use crate::scope::ScopeKind;
 use crate::types::{Constraint, RangeC, TypeKind};
 
 /// How much of each arena earlier calls already checked.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Mark {
     exprs: usize,
     stmts: usize,

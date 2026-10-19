@@ -25,7 +25,7 @@ use crate::token::Kw;
 /// For basic identifiers `key` is the lower-case form. Extended identifiers
 /// (`\Foo\`) are case-sensitive, so their key is the spelling itself,
 /// backslashes included.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Ident {
     pub text: Symbol,
     pub key: Symbol,
@@ -367,7 +367,7 @@ pub enum Constraint {
     Record(Vec<(Ident, Constraint)>, Span),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     To,
     Downto,
@@ -411,7 +411,7 @@ pub struct ObjectDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SignalKind {
     Register,
     Bus,
@@ -746,7 +746,7 @@ pub enum Suffix {
     All(Span),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalClass {
     Constant,
     Signal,
@@ -768,7 +768,7 @@ pub struct ExternalPath {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PathKind {
     /// `@lib.pkg.obj`
     Package,
@@ -1020,7 +1020,7 @@ pub enum SignalAssignKind {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ForceMode {
     In,
     Out,

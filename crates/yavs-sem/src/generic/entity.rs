@@ -19,7 +19,7 @@ use crate::loader::Unit;
 
 /// The actual of a generic type, subprogram or package of a design entity, as the HIR
 /// generic map gives it (`Actual::Subtype`, `Actual::Subprogram`, `Actual::Package`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum GenericActual {
     Subtype(SubtypeId),
     Subprogram(DeclId),

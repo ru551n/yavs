@@ -1818,3 +1818,46 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   `loadedSources` (P5) exists. Answers to requests of an earlier stop are dropped. Why: the
   server holds no list the client could read back, and the design keeps all state on the UI
   thread.
+
+## Compilation cache (yavs-cache, yavs-sem `image.rs`, CLI, #407, user, 2026-10-19)
+
+- **The "no incremental compilation cache" decision is lifted** (user, 2026-10-19: "you may disregard
+  my no-cache decision"; goal: "cache as much as possible for our gain"). It was the basis of the earlier
+  "so there is still no cache" statements in this file and of the `docs/plan.md` rows for `yavs-lib` and
+  `yavs-llvm`; those now point here. The cost that motivated it (a short test run spends most of its CPU
+  analyzing and elaborating libraries, #405) is the reason it is lifted.
+- **Stage 1 stores the whole analyzed `Db` of a closure, not per-unit pieces** (yavs decision under the
+  user's goal): the typed ids index arenas shared by all units (a type of one package is a `TypeId`
+  that other units' expressions hold), so a unit's analyzed form is only meaningful together with the
+  units analyzed before it, and units are analyzed in an order that fixes every id. An image of the
+  settled `Db` after `analyze_closure` restores exactly the value a cold analysis produces, id for id,
+  which is what makes a warm run byte-identical to a cold one; per-unit relocation of ids would need an
+  audit of every mutation of earlier arena entries in `yavs-sem` and would have no such guarantee.
+  Invalidation of dependents is implicit: the key covers every file of the closure.
+- **Written by `elab`/`run`, not by `analyze`.** `yavs analyze` loads a file's dependencies on demand in
+  demand order; the closure that `elab`/`run` analyze is in dependency order, so the two histories are
+  different `Db`s and an image from one cannot serve the other. Writing from `analyze` would also cost a
+  second analysis per file. The first `elab` or `run` of a design stores the image; every later one hits.
+- **Key and validation.** Key = sha256 over the cache format, the yavs build id (version, size and
+  modification time of the executable), `--std`/`--relaxed`/`--psl`/`--encoding`/defines, the std/ieee
+  tree, and the closure's files (library, path, recorded content hash, standard; the working directory
+  for a relative path). The image also holds the bytes of every source file read (std/ieee included) and
+  is rejected unless each still equals what is on disk or built in, so a file the manifests do not list
+  cannot make an entry stale. Library manifests are never stored: they are read again on restore.
+  Anything that does not match, or does not decode, is a miss and analysis runs from source; the cache
+  can only make a run faster.
+- **What is stored.** The arenas and tables of `Db`, the source map and the diagnostics (warnings replay
+  identically); never an analysis with errors; never one with pending work. Transient analysis state
+  (memo tables, the parsed-file cache) is cleared by `Db::settle` after the closure on both paths, so a
+  restored `Db` and a cold one continue from the same state. Symbols are written as indices into a
+  per-image text table and interned again on load (`yavs_syntax::encode_table`/`decode_table`).
+- **Format.** `serde` with `postcard` (a maintained, specified, compact serde format), wrapped by
+  `yavs-cache` in a header with magic, format version, key, length and sha256 of the payload. Stored in
+  `<work library dir>/yavs-cache/sem-<key>.img`; a write is a temporary file plus an atomic rename (no
+  lock needed; the library lock rules of rule 14 are unchanged and the manifest is never touched by
+  `run`); the 48 most recently used entries are kept; a directory that cannot be written is skipped
+  silently. `--no-cache` and `yavs cache clean` (`E0123`) control it. A custom `$YAVS_STDLIB` disables
+  the cache.
+- **Not stored in the library but per user:** nothing yet. A precomputed std/ieee base shared by all
+  designs is part of a later slice of #407.
+

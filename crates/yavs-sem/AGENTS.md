@@ -14,7 +14,7 @@ It summarises and links; the binding documents are `docs/design/sem.md` (design)
   Output: a **typed HIR** (`hir.rs`) where every expression has its subtype and every call names
   its overload; diagnostics `E1xxx`/`W1xxx`.
 - Does not: elaborate (generics values, hierarchy: `yavs-elab`), lower to IR (`yavs-lower`), run
-  anything, or keep a compiled-unit cache (every run re-analyzes from source, `docs/plan.md`).
+  anything, or decide when to cache: `image.rs` only turns a settled `Db` into bytes and back (`docs/decisions.md` "Compilation cache"); the key, the files and the policy are `yavs-cache` and the CLI.
   Single-threaded by design.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib` (`Libraries`, `UnitRecord`), `yavs-std`
   (`value::lex_abstract` for literals). Called by: `yavs` (analyze, elab), `yavs-lower`,
@@ -33,6 +33,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Typed ids and `Arena` (`DeclId`, `ScopeId`, `ExprId`, `SubtypeId`, `TypeId`, `UnitId`, ...) | `src/ids.rs` |
 | HIR shapes consumed by M2 (`Expr`/`ExprKind`, `Stmt`/`StmtKind`, `Call`, `Lsp`, `UnitHir`, `Binding`, `GenSelect`) | `src/hir.rs` |
 | HIR invariants (sem.md 7.3) | `src/validate.rs` |
+| `Db::to_image`, `from_image`, `settle`: the compilation cache image of a settled `Db` (serde + postcard, symbols through a per-image table) | `src/image.rs` |
 | Static folding, `ConstValue`, `Db::fold_with` (used by elab) | `src/stat.rs` |
 | Generics, instances by HIR cloning, `Db::instance_body`; for M2 `Db::package_regions` and `Db::decls_with_instances` (an instance's objects belong to the region declaring it, #101) | `src/generic.rs` |
 | Group templates, groups, disconnection specifications (`DeclKind::GroupTemplate`/`Group`, `Db::disconnect_times`), `E1640`, `E1641`, `E1650`, `E1651` (#260) | `src/group.rs` |
@@ -106,6 +107,7 @@ Module-local decisions go in this section and in the matching sem.md section, LR
   caller needed; `One`/`Overloads` are the caller's to handle (reaching it is an ICE).
 - **Fail early.** Any error means `Err(Reported)`; never hand a partial HIR to elab. Never
   `unwrap_or(default)` on design data; `expect` only for yavs's own invariants.
+- **`Db` is serialized (`image.rs`).** Every type reachable from a `Db` field derives `serde::Serialize`/`Deserialize` (no `&'static str`, no references, no trait objects, no interior pointers). A new `Db` field is either serialized (its type derives) or `#[serde(skip)]` because it is transient: then `Db::settle` clears it and `to_image` must refuse an image while it is non-empty. State that survives `analyze_closure` and is read later by elab or lowering must be serialized, or a warm run differs from a cold one (`crates/yavs/tests/cache.rs`, the difftest corpus). Library sources (manifests) are never serialized.
 - **Determinism.** Diagnostics order must not depend on hash-map iteration; snapshots and the
   negative suite compare exact `(code, line, col)` sets.
 - **xfail list.** A listed file that starts passing fails `diag_sem`: remove its line in the

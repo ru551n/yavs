@@ -33,11 +33,23 @@ use std::io::IsTerminal;
 use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
 
 /// Index of a file in a [`SourceMap`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct FileId(pub u32);
 
 /// A byte range in one source file.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub file: FileId,
     pub start: u32,
@@ -70,6 +82,7 @@ impl std::fmt::Debug for Span {
 /// Spans are byte offsets into the file as it is on disk. For a UTF-8 file
 /// that is the same as an offset into `text`; for a file read as ISO-8859-1
 /// the original bytes are kept and offsets are mapped when rendering.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SourceFile {
     pub path: String,
     /// The decoded text, for display.
@@ -117,7 +130,7 @@ impl SourceFile {
 }
 
 /// All files a session has loaded, addressed by [`FileId`].
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
 }
@@ -158,9 +171,16 @@ impl SourceMap {
     pub fn get(&self, id: FileId) -> &SourceFile {
         &self.files[id.0 as usize]
     }
+
+    /// Every file as (path, bytes on disk), in `FileId` order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.files.iter().map(|f| (f.path.as_str(), f.bytes()))
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Severity {
     Note,
     Warning,
@@ -178,13 +198,13 @@ impl Severity {
 }
 
 /// A span with an (optionally empty) message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Label {
     pub span: Span,
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     /// Stable code, for `--explain` and per-code suppression; empty for
@@ -195,6 +215,48 @@ pub struct Diagnostic {
     pub secondary: Vec<Label>,
     pub notes: Vec<String>,
     pub help: Vec<String>,
+}
+
+/// What a diagnostic is read from: the code as text, interned so it can be `'static` again.
+#[derive(serde::Deserialize)]
+struct DiagnosticRepr {
+    severity: Severity,
+    code: String,
+    message: String,
+    primary: Option<Label>,
+    secondary: Vec<Label>,
+    notes: Vec<String>,
+    help: Vec<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for Diagnostic {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static SEEN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+        let r = DiagnosticRepr::deserialize(d)?;
+        let mut seen = SEEN
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let code = match seen.get(r.code.as_str()) {
+            Some(&k) => k,
+            None => {
+                let k: &'static str = Box::leak(r.code.into_boxed_str());
+                seen.insert(k);
+                k
+            }
+        };
+        Ok(Diagnostic {
+            severity: r.severity,
+            code,
+            message: r.message,
+            primary: r.primary,
+            secondary: r.secondary,
+            notes: r.notes,
+            help: r.help,
+        })
+    }
 }
 
 impl Diagnostic {
@@ -534,5 +596,15 @@ mod tests {
             j.contains("\"rendered\":\"error[E0001]: mismatched name\\n"),
             "{j}"
         );
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    #[test]
+    fn diagnostic_is_owned_deserialize() {
+        fn owned<T: serde::de::DeserializeOwned>() {}
+        owned::<super::Diagnostic>();
+        owned::<super::SourceMap>();
     }
 }

@@ -112,7 +112,7 @@ raises an error itself for a project containing VHDL-93/2002 files.
   it only creates the parent of the library directory.
 - `std` and `ieee` (and any other library yavs ships) are resolved by yavs
   itself, on demand from the std/ieee sources built into the `yavs` executable
-  (nothing is cached, nothing is installed next to it). `$YAVS_STDLIB`, if set,
+  (nothing is installed next to it). `$YAVS_STDLIB`, if set,
   names a tree on disk (`<dir>/{std,ieee}/<rev>/*.vhdl`) used instead. A user `--map` or
   `--work` of `std` or `ieee` is an error (`E0102`), except under
   `yavs analyze --bootstrap`, which is how yavs's own `lib/std` and `lib/ieee` are
@@ -121,8 +121,10 @@ raises an error itself for a project containing VHDL-93/2002 files.
 - Library names are case-insensitive VHDL identifiers; paths are used verbatim
   and may contain spaces and, on Windows, drive letters (`C:\x`): split
   `NAME:PATH` at the first colon only.
-- Concurrency (plan rule 14): `run` and `elab` never write into any library
-  directory, so any number of them may run at once against the same libraries.
+- Concurrency (plan rule 14): `run` and `elab` never write a manifest or lock a library
+  for writing. The only thing they write into a library directory is the compilation cache
+  entry of the work library (below, in `<work dir>/yavs-cache/`), best effort and by atomic
+  rename, so any number of them may run at once against the same libraries.
   `analyze` must be safe when several processes analyze into the same library
   at the same time (two `run.py` invocations, or a future parallel compile in
   the test runner). yavs does this with automatic library locking like the reference simulator's: each library
@@ -131,6 +133,30 @@ raises an error itself for a project containing VHDL-93/2002 files.
   `run`/`elab` hold it shared only while reading the manifest. Read-only
   library directories never fail: shared lock via a read-only open, or no lock
   if the file cannot be opened at all. The test runner needs no locking of its own.
+
+### Compilation cache
+
+`yavs elab` and `yavs run` keep what analysis of the design's closure produced in the work
+library's directory, `<dir>/yavs-cache/sem-<key>.img` (user decision 2026-10-19, `docs/decisions.md`
+"Compilation cache"). The next `elab`/`run` of the same closure reads it instead of parsing and
+analyzing the sources again; the output, the diagnostics (warnings included) and the exit status are
+identical to a run without it, at any `--threads`.
+
+- The key is a hash of the yavs build, `--std`, `--relaxed`, `--psl`, `--encoding` and every file of the
+  closure (library, path, recorded content hash, standard). An entry also records the bytes of every
+  source file it was made from and is used only if they are unchanged, so editing a file (or any file
+  it depends on) makes the next run analyze from source and store a new entry. Entries of another
+  yavs build, another format version or a damaged file are ignored, never an error. An error-free
+  analysis is stored; a design with errors never is.
+- Entries are written to a temporary file and renamed into place: concurrent runs need no lock and
+  never see a partial entry. The newest 48 entries per library directory are kept. A library
+  directory that cannot be written (read-only mount, no permission) is simply not cached into;
+  reading from it works as before.
+- `--no-cache` (`run` and `elab`) neither reads nor writes the cache. A custom `$YAVS_STDLIB` tree
+  disables it. `yavs cache clean --work=NAME:PATH [--map=NAME:PATH ...]` removes the entries of those
+  library directories and prints what it removed (`E0123` if one cannot be removed). Deleting
+  the `yavs-cache` directory by hand is equally safe.
+- `yavs analyze` does not read or write the cache.
 
 ## 4. `yavs analyze`
 
@@ -189,7 +215,7 @@ yavs elab [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
 The test runner passes everything after `run`/`elab` in a response file (Conventions).
 
 - `run` elaborates and simulates in one process (no elaboration artefact is
-  saved: no-cache design). `elab` elaborates only, for the test runner's
+  saved; only the analysis is cached, see "Compilation cache" in section 3). `elab` elaborates only, for the test runner's
   `--elaborate` mode, and has the same exit codes as `run` minus the
   simulation ones.
 - `TOP` is `ENTITY`, `ENTITY.ARCH` or `CONFIGURATION`, looked up in the work

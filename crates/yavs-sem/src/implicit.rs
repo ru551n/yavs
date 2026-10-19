@@ -50,7 +50,7 @@ mod tests;
 
 /// The native link of an implicit op is `yavs.implicit.<family>.<type mangled>[#<form>]`
 /// (`mangle::implicit_native`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImplicitOp {
     pub family: Family,
     /// The type the operation was declared for.
@@ -59,7 +59,7 @@ pub struct ImplicitOp {
     pub form: Form,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Family {
     Eq,
     Neq,
@@ -193,7 +193,7 @@ impl Family {
 
 /// Which overload of a family: `Plain` is the one named by the family alone
 /// (`T op T`, or the only one); the others are suffixed to the native symbol.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Form {
     Plain,
     /// Array op element (`&`, logical operators).

@@ -1,5 +1,7 @@
 # Performance: what the reference simulators do, and what yavs should take from it
 
+Update (user, 2026-10-19): the no-cache premise of this study is lifted, see `docs/decisions.md` "Compilation cache" (#407).
+
 Status: study (2026-10-19, issue #395 and the performance section of `STATUS.md`). Nothing here
 is implemented by this document; section 9 is the ranked list the crate owners work from.
 

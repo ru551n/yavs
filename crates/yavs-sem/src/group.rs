@@ -12,6 +12,7 @@ use crate::scope::Visible;
 use crate::stat::Staticness;
 
 /// A group constituent naming a label not declared yet.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingGroup {
     scope: ScopeId,
     group: DeclId,

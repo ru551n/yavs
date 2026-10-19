@@ -157,7 +157,7 @@ pub enum UnitKind { Entity, Architecture, Package, PackageBody, PackageInst, Con
                     Configuration, SubprogramUnit /*2008 subprogram as primary*/, SubprogramInst }
 ```
 
-On-demand loading (plan: no cache, analyze only what is reached):
+On-demand loading (analyze only what is reached; the result of a whole closure can be kept as an image, `image.rs`, `docs/decisions.md` "Compilation cache"):
 - `Db::unit(lib, key)` returns `Done` at once, otherwise looks the key up in the manifest, parses
   the whole file (all units, cheap) and analyzes **only** the requested unit. Other units of the
   same file stay `NotLoaded` and keep their parsed AST in a per-file cache until the session ends

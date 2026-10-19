@@ -9,7 +9,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   **closure query** that turns a top unit into an ordered list of source files (with the standard
   of each file) for `elab`/`run`.
 - Does not: parse or analyze VHDL (the analyzer hands in `UnitRecord`s: kind, name, dependencies,
-  standard), cache compiled units (there is no incremental compilation cache, by plan), or know
+  standard), store compiled units (the compilation cache is `yavs-cache` plus `yavs-sem` `image.rs`), or know
   about `std`/`ieee` (those come from `lib/` through `yavs-sem`).
 - Depends on: `yavs-diag`, `serde`, `toml`, `sha2`. Called by: `yavs-sem` (`Libraries` in
   `Options`), `yavs-elab`, `yavs` (analyze records files; elab computes the closure).
@@ -29,7 +29,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | Decision | Why | Source |
 |---|---|---|
-| No incremental compilation cache; `elab`/`run` re-parse and re-analyze from source; analysis is on demand over the closure only | Keeps UNISIM-size libraries cheap without a cache | `docs/plan.md` "Decisions", architecture table `yavs-lib` |
+| The manifest is never a cache of analysis; analysis is on demand over the closure only (the closure's analysis may be read from the compilation cache directory `yavs-cache/` of the work library, written by the CLI, not by this crate) | Keeps UNISIM-size libraries cheap; the cache lifts the earlier no-cache rule (user, 2026-10-19) | `docs/decisions.md` "Compilation cache", `docs/plan.md` architecture table |
 | `_YAVS_LIB` locked with `std::fs::File::lock`/`lock_shared` (flock / LockFileEx) | Parallel `yavs analyze` into one library is safe | `docs/plan.md` rule 14 |
 | `analyze` takes the exclusive lock while updating; each write is temp file plus atomic rename | Readers never see a half-written manifest | rule 14 |
 | `elab`/`run` take the shared lock only while reading; `run` never writes into library dirs | A long simulation never blocks compilation | rule 14 |

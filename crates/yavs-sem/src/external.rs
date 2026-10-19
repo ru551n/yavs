@@ -208,7 +208,7 @@ impl Db {
 }
 
 /// What owns the implicit aliases of the external names it uses directly (#93).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ExtOwner {
     /// A process or concurrent statement: its statements, the initial values of its
     /// declarations, its sensitivity, wait and driver names.

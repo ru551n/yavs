@@ -25,7 +25,7 @@ use crate::{LangRev, Options};
 
 /// Entities of `std.standard` that analysis refers to directly. Filled while
 /// `std.standard` is analyzed; `None` before that.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WellKnown {
     pub universal_integer: Option<TypeId>,
     pub universal_real: Option<TypeId>,
@@ -49,12 +49,16 @@ pub struct WellKnown {
 }
 
 /// Poison entities (sem.md 8.2): compatible with everything, silent in checks.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Poison {
     pub decl: DeclId,
     pub ty: TypeId,
     pub subtype: SubtypeId,
     pub expr: ExprId,
+}
+
+fn placeholder_options() -> Options {
+    Options::new(LangRev::Vhdl2008, "")
 }
 
 /// Marker that an error was already reported; callers propagate it silently.
@@ -71,9 +75,11 @@ pub(crate) struct UnitCx {
     pub file_rev: LangRev,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Db {
     /// The design revision `D`: std and ieee are loaded for it.
     pub rev: LangRev,
+    #[serde(skip, default = "placeholder_options")]
     pub(crate) opts: Options,
     pub sources: SourceMap,
     pub libs: Arena<LibId, Library>,
@@ -107,11 +113,14 @@ pub struct Db {
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
     pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
+    #[serde(skip)]
     pub(crate) pending_label_attrs: Vec<crate::attr::PendingLabel>,
     /// Package instances in a process or subprogram whose generic's body is not declared yet
     /// (instance, region, span): `E1237` is checked when the body arrives.
+    #[serde(skip)]
     pub(crate) pending_inst_checks: Vec<(crate::ids::InstId, ScopeId, yavs_diag::Span)>,
     /// Groups with a label constituent not declared yet.
+    #[serde(skip)]
     pub(crate) pending_groups: Vec<crate::group::PendingGroup>,
     pub well_known: WellKnown,
     pub poison: Poison,
@@ -120,7 +129,9 @@ pub struct Db {
     pub(crate) lib_by_key: HashMap<Symbol, Option<LibId>>,
     /// Parsed files per library: a file analyzed into several libraries is parsed once for
     /// each, as each library's units are separate (#290).
+    #[serde(skip)]
     pub(crate) files: HashMap<(LibId, PathBuf), FileCache>,
+    #[serde(skip)]
     pub(crate) stack: Vec<UnitCx>,
     #[allow(dead_code)]
     /// Undeclared names already reported, per (unit, key) (8.2).
@@ -129,34 +140,45 @@ pub struct Db {
     /// classified once per resolution pass).
     pub(crate) rev_reported: HashSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
+    #[serde(skip)]
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
     /// The same for name nodes.
+    #[serde(skip)]
     pub(crate) name_memo: HashMap<usize, crate::expr::CandSet>,
     /// Units that depend on a failed unit: undeclared names in them are cascades (8.2).
     pub(crate) tainted: HashSet<UnitId>,
     /// The subtype the next complete context's top expression is resolved for
     /// (an object's declared subtype), so an aggregate with `others` knows its
     /// bounds (9.3.3.3). Consumed by `resolve`.
+    #[serde(skip)]
     pub(crate) context_subtype: Option<SubtypeId>,
     /// `(top AST node address, context subtype)` of the complete context being resolved.
+    #[serde(skip)]
     pub(crate) top_context: Option<(usize, SubtypeId)>,
     /// Folds that overflowed in the complete context being resolved (Q5).
     /// `Some(why)` when the operation has no value (division by zero, ...).
+    #[serde(skip)]
     pub(crate) overflow: Vec<(ExprId, Option<&'static str>)>,
     /// Bounds being resolved are required at analysis time (Q5: array type bounds).
+    #[serde(skip)]
     pub(crate) required_ctx: bool,
     /// Generic types of the instance whose port map is being resolved, with their actuals.
+    #[serde(skip)]
     pub(crate) inst_types: Vec<(TypeId, SubtypeId)>,
     /// The anonymous interface types (`type is ...`) of the objects of the interface list
     /// being analyzed; the owner takes them (entities append them to their generics).
+    #[serde(skip)]
     pub(crate) hidden_types: Vec<DeclId>,
     /// The anonymous types of the parameters of the subprogram spec being analyzed.
+    #[serde(skip)]
     pub(crate) param_anon: Vec<TypeId>,
     /// The anonymous parameter types of the spec a subprogram body being analyzed completes,
     /// taken in order by its parameters instead of new ones (`subprogram_body`).
+    #[serde(skip)]
     pub(crate) anon_reuse: std::collections::VecDeque<SubtypeId>,
     /// External names of the current unit already built, by AST node address (built once:
     /// candidates need the subtype, the HIR is the same).
+    #[serde(skip)]
     pub(crate) ext_memo: HashMap<usize, ExprId>,
     /// Implicit aliases of the external names used directly in a statement or an alias
     /// target, made by [`Db::alias_external_uses`] (#93).
@@ -169,16 +191,20 @@ pub struct Db {
     pub(crate) written_marks: HashMap<DeclId, Span>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
+    #[serde(skip)]
     pub(crate) incomplete_ok: bool,
     /// Implicit operations waiting for a well-known type of `std.standard` (BOOLEAN, STRING, ...).
+    #[serde(skip)]
     pub(crate) pending_implicit: Vec<crate::implicit::Pending>,
     /// How much of the arenas `validate` already checked.
     pub(crate) validated: crate::validate::Mark,
     /// Processes and subprograms whose statements are being analyzed, innermost last (stmt.rs).
+    #[serde(skip)]
     pub(crate) stmt_owners: Vec<crate::stmt::Owner>,
     /// Configuration specifications (7.3.1) by the declarative region they are in (unit.rs).
     pub config_specs: HashMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
     /// Configuration specifications whose instance labels wait for the statement part.
+    #[serde(skip)]
     pub(crate) pending_specs: Vec<crate::unit::PendingSpec>,
     /// 2019 range record types (`R'RECORD`) by scalar base type, made on first use (attr.rs).
     pub(crate) range_records: HashMap<TypeId, SubtypeId>,
@@ -191,7 +217,7 @@ pub struct Db {
 // Helpers below are used by the slices being filled in (CONTRIBUTING.md).
 #[allow(dead_code)]
 /// A use of a TIME unit below one second (LRM 5.2.4.2).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TimeUnitUse {
     pub span: Span,
     /// The unit as written, and its size in femtoseconds.

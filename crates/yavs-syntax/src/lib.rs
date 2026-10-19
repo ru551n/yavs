@@ -34,12 +34,23 @@ mod source;
 mod symbol;
 pub mod token;
 
-pub use symbol::Symbol;
+pub use symbol::{Symbol, decode_table, encode_table};
 
 use yavs_diag::{Diagnostic, FileId, Severity, SourceFile, SourceMap, Span};
 
 /// The language standard a file is analyzed under.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum Std {
     #[default]
     Vhdl2008,

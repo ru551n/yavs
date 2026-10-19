@@ -14,7 +14,7 @@ pub trait Id: Copy + Eq {
 
 macro_rules! id {
     ($($name:ident),* $(,)?) => {$(
-        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
         pub struct $name(NonZeroU32);
 
         impl Id for $name {
@@ -89,6 +89,21 @@ impl<I: Id, T> Arena<I, T> {
             .iter()
             .enumerate()
             .map(|(i, t)| (I::from_index(i), t))
+    }
+}
+
+impl<I, T: serde::Serialize> serde::Serialize for Arena<I, T> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(s)
+    }
+}
+
+impl<'de, I, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Arena<I, T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Arena {
+            items: Vec::deserialize(d)?,
+            _id: PhantomData,
+        })
     }
 }
 

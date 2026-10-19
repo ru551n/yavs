@@ -87,6 +87,7 @@ codes! {
     GENERIC_CLASS = "E1503", "The actual does not belong to the class of the formal generic type.";
     GENERIC_DEFAULT = "E1504", "No unique subprogram matches the `is <>` default.";
     UNINSTANTIATED_CALL = "E1505", "An uninstantiated subprogram cannot be called.";
+    GENERIC_SUBPROGRAM_ACTUAL = "E1506", "A generic subprogram of a component or block cannot be the actual of an entity's generic subprogram in a generic map. Name a subprogram declared elsewhere, or rely on the default binding, which passes a component's generic subprogram by name.";
     // E16xx names, aliases, attributes, signatures
     EXTERNAL_CLASS = "E1601", "The class of the external name does not allow this use.";
     EXTERNAL_PATH = "E1602", "The path of an external name is malformed: a package path is `@lib.pkg.obj`, an absolute path names the top entity first, only generate labels take a globally static index, and a relative path needs an enclosing concurrent region (LRM 8.7).";

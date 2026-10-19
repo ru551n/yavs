@@ -1077,6 +1077,27 @@ impl Db {
             crate::expr::names::NameRes::Overloads(ds) => ds,
             other => return Err(self.report_name(scope, other, n.span, "a function name")),
         };
+        // The generic subprogram of a component or a block is not an actual (user, 2026-10-19, L63).
+        if let Some(&d) = cands.iter().find(|&&d| {
+            matches!(self.decls[d].kind, DeclKind::GenericSubprogram(_))
+                && matches!(
+                    self.scopes[self.decls[d].scope].kind,
+                    ScopeKind::Component | ScopeKind::Block
+                )
+        }) {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::GENERIC_SUBPROGRAM_ACTUAL,
+                    format!(
+                        "the generic subprogram `{}` of a component or block cannot be the actual of a generic subprogram",
+                        self.decls[d].name
+                    ),
+                )
+                .with_primary(n.span, "")
+                .with_secondary(self.decls[d].span, "declared here")
+                .with_help("name a subprogram declared in the architecture or a package; a default binding passes a component's generic subprogram by name"),
+            ));
+        }
         let text = self.source_text(n.span);
         self.fit_subprogram(f, cands, n.span, Some(&text))
     }

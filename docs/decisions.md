@@ -1009,3 +1009,7 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   they take no position, with no warning; two of three reference simulators agree.
 - **Calls through aliases of methods of shared and process variables (L15, #237; user, 2026-10-19):**
   stay accepted (permissive), although the reference simulators reject or crash on the calls.
+- **Generic subprograms of components and blocks as actuals (L63, #222; user, 2026-10-19):** a generic
+  subprogram of a component or block as the actual of an entity's generic subprogram in a generic map
+  is `E1506` at the actual (all three reference simulators reject it). The default binding by name
+  is unaffected.

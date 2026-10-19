@@ -23,6 +23,7 @@ fn setup(
         symbol: name.into(),
         args,
         ret,
+        model: None,
     });
     (x, pb.declare("fun", FuncKind::Function, None))
 }

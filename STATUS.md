@@ -624,6 +624,18 @@ deposit on a driven signal, value changes on a signal, a port, a bit and a recor
 `--threads 1` and `4`, `tests/put/expected.txt`) and `vhpi_put_value_misuse_is_reported`
 (`tests/put/errors.txt`). Missing: writing variables (#309), `vhpi_schedule_transaction`.
 
+Done (#274): `vhpi_register_foreignf` and `vhpi_get_foreignf_info` (`crates/yavs-vhpi/src/foreign.rs`):
+`'FOREIGN "VHPI library model"` functions and procedures (lowering: `ForeignRef::model`; interpreter:
+`ForeignModel`, `Bindings::models`; CLI binds them after the plugins load) run the plugin's `execf`
+with the call as `obj`; parameters through `vhpiParamDecls`, `vhpi_get_value`, and `vhpi_put_value`
+on `out`/`inout` parameters and on the call for the function result; `elabf` runs once per bound
+subprogram; an unregistered model is `W0108` then `E0107` at the call. Scalars and arrays of scalars
+only. `crates/yavs/tests/vhpi_run.rs` `vhpi_foreign_subprograms` (functions of integer, real, time,
+logic vector, boolean; procedures with `out`, `inout` and array `inout`; identical at `--threads 4`,
+`tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing: foreign
+architectures (`vhpiArchF`, `vhpiLibF` and `vhpiAppF` registrations are stored and queryable only),
+record/access/signal parameters, array results (`vhpiSizeConstraint`), `vhpi_get_data`/`vhpi_put_data`.
+
 Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
 the elaborated design made before plugins load: root and component instances, blocks, `for`
 iterations (`G(0)`), `if`/`case` generates, process statements, package instances (`@lib:pkg`),

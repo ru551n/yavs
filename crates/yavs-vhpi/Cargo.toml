@@ -13,6 +13,8 @@ links = "yavs_vhpi"
 yavs-diag.workspace = true
 yavs-elab = { path = "../yavs-elab" }
 yavs-ffi = { path = "../yavs-ffi" }
+yavs-interp = { path = "../yavs-interp" }
+yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-sem = { path = "../yavs-sem" }
 libloading = "0.9.0"

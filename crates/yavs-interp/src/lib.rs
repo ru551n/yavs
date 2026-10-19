@@ -17,6 +17,7 @@ mod debug;
 mod env;
 mod exec;
 mod foreign;
+pub use foreign::{ForeignModel, ModelArg, ModelCall, ScalarKind};
 mod heap;
 mod implicit;
 mod native;
@@ -187,6 +188,8 @@ impl Default for Limits {
 pub struct Bindings {
     /// A function for every `Program::foreign` entry (looked up by the elaborator).
     pub foreign: Vec<(ForeignId, ForeignFn)>,
+    /// A plugin-registered model for every `'FOREIGN "VHPI library model"` entry that has one.
+    pub models: Vec<(ForeignId, Arc<dyn ForeignModel>)>,
     /// Where the bindings looked for symbols (reported when an unbound one is called).
     pub searched: String,
     /// Package instance data, addressed by `AddrSpace::Pkg(i)`.
@@ -206,6 +209,7 @@ impl Default for Bindings {
     fn default() -> Bindings {
         Bindings {
             foreign: Vec::new(),
+            models: Vec::new(),
             searched: String::new(),
             packages: Vec::new(),
             cov_counters: None,
@@ -222,6 +226,7 @@ pub struct Runtime {
     pub prog: Arc<Program>,
     pub(crate) natives: Vec<Option<native::NativeFn>>,
     pub(crate) foreign: Vec<Option<ForeignFn>>,
+    pub(crate) models: Vec<Option<Arc<dyn ForeignModel>>>,
     /// Where unbound foreign symbols were looked for, for the error at their call.
     pub(crate) searched: String,
     pub(crate) pkgs: Vec<Arc<InstData>>,
@@ -270,10 +275,22 @@ impl Runtime {
             }
             foreign[id.0 as usize] = Some(f);
         }
+        let mut models: Vec<Option<Arc<dyn ForeignModel>>> = vec![None; prog.foreign.len()];
+        for (id, h) in b.models {
+            match prog.foreign.get(id) {
+                Some(x) if x.model.is_some() => models[id.0 as usize] = Some(h),
+                _ => {
+                    return Err(usage(format!(
+                        "model binding for non-VHPI foreign subprogram {id}"
+                    )));
+                }
+            }
+        }
         let n = b.cov_counters.unwrap_or(prog.cov.len());
         Ok(Arc::new(Runtime {
             natives,
             foreign,
+            models,
             searched: b.searched,
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),

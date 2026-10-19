@@ -1240,6 +1240,13 @@ which tools/difftest parses.
   x86_64 GNU under wine by hand (a MinGW DLL; the test itself cannot spawn the compiler from
   inside wine).
 
+- **VHPI models (#274, 2026-10-19):** `'FOREIGN "VHPI library model"` (exactly three words,
+  keyword case-insensitive) binds to the model a `--vhpi` plugin registered with
+  `vhpi_register_foreignf`, after the plugins load and before `build`; unbound follows "warn
+  early, fail at call" (`W0108`, `E0107`). Parameters and results are scalars or arrays of
+  scalars; the interpreter hands the plugin layer neutral cells (`yavs_interp::ForeignModel`),
+  so `yavs-interp` knows nothing of VHPI. Details: `crates/yavs-vhpi/AGENTS.md`.
+
 ## Binary files (yavs-interp `binfile.rs`, #79, 2026-10-18)
 
 `read` and `write` on `file of T` (LRM 5.5.2) are implemented for `T` a scalar type or an array of

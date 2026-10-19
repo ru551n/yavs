@@ -1,10 +1,74 @@
 //! VHPIDIRECT calls (ir.md 1.7): marshalling VHDL values to C arguments and back.
 
 use yavs_ffi::{Arg, CType, Ret};
-use yavs_ir::{ForeignArg, ForeignId, Func, Program, Regs, Ty, TyId, Width};
+use yavs_ir::{
+    ForeignArg, ForeignId, ForeignMode, Func, LogicKind, Program, Regs, Ty, TyId, VhpiModel, Width,
+};
 
 use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
 use crate::heap::Obj;
+
+/// The scalar type of a model call's value or array element.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScalarKind {
+    Int,
+    Real,
+    /// A physical type; `time` for the predefined `time` (primary unit `fs`).
+    Phys {
+        time: bool,
+    },
+    /// Literals in original spelling; `logic` for std_ulogic and BIT types.
+    Enum {
+        lits: Vec<String>,
+        logic: Option<LogicKind>,
+    },
+}
+
+/// One actual of a model call (or its function result). `cells` are the VHDL cells of the
+/// scalar or of the array elements, row-major, leftmost first: integers and physical values
+/// as `i64`, reals as `f64` bits, enumerations as literal positions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelArg {
+    pub name: String,
+    pub mode: ForeignMode,
+    pub kind: ScalarKind,
+    pub array: bool,
+    pub cells: Vec<u64>,
+    /// False for a function result the model has not set yet.
+    pub set: bool,
+}
+
+/// A call of a `'FOREIGN "VHPI library model"` subprogram.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelCall {
+    pub subprogram: String,
+    pub args: Vec<ModelArg>,
+    /// The function result, `None` for a procedure.
+    pub ret: Option<ModelArg>,
+}
+
+/// A foreign model registered by a plugin; bound by the elaborator (`Bindings::models`).
+pub trait ForeignModel: Send + Sync {
+    /// Runs the model. `out` and `inout` arguments and the result are read back afterwards.
+    fn call(&self, call: &mut ModelCall) -> Result<(), String>;
+}
+
+fn scalar_kind(t: &Ty) -> Option<ScalarKind> {
+    Some(match t {
+        Ty::Int { .. } => ScalarKind::Int,
+        Ty::Real => ScalarKind::Real,
+        Ty::Physical { units, .. } => ScalarKind::Phys {
+            time: units
+                .first()
+                .is_some_and(|u| u.0.eq_ignore_ascii_case("fs")),
+        },
+        Ty::Enum { lits, logic } => ScalarKind::Enum {
+            lits: lits.clone(),
+            logic: *logic,
+        },
+        _ => return None,
+    })
+}
 
 fn csize(ct: CType) -> usize {
     match ct {
@@ -337,6 +401,135 @@ impl Machine {
         Ok(d[skip..].as_mut_ptr().cast())
     }
 
+    /// The scalar kind of a type or of an array type's element, and that scalar `Ty`.
+    fn kind_of(&self, t: TyId) -> R<(ScalarKind, Ty)> {
+        let mut t = self.ty(t)?;
+        if let Ty::Array { elem, .. } = t {
+            t = self.ty(elem)?;
+        }
+        Ok((
+            scalar_kind(&t).ok_or_else(|| ice("VHPI model argument type"))?,
+            t,
+        ))
+    }
+
+    /// A call of a VHPI model: arguments as neutral cells, the model reads and writes them,
+    /// `out`/`inout` arguments and the result come back.
+    fn model_call(
+        &mut self,
+        name: &str,
+        id: ForeignId,
+        m: &VhpiModel,
+        fargs: &[ForeignArg],
+        regs: &[yavs_ir::Reg],
+    ) -> R<u64> {
+        let rt = self.rt.clone();
+        let Some(h) = rt.models.get(id.0 as usize).and_then(|h| h.as_ref()) else {
+            return Err(Fault::Unbound(
+                format!(
+                    "VHPI model `{} {}` of foreign subprogram `{name}` is not registered",
+                    m.library, m.model
+                ),
+                "the plugins loaded with `--vhpi`".into(),
+            ));
+        };
+        let mut call = ModelCall {
+            subprogram: name.to_string(),
+            args: Vec::new(),
+            ret: None,
+        };
+        // Per array argument: its buffer layout, for the copy back.
+        let mut arrays: Vec<Option<(u64, u64, TyId)>> = Vec::new();
+        for ((a, &r), p) in fargs.iter().zip(regs).zip(&m.params) {
+            let v = self.r(r);
+            let (kind, _) = self.kind_of(p.ty)?;
+            let (cells, array) = match *a {
+                ForeignArg::Value(_) => (vec![v], false),
+                ForeignArg::ScalarRef(_, w) => (vec![self.load(v, w)?], false),
+                ForeignArg::Array { ty, .. } => {
+                    let (buf, data, lens) = self.marshal_array(ty, v, name)?;
+                    let n: u64 = lens.iter().product();
+                    let (_, ct, _, _) = self.array_elem(ty, name)?;
+                    let cs = csize(ct);
+                    arrays.push(Some((data, n, ty)));
+                    let cells = (0..n as usize).map(|i| get_c(&buf, i * cs, ct)).collect();
+                    (cells, true)
+                }
+                _ => return Err(ice("VHPI model argument shape")),
+            };
+            if !array {
+                arrays.push(None);
+            }
+            call.args.push(ModelArg {
+                name: p.name.clone(),
+                mode: p.mode,
+                kind,
+                array,
+                cells,
+                set: true,
+            });
+        }
+        if let Some(rt_ty) = m.ret {
+            let (kind, _) = self.kind_of(rt_ty)?;
+            call.ret = Some(ModelArg {
+                name: String::new(),
+                mode: ForeignMode::Out,
+                kind,
+                array: false,
+                cells: Vec::new(),
+                set: false,
+            });
+        }
+        h.call(&mut call).map_err(|e| {
+            Fault::Runtime(format!(
+                "foreign call of `{name}` (VHPI {} {}): {e}",
+                m.library, m.model
+            ))
+        })?;
+        for (k, ((a, &r), p)) in fargs.iter().zip(regs).zip(&m.params).enumerate() {
+            if p.mode == ForeignMode::In {
+                continue;
+            }
+            let v = self.r(r);
+            let (_, et) = self.kind_of(p.ty)?;
+            let cells = &call.args[k].cells;
+            match *a {
+                ForeignArg::ScalarRef(_, w) => {
+                    let c = *cells.first().ok_or_else(|| ice("model argument cells"))?;
+                    check_back(&et, c, name, k)?;
+                    self.store(v, w, c)?;
+                }
+                ForeignArg::Array { ty, .. } => {
+                    let Some((data, n, _)) = arrays[k] else {
+                        return Err(ice("array argument"));
+                    };
+                    let (_, ct, _, _) = self.array_elem(ty, name)?;
+                    if cells.len() as u64 != n {
+                        return rt_err(format!(
+                            "foreign `{name}` changed the length of argument {}",
+                            k + 1
+                        ));
+                    }
+                    let cs = csize(ct);
+                    let mut buf = vec![0u8; n as usize * cs];
+                    for (i, &c) in cells.iter().enumerate() {
+                        put_c(&mut buf, i * cs, ct, c, name, k)?;
+                    }
+                    self.unmarshal_array(ty, &buf, data, n, name, k)?;
+                }
+                _ => return Err(ice("VHPI model argument shape")),
+            }
+        }
+        match call.ret {
+            None => Ok(0),
+            Some(r) if r.set && r.cells.len() == 1 => Ok(r.cells[0]),
+            Some(_) => rt_err(format!(
+                "foreign function `{name}` (VHPI {} {}) did not set its result",
+                m.library, m.model
+            )),
+        }
+    }
+
     pub(crate) fn foreign(
         &mut self,
         prog: &Program,
@@ -349,6 +542,10 @@ impl Machine {
             .get(id)
             .ok_or_else(|| ice(format!("no foreign subprogram {id}")))?;
         let rt = self.rt.clone();
+        if let Some(m) = &x.model {
+            let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();
+            return self.model_call(x.name.as_str(), id, m, &x.args, &regs);
+        }
         let Some(fun) = rt.foreign.get(id.0 as usize).and_then(|f| f.as_ref()) else {
             return Err(Fault::Unbound(
                 format!(

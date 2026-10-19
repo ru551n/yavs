@@ -65,6 +65,16 @@ pub(crate) enum Object {
     Iter(Iter),
     /// A type, range constraint, enumeration literal, record element or unit (`types.rs`).
     Type(TypeObj),
+    /// Registration `i` of `vhpi_register_foreignf` (`foreign.rs`).
+    Foreign(usize),
+    /// The call of a foreign subprogram that a model's `execf` is running (key in
+    /// `Foreign::calls`); a function call is also the function's result.
+    Call(u64),
+    /// Parameter `idx` of foreign call `call`.
+    Param {
+        call: u64,
+        idx: u32,
+    },
 }
 
 /// The state of a `vhpi_iterator`.
@@ -272,6 +282,7 @@ pub(crate) const STR_PROPS: &[vhpiStrPropertyT] = &[
 pub(crate) struct State {
     pub(crate) handles: Handles,
     pub(crate) cbs: Callbacks,
+    pub(crate) foreign: crate::foreign::Foreign,
     pub(crate) clock: Clock,
     pub(crate) design: Design,
     /// The tool's arguments (`vhpiArgcP`, `vhpiArgvs`): the program name, then the plusargs.
@@ -437,6 +448,9 @@ impl State {
         kernel: impl FnOnce(SigRef) -> Option<Result<Value, SimError>>,
     ) -> Result<Read, (Fault, String)> {
         let misuse = |m: &str| (Fault::Misuse, format!("vhpi_get_value: {m}"));
+        if matches!(obj, Object::Call(_) | Object::Param { .. }) {
+            return self.foreign_read(obj);
+        }
         let at = self.at(obj, "vhpi_get_value")?;
         let (ty, len, array) = Self::scalars(at.l, "vhpi_get_value")?;
         match &at.node.origin {
@@ -593,6 +607,7 @@ impl State {
             Object::Callback(_) => vhpiCallbackK,
             Object::Iter(_) => vhpiIteratorK,
             Object::Type(o) => self.design.types.kind(*o),
+            Object::Foreign(_) | Object::Call(_) | Object::Param { .. } => self.foreign_kind(obj),
             Object::Node(n) => self.design.node(*n).kind,
             Object::Elem { base, path } => {
                 self.design
@@ -627,6 +642,11 @@ impl State {
             (Object::Type(o), _) if prop != vhpiKindStrP => {
                 return self.design.types.str_property(*o, prop);
             }
+            (Object::Foreign(_) | Object::Call(_) | Object::Param { .. }, _)
+                if prop != vhpiKindStrP =>
+            {
+                return self.foreign_str(obj, prop);
+            }
             (_, vhpiKindStrP) => {
                 let k = i64::from(self.kind(obj));
                 VHPICLASSKINDT_VALUES
@@ -650,6 +670,9 @@ impl State {
         Some(match (obj, prop) {
             (_, vhpiKindP) => self.kind(obj),
             (Object::Type(o), _) => return self.design.types.int_property(*o, prop),
+            (Object::Foreign(_) | Object::Call(_) | Object::Param { .. }, _) => {
+                return self.foreign_int(obj, prop);
+            }
             (Object::Callback(i), vhpiStateP) => self.cbs.get(*i)?.state,
             (Object::Callback(i), vhpiReasonP) => self.cbs.get(*i)?.data.reason,
             (Object::Tool, vhpiArgcP) => vhpiIntT::try_from(self.argv.len()).ok()?,
@@ -734,6 +757,9 @@ impl State {
     ) -> Result<Option<Iter>, bool> {
         let list =
             |items: Vec<Object>| Ok((!items.is_empty()).then_some(Iter::List { items, next: 0 }));
+        if let (vhpiParamDecls, Some(o @ Object::Call(_))) = (rel, reference) {
+            return list(self.foreign_params(o).ok_or(false)?);
+        }
         if matches!(
             rel,
             vhpiConstraints | vhpiEnumLiterals | vhpiRecordElems | vhpiUnitDecls

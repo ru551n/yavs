@@ -21,9 +21,9 @@ pub use inst::{
     IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, SIG_PART_BYTES, Width,
 };
 pub use program::{
-    Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignRef, Func,
-    FuncFlags, FuncKind, Local, Mode, NativeRef, Param, ParamClass, Program, RootKind, StmtInfo,
-    StmtKind,
+    Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
+    ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, Param, ParamClass, Program,
+    RootKind, StmtInfo, StmtKind, VhpiModel, VhpiParam,
 };
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;

@@ -455,3 +455,63 @@ fn vhpi_put_value_misuse_is_reported() {
     assert!(err.contains("warning[W0903]"), "{err}");
     assert!(err.contains("warning[W0904]"), "{err}");
 }
+
+/// Runs entity `top` of `yavs-vhpi/tests/foreign/design.vhd` with the `foreign` plugin.
+fn foreign(top: &str, extra: &[&str]) -> (i32, String, String) {
+    let vhdl =
+        std::fs::read_to_string(vhpi_dir().join("tests/foreign/design.vhd")).expect("design");
+    let (lib, so) = setup_with("foreign", &vhdl);
+    let spec = format!("--vhpi={}", so.display());
+    let extras = format!("--vhpi={}:foreign_extras", so.display());
+    let mut args = vec!["run", &lib, &spec, &extras];
+    args.extend_from_slice(extra);
+    args.push(top);
+    yavs(&args)
+}
+
+/// Foreign functions and procedures registered with `vhpi_register_foreignf` and called from
+/// VHDL (#274): scalar and array parameters, results through `vhpi_put_value`, `out` and
+/// `inout` parameters, registration queries and registration misuse. The plugin's output is
+/// `yavs-vhpi/tests/foreign/expected.txt` (`YAVS_BLESS=1` rewrites it).
+#[test]
+fn vhpi_foreign_subprograms() {
+    let (code, err, out) = foreign("top", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("foreign ok"), "{out}{err}");
+    let expected = vhpi_dir().join("tests/foreign/expected.txt");
+    let plugin: String = out
+        .lines()
+        .filter(|l| !l.starts_with("**") && !l.starts_with("    Process"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &plugin).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected trace")
+        .replace("\r\n", "\n");
+    assert_eq!(plugin, want);
+    // The write to an in parameter and the registration misuse are reported.
+    assert!(err.matches("warning[W0903]").count() >= 3, "{err}");
+    // Same result with more threads.
+    let (code, _, again) = foreign("top", &["--threads=4"]);
+    assert_eq!(code, 0);
+    assert_eq!(again, out);
+}
+
+/// A model that is not registered warns before time 0 and fails only when called; a function
+/// that sets no result is a runtime error.
+#[test]
+fn vhpi_foreign_missing_model_and_result() {
+    let (code, err, out) = foreign("lazy", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("lazy ok"), "{out}");
+    assert!(err.contains("warning[W0108]"), "{err}");
+    assert!(err.contains("VHPI model `plug missing`"), "{err}");
+    let (code, err, _) = foreign("miss", &[]);
+    assert_ne!(code, 0);
+    assert!(err.contains("error[E0107]"), "{err}");
+    let (code, err, _) = foreign("nores", &[]);
+    assert_ne!(code, 0);
+    assert!(err.contains("did not set its result"), "{err}");
+}

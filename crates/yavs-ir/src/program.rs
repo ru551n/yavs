@@ -267,6 +267,35 @@ pub struct ForeignRef {
     pub symbol: String,
     pub args: Vec<ForeignArg>,
     pub ret: Option<CType>,
+    /// `Some` for a `'FOREIGN "VHPI library model"` subprogram: the plugin's registered model
+    /// is called instead of a C function (`symbol` is the model name).
+    pub model: Option<VhpiModel>,
+}
+
+/// The parameter mode of a VHPI foreign subprogram's formal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForeignMode {
+    In,
+    Out,
+    InOut,
+}
+
+/// One formal of a VHPI foreign subprogram: its name, mode and type (the array type for an
+/// array formal, else the scalar's base type).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VhpiParam {
+    pub name: String,
+    pub mode: ForeignMode,
+    pub ty: TyId,
+}
+
+/// What a VHPI foreign call needs beyond the C-shaped [`ForeignRef`] fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VhpiModel {
+    pub library: String,
+    pub model: String,
+    pub params: Vec<VhpiParam>,
+    pub ret: Option<TyId>,
 }
 
 impl ForeignRef {

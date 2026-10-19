@@ -40,6 +40,9 @@ pub struct Ir {
     pub foreign: Vec<(yavs_ir::ForeignId, yavs_ffi::ForeignFn)>,
     /// Where the unbound ones were looked for (reported when one is called).
     pub foreign_searched: String,
+    /// The plugin-registered model of each `'FOREIGN "VHPI library model"` entry of
+    /// `program.foreign`, bound by the caller like `foreign`.
+    pub models: Vec<(yavs_ir::ForeignId, Arc<dyn yavs_interp::ForeignModel>)>,
     /// Thunks returning the handle of each package shared variable a variable port denotes.
     pub var_pkgs: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
     /// The functions of `Elaborated::elab_calls`, for the replay.
@@ -257,6 +260,7 @@ impl Elaborated {
             shared_size: lowered.shared_size,
             foreign: Vec::new(),
             foreign_searched: String::new(),
+            models: Vec::new(),
             var_pkgs,
             elab_sigs,
         });
@@ -413,6 +417,7 @@ impl Elaborated {
             &ir.sources,
             &ir.foreign,
             &ir.foreign_searched,
+            &ir.models,
             &shared,
             time_resolution(cfg.resolution),
             ir.revision,

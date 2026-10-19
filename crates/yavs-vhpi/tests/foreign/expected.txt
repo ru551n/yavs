@@ -1,0 +1,15 @@
+info: other info kind=3 elabf=0 execf=1 kindP=3 name=info
+duplicate: vhpi_register_foreignf: other info is already registered
+noexec: vhpi_register_foreignf: a function or procedure needs an execf
+elab: plug add kind=2
+elab: plug half kind=2
+elab: plug later kind=2
+elab: plug parity kind=2
+elab: plug is_big kind=2
+elab: plug divmod kind=3
+elab: plug invert kind=3
+elab: plug bump kind=3
+add: call kind=1052 name=ADD
+add: param A mode=1001 kind=1029
+add: param B mode=1001 kind=1029
+divmod: in parameter: vhpi_put_value: parameter a has mode in

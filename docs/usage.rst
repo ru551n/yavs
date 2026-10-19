@@ -208,6 +208,23 @@ it is refused. Constants, generics, records as a whole and ``vhpiSizeConstraint`
 signal, port or one of their sub-elements runs once in every cycle in which any of its elements
 changed, with the object's value in the format its ``value`` field asks for.
 
+A plugin can also implement VHDL subprograms. A subprogram whose ``foreign`` attribute is
+``"VHPI library model"`` calls the model that a plugin registered at startup with
+``vhpi_register_foreignf`` (``vhpiFuncF`` for a function, ``vhpiProcF`` for a procedure,
+``libraryName`` and ``modelName`` equal to the two words). The registration's ``elabf`` runs
+once for every subprogram that is bound to it, before the simulation starts, and its ``execf``
+at every call, with ``obj`` the call: ``vhpi_iterator(vhpiParamDecls, obj)`` or
+``vhpi_handle_by_index(vhpiParamDecls, obj, i)`` give the parameters (``vhpiNameP``,
+``vhpiModeP``), ``vhpi_get_value`` reads them in every format, and ``vhpi_put_value`` with
+``vhpiDeposit`` or ``vhpiDepositPropagate`` writes the ``out`` and ``inout`` parameters and, on
+``obj`` itself, the function result. Parameters and results are scalars or arrays of scalars;
+records, access values, signal and file parameters are not supported. A function that sets no
+result, or a value that does not fit its VHDL type, is a run-time error. A model nobody
+registered is warning ``W0108`` before the simulation and error ``E0107`` only when the
+subprogram is called. ``vhpi_get_foreignf_info`` returns a registration. Foreign architectures
+(``vhpiArchF``) can be registered and queried but are not run yet. Calls are serialized, so a
+plugin needs no locking, whatever ``--threads`` says.
+
 Plusargs
 --------
 

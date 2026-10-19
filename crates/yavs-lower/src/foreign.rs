@@ -4,7 +4,7 @@
 use yavs_diag::Span;
 use yavs_ffi::CType;
 use yavs_ffi::vhdl::{self, VhdlType};
-use yavs_ir::{ForeignArg, ForeignRef, Inst, RegTy, Ty};
+use yavs_ir::{ForeignArg, ForeignMode, ForeignRef, Inst, RegTy, Ty, VhpiModel, VhpiParam};
 use yavs_sem::decl::ObjClass;
 use yavs_sem::decl::Subprogram;
 use yavs_sem::hir::{Arg, Mode};
@@ -26,6 +26,16 @@ pub fn vhpidirect_symbol(attr: &str, name: &str) -> Option<String> {
         return None;
     }
     Some(w.last().unwrap_or(name).to_string())
+}
+
+/// The library and model of a `'FOREIGN "VHPI library model"` attribute value (exactly three
+/// words, keyword case-insensitive); `None` for any other form.
+pub fn vhpi_model(attr: &str) -> Option<(String, String)> {
+    let w: Vec<&str> = attr.split_whitespace().collect();
+    match w[..] {
+        [k, lib, model] if k.eq_ignore_ascii_case("vhpi") => Some((lib.into(), model.into())),
+        _ => None,
+    }
 }
 
 impl Fx<'_, '_> {
@@ -111,16 +121,22 @@ impl Fx<'_, '_> {
                 ));
             }
         };
-        let Some(symbol) = vhpidirect_symbol(&text, &name) else {
+        let vhpi = vhpi_model(&text);
+        let Some(symbol) = vhpi
+            .as_ref()
+            .map(|(_, m)| m.clone())
+            .or_else(|| vhpidirect_symbol(&text, &name))
+        else {
             return Err(self.cx.error(
                 NOT_IMPLEMENTED,
                 span,
                 format!(
                     "foreign subprogram `{name}` with 'FOREIGN \"{text}\": only VHPIDIRECT \
-                     subprograms are supported"
+                     and \"VHPI library model\" subprograms are supported"
                 ),
             ));
         };
+        let mut params = Vec::new();
         let mut args = Vec::new();
         for p in sp.params.iter() {
             let pname = p.name.text.to_string();
@@ -136,6 +152,23 @@ impl Fx<'_, '_> {
                 return Err(bad(self, "signal and file parameters are not supported"));
             }
             let t = db.base(p.subtype);
+            if vhpi.is_some() {
+                if matches!(
+                    db.types[t].kind,
+                    TypeKind::Record { .. } | TypeKind::Access { .. }
+                ) {
+                    return Err(bad(self, "record and access parameters of a VHPI model"));
+                }
+                params.push(VhpiParam {
+                    name: pname.clone(),
+                    mode: match p.mode {
+                        Mode::In => ForeignMode::In,
+                        Mode::Out => ForeignMode::Out,
+                        _ => ForeignMode::InOut,
+                    },
+                    ty: self.ty(t, span)?,
+                });
+            }
             args.push(match &db.types[t].kind {
                 TypeKind::Array { indexes, .. } => {
                     let full = matches!(
@@ -182,11 +215,24 @@ impl Fx<'_, '_> {
                 }
             },
         };
+        let model = match vhpi {
+            None => None,
+            Some((library, model)) => Some(VhpiModel {
+                library,
+                model,
+                params,
+                ret: match sp.ret {
+                    Some(r) => Some(self.ty(db.base(r), span)?),
+                    None => None,
+                },
+            }),
+        };
         Ok(ForeignRef {
             name,
             symbol,
             args,
             ret,
+            model,
         })
     }
 
@@ -229,7 +275,17 @@ impl Fx<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use super::vhpidirect_symbol as sym;
+    use super::{vhpi_model, vhpidirect_symbol as sym};
+
+    #[test]
+    fn vhpi_forms() {
+        assert_eq!(
+            vhpi_model(" vhpi  lib  mod "),
+            Some(("lib".into(), "mod".into()))
+        );
+        assert_eq!(vhpi_model("VHPI lib"), None);
+        assert_eq!(vhpi_model("VHPIDIRECT lib mod"), None);
+    }
 
     #[test]
     fn vhpidirect_forms() {

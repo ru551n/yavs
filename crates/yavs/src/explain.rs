@@ -97,11 +97,11 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W0108",
-        "A VHPIDIRECT foreign subprogram's symbol is defined in no `--load` library and not in the executable. The run goes on; calling the subprogram is `E0107`.",
+        "A VHPIDIRECT foreign subprogram's symbol is defined in no `--load` library and not in the executable, or a `\"VHPI library model\"` subprogram's model was registered by no `--vhpi` plugin. The run goes on; calling the subprogram is `E0107`.",
     ),
     (
         "E0107",
-        "A VHPIDIRECT foreign subprogram cannot be bound or called: its C signature cannot be called, or (at the call) no `--load` library and not the executable defines its symbol.",
+        "A foreign subprogram cannot be bound or called: its VHPIDIRECT C signature cannot be called, its VHPI model is registered as the other kind of subprogram, or (at the call) no `--load` library and not the executable defines its symbol or no `--vhpi` plugin registered its model.",
     ),
     // yavs-vhpi
     (

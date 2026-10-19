@@ -772,7 +772,12 @@ pub unsafe extern "C" fn vhpi_put_value(
             })?;
             value::Read::decode(ty.clone(), n, format, given, res)
         };
-        match s.put(&o, mode, decode) {
+        let put = if matches!(o, Object::Call(_) | Object::Param { .. }) {
+            s.foreign_put(&o, mode, decode)
+        } else {
+            s.put(&o, mode, decode)
+        };
+        match put {
             Ok(()) => 0,
             Err((fault, m)) => {
                 let m = if fault == Fault::Unsupported {
@@ -870,16 +875,55 @@ pub extern "C" fn vhpi_create(
     std::ptr::null_mut()
 }
 
+/// Registers a foreign model (`vhpiFuncF`, `vhpiProcF`, `vhpiArchF`, `vhpiLibF`, `vhpiAppF`)
+/// and returns its `vhpiForeignfK` handle, NULL on error. See `foreign.rs`.
+///
+/// # Safety
+/// `data` is NULL or points to a `vhpiForeignDataT` whose names are NUL-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_register_foreignf(_data: *mut vhpiForeignDataT) -> vhpiHandleT {
-    not_implemented("vhpi_register_foreignf");
-    std::ptr::null_mut()
+pub unsafe extern "C" fn vhpi_register_foreignf(data: *mut vhpiForeignDataT) -> vhpiHandleT {
+    // SAFETY: NULL or valid per the contract; the struct is copied.
+    let Some(d) = (unsafe { data.as_ref() }).copied() else {
+        with_state(|s| s.fail(Fault::Misuse, "vhpi_register_foreignf: NULL data"));
+        return std::ptr::null_mut();
+    };
+    with_state(|s| match s.register_foreign(&d) {
+        Ok(i) => s.handles.alloc(Object::Foreign(i)),
+        Err(m) => {
+            s.fail(Fault::Misuse, format!("vhpi_register_foreignf: {m}"));
+            std::ptr::null_mut()
+        }
+    })
 }
 
+/// Fills `data` from the registration behind `h`. Returns 0, or 1 on error.
+///
+/// # Safety
+/// `data` is NULL or writable.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_get_foreignf_info(_h: vhpiHandleT, _data: *mut vhpiForeignDataT) -> c_int {
-    not_implemented("vhpi_get_foreignf_info");
-    1
+pub unsafe extern "C" fn vhpi_get_foreignf_info(
+    h: vhpiHandleT,
+    data: *mut vhpiForeignDataT,
+) -> c_int {
+    // SAFETY: NULL or writable per the contract.
+    let Some(out) = (unsafe { data.as_mut() }) else {
+        with_state(|s| s.fail(Fault::Misuse, "vhpi_get_foreignf_info: NULL data"));
+        return 1;
+    };
+    with_state(|s| match get_obj(s, h, "vhpi_get_foreignf_info") {
+        Some(Object::Foreign(i)) => match s.foreign_info(i, out) {
+            Some(()) => 0,
+            None => 1,
+        },
+        Some(_) => {
+            s.fail(
+                Fault::Misuse,
+                "vhpi_get_foreignf_info: not a foreign registration handle",
+            );
+            1
+        }
+        None => 1,
+    })
 }
 
 #[unsafe(no_mangle)]

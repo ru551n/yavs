@@ -28,7 +28,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | `src/ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` |
 | `src/composite.rs`, `access.rs`, `protected.rs`, `file.rs`, `force.rs` | Records and composite arrays, access types, protected types, files/textio, force/release (lower2) |
 | `src/reflect.rs` | `'reflect` and mirror lowering |
-| `src/foreign.rs` | Calls of `'FOREIGN` (VHPIDIRECT) subprograms: one `ForeignRef` per subprogram (`Cx::foreigns`), arguments as `cells(.., native)`, result range check |
+| `src/foreign.rs` | Calls of `'FOREIGN` (VHPIDIRECT and `"VHPI library model"`, `ForeignRef::model`) subprograms: one `ForeignRef` per subprogram (`Cx::foreigns`), arguments as `cells(.., native)`, result range check |
 | `tests/corpus.rs` | `tests/corpus` groups through sem, elab (lowering), verifier, interpreter and kernel vs the reference simulator `.expected` (honours `ignore=order` and `ignore=path`); `PASS` list must match exactly |
 
 ## 3. Design decisions that bind this module

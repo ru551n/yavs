@@ -22,6 +22,7 @@ pub mod sys;
 mod abi;
 mod callbacks;
 mod design;
+mod foreign;
 mod model;
 mod plugin;
 mod sim;
@@ -72,4 +73,16 @@ pub fn run_callbacks(reason: i32) -> usize {
 /// Takes the pending `vhpi_control` request, if a plugin made one.
 pub fn take_control() -> Option<Control> {
     abi::with_state(|s| s.control.take())
+}
+
+/// The model a plugin registered with `vhpi_register_foreignf` for the `'FOREIGN "VHPI library
+/// model"` subprogram `library model` (a function when `function`), for the elaborator to
+/// bind. Runs the model's elaboration callback. `Ok(None)`: nothing registered under that
+/// name; `Err`: registered as the other kind of subprogram.
+pub fn foreign_model(
+    library: &str,
+    model: &str,
+    function: bool,
+) -> Result<Option<std::sync::Arc<dyn yavs_interp::ForeignModel>>, String> {
+    foreign::model(library, model, function)
 }

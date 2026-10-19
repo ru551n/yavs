@@ -283,6 +283,34 @@ fn bind_foreign(
         + "the yavs executable";
     ir.foreign_searched = searched.clone();
     for (id, x) in ir.program.foreign.iter() {
+        if let Some(m) = &x.model {
+            match yavs_vhpi::foreign_model(&m.library, &m.model, x.ret.is_some()) {
+                Ok(Some(h)) => ir.models.push((id, h)),
+                Err(err) => {
+                    return Err(Box::new(Diagnostic::error(
+                        "E0107",
+                        format!("foreign subprogram `{}` cannot be called: {err}", x.name),
+                    )));
+                }
+                // Warn early, fail at the call, as for a missing VHPIDIRECT symbol.
+                Ok(None) => out.emit(
+                    &SourceMap::default(),
+                    &Diagnostic::warning(
+                        "W0108",
+                        format!(
+                            "VHPI model `{} {}` of foreign subprogram `{}` is not registered",
+                            m.library, m.model, x.name
+                        ),
+                    )
+                    .with_note("searched the plugins loaded with `--vhpi`")
+                    .with_help(
+                        "register it with `vhpi_register_foreignf` in a plugin given as \
+                         `--vhpi=LIB`; calling the subprogram is an error (E0107)",
+                    ),
+                ),
+            }
+            continue;
+        }
         match yavs_vhpi::bind_foreign(&libs, &x.symbol, x.signature()) {
             Some(Ok(f)) => ir.foreign.push((id, f)),
             Some(Err(err)) => {

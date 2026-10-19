@@ -1148,6 +1148,7 @@ fn foreign_call() {
             ForeignArg::Value(CType::U8),
         ],
         ret: Some(CType::I32),
+        model: None,
     };
     let mut pb = ProgramBuilder::new();
     let int = integer(&mut pb);

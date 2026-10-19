@@ -304,7 +304,8 @@ expression; elsewhere it is an error (``E1304``). Some simulators accept fewer c
 constraint, a generic type whose actual is scalar): ``r`` is then the target's subtype, so
 ``r'low``, ``r'high``, a variable of subtype ``r`` and its range checks follow the target's range,
 and the returned value is checked against ``t``. Some simulators reject scalar named return
-values, and some give ``r`` the range of ``t`` instead of the target's (4.2.1, 2019).
+values, and some give ``r`` the range of ``t`` instead of the target's (4.2.1, 2019). A named
+return value of an access type is an error (``E1233``; decided by the user, 2026-10-19).
 
 *Portable:* pass the range as a parameter, or return a value of ``t`` and let the assignment
 check it.

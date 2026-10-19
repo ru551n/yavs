@@ -1388,7 +1388,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Scalar named return values (L77, #327; user, 2026-10-19, reverses the earlier ruling of the
   same day that kept them rejected with `E1233`, commit 2462e0aa):** `function f return r of t`
   with a scalar `t` is accepted; `r` is the call's target subtype and has its range, passed like
-  array and record bounds. `E1233` stays for access and file types. Of the references that run
+  array and record bounds. `E1233` stays for access types (user, 2026-10-19: keep reject) and
+  file types (never a return type). Of the references that run
   it, one takes the target's range and one the type mark's; yavs keeps the reading of array and
   record named returns.
 - **Incremental binding repeating the entity aspect (config-rebinding, 7.3.2.1; user, 2026-10-19: LRM
@@ -1424,7 +1425,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   (`E1312`), `external-name-architecture-subprogram-unbound` (`E2117`),
   `aggregate-piece-mixed-direction` and `aggregate-target-range-directions` (`E1334`),
   `i64-min-literal` (`E1402`), `formal-package-per-element-box` (not parsed), `div-by-zero-in-range`
-  (`E1401`) and `generic-subprogram-of-block` (`E1506`). Listed in `docs/design/lrm-checks.md`
+  (`E1401`), `generic-subprogram-of-block` (`E1506`) and a 2019 named return value of an access
+  type, `return r of t` (`E1233`). Listed in `docs/design/lrm-checks.md`
   "Rule 15 rows".
 - **Static index and slice out of range (L51, sem.md 4.3; user, 2026-10-19, rule 15):** a locally
   static index or non-null slice outside the static index range of its array is warning `W1404` at

@@ -370,6 +370,7 @@ E1101, L22/L89). No other root cause is left.
 | Run | Fuzz time | Executions | Crashes found | Fixed | Open |
 |---|---:|---:|---:|---:|---|
 | 4 workers, ~1.1 h CPU in total | ~27 min wall | ~280,000 | 3 distinct ICEs (procedure call left `ExprKind::Error`; physical-literal unit undeclared; alias of a selected object name) | 3 | none |
+| 1 worker, 2 x 30 min (`parse` ~99,000 runs, `sem` ~98,000 after the fix; seeds `tests/diag/sem`, `tests/corpus`, `lib/`) | ~60 min wall | ~197,000 | `parse`: none. `sem`: `'record` on a range under 2008 was an ICE (#359) | 1 | none |
 
 The procedure-call ICE was fixed on main in parallel; the other two are fixed here, all with
 regression tests in `tests/diag/sem/fuzz/`. The last 3 chunks (~190,000 executions) found nothing.

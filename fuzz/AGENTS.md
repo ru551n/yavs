@@ -34,6 +34,7 @@ cargo +nightly fuzz run sem --jobs 4 -- -rss_limit_mb=2048 -timeout=20     # par
 cargo +nightly fuzz tmin sem artifacts/sem/crash-...                        # minimise a find
 ```
 
+- Seeds can also include `../tests/corpus`; `-artifact_prefix=<dir>/` needs an existing directory (use a cache dir, not `/tmp`).
 - Keep runs bounded (`-max_total_time`) and worker counts low on the shared host; run
   `cargo clean` in `fuzz/` afterwards (its own `target/`).
 - Open issues (snapshot 2026-10-18): #87 periodic fuzz and parse-corpus gate; #44 fuzz regression

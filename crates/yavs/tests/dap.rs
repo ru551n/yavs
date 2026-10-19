@@ -381,7 +381,10 @@ fn attach_through_response_file() {
     c.event("stopped");
     let st = c.request("stackTrace", json!({"threadId": 1}));
     assert_eq!(st["body"]["stackFrames"][0]["line"], 20, "{st}");
-    c.request("setBreakpoints", json!({"source": {"path": src}, "breakpoints": []}));
+    c.request(
+        "setBreakpoints",
+        json!({"source": {"path": src}, "breakpoints": []}),
+    );
     c.request("continue", json!({"threadId": 1}));
     assert_eq!(c.event("exited")["body"]["exitCode"], 0);
     c.request("disconnect", json!({}));

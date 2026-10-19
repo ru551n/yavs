@@ -304,6 +304,8 @@ fields, #215), shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`, once per element, on byte and logic leaves, #293). Difftest: access 3/3,
 composite 6/6, force 3/3, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
+- An alias of a constant with a static value in a subprogram has no storage; its uses lower the aliased name (#300; difftest `composite/alias_constant`).
+
 ## sem robustness
 
 `cargo +nightly fuzz run sem` (in `fuzz/`, seeds `tests/diag/sem`, `lib/`) parses and analyzes each input

@@ -421,6 +421,15 @@ impl<'a, 'b> Fx<'a, 'b> {
             self.cx.objs.insert(d, o);
             return Ok(());
         }
+        // A locally static constant has no slot (its folded value is used): the alias has no
+        // storage either and its uses lower the aliased name (`alias_target`, #300).
+        if let Some(yavs_sem::lsp::NameRoot::Obj(yavs_sem::hir::ObjRoot::Decl(t))) =
+            db.name_root(target)
+            && !self.cx.objs.contains_key(&t)
+            && matches!(&db.decls[t].kind, DeclKind::Object(o) if o.class == ObjClass::Constant)
+        {
+            return Ok(());
+        }
         self.stmt_start(StmtKind::Decl, span);
         let name = db.decls[d].name.to_string();
         match self.place(target)? {

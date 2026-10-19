@@ -362,16 +362,28 @@ impl Signal {
         }
         cuts.sort_unstable();
         cuts.dedup();
-        self.segments = cuts
-            .windows(2)
-            .map(|w| {
-                let range = Range::new(w[0], w[1] - w[0]);
-                let drivers = (0..self.drivers.len() as u32)
-                    .filter(|&i| self.drivers[i as usize].range.contains(range))
-                    .collect();
-                Segment { range, drivers }
-            })
+        // Sweep the cuts with the set of sources covering them (kept in source order), not a
+        // scan over all sources per segment: one source per element stays O(n log n).
+        let mut by_start: Vec<u32> = (0..self.drivers.len() as u32)
+            .filter(|&i| self.drivers[i as usize].range.len > 0)
             .collect();
+        by_start.sort_by_key(|&i| self.drivers[i as usize].range.offset);
+        let mut next = by_start.iter().peekable();
+        let mut active = std::collections::BTreeSet::new();
+        self.segments = Vec::with_capacity(cuts.len());
+        for w in cuts.windows(2) {
+            let range = Range::new(w[0], w[1] - w[0]);
+            active.retain(|&i: &u32| self.drivers[i as usize].range.end() > w[0]);
+            while let Some(&&i) = next.peek() {
+                if self.drivers[i as usize].range.offset > w[0] {
+                    break;
+                }
+                active.insert(i);
+                next.next();
+            }
+            let drivers = active.iter().copied().collect();
+            self.segments.push(Segment { range, drivers });
+        }
     }
 
     /// Recompute the driving value of `r` from the sources. A leaf of a composite group is
@@ -757,6 +769,34 @@ mod tests {
             range: Range::new(off, v.len() as u32),
             value,
         }
+    }
+
+    #[test]
+    fn segments_list_covering_sources_in_order() {
+        let ty = SignalType::bytes(1, 10);
+        let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 10), None);
+        for (o, l) in [(0, 10), (5, 3), (2, 1), (4, 0), (8, 2)] {
+            sig.drivers.push(DriverSlot {
+                range: Range::new(o, l),
+                value: Buf::zeroed(ty.elem, l as usize),
+                off: None,
+            });
+        }
+        sig.build_segments();
+        let got: Vec<_> = sig
+            .segments
+            .iter()
+            .map(|g| (g.range.offset, g.range.len, g.drivers.clone()))
+            .collect();
+        let want = vec![
+            (0, 2, vec![0]),
+            (2, 1, vec![0, 2]),
+            (3, 1, vec![0]),
+            (4, 1, vec![0]),
+            (5, 3, vec![0, 1]),
+            (8, 2, vec![0, 4]),
+        ];
+        assert_eq!(got, want);
     }
 
     #[test]

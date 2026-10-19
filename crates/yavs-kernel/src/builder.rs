@@ -1,7 +1,7 @@
 //! Elaboration-free model construction.
 
 use std::cmp::Reverse;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{ErrorKind, SimError};
@@ -399,6 +399,9 @@ impl Builder {
             return Err(e);
         }
         let usage = |m: String| SimError::new(ErrorKind::Usage(m));
+        // Per signal, the source ranges added so far (offset -> end), so the "several sources"
+        // check of an unresolved signal is a lookup, not a scan over all its sources.
+        let mut taken: Vec<BTreeMap<u32, u32>> = vec![BTreeMap::new(); self.signals.len()];
         let mut infos = Vec::with_capacity(self.drivers.len());
         for (i, &(sig, range, owner)) in self.drivers.iter().enumerate() {
             let owner = owner.ok_or_else(|| usage(format!("driver {i} has no process")))?;
@@ -417,7 +420,7 @@ impl Builder {
                 range,
                 slot: s.drivers.len() as u32,
             });
-            add_source(s, range).map_err(usage)?;
+            add_source(s, range, &mut taken[sig.0 as usize]).map_err(usage)?;
         }
         for p in &mut self.ports {
             for &(f, fr) in &p.formal {
@@ -432,10 +435,10 @@ impl Builder {
                 }
             }
             if !matches!(p.mode, PortMode::In) {
-                for &(a, ar) in &p.actual {
-                    let a = &mut self.signals[a.0 as usize];
+                for &(a_id, ar) in &p.actual {
+                    let a = &mut self.signals[a_id.0 as usize];
                     p.slots.push(a.drivers.len() as u32);
-                    add_source(a, ar).map_err(usage)?;
+                    add_source(a, ar, &mut taken[a_id.0 as usize]).map_err(usage)?;
                     if let Some(d) = a.drivers.last_mut() {
                         d.off = None; // a port source is never disconnected
                     }
@@ -579,9 +582,14 @@ impl Builder {
 }
 
 /// Add a source (driver or out-port) for `range`, checking unresolved signals have one.
-fn add_source(s: &mut Signal, range: Range) -> Result<(), String> {
-    if s.resolution.is_none() && s.drivers.iter().any(|d| d.range.overlaps(range)) {
-        return Err(format!("unresolved signal {} has several sources", s.name));
+fn add_source(s: &mut Signal, range: Range, taken: &mut BTreeMap<u32, u32>) -> Result<(), String> {
+    if s.resolution.is_none() && range.len > 0 {
+        // The source starting last before `range` ends is the only one that can overlap it.
+        let hit = taken.range(..range.end()).next_back();
+        if hit.is_some_and(|(_, &end)| end > range.offset) {
+            return Err(format!("unresolved signal {} has several sources", s.name));
+        }
+        taken.insert(range.offset, range.end());
     }
     let value = s.cur.extract(range.offset as usize, range.len as usize);
     let off = s.guard.map(|_| vec![0; (range.len as usize).div_ceil(64)]);

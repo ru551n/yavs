@@ -183,7 +183,7 @@ pub(crate) fn in_ports(
             mr(&mut q);
             (*l, *r) = q;
         }
-        if let Some((_, l, e)) = &mut p.trigger {
+        if let Some((_, l, e, _)) = &mut p.trigger {
             let (t, off) = m(*l);
             (*l, *e) = (t, *e + off);
         }

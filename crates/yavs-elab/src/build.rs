@@ -170,6 +170,7 @@ impl Elaborated {
                 })
                 .collect();
             let proc = make(p, &ds)?;
+            let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);
             let name = name.strip_suffix(':').unwrap_or(&name);
             let pid = b.process(
@@ -183,7 +184,7 @@ impl Elaborated {
                 &ds,
                 Boxed(proc),
             );
-            if let Some((rising, leaf, elem)) = p.trigger {
+            if let Some((rising, leaf, elem, _)) = p.trigger.filter(|t| !t.3 || !proc_waits) {
                 let signal = yavs_kernel::SignalId(leaf.0);
                 b.edge_trigger(
                     pid,

@@ -1929,24 +1929,50 @@ fn record_port_element_bounds_check_the_index() {
 fn clocked_processes_get_edge_triggers() {
     let src = "library ieee; use ieee.std_logic_1164.all;
       entity t is end; architecture a of t is
-        signal clk, rst : std_logic := '0';
+        signal clk, rst, en : std_logic := '0';
         signal v : std_logic_vector(3 downto 0);
         signal q, r, s : std_logic;
       begin
         p1 : process (clk) begin if rising_edge(clk) then q <= '1'; end if; end process;
         p2 : process (rst) begin if falling_edge(rst) then r <= '1'; end if; end process;
-        p5 : process (v(2)) begin if falling_edge(v(2)) then v(0) <= '1'; end if; end process;
-        p3 : process (clk, rst) begin if rising_edge(clk) then s <= '1'; end if; end process;
-        p4 : process (clk) begin if rising_edge(clk) then q <= '0'; else q <= '1'; end if; end process;
+        p3 : process (v) begin if falling_edge(v(2)) then v(0) <= '1'; end if; end process;
+        p4 : process (clk, rst) begin if rising_edge(clk) then s <= '1'; end if; end process;
+        p5 : process (clk) begin if rising_edge(clk) then q <= '0'; else q <= '1'; end if; end process;
+        p6 : process (clk) begin if rising_edge(clk) and en = '1' then q <= '0'; end if; end process;
+        p7 : process (clk) begin if en = '1' and rising_edge(clk) then q <= '0'; end if; end process;
+        p8 : process begin wait until rising_edge(clk); q <= '1'; end process;
+        p9 : process begin wait until rising_edge(clk); wait for 1 ns; end process;
+        p10 : process (clk, rst) begin if rst = '1' then q <= '0'; elsif rising_edge(clk) then q <= '1'; end if; end process;
+        g : for i in 0 to 1 generate
+          p11 : process (v) begin if rising_edge(v(i + 1)) then q <= '1'; end if; end process;
+        end generate;
       end;";
     let (_, e) = elab("edges", src, "t", &[]);
     let t: Vec<_> = e
         .procs
         .iter()
-        .map(|p| p.trigger.map(|(rising, _, elem)| (rising, elem)))
+        .map(|p| {
+            p.trigger
+                .map(|(rising, _, elem, wait)| (rising, elem, wait))
+        })
         .collect();
-    // Not (yet) an element of a composite (p5).
-    assert_eq!(t, [Some((true, 0)), Some((false, 0)), None, None, None]);
+    assert_eq!(
+        t,
+        [
+            Some((true, 0, false)),
+            Some((false, 0, false)),
+            Some((false, 2, false)),
+            Some((true, 0, false)),
+            None,
+            Some((true, 0, false)),
+            None,
+            Some((true, 0, true)),
+            None,
+            None,
+            Some((true, 1, false)),
+            Some((true, 2, false)),
+        ]
+    );
 }
 
 /// R4: an `in` port whose actual is whole signal leaves, or part of one leaf, is an alias of

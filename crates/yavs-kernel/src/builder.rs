@@ -60,9 +60,10 @@ struct ProcDecl {
 }
 
 /// The one condition under which an event resumes a process to any effect: the process is
-/// `process (s) begin if rising_edge(s) then ... end if; end process;` (or `falling_edge`) on
-/// element `elem` of a logic signal. An event that does not make the edge true would only
-/// evaluate the `if` and suspend again, so the kernel leaves the process suspended
+/// `process (...) begin if rising_edge(s) then ... end if; end process;` (or `falling_edge`;
+/// or one `wait until` of that, optionally `and`ed with more) on element `elem` of a logic
+/// signal. An event that does not make the edge true would only evaluate the condition and
+/// suspend again, so the kernel leaves the process suspended
 /// (`Config::edge_triggers`). Edges as the IEEE 1164 functions define them: `'event`, and the
 /// value and `'last_value` through `To_X01`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

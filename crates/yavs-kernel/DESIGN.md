@@ -106,9 +106,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    So an uncollapsed port hierarchy of any depth settles in the same delta as its source.
 3. Publish value changes on the observer bus (signal id order, then range order), then resume
    processes whose waited range overlaps a changed range. A process with an edge trigger
-   (`Builder::edge_trigger`: its body is one `if rising_edge(s)` or `falling_edge(s)` on the
-   element it waits on) stays suspended, its waiter in place, when the event does not make the
-   edge true: running it would only evaluate the `if` and suspend again
+   (`Builder::edge_trigger`: its body is one `if rising_edge(s)` or `falling_edge(s)` on an
+   element of a signal, or one `wait until` of that, and does nothing without the edge) stays
+   suspended, its waiter in place, when the event does not make the edge true: running it
+   would only evaluate the condition and suspend again
    (`Config::edge_triggers`, off when activations are observable).
 4. Run resumed non-postponed processes (parallel, below), between the `StartOfProcesses` and
    `EndOfProcesses` callbacks (every cycle, #317; at `EndOfProcesses` what the processes

@@ -213,6 +213,7 @@ const PASS: &[&str] = &[
     "process/call_conversions_unconstrained",
     "process/case_if",
     "process/conditional_expr_2019",
+    "process/edge_shapes",
     "process/individual_assoc",
     "process/individual_assoc_parts",
     "process/process_order",

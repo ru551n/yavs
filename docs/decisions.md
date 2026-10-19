@@ -1967,4 +1967,11 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - Off (`Config::edge_triggers`) with `--cov`, `--dap` and `--vhpi`: statement coverage, a
   debugger and foreign callbacks can see the skipped activation. Output is otherwise unchanged;
   the statistics count fewer process runs.
+- More shapes (#420): the edge may be on a static element of a signal (`v(2)`, `r.f`, a
+  generate index), the sensitivity list may hold other signals (they resume the process as
+  before; the trigger only keeps a resumption without the edge from running it), the condition
+  may be `rising_edge(c) and X` with the edge as the first operand (the predefined BOOLEAN
+  `and` does not evaluate `X` after a false edge), and a process with one `wait [on ...] until
+  E;` and no other suspension point (decided after lowering: `Process::several_waits`) is
+  recognised in the same way.
 

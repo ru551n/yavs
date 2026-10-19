@@ -599,7 +599,7 @@ Done (#272, object-independent part; #123): simulation-phase and after-delay cal
 `yavs_vhpi::VhpiObserver` and two new kernel phases (`EndOfInit`, `NextCycle`): start/end of
 initialization, next time step, start of next cycle, start and end of processes and start of
 postponed (kernel phases `StartOfProcesses`, `EndOfProcesses` (also once after initialization), `StartOfPostponed`, #317), last known delta cycle (read-write), end
-of time step (read-only), after delay, each with its `Rep` form; `vhpi_remove_cb`,
+of time step (read-only; both also at time 0 after initialization when no delta follows, #347), after delay, each with its `Rep` form; `vhpi_remove_cb`,
 `vhpi_enable_cb`, `vhpi_disable_cb`, `vhpi_get_cb_info` (removing a matured callback is legal);
 disabled callbacks sit outside the per-phase sets and cost nothing per cycle. `vhpi_get_time`
 and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs` (7 tests) runs

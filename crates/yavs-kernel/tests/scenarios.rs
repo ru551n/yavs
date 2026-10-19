@@ -651,7 +651,8 @@ fn phases_steps_and_end() {
     );
 }
 
-/// A VHPI-style callback depositing at the last known delta creates a delta.
+/// A VHPI-style callback depositing at the last known delta creates a delta (already at time 0:
+/// the last-delta phases run after initialization when no delta follows, #347).
 #[test]
 fn hook_deposit_at_last_known_delta() {
     struct Dep(SignalId, bool);
@@ -699,8 +700,8 @@ fn hook_deposit_at_last_known_delta() {
         trace.take(),
         [
             "0 fs +0 p0 Note: [0]",
-            "5 ns +1 s[0..1]=[4]",
-            "5 ns +1 p0 Note: [4]"
+            "0 fs +1 s[0..1]=[4]",
+            "0 fs +1 p0 Note: [4]"
         ]
     );
 }
@@ -1131,6 +1132,8 @@ fn observer_wake_up_defers_idle_end() {
             "0 fs +0 p0 Note: [0]",
             "0 fs +0 EndOfProcesses",
             "0 fs +0 EndOfInit",
+            "0 fs +0 LastKnownDelta",
+            "0 fs +0 EndOfTimeStep",
             "7 ns +0 NextTimeStep",
             "7 ns +0 NextCycle",
             "wake at 7 ns",
@@ -1174,6 +1177,8 @@ fn observer_wake_up_in_the_past_or_now() {
     assert_eq!(
         trace.take()[4..],
         [
+            "0 fs +0 LastKnownDelta",
+            "0 fs +0 EndOfTimeStep",
             "7 ns +0 NextTimeStep",
             "7 ns +0 NextCycle",
             "wake 7 ns +0",

@@ -283,7 +283,8 @@ fn read_write_before_read_only_and_phase_order() {
 }
 
 /// Every phase once per occurrence. Start and end of processes bracket each cycle's processes
-/// (#317; end of processes also fires after initialization's process run), start of postponed only when postponed processes run. The read-write phase (last known delta) runs before the
+/// (#317; end of processes also fires after initialization's process run), start of postponed only when postponed processes run. The read-write and read-only
+/// phases also run at time 0 when no delta follows initialization (#347). The read-write phase (last known delta) runs before the
 /// postponed processes and the read-only phase (end of time step) after them; an after-delay of
 /// 0 from it creates one more delta; a callback registered in the read-only phase for the same
 /// phase runs at the next time step.
@@ -293,6 +294,13 @@ const ORDER: &str = "vhpi: start_of_sim t=0 d=0 cb_time=0\n\
      ** Note: 0fs+0: postponed s='0'\n\
      vhpi: end_procs t=0 d=0 cb_time=0\n\
      vhpi: end_of_init t=0 d=0 cb_time=0\n\
+     vhpi: read_write t=0 d=0 cb_time=0\n\
+     vhpi: next_cycle t=0 d=1 cb_time=0\n\
+     vhpi: after0 t=0 d=1 cb_time=0\n\
+     vhpi: start_procs t=0 d=1 cb_time=0\n\
+     vhpi: end_procs t=0 d=1 cb_time=0\n\
+     vhpi: read_write t=0 d=1 cb_time=0\n\
+     vhpi: read_only t=0 d=1 cb_time=0\n\
      vhpi: next_time_step_once t=10 d=0 cb_time=10\n\
      vhpi: next_time_step t=10 d=0 cb_time=10\n\
      vhpi: next_cycle t=10 d=0 cb_time=10\n\
@@ -300,14 +308,10 @@ const ORDER: &str = "vhpi: start_of_sim t=0 d=0 cb_time=0\n\
      ** Note: 10000000fs+0: s='1'\n\
      vhpi: end_procs t=10 d=0 cb_time=10\n\
      vhpi: read_write t=10 d=0 cb_time=10\n\
-     vhpi: next_cycle t=10 d=1 cb_time=10\n\
-     vhpi: after0 t=10 d=1 cb_time=10\n\
-     vhpi: start_procs t=10 d=1 cb_time=10\n\
-     vhpi: end_procs t=10 d=1 cb_time=10\n\
-     vhpi: read_write t=10 d=1 cb_time=10\n\
-     vhpi: start_postponed t=10 d=1 cb_time=10\n\
-     ** Note: 10000000fs+1: postponed s='1'\n\
-     vhpi: read_only t=10 d=1 cb_time=10\n\
+     vhpi: start_postponed t=10 d=0 cb_time=10\n\
+     ** Note: 10000000fs+0: postponed s='1'\n\
+     vhpi: read_only t=10 d=0 cb_time=10\n\
+     vhpi: late_eots t=10 d=0 cb_time=10\n\
      vhpi: next_time_step t=20 d=0 cb_time=20\n\
      vhpi: next_cycle t=20 d=0 cb_time=20\n\
      vhpi: start_procs t=20 d=0 cb_time=20\n\
@@ -317,7 +321,6 @@ const ORDER: &str = "vhpi: start_of_sim t=0 d=0 cb_time=0\n\
      vhpi: start_postponed t=20 d=0 cb_time=20\n\
      ** Note: 20000000fs+0: postponed s='0'\n\
      vhpi: read_only t=20 d=0 cb_time=20\n\
-     vhpi: late_eots t=20 d=0 cb_time=20\n\
      vhpi: end t=20 d=0 cb_time=20\n";
 
 #[test]
@@ -504,6 +507,24 @@ fn vhpi_value_change_rearmed_fires_once_per_cycle() {
         ["vhpi: e=01011010 t=10 d=0", "vhpi: e=00000000 t=20 d=0"],
         "{out}"
     );
+}
+
+/// A write from the read-write phase registered at load time lands at time 0 even though the
+/// design has no delta at time 0, and reaches an output port through a transport delay 10 ns
+/// later (#347).
+#[test]
+fn vhpi_read_write_at_time_zero_reaches_a_transport_delay() {
+    let vhdl = "entity top is port (ti : in integer; tout : out integer); end;\n\
+                architecture a of top is begin tout <= transport ti after 10 ns; end;\n";
+    let (lib, so) = setup_with("put", vhdl);
+    let spec = format!("--vhpi={}:transport", so.display());
+    let (code, err, out) = yavs(&["run", &lib, &spec, "--resolution=ns", "top"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("vhpi: read-write t=0 d=0\nvhpi: put ti: ok\n"),
+        "{out}"
+    );
+    assert!(out.contains("vhpi: tout=0 t=10 d=0\n"), "{out}");
 }
 
 /// Runs entity `top` of `yavs-vhpi/tests/foreign/design.vhd` with the `foreign` plugin.

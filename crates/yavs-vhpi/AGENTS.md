@@ -116,9 +116,9 @@ testbench frameworks use `vhpiCbRepLastKnownDeltaCycle` for their read-write pha
 | `vhpiCbAfterDelay` | `Hook::wake_at(now + delay)`, then `Observer::wake` with that `WakeId`; removing the callback is `Hook::cancel`. A delay of 0 is the next delta. A disabled one is skipped when due (a one-shot then matures) |
 | `vhpiCbStartOfProcesses` | `Phase::StartOfProcesses` (every cycle, before its processes run, #317) |
 | `vhpiCbEndOfProcesses` | `Phase::EndOfProcesses` (every cycle, after its processes ran, and once after initialization's process run, before end of initialization; what they scheduled is not applied yet; puts here make the next delta, #317) |
-| `vhpiCbLastKnownDeltaCycle` (read-write) | `Phase::LastKnownDelta` (puts queued here create one more delta) |
+| `vhpiCbLastKnownDeltaCycle` (read-write) | `Phase::LastKnownDelta` (puts queued here create one more delta; also at time 0 right after initialization when no delta follows it, #347) |
 | `vhpiCbStartOfPostponed` | `Phase::StartOfPostponed` (before the postponed processes, only when some run; no puts, #317) |
-| `vhpiCbEndOfTimeStep` (read-only) | `Phase::EndOfTimeStep` (after postponed processes; no puts) |
+| `vhpiCbEndOfTimeStep` (read-only) | `Phase::EndOfTimeStep` (after postponed processes; no puts; at time 0 also when no delta follows initialization, #347) |
 | `vhpiCbValueChange` | `Observer::value_change`, once per cycle per callback (see the decisions above) |
 
 Callback rules (#272, #123):

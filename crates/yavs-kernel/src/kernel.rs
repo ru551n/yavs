@@ -800,6 +800,9 @@ impl SimControl {
                 self.run_batch((0..self.procs.len() as u32).collect(), false, true)?;
                 self.phase(Phase::EndOfProcesses);
                 self.phase(Phase::EndOfInit);
+                if self.end.is_none() {
+                    self.last_delta()?;
+                }
             }
             f(self)
         }))
@@ -943,7 +946,12 @@ impl SimControl {
         self.run_batch(ready, false, false)?;
         self.phase(Phase::EndOfProcesses);
 
-        // f/g: at the last delta of this time, postponed processes.
+        self.last_delta()
+    }
+
+    /// f/g: at the last delta of this time, postponed processes. Also after initialization
+    /// when no delta follows at time 0, so read-write and read-only observers see time 0 (#347).
+    fn last_delta(&mut self) -> Result<(), SimError> {
         if self.next_time() != Some(self.now) {
             self.phase(Phase::LastKnownDelta);
             if self.next_time() != Some(self.now) {

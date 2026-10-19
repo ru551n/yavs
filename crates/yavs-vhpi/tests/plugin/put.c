@@ -276,3 +276,28 @@ PLUGIN_EXPORT void edges(void) {
   ev.value.str = (vhpiCharT *)ebuf;
   edge_h = reg(vhpiCbValueChange, 0, edge, h("e"), &ev, "e");
 }
+
+/* ---- transport: a write from the read-write phase at time 0 of a design with no delta at
+ * time 0, seen through a transport delay (#347) ---------------------------------------- */
+
+static void tout_changed(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  vhpi_printf("vhpi: tout=%d t=%u d=%ld\n", cb->value->value.intg, t, c);
+}
+
+static void transport_rw(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  (void)cb;
+  vhpi_printf("vhpi: read-write t=%u d=%ld\n", t, c);
+  put_int(h("ti"), 0, vhpiDepositPropagate);
+  check("put ti");
+}
+
+PLUGIN_EXPORT void transport(void) {
+  static vhpiValueT tv;
+  tv.format = vhpiIntVal;
+  reg(vhpiCbValueChange, 0, tout_changed, h("tout"), &tv, "tout");
+  reg(vhpiCbLastKnownDeltaCycle, 0, transport_rw, NULL, NULL, "rw");
+}

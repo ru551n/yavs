@@ -106,7 +106,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    that schedules anything at `now` is an `ErrorKind::PostponedDelta`.
 
 The run starts with the `StartOfSim` callback, runs every process once (initialization) and
-calls `EndOfInit` before the first cycle (#272).
+calls `EndOfInit` before the first cycle (#272). When no delta follows at time 0, step 5 runs
+right after `EndOfInit`, so `LastKnownDelta` and `EndOfTimeStep` happen at time 0 as in both
+references with VHPI (a deposit queued there makes a delta at time 0, #347).
 
 Initialization (`settle` at build) computes driving values bottom-up and effective values
 top-down through ports without events; no signal is active then, so `'transaction` keeps its

@@ -242,8 +242,9 @@ milestone users care about works.
   `StartOfProcesses` and `EndOfProcesses` around every cycle's processes (all three references
   with VHPI accept end of processes; sim1 and sim3 also fire it once after initialization's
   process run, at cycle 0, sim4 does not: rule 15, majority of sim1/sim3/sim4, so yavs fires it
-  there too, before `EndOfInit`; start of processes is accepted by sim4 only and stays accepted,
-  rule 15(b), and never fires after initialization in sim4 or yavs) and `StartOfPostponed` (read-only,
+  there too, before `EndOfInit`; registering start of processes is accepted by sim4 only (sim1 and sim3
+  refuse the registration) and stays accepted, user, 2026-10-19 ("keep it permissive": the
+  rule 15 majority applies to run-time semantics, not to accepting a registration); it never fires after initialization in sim4 or yavs) and `StartOfPostponed` (read-only,
   only when postponed processes run, as the one reference that accepts it fires it). IEEE VHPI has no read-write or
   read-only synch reason: the read-write phase is `vhpiCb[Rep]LastKnownDeltaCycle`
   (`Phase::LastKnownDelta`, puts there make one more delta) and the read-only phase
@@ -252,6 +253,10 @@ milestone users care about works.
   of a wake-up at `now` for read-write was dropped because it always costs one extra delta and
   runs before the deltas still due at this time have settled. VHPI times count in units of `--resolution`. Disabled
   callbacks are kept out of the per-phase sets, so they cost nothing per cycle (#123, plan rule 9).
+  Both phases also run at time 0 right after initialization when no delta follows it, so a
+  write a Python testbench framework queues for its read-write phase at time 0 lands at time 0:
+  the two references that fire these reasons do so (the third fires neither at time 0; agent,
+  2026-10-19, #347, `tools/vhpi-conformance` plugin `tport`).
   Full rules: `crates/yavs-vhpi/AGENTS.md` section 3.
 - **Puts and value changes (#271, #272):** `vhpi_put_value` goes through the kernel's observer
   forces and deposits, queued until the callback returns, and lands in the next delta: puts from callbacks before

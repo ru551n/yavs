@@ -483,6 +483,8 @@ pub(crate) fn shared_var(
             return Err(cx.ice(span, "shared variable without a slot"));
         };
         cx.objs.insert(d, obj);
+        let ty = crate::ty::lower(db, cx, pb, t, span)?;
+        cx.shared_vars.push((d, ty));
         f
     };
     ir.consts.push(crate::InstConst {

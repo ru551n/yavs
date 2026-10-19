@@ -139,6 +139,7 @@ pub struct Hook<'a> {
     ops: &'a mut Vec<SignalOp>,
     end: &'a mut Option<EndReason>,
     wakes: &'a mut Wakes,
+    slots: &'a [Mutex<Slot>],
     /// Index of the observer being called.
     observer: usize,
 }
@@ -223,6 +224,18 @@ impl Hook<'_> {
     /// End the run with `reason` (`Stop`/`Finish` carry a status), unless it already ends.
     pub fn end(&mut self, reason: EndReason) {
         self.end.get_or_insert(reason);
+    }
+
+    /// Calls `f` with process `p` (`None` for no such process). Observers run between
+    /// phases, so every process is suspended: VHPI and waves read and write its variables
+    /// through [`Process::as_any`].
+    pub fn with_process<R>(
+        &mut self,
+        p: ProcId,
+        f: impl FnOnce(&mut dyn Process) -> R,
+    ) -> Option<R> {
+        let slot = self.slots.get(p.0 as usize)?;
+        Some(f(lock(slot).process.as_mut()))
     }
 }
 
@@ -1458,6 +1471,7 @@ impl SimControl {
             ops: &mut self.ops,
             end: &mut self.end,
             wakes: &mut self.wakes,
+            slots: &self.slots,
             observer: 0,
         };
         for (i, o) in observers.iter_mut().enumerate() {

@@ -245,6 +245,10 @@ pub struct Lowered {
     pub shared_size: u32,
 }
 
+/// A non-protected shared variable, its slot thunk (packages) and its value's IR type
+/// (`Lowerer::var_slots`).
+pub type VarSlot = (DeclId, Option<FuncId>, TyId);
+
 /// A package's objects at run time (LRM 14.4.2). The elaborator initialises each package
 /// once, in dependency order, with `yavs_interp::init_package(rt, init, index, size, shared)`
 /// and binds the results as `Bindings::packages` (index order); signals are the first
@@ -377,6 +381,9 @@ pub(crate) struct Cx {
     /// Bytes of the shared variables area allocated so far (package files and non-protected
     /// shared variables).
     pub shared_size: u32,
+    /// Non-protected shared variables lowered so far and the IR types of their values
+    /// (`Lowerer::var_slots`).
+    pub shared_vars: Vec<(DeclId, TyId)>,
     /// The leaves of record signals, in leaf order.
     pub rec_leaves: HashMap<DeclId, Vec<RecLeaf>>,
     /// Port actuals that get an equivalent process ([`Lowerer::port_actual`]): the instance
@@ -522,6 +529,7 @@ impl<'a> Lowerer<'a> {
                 pkg_sigs: Vec::new(),
                 arch_scopes: Vec::new(),
                 shared_size: 0,
+                shared_vars: Vec::new(),
                 rec_leaves: HashMap::new(),
                 actuals: HashMap::new(),
                 ext_sigs: HashMap::new(),
@@ -596,6 +604,42 @@ impl<'a> Lowerer<'a> {
             Ok(f) if self.cx.diags.is_empty() => Ok(f),
             _ => Err(self.cx.take_failed()),
         }
+    }
+
+    /// Each non-protected shared variable lowered so far and the IR type of its value; for a
+    /// package's, a thunk returning the address of its slot (a scalar, or `[data, desc, ..]` as
+    /// `VarShape` says). A region's slot address is what its instance cell holds. VHPI reads
+    /// and writes the variable there (#309).
+    pub fn var_slots(&mut self) -> Result<Vec<VarSlot>, Vec<Diagnostic>> {
+        let mut out = Vec::new();
+        for (d, ty) in self.cx.shared_vars.clone() {
+            let Some(
+                Obj::Scalar {
+                    space: Space::Shared,
+                    off,
+                    ..
+                }
+                | Obj::Array {
+                    space: Space::Shared,
+                    off,
+                },
+            ) = self.cx.objs.get(&d).copied()
+            else {
+                out.push((d, None, ty));
+                continue;
+            };
+            let decl = &self.db.decls[d];
+            let (name, span) = (format!("{}'slot", decl.name), decl.span);
+            let f = func::thunk(self.db, &mut self.pb, &mut self.cx, &name, span, |fx| {
+                Ok(fx.addr(Space::Shared, off))
+            });
+            self.drain();
+            match f {
+                Ok(f) if self.cx.diags.is_empty() => out.push((d, Some(f), ty)),
+                _ => return Err(self.cx.take_failed()),
+            }
+        }
+        Ok(out)
     }
 
     /// Lower a subprogram (and everything it calls), returning its function.

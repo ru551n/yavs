@@ -52,6 +52,12 @@ pub trait Process: Send {
     fn concurrent_call(&self) -> bool {
         false
     }
+
+    /// The process as `Any`, so an observer that knows its implementation can reach its
+    /// state while it is suspended (`Hook::with_process`: VHPI reads and writes variables).
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {

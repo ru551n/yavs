@@ -49,6 +49,20 @@ pub struct Ir {
     pub var_pkgs: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
     /// The functions of `Elaborated::elab_calls`, for the replay.
     pub(crate) elab_sigs: HashMap<yavs_sem::DeclId, crate::pkgcall::Sig>,
+    /// The slot thunk (packages) and value type of each non-protected shared variable
+    /// (`Lowerer::var_slots`), for [`Built::vars`].
+    pub var_slots: Vec<yavs_lower::VarSlot>,
+}
+
+/// The interpreter side of a built simulation (`Elaborated::build_full`).
+pub struct Built {
+    pub rt: Arc<Runtime>,
+    pub shared: Arc<Mutex<SharedState>>,
+    /// The slot address and value type of each non-protected shared variable, by declaring
+    /// region (`None` for a package's) and declaration: VHPI reads and writes it there
+    /// (`yavs_interp::shared_var`, #309). A region's is listed when a process uses it (its
+    /// slot exists then).
+    pub vars: HashMap<(Option<ScopeId>, yavs_sem::DeclId), (u64, yavs_ir::TyId)>,
 }
 
 fn sim_err(m: String) -> SimError {
@@ -196,6 +210,7 @@ impl Elaborated {
         for &a in &archs {
             idx.push(l.architecture(a)?);
         }
+        let var_slots = l.var_slots()?;
         let mut resolvers = HashMap::new();
         let mut res_types = HashMap::new();
         for leaf in &self.nets.leaves {
@@ -265,6 +280,7 @@ impl Elaborated {
             models: Vec::new(),
             var_pkgs,
             elab_sigs,
+            var_slots,
         });
         Ok(())
     }
@@ -396,6 +412,17 @@ impl Elaborated {
         cfg: Config,
         probes: Option<&yavs_interp::VarProbes>,
     ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+        self.build_full(cfg, probes)
+            .map(|(s, b)| (s, b.map(|b| b.rt)))
+    }
+
+    /// [`Elaborated::build_probed`] with the shared state and where the shared variables
+    /// are (VHPI, #309).
+    pub fn build_full(
+        &self,
+        cfg: Config,
+        probes: Option<&yavs_interp::VarProbes>,
+    ) -> Result<(SimControl, Option<Built>), SimError> {
         self.build_runtime_with(cfg, probes, None)
     }
 
@@ -408,6 +435,7 @@ impl Elaborated {
         session: &Arc<DebugSession>,
     ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
         self.build_runtime_with(cfg, None, Some(session))
+            .map(|(s, b)| (s, b.map(|b| b.rt)))
     }
 
     /// The path of a process instance as reports and the debugger show it: `:top:u1:p`.
@@ -421,7 +449,7 @@ impl Elaborated {
         cfg: Config,
         probes: Option<&yavs_interp::VarProbes>,
         dbg: Option<&Arc<DebugSession>>,
-    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+    ) -> Result<(SimControl, Option<Built>), SimError> {
         let attach = |proc: InterpProcess, p: &crate::ProcInst| match dbg {
             Some(s) => proc.with_debug(s.clone(), &self.proc_name(p)),
             None => proc,
@@ -577,7 +605,7 @@ impl Elaborated {
                     Ok(())
                 }))
             };
-        self.build_res(
+        let mut s = self.build_res(
             cfg,
             |p, ds| {
                 let i = self.instance_of(p.scope);
@@ -645,15 +673,43 @@ impl Elaborated {
                 Ok(Box::new(attach(proc, p)))
             },
             res,
-        )
-        .map(|mut s| {
-            // The shared heap is collected between cycles (#303).
-            s.subscribe(Box::new(yavs_interp::SharedGc {
-                rt: rt.clone(),
-                shared,
-            }));
-            (s, Some(rt))
-        })
+        )?;
+        // Where each shared variable's slot is: a region's is the value its thunk gave
+        // (`once`, the cell's content), when a process of the design uses it; a package's
+        // comes from its slot thunk.
+        let mut vars = HashMap::new();
+        for &(d, f, ty) in &ir.var_slots {
+            match f {
+                Some(f) => {
+                    let inst = Arc::new(InstData::default());
+                    let v = yavs_interp::call_values_shared(
+                        rt.clone(),
+                        f,
+                        inst,
+                        &[],
+                        None,
+                        Some(&shared),
+                    )?;
+                    let Some(CallVal::Cell(slot)) = v else {
+                        return Err(sim_err("shared variable slot not found".into()));
+                    };
+                    vars.insert((None, d), (slot, ty));
+                }
+                None => {
+                    for &(r, x) in self.shared_vars.iter().filter(|&&(_, x)| x == d) {
+                        if let Some(&CallVal::Cell(slot)) = once.get(&(r, x)) {
+                            vars.insert((Some(r), d), (slot, ty));
+                        }
+                    }
+                }
+            }
+        }
+        // The shared heap is collected between cycles (#303).
+        s.subscribe(Box::new(yavs_interp::SharedGc {
+            rt: rt.clone(),
+            shared: shared.clone(),
+        }));
+        Ok((s, Some(Built { rt, shared, vars })))
     }
 
     /// The equivalent process of an expression actual (`ProcInst::actual`): the region's

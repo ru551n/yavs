@@ -25,7 +25,9 @@ pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
     ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
-pub use sim::Ir;
+pub use sim::{Built, Ir};
+/// Values in IR memory and back (VHPI variables, #309).
+pub use value::{decode as ir_decode, encode as ir_encode};
 
 use yavs_diag::Diagnostic;
 use yavs_sem::{Db, StmtId, UnitId};

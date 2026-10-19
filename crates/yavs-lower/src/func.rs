@@ -2093,6 +2093,8 @@ impl Fx<'_, '_> {
                     let slot = self.addr(Space::Shared, off);
                     self.var_init(d, shape, slot, true)?;
                     self.cx.objs.insert(d, shape.obj(Space::Shared, off));
+                    let ty = self.ty(t, span)?;
+                    self.cx.shared_vars.push((d, ty));
                     return Ok(());
                 }
                 self.stmt_start(StmtKind::Decl, span);

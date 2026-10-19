@@ -400,6 +400,153 @@ impl InterpProcess {
     pub fn heap_live(&self) -> usize {
         self.m.heap.live()
     }
+
+    /// The program the process runs (for decoding [`InterpProcess::var`]).
+    pub fn program(&self) -> &Program {
+        &self.m.rt.prog
+    }
+
+    /// Variable `name` of the process's declarative part, read while the process is
+    /// suspended (VHPI, #309): its IR type and value (a composite's data and descriptor, as
+    /// [`call_values`] returns them). An error before the process first ran (its variables
+    /// are created then) or for a name the process does not declare.
+    pub fn var(&self, name: &str) -> Result<(yavs_ir::TyId, CallVal), String> {
+        let (ty, a) = self.var_slot(name)?;
+        let v = read_slot(&self.m, ty, a).map_err(fault_text)?;
+        Ok((ty, v))
+    }
+
+    /// Writes `v` into variable `name` (see [`InterpProcess::var`]); a composite keeps its
+    /// bounds, so `v`'s data must have the size of the current value's.
+    pub fn set_var(&mut self, name: &str, v: &CallVal) -> Result<(), String> {
+        let (ty, a) = self.var_slot(name)?;
+        write_slot(&mut self.m, ty, a, v).map_err(fault_text)
+    }
+
+    /// The IR type and slot address of variable `name` in the process's frame.
+    fn var_slot(&self, name: &str) -> Result<(yavs_ir::TyId, u64), String> {
+        let m = &self.m;
+        if !m.frames.first().is_some_and(|f| f.func == m.entry) {
+            return Err("the process has not started yet".into());
+        }
+        // ponytail: by name; the declarative part is lowered before the statements, so the
+        // first local of a name is the variable (a loop parameter may reuse the name later).
+        // Key locals by declaration if two ever share a name in one frame.
+        let l =
+            m.rt.prog
+                .func(m.entry)
+                .and_then(|f| f.locals.iter().find(|l| l.name == name))
+                .ok_or_else(|| format!("the process has no variable `{name}`"))?;
+        let a = exec::mk_addr(exec::FRAME, 0, u64::from(l.slot)).map_err(fault_text)?;
+        Ok((l.ty, a))
+    }
+}
+
+/// The value of the non-protected shared variable of IR type `ty` whose slot is at `slot`
+/// (the address its `Lowered::var_slots` thunk returns), read between cycles (VHPI, #309).
+pub fn shared_var(
+    rt: &Arc<Runtime>,
+    shared: &Mutex<SharedState>,
+    slot: u64,
+    ty: yavs_ir::TyId,
+) -> Result<CallVal, String> {
+    with_shared(rt, shared, |m| read_slot(m, ty, slot))
+}
+
+/// Writes `v` into a shared variable (see [`shared_var`]); a composite keeps its bounds.
+pub fn set_shared_var(
+    rt: &Arc<Runtime>,
+    shared: &Mutex<SharedState>,
+    slot: u64,
+    ty: yavs_ir::TyId,
+    v: &CallVal,
+) -> Result<(), String> {
+    with_shared(rt, shared, |m| write_slot(m, ty, slot, v))
+}
+
+/// Runs `f` on a machine holding the shared state (as [`call_shared`] does).
+fn with_shared<T>(
+    rt: &Arc<Runtime>,
+    shared: &Mutex<SharedState>,
+    f: impl FnOnce(&mut Machine) -> exec::R<T>,
+) -> Result<T, String> {
+    let mut g = shared
+        .lock()
+        .map_err(|_| "shared state lock poisoned".to_string())?;
+    let mut m = Machine::new(rt.clone(), Arc::default(), Vec::new(), yavs_ir::FuncId(0));
+    m.sh = Some(std::mem::take(&mut *g));
+    let r = f(&mut m);
+    if let Some(st) = m.sh.take() {
+        *g = st;
+    }
+    r.map_err(fault_text)
+}
+
+/// The value of a variable of IR type `ty` whose slot is at `a`: a scalar, or a composite's
+/// `[data, desc, ..]` (yavs-lower `VarShape`).
+fn read_slot(m: &Machine, ty: yavs_ir::TyId, a: u64) -> exec::R<CallVal> {
+    if let Some(n) = m.rt.prog.types.get(ty).and_then(yavs_ir::Ty::scalar_size) {
+        return Ok(CallVal::Cell(m.load(a, width(n))?));
+    }
+    let ((data, n), desc) = composite(m, ty, a)?;
+    Ok(CallVal::Composite {
+        data: m.rd(data, n)?.to_vec(),
+        desc,
+    })
+}
+
+/// Writes `v` into the variable slot at `a` (see [`read_slot`]).
+fn write_slot(m: &mut Machine, ty: yavs_ir::TyId, a: u64, v: &CallVal) -> exec::R<()> {
+    let scalar = m.rt.prog.types.get(ty).and_then(yavs_ir::Ty::scalar_size);
+    match (v, scalar) {
+        (CallVal::Cell(c), Some(n)) => m.store(a, width(n), *c),
+        (CallVal::Composite { data, .. }, None) => {
+            let ((at, n), _) = composite(m, ty, a)?;
+            if n != data.len() as u64 {
+                return Err(exec::Fault::Internal(format!(
+                    "{} bytes for a variable of {n}",
+                    data.len()
+                )));
+            }
+            m.put(at, data)
+        }
+        _ => Err(exec::Fault::Internal(
+            "value and variable shapes differ".into(),
+        )),
+    }
+}
+
+/// The data (address, size) and descriptor bytes of a composite variable whose slot is
+/// `[data, desc, ..]` at `a`.
+fn composite(m: &Machine, ty: yavs_ir::TyId, a: u64) -> exec::R<((u64, u64), Vec<u8>)> {
+    let prog = &m.rt.prog;
+    let data = m.load(a, yavs_ir::Width::B8)?;
+    let n = yavs_ir::Ty::desc_size(&prog.types, ty)
+        .ok_or_else(|| exec::Fault::Internal("variable of a cyclic type".into()))?;
+    let desc = if n == 0 {
+        Vec::new()
+    } else {
+        let d = m.load(exec::add_addr(a, 8)?, yavs_ir::Width::B8)?;
+        m.rd(d, n)?.to_vec()
+    };
+    let (l, _) = yavs_ir::Ty::layout(&prog.types, &prog.consts, ty, &desc)
+        .map_err(|e| exec::Fault::Internal(format!("variable layout: {e:?}")))?;
+    Ok(((data, l.size), desc))
+}
+
+fn width(n: u64) -> yavs_ir::Width {
+    match n {
+        1 => yavs_ir::Width::B1,
+        4 => yavs_ir::Width::B4,
+        _ => yavs_ir::Width::B8,
+    }
+}
+
+fn fault_text(e: exec::Fault) -> String {
+    match e {
+        exec::Fault::Runtime(m) | exec::Fault::Internal(m) | exec::Fault::Unbound(m, _) => m,
+        exec::Fault::Kernel(e) => format!("{e:?}"),
+    }
 }
 
 impl Process for InterpProcess {
@@ -416,6 +563,10 @@ impl Process for InterpProcess {
         p.func(self.m.entry)
             .is_some_and(|f| f.flags.contains(yavs_ir::FuncFlags::IMPLICIT))
             && !p.single_suspend(self.m.entry)
+    }
+
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {

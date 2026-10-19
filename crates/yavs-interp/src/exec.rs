@@ -107,7 +107,7 @@ fn sub_value(v: &Value, elem: Elem, at: u32, len: u32) -> R<Value> {
     })
 }
 
-const FRAME: u8 = 0;
+pub(crate) const FRAME: u8 = 0;
 const INST: u8 = 1;
 const PKG: u8 = 2;
 const CONST: u8 = 3;

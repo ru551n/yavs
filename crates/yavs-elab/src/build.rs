@@ -23,6 +23,9 @@ impl Process for Boxed {
     fn concurrent_call(&self) -> bool {
         self.0.concurrent_call()
     }
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.0.as_any()
+    }
 }
 
 fn usage(m: String) -> SimError {

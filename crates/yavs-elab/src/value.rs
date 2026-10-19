@@ -106,7 +106,7 @@ fn read(b: &[u8], at: usize, n: usize) -> Option<u64> {
 
 /// `v` of IR type `ty` as a call argument: a scalar as a cell, a composite as data and
 /// descriptor bytes in the IR layout. `None` for a value that does not fit the type.
-pub(crate) fn encode(prog: &Program, ty: TyId, v: &Val) -> Option<CallVal> {
+pub fn encode(prog: &Program, ty: TyId, v: &Val) -> Option<CallVal> {
     if prog.types.get(ty)?.scalar_size().is_some() {
         return scalar_cell(v).map(CallVal::Cell);
     }
@@ -360,7 +360,7 @@ fn logic_val(prog: &Program, ty: TyId, desc: &[u8], codes: &[u32]) -> Option<Val
 }
 
 /// The value of a call result of IR type `ty` (the inverse of [`encode`]).
-pub(crate) fn decode(prog: &Program, ty: TyId, r: &CallVal) -> Option<Val> {
+pub fn decode(prog: &Program, ty: TyId, r: &CallVal) -> Option<Val> {
     match r {
         CallVal::Cell(c) => scalar_val(prog.types.get(ty)?, *c),
         CallVal::Composite { data, desc } => get(prog, ty, data, desc).map(|(v, _)| v),

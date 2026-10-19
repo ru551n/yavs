@@ -168,6 +168,7 @@ const PASS: &[&str] = &[
     "protected/alloc_call_in_pkg_init",
     "protected/alloc_in_init",
     "protected/counter",
+    "protected/expanded_name_in_body",
     "protected/generic_package_prot",
     "protected/impure_const_once",
     "protected/method_in_init",

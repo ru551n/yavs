@@ -562,6 +562,7 @@ impl Db {
                 ScopeKind::Block => "block",
                 ScopeKind::Generate => "generate statement",
                 ScopeKind::Loop => "loop",
+                ScopeKind::Protected | ScopeKind::ProtectedBody => "protected type",
                 _ => "construct",
             };
             return self.error(

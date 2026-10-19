@@ -110,6 +110,17 @@ impl Db {
                                 return NameRes::Value;
                             }
                             DeclKind::Error => return NameRes::Error,
+                            DeclKind::Type(t)
+                                if matches!(self.types[t].kind, TypeKind::Protected { .. }) =>
+                            {
+                                return self.protected_expanded(
+                                    scope,
+                                    d,
+                                    t,
+                                    suffix_span(suffix, n.span),
+                                    key,
+                                );
+                            }
                             DeclKind::Label(_) => match self.construct_region(scope, &[d]) {
                                 Some((s, true)) => Region::Scope(s),
                                 Some((s, false)) => {
@@ -183,6 +194,49 @@ impl Db {
             Some(ds) if ds.len() == 1 && !self.is_overloadable(ds[0]) => NameRes::One(ds[0]),
             Some(ds) if !ds.is_empty() => NameRes::Overloads(ds.clone()),
             _ => NameRes::NotInRegion(s, span, key),
+        }
+    }
+
+    /// `pt.x` with protected type `pt` as prefix: `x` declared immediately within the type's
+    /// declaration or body (one declarative region, 12.1), legal only inside them (8.3, #250).
+    fn protected_expanded(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        t: TypeId,
+        at: Span,
+        key: Symbol,
+    ) -> NameRes {
+        let TypeKind::Protected {
+            decl_scope, body, ..
+        } = self.types[t].kind
+        else {
+            self.ice(at, "protected type prefix without a protected type");
+            return NameRes::Error;
+        };
+        let region = body
+            .filter(|&b| self.is_within(scope, b))
+            .unwrap_or(decl_scope);
+        if !matches!(self.construct_region(scope, &[d]), Some((_, true))) {
+            let home = body
+                .filter(|&b| self.scopes[b].names.contains_key(&key))
+                .unwrap_or(decl_scope);
+            return NameRes::NotInRegion(home, at, key);
+        }
+        // Normal visibility from the region, keeping only its own declarations: one walk
+        // for hiding and overloading (a parameter `n` of a method does not hide `pt.n`).
+        let own = |db: &Db, x: DeclId| [Some(decl_scope), body].contains(&Some(db.decls[x].scope));
+        match self.lookup(region, key) {
+            Visible::One(x) if own(self, x) => NameRes::One(x),
+            Visible::Overloads(ds) => {
+                let ds: Vec<DeclId> = ds.into_iter().filter(|&x| own(self, x)).collect();
+                if ds.is_empty() {
+                    NameRes::NotInRegion(region, at, key)
+                } else {
+                    NameRes::Overloads(ds)
+                }
+            }
+            _ => NameRes::NotInRegion(region, at, key),
         }
     }
 

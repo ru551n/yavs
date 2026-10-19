@@ -391,6 +391,10 @@ fn simulate(file: &Path) -> Result<String, String> {
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(rev, lib);
     opts.relaxed = relaxed;
+    opts.psl = src
+        .lines()
+        .take(15)
+        .any(|l| l.contains("difftest:") && l.split_whitespace().any(|kv| kv == "psl"));
     let dir = std::env::temp_dir().join(format!("yavs-lower-work-{}", std::process::id()));
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))

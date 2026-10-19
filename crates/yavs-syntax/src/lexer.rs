@@ -579,7 +579,7 @@ mod tests {
 
     fn kinds(src: &str) -> Vec<Tok> {
         let mut d = Vec::new();
-        let t = lex(FileId(0), utf8(src), Std::Vhdl2008, &mut d);
+        let t = lex(FileId(0), utf8(src), Std::Vhdl2008, false, &mut d);
         assert!(d.is_empty(), "{d:?}");
         t.into_iter().map(|t| t.kind).collect()
     }
@@ -622,7 +622,13 @@ mod tests {
     #[test]
     fn keywords_by_std() {
         let mut d = Vec::new();
-        let t = lex(FileId(0), utf8("VIEW Private"), Std::Vhdl2019, &mut d);
+        let t = lex(
+            FileId(0),
+            utf8("VIEW Private"),
+            Std::Vhdl2019,
+            false,
+            &mut d,
+        );
         assert_eq!(t[0].kind, Tok::Kw(Kw::View));
         assert_eq!(t[1].kind, Tok::Kw(Kw::Private));
         assert_eq!(kinds("view")[0], Tok::Ident);
@@ -635,6 +641,7 @@ mod tests {
             FileId(0),
             utf8("\"abc\n 16#ab $ /* x"),
             Std::Vhdl2008,
+            false,
             &mut d,
         );
         let msgs: Vec<_> = d.iter().map(|d| d.message.as_str()).collect();

@@ -461,25 +461,32 @@ impl Machine {
     }
 
     /// Before a process runs again: take this thread's scratch vectors back.
-    pub(crate) fn borrow_scratch(&mut self) {
+    pub(crate) fn borrow_scratch(&mut self) -> R<()> {
         if !self.released {
-            return;
+            return Ok(());
         }
         self.released = false;
-        let n = self
-            .frames
-            .first()
-            .and_then(|fr| self.rt.prog.func(fr.func))
-            .map_or(0, |f| f.reg_ty.len());
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
             std::mem::swap(&mut self.regs, &mut s.regs);
             std::mem::swap(&mut self.temp, &mut s.temp);
             std::mem::swap(&mut self.spare, &mut s.spare);
         });
-        // Registers are written before they are read: stale values are harmless.
-        self.regs.resize(n, 0);
+        // Registers are written before they are read: stale values are harmless, except
+        // those a frame starts with (`pre.rs`).
+        let rt = self.rt.clone();
+        let root = self.frames.first().map(|fr| fr.func);
+        match root.and_then(|id| Some((id, rt.prog.func(id)?))) {
+            Some((id, f)) => {
+                let pre = rt
+                    .pre(id, f)
+                    .ok_or_else(|| ice(format!("no function {id}")))?;
+                pre.fill(&mut self.regs, 0)?;
+            }
+            None => self.regs.clear(),
+        }
         self.temp.clear();
+        Ok(())
     }
 
     /// At a suspension in the root frame: hand the working vectors to this thread's scratch.
@@ -568,8 +575,11 @@ impl Machine {
         let (mut slots, mut regs) = self.spare.pop().unwrap_or_default();
         slots.clear();
         slots.resize(f.frame as usize, 0);
-        regs.clear();
-        regs.resize(f.reg_ty.len(), 0);
+        let pre = self
+            .rt
+            .pre(func, f)
+            .ok_or_else(|| ice(format!("no function {func}")))?;
+        pre.fill(&mut regs, self.frames.len() as u32)?;
         Ok(Frame {
             func,
             pc: 0,
@@ -1420,11 +1430,21 @@ impl Machine {
             let f = prog
                 .func(fr.func)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
+            let pre = rt
+                .pre(fr.func, f)
+                .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
             let mut pc = fr.pc as usize;
             loop {
                 if let Some(tier) = tier {
                     pc = self.run_tier(&**tier, prog, f, pc, ctx)?;
                 }
+                // Skip the definitions the frame started with (`pre.rs`).
+                pc = *pre
+                    .next
+                    .get(pc)
+                    .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?
+                    as usize;
+                self.top().pc = pc as u32;
                 let inst = *f
                     .code
                     .get(pc)
@@ -1433,17 +1453,13 @@ impl Machine {
                     self.debug_tick(prog, f, pc, &inst, ctx)?;
                 }
                 match self.step(prog, f, inst, ctx)? {
-                    Flow::Next => {
-                        pc += 1;
-                        self.top().pc = pc as u32;
-                    }
+                    Flow::Next => pc += 1,
                     Flow::Jump(b) => {
                         let blk = f
                             .blocks
                             .get(b)
                             .ok_or_else(|| ice(format!("no block {b}")))?;
                         pc = blk.start as usize;
-                        self.top().pc = blk.start;
                         if self.pause == Some(b) && self.frames.len() == 1 {
                             self.pause = None;
                             return Ok(Outcome::Suspended);

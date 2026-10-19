@@ -414,6 +414,26 @@ kernel-only bench, so it was not kept. Sampled profiles after #420: 55 to 70 per
 interpreter dispatch (instruction fetch and `step`), 15 to 25 percent kernel (wake scan, driving values, `Ctx`
 accessors), the rest allocation in the interpreter (`temp_alloc`, the part tables now removed).
 
+### Interpreter dispatch, round 2 (#412)
+
+One commit per change; each table is an interleaved A/B of the binary before and after that commit
+(`tools/bench --compare`, median total CPU seconds of 5 runs, release builds, shared host).
+
+1. Registers defined once by `Const`, `ConstF` or `AddrOf` (every constant and every variable address
+   lowering emits at each use) are set when the frame is created and skipped by the dispatch loop
+   (`crates/yavs-interp/src/pre.rs`); the instructions stay in the code, so compiled code, pc numbers and
+   the debug loop are unchanged. Roughly 40% of the executed instructions of `compute_loop` are gone.
+
+| Benchmark | before | after | ratio |
+|---|---|---|---|
+| `compute_loop` | 0.56 | 0.39 | 0.69 |
+| `ff_rtl` | 0.99 | 0.87 | 0.88 |
+| `resolved_bus` | 0.43 | 0.40 | 0.92 |
+| `delta_chain` | 0.23 | 0.20 | 0.88 |
+| `textio_heavy` | 0.42 | 0.38 | 0.90 |
+| `protected_scoreboard` | 0.34 | 0.28 | 0.85 |
+| `uvvm_util_rand_tb` | 17.74 | 15.46 | 0.87 |
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

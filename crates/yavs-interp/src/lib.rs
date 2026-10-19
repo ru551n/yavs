@@ -17,6 +17,7 @@ mod debug;
 mod env;
 mod exec;
 mod foreign;
+mod pre;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
 mod heap;
 mod ieee;
@@ -299,6 +300,8 @@ pub struct Runtime {
     pub(crate) cov: Vec<AtomicU64>,
     /// Compact constants expanded on first use by address.
     pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
+    /// Per-function facts, computed on the first call (`pre.rs`).
+    pre: Vec<std::sync::OnceLock<pre::Pre>>,
     pub(crate) limits: Limits,
     pub(crate) revision: Revision,
     pub(crate) resolution: TimeResolution,
@@ -366,6 +369,7 @@ impl Runtime {
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
+            pre: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             limits: b.limits,
             revision: b.revision,
             resolution: b.resolution,
@@ -395,9 +399,19 @@ impl Runtime {
         self.models.resize(prog.foreign.len(), None);
         self.expanded
             .resize_with(prog.consts.len(), Default::default);
+        self.pre.resize_with(prog.funcs.len(), Default::default);
         self.sources.add_from(&prog, self.prog.stmts.len(), map);
         self.prog = prog;
         Ok(())
+    }
+
+    /// The facts of function `id` (`f`), computed once.
+    pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
+        Some(
+            self.pre
+                .get(id.0 as usize)?
+                .get_or_init(|| pre::Pre::new(f)),
+        )
     }
 
     /// The data of the bound packages, in `Bindings::packages` order.
@@ -801,7 +815,9 @@ impl Process for InterpProcess {
                 return Err(self.m.error(e, Some(ctx)));
             }
         }
-        self.m.borrow_scratch();
+        if let Err(e) = self.m.borrow_scratch() {
+            return Err(self.m.error(e, Some(ctx)));
+        }
         let r = self.exec(Some(&mut *ctx));
         match r {
             Ok(Outcome::Suspended) => {

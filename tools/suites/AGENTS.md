@@ -29,6 +29,7 @@ change a driver that simulates an external library's own testbenches on yavs.
 | Pass = exit 0, a `>> Simulation SUCCESS` line and no `>> Simulation FAILED` line in the output | The library's own final summary | #277 |
 | `--private-copies` analyzes every library source from a per-library copy of the file | The same source file compiled into several libraries was a yavs defect (#290, fixed); the option is no longer needed | #277, #290 |
 | A testbench whose third-party design files are not in the pinned checkout is skipped with the missing directories named | Not a yavs result | #277 |
+| `pro.py` generates the body of `OsvvmScriptSettingsPkg` from the default one with the scripts' release (`OsvvmVersion`) as `OSVVM_REVISION` and `OSVVM_SETTINGS_REVISION`, as the scripts' own generator does | The settings revision selects the transcript layout the tests compare against the validated results (58 false failures with the default body) | #276 |
 | Each yavs call is `timeout 300 systemd-run --user --scope -p MemoryMax=...` (2G for analysis, `--mem` for runs, default 4G); `-j` calls at once (default 4) | Root rules 15 and 16: a testbench over 5 minutes is reported as skipped, never shortened | root `AGENTS.md` |
 
 ## 4. Invariants and pitfalls

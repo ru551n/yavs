@@ -89,7 +89,7 @@ class Plan:
                      "Supports2019ImpureFunctions": True, "Supports2019FilePath": True,
                      "Supports2019AssertApi": True, "Supports2019Integer64Bits": True,
                      "Supports2019Generics": True, "FunctionalCoverageIntegratedInSimulator": "default",
-                     "UseMemoryPkg01": False, "ClockResetVersion": "2026.09",
+                     "UseMemoryPkg01": False, "ClockResetVersion": "2026.09", "OsvvmVersion": "2026.09",
                      "OsvvmDevDerivePackageHeaders": False, "OsvvmDevDeriveArchitectures": False}
 
     def err(self, msg):
@@ -100,7 +100,7 @@ class Plan:
         if w.startswith("[") and w.endswith("]"):
             c = words(w[1:-1])
             if c[0] == "FindOsvvmScriptSettingsPkg":
-                return "OsvvmScriptSettingsPkg_default.vhd"
+                return self.script_settings()
             if c[0] == "FindSettingsPkgBody":
                 return f"{self.subst(c[1])}_default.vhd"
             if c[0] == "NoNullRangeWarning":
@@ -116,6 +116,20 @@ class Plan:
                 self.err(f"unknown variable ::osvvm::{m.group(1)}")
             return str(self.vars[m.group(1)])
         return re.sub(r"\$\{?::osvvm::(\w+)\}?", var, w)
+
+    def script_settings(self):
+        """What the scripts generate for OsvvmScriptSettingsPkg's body: the default one with the
+        scripts' release as OSVVM_REVISION and OSVVM_SETTINGS_REVISION (the settings that
+        follow it, such as the transcript layout, are those of the validated results)."""
+        text = (self.cwd / "OsvvmScriptSettingsPkg_default.vhd").read_text()
+        for c in ("OSVVM_REVISION", "OSVVM_SETTINGS_REVISION"):
+            text, n = re.subn(rf'({c}\s*:\s*string\s*:=\s*)"[^"]*"', rf'\g<1>"{self.vars["OsvvmVersion"]}"', text)
+            if n != 1:
+                self.err(f"no {c} in OsvvmScriptSettingsPkg_default.vhd")
+        f = self.out / "gen" / "OsvvmScriptSettingsPkg_generated.vhd"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+        return str(f)
 
     def common_pkg(self, name="TestCaseCommonPkg", validated="../ValidatedResults"):
         """What the library's CreateTestCaseCommonPkg writes (the 2008 form), into OUT/gen."""

@@ -19,9 +19,9 @@ pub struct Ir {
     pub units: HashMap<UnitId, UnitIr>,
     /// The function of each user resolution function of a signal.
     pub resolvers: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
-    /// IR types of the parameter and the result of each function resolving a composite as
-    /// a whole (#193).
-    pub whole_types: HashMap<yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId)>,
+    /// IR types of the parameter and the result of each user resolution function (#193,
+    /// #293).
+    pub res_types: HashMap<yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId)>,
     /// Leaves resolved by a function declared in an entity or architecture: the instance
     /// whose data the function reads (its constants and generics, #164).
     pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
@@ -190,20 +190,20 @@ impl Elaborated {
             idx.push(l.architecture(a)?);
         }
         let mut resolvers = HashMap::new();
-        let mut whole_types = HashMap::new();
+        let mut res_types = HashMap::new();
         for leaf in &self.nets.leaves {
             if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
                 && !resolvers.contains_key(&d)
             {
                 resolvers.insert(d, l.subprogram(d)?);
             }
-            if let Some(LeafRes::Whole(d)) = leaf.resolution
-                && !whole_types.contains_key(&d)
+            if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
+                && !res_types.contains_key(&d)
                 && let Some(sp) = db.decls[d].kind.subprogram()
                 && let ([p], Some(r)) = (&sp.params[..], sp.ret)
             {
                 let tys = (l.ty(db.base(p.subtype))?, l.ty(db.base(r))?);
-                whole_types.insert(d, tys);
+                res_types.insert(d, tys);
             }
         }
         let lowered = l.finish()?;
@@ -247,7 +247,7 @@ impl Elaborated {
             program: Arc::new(lowered.program),
             units,
             resolvers,
-            whole_types,
+            res_types,
             res_regions,
             names,
             packages: lowered.packages,
@@ -493,15 +493,35 @@ impl Elaborated {
                 let rt = rt.clone();
                 let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
                 if let Some(LeafRes::Whole(_)) = self.nets.leaf(leaf).resolution {
-                    let tys = *ir.whole_types.get(&d).ok_or_else(|| {
+                    let tys = *ir.res_types.get(&d).ok_or_else(|| {
                         sim_err("types of a composite resolution function not lowered".into())
                     })?;
                     let shape = &self.nets.obj(self.nets.leaf(leaf).obj).shape;
                     return crate::whole::resolver(rt, f, inst, tys, shape).map_err(sim_err);
                 }
+                // Element-wise: one call per element of the leaf (#293).
+                let (w, logic) = match self.nets.leaf(leaf).ty.elem {
+                    yavs_kernel::Elem::Bytes(es) => (es as usize, None),
+                    yavs_kernel::Elem::Logic => {
+                        let (_, ret) = *ir.res_types.get(&d).ok_or_else(|| {
+                            sim_err("types of a resolution function not lowered".into())
+                        })?;
+                        let k = yavs_ir::Ty::logic_leaf(&rt.prog.types, ret).ok_or_else(|| {
+                            sim_err("logic signal resolved by a non-logic function".into())
+                        })?;
+                        (1, Some(k))
+                    }
+                };
                 Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
-                    yavs_interp::resolve(rt.clone(), f, inst.clone(), vals, out)
-                        .map_err(|e| e.to_string())
+                    for (k, o) in out.chunks_mut(w).enumerate() {
+                        let el: Vec<&[u8]> = vals
+                            .iter()
+                            .map(|v| v.get(k * w..(k + 1) * w).unwrap_or(&[]))
+                            .collect();
+                        yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(())
                 }))
             };
         self.build_res(

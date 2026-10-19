@@ -569,26 +569,51 @@ pub fn call_native(
 }
 
 /// Run the resolution function `func` (one parameter: an unconstrained array of the element
-/// type) over the driving values `vals` (each in the kernel's byte representation, which is
-/// the element's memory layout) and write the resolved scalar into `out`. The array passed
-/// is indexed `0 to n - 1`.
+/// type) over the driving values `vals` of one element and write the resolved scalar into
+/// `out`. A byte element is passed in the kernel's byte representation, which is its memory
+/// layout. A logic element (`logic`: the kind of the element type) is one kernel code per
+/// value, passed as a logic array of bit-planes (ir.md 1.3) and returned as a position, which
+/// is the code minus 2 for BIT and BOOLEAN. The array passed is indexed `0 to n - 1`.
 pub fn resolve(
     rt: Arc<Runtime>,
     func: FuncId,
     inst: Arc<InstData>,
     vals: &[&[u8]],
     out: &mut [u8],
+    logic: Option<yavs_ir::LogicKind>,
 ) -> Result<(), SimError> {
     let mut m = Machine::new(rt, inst, Vec::new(), func);
     let stride = out.len() as u64;
+    let bias = match logic {
+        Some(yavs_ir::LogicKind::StdULogic) | None => 0,
+        Some(_) => 2,
+    };
     let r = (|| {
-        let data = m.temp_alloc(stride * vals.len() as u64)?;
-        for (k, v) in vals.iter().enumerate() {
-            if v.len() as u64 != stride {
-                return Err(exec::ice("driving value of the wrong size for resolution"));
-            }
-            m.put(data + k as u64 * stride, v)?;
+        if vals.iter().any(|v| v.len() as u64 != stride) || (logic.is_some() && stride != 1) {
+            return Err(exec::ice("driving value of the wrong size for resolution"));
         }
+        let n = vals.len() as u64;
+        let data = if logic.is_some() {
+            // Row-major element j is plane bit n - 1 - j: four 64-bit planes per 64 elements.
+            let mut planes = vec![0u8; (n.div_ceil(64) * 32) as usize];
+            for (j, v) in vals.iter().enumerate() {
+                let b = n - 1 - j as u64;
+                for plane in 0..4 {
+                    if v[0] >> plane & 1 == 1 {
+                        planes[(b / 64 * 32 + plane * 8 + b % 64 / 8) as usize] |= 1 << (b % 8);
+                    }
+                }
+            }
+            let at = m.temp_alloc(planes.len() as u64)?;
+            m.put(at, &planes)?;
+            at
+        } else {
+            let at = m.temp_alloc(stride * n)?;
+            for (k, v) in vals.iter().enumerate() {
+                m.put(at + k as u64 * stride, v)?;
+            }
+            at
+        };
         let dope = m.temp_alloc(24)?;
         let d: Vec<u8> = [0i64, vals.len() as i64 - 1, 0]
             .iter()
@@ -599,6 +624,18 @@ pub fn resolve(
         m.run(None, 0)
     })();
     match r {
+        Ok(Outcome::Returned(Some(v))) if logic.is_some() => {
+            match u8::try_from(v).ok().and_then(|c| c.checked_add(bias)) {
+                Some(c) if c < 9 => {
+                    out[0] = c;
+                    Ok(())
+                }
+                _ => Err(m.error(
+                    exec::ice("logic resolution function returned an invalid position"),
+                    None,
+                )),
+            }
+        }
         Ok(Outcome::Returned(Some(v))) => {
             let n = out.len().min(8);
             out[..n].copy_from_slice(&v.to_le_bytes()[..n]);

@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:user_logic_vector:_p4	v=00000000 @0 fs
+diag	note	0	0	:user_logic_vector:_p5	n=0,0,0 @0 fs
+diag	note	0	1	:user_logic_vector:_p4	v=01010000 @0 fs
+diag	note	1000000	0	:user_logic_vector:_p4	v=11110000 @1000000 fs
+diag	note	1000000	0	:user_logic_vector:_p5	n=3,4,5 @1000000 fs
+diag	note	2000000	0	:user_logic_vector:_p4	v=11110110 @2000000 fs
+diag	note	3000000	1	:user_logic_vector:_p4	v=10100110 @3000000 fs
+diag	note	4000000	0	:user_logic_vector:_p4	v=X0000110 @4000000 fs
+diag	note	10000000	0	:user_logic_vector:_p6	done

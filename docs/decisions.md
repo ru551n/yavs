@@ -677,6 +677,12 @@ a note and a help suggesting an access type, as the reference simulators reject 
   calls the function through `call_values` and unpacks the result. `(f) t` with a composite
   element resolves each element as a whole. Not yet (E9999, #76): such a composite inside
   another composite, and resolved subelements below one.
+- **User resolution of scalar leaves** (#293, elab agent, 2026-10-19; LRM 4.6, 14.7.3.2):
+  the resolver of a leaf resolved element by element (`LeafRes::Func`) calls the function
+  once per element of the leaf, with that element of every source. On a logic leaf
+  (`std_ulogic`, `bit`, `boolean`) the sources are passed as a logic array of bit-planes, the
+  IR layout of the parameter, and the returned position becomes the kernel code (plus 2 for
+  BIT and BOOLEAN); the kernel stays plane-based.
 - **External name as a port actual** (#186, user, 2026-10-19: same delta, majority of the
   reference simulators; LRM 8.7, 6.5.7.1, 14.7.3; `docs/design/lrm-checks.md` L49):
   `i => << signal ... >>` on an `in` port is a signal name actual, since the external name

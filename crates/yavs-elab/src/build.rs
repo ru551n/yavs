@@ -98,14 +98,6 @@ impl Elaborated {
                 (Some(LeafRes::StdLogic), None) => {
                     b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::StdLogic)
                 }
-                (Some(LeafRes::Func(_)), None)
-                    if matches!(leaf.ty.elem, yavs_kernel::Elem::Logic) =>
-                {
-                    return Err(usage(format!(
-                        "signal {name}: user resolution of std_ulogic, bit and boolean leaves \
-                         is not implemented yet (M3)"
-                    )));
-                }
                 // Joined into one resolved composite below.
                 (Some(LeafRes::Whole(_)), None) => b.signal(&name, leaf.ty, &leaf.init),
                 (Some(LeafRes::Func(d)), None) => b.resolved_signal(

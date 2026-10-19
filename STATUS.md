@@ -294,7 +294,7 @@ element sensitivity, resolution as a whole, #200; field and element bounds from 
 value, a partially constrained subtype or a port's actual, signal parameters of such types,
 package signals of record types, attributes and implicit signals of parts over several
 fields, #215), shared protected variables (created through `call_shared`),
-user resolution functions (yavs-elab resolver over `yavs_interp::resolve`). Difftest: access 3/3,
+user resolution functions (yavs-elab resolver over `yavs_interp::resolve`, once per element, on byte and logic leaves, #293). Difftest: access 3/3,
 composite 6/6, force 3/3, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
 ## sem robustness

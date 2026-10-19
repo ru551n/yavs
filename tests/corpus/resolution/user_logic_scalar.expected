@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:user_logic_scalar:_p10	x='0' @0 fs
+diag	note	0	0	:user_logic_scalar:_p11	c='X' @0 fs
+diag	note	0	0	:user_logic_scalar:_p12	b='0' @0 fs
+diag	note	0	0	:user_logic_scalar:_p13	t=true @0 fs
+diag	note	1000000	0	:user_logic_scalar:_p10	x='1' @1000000 fs
+diag	note	2000000	0	:user_logic_scalar:_p12	b='1' @2000000 fs
+diag	note	2500000	0	:user_logic_scalar:_p13	t=false @2500000 fs
+diag	note	3500000	0	:user_logic_scalar:_p13	t=true @3500000 fs
+diag	note	4000000	0	:user_logic_scalar:_p11	c='W' @4000000 fs
+diag	note	4500000	0	:user_logic_scalar:_p12	b='0' @4500000 fs
+diag	note	5000000	0	:user_logic_scalar:_p10	x='0' @5000000 fs
+diag	note	10000000	0	:user_logic_scalar:_p14	done

@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:user_logic_record:_p1	valid='0' data=0000 count=0 @0 fs
+diag	note	0	1	:user_logic_record:_p1	valid='0' data=0001 count=0 @0 fs
+diag	note	1000000	0	:user_logic_record:_p1	valid='0' data=0001 count=5 @1000000 fs
+diag	note	1000000	1	:user_logic_record:_p1	valid='1' data=0011 count=5 @1000000 fs
+diag	note	2000000	1	:user_logic_record:_p1	valid='1' data=1011 count=5 @2000000 fs
+diag	note	4000000	1	:user_logic_record:_p1	valid='0' data=1011 count=5 @4000000 fs
+diag	note	10000000	0	:user_logic_record:_p2	done

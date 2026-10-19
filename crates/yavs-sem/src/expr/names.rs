@@ -677,8 +677,23 @@ impl Db {
         };
         let info = a.info();
         let dim = literal_dim(args);
+        // `p'reflect` of an access object mirrors the access value (class_access), not the
+        // designated object its implicit dereference would give (16.2, LRM 2019 16.11).
+        let derefs: Vec<TypeId> = if a == PredefAttr::Reflect {
+            ps.iter()
+                .filter_map(|(_, s)| match *s {
+                    PSrc::Object(_, t) | PSrc::Value(t) => self.designated(t).map(|d| self.base(d)),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut out = Vec::new();
         for (p, src) in &ps {
+            if matches!(*src, PSrc::Value(t) if derefs.contains(&t)) {
+                continue;
+            }
             if !attr::applies(self, info, p)
                 || !matches!(info.kind, Kind::Value | Kind::Function | Kind::Signal)
                 || !arity_ok(info, p, args.len())

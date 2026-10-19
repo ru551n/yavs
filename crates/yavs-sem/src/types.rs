@@ -895,8 +895,27 @@ impl Db {
                     let res = self.discrete_range(scope, r, None);
                     self.required_ctx = false;
                     let (rc, t) = res?;
+                    // 5.3.2.1: the index subtype is the type mark of the discrete range
+                    // (`byte range 3 to 4`, `mid`), else the range's type.
+                    let ix = match (r, &rc) {
+                        (
+                            ast::DiscreteRange::Range(ast::Range::Name(n)),
+                            RangeC::Attr {
+                                prefix: AttrPrefix::Subtype(st),
+                                ..
+                            },
+                        ) if !matches!(n.kind, ast::NameKind::Attribute { .. }) => *st,
+                        (
+                            ast::DiscreteRange::Subtype(_),
+                            RangeC::Attr {
+                                prefix: AttrPrefix::Subtype(st),
+                                ..
+                            },
+                        ) => self.subtypes[*st].parent.unwrap_or(*st),
+                        _ => self.types[t].first_subtype,
+                    };
                     dims.push(rc);
-                    idx.push(self.types[t].first_subtype);
+                    idx.push(ix);
                 }
                 let elem = self.subtype_indication(scope, element)?;
                 let ty = self.types.next_id();

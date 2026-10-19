@@ -1,7 +1,7 @@
 -- yavs-test: std=2019
 -- expect: E9999 22:16 aliases of methods of objects not denoted by a simple or expanded name
 -- LRM 2019 6.6.3 (forwarding through a prefix that is not an object name is not implemented;
--- no call, a call of the poisoned alias cascades: #245)
+-- a call of the poisoned alias reports nothing more)
 package p is
   type inner is protected
     procedure set (x : integer);
@@ -21,6 +21,7 @@ begin
     variable ptr : inner_ptr := new inner;
     alias s is ptr.all.set [integer];
   begin
+    s(1);
     wait;
   end process;
 end architecture;

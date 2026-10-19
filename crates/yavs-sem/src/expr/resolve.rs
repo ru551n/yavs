@@ -1255,6 +1255,15 @@ impl Db {
                     return Err(self.report_name(scope, other, prefix.span, "a procedure name"));
                 }
             };
+            // A name whose declaration failed was reported there (8.2).
+            if ds.iter().any(|&d| {
+                matches!(
+                    self.decls[self.entity(d)].kind,
+                    crate::decl::DeclKind::Error
+                )
+            }) {
+                return Err(crate::Reported);
+            }
             let procs: Vec<crate::ids::DeclId> = ds
                 .iter()
                 .copied()

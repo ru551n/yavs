@@ -1417,7 +1417,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "yavs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "clap",
@@ -1440,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-cov"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "yavs-diag",
  "yavs-elab",
@@ -1451,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-dap"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde_json",
  "yavs-diag",
@@ -1467,14 +1467,14 @@ dependencies = [
 
 [[package]]
 name = "yavs-diag"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "annotate-snippets",
 ]
 
 [[package]]
 name = "yavs-elab"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "tempfile",
  "yavs-diag",
@@ -1492,11 +1492,11 @@ dependencies = [
 
 [[package]]
 name = "yavs-ffi"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "yavs-interp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "yavs-diag",
  "yavs-ffi",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-ir"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "yavs-diag",
  "yavs-ffi",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-kernel"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rayon",
  "yavs-logic",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-lib"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "sha2",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-llvm"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "llvm-sys",
  "yavs-diag",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-logic"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "criterion",
  "proptest",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-lower"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "tempfile",
  "yavs-diag",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-sem"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "tempfile",
  "yavs-diag",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-std"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "jiff",
  "proptest",
@@ -1589,14 +1589,14 @@ dependencies = [
 
 [[package]]
 name = "yavs-syntax"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "yavs-diag",
 ]
 
 [[package]]
 name = "yavs-vhpi"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "libloading",
@@ -1612,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-wave"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ctrlc",
  "tempfile",

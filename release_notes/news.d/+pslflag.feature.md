@@ -1,1 +1,0 @@
-The new option `--psl` (`parse`, `analyze`, `elab`, `run`) makes yavs read `-- psl` comments as PSL pragmas; without it they are comments, as in the reference simulators. PSL statements written in VHDL-2008 syntax are always read.

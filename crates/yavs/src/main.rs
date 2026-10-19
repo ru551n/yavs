@@ -9,7 +9,6 @@ mod cov;
 mod elab;
 mod explain;
 mod gui;
-mod timing;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};

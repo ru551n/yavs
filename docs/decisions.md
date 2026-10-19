@@ -1633,9 +1633,7 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   elements, ranges and `others`), and the Variables view writes values the same way. Why: one
   syntax a VHDL user already knows; text comparison could not match `x"A5"` with `"10100101"`.
 - **Force, deposit and release from the debugger go through `SimControl`** and take effect in
-  the next cycle, from a stop between cycles or inside a process alike (#323). A field, element
-  or slice acts on its kernel elements only (#364), so a force of `d(7 downto 4)` leaves the
-  other elements to their drivers. Why: the plan
+  the next cycle, from a stop between cycles or inside a process alike (#323). Why: the plan
   lets nothing else drive the kernel, and a stop inside a process is mid-cycle.
 - **Breakpoint conditions are evaluated by the DAP server, not lowered to IR** (#326): the
   condition is parsed as a VHDL expression and evaluated over the locals and signals the
@@ -1647,16 +1645,12 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Live waves are a second sink of the `--wave` recorder** (#325): `yavs/waveSubscribe` builds a
   `yavs_wave::Recorder` (`record_to`, a `Sink` beside the FST `WaveWriter`) for the client's
   selection, so the stream has the hierarchy, selection rules, final value per time step and
-  entry order of the file. Values go out in the compact binary encoding (user, 2026-10-19,
-  "binary now"; it first went out as text): base64 of the recorder's value bytes, the layout
-  the FST path gets (`yavs_wave` crate docs: one byte per element of a bit/`std_logic` vector,
-  `u32` enumeration position, `i64`, `f64`, little endian), one string per change. The subscribe
-  response gives every signal an `encoding` (`layout`, `width`) beside its type, which is all a
-  client needs to decode. One base64 blob per batch with offsets is not smaller (the values are
-  a few bytes each), so it is not used. Batches go through a bounded queue and are merged when it
-  is full (only the last change of each value kept, `merged`), so a slow client never blocks the
-  simulation (user decision, 2026-10-19: never block the simulation, merge queued batches);
-  `docs/design/gui.md` 5.1 is updated to match.
+  entry order of the file. Values go out as text (as the Variables view and the value parser
+  write them), not the recorder's bytes. Why: one value syntax across the protocol and readable
+  transcripts; the subscribe response gives each value's type, which is all a viewer needs to
+  convert. Batches go through a bounded queue and are merged when it is full (only the last
+  change of each value kept, `merged`), so a slow client never blocks the simulation (user,
+  2026-10-19: never block the simulation); `docs/design/gui.md` 5.1 is updated to match.
 - **`--wave` and `--vhpi` work under `--dap`** (#325): the CLI attaches the same observers to the
   debug build and the recorder finishes before `exited`. A VHPI plugin's stdout shares the
   stdio transport, so `--vhpi` is debugged over a port (#389).
@@ -1798,11 +1792,3 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   <arguments> --dap=stdio` (`yavs` from `--yavs`, else next to `yavs-gui`, else PATH);
   `yavs-gui --attach HOST:PORT` connects to a `yavs run --dap=PORT`. Closing the window sends
   `disconnect` and kills the child if it has not exited after 2 s.
-- **G2 client state (#399):** the GUI owns the line breakpoint list and resends a file's whole
-  set (enabled entries only) on every change and, for all files, before `configurationDone`; a
-  breakpoint the server moved follows to the line it answered. Until the server sends structured
-  time (P1) the GUI parses `"<reason> at <time>, delta <n>"` from the `stopped` description.
-  Source files are read from disk by the path of a frame, or typed into the Source panel until
-  `loadedSources` (P5) exists. Answers to requests of an earlier stop are dropped. Why: the
-  server holds no list the client could read back, and the design keeps all state on the UI
-  thread.

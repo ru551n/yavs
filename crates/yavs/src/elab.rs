@@ -89,10 +89,6 @@ pub struct RunArgs {
     /// the include and exclude globs apply to `top.proc.var`.
     #[arg(long, requires = "wave")]
     wave_variables: bool,
-    /// Print the wall and CPU time of each phase (analyze, elaborate, init, simulate) to
-    /// standard error when the simulation ends.
-    #[arg(long)]
-    time_report: bool,
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
@@ -271,7 +267,6 @@ fn elaborate(
     if analyzed.is_err() || out.errors > 0 {
         return Err((out, 2));
     }
-    crate::timing::mark("analyze");
     let r = yavs_elab::find_top(&mut db, &work, &c.top).and_then(|t| {
         yavs_elab::elaborate(&mut db, t, &c.generics, &yavs_elab::ElabConfig::default())
     });
@@ -290,7 +285,6 @@ fn elaborate(
             if out.errors > 0 {
                 return Err((out, 2));
             }
-            crate::timing::mark("elaborate");
             Ok((out, db, e))
         }
         Err(ds) => {
@@ -489,9 +483,6 @@ pub fn run(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    if a.time_report {
-        crate::timing::enable();
-    }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
     let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
     let (mut out, db, e) = match elaborate(&a.common, counters, format, color, encoding) {
@@ -663,10 +654,7 @@ pub fn run(
             return out.finish(2);
         }
     };
-    crate::timing::mark("init");
     let r = sim.run_until(stop);
-    crate::timing::mark("simulate");
-    crate::timing::report();
     let mut o = std::io::stdout().lock();
     let code = match r {
         Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {

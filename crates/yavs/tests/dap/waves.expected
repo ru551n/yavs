@@ -4,9 +4,9 @@
 < {"body":{},"event":"initialized","type":"event"}
 < {"body":{},"command":"launch","request_seq":2,"success":true,"type":"response"}
 > yavs/waveSubscribe {"flushMs":0,"include":["tb.cnt"]}
-< {"body":{"scopes":[{"children":[{"class":"signal","direction":"none","encoding":{"layout":"i64le","width":32},"id":0,"name":"cnt","type":{"bits":32,"kind":"integer","name":"INTEGER"}}],"component":"tb(a)","kind":"instance","scope":"tb"}],"skipped":[]},"command":"yavs/waveSubscribe","request_seq":3,"success":true,"type":"response"}
+< {"body":{"scopes":[{"children":[{"class":"signal","direction":"none","id":0,"name":"cnt","type":{"bits":32,"kind":"integer","name":"INTEGER"}}],"component":"tb(a)","kind":"instance","scope":"tb"}],"skipped":[]},"command":"yavs/waveSubscribe","request_seq":3,"success":true,"type":"response"}
 > yavs/waveSubscribe {"exclude":["tb.p"],"flushMs":0,"include":["tb.*"]}
-< {"body":{"scopes":[{"children":[{"class":"signal","direction":"none","encoding":{"layout":"i64le","width":32},"id":0,"name":"cnt","type":{"bits":32,"kind":"integer","name":"INTEGER"}},{"class":"signal","direction":"none","encoding":{"layout":"u8-per-element","width":4},"id":1,"name":"v","type":{"ascending":false,"element":{"literals":["'0'","'1'"],"name":"BIT"},"kind":"vector","left":3,"name":"BIT_VECTOR","right":0}}],"component":"tb(a)","kind":"instance","scope":"tb"}],"skipped":[]},"command":"yavs/waveSubscribe","request_seq":4,"success":true,"type":"response"}
+< {"body":{"scopes":[{"children":[{"class":"signal","direction":"none","id":0,"name":"cnt","type":{"bits":32,"kind":"integer","name":"INTEGER"}},{"class":"signal","direction":"none","id":1,"name":"v","type":{"ascending":false,"element":{"literals":["'0'","'1'"],"name":"BIT"},"kind":"vector","left":3,"name":"BIT_VECTOR","right":0}}],"component":"tb(a)","kind":"instance","scope":"tb"}],"skipped":[]},"command":"yavs/waveSubscribe","request_seq":4,"success":true,"type":"response"}
 > setBreakpoints {"breakpoints":[{"line":22}],"source":{"path":"$TMP/tb.vhd"}}
 < {"body":{"breakpoints":[{"line":22,"source":{"name":"tb.vhd","path":"$TMP/tb.vhd"},"verified":true}]},"command":"setBreakpoints","request_seq":5,"success":true,"type":"response"}
 > configurationDone {}
@@ -17,21 +17,21 @@
 > yavs/stepTimestep {}
 < {"body":{},"command":"yavs/stepTimestep","request_seq":8,"success":true,"type":"response"}
 < {"body":{"allThreadsContinued":true,"threadId":1},"event":"continued","type":"event"}
-< {"body":{"changes":[[0,0,"AgAAAAAAAAA="],[0,1,"AAEAAQ=="]],"from":0,"times":[0],"to":0},"event":"yavs/waves","type":"event"}
+< {"body":{"changes":[[0,0,"2"],[0,1,"\"0101\""]],"from":0,"times":[0],"to":0},"event":"yavs/waves","type":"event"}
 < {"body":{"allThreadsStopped":true,"description":"step at 0 fs, delta 2","reason":"step"},"event":"stopped","type":"event"}
 > yavs/stepTimestep {}
 < {"body":{},"command":"yavs/stepTimestep","request_seq":9,"success":true,"type":"response"}
 < {"body":{"allThreadsContinued":true,"threadId":1},"event":"continued","type":"event"}
-< {"body":{"changes":[[0,0,"BAAAAAAAAAA="],[0,1,"AQABAA=="]],"from":10000000,"times":[10000000],"to":10000000},"event":"yavs/waves","type":"event"}
+< {"body":{"changes":[[0,0,"4"],[0,1,"\"1010\""]],"from":10000000,"times":[10000000],"to":10000000},"event":"yavs/waves","type":"event"}
 < {"body":{"allThreadsStopped":true,"description":"step at 10 ns, delta 2","reason":"step"},"event":"stopped","type":"event"}
 > yavs/waveUnsubscribe {}
 < {"body":{},"command":"yavs/waveUnsubscribe","request_seq":10,"success":true,"type":"response"}
 > yavs/waveSubscribe {"flushMs":0,"include":["tb.v"]}
-< {"body":{"scopes":[{"children":[{"class":"signal","direction":"none","encoding":{"layout":"u8-per-element","width":4},"id":0,"name":"v","type":{"ascending":false,"element":{"literals":["'0'","'1'"],"name":"BIT"},"kind":"vector","left":3,"name":"BIT_VECTOR","right":0}}],"component":"tb(a)","kind":"instance","scope":"tb"}],"skipped":[]},"command":"yavs/waveSubscribe","request_seq":11,"success":true,"type":"response"}
+< {"body":{"scopes":[{"children":[{"class":"signal","direction":"none","id":0,"name":"v","type":{"ascending":false,"element":{"literals":["'0'","'1'"],"name":"BIT"},"kind":"vector","left":3,"name":"BIT_VECTOR","right":0}}],"component":"tb(a)","kind":"instance","scope":"tb"}],"skipped":[]},"command":"yavs/waveSubscribe","request_seq":11,"success":true,"type":"response"}
 > continue {}
 < {"body":{"allThreadsContinued":true},"command":"continue","request_seq":12,"success":true,"type":"response"}
-< {"body":{"changes":[[0,0,"AQABAA=="]],"from":10000000,"times":[10000000],"to":10000000},"event":"yavs/waves","type":"event"}
-< {"body":{"changes":[[0,0,"AAEAAQ=="]],"from":20000000,"times":[20000000],"to":20000000},"event":"yavs/waves","type":"event"}
+< {"body":{"changes":[[0,0,"\"1010\""]],"from":10000000,"times":[10000000],"to":10000000},"event":"yavs/waves","type":"event"}
+< {"body":{"changes":[[0,0,"\"0101\""]],"from":20000000,"times":[20000000],"to":20000000},"event":"yavs/waves","type":"event"}
 < {"body":{"category":"stdout","output":"** Note: 30000000fs+0: done\n    Process :tb:p\n"},"event":"output","type":"event"}
 < {"body":{"changes":[],"from":30000000,"times":[],"to":30000000},"event":"yavs/waves","type":"event"}
 < {"body":{"exitCode":0},"event":"exited","type":"event"}

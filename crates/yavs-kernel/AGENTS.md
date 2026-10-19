@@ -25,7 +25,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | `src/lib.rs` | Re-exports (the public API is exactly this list) |
 | `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`: `postponed`, `serial`, `several_waits`), `PortMode` |
 | `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, `Hook::with_process` (a suspended process, VHPI variables), `Hook::assign` (a transaction on a driver, VHPI foreign architectures), wake-ups (`WakeId`, `Hook::wake_at`/`cancel`, `Observer::wake`), `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
-| `src/process.rs` | `Process` trait (`run`, `serial`, `several_waits`, `as_any`), `Ctx` (reads, `read_into` without allocation, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`, `deposit` for VHPI foreign calls), `ProcId`, `Severity` |
+| `src/process.rs` | `Process` trait (`run`, `serial`, `several_waits`, `as_any`), `Ctx` (reads, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`, `deposit` for VHPI foreign calls), `ProcId`, `Severity` |
 | `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
 | `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
 | `src/time.rs` | `Time` (checked fs arithmetic), `Unit`, `TimeError` |

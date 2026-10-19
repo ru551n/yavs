@@ -20,10 +20,8 @@ panels, protocol, phased plan G1 to G6). This file is for an agent about to chan
 |---|---|
 | `src/main.rs` | Command line (`[--yavs PATH] -- <yavs run arguments>`, `--attach HOST:PORT`, `--help`, `--version`), `eframe::run_native` |
 | `src/dap.rs` | `Target`, `Session` (child or TCP, `request`, `Drop` = `disconnect` then kill after 2 s), reader threads into an `mpsc` channel, `Content-Length` framing |
-| `src/app.rs` | `App` (dock) and `Dbg` (everything else): run state, DAP message handling, `Purpose` per request (answers of an earlier stop are dropped), `Action`s from the panels turned into requests, toolbar, status bar, `egui_dock` layout |
-| `src/state.rs` | Plain structs, no window: `Breakpoints`, `Stack`, `VarTree` (lazy, paged), `parse_time`, `word_at`, `highlight`; unit tests |
-| `src/panels.rs` | Console, Source (gutter, highlight, hover), Call stack, Locals, Watch, Breakpoints, the breakpoint dialog; they read `Dbg` and return `Action`s |
-| `src/tests.rs` | Argument parsing; scripted DAP servers on a socket driven through the window with `egui_kittest` (G1 run controls; G2 stop, gutter, dialog, expansion, paging, hover, watch, setVariable, step); a connection failure; `launch_real_yavs` and `debug_real_yavs` (ignored, need `YAVS_BIN`) |
+| `src/app.rs` | `App`: run state, DAP message handling (initialize, launch/attach, configurationDone, output, stopped, continued, exited, terminated), toolbar, status bar, `egui_dock` layout, console |
+| `src/tests.rs` | Argument parsing; a scripted DAP server on a socket driven through the window with `egui_kittest` (Pause, Run, Stop, console, status); a connection failure; `launch_real_yavs` (ignored, needs `YAVS_BIN`) |
 
 ## 3. Design decisions that bind this module
 
@@ -42,13 +40,8 @@ panels, protocol, phased plan G1 to G6). This file is for an agent about to chan
 - Tests are headless (no `wgpu`, no snapshots): they need no GPU or display. Keep image
   snapshots out (they need a GPU backend on every CI platform).
 - `Harness::step` does not wait for the reader thread: use `wait_for` in `src/tests.rs`.
-- The kittest accessibility tree finds widgets by their label: renaming a toolbar button or
-  changing the gutter text (`panels::gutter`: marker, space, line number right-aligned in 4)
-  breaks the tests on purpose. egui_dock's tab buttons are not in the tree (`App::focus` brings
-  a tab forward), and a widget scrolled out of its panel cannot be clicked (use
-  `click_accesskit` or `Dbg::act`).
-- Requests that need a stop (`stackTrace`, `scopes`, `variables`, `evaluate`) fail with `the
-  simulation is running` otherwise; the panels grey out while running and ask again at each stop.
+- The kittest accessibility tree finds widgets by their label: renaming a toolbar button breaks
+  the tests on purpose.
 - Linux builds need no development packages: winit and glutin load X11, Wayland and EGL/GLX at
   run time. At run time an OpenGL driver is needed (software rendering works).
 
@@ -65,6 +58,4 @@ cargo run -- -- --work=work:<dir> tb                             # needs a displ
 
 ## 6. Open
 
-Slices G3 to G6 (`docs/design/gui.md` 10) and the server slices S1 (#396), S2 (#397), S4 (#398)
-they need. Not in G2: global step (`yavs/stepAny`, S1), exception breakpoints (S4), locals of
-suspended processes (S4), keyboard shortcuts (G5), breakpoint hit counts so far.
+Slices G2 to G6 (`docs/design/gui.md` 10) and the server slices S1 to S4 they need.

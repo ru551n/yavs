@@ -1,7 +1,7 @@
 # M10 GUI: yavs-gui
 
-Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Slices G1
-(#388) and G2 (#399) are implemented in `gui/` (see `gui/AGENTS.md`). Binding inputs: `docs/plan.md`
+Status: accepted (#384, epic #148, #133); the user's decisions are in section 12. Slice G1
+(#388) is implemented in `gui/` (see `gui/AGENTS.md`). Binding inputs: `docs/plan.md`
 (the `yavs-gui` row of the architecture table, "Designed for the GUI from the start", M10) and the
 M8 DAP server as it is on main (`crates/yavs-dap/AGENTS.md`).
 
@@ -132,25 +132,23 @@ are absolute), an objects-while-running request (the Objects panel reads the wav
   width and element enumeration, enum literal table in original spelling, integer subtype name and
   width, real, time) and direction. The GUI then builds the same tree a written FST would show.
 - Event `yavs/waves {from, to, times: [<fs>], changes: [[<time index>, <id>, <value>]]}`: the
-  changes of completed time steps, final value per time step as in the FST, in entry order. The
-  value is base64 of the value bytes the recorder gives the FST path (user, 2026-10-19: "binary
-  now"): a bit/`std_logic` vector one byte per element (the enumeration position, left to
-  right), an enumeration a `u32`, an integer or TIME (fs) an `i64`, a real an `f64`, little
-  endian. The subscribe response gives each signal an `encoding {layout: "u8-per-element" |
-  "u32le" | "i64le" | "f64le", width}` beside its `type`, so the GUI converts bytes straight to
-  its store. One string per change; a blob per batch with offsets would not be smaller for
-  values of a few bytes. A batch with no changes still carries `to`, so the status bar time
-  moves while running.
+  changes of completed time steps, final value per time step as in the FST, in entry order; the
+  value is text as the Variables view and the value parser write it (`"01UX"` for a logic
+  vector, `'1'` or `IDLE` for an enumeration, `42`, `1.5`, `10 fs` for TIME). Implemented
+  differently from the first draft of this section (base64 of the FST byte layout): one value
+  syntax across the protocol and readable transcripts; the hierarchy gives each id's type, so the
+  GUI converts text to its store as cheaply as bytes. A batch with no changes still carries `to`,
+  so the status bar time moves while running.
 - The server flushes a batch at the end of a time step once `flushMs` (default 100) have passed
   or 256 KiB are pending, always before `stopped`, `exited` and the response to
   `yavs/waveUnsubscribe`, so the GUI's waves end where the stop is.
 - Server side, the `Recorder` has a sink seam (`yavs_wave::Sink`, `record_to`): the FST
   `WaveWriter` and the DAP stream are two sinks, so `--wave out.fst` and the stream work together
   under `--dap`.
-- The simulation never waits for the client (user decision, 2026-10-19): batches go through a bounded
+- The simulation never waits for the client (user, 2026-10-19): batches go through a bounded
   queue to a sender thread; when it is full the newest batch is merged into the last one, keeping
-  only the last change of each value (`merged: true`). `ponytail:` base64 in JSON on the DAP pipe;
-  a binary side channel is the upgrade if measured throughput needs it.
+  only the last change of each value (`merged: true`). `ponytail:` JSON on the DAP pipe; a binary
+  side channel is the upgrade if measured throughput needs it.
 
 ### 5.2 In the GUI
 

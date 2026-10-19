@@ -1,0 +1,108 @@
+# Scheduled front-end fuzzing (#87, #44): the cargo-fuzz targets in fuzz/ on nightly Rust, bounded
+# per target, corpus cached between runs. A finding fails the job, uploads the minimised input and
+# opens (or comments on) one `fuzz` issue per crash signature. See fuzz/AGENTS.md.
+name: fuzz
+
+on:
+  push:
+    branches: [fuzzci-wip]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Fuzz minutes per target"
+        default: "20"
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: 0
+  MINUTES: ${{ inputs.minutes || (github.event_name == 'push' && '1') || '20' }}
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, sem]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        id: fuzz
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/${{ matrix.target }}
+          # Seeds: the VHDL sources only (tests/corpus also holds .gz and expected-output files).
+          seeds="$RUNNER_TEMP/seeds"; mkdir -p "$seeds"
+          find ../tests ../lib \( -name '*.vhd' -o -name '*.vhdl' \) -print0 \
+            | xargs -0 -I{} cp --backup=numbered {} "$seeds/"
+          set +e
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -rss_limit_mb=2048 -timeout=10 \
+            -max_total_time=$((MINUTES * 60)) \
+            "$seeds" 2>&1 | tee "$RUNNER_TEMP/fuzz.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Minimise a crash
+        if: steps.fuzz.outputs.status != '0'
+        working-directory: fuzz
+        run: |
+          for f in artifacts/${{ matrix.target }}/crash-* artifacts/${{ matrix.target }}/timeout-* artifacts/${{ matrix.target }}/oom-*; do
+            [ -f "$f" ] || continue
+            timeout 600 cargo fuzz tmin --target x86_64-unknown-linux-gnu ${{ matrix.target }} "$f" -- -rss_limit_mb=2048 -timeout=10 \
+              -max_total_time=300 || true
+          done
+          ls -l artifacts/${{ matrix.target }}
+      - name: Upload artifacts
+        if: steps.fuzz.outputs.status != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}
+            ${{ runner.temp }}/fuzz.log
+      - name: Report one issue per crash signature
+        if: steps.fuzz.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          log="$RUNNER_TEMP/fuzz.log"
+          # Signature: panic location plus message, else libFuzzer's ERROR line (timeout, oom).
+          sig=$(grep -m1 -A1 'panicked at' "$log" | tr '\n' ' ')
+          [ -n "$sig" ] || sig=$(grep -m1 -E 'ERROR: libFuzzer' "$log")
+          [ -n "$sig" ] || sig="unknown (exit status ${{ steps.fuzz.outputs.status }})"
+          hash=$(printf '%s' "$sig" | sed -E 's/[0-9]+//g' | sha1sum | cut -c1-8)
+          title="fuzz $TARGET: $hash $(printf '%s' "$sig" | sed -E 's/==[0-9]+== //; s/ after [0-9]+ seconds//' | cut -c1-80)"
+          body=$(printf 'Scheduled fuzz run: %s\n\nTarget `%s`, signature `%s`.\n\nThe minimised input and the log are in the run artifacts (fuzz-%s-*). Add a regression test (`tests/diag/sem/fuzz/` or a `yavs-syntax` unit test) before the fix, see fuzz/AGENTS.md.\n\n```\n%s\n```\n' \
+            "$RUN_URL" "$TARGET" "$hash" "$TARGET" "$(grep -m1 -B2 -A12 -E 'panicked at|ERROR: libFuzzer' "$log" | head -40)")
+          gh label create fuzz --color B60205 --description "Found by the scheduled fuzz job" 2>/dev/null || true
+          n=$(gh issue list --label fuzz --state open --search "$TARGET: $hash in:title" --json number -q '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "Seen again: $RUN_URL"
+          else
+            gh issue create --label fuzz --title "$title" --body "$body"
+          fi
+      - name: Fail on a finding
+        if: steps.fuzz.outputs.status != '0'
+        run: exit 1

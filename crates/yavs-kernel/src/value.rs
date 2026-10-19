@@ -257,33 +257,6 @@ impl Buf {
         }
     }
 
-    /// Elements `off .. off + n` into `out` without allocating: the bytes, or for logic the
-    /// plane blocks of `extract(off, n)` as little-endian words. False if `out` has another
-    /// size.
-    pub fn write_to(&self, off: usize, n: usize, out: &mut [u8]) -> bool {
-        match self {
-            Buf::Bytes { es, data } => {
-                let src = &data[off * es..(off + n) * es];
-                if out.len() != src.len() {
-                    return false;
-                }
-                out.copy_from_slice(src);
-            }
-            Buf::Planes { b, .. } => {
-                let (blocks, rest) = out.as_chunks_mut::<32>();
-                if !rest.is_empty() || blocks.len() != n.div_ceil(64) {
-                    return false;
-                }
-                for ((c, k), dst) in chunks(n).zip(blocks) {
-                    for (p, w) in get_block(b, off + c, k).iter().enumerate() {
-                        dst[p * 8..p * 8 + 8].copy_from_slice(&w.to_le_bytes());
-                    }
-                }
-            }
-        }
-        true
-    }
-
     pub fn to_value(&self) -> Value {
         match self {
             Buf::Bytes { data, .. } => Value::Bytes(data.clone()),
@@ -470,28 +443,6 @@ mod tests {
         let mut back = Buf::zeroed(Elem::Logic, 4);
         back.set_codes(0, &codes);
         assert_eq!(back, m);
-    }
-
-    #[test]
-    fn write_to_matches_extract() {
-        let src = LogicVec::from_fn(150, |i| StdULogic::from_code_pub((i % 9) as u8));
-        let b = Buf::from_ref(Elem::Logic, 150, (&src).into()).unwrap();
-        let mut out = [0u8; 64];
-        assert!(b.write_to(70, 70, &mut out));
-        let Buf::Planes { b: want, .. } = b.extract(70, 70) else {
-            panic!()
-        };
-        let words: Vec<u64> = want.iter().flatten().copied().collect();
-        let got: Vec<u64> = out
-            .chunks(8)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        assert_eq!(got, words);
-        assert!(!b.write_to(70, 70, &mut [0u8; 32]));
-        let bytes = Buf::from_ref(Elem::Bytes(2), 3, (&[1u8, 2, 3, 4, 5, 6]).into()).unwrap();
-        let mut out = [0u8; 4];
-        assert!(bytes.write_to(1, 2, &mut out));
-        assert_eq!(out, [3, 4, 5, 6]);
     }
 
     #[test]

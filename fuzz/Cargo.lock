@@ -472,7 +472,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "yavs-diag"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "annotate-snippets",
 ]
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-lib"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "sha2",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "yavs-sem"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "yavs-diag",
  "yavs-lib",
@@ -509,14 +509,14 @@ dependencies = [
 
 [[package]]
 name = "yavs-std"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "jiff",
 ]
 
 [[package]]
 name = "yavs-syntax"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "yavs-diag",
 ]

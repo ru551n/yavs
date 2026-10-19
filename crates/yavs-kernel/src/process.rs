@@ -189,22 +189,6 @@ impl Ctx<'_> {
         }
     }
 
-    /// Current value of `r` copied into `out` without allocating: the bytes of a byte signal,
-    /// or the bit-plane blocks of a logic signal (four little-endian `u64` planes per 64
-    /// elements, unused bits zero, as `LogicVec`'s blocks). `out` must be exactly that size.
-    pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
-        let (s, r) = self.sig(r)?;
-        if s.cur.write_to(r.offset as usize, r.len as usize, out) {
-            return Ok(());
-        }
-        Err(self.error(ErrorKind::BadRef(format!(
-            "{}: a {}-byte buffer for {} elements",
-            s.name,
-            out.len(),
-            r.len
-        ))))
-    }
-
     /// `'event`: an event on any element in this cycle.
     pub fn event(&self, r: impl Into<SigRef>) -> Result<bool, SimError> {
         let (s, r) = self.sig(r)?;

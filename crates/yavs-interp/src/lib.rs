@@ -267,9 +267,6 @@ pub struct Runtime {
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
     /// Compiled code, set once before the simulation starts (`set_tier`).
     pub(crate) tier: std::sync::OnceLock<Arc<dyn Tier>>,
-    /// Calls run again for their side effects (`set_replay`): their reports without a
-    /// kernel were printed and counted the first time.
-    pub(crate) replay: std::sync::atomic::AtomicBool,
 }
 
 fn usage(m: String) -> SimError {
@@ -331,7 +328,6 @@ impl Runtime {
             asserts: Default::default(),
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
-            replay: Default::default(),
             prog,
         }))
     }
@@ -351,13 +347,6 @@ impl Runtime {
         self.sources = sources;
         self.prog = prog;
         Ok(())
-    }
-
-    /// While `on`, calls run again what they ran before (elaboration-time calls replayed on
-    /// fresh package state, #390): a report without a kernel is neither printed nor counted
-    /// again.
-    pub fn set_replay(&self, on: bool) {
-        self.replay.store(on, Ordering::Relaxed);
     }
 
     /// The VHDL assert count of severity `s` (`GetVhdlAssertCount(s)`) as it stands now:
@@ -727,7 +716,7 @@ impl InterpProcess {
                 Ok(())
             }
             r => {
-                self.m.truncate_frames(0);
+                self.m.frames.clear();
                 Err(match r {
                     Err(e) => format!("its declarative part cannot run yet: {}", fault_text(e)),
                     _ => "this is a bug in yavs: a process ended in its declarative part".into(),

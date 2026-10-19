@@ -7,8 +7,6 @@ use std::sync::Arc;
 
 mod app;
 mod dap;
-mod panels;
-mod state;
 
 use dap::Target;
 

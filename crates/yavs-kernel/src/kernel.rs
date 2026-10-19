@@ -960,18 +960,26 @@ impl SimControl {
                 }
             }
         }
-        let mut woken = Vec::new();
         for &s in &changed {
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64;
             let mut runs = std::mem::take(&mut sig.changed);
-            runs.sort_unstable_by_key(|r| r.offset);
             let procs = &self.procs;
-            let live = |w: &Waiter| procs[w.proc as usize].generation == w.generation;
-            sig.waiters.take_woken(&runs, live, &mut woken);
+            let mut woken = Vec::new();
+            sig.waiters.retain(|w| {
+                if procs[w.proc as usize].generation != w.generation {
+                    return false;
+                }
+                if runs.iter().any(|r| r.overlaps(w.range)) {
+                    woken.push(w.proc);
+                    return false;
+                }
+                true
+            });
+            sig.waiters_live = sig.waiters.len();
             runs.clear();
             sig.changed = runs;
-            for &(_, p) in &woken {
+            for p in woken {
                 self.wake(p, false);
             }
         }
@@ -1443,11 +1451,14 @@ impl SimControl {
             }
             for (s, range) in st.sens.drain(..) {
                 let procs = &self.procs;
-                self.signals[s.0 as usize]
-                    .waiters
-                    .add(p, range, generation, |w| {
-                        procs[w.proc as usize].generation == w.generation
-                    });
+                self.signals[s.0 as usize].add_waiter(
+                    Waiter {
+                        proc: p,
+                        range,
+                        generation,
+                    },
+                    |w| procs[w.proc as usize].generation == w.generation,
+                );
             }
             let result = std::mem::replace(&mut slot.result, Ok(()));
             drop(slot);

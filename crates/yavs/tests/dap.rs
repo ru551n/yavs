@@ -224,13 +224,6 @@ fn force_deposit_release() {
     script_case("values", &["--threads=4"]);
 }
 
-/// Force, deposit and release of signal parts (#364): a slice, an element, a field and an
-/// element of a field, only those elements changing, and rejected selections.
-#[test]
-fn signal_parts() {
-    script_case("parts", &[]);
-}
-
 /// Breakpoint conditions: on line breakpoints (held, not held inside a function stepped over,
 /// an error in one, with a hit count), on data breakpoints (names seen from the signal's
 /// region, with a hit count), and unparsable or unsupported ones. Identical at `--threads=4`.

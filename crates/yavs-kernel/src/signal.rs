@@ -137,119 +137,6 @@ pub(crate) struct Waiter {
     pub proc: u32,
     pub range: Range,
     pub generation: u64,
-    /// Registration number on its signal: the order in which waiters wake.
-    seq: u64,
-}
-
-/// Elements per waiter bucket, and the most buckets a waiter is copied into before it goes
-/// to the wide list instead.
-const WAIT_CHUNK: u32 = 64;
-const WAIT_NARROW: u32 = 4;
-
-/// The processes waiting on one signal, bucketed by chunk of `WAIT_CHUNK` elements, so an
-/// event looks only at the waiters of the chunks it touches: one process per element of a
-/// wide vector costs O(1) per event, not O(processes). Waiters over more than `WAIT_NARROW`
-/// chunks (or none) sit in a wide list that every event scans. Each list keeps its count
-/// right after the last compaction, so lists of signals that rarely change do not grow
-/// without bound.
-pub(crate) struct Waiters {
-    /// Per chunk, then the wide list last.
-    lists: Vec<(Vec<Waiter>, usize)>,
-    next: u64,
-}
-
-impl Waiters {
-    fn new(len: u32) -> Waiters {
-        let n = len.div_ceil(WAIT_CHUNK) as usize + 1;
-        Waiters {
-            lists: (0..n).map(|_| (Vec::new(), 0)).collect(),
-            next: 0,
-        }
-    }
-
-    fn lists_of(&self, r: Range) -> std::ops::Range<usize> {
-        let wide = self.lists.len() - 1;
-        if r.len == 0 {
-            return wide..wide + 1;
-        }
-        let (a, b) = (r.offset / WAIT_CHUNK, (r.end() - 1) / WAIT_CHUNK);
-        if b - a >= WAIT_NARROW {
-            return wide..wide + 1;
-        }
-        a as usize..b as usize + 1
-    }
-
-    pub fn add(
-        &mut self,
-        proc: u32,
-        range: Range,
-        generation: u64,
-        live: impl Fn(&Waiter) -> bool,
-    ) {
-        let seq = self.next;
-        self.next += 1;
-        for i in self.lists_of(range) {
-            let (l, n) = &mut self.lists[i];
-            if l.len() >= 2 * *n + 16 {
-                l.retain(&live);
-                *n = l.len();
-            }
-            l.push(Waiter {
-                proc,
-                range,
-                generation,
-                seq,
-            });
-        }
-    }
-
-    /// Remove the live waiters overlapping `runs` (sorted, disjoint) and put their
-    /// `(registration, process)` in `out`, in registration order, each waiter once; drop
-    /// stale ones on the way.
-    pub fn take_woken(
-        &mut self,
-        runs: &[Range],
-        live: impl Fn(&Waiter) -> bool,
-        out: &mut Vec<(u64, u32)>,
-    ) {
-        let hit = |r: Range| {
-            let i = runs.partition_point(|x| x.end() <= r.offset);
-            runs.get(i).is_some_and(|x| x.overlaps(r))
-        };
-        out.clear();
-        let wide = self.lists.len() - 1;
-        let mut scanned = 0;
-        let mut last = usize::MAX;
-        let chunks = runs.iter().flat_map(|r| {
-            (r.len > 0)
-                .then(|| r.offset / WAIT_CHUNK..=(r.end() - 1) / WAIT_CHUNK)
-                .into_iter()
-                .flatten()
-        });
-        for i in chunks.map(|c| c as usize).chain([wide]) {
-            if i == last {
-                continue;
-            }
-            last = i;
-            scanned += 1;
-            let (l, n) = &mut self.lists[i];
-            l.retain(|w| {
-                if !live(w) {
-                    return false;
-                }
-                if hit(w.range) {
-                    out.push((w.seq, w.proc));
-                    return false;
-                }
-                true
-            });
-            *n = l.len();
-        }
-        if scanned > 1 {
-            out.sort_unstable();
-            out.dedup_by_key(|w| w.0);
-        }
-    }
 }
 
 pub(crate) struct Signal {
@@ -285,7 +172,9 @@ pub(crate) struct Signal {
     /// Cycle in which the signal was last put on the driving / effective worklist.
     pub queued_up: u64,
     pub queued_down: u64,
-    pub waiters: Waiters,
+    pub waiters: Vec<Waiter>,
+    /// Waiter count right after the last compaction (see `add_waiter`).
+    pub waiters_live: usize,
     /// Elements changed in the current cycle.
     pub changed: Vec<Range>,
     /// Ranges whose driving value must be recomputed this cycle.
@@ -319,7 +208,8 @@ impl Signal {
             level: 0,
             queued_up: 0,
             queued_down: 0,
-            waiters: Waiters::new(ty.len),
+            waiters: Vec::new(),
+            waiters_live: 0,
             changed: Vec::new(),
             dirty: Vec::new(),
             eff_dirty: Vec::new(),
@@ -371,13 +261,7 @@ impl Signal {
         if !self.groups.is_empty() {
             return Ok(());
         }
-        // Segments are sorted and disjoint: start at the first one that reaches `r`, so a
-        // signal with one driver per element costs O(log n) per dirty range, not O(n).
-        let first = self.segments.partition_point(|s| s.range.end() <= r.offset);
-        for seg in &self.segments[first..] {
-            if seg.range.offset >= r.end() {
-                break;
-            }
+        for seg in &self.segments {
             let Some(part) = seg.range.intersect(r) else {
                 continue;
             };
@@ -516,6 +400,16 @@ impl Signal {
 
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
         self.event_cycle[r.elems()].contains(&cycle)
+    }
+
+    /// Register a waiter, compacting stale entries so lists of signals that rarely change do
+    /// not grow without bound.
+    pub fn add_waiter(&mut self, w: Waiter, live: impl Fn(&Waiter) -> bool) {
+        if self.waiters.len() >= 2 * self.waiters_live + 16 {
+            self.waiters.retain(&live);
+            self.waiters_live = self.waiters.len();
+        }
+        self.waiters.push(w);
     }
 }
 
@@ -715,28 +609,6 @@ mod tests {
             range: Range::new(off, v.len() as u32),
             value,
         }
-    }
-
-    #[test]
-    fn waiters_wake_once_in_registration_order() {
-        let all = |_: &Waiter| true;
-        let mut w = Waiters::new(300);
-        w.add(1, Range::new(200, 1), 0, all); // chunk 3
-        w.add(2, Range::new(0, 300), 0, all); // five chunks: the wide list
-        w.add(3, Range::new(60, 10), 0, all); // chunks 0 and 1
-        w.add(4, Range::new(100, 1), 0, all); // chunk 1
-        w.add(5, Range::new(0, 0), 0, all); // null: never woken
-        let mut out = Vec::new();
-        let procs = |o: &[(u64, u32)]| o.iter().map(|x| x.1).collect::<Vec<_>>();
-        w.take_woken(&[Range::new(65, 1), Range::new(200, 2)], all, &mut out);
-        assert_eq!(procs(&out), [1, 2, 3]);
-        // The woken processes resumed (their other copies are stale), and so did 4.
-        let live = |w: &Waiter| w.proc > 4;
-        w.take_woken(&[Range::new(0, 300)], live, &mut out);
-        assert!(out.is_empty());
-        w.add(6, Range::new(299, 1), 0, all);
-        w.take_woken(&[Range::new(0, 300)], live, &mut out);
-        assert_eq!(procs(&out), [6]);
     }
 
     #[test]

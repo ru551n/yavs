@@ -358,8 +358,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs.ycov`, relative to the working directory) after the simulation, whatever its exit
   status; an elaboration failure writes none. The file is overwritten, never appended to:
   one database per run, merged afterwards with `yavs cov merge A B ... -o OUT`. `yavs cov report
-  DB ... [--cobertura FILE.xml] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
-  stdout and writes Cobertura XML. `--uncovered` prints instead one exclusion row per item that
+  DB ... [--cobertura FILE.xml] [--html DIR] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
+  stdout and writes Cobertura XML. `--html DIR` writes a static HTML report (`index.html`,
+  `src-N.html` per source file in name order; inline CSS, no scripts, no external resources,
+  no timestamp, so equal databases give equal bytes); sources are read from the paths in the
+  database at report time and an unreadable one is `E0113` with nothing written. `--uncovered` prints instead one exclusion row per item that
   never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `toggle PATH SCALAR   # never
   0->1|1->0 (FILE:LINE)`, or `# never toggled`); `--exclude FILE` takes the
   items such a file lists out of the summary and the Cobertura report and lists them under

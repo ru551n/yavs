@@ -24,6 +24,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | `src/lib.rs` | `Kind`, `Key`, `Entry` (with `tests`), `Database` (`tests`, `write`, `parse`, `merge`, `attribute`, `rank`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
 | `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
 | `src/exclude.rs` | Exclusion file `parse`, `apply` (W0110, W0111, W0114), `Database::uncovered`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
+| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html`: static, inline CSS, light/dark, no scripts, missed items carry their `exclude::miss_row`) |
 | `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd` and toggles on `tests/cli/cov_toggle.vhd`, thread identity, merge, reports |
 
 ## 3. Design decisions that bind this module
@@ -39,6 +40,8 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 
 | Exclusions match by instance glob + kind/arm + hash prefix + occurrence, never by line; pragma-excluded items are skipped when the key is added, after occurrences are numbered, so a pragma never renumbers its neighbours | Rows stay valid when code moves or pragmas change | `docs/decisions.md` "Coverage exclusions" |
 
+| HTML report: static files, no scripts and no external resources, no timestamp; a line shows the largest statement count on it, items listed under it; sources read by the CLI (`E0113` if unreadable), the crate only formats | Opens from disk, reproducible, the report rows are the exclusion format (user) | `docs/decisions.md` "Code coverage" |
+
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
 ## 4. Invariants and pitfalls
@@ -48,7 +51,8 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 - A new branch kind in lowering needs no change here as long as it is `CovKind::Branch(arm)`;
   a new `CovKind` variant needs a `Kind` and a letter in the text format.
 - A new `Kind` needs its arm in `write`/`parse`, `summary`, `cobertura`, `exclude::head`/`matches`.
-- Not yet: HTML (#344).
+- `html.rs` writes no timestamp and iterates only ordered maps: keep it byte-deterministic.
+  Every source text goes through `esc`; a new field shown in a page must too.
 
 ## 5. How to work here
 

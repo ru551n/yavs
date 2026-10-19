@@ -24,6 +24,10 @@ pub enum Command {
         /// Also write a Cobertura XML report.
         #[arg(long, value_name = "FILE.xml")]
         cobertura: Option<PathBuf>,
+        /// Also write an HTML report (static files, sources read from the paths in the
+        /// database) into DIR.
+        #[arg(long, value_name = "DIR")]
+        html: Option<PathBuf>,
         /// Leave out the items an exclusion file lists (rows pasted from `--uncovered`).
         #[arg(long, value_name = "FILE")]
         exclude: Option<PathBuf>,
@@ -59,6 +63,8 @@ const WRITE_ERROR: &str = "E0110";
 const EXCLUDE_ERROR: &str = "E0112";
 /// Cannot read a coverage database.
 const READ_ERROR: &str = "E0111";
+/// Cannot read a source file named by the database (`--html`).
+const SOURCE_ERROR: &str = "E0113";
 
 fn merged(inputs: &[PathBuf]) -> Result<Database, Box<Diagnostic>> {
     let mut db = Database::default();
@@ -123,10 +129,38 @@ fn excluded(
     Ok((a.kept, a.excluded))
 }
 
+/// Write the HTML report into `dir`; every source file the database names must be readable.
+fn write_html(dir: &PathBuf, db: &Database, excluded: &Excluded) -> Result<(), Box<Diagnostic>> {
+    let mut sources = std::collections::BTreeMap::new();
+    for f in yavs_cov::html::files(db, excluded) {
+        let t = std::fs::read_to_string(f).map_err(|e| {
+            Box::new(
+                Diagnostic::error(SOURCE_ERROR, format!("cannot read source file `{f}`"))
+                    .with_note(e.to_string())
+                    .with_help(
+                        "run `yavs cov report --html` where the paths in the database resolve",
+                    ),
+            )
+        })?;
+        sources.insert(f.to_string(), t);
+    }
+    std::fs::create_dir_all(dir).map_err(|e| {
+        Box::new(
+            Diagnostic::error(WRITE_ERROR, format!("cannot write `{}`", dir.display()))
+                .with_note(e.to_string()),
+        )
+    })?;
+    for (name, text) in yavs_cov::html::pages(db, excluded, &sources) {
+        write(&dir.join(name), text)?;
+    }
+    Ok(())
+}
+
 fn report(
     out: &mut Out,
     db: Database,
     cobertura: Option<PathBuf>,
+    html: Option<PathBuf>,
     exclude: Option<PathBuf>,
     uncovered: bool,
     tests: bool,
@@ -139,6 +173,9 @@ fn report(
     } else {
         print!("{}", db.summary());
         print!("{}", yavs_cov::exclude::excluded_text(&excluded));
+    }
+    if let Some(d) = &html {
+        write_html(d, &db, &excluded)?;
     }
     match cobertura {
         Some(p) => write(&p, db.cobertura()),
@@ -154,6 +191,7 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
         }
         Command::Report {
             cobertura,
+            html,
             exclude,
             uncovered,
             tests,
@@ -162,7 +200,7 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
         } => out
             .set_warn(&warn)
             .and_then(|()| merged(&inputs))
-            .and_then(|db| report(&mut out, db, cobertura, exclude, uncovered, tests)),
+            .and_then(|db| report(&mut out, db, cobertura, html, exclude, uncovered, tests)),
         Command::Rank {
             exclude,
             warn,

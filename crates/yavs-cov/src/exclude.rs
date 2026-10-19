@@ -283,33 +283,29 @@ pub fn comment(k: &Key, e: &Entry) -> String {
     }
 }
 
+/// The `--uncovered` row of an item that never ran (`None` for a hit item, and for the rise
+/// direction of a scalar whose fall row already says it never toggled).
+pub fn miss_row(db: &Database, k: &Key, e: &Entry) -> Option<String> {
+    let both = matches!(k.kind, Kind::Toggle(_)) && partner(db, k).is_some_and(|p| p.count == 0);
+    if e.count > 0 || (k.kind == Kind::Toggle(true) && both) {
+        return None;
+    }
+    let c = match k.kind {
+        Kind::Toggle(false) if both => format!("never toggled ({}:{})", e.file, e.line),
+        Kind::Toggle(r) => format!("never {} ({}:{})", crate::arrow(r), e.file, e.line),
+        _ => comment(k, e),
+    };
+    Some(format!("{}   # {c}\n", head(k, e)))
+}
+
 impl Database {
     /// The report of `--uncovered`: one exclusion row per item that never ran, in source
     /// order. Change nothing, paste into an exclusion file. A scalar that never toggled
     /// either way is one row.
     pub fn uncovered(&self) -> String {
-        let mut v: Vec<_> = self
-            .items
-            .iter()
-            .filter(|(k, e)| {
-                e.count == 0
-                    && !(k.kind == Kind::Toggle(true)
-                        && partner(self, k).is_some_and(|p| p.count == 0))
-            })
-            .collect();
+        let mut v: Vec<_> = self.items.iter().collect();
         v.sort_by(|a, b| (&a.1.file, a.1.line, a.0).cmp(&(&b.1.file, b.1.line, b.0)));
-        v.iter()
-            .map(|(k, e)| {
-                let c = match k.kind {
-                    Kind::Toggle(false) if partner(self, k).is_some_and(|p| p.count == 0) => {
-                        format!("never toggled ({}:{})", e.file, e.line)
-                    }
-                    Kind::Toggle(r) => format!("never {} ({}:{})", crate::arrow(r), e.file, e.line),
-                    _ => comment(k, e),
-                };
-                format!("{}   # {c}\n", head(k, e))
-            })
-            .collect()
+        v.iter().filter_map(|(k, e)| miss_row(self, k, e)).collect()
     }
 }
 

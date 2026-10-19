@@ -65,6 +65,7 @@ pub struct Entry {
 }
 
 pub mod exclude;
+pub mod html;
 pub mod toggle;
 
 /// An unclosed `-- coverage off` or a `-- coverage on` without one.

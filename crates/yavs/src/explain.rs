@@ -129,6 +129,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A coverage database given to `yavs cov merge` or `yavs cov report` cannot be read, or is not a database `yavs run --cov` wrote: the note says which.",
     ),
     (
+        "E0113",
+        "A source file named by the coverage database cannot be read, so `yavs cov report --html DIR` cannot show it; the note gives the reason. Run the command where the paths in the database resolve.",
+    ),
+    (
         "E0112",
         "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row; the note names the line. Rows start with `statement`, `branch`, `toggle`, `instance`, `unit` or `file`.",
     ),

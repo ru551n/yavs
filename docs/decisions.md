@@ -1638,7 +1638,16 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   per run (`--cov=FILE`, default `yavs.ycov`, overwritten), written whatever the run's outcome;
   `yavs cov merge` adds counts per key and keeps items only one input has. Cobertura output has
   timestamp 0 so equal databases give byte-identical reports.
-- **Not yet:** HTML reports (#344); the LLVM tier does not lower IR yet, so the interpreter is
+- **HTML (#344):** `cov report --html DIR`: static files (inline CSS, no scripts, no external
+  resources, light and dark by `prefers-color-scheme`, no timestamp so equal databases give equal
+  bytes). `index.html` has totals and a row per instance or package and per file; `src-N.html`
+  (N in file-name order) shows the source with the largest statement count per line and, under
+  it, every item with its count, tests and, if missed, its `--uncovered` row (the report is the
+  exclusion format); excluded items stay, greyed, with their reason. Sources are read at report
+  time from the database's paths; an unreadable one is `E0113`, nothing is written, rather than
+  a silently thinner report. No script filters or sorts: a hand-written template keeps the
+  crate free of dependencies.
+- **Not yet:** the LLVM tier does not lower IR yet, so the interpreter is
   the only tier today.
 
 ## Coverage exclusions (yavs-cov, CLI, #351, user, 2026-10-19)

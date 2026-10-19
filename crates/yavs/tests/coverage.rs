@@ -461,3 +461,134 @@ fn per_test_attribution() {
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// Run `top` of `tests/cli/<file>` with `--cov`, once per `(db, extra)`.
+fn cov_dbs(tmp: &Path, file: &str, top: &str, runs: &[(&str, &[&str])]) {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/cli")
+        .join(file);
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    assert!(
+        yavs(tmp, &["analyze", &lib, src.to_str().expect("utf-8")])
+            .status
+            .success()
+    );
+    for (db, extra) in runs {
+        let cov = format!("--cov={db}");
+        let args = [&["run", &lib, top, &cov][..], extra].concat();
+        let o = yavs(tmp, &args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+}
+
+fn html(tmp: &Path, args: &[&str]) -> Output {
+    yavs(tmp, &[&["cov", "report", "--html", "h"][..], args].concat())
+}
+
+fn page(tmp: &Path, name: &str) -> String {
+    std::fs::read_to_string(tmp.join("h").join(name)).expect("page")
+}
+
+#[test]
+fn html_report() {
+    let tmp = tempdir("html");
+    cov_dbs(
+        &tmp,
+        "cov_run.vhd",
+        "cov_run",
+        &[("a.ycov", &[]), ("b.ycov", &["-gn=0"])],
+    );
+    let o = yavs(&tmp, &["cov", "merge", "a.ycov", "b.ycov", "-o", "m.ycov"]);
+    assert!(o.status.success());
+    // Exclude the whole of u2 with a reason.
+    std::fs::write(tmp.join("ex.txt"), "instance :cov_run:u2   # dead <b>\n").expect("write");
+    let o = html(&tmp, &["m.ycov", "--exclude", "ex.txt"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let index = page(&tmp, "index.html");
+    assert!(index.contains("<title>Coverage report</title>"), "{index}");
+    assert!(index.contains(">:cov_run:u1</td>") && index.contains("href=\"src-0.html\""));
+    assert!(
+        !index.contains(":cov_run:u2</td>"),
+        "excluded instance is not listed"
+    );
+    assert!(index.contains("2 tests: cov_run, cov_run(n=0)"), "{index}");
+    let src = page(&tmp, "src-0.html");
+    // Line 56 never runs: a missed row with its copyable exclusion row; line 51 has a count.
+    assert!(src.contains("<tr id=\"L56\" class=\"miss\">"), "{src}");
+    assert!(
+        src.contains("<code>statement :cov_run ") && src.contains("cov_run.vhd:56"),
+        "{src}"
+    );
+    assert!(
+        src.contains("branch arm 0 in :cov_run: 3 (hit by tests: cov_run)"),
+        "{src}"
+    );
+    // Excluded items are greyed, with the (escaped) reason.
+    assert!(
+        src.contains("class=\"it ex\"") && src.contains("excluded: dead &lt;b&gt;"),
+        "{src}"
+    );
+    // No external resources, no scripts; source text is escaped.
+    for p in [&index, &src] {
+        assert!(
+            !p.contains("http") && !p.contains("<script") && !p.contains("src=\""),
+            "{p}"
+        );
+    }
+    assert!(src.contains("&lt;") && !src.contains("<=  "), "{src}");
+    assert!(src.contains("prefers-color-scheme:dark"));
+    // Byte-identical for the same database.
+    let again = |d: &str| {
+        let mut o = yavs(
+            &tmp,
+            &[
+                "cov",
+                "report",
+                "m.ycov",
+                "--exclude",
+                "ex.txt",
+                "--html",
+                d,
+            ],
+        );
+        assert!(o.status.success());
+        o.stdout.clear();
+    };
+    again("h2");
+    for n in ["index.html", "src-0.html"] {
+        assert_eq!(
+            page(&tmp, n),
+            std::fs::read_to_string(tmp.join("h2").join(n)).expect("h2")
+        );
+    }
+
+    // A source the database names that cannot be read is E0113 and writes nothing.
+    let text = std::fs::read_to_string(tmp.join("m.ycov")).expect("db");
+    let gone = text.replace("cov_run.vhd", "nope.vhd");
+    std::fs::write(tmp.join("g.ycov"), gone).expect("write");
+    std::fs::remove_dir_all(tmp.join("h")).expect("rm");
+    let o = html(&tmp, &["g.ycov"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("error[E0113]"));
+    assert!(!tmp.join("h").exists());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn html_toggles() {
+    let tmp = tempdir("html-toggle");
+    cov_dbs(&tmp, "cov_toggle.vhd", "cov_toggle", &[("t.ycov", &[])]);
+    let o = html(&tmp, &["t.ycov"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let src = page(&tmp, "src-0.html");
+    assert!(
+        src.contains("toggle v(1) 0-&gt;1 in :cov_toggle: 0"),
+        "{src}"
+    );
+    assert!(
+        src.contains("<code>toggle :cov_toggle v(1)   # never toggled"),
+        "{src}"
+    );
+    assert!(page(&tmp, "index.html").contains("toggles"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}

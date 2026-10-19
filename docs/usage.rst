@@ -150,6 +150,19 @@ of its most executed statement, and how many of its branches ran) for CI service
 coverage. Cobertura has no notion of toggles, so they are only in the text report. A database that cannot be read
 is error ``E0111``, a file that cannot be written ``E0110``.
 
+``--html DIR`` writes an HTML report into ``DIR``: static files with inline styles, no scripts
+and no external resources, so ``index.html`` opens straight from disk, in a light or dark
+theme as the browser asks. The index has the totals, one line per instance or package with its
+statement, branch and toggle percentages, and a link per source file. A file page shows the
+source with the hit count of each line, missed lines in red and lines with a missed branch arm
+or toggle in yellow; under a line, each of its items (statement, branch arm, toggle per signal
+and direction) with its instance, count and, when the database has test names, the tests that
+hit it. A missed item shows its ``--uncovered`` row, so it can be copied into an exclusion file.
+Items taken out by ``--exclude`` stay visible, greyed, with the reason of their row. The
+sources are read at report time from the paths in the database, so run the command where they
+resolve; a source that cannot be read is error ``E0113`` and nothing is written. The same
+database always gives the same bytes.
+
 Excluding code from coverage
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

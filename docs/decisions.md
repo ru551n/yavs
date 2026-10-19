@@ -760,6 +760,24 @@ a note and a help suggesting an access type, as the reference simulators reject 
 
 ## Elaboration (yavs-elab, M2)
 
+- **`in` ports collapse into their actuals** (R4 of `docs/design/performance.md`, #413, user,
+  2026-10-19; plan rule 3): after `bind_late` (`collapse.rs`), the formal of an `in` port (or a
+  component port) whose actual is whole kernel leaves of the same type, one consecutive range,
+  with no conversion, takes the actual's leaves: its own leaves, port edges and the copy per
+  delta are gone, and the leaves are renumbered in their old order. The formal object keeps its
+  name, scope and shape, so waves, `'path_name` and instance data name it as before; a chain
+  through a component port collapses to the signal at its end. The effective value of an `in`
+  formal is its actual's (LRM 14.7.3.3), so values, events, activity, `'last_value` and implicit
+  signals are unchanged; `'driving` does not apply to `in` ports. Not collapsed: a formal some
+  VHDL force or release names (directly, through an alias or an external name: LRM 10.5.2.1, a
+  force of an `in` port acts on the port only; a force of a signal parameter keeps every port
+  apart), a formal with a driver, a guard, a user resolution function or in a composite resolved
+  as a whole, an actual that is part of a leaf (`d => v(i)`; it needs a leaf offset in the
+  instance signals), and every port under `--dap` or `--vhpi` (a debugger or plugin may force or
+  deposit any port; edge triggers make the same choice). On by default, `--no-collapse-ports`
+  (`ElabConfig::collapse_ports`) keeps every port apart; the difftest corpus runs both ways
+  (`YAVS_RUN_FLAGS=--no-collapse-ports`).
+
 - **The elaboration-time session grows one program** (#383, elab agent, 2026-10-19): a function
   that uses package state and is called for the first time is lowered into the session's
   program by the kept lowering (`Lowerer::suspend`/`resume`, `snapshot`), and the runtime moves
@@ -784,7 +802,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
 - **Unlabeled processes** are named `_pN`, N counting the unlabeled process-like statements of
   the region (the reference simulator's names, so difftest paths match).
 - **Component instances** get a hidden `Component` scope holding the component ports as their own
-  signals (two port edges per port, uncollapsed); it is not part of path names, the bound entity
+  signals (two port edges per port, uncollapsed except `in` ports, see above); it is not part of path names, the bound entity
   instance carries the label.
 - **Interim evaluator:** globally static expressions are folded with sem's static folder over
   generic and constant values (`Db::fold_with`); calls of user functions with scalar arguments

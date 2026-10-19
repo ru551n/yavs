@@ -9,6 +9,7 @@
 //! Fail early: any error-severity diagnostic means there is no [`Elaborated`].
 
 mod build;
+mod collapse;
 mod eval;
 mod hier;
 mod pkgcall;
@@ -122,11 +123,17 @@ pub fn check_time_resolution(db: &Db, limit: yavs_kernel::Unit) -> Option<Diagno
 pub struct ElabConfig {
     /// Instances nested deeper than this are an error (recursive designs end at a generate).
     pub max_depth: u32,
+    /// Collapse `in` ports whose actual is whole signal leaves into aliases of the actual
+    /// (`collapse.rs`, plan rule 3): on by default, off with `--no-collapse-ports`.
+    pub collapse_ports: bool,
 }
 
 impl Default for ElabConfig {
     fn default() -> Self {
-        ElabConfig { max_depth: 1000 }
+        ElabConfig {
+            max_depth: 1000,
+            collapse_ports: true,
+        }
     }
 }
 

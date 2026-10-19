@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:in_port_collapse:u:_p2	v=0001 v(3)='0' event=false last=0001
+diag	note	1000000	1	:in_port_collapse:u:_p2	v=1000 v(3)='1' event=true last=0001
+diag	note	1000000	1	:in_port_collapse:u:_p3	r.n=3 r.b=10 stable=false clk'last_event=9223372036854775807 fs
+diag	note	8000000	1	:in_port_collapse:u:_p3	r.n=5 r.b=10 stable=false clk'last_event=1000000 fs
+diag	note	10000000	0	:in_port_collapse:_p0	q=14 v'stable=true

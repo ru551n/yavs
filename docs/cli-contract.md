@@ -281,6 +281,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
+- `--no-collapse-ports` (`run` and `elab`): keep every `in` port its own signal. By default the
+  formal of an `in` port whose actual is a whole signal (or whole record elements), with no
+  conversion and no force or release of the port, is an alias of its actual: no separate signal
+  and no copy per delta. Output, waves and `'path_name` are the same either way; a forced port,
+  and every port under `--dap` or `--vhpi` (a debugger or plugin may force or deposit any port),
+  stay apart. For comparing against the uncollapsed design.
 - `--time-report`: when the simulation ends (any outcome after elaboration) print the wall and
   CPU seconds of each phase to standard error, one line per phase and a total:
   `time-report: PHASE wall=S cpu=S`, with PHASE one of `analyze` (library loading, parsing and

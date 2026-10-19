@@ -1,0 +1,5 @@
+exit	0
+diag	note	2000000	0	:force_in_port:_p0	top s=1 t=1 u=3
+diag	note	2000000	0	:force_in_port:u1:_p0	child a=5 b=7 c=3
+diag	note	3000000	0	:force_in_port:_p0	top released s=1 t=1
+diag	note	3000000	0	:force_in_port:u1:_p0	child released a=1 b=1

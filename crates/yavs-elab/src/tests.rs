@@ -26,11 +26,27 @@ fn analyze_rev(_name: &str, src: &str, rev: LangRev) -> Db {
 
 type Errs = Vec<(&'static str, String)>;
 
+/// Ports kept apart: the tests of the uncollapsed net graph (plan rule 3).
+const UNCOLLAPSED: ElabConfig = ElabConfig {
+    max_depth: 1000,
+    collapse_ports: false,
+};
+
 fn try_elab(
     name: &str,
     src: &str,
     top: &str,
     gens: &[(&str, &str)],
+) -> (Db, Result<Elaborated, Errs>) {
+    try_elab_cfg(name, src, top, gens, &ElabConfig::default())
+}
+
+fn try_elab_cfg(
+    name: &str,
+    src: &str,
+    top: &str,
+    gens: &[(&str, &str)],
+    cfg: &ElabConfig,
 ) -> (Db, Result<Elaborated, Errs>) {
     let mut db = analyze(name, src);
     let gens: Vec<(String, String)> = gens
@@ -38,7 +54,7 @@ fn try_elab(
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
     let r = crate::find_top(&mut db, "work", top)
-        .and_then(|t| crate::elaborate(&mut db, t, &gens, &ElabConfig::default()))
+        .and_then(|t| crate::elaborate(&mut db, t, &gens, cfg))
         .map_err(|v| v.into_iter().map(|d| (d.code, d.message)).collect());
     (db, r)
 }
@@ -48,6 +64,13 @@ fn elab(name: &str, src: &str, top: &str, gens: &[(&str, &str)]) -> (Db, Elabora
     match r {
         Ok(e) => (db, e),
         Err(v) => panic!("elaboration failed: {v:#?}"),
+    }
+}
+
+fn elab_ports(name: &str, src: &str, top: &str, gens: &[(&str, &str)]) -> (Db, Elaborated) {
+    match try_elab_cfg(name, src, top, gens, &UNCOLLAPSED) {
+        (db, Ok(e)) => (db, e),
+        (_, Err(v)) => panic!("elaboration failed: {v:#?}"),
     }
 }
 
@@ -151,7 +174,7 @@ end;
 
 #[test]
 fn generics_defaults_maps_and_generates() {
-    let (_, e) = elab("generics", GENERICS, "gtop", &[]);
+    let (_, e) = elab_ports("generics", GENERICS, "gtop", &[]);
     let c1 = e.hier.scope(crate::ScopeId(0)).children[0];
     let c2 = e.hier.scope(crate::ScopeId(0)).children[1];
     // c1: W = 2, so 2 for-generate processes, the else branch of `big`.
@@ -282,7 +305,7 @@ fn arch_of(db: &Db, e: &Elaborated, label: &str) -> String {
 
 #[test]
 fn component_binding_default_spec_and_configuration() {
-    let (db, e) = elab("binding", BINDING, "btop", &[]);
+    let (db, e) = elab_ports("binding", BINDING, "btop", &[]);
     // Default binding: the most recently analyzed architecture.
     assert_eq!(arch_of(&db, &e, "u1"), "other");
     // Configuration specification.
@@ -295,12 +318,12 @@ fn component_binding_default_spec_and_configuration() {
     // Component ports between the actual and the entity's formal: two edges per port.
     assert_eq!(e.nets.ports.len(), 12);
 
-    let (db, e) = elab("binding_cfg", BINDING, "cfg", &[]);
+    let (db, e) = elab_ports("binding_cfg", BINDING, "cfg", &[]);
     assert!(e.top.config.is_some());
     assert_eq!(arch_of(&db, &e, "u1"), "rtl");
     assert_eq!(arch_of(&db, &e, "u2"), "rtl");
 
-    let (db, e) = elab("binding_arch", BINDING, "inv.rtl", &[]);
+    let (db, e) = elab_ports("binding_arch", BINDING, "inv.rtl", &[]);
     assert_eq!(db.units[e.top.arch].name.key.as_str(), "rtl");
 }
 
@@ -531,18 +554,29 @@ fn restart_is_identical() {
             })
             .collect::<Vec<_>>()
     };
-    let (_, a) = elab("restart", BINDING, "btop", &[]);
-    let (_, b) = elab("restart", BINDING, "btop", &[]);
-    assert_eq!(procs(&a), procs(&b));
-    assert_eq!(sig_paths(&a), sig_paths(&b));
-    assert_eq!(a.nets.ports, b.nets.ports);
-    let first = run(&a);
-    assert_eq!(first, run(&a));
-    assert_eq!(first, run(&b));
-    assert!(
-        first.iter().any(|s| s.starts_with(":btop:u1:a")),
-        "{first:?}"
-    );
+    for collapse in [false, true] {
+        let cfg = ElabConfig {
+            collapse_ports: collapse,
+            ..ElabConfig::default()
+        };
+        let e = || match try_elab_cfg("restart", BINDING, "btop", &[], &cfg) {
+            (_, Ok(e)) => e,
+            (_, Err(v)) => panic!("elaboration failed: {v:#?}"),
+        };
+        let (a, b) = (e(), e());
+        assert_eq!(procs(&a), procs(&b));
+        assert_eq!(sig_paths(&a), sig_paths(&b));
+        assert_eq!(a.nets.ports, b.nets.ports);
+        let first = run(&a);
+        assert_eq!(first, run(&a));
+        assert_eq!(first, run(&b));
+        // A collapsed `in` port is no kernel signal of its own.
+        assert_eq!(
+            first.iter().any(|s| s.starts_with(":btop:u1:a")),
+            !collapse,
+            "{first:?}"
+        );
+    }
 }
 
 struct Collect(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
@@ -934,7 +968,7 @@ fn package_signals() {
         u1 : entity work.c port map (pk);
         u2 : entity work.c port map (i => pk);
       end;";
-    let (_, e) = elab("pkgsig", src, "t", &[]);
+    let (_, e) = elab_ports("pkgsig", src, "t", &[]);
     assert_eq!(sig_paths(&e), [":work:p:pk", ":t:u1:i", ":t:u2:i"]);
     assert_eq!(e.nets.ports[0].actual.0, e.nets.ports[1].actual.0);
     let yavs_kernel::Value::Bytes(b) = &e.nets.leaves[0].init else {
@@ -1039,7 +1073,7 @@ fn external_port_actual_is_a_signal_name() {
         l : entity work.leaf;
         m : entity work.mon port map (i => << signal .t.l.hidden : bit >>);
       end;";
-    let (_, e) = elab("external_port", src, "t", &[]);
+    let (_, e) = elab_ports("external_port", src, "t", &[]);
     let id = |n: &str| {
         (0..e.nets.leaves.len() as u32)
             .map(crate::LeafId)
@@ -1068,7 +1102,7 @@ fn block_generics_and_ports() {
         begin
         end block;
       end;";
-    let (_, e) = elab("blockports", src, "t", &[]);
+    let (_, e) = elab_ports("blockports", src, "t", &[]);
     assert_eq!(sig_paths(&e), [":t:x", ":t:b:p", ":t:b:inner"]);
     assert_eq!(e.nets.leaves[2].ty.len, 8);
     assert_eq!(e.nets.ports.len(), 1);
@@ -1286,7 +1320,7 @@ fn mode_view_and_linkage_ports() {
       end;";
     let mut db = analyze_rev("views", src, LangRev::Vhdl2019);
     let top = crate::find_top(&mut db, "work", "t").expect("top");
-    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
+    let e = crate::elaborate(&mut db, top, &[], &UNCOLLAPSED).expect("elab");
     let modes: Vec<PortMode> = e.nets.ports.iter().map(|p| p.mode).collect();
     assert_eq!(
         modes,
@@ -1913,4 +1947,50 @@ fn clocked_processes_get_edge_triggers() {
         .collect();
     // Not (yet) an element of a composite (p5).
     assert_eq!(t, [Some((true, 0)), Some((false, 0)), None, None, None]);
+}
+
+/// R4: an `in` port whose actual is whole signal leaves is an alias of the actual (through
+/// the component port too); a part of a leaf, a forced port and an `out` port keep their
+/// edges.
+#[test]
+fn in_ports_collapse() {
+    let src = "
+entity leaf is
+  port (a : in bit; v : in bit_vector(3 downto 0); p : in bit; f : in bit; y : out bit);
+end;
+architecture rtl of leaf is begin
+  y <= a xor p xor f;
+  process begin f <= force '1'; wait; end process;
+end;
+entity top is end;
+architecture t of top is
+  component leaf is
+    port (a : in bit; v : in bit_vector(3 downto 0); p : in bit; f : in bit; y : out bit);
+  end component;
+  signal x, y, z : bit;
+  signal w : bit_vector(0 to 3);
+  signal link : bit_vector(0 to 1);
+begin
+  u : leaf port map (a => x, v => w, p => link(1), f => z, y => y);
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        e.nets.objs[k].leaves
+    };
+    let (_, apart) = elab_ports("collapse", src, "top", &[]);
+    let (_, e) = elab("collapse", src, "top", &[]);
+    assert_eq!(obj(&e, ":top:u:a"), obj(&e, ":top:x"));
+    assert_eq!(obj(&e, ":top:u:v"), obj(&e, ":top:w"));
+    assert_ne!(obj(&e, ":top:u:p"), obj(&e, ":top:link"));
+    assert_ne!(obj(&e, ":top:u:f"), obj(&e, ":top:z"));
+    // Component and entity ports of `a` and `v`, the entity's `p` (its actual is the whole
+    // component port) and the component's `f` (only the entity's is forced).
+    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 6);
+    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 6);
+    for p in &e.nets.ports {
+        assert!(
+            p.formal.0.index() < e.nets.leaves.len() && p.actual.0.index() < e.nets.leaves.len()
+        );
+    }
 }

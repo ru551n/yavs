@@ -87,6 +87,7 @@ to stderr in the reference simulator and stdout in the second reference simulato
 `--candidate` takes `nvc`, `ghdl`, `yavs` or any bash command template. The built-in `yavs`
 template (`YAVS` in `difftest.py`) analyzes the file with `yavs analyze` into the work library,
 then `yavs run`s the top; `YAVS_BIN` selects the binary (default `yavs` on `PATH`),
+`YAVS_RUN_FLAGS` adds flags to `yavs run` (e.g. `--no-collapse-ports` for the uncollapsed design),
 `DIFFTEST_CACHE` the output directory (default: unique per process). A failing `yavs elab` (run first, so that `stop(2)` in `yavs run` can exit 2)
 is reported as an elaboration failure. `tools/difftest/report.sh` runs the corpus at 1 thread,
 4 threads and 4 threads shuffled and writes `tests/corpus/RESULTS.md`; `--json FILE` writes the

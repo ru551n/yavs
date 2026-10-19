@@ -44,6 +44,9 @@ pub struct Common {
     /// Neither read nor write the compilation cache of the work library.
     #[arg(long)]
     no_cache: bool,
+    /// Keep every `in` port its own signal instead of an alias of its actual (docs/cli-contract.md).
+    #[arg(long)]
+    no_collapse_ports: bool,
     /// Print the elaborated hierarchy (for debugging yavs).
     #[arg(long, hide = true)]
     print_hierarchy: bool,
@@ -190,6 +193,7 @@ pub enum SeverityArg {
 fn elaborate(
     c: &Common,
     coverage: bool,
+    collapse_ports: bool,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
@@ -277,7 +281,11 @@ fn elaborate(
     }
     crate::timing::mark("analyze");
     let r = yavs_elab::find_top(&mut db, &work, &c.top).and_then(|t| {
-        yavs_elab::elaborate(&mut db, t, &c.generics, &yavs_elab::ElabConfig::default())
+        let cfg = yavs_elab::ElabConfig {
+            collapse_ports: collapse_ports && !c.no_collapse_ports,
+            ..yavs_elab::ElabConfig::default()
+        };
+        yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)
     });
     match r {
         Ok(mut e) => {
@@ -432,7 +440,7 @@ pub fn elab(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    match elaborate(&a, false, format, color, encoding) {
+    match elaborate(&a, false, true, format, color, encoding) {
         Ok((out, db, e)) => {
             if a.print_hierarchy {
                 print_hierarchy(&db, &e);
@@ -501,10 +509,13 @@ pub fn run(
     }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
     let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
-    let (mut out, mut db, e) = match elaborate(&a.common, counters, format, color, encoding) {
-        Ok(x) => x,
-        Err((out, code)) => return out.finish(code),
-    };
+    // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
+    let collapse = a.dap.is_none() && a.vhpi.is_empty();
+    let (mut out, mut db, e) =
+        match elaborate(&a.common, counters, collapse, format, color, encoding) {
+            Ok(x) => x,
+            Err((out, code)) => return out.finish(code),
+        };
     if a.common.print_hierarchy {
         print_hierarchy(&db, &e);
     }

@@ -56,6 +56,10 @@ otherwise.
   the elaborated design (``1 ps`` under ``--resolution=ns``), in a package it uses or in code that
   never runs, is an error (``E2120``, LRM 5.2.4.2) that lists the locations; ``0 ps`` is allowed,
   and so is ``0.4 ns``, because the rule is about the unit and not the value.
+* An ``in`` port whose actual is a whole signal shares its actual's storage: no separate
+  signal and no copy each delta cycle, with the same output, waveforms and names.
+  ``--no-collapse-ports`` keeps every port its own signal. Ports that are forced, and all ports
+  under ``--dap`` or ``--vhpi``, always are.
 * ``--wave out.fst`` records waveforms, see `Waveforms`_.
 * ``--cov[=FILE]`` counts code and toggle coverage, see `Code coverage`_.
 

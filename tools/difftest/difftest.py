@@ -31,7 +31,7 @@ GHDL = ("mkdir -p {work} && o=$(ghdl -a -fpsl --std={std2} --workdir={work} {rel
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
 YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} {relaxed} {psl} {file} 2>&1) || {{ printf \'%s\\n\' "$o" >&2; exit 97; }}; '
         '"$R" elab --std={std} --work=work:{work} {relaxed} {psl} {top} || exit 98; '
-        '"$R" run --std={std} --work=work:{work} {relaxed} {psl} {stop_flag} {res_flag} --threads={threads} {shuffle_on} {top}')
+        '"$R" run --std={std} --work=work:{work} {relaxed} {psl} {stop_flag} {res_flag} --threads={threads} {shuffle_on} $YAVS_RUN_FLAGS {top}')
 # yavs with every function compiled by the LLVM tier (needs a yavs built with `--features llvm`);
 # compared with the same `.expected`, so it must match the interpreter (rule 5).
 YAVS_LLVM = YAVS.replace("--threads=", "--tier=llvm --threads=")

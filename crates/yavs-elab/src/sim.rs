@@ -1108,12 +1108,14 @@ impl Elaborated {
                     &mut inst.data,
                 )?;
             }
-            // The leaf the entry names (a record signal has one entry per field leaf).
-            let (a, b) = self.nets.obj(o).leaves;
-            let Some(leaf) = (a.0..b.0)
-                .map(crate::LeafId)
-                .find(|&l| self.nets.leaf(l).path == s.path)
-            else {
+            // The leaf the entry names (a record signal has one entry per field leaf), by
+            // position: a collapsed port's leaves are its actual's (`collapse.rs`).
+            let obj = self.nets.obj(o);
+            let k = match s.path.is_empty() {
+                true => Some(0),
+                false => (obj.shape.leaves().iter()).position(|(p, _, _)| *p == s.path),
+            };
+            let Some(leaf) = k.map(|k| crate::LeafId(obj.leaves.0.0 + k as u32)) else {
                 return Err(sim_err(format!(
                     "signal `{}` has no kernel signal for field path {:?}",
                     s.name, s.path

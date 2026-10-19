@@ -145,7 +145,7 @@ pub struct Hook<'a> {
     cfg: &'a Config,
     drivers: &'a [DriverInfo],
     names: &'a [String],
-    queue: &'a mut BinaryHeap<Reverse<(Time, Entry)>>,
+    queue: &'a mut Queue,
     signals: &'a [Signal],
     ops: &'a mut Vec<SignalOp>,
     end: &'a mut Option<EndReason>,
@@ -245,7 +245,7 @@ impl Hook<'_> {
         };
         ctx.assign(d, target, waveform, mode)?;
         for (t, d) in slot.st.scheduled.drain(..) {
-            self.queue.push(Reverse((t, Entry::Driver(d.0))));
+            self.queue.push(self.now, t, Entry::Driver(d.0));
         }
         Ok(())
     }
@@ -377,6 +377,26 @@ pub(crate) struct Implicit {
     pub delayed: VecDeque<(Time, Buf)>,
 }
 
+/// Pending queue entries: a heap by time for the future, and a plain list for those due at
+/// the current time (zero delay: the next delta), which costs no heap operation. Both drain
+/// in `(time, entry)` order.
+#[derive(Default)]
+struct Queue {
+    later: BinaryHeap<Reverse<(Time, Entry)>>,
+    /// Entries at the current time, in push order.
+    next_delta: Vec<Entry>,
+}
+
+impl Queue {
+    fn push(&mut self, now: Time, t: Time, e: Entry) {
+        if t == now {
+            self.next_delta.push(e);
+        } else {
+            self.later.push(Reverse((t, e)));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Entry {
     Driver(u32),
@@ -406,7 +426,7 @@ pub struct SimControl {
     slots: Vec<Mutex<Slot>>,
     procs: Vec<ProcMeta>,
     names: Vec<String>,
-    queue: BinaryHeap<Reverse<(Time, Entry)>>,
+    queue: Queue,
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
@@ -540,7 +560,7 @@ impl SimControl {
             groups,
             slots,
             procs,
-            queue: BinaryHeap::new(),
+            queue: Queue::default(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
             ready: Vec::new(),
@@ -932,28 +952,39 @@ impl SimControl {
     }
 
     fn next_queued(&mut self) -> Option<Time> {
-        while let Some(&Reverse((t, e))) = self.queue.peek() {
-            let live = match e {
-                Entry::Timeout(p, g) => self.procs[p as usize].generation == g,
-                Entry::Driver(d) => {
-                    let info = &self.drivers[d as usize];
-                    let slot = lock(&self.slots[info.owner.0 as usize]);
-                    slot.st.waveforms[info.local as usize]
-                        .pending
-                        .first()
-                        .is_some_and(|x| x.time == t)
-                }
-                Entry::Implicit(i) => {
-                    let im = &self.implicits[i as usize];
-                    im.rise_at == Some(t) || im.delayed.front().is_some_and(|(dt, _)| *dt == t)
-                }
-            };
-            if live {
+        while let Some(&e) = self.queue.next_delta.last() {
+            if self.live(self.now, e) {
+                return Some(self.now);
+            }
+            self.queue.next_delta.pop();
+        }
+        while let Some(&Reverse((t, e))) = self.queue.later.peek() {
+            if self.live(t, e) {
                 return Some(t);
             }
-            self.queue.pop();
+            self.queue.later.pop();
         }
         None
+    }
+
+    /// Whether a queue entry at `t` still has something to do; stale ones are dropped before
+    /// they could cause an empty cycle.
+    fn live(&self, t: Time, e: Entry) -> bool {
+        match e {
+            Entry::Timeout(p, g) => self.procs[p as usize].generation == g,
+            Entry::Driver(d) => {
+                let info = &self.drivers[d as usize];
+                let slot = lock(&self.slots[info.owner.0 as usize]);
+                slot.st.waveforms[info.local as usize]
+                    .pending
+                    .first()
+                    .is_some_and(|x| x.time == t)
+            }
+            Entry::Implicit(i) => {
+                let im = &self.implicits[i as usize];
+                im.rise_at == Some(t) || im.delayed.front().is_some_and(|(dt, _)| *dt == t)
+            }
+        }
     }
 
     fn cycle(&mut self) -> Result<(), SimError> {
@@ -1064,11 +1095,21 @@ impl SimControl {
         // Matured drivers of independent signals without forces or deposits, as
         // (signal, driver) in queue order.
         let mut indep: Vec<(u32, u32)> = Vec::new();
-        while let Some(&Reverse((t, e))) = self.queue.peek() {
+        // Everything due now, in (time, entry) order: the heap pops in order and holds nothing
+        // before `now` (time only advances to its first entry), as the delta list.
+        let mut entries = std::mem::take(&mut self.queue.next_delta);
+        let from_delta = entries.len();
+        while let Some(&Reverse((t, e))) = self.queue.later.peek() {
             if t > now {
                 break;
             }
-            self.queue.pop();
+            self.queue.later.pop();
+            entries.push(e);
+        }
+        if from_delta > 0 {
+            entries.sort_unstable();
+        }
+        for &e in &entries {
             match e {
                 Entry::Timeout(p, g) => {
                     if self.procs[p as usize].generation == g {
@@ -1097,6 +1138,8 @@ impl SimControl {
                 }
             }
         }
+        entries.clear();
+        self.queue.next_delta = entries;
         self.update_independent(indep)?;
 
         // Driving values bottom-up: formals before the actuals they feed.
@@ -1335,7 +1378,7 @@ impl SimControl {
                     if fire {
                         let at = after(t)?;
                         im.rise_at = Some(at);
-                        self.queue.push(Reverse((at, Entry::Implicit(i as u32))));
+                        self.queue.push(now, at, Entry::Implicit(i as u32));
                         new = Some(bool_buf(false));
                     } else if due.contains(&(i as u32)) && im.rise_at == Some(now) {
                         im.rise_at = None;
@@ -1357,7 +1400,7 @@ impl SimControl {
                             im.delayed.pop_back();
                         }
                         im.delayed.push_back((at, v));
-                        self.queue.push(Reverse((at, Entry::Implicit(i as u32))));
+                        self.queue.push(now, at, Entry::Implicit(i as u32));
                     }
                 }
             }
@@ -1482,10 +1525,10 @@ impl SimControl {
                 first_err = Some(e);
             }
             for (t, d) in st.scheduled.drain(..) {
-                self.queue.push(Reverse((t, Entry::Driver(d.0))));
+                self.queue.push(self.now, t, Entry::Driver(d.0));
             }
             if let Some(t) = st.deadline.take() {
-                self.queue.push(Reverse((t, Entry::Timeout(p, generation))));
+                self.queue.push(self.now, t, Entry::Timeout(p, generation));
             }
             for (s, range) in st.sens.drain(..) {
                 let procs = &self.procs;

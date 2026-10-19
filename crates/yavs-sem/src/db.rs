@@ -147,6 +147,14 @@ pub struct Db {
     pub(crate) required_ctx: bool,
     /// Generic types of the instance whose port map is being resolved, with their actuals.
     pub(crate) inst_types: Vec<(TypeId, SubtypeId)>,
+    /// The anonymous interface types (`type is ...`) of the objects of the interface list
+    /// being analyzed; the owner takes them (entities append them to their generics).
+    pub(crate) hidden_types: Vec<DeclId>,
+    /// The anonymous types of the parameters of the subprogram spec being analyzed.
+    pub(crate) param_anon: Vec<TypeId>,
+    /// The anonymous parameter types of the spec a subprogram body being analyzed completes,
+    /// taken in order by its parameters instead of new ones (`subprogram_body`).
+    pub(crate) anon_reuse: std::collections::VecDeque<SubtypeId>,
     /// External names of the current unit already built, by AST node address (built once:
     /// candidates need the subtype, the HIR is the same).
     pub(crate) ext_memo: HashMap<usize, ExprId>,
@@ -316,6 +324,9 @@ impl Db {
             overflow: Vec::new(),
             required_ctx: false,
             inst_types: Vec::new(),
+            hidden_types: Vec::new(),
+            param_anon: Vec::new(),
+            anon_reuse: Default::default(),
             ext_memo: HashMap::new(),
             ext_uses: HashMap::new(),
             pkg_targets: HashMap::new(),

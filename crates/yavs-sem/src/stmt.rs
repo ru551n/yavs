@@ -1674,10 +1674,13 @@ impl Db {
             }
             None => None,
         };
+        self.hidden_types.clear();
         let generics = match &b.generics {
             Some(l) => errs.keep(self.st_interfaces(bscope, l, ObjRole::Generic, s.span)),
             None => Some(Box::default()),
         };
+        // Anonymous interface types (#283) come after the declared generics.
+        let mut hidden = self.take_hidden_types();
         let generic_map = match (&generics, &b.generic_map) {
             (Some(g), Some(m)) => {
                 let g = g.to_vec();
@@ -1689,12 +1692,24 @@ impl Db {
             Some(l) => errs.keep(self.st_interfaces(bscope, l, ObjRole::Port, s.span)),
             None => Some(Box::default()),
         };
+        hidden.extend(self.take_hidden_types());
         let port_map = match (&ports, &b.port_map) {
             (Some(p), Some(m)) => {
                 let p = p.to_vec();
                 errs.keep(self.st_assoc(scope, &p, m, s.span))
             }
             _ => Some(Box::default()),
+        };
+        let generics = generics.map(|g| {
+            let mut v = g.into_vec();
+            v.extend(&hidden);
+            Box::<[DeclId]>::from(v)
+        });
+        let generic_map = match (&generics, generic_map, &ports, &port_map) {
+            (Some(g), Some(m), Some(p), Some(pm)) if !hidden.is_empty() => {
+                errs.keep(self.with_hidden_args(g, p, m, pm, s.span))
+            }
+            (_, m, _, _) => m,
         };
         errs.keep(self.st_decls(bscope, &b.decls, s.span));
         let body = errs.keep(self.conc_stmts(bscope, &b.stmts, false));
@@ -1807,6 +1822,11 @@ impl Db {
         let generic_map = errs.keep(self.st_assoc(scope, &gens, gmap, span));
         let port_map = errs.keep(self.st_assoc(scope, &ports, pmap, span));
         self.inst_types.clear();
+        // Entities with anonymous interface types: their hidden types take the actuals' (#283).
+        let generic_map = match (generic_map, &port_map) {
+            (Some(g), Some(p)) => errs.keep(self.with_hidden_args(&gens, &ports, g, p, span)),
+            _ => None,
+        };
         errs.finish(())?;
         Ok(StmtKind::Instance {
             target,

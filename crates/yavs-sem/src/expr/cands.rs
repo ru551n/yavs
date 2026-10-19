@@ -358,6 +358,54 @@ impl Db {
         }
     }
 
+    /// The cheapest way a candidate set can be an actual of anonymous parameter type `t`
+    /// (any type of its class; a universal value converts to INTEGER or REAL; the class is
+    /// checked in full by the call, #283). Dearer than an exact match of another overload.
+    pub(crate) fn anonymous_cost(&self, c: &CandSet, t: TypeId) -> Option<u32> {
+        let CandSet::Types(is) = c else {
+            return None;
+        };
+        is.iter()
+            .filter_map(|i| {
+                let ui = Some(i.ty) == self.well_known.universal_integer;
+                let ur = Some(i.ty) == self.well_known.universal_real;
+                let own = if ui {
+                    self.well_known.integer
+                } else if ur {
+                    self.well_known.real
+                } else {
+                    Some(i.ty)
+                };
+                let ok = i.ty == self.poison.ty || own.is_some_and(|o| self.class_fits(t, o));
+                ok.then_some(i.convs + 1 + u32::from(ui || ur))
+            })
+            .min()
+    }
+
+    /// The type an actual with candidates `c` gives anonymous parameter type `t`: its only
+    /// interpretation (a universal value as INTEGER or REAL), if it fits the class.
+    pub(crate) fn anonymous_binding(&self, c: &CandSet, t: TypeId) -> Option<TypeId> {
+        let CandSet::Types(is) = c else {
+            return None;
+        };
+        let mut own: Vec<TypeId> = is
+            .iter()
+            .filter_map(|i| {
+                if Some(i.ty) == self.well_known.universal_integer {
+                    self.well_known.integer
+                } else if Some(i.ty) == self.well_known.universal_real {
+                    self.well_known.real
+                } else {
+                    Some(i.ty)
+                }
+            })
+            .filter(|&o| self.class_fits(t, o))
+            .collect();
+        own.sort();
+        own.dedup();
+        (own.len() == 1).then(|| own[0])
+    }
+
     /// Whether literal class `m` (aggregate, string, null, ...) admits type `t`.
     pub(crate) fn class_admits(&self, m: ClassMask, t: TypeId) -> bool {
         match &self.types[t].kind {

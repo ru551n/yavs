@@ -83,6 +83,7 @@ impl Db {
         scope: ScopeId,
         e: &ast::EntityDecl,
     ) -> UnitHir {
+        self.hidden_types.clear();
         let generics = match &e.generics {
             Some(l) => self
                 .interface_list(scope, l, ObjRole::Generic)
@@ -95,6 +96,11 @@ impl Db {
                 .unwrap_or_default(),
             None => Box::default(),
         };
+        // The anonymous interface types of generics and ports are generic types after the
+        // declared generics, bound from the actuals of their objects (#283).
+        let mut generics: Vec<DeclId> = generics.into_vec();
+        generics.extend(self.take_hidden_types());
+        let generics: Box<[DeclId]> = generics.into();
         self.decls_in(scope, &e.decls);
         let _ = self.check_protected_bodies(scope, e.span);
         // Set before the statements: their analysis never needs it, but a
@@ -526,6 +532,8 @@ impl Db {
     ) -> Result<Box<[Arg]>, Reported> {
         let mut errs = Errs::default();
         let mut map: Vec<Assoc> = formals.iter().map(|_| Assoc::None).collect();
+        // The hidden types of anonymous interface types come last and take no actual.
+        let visible = formals.iter().filter(|&&f| !self.hidden_type(f)).count();
         let mut named = false;
         for (k, a) in assocs.iter().enumerate() {
             let Some(f) = &a.formal else {
@@ -539,7 +547,7 @@ impl Db {
                     )));
                     continue;
                 }
-                if k >= formals.len() {
+                if k >= visible {
                     errs.keep::<()>(Err(self.too_many(formals, a.span)));
                     break;
                 }
@@ -589,6 +597,9 @@ impl Db {
         let mut args = Vec::with_capacity(formals.len());
         for (k, m) in map.into_iter().enumerate() {
             let f = formals[k];
+            if k >= visible {
+                continue;
+            }
             let m_idx = match &m {
                 Assoc::Whole { idx, .. } => Some(*idx),
                 _ => None,
@@ -628,7 +639,10 @@ impl Db {
         self.error(
             Diagnostic::error(
                 diag::NOT_DECLARED,
-                format!("too many actuals: {owner} has {} {what}s", formals.len()),
+                format!(
+                    "too many actuals: {owner} has {} {what}s",
+                    formals.iter().filter(|&&f| !self.hidden_type(f)).count()
+                ),
             )
             .with_primary(span, "no formal for this actual"),
         )
@@ -763,6 +777,107 @@ impl Db {
         }
     }
 
+    /// Whether `d` is the hidden generic type of an anonymous interface type (`c : type
+    /// is (<>)`), which an entity lists after its generics (#283).
+    pub(crate) fn hidden_type(&self, d: DeclId) -> bool {
+        matches!(self.decls[d].kind, DeclKind::GenericType(t) if self.types[t].anonymous)
+    }
+
+    /// `E1311`/`E1310`: the anonymous type of `f` comes from its actual, so `open`, an
+    /// absent association and a default cannot bind it.
+    pub(crate) fn unbound_anonymous(&mut self, f: DeclId, at: Span) -> Reported {
+        let name = self.decls[f].name;
+        self.error(
+            Diagnostic::error(
+                diag::MISSING_GENERIC,
+                format!("`{name}` has an anonymous type and needs an actual to bind it"),
+            )
+            .with_primary(at, "no actual here")
+            .with_secondary(self.decls[f].span, "declared with `type is ...`")
+            .with_note("LRM 6.5.3: the type of an object declared with an unspecified type indication is the type of its actual"),
+        )
+    }
+
+    /// The actual of an object of anonymous type `t`: typed without context, a universal
+    /// literal as INTEGER or REAL (L93); its class is checked against the type's (`E1503`).
+    pub(crate) fn anonymous_actual(
+        &mut self,
+        scope: ScopeId,
+        e: &ast::Expr,
+        t: TypeId,
+    ) -> Result<ExprId, Reported> {
+        let mut id = self.expr(scope, e, crate::expr::Expected::Any);
+        let ut = self.base(self.exprs[id].subtype);
+        let wk = &self.well_known;
+        let own = if Some(ut) == wk.universal_integer {
+            wk.integer
+        } else if Some(ut) == wk.universal_real {
+            wk.real
+        } else {
+            None
+        };
+        if let Some(own) = own {
+            id = self.expr(scope, e, crate::expr::Expected::Type(own));
+        }
+        if self.is_poison_expr(id) {
+            return Err(Reported);
+        }
+        let st = self.exprs[id].subtype;
+        self.check_class(t, st, e.span, &mut crate::generic::Remap::default())?;
+        Ok(id)
+    }
+
+    /// Add the actual of each hidden type of `gens` to the generic map: the subtype of
+    /// the actual of the generic or port that has the anonymous type (#283).
+    pub(crate) fn with_hidden_args(
+        &mut self,
+        gens: &[DeclId],
+        ports: &[DeclId],
+        gmap: Box<[Arg]>,
+        pmap: &[Arg],
+        at: Span,
+    ) -> Result<Box<[Arg]>, Reported> {
+        let g0 = gmap.clone();
+        let mut out = gmap.into_vec();
+        let mut errs = Errs::default();
+        for (k, &h) in gens.iter().enumerate() {
+            let DeclKind::GenericType(t) = self.decls[h].kind else {
+                continue;
+            };
+            if !self.hidden_type(h) {
+                continue;
+            }
+            let has = |o: &DeclId| {
+                matches!(&self.decls[*o].kind, DeclKind::Object(x) if self.base(x.subtype) == t)
+            };
+            let (args, i, o) = if let Some(i) = gens.iter().position(has) {
+                (&g0[..], i, gens[i])
+            } else if let Some(i) = ports.iter().position(has) {
+                (pmap, i, ports[i])
+            } else {
+                return Err(self.ice(at, "an anonymous type without its object"));
+            };
+            let st = args
+                .iter()
+                .find(|a| a.formal as usize == i)
+                .and_then(|a| match a.actual {
+                    Actual::Expr(x) => Some(self.exprs[x].subtype),
+                    _ => None,
+                });
+            match st {
+                Some(st) => out.push(Arg {
+                    formal: k as u16,
+                    actual: Actual::Subtype(st),
+                    inertial: false,
+                }),
+                None => {
+                    errs.keep::<()>(Err(self.unbound_anonymous(o, at)));
+                }
+            }
+        }
+        errs.finish(out.into())
+    }
+
     fn missing_actual(&mut self, scope: ScopeId, f: DeclId, at: Span) -> Result<Actual, Reported> {
         let o = match &self.decls[f].kind {
             DeclKind::Object(o) => o,
@@ -861,12 +976,17 @@ impl Db {
         // A port of a generic type of this instance has the type's actual.
         // ponytail: only ports whose type is the generic type itself; composites built from
         // it need the instance substitution of generic.rs.
-        let st = self
+        let mut st = self
             .inst_types
             .iter()
             .find(|(t, _)| *t == self.base(st))
             .map_or(st, |&(_, a)| a);
+        // An anonymous interface type (`type is ...`) is the type of the actual (#283).
+        let anon = self.anonymous_generic(st).then(|| self.base(st));
         let e = match a {
+            ast::Actual::Open(sp) if anon.is_some() => {
+                return Err(self.unbound_anonymous(f, *sp));
+            }
             ast::Actual::Open(sp) if class == ObjClass::Variable && role == ObjRole::Port => {
                 return Err(self.variable_port_open(f, *sp, "left open here"));
             }
@@ -973,7 +1093,19 @@ impl Db {
                 .with_note("9.3.6: a type mark as formal part is a type conversion of the formal"),
             ));
         }
-        let id = self.expr_in_subtype(scope, e, if actual_converts { st } else { back });
+        let id = match anon {
+            Some(_) if formal_conv.is_some() => {
+                return Err(self.unsupported(fspan, "a conversion of a formal of an anonymous type", "S7"));
+            }
+            Some(t) => {
+                let id = self.anonymous_actual(scope, e, t)?;
+                st = self.exprs[id].subtype;
+                // Later objects of the same type (`k : c'subtype`) take it.
+                self.inst_types.push((t, st));
+                id
+            }
+            None => self.expr_in_subtype(scope, e, if actual_converts { st } else { back }),
+        };
         if self.is_poison_expr(id) {
             return Err(Reported);
         }
@@ -1787,6 +1919,10 @@ impl Db {
         let port_map = match &b.port_map {
             Some(m) => errs.keep(self.assoc_list(cscope, &ep, m, b.span)),
             None => errs.keep(self.default_map(&locals_p, &ep, e, &types, at)),
+        };
+        let generic_map = match (generic_map, &port_map) {
+            (Some(g), Some(p)) => errs.keep(self.with_hidden_args(&eg, &ep, g, p, b.span)),
+            _ => None,
         };
         errs.finish(())?;
         Ok(Binding {

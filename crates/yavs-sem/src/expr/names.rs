@@ -957,6 +957,7 @@ impl Db {
             .collect();
         let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
         let mut convs = 0;
+        let mut anon_bound: Vec<(TypeId, TypeId)> = Vec::new();
         for (i, (_, ft, has_default)) in formals.iter().enumerate() {
             let whole = match &map[i] {
                 Slot::Whole(a) => Some(&args[*a].actual),
@@ -973,13 +974,29 @@ impl Db {
             match whole {
                 Some(ast::Actual::Expr(x)) => {
                     let c = self.cands(scope, x);
-                    convs += self.best_cost(&c, Expected::Type(*ft))?;
+                    // An anonymous parameter type takes any type of its class (#283).
+                    convs += if self.anonymous_param(e, *ft) {
+                        if !anon_bound.iter().any(|b| b.0 == *ft)
+                            && let Some(t) = self.anonymous_binding(&c, *ft)
+                        {
+                            anon_bound.push((*ft, t));
+                        }
+                        self.anonymous_cost(&c, *ft)?
+                    } else {
+                        self.best_cost(&c, Expected::Type(*ft))?
+                    };
                 }
                 // 6.5.6.2: `open` stands for the default expression.
                 None | Some(ast::Actual::Open(_)) if *has_default => {}
                 _ => return None,
             }
         }
+        // A result of an anonymous parameter type is the type its actual binds.
+        let ret = if self.anonymous_param(e, ret) {
+            anon_bound.iter().find(|b| b.0 == ret)?.1
+        } else {
+            ret
+        };
         Some(Interp {
             convs,
             ..Interp::new(ret, Via::Call(d))
@@ -1542,6 +1559,9 @@ impl Db {
         span: Span,
     ) -> Option<(DeclId, Box<[Arg]>, Staticness)> {
         let e = self.entity(d);
+        // A subprogram with anonymous parameter types: the call goes to its instance for
+        // the actuals' types (#283).
+        let (e, pre) = self.implicit_instance(scope, e, args, span)?;
         let s = self.decls[e].kind.subprogram()?;
         let formals: Vec<(Symbol, SubtypeId)> =
             s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
@@ -1579,7 +1599,10 @@ impl Db {
                 }
                 Slot::Whole(a) => match &args[*a].actual {
                     ast::Actual::Expr(x) => {
-                        let id = self.resolve_in(scope, x, *ft);
+                        let id = match pre.get(&k) {
+                            Some(&id) => id,
+                            None => self.resolve_in(scope, x, *ft),
+                        };
                         stat = stat.min(self.exprs[id].stat);
                         let (class, mode, name) = &classes[k];
                         // Only a type of a concrete instance is distinct: one still in a generic

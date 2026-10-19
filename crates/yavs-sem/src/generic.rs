@@ -31,6 +31,7 @@ use crate::decl::{
     Subprogram, SubprogramKind,
 };
 use crate::diag;
+use crate::expr::Expected;
 use crate::hir::{
     Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Call, Choice, ChoiceSet, Delay, Expr, ExprKind,
     External, GenAlt, InstTarget, LoopScheme, Lsp, LspStep, Mode, NewInit, ObjRoot, ProcessInfo,
@@ -117,6 +118,12 @@ pub struct GenericState {
     pub(crate) maps: HashMap<InstId, Remap>,
     /// The generic spec the subprogram body being analyzed completes (`prepare_generic_body`).
     pub(crate) reuse: Option<DeclId>,
+    /// The anonymous interface types of the parameters of subprograms, which each call binds
+    /// to its actuals' types (`implicit_instance`, #283).
+    pub(crate) implicit: HashMap<DeclId, Box<[TypeId]>>,
+    /// Those instances, per region of the call and the actuals' subtypes.
+    #[allow(clippy::type_complexity)]
+    pub(crate) implicit_insts: HashMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
     /// Uninstantiated subprograms of headers with a generic map (`header_instance`).
     pub(crate) header: HashSet<DeclId>,
     /// Generic constants, types and packages of packages and subprograms not yet
@@ -510,6 +517,15 @@ impl Db {
                     ));
                 }
                 let d = self.subprogram_spec(scope, &s.spec)?;
+                // ponytail: binding anonymous parameter types of a formal subprogram from the
+                // actual's profile is not done.
+                if self.generic.implicit.remove(&d).is_some() {
+                    return Err(self.unsupported(
+                        s.spec.span,
+                        "anonymous parameter types of a formal subprogram",
+                        "S7",
+                    ));
+                }
                 if let DeclKind::Subprogram(mut sp) =
                     std::mem::replace(&mut self.decls[d].kind, DeclKind::Error)
                 {
@@ -726,21 +742,31 @@ impl Db {
                 ),
             ));
         }
-        let st = match &o.subtype {
-            Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(scope, si)?,
-            _ => return Err(self.unsupported(o.span, "anonymous generic types", "S7")),
-        };
-        let default = o
-            .default
-            .as_ref()
-            .map(|e| self.expr_in_subtype(scope, e, st));
-        let bounds = if self.constrainedness(st) == Constrainedness::Full {
-            BoundsFrom::Subtype
-        } else {
-            BoundsFrom::Actual
+        let named = match &o.subtype {
+            Some(ast::IncompleteSubtype::Subtype(si)) => Some(self.subtype_indication(scope, si)?),
+            Some(_) => None,
+            None => return Err(self.ice(o.span, "generic constant without a type")),
         };
         let mut out = Vec::new();
         for &name in &o.names {
+            // `c : type is (<>)`: the object's own anonymous interface type, bound to the
+            // type of its actual (2019 6.5.2, 6.5.3); one type per name.
+            let st = match (named, &o.subtype) {
+                (Some(st), _) => st,
+                (None, Some(ast::IncompleteSubtype::Anonymous(def, sp))) => {
+                    self.anonymous_object_type(scope, name, def, *sp)?
+                }
+                _ => return Err(self.ice(o.span, "generic constant without a type")),
+            };
+            let default = o
+                .default
+                .as_ref()
+                .map(|e| self.expr_in_subtype(scope, e, st));
+            let bounds = if self.constrainedness(st) == Constrainedness::Full {
+                BoundsFrom::Subtype
+            } else {
+                BoundsFrom::Actual
+            };
             let d = self.new_decl(
                 scope,
                 Designator::Ident(name),
@@ -760,6 +786,25 @@ impl Db {
             out.push(d);
         }
         Ok(out)
+    }
+
+    /// The first subtype of the anonymous interface type of object `name` (`type is ...`,
+    /// 2019 6.5.2): a generic type of its class named after the object.
+    pub(crate) fn anonymous_object_type(
+        &mut self,
+        scope: ScopeId,
+        name: ast::Ident,
+        def: &ast::GenericTypeDef,
+        span: Span,
+    ) -> Result<SubtypeId, Reported> {
+        let text = format!("{}'type", name.text);
+        let n = ast::Ident {
+            text: Symbol::intern(&text),
+            key: Symbol::intern(&format!("<{}>", text.to_ascii_lowercase())),
+            span,
+        };
+        let ty = self.generic_type(scope, n, Some(def), true, span)?;
+        Ok(self.types[ty].first_subtype)
     }
 
     /// A generic type of class `def` with its declaration in `scope` (not declared by
@@ -1117,25 +1162,6 @@ impl Db {
             .expect("a generic subprogram");
         let formals = s.generics.clone().expect("a generic subprogram");
         let gscope = s.scope.expect("specs have a parameter region");
-        let kind = s.kind;
-        let params: Vec<(Param, Option<DeclId>)> = s
-            .params
-            .iter()
-            .map(|p| {
-                (
-                    Param {
-                        name: p.name,
-                        class: p.class,
-                        mode: p.mode,
-                        subtype: p.subtype,
-                        default: p.default,
-                        decl: p.decl,
-                    },
-                    p.decl,
-                )
-            })
-            .collect();
-        let ret = s.ret;
         let what = format!("subprogram `{}`", self.decls[g].name);
         let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
         let d = self.new_decl(scope, dname, DeclKind::Error, span);
@@ -1153,12 +1179,47 @@ impl Db {
         if !assoc_ok {
             return Err(Reported);
         }
+        self.clone_subprogram(scope, g, d, new_scope, r, map, overflow)?;
+        Ok(d)
+    }
+
+    /// Complete instance `d` of subprogram `g` (region `new_scope`) once `r` maps its
+    /// generics: the cloned profile, the instance and its body. `scope` declares `d`.
+    fn clone_subprogram(
+        &mut self,
+        scope: ScopeId,
+        g: DeclId,
+        d: DeclId,
+        new_scope: ScopeId,
+        mut r: Remap,
+        map: GenericMap,
+        overflow: usize,
+    ) -> Result<(), Reported> {
+        let s = self.decls[g]
+            .kind
+            .subprogram()
+            .expect("a generic subprogram");
+        let kind = s.kind;
+        let params: Vec<Param> = s
+            .params
+            .iter()
+            .map(|p| Param {
+                name: p.name,
+                class: p.class,
+                mode: p.mode,
+                subtype: p.subtype,
+                default: p.default,
+                decl: p.decl,
+            })
+            .collect();
+        let ret = s.ret;
+        let dname = self.decls[d].name;
         let params: Box<[Param]> = params
             .into_iter()
-            .map(|(p, decl)| Param {
+            .map(|p| Param {
                 subtype: self.r_subtype(&mut r, p.subtype),
                 default: p.default.map(|e| self.r_expr(&mut r, e)),
-                decl: decl.map(|x| self.r_decl(&mut r, x)),
+                decl: p.decl.map(|x| self.r_decl(&mut r, x)),
                 ..p
             })
             .collect();
@@ -1187,6 +1248,142 @@ impl Db {
             body: Body::Instance(inst),
             mangled,
         });
+        Ok(())
+    }
+
+    /// Whether `t` is an anonymous parameter type of subprogram `e` (#283).
+    pub(crate) fn anonymous_param(&self, e: DeclId, t: TypeId) -> bool {
+        self.generic.implicit.get(&e).is_some_and(|v| v.contains(&t))
+    }
+
+    /// Whether an actual of type `ty` can belong to the class of generic type `t`; the
+    /// class is checked in full, with a message, when the call binds the type.
+    pub(crate) fn class_fits(&self, t: TypeId, ty: TypeId) -> bool {
+        use crate::types::TypeKind as K;
+        let kind = &self.types[ty].kind;
+        if matches!(kind, K::Error | K::Generic { .. }) {
+            return true;
+        }
+        match &self.types[t].kind {
+            K::Generic { class } => match class {
+                GenericClass::Private => true,
+                GenericClass::Scalar => kind.is_scalar(),
+                GenericClass::Discrete => kind.is_discrete(),
+                GenericClass::Integer => matches!(kind, K::Integer | K::UniversalInteger),
+                GenericClass::Floating => matches!(kind, K::Floating | K::UniversalReal),
+                GenericClass::Physical => matches!(kind, K::Physical { .. }),
+                GenericClass::Access { .. } => matches!(kind, K::Access { .. }),
+                GenericClass::File { .. } => matches!(kind, K::File { .. }),
+            },
+            K::Array { .. } => matches!(kind, K::Array { .. }),
+            _ => false,
+        }
+    }
+
+    /// Bind the anonymous parameter types of subprogram `e` for a call with `args`: the
+    /// actuals are typed without context (a universal value as INTEGER or REAL, L93), and
+    /// the call goes to the instance of `e` for their types, made once per region. The
+    /// second result holds those actuals by parameter index. A subprogram without
+    /// anonymous parameter types is returned as it is.
+    pub(crate) fn implicit_instance(
+        &mut self,
+        scope: ScopeId,
+        e: DeclId,
+        args: &[ast::AssocElem],
+        span: Span,
+    ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
+        let Some(types) = self.generic.implicit.get(&e).cloned() else {
+            return Some((e, HashMap::new()));
+        };
+        let s = self.decls[e].kind.subprogram()?;
+        let params: Vec<(Symbol, TypeId, Option<DeclId>)> = s
+            .params
+            .iter()
+            .map(|p| (p.name.key, self.base(p.subtype), p.decl))
+            .collect();
+        let keys: Vec<Symbol> = params.iter().map(|p| p.0).collect();
+        let map = crate::expr::names::assoc_map(&keys, args).ok()?;
+        let mut pre = HashMap::new();
+        let mut bound: Vec<(TypeId, SubtypeId)> = Vec::new();
+        for (k, &(_, ft, pdecl)) in params.iter().enumerate() {
+            if !types.contains(&ft) {
+                continue;
+            }
+            let actual = match &map[k] {
+                crate::expr::names::Slot::Whole(a) => match &args[*a].actual {
+                    ast::Actual::Expr(x) => Some(x),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(x) = actual else {
+                let at = args.first().map_or(span, |a| a.span);
+                let who = pdecl.unwrap_or(e);
+                self.unbound_anonymous(who, at);
+                return None;
+            };
+            let id = match bound.iter().find(|(t, _)| *t == ft) {
+                // `y : x'subtype`: the same type again.
+                Some(&(_, st)) => self.resolve_in(scope, x, st),
+                None => {
+                    let id = self.anonymous_actual(scope, x, ft).ok()?;
+                    bound.push((ft, self.exprs[id].subtype));
+                    id
+                }
+            };
+            if self.is_poison_expr(id) {
+                return None;
+            }
+            pre.insert(k, id);
+        }
+        // A call inside the body of `e` itself, on parameters of the anonymous types: the
+        // call stays one of `e`, which every instance's clone maps to the instance.
+        let own = |db: &Db, b: &(TypeId, SubtypeId)| db.base(b.1) == b.0;
+        if bound.iter().all(|b| own(self, b)) {
+            return Some((e, pre));
+        }
+        if bound.iter().any(|b| types.contains(&self.base(b.1))) {
+            self.unsupported(span, "a call mixing the anonymous types of its own subprogram", "S7");
+            return None;
+        }
+        let key: Box<[SubtypeId]> = bound.iter().map(|b| b.1).collect();
+        if let Some(&d) = self.generic.implicit_insts.get(&(scope, e, key.clone())) {
+            return Some((d, pre));
+        }
+        let d = self.instantiate_implicit(scope, e, &bound, span).ok()?;
+        self.generic.implicit_insts.insert((scope, e, key), d);
+        Some((d, pre))
+    }
+
+    /// The instance of `g` for `bound` (its anonymous parameter types and the subtypes of
+    /// the actuals), kept in the order of `scope`'s declarations but not visible by name.
+    fn instantiate_implicit(
+        &mut self,
+        scope: ScopeId,
+        g: DeclId,
+        bound: &[(TypeId, SubtypeId)],
+        span: Span,
+    ) -> Result<DeclId, Reported> {
+        let gscope = self.decls[g]
+            .kind
+            .subprogram()
+            .and_then(|s| s.scope)
+            .expect("specs have a parameter region");
+        let name = self.decls[g].name;
+        let d = self.new_decl(scope, name, DeclKind::Error, span);
+        let new_scope = self.add_scope(ScopeKind::Subprogram, Some(scope), Some(d));
+        let mut r = Remap::new(gscope, new_scope);
+        r.decls.insert(g, d);
+        let mut map = GenericMap::default();
+        let overflow = self.overflow.len();
+        for &(t, st) in bound {
+            let fd = self.types[t].decl;
+            self.check_class(t, st, span, &mut r)?;
+            self.seed_type(None, new_scope, gscope, fd, t, st, span, &mut r, &mut map)?;
+        }
+        self.fill_scope(&mut r, gscope, new_scope);
+        self.clone_subprogram(scope, g, d, new_scope, r, map, overflow)?;
+        self.scopes[scope].order.push(d);
         Ok(d)
     }
 
@@ -1296,7 +1493,9 @@ impl Db {
         for (i, &f) in formals.iter().enumerate() {
             let a = actuals[i];
             let ok = match &self.decls[f].kind {
-                DeclKind::Object(_) => self.bind_const(scope, inst_scope, site_span, f, a, r, map),
+                DeclKind::Object(_) => {
+                    self.bind_const(scope, inst_scope, site_span, gscope, f, a, r, map)
+                }
                 DeclKind::GenericType(t) => {
                     let t = *t;
                     let res = self.bind_type(scope, inst_scope, site_span, gscope, f, t, a, r, map);
@@ -1345,6 +1544,7 @@ impl Db {
         scope: ScopeId,
         inst_scope: ScopeId,
         site: Span,
+        gscope: ScopeId,
         f: DeclId,
         a: Option<&ast::AssocElem>,
         r: &mut Remap,
@@ -1354,12 +1554,43 @@ impl Db {
             return Err(Reported);
         };
         let (fst, fdefault, bounds) = (o.subtype, o.default, o.bounds);
-        let st = self.r_subtype(r, fst);
+        // An anonymous interface type (`c : type is (<>)`) is bound to the type of the
+        // actual, which is typed without context (2019 6.5.2, 6.5.3).
+        let anon = self
+            .anonymous_generic(fst)
+            .then(|| self.base(fst))
+            .filter(|t| !r.types.contains_key(t));
+        let mut st = self.r_subtype(r, fst);
         let actual = match a.map(|a| &a.actual) {
+            Some(ast::Actual::Expr(e)) if anon.is_some() => {
+                let mut id = self.expr(scope, e, Expected::Any);
+                // A universal value has no type of its own: INTEGER or REAL (L93).
+                let ut = self.base(self.exprs[id].subtype);
+                let wk = &self.well_known;
+                let own = if Some(ut) == wk.universal_integer {
+                    wk.integer
+                } else if Some(ut) == wk.universal_real {
+                    wk.real
+                } else {
+                    None
+                };
+                if let Some(t) = own {
+                    id = self.expr(scope, e, Expected::Type(t));
+                }
+                if !matches!(self.exprs[id].kind, ExprKind::Error) {
+                    let (t, actual_st) = (anon.expect("checked"), self.exprs[id].subtype);
+                    self.check_class(t, actual_st, e.span, r)?;
+                    let fd = self.types[t].decl;
+                    self.seed_type(None, inst_scope, gscope, fd, t, actual_st, e.span, r, map)?;
+                    st = actual_st;
+                }
+                id
+            }
             Some(ast::Actual::Expr(e)) => self.expr_in_subtype(scope, e, st),
             Some(ast::Actual::Open(_)) | None => match fdefault {
-                Some(d) => self.r_expr(r, d),
-                None => return Err(self.missing_generic(f, site, "")),
+                // The default cannot bind the anonymous type: the actual must.
+                Some(d) if anon.is_none() => self.r_expr(r, d),
+                _ => return Err(self.missing_generic(f, site, "")),
             },
             Some(other) => {
                 return Err(self.error(
@@ -1535,7 +1766,7 @@ impl Db {
     }
 
     /// Whether `st` is an anonymous generic type (`type is ...`, 2019 6.5.3).
-    fn anonymous_generic(&self, st: SubtypeId) -> bool {
+    pub(crate) fn anonymous_generic(&self, st: SubtypeId) -> bool {
         let t = &self.types[self.base(st)];
         t.anonymous && matches!(self.decls[t.decl].kind, DeclKind::GenericType(_))
     }
@@ -2409,6 +2640,11 @@ impl Db {
         if let Some(&pv) = self.forwarding.get(&d) {
             let pv = self.r_decl(r, pv);
             self.forwarding.insert(n, pv);
+        }
+        // A subprogram with anonymous parameter types stays one in the clone (#283).
+        if let Some(ts) = self.generic.implicit.get(&d).cloned() {
+            let ts: Box<[TypeId]> = ts.iter().map(|&t| self.r_ty(r, t)).collect();
+            self.generic.implicit.insert(n, ts);
         }
         n
     }

@@ -1343,7 +1343,13 @@ impl Db {
                         Slot::Whole(a) => match &args[*a].actual {
                             ast::Actual::Expr(x) => {
                                 let c = self.cands(scope, x);
-                                match self.best_cost(&c, Expected::Type(*ft)) {
+                                // An anonymous parameter type takes any type of its class (#283).
+                                let cost = if self.anonymous_param(e, *ft) {
+                                    self.anonymous_cost(&c, *ft)
+                                } else {
+                                    self.best_cost(&c, Expected::Type(*ft))
+                                };
+                                match cost {
                                     Some(c) => convs += c,
                                     None => ok = false,
                                 }

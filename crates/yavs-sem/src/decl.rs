@@ -950,8 +950,6 @@ impl Db {
         b: &ast::SubprogramBody,
     ) -> Result<(), crate::Reported> {
         self.prepare_generic_body(scope, &b.spec);
-        let new = self.subprogram_spec(scope, &b.spec)?;
-        let key = self.decls[new].name.key();
         let mut regions = vec![scope];
         match self.scopes[scope].kind {
             crate::scope::ScopeKind::PackageBody => regions.extend(self.body_package(scope)),
@@ -959,6 +957,21 @@ impl Db {
             crate::scope::ScopeKind::Architecture => regions.extend(self.entity_of_arch(scope)),
             _ => {}
         }
+        // A body whose parameters have anonymous types completes the spec's types (#283).
+        let anon_spec = self.anonymous_spec(&regions, &b.spec);
+        if let Some(d) = anon_spec {
+            self.anon_reuse = self.generic.implicit[&d]
+                .iter()
+                .map(|&t| self.types[t].first_subtype)
+                .collect();
+        }
+        let new = self.subprogram_spec(scope, &b.spec);
+        self.anon_reuse.clear();
+        let new = new?;
+        if let Some(d) = anon_spec {
+            self.share_anonymous_ops(d, new);
+        }
+        let key = self.decls[new].name.key();
         let profile = self.profile(new);
         // ponytail: a spec in the entity takes the body of the last architecture analyzed
         // in the session (one per elaboration in practice); per-architecture bodies would
@@ -1012,6 +1025,64 @@ impl Db {
             }
         }
         Ok(())
+    }
+
+    /// The pending spec in `regions` that a body with `spec`'s header completes, when its
+    /// parameters have anonymous types: same designator, parameter and anonymous counts.
+    fn anonymous_spec(&self, regions: &[ScopeId], spec: &ast::SubprogramSpec) -> Option<DeclId> {
+        let objs = || {
+            spec.params
+                .iter()
+                .flatten()
+                .filter_map(|p| match p {
+                    ast::InterfaceDecl::Object(o) => Some(o),
+                    _ => None,
+                })
+        };
+        let anon: usize = objs()
+            .filter(|o| matches!(o.subtype, Some(ast::IncompleteSubtype::Anonymous(..))))
+            .map(|o| o.names.len())
+            .sum();
+        if anon == 0 {
+            return None;
+        }
+        let total: usize = objs().map(|o| o.names.len()).sum();
+        let key = crate::alias::designator(&spec.designator).key();
+        regions.iter().find_map(|&r| {
+            self.scopes[r].names.get(&key)?.iter().copied().find(|d| {
+                self.generic.implicit.get(d).is_some_and(|t| t.len() == anon)
+                    && matches!(self.decls[*d].kind.subprogram(), Some(s)
+                        if matches!(s.body, Body::Pending | Body::Foreign(_)) && s.params.len() == total)
+            })
+        })
+    }
+
+    /// The body's parameter region shares the spec's anonymous types, so it also holds their
+    /// class operations (as `reuse_generics` does for generic types).
+    fn share_anonymous_ops(&mut self, spec: DeclId, body: DeclId) {
+        let (Some(sp), Some(bp)) = (
+            self.decls[spec].kind.subprogram().and_then(|s| s.scope),
+            self.decls[body].kind.subprogram().and_then(|s| s.scope),
+        ) else {
+            return;
+        };
+        let params: std::collections::HashSet<DeclId> = self.decls[spec]
+            .kind
+            .subprogram()
+            .map(|s| s.params.iter().filter_map(|p| p.decl).collect())
+            .unwrap_or_default();
+        let ops: Vec<DeclId> = self.scopes[sp]
+            .order
+            .iter()
+            .copied()
+            .filter(|d| !params.contains(d))
+            .collect();
+        for d in ops {
+            let k = self.decls[d].name.key();
+            let s = &mut self.scopes[bp];
+            s.names.entry(k).or_default().push(d);
+            s.order.push(d);
+        }
     }
 
     /// The type mark of a named return value denotes a composite type (lrm-checks L77), or a
@@ -1132,6 +1203,7 @@ impl Db {
             && !self.in_std_library(scope);
         let method_2008 = method && self.file_rev() < LangRev::Vhdl2019;
         let mut params = Vec::new();
+        self.param_anon.clear();
         for p in s.params.iter().flatten() {
             // 4.2.2.1: only constants, signals, variables and files are parameters.
             let o = match p {
@@ -1158,6 +1230,16 @@ impl Db {
                 }
             }
         }
+        let anon_params = std::mem::take(&mut self.param_anon);
+        // ponytail: an instance of a generic subprogram would need the anonymous types
+        // bound too; one subprogram gets either a generic list or anonymous parameter types.
+        if generics.is_some() && !anon_params.is_empty() {
+            return Err(self.unsupported(
+                s.span,
+                "anonymous parameter types in a subprogram with a generic list",
+                "S7",
+            ));
+        }
         let name_span = match &s.designator {
             ast::Designator::Ident(i) => i.span,
             ast::Designator::Operator(_, sp) => *sp,
@@ -1181,7 +1263,16 @@ impl Db {
         }
         let ret = match &s.return_type {
             // The generics of a generic subprogram are visible in its result type.
-            Some(n) => Some(self.type_mark(if generics.is_some() { pscope } else { scope }, n)?),
+            // An anonymous parameter type is named by `p'subtype`, so the parameters are
+            // visible here too (#283).
+            Some(n) => Some(self.type_mark(
+                if generics.is_some() || !anon_params.is_empty() {
+                    pscope
+                } else {
+                    scope
+                },
+                n,
+            )?),
             None => None,
         };
         if let Some(n) = &s.return_type {
@@ -1216,6 +1307,9 @@ impl Db {
             body,
             mangled,
         });
+        if !anon_params.is_empty() {
+            self.generic.implicit.insert(decl, anon_params.into());
+        }
         Ok(decl)
     }
 
@@ -1246,6 +1340,7 @@ impl Db {
             c.name.span,
         );
         let cscope = self.add_scope(crate::scope::ScopeKind::Component, Some(scope), Some(decl));
+        self.hidden_types.clear();
         let generics = self.interface_list(
             cscope,
             c.generics.as_deref().unwrap_or_default(),
@@ -1256,16 +1351,24 @@ impl Db {
             c.ports.as_deref().unwrap_or_default(),
             ObjRole::Port,
         );
+        // Anonymous interface types (#283) come after the declared generics.
+        let mut all: Vec<DeclId> = generics.clone().unwrap_or_default().into_vec();
+        all.extend(self.take_hidden_types());
         // Declared even when an interface failed, so instances do not cascade into `E1100`.
         self.decls[decl].kind = DeclKind::Component(Component {
             scope: cscope,
-            generics: generics.clone().unwrap_or_default(),
+            generics: all.into(),
             ports: ports.clone().unwrap_or_default(),
         });
         self.declare(scope, decl);
         generics?;
         ports?;
         Ok(())
+    }
+
+    /// The anonymous interface types of the lists just analyzed, taken by their owner.
+    pub(crate) fn take_hidden_types(&mut self) -> Vec<DeclId> {
+        std::mem::take(&mut self.hidden_types)
     }
 
     /// A generic or port clause (6.5.6.2, 6.5.6.3) declared into `scope`, in order.
@@ -1388,7 +1491,7 @@ impl Db {
                     st,
                     o.span,
                 )?;
-                return Ok(self.declare_interface(scope, o, role, ObjClass::Signal, mode, subtype));
+                return Ok(self.declare_interface(scope, o, role, ObjClass::Signal, mode, &[subtype]));
             }
             Some(ast::Mode::View { .. }) => {
                 return Err(self.unsupported(o.span, "mode views outside port clauses", "S7"));
@@ -1424,6 +1527,17 @@ impl Db {
         }
         let subtype = match &o.subtype {
             Some(ast::IncompleteSubtype::Subtype(si)) => self.subtype_indication(scope, si)?,
+            // `p : in type is (<>)`: one anonymous interface type per name, bound to the type
+            // of its actual (2019 6.5.2, 6.5.3). The owner appends the types to its generics.
+            Some(ast::IncompleteSubtype::Anonymous(def, sp)) if !var_port => {
+                let mut sts = Vec::new();
+                for &n in &o.names {
+                    let st = self.anonymous_object_type(scope, n, def, *sp)?;
+                    self.hidden_types.push(self.types[self.base(st)].decl);
+                    sts.push(st);
+                }
+                return Ok(self.declare_interface(scope, o, role, class, mode, &sts));
+            }
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
         if var_port {
@@ -1450,10 +1564,11 @@ impl Db {
                 }
             }
         }
-        Ok(self.declare_interface(scope, o, role, class, mode, subtype))
+        Ok(self.declare_interface(scope, o, role, class, mode, &[subtype]))
     }
 
-    /// Declare the names of interface object `o`, with its default resolved in `subtype`.
+    /// Declare the names of interface object `o`, with its default resolved in its subtype:
+    /// `subtypes` is one subtype for all names or one per name.
     fn declare_interface(
         &mut self,
         scope: ScopeId,
@@ -1461,19 +1576,26 @@ impl Db {
         role: ObjRole,
         class: ObjClass,
         mode: Mode,
-        subtype: crate::ids::SubtypeId,
+        subtypes: &[crate::ids::SubtypeId],
     ) -> Vec<DeclId> {
-        let default = o
-            .default
-            .as_ref()
-            .map(|e| self.expr_in_subtype(scope, e, subtype));
-        let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
-            BoundsFrom::Subtype
-        } else {
-            BoundsFrom::Actual
-        };
         let mut out = Vec::new();
-        for &name in &o.names {
+        // One default for all names of one subtype (diagnostics once), else one per name.
+        let shared = match (subtypes, &o.default) {
+            ([st], Some(e)) => Some(self.expr_in_subtype(scope, e, *st)),
+            _ => None,
+        };
+        for (i, &name) in o.names.iter().enumerate() {
+            let subtype = subtypes[i.min(subtypes.len() - 1)];
+            let default = shared.or_else(|| {
+                o.default
+                    .as_ref()
+                    .map(|e| self.expr_in_subtype(scope, e, subtype))
+            });
+            let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
+                BoundsFrom::Subtype
+            } else {
+                BoundsFrom::Actual
+            };
             let decl = self.new_decl(
                 scope,
                 Designator::Ident(name),
@@ -1598,10 +1720,24 @@ impl Db {
         };
         let _ = kind;
         self.generic.hop2 = false;
+        // `x : in type is (<>)`: one anonymous interface type per name, bound by each call
+        // to the type of its actual (2019 6.5.2, 6.5.3; `Db::implicit_instance`).
+        let mut anon = Vec::new();
         let subtype = match (&o.subtype, view_subtype) {
             (_, Some(st)) => st,
             (Some(ast::IncompleteSubtype::Subtype(si)), None) => {
                 self.subtype_indication(pscope, si)?
+            }
+            (Some(ast::IncompleteSubtype::Anonymous(def, sp)), None) => {
+                for &n in &o.names {
+                    let st = match self.anon_reuse.pop_front() {
+                        Some(st) => st,
+                        None => self.anonymous_object_type(pscope, n, def, *sp)?,
+                    };
+                    self.param_anon.push(self.base(st));
+                    anon.push(st);
+                }
+                anon[0]
             }
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
@@ -1621,17 +1757,23 @@ impl Db {
             _ => {}
         }
         let hop2 = std::mem::take(&mut self.generic.hop2);
-        let default = o
+        let shared = o
             .default
             .as_ref()
+            .filter(|_| anon.is_empty())
             .map(|e| self.expr_in_subtype(pscope, e, subtype));
-        let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
-            BoundsFrom::Subtype
-        } else {
-            BoundsFrom::Actual
-        };
         let mut out = Vec::new();
-        for &name in &o.names {
+        for (i, &name) in o.names.iter().enumerate() {
+            let subtype = anon.get(i).copied().unwrap_or(subtype);
+            let default = match (&o.default, anon.is_empty()) {
+                (Some(e), false) => Some(self.expr_in_subtype(pscope, e, subtype)),
+                _ => shared,
+            };
+            let bounds = if self.constrainedness(subtype) == crate::types::Constrainedness::Full {
+                BoundsFrom::Subtype
+            } else {
+                BoundsFrom::Actual
+            };
             let decl = self.new_decl(
                 pscope,
                 Designator::Ident(name),

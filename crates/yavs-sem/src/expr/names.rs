@@ -713,6 +713,11 @@ impl Db {
                 ast::NameKind::Selected { prefix, .. } | ast::NameKind::Apply { prefix, .. } => {
                     self.ast_root_signal(scope, prefix)
                 }
+                // `s'delayed(t)`, `'stable`, `'quiet`, `'transaction` denote signals (16.2.4).
+                ast::NameKind::Attribute { prefix, attr } => {
+                    PredefAttr::from_key(attr.key).is_some_and(|a| a.info().kind == Kind::Signal)
+                        && self.ast_root_signal(scope, prefix)
+                }
                 _ => false,
             },
             _ => false,

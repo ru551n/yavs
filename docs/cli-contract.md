@@ -323,7 +323,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   value-change callbacks and `vhpi_put_value` need #271.
 - `--dap=PORT|stdio`: run under a Debug Adapter Protocol client instead of printing to stdout.
   With a port, yavs listens on `127.0.0.1:PORT` (`0` picks a free one) for one client, and its
-  first line on stderr is exactly `yavs: DAP listening on 127.0.0.1:<port>`; with `stdio` stdout
+  first line on stderr is exactly `yavs: DAP listening on 127.0.0.1:<port>`, the second
+  `yavs: waiting for a debugger on port <port>`, and nothing runs until the client attaches; with `stdio` stdout
   carries only DAP messages. Reports and `OUTPUT` text become `output` events, a runtime error
   an `output` event of category `stderr`. Processes run on one thread (`--threads` above 1 is
   warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as

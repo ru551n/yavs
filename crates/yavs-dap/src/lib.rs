@@ -1672,6 +1672,7 @@ pub fn serve(
                 .local_addr()
                 .map_err(|err| io_err("no local address", err))?;
             eprintln!("yavs: DAP listening on 127.0.0.1:{}", addr.port());
+            eprintln!("yavs: waiting for a debugger on port {}", addr.port());
             let (s, _) = l.accept().map_err(|err| io_err("accept failed", err))?;
             let r = s.try_clone().map_err(|err| io_err("accept failed", err))?;
             closer = s.try_clone().ok();

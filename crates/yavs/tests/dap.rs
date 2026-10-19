@@ -331,3 +331,62 @@ fn tcp() {
     assert_eq!(child.wait().expect("wait").code(), Some(0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A test runner's flow: the arguments in a response file with `--dap`, the run held until a
+/// client attaches (after `waiting for a debugger` on stderr), a line breakpoint sent before
+/// `configurationDone` stops on its line, and after `continue` and `disconnect` the exit
+/// status is the run's.
+#[test]
+fn attach_through_response_file() {
+    let dir = setup("attach");
+    std::fs::write(dir.join("args.rsp"), "--work=work:lib\n--dap=0\ntb\n").expect("rsp");
+    let mut child = yavs()
+        .current_dir(&dir)
+        .args(["run", "@args.rsp"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("yavs");
+    let mut err = BufReader::new(child.stderr.take().expect("stderr"));
+    let mut line = String::new();
+    err.read_line(&mut line).expect("stderr");
+    let port = line
+        .trim()
+        .strip_prefix("yavs: DAP listening on 127.0.0.1:")
+        .unwrap_or_else(|| panic!("first stderr line: {line}"))
+        .to_string();
+    line.clear();
+    err.read_line(&mut line).expect("stderr");
+    assert_eq!(
+        line.trim(),
+        format!("yavs: waiting for a debugger on port {port}")
+    );
+    let s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
+    let mut c = Client {
+        w: s.try_clone().expect("clone"),
+        r: BufReader::new(s),
+        seq: 0,
+        log: Vec::new(),
+    };
+    c.request("initialize", json!({"adapterID": "yavs"}));
+    c.request("launch", json!({}));
+    let src = dir.join("tb.vhd").display().to_string();
+    let bp = c.request(
+        "setBreakpoints",
+        json!({"source": {"path": src}, "breakpoints": [{"line": 20}]}),
+    );
+    assert_eq!(bp["body"]["breakpoints"][0]["verified"], true, "{bp}");
+    c.request("configurationDone", json!({}));
+    c.event("stopped");
+    let st = c.request("stackTrace", json!({"threadId": 1}));
+    assert_eq!(st["body"]["stackFrames"][0]["line"], 20, "{st}");
+    c.request("setBreakpoints", json!({"source": {"path": src}, "breakpoints": []}));
+    c.request("continue", json!({"threadId": 1}));
+    assert_eq!(c.event("exited")["body"]["exitCode"], 0);
+    c.request("disconnect", json!({}));
+    assert!(read(&mut c.r).is_none());
+    drop(c);
+    assert_eq!(child.wait().expect("wait").code(), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}

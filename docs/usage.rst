@@ -520,7 +520,39 @@ yourself); ``libraries`` are more ``NAME:PATH`` mappings, ``generics`` become ``
 Run and Debug view and press F5: the call stack lists one thread per process, the Variables view
 shows locals, signals and generics, hovering a signal shows its value, and reports go to the
 Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs run
---dap=4711`` started by hand.
+--dap=4711`` started by hand (see the recipe below).
+
+Recipe: debug one VUnit test from VS Code
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``yavs run --dap=PORT`` listens first and holds the simulation until a client attaches, so a test
+runner can start it and VS Code can join afterwards. It prints ``yavs: DAP listening on
+127.0.0.1:PORT`` and then ``yavs: waiting for a debugger on port PORT`` on stderr. The runner's
+own output and exit status work as in a normal run: when you disconnect or the run ends, the test
+is reported as usual.
+
+1. Add an attach configuration to ``.vscode/launch.json`` (the snippet "yavs: Attach to yavs"
+   inserts it):
+
+   .. code-block:: json
+
+       { "type": "yavs", "request": "launch", "name": "Attach to yavs", "port": 4711 }
+
+2. Open the testbench and set breakpoints.
+3. In a terminal, start the one test with the debug flag of the VUnit simulator interface for
+   yavs. It runs the test with ``--dap=4711`` (or the port in ``YAVS_DAP_PORT``) and prints the
+   waiting line:
+
+   .. code-block:: bash
+
+       python run.py lib.tb_fifo.test_full --debug
+
+   Exactly one test must be selected and ``-p`` must be 1, since only one run can own the port;
+   ``--debug`` cannot be combined with ``--gui``.
+4. Pick "Attach to yavs" in the Run and Debug view and press F5. The breakpoints are sent
+   before the run starts, the run continues and stops on the first one. Continue, step, inspect
+   as in any session.
+5. Disconnect, or let the test finish: VUnit then prints the result of the test.
 
 * **Threads are processes**, named by their path such as ``:tb:u1:p``.
 * **Line breakpoints** stop at the statements that start on the line, or on the next line that

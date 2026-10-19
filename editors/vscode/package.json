@@ -249,6 +249,16 @@
                 "^\"\\${workspaceFolder}/${1:tb}.vhd\""
               ]
             }
+          },
+          {
+            "label": "yavs: Attach to yavs",
+            "description": "Attach to a running yavs run --dap=PORT, for example one started by a test runner.",
+            "body": {
+              "type": "yavs",
+              "request": "launch",
+              "name": "Attach to yavs",
+              "port": "^4711"
+            }
           }
         ]
       }

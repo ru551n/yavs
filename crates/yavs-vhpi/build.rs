@@ -4,7 +4,7 @@
 //! - `exports.rs`: the Rust table that references every exported symbol,
 //!   so none is dropped at link time.
 //! - `yavs-vhpi.map` (Linux): a linker version script, passed as
-//!   `-Wl,--version-script` (`--dynamic-list` is rejected by cargo-zigbuild).
+//!   `-rdynamic -Wl,--version-script` (`--dynamic-list` is rejected by cargo-zigbuild).
 //! - `exports.def` (Windows): passed to the linker of the executable.
 //! - `yavs-vhpi-host.lib` (Windows): import library for this crate's tests,
 //!   naming the spike host. No import library for `yavs.exe` is built or
@@ -105,10 +105,13 @@ fn main() {
             );
         }
         "macos" | "ios" => {}
-        _ => println!(
-            "cargo:rustc-link-arg-bins=-Wl,--version-script={}",
-            dynlist_path.display()
-        ),
+        _ => {
+            println!("cargo:rustc-link-arg-bins=-rdynamic");
+            println!(
+                "cargo:rustc-link-arg-bins=-Wl,--version-script={}",
+                dynlist_path.display()
+            );
+        }
     }
 }
 

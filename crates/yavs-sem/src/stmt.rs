@@ -148,7 +148,9 @@ impl Db {
         let body = self.seq_list(&mut cx, stmts);
         self.stmt_owners.pop();
         let body = body?;
-        if let SubprogramKind::Function { pure: true } = kind {
+        if let SubprogramKind::Function { pure: true } = kind
+            && !self.in_vital_library(scope)
+        {
             self.check_purity(decl, scope, &body);
         }
         Ok(body)

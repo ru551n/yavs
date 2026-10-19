@@ -1681,6 +1681,25 @@ impl Db {
         }
     }
 
+    /// Whether `scope` is in a vendored IEEE 1076.4 VITAL package (`ieee.vital_*`, body
+    /// included). Their unmodified sources have pure functions calling `NOW`, which the
+    /// LRM forbids but every VITAL-capable tool accepts (user, 2026-10-19).
+    pub(crate) fn in_vital_library(&self, mut scope: ScopeId) -> bool {
+        loop {
+            if let Some(o) = self.scopes[scope].owner
+                && let DeclKind::Unit(u) = self.decls[o].kind
+            {
+                let u = &self.units[u];
+                return self.libs[u.lib].name.key.as_str() == "ieee"
+                    && u.name.key.as_str().starts_with("vital_");
+            }
+            match self.scopes[scope].parent {
+                Some(p) => scope = p,
+                None => return false,
+            }
+        }
+    }
+
     /// `(package, protected type)` when `scope` is the declaration of a package of
     /// library `std` or of a protected type in one.
     fn std_package_of(&self, scope: ScopeId) -> Option<(String, Option<String>)> {

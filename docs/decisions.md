@@ -992,8 +992,11 @@ which tools/difftest parses.
   bounds). Where the two disagree yavs keeps choices order-independent (associations written
   out of index order); range choices of both directions are `E1334`, as in aggregate values
   (2 of 3 reference simulators reject them; lrm-checks L68, L84). A piece must have as many
-  elements as its choice, checked before it is assigned; element-only targets keep naming the
-  value's own indices.
+  elements as its choice, checked before it is assigned. Element-only targets, `(0 => a, 1 => b) := v;`,
+  use the same mapping (#264, 2026-10-19: LRM 9.3.3.3 gives the aggregate its index subtype's
+  direction, two of the three reference simulators put the aggregate's leftmost index on the value's
+  leftmost element, the third does not accept the form): the choices are not the value's own
+  indices, whatever its bounds.
 - **`&` on arrays of composites** (#234, LRM 9.2.5): arrays of arrays and of records
   concatenate like arrays of scalars (bounds from the index subtype, two null operands give
   the right operand), each element copied as a row with the piece copy shared with

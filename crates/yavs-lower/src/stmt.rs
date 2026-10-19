@@ -11,7 +11,7 @@ use yavs_sem::hir::{
     Target, Waveform,
 };
 use yavs_sem::types::{Direction, TypeKind};
-use yavs_sem::{ExprId, StmtId};
+use yavs_sem::{ExprId, StmtId, TypeId};
 
 use crate::expr::{Dr, Place};
 use crate::func::Fx;
@@ -786,7 +786,7 @@ impl Fx<'_, '_> {
         let (_, rt, w) = self.scalar(elem, span)?;
         let count = self.dope_len(dope);
         let m = self.msg("aggregate target", Dir::To);
-        let named = self.named_target_positions(assocs, span)?;
+        let named = self.named_target_positions(assocs, t, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
         if assocs.iter().any(|a| a.slice_piece) {
@@ -892,18 +892,22 @@ impl Fx<'_, '_> {
         Ok(())
     }
 
-    /// Value positions of the associations of an aggregate target with a range choice, and
-    /// each one's choice length (#244, user, 2026-10-19, lrm-checks L68): the aggregate runs
-    /// from its lowest to its highest choice in the direction of its first range choice, its
-    /// leftmost index takes the value's leftmost element, and a piece takes the elements of its
-    /// range in the aggregate's order. `None` without a range choice (element choices then
-    /// name the value's own indices).
+    /// Value positions of the associations of a named aggregate target, and each one's choice
+    /// length (#244, #264, user, 2026-10-19, lrm-checks L68): the aggregate runs from its
+    /// lowest to its highest choice in the direction of its first range choice, else of the
+    /// index subtype of its type `t` (LRM 9.3.3.3); its leftmost index takes the value's
+    /// leftmost element, and a piece takes the elements of its range in the aggregate's order.
+    /// `None` for a positional target.
     fn named_target_positions(
         &mut self,
         assocs: &[yavs_sem::hir::AggAssoc],
+        t: TypeId,
         span: Span,
     ) -> R<Option<Vec<(i64, i64)>>> {
-        use yavs_sem::expr::aggregate::{StaticRange, range_value};
+        use yavs_sem::expr::aggregate::{StaticRange, range_value, subtype_range};
+        if assocs.iter().any(|a| a.choices.is_empty()) {
+            return Ok(None);
+        }
         let db = self.db;
         let first = assocs
             .iter()
@@ -912,9 +916,6 @@ impl Fx<'_, '_> {
                 Choice::Range(rc) => Some(rc),
                 _ => None,
             });
-        let Some(first) = first else {
-            return Ok(None);
-        };
         let mut rs = Vec::with_capacity(assocs.len());
         for a in assocs {
             let r = match &a.choices[..] {
@@ -926,17 +927,23 @@ impl Fx<'_, '_> {
                 _ => None,
             };
             let Some(r) = r else {
-                return Err(self.cx.unsupported(
-                    span,
-                    "range choices in aggregate targets with several or non-static choices",
-                ));
+                return Err(self
+                    .cx
+                    .unsupported(span, "aggregate targets with several or non-static choices"));
             };
             rs.push(r);
         }
-        let Some(dir) = range_value(db, first).map(|r| r.dir) else {
+        let dir = match first {
+            Some(rc) => range_value(db, rc).map(|r| r.dir),
+            None => match &db.types[t].kind {
+                TypeKind::Array { indexes, .. } => subtype_range(db, indexes[0], 0).map(|r| r.dir),
+                _ => None,
+            },
+        };
+        let Some(dir) = dir else {
             return Err(self
                 .cx
-                .ice(span, "unfolded range choice in an aggregate target"));
+                .ice(span, "unresolved direction of an aggregate target"));
         };
         let live = rs.iter().filter(|r| !r.is_null());
         let (Some(low), Some(high)) = (
@@ -1262,7 +1269,7 @@ impl Fx<'_, '_> {
             }
         };
         let m = self.msg("aggregate target", Dir::To);
-        let named = self.named_target_positions(assocs, span)?;
+        let named = self.named_target_positions(assocs, t, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
         if assocs.iter().any(|a| a.slice_piece) {

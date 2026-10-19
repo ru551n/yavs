@@ -154,8 +154,8 @@ Standard: 9.2.9.
 
 *Portable:* ``use ieee.std_logic_1164.all`` or write ``s = '1'``.
 
-Aggregate targets with range choices
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Aggregate targets with range or element choices
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: vhdl
 
@@ -166,9 +166,12 @@ simulator rejects the form. yavs gives the aggregate the bounds of its choices, 
 direction of its range choices, and matches its leftmost index with the value's leftmost
 element: ``(0 to 1 => a, 2 to 5 => b) := v`` gives ``a`` the two leftmost elements of ``v``,
 whatever ``v``'s bounds. Associations may be written in any order. Each target must have as
-many elements as its choice. Standard: 10.5.2.1, 10.6.2.1.
+many elements as its choice. Element choices alone work the same way: with ``v : iv(1 downto 0)``,
+``(0 => a, 1 => b) := v;`` gives ``a`` the value ``v(1)``, the leftmost element, not ``v(0)``. Without a
+range choice the aggregate runs in the direction of the array type's index subtype.
+Standard: 10.5.2.1, 10.6.2.1, 9.3.3.3.
 
-*Portable:* assign slices: ``hi := v(5 downto 2); lo := v(1 downto 0);``.
+*Portable:* assign slices or elements: ``hi := v(5 downto 2); lo := v(1 downto 0);``, ``a := v(1); b := v(0);``.
 
 Array values under range choices in aggregates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

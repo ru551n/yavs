@@ -39,6 +39,8 @@ const PASS: &[&str] = &[
     "composite/aggregate_pieces",
     "composite/aggregate_target_cover",
     "composite/aggregate_target_cover_signal",
+    "composite/aggregate_target_elems",
+    "composite/aggregate_target_elems_order",
     "composite/aggregate_target_range_length",
     "composite/aggregate_target_range_order",
     "composite/aggregate_target_ranges",

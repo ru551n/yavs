@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:aggregate_target_elems_order:_p0	a=0 b=10
+diag	note	0	0	:aggregate_target_elems_order:_p0	a=0 b=10
+diag	note	0	0	:aggregate_target_elems_order:_p0	a=10 b=0

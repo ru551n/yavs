@@ -56,11 +56,11 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 023 | Relax library requirement on configurations | not tested | ok | ok | ok | ok | only a plain configuration analyzes in all; the relaxed form was not identified |
 | 026c | Long integers | supported | ok | ok (output differs) | fatal | fatal | 64-bit integer range; `integer'high` is 2**63-1 in yavs, 2**31-1 in sim2; sim3 and sim4 stop at the 62-bit type |
 | 030 | Garbage collection | not applicable | - | - | - | - | implementation property, no source syntax; `deallocate` and heap reuse are covered by the access type tests |
-| 032 | `PATH_NAME` and `INSTANCE_NAME` with protected types | supported | ok/ok (output differs) | reject/ok | ok/ok (output differs) | ok | `pt'path_name` inside a method: yavs and two references give `:top:pt`, one gives `:top:sv:`, one `:top:sv:pt:` (not catalogued yet) |
+| 032 | `PATH_NAME` and `INSTANCE_NAME` with protected types | supported | ok/ok (output differs) | reject/ok | ok/ok (output differs) | ok | `pt'path_name` inside a method: yavs and two references give `:top:pt`, one gives `:top:sv:`, one `:top:sv:pt:` (catalogued as `protected-path-name`) |
 | 033 | Composition with protected types | supported | ok | ok | ok | ok | a protected variable inside a protected body |
 | 034 | Protected types with a generic clause | partial | reject | reject | reject | ok | the declaration and body analyze (opaque generics); `type t is new p.box generic map (..)` is `E0002` (#29) |
 | 036a | Conditional expressions in declarations | supported | ok | reject | ok | ok |  |
-| 041 | Record introspection and type reflection | supported | ok | reject | reject | ok (output differs) | `integer'reflect.simple_name` is `INTEGER` in yavs and sim1, `integer` in sim4 (sim2 and sim3 reject the probe; not catalogued) |
+| 041 | Record introspection and type reflection | supported | ok | reject | reject | ok (output differs) | `integer'reflect.simple_name` is `INTEGER` in yavs and sim1, `integer` in sim4 (sim2 and sim3 reject the probe; catalogued as `reflect-integer-simple-name`) |
 | 043 | Attributes for PSL | not tested | - | - | - | - | PSL is out of scope of this page |
 | 045a | Mode view declarations | supported | ok | ok/fatal/ok | ok | ok | view ports, signal parameters of a view, an array of a viewed record; gaps in #254, #265 |
 | 045c | `'CONVERSE` of a mode view | supported | ok | ok | ok | ok |  |

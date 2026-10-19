@@ -1,0 +1,5 @@
+# sim1 gives INTEGER, sim4 gives integer; sim2 and sim3 reject only for lack of std.reflection (unsupported: no vote)
+sim1 2019 OK
+sim2 2019 REJECT
+sim3 2019 REJECT
+sim4 2019 OK*

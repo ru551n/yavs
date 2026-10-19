@@ -1,0 +1,5 @@
+# sim1: OK* (:pathprot:sv: and :pathprot(test):sv:), sim3: OK* (:pathprot:sv:pt: and :pathprot(test):sv:pt:), sim2 and sim4 give :pathprot:pt like yavs
+sim1 2019 OK*
+sim2 2019 OK
+sim3 2019 OK*
+sim4 2019 OK

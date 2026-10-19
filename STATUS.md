@@ -550,6 +550,44 @@ Findings:
   of a run); (3) allocation-volume triggers already exist; (4) per-process heaps collected in
   parallel: no measured benefit, the shared heap work is below 1% of every run.
   Recommendation: the current overhead is acceptable; no redesign needed.
+### Startup against simulation per test (2026-10-19)
+
+Question: how much of a small test's time is startup, to judge an analyzed-unit cache. Release
+build of `origin/main` (92dfc349) with temporary phase timers (not committed), interpreter tier,
+the external test runner's `verification_components` suite (579 tests, 576 reached the timer
+line; the other 3 end through a different path), host load average about 15 from other agents
+(absolute times are inflated, shares are what matters). The runner analyzes each file once up
+front (7.6 s for the suite, `-p 4`); every `yavs run` then re-parses and re-analyzes the closure
+of its top level from the sources.
+
+| Phase (ms per test) | median | p90 | Share of summed per-test time (`-p 4`, 576 tests, 2672 s) |
+|---|---|---|---|
+| parse + analyze of the closure | 461 | 596 | 10.3% |
+| of which std/ieee (23 units) | 178 | 185 | 3.7% |
+| of which test runner library + testbench (about 112 units) | 212 | 233 | 4.6% |
+| of which third-party verification library (about 18-30 units) | 70 | 189 | 1.9% |
+| library manifest / closure | 8 | 9 | 0.2% |
+| elaboration (expand hierarchy) | 3175 | 4138 | 56.8% |
+| lowering | 18 | 30 | 0.4% |
+| package and instance initialisation (`build_full`) | 294 | 596 | 7.4% |
+| simulation | 418 | 3003 | 25.3% |
+| LLVM compile (`--tier=llvm`, 3 tests) | 14000 to 43000 | | not in the default run |
+
+- Suite wall time: 671 s at `-p 4` (plus 7.6 s runner analysis). The 50-test subset (every 11th
+  test) at `-p 1` takes 231 s (in-process median 4.1 s, startup 3.5 s of it); a reference
+  simulator takes 9.7 s for the same 50 tests (4.5 s of runner compile for the whole suite).
+- Units re-analyzed: median 153 units from 110 files per test (at most 181), 89341 unit analyses
+  over the suite for fewer than 200 distinct units; no user-edited file is among them, all are
+  library or testbench sources that did not change.
+- Cache estimate: a cache load cost of 10% of analyze time (not measurable: no serializer
+  exists) saves 247 s of the 2672 s, 9.2%; the suite would take about 610 s instead of 671 s at
+  `-p 4`. A free cache would save 10.3%. Elaboration is the dominant startup cost (56%), and it
+  varies by testbench from 46 ms (`tb_memory`) to 4.4 s (`tb_axi_stream`); it is the thing to
+  look at before a cache.
+- Not measured: the two testbenches of the neural-network project (their runner needs the Python
+  FFI build of the runner, not set up here).
+
+
 
 ## elab (`crates/yavs-elab`, M2)
 

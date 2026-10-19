@@ -27,7 +27,7 @@ use yavs_std::types::PhysicalType;
 use yavs_std::{arith, image};
 
 use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
-use crate::native::{NativeFn, lit, scalar_text};
+use crate::native::NativeFn;
 
 /// The native of an implicit operation symbol, `None` for symbols this module does not own.
 pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
@@ -836,48 +836,7 @@ fn to_string(
     t: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    let (t, _) = ty_of(m, t)?;
-    let v = arg(a, 0)?;
-    if !is_array(m, t)? {
-        let s = scalar_text(m, Some(t), v, false)?;
-        return ret(m, &s);
-    }
-    let (elem, _, _) = array_ty(m, t)?;
-    let p = read_arr(m, t, v)?;
-    let lits = match ty_of(m, Some(elem))?.1 {
-        Ty::Enum { lits, .. } => Some(lits),
-        _ => None,
-    };
-    let chars: Option<Vec<u8>> = lits.as_ref().and_then(|l| {
-        p.el.iter()
-            .map(|&e| match lit(l.get(e as usize)?) {
-                yavs_std::types::EnumLit::Char(c) => Some(c),
-                _ => None,
-            })
-            .collect()
-    });
-    // An array of a character-literal enumeration is its characters (5.3.2.4); any other
-    // array (2019 5.7) is `(e1,e2,...)` of its elements' TO_STRING, as NVC prints it.
-    let s = match chars {
-        Some(c)
-            if lits
-                .as_ref()
-                .is_some_and(|l| l.iter().all(|x| x.starts_with('\''))) =>
-        {
-            c
-        }
-        _ => {
-            let mut s = vec![b'('];
-            for (i, &e) in p.el.iter().enumerate() {
-                if i > 0 {
-                    s.push(b',');
-                }
-                s.extend(scalar_text(m, Some(elem), e, false)?);
-            }
-            s.push(b')');
-            s
-        }
-    };
+    let s = crate::native::text(m, t, arg(a, 0)?, false)?;
     ret(m, &s)
 }
 

@@ -3437,6 +3437,29 @@ impl<'a> Fx<'a, '_> {
 
     // ---- attributes ----
 
+    /// `T'IMAGE(X)` and the 2019 object form `X'IMAGE` (LRM 2019 16.2.2): scalars by value,
+    /// arrays and records as a fat pair (the native formats them recursively).
+    fn image_attr(&mut self, prefix: AttrPrefix, args: &[ExprId], span: Span) -> R<V> {
+        let db = self.db;
+        let (st, x) = match (prefix, args.first()) {
+            (AttrPrefix::Subtype(st), Some(&x)) => (st, x),
+            (AttrPrefix::Expr(e), None) => (db.exprs[e].subtype, e),
+            _ => return Err(self.cx.ice(span, "'image without a value")),
+        };
+        let t = db.base(st);
+        let v = if ty::is_array(db, t) || matches!(db.types[t].kind, TypeKind::Record { .. }) {
+            let v = self.expr(x)?;
+            let (data, desc) = self.arr(v, span)?;
+            self.make_fat(data, desc)
+        } else {
+            self.scalar_expr(x)?
+        };
+        let tid = self.ty(t, span)?;
+        let string = self.string_subtype(span)?;
+        self.native("yavs.attr.image", Some(tid), &[v], Some(string), span)?
+            .ok_or(Failed)
+    }
+
     fn attr(
         &mut self,
         attr: PredefAttr,
@@ -3448,6 +3471,9 @@ impl<'a> Fx<'a, '_> {
         use PredefAttr::*;
         if attr == Reflect {
             return self.reflect_attr(prefix, span);
+        }
+        if attr == Image {
+            return self.image_attr(prefix, args, span);
         }
         let db = self.db;
         let dim = |fx: &Fx<'_, '_>| -> u8 {
@@ -3506,14 +3532,6 @@ impl<'a> Fx<'a, '_> {
                             span,
                         )?;
                         Ok(V::S(r))
-                    }
-                    Image => {
-                        let v = self.scalar_expr(args[0])?;
-                        let tid = self.ty(t, span)?;
-                        let string = self.string_subtype(span)?;
-                        Ok(self
-                            .native("yavs.attr.image", Some(tid), &[v], Some(string), span)?
-                            .ok_or(Failed)?)
                     }
                     Value => {
                         let v = self.expr(args[0])?;

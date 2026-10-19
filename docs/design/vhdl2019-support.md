@@ -26,7 +26,7 @@ with the result of the four reference simulators (`sim1` to `sim4`, labels as in
 
 ## Summary
 
-46 LCS rows: 38 supported, 2 partial, 1 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
+46 LCS rows: 39 supported, 1 partial, 1 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
 
 For comparison, over the rows that have a probe, the references run the probe (`ok` or `ok (output differs)`) for the following number of rows: sim1 37, sim2 11, sim3 22, sim4 39 (rows with several probes count only when all probes agree).
 
@@ -43,7 +43,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 006f | Standard conditional analysis identifiers | supported | ok | reject | ok | ok |  |
 | 007 | Sequential declaration regions | supported | ok | ok | ok | ok | editorial rule; only name hiding in nested regions probed |
 | 011 | Date and time functions | supported | ok | reject | ok | ok |  |
-| 012 | `'IMAGE` and `TO_STRING` for composite types | partial | ok/ok/ok/ok/ok (output differs) | reject | ok/ok/ok/reject/ok (output differs) | ok/ok/ok/ok/ok (output differs) | `TO_STRING` of an array of scalars works; type and object `'IMAGE` of arrays and records is an ICE; `TO_STRING` of a record fails at run time (#360). Cells list the five probes in order |
+| 012 | `'IMAGE` and `TO_STRING` for composite types | supported | ok/ok/ok/ok/ok (output differs) | reject | ok/ok/ok/reject/ok (output differs) | ok/ok/ok/ok/ok (output differs) | `'IMAGE` (type mark and object forms) and `TO_STRING` of arrays and records run (#360, L105); the references differ in quoting (catalogue `composite-image-quoting`). Cells list the five probes in order |
 | 014 | Composites of protected types | supported | reject | reject | reject | ok | each element is its own object; records may also hold other elements (permissive, sim4 rejects, L102, #371); a variable port of such a composite is `E9999` (#370) |
 | 014a | Access types to composites of protected types | supported | reject | reject | reject | ok | allocation and deallocation (#361) |
 | 015 | Report the calling path | supported | crash | reject | ok | crash | `get_call_path` |
@@ -83,6 +83,9 @@ For comparison, over the rows that have a probe, the references run the probe (`
 
 ## Gaps by use in practice
 
+Issues for VHDL-2019 gaps carry the GitHub label `v2019` (user, 2026-10-19); give a new gap issue that
+label.
+
 Signal: number of files in the local sources of two verification libraries and one external test runner
 (in that order) that use the construct (a rough text count, not a parse). Mode views appear in 26 and 10
 files of the libraries; call path and file name functions in 17, 69 and 38 files; `to_string` in 246, 149
@@ -92,7 +95,7 @@ occur in those sources.
 
 | Rank | Gap | Issue |
 |---|---|---|
-| 1 | `'IMAGE` and `TO_STRING` of arrays and records (LCS-012) | #360 |
+| 1 | `'IMAGE` and `TO_STRING` of arrays and records (LCS-012) | #360 (fixed) |
 | 2 | Generic protected type instantiation (LCS-034) | #29 |
 | 3 | Generic map on a subprogram call (LCS-049): done | #362 |
 | 4 | Arrays and records of protected types (LCS-014, 014a): done | #361 |
@@ -104,7 +107,8 @@ occur in those sources.
 - `pt'path_name` inside a protected method: four different answers across yavs and the references
   (see row 032). The LRM text for the path of a protected object was not settled by this audit.
 - `integer'reflect.simple_name` for `integer`: upper case in yavs, lower case in sim4.
-- `to_string` of a record: element quoting differs between references (`(3,'1')` against `(3,1)`).
+- `to_string` of a record: element quoting differs between references (`(3,'1')` against `(3,1)`);
+  yavs follows the majority, `(3,1)` (catalogue `composite-image-quoting`, L105).
 - Long integers (LCS-026c): sim2 keeps a 32-bit `integer'high`; sim3 and sim4 stop on a 62-bit type.
 - Directory functions: sim3 reports `is not supported` warnings and returns false.
 - Mode views, conditional compilation, `return .. when`, `open` slices and the std.env additions are

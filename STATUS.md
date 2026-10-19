@@ -647,8 +647,8 @@ compact constants, natives by NATIVE.md symbol, foreign references, flag propaga
 (`MAY_SUSPEND`, `TOUCHES_SHARED`), resume numbering, a linear verifier and a text dump
 (`crates/yavs-ir/README.md` says what is stable). `yavs-interp`: `InterpProcess` implements the
 kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
-yavs-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
-`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined until a suspension or, in a long activation, a recycle between instructions, #355; the shared heap, where serial processes allocate, collected between cycles from the shared variables, the objects elaboration made and every serial process's frames, #303),
+yavs-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`,
+`to_string`/`'image` of scalars and, 2019, of arrays and records with the object form `x'image` (#360)), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined until a suspension or, in a long activation, a recycle between instructions, #355; the shared heap, where serial processes allocate, collected between cycles from the shared variables, the objects elaboration made and every serial process's frames, #303),
 serial marking, kernel-free `call` / `call_shared` for elaboration (allocations with the shared state, at any call depth, in the shared heap, #246), protected objects,
 std.textio (read/write of every textio type, linear in the line length over many calls,
 readline/writeline/tee, hread/oread/sread, justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version

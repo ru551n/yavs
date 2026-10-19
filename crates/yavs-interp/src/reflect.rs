@@ -67,7 +67,7 @@ struct Mirror {
 /// One `ranges` entry.
 const RANGE: usize = 32;
 
-fn rd64(b: &[u8], at: usize) -> u64 {
+pub(crate) fn rd64(b: &[u8], at: usize) -> u64 {
     let mut a = [0u8; 8];
     if let Some(s) = b.get(at..at + 8) {
         a.copy_from_slice(s);
@@ -75,7 +75,7 @@ fn rd64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(a)
 }
 
-fn le(b: &[u8]) -> u64 {
+pub(crate) fn le(b: &[u8]) -> u64 {
     let mut a = [0u8; 8];
     let n = b.len().min(8);
     a[..n].copy_from_slice(&b[..n]);
@@ -88,14 +88,14 @@ fn refl(prog: &Program, id: ReflId) -> R<&Refl> {
         .ok_or_else(|| ice(format!("no reflection entry {id}")))
 }
 
-fn layout_err(e: yavs_ir::LayoutError) -> Fault {
+pub(crate) fn layout_err(e: yavs_ir::LayoutError) -> Fault {
     match e {
         yavs_ir::LayoutError::TooLarge => Fault::Runtime(e.to_string()),
         yavs_ir::LayoutError::Malformed(_) => ice(e.to_string()),
     }
 }
 
-fn const_bytes(prog: &Program, c: ConstId) -> R<Vec<u8>> {
+pub(crate) fn const_bytes(prog: &Program, c: ConstId) -> R<Vec<u8>> {
     match prog.consts.get(c) {
         Some(ConstData::Bytes(b)) => Ok(b.clone()),
         _ => Err(ice(format!(
@@ -210,13 +210,13 @@ fn scalar_width(prog: &Program, k: &ReflKind) -> R<Option<usize>> {
     }))
 }
 
-fn plane_get(v: &[u8], i: u64) -> u64 {
+pub(crate) fn plane_get(v: &[u8], i: u64) -> u64 {
     let b = (i / 64) as usize * 32;
     let bit = i % 64;
     (0..4).map(|p| ((rd64(v, b + p * 8) >> bit) & 1) << p).sum()
 }
 
-fn plane_set(v: &mut [u8], i: u64, code: u64) {
+pub(crate) fn plane_set(v: &mut [u8], i: u64, code: u64) {
     let b = (i / 64) as usize * 32;
     let bit = i % 64;
     for p in 0..4 {
@@ -230,7 +230,7 @@ fn plane_set(v: &mut [u8], i: u64, code: u64) {
 
 /// Position of a logic element from its plane code (BIT and BOOLEAN store the codes of '0'
 /// and '1'; positions 0 and 1 are accepted too, as `bits_at` does).
-fn logic_pos(k: LogicKind, code: u64) -> u64 {
+pub(crate) fn logic_pos(k: LogicKind, code: u64) -> u64 {
     match k {
         LogicKind::StdULogic => code,
         _ if code >= 2 => code - 2,

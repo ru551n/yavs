@@ -103,8 +103,10 @@ a call into your module in a small commit.
   bound as its bits), read back by `r`'s range (`Db::scalar_range`, #327). The elaborator
   passes a value of that subtype in the same place (for a scalar: its bounds only).
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
-  operated type as `NativeRef::ty`; `'image` is `yavs.attr.image`, `'value` `yavs.attr.value`
-  (taking the string as a fat pair address). Array arguments to natives are fat pair addresses.
+  operated type as `NativeRef::ty`; `'image` is `yavs.attr.image` (type mark and 2019 object
+  forms; a 2019 array or record value as a fat pair, formatted by the interpreter), `'value`
+  `yavs.attr.value` (taking the string as a fat pair address). Array and record arguments to
+  natives are fat pair addresses.
 - `PackageIr` per package with run-time objects (`Lowerer::package`, before the
   architectures): package data `AddrSpace::Pkg(index)` written once by its `init` thunk under
   `yavs_interp::init_package` (constants that are not locally static, composites of static

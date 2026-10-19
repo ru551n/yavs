@@ -18,6 +18,7 @@ use yavs_std::image;
 use yavs_std::types::{EnumLit, PhysicalType};
 
 use crate::exec::{Fault, Machine, R, ice, rt_err};
+use crate::reflect::{const_bytes, layout_err, le, logic_pos, plane_get, plane_set};
 
 pub(crate) type NativeFn =
     fn(&mut Machine, &mut Option<&mut Ctx<'_>>, Option<TyId>, &[u64]) -> R<Option<u64>>;
@@ -295,8 +296,192 @@ fn image_attr(
     ty: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    let s = scalar_text(m, ty, arg(a, 0)?, true)?;
+    let s = text(m, ty, arg(a, 0)?, true)?;
     m.ret_string(&s).map(Some)
+}
+
+/// `'image` (`image = true`) or `to_string` of any value: scalars by value, arrays and
+/// records as the address of their fat pair.
+pub(crate) fn text(m: &Machine, ty: Option<TyId>, v: u64, image: bool) -> R<Vec<u8>> {
+    let t = ty.ok_or_else(|| ice("image native without a type"))?;
+    match m.rt.prog.types.get(t) {
+        Some(Ty::Array { .. } | Ty::Record { .. }) => {}
+        _ => return scalar_text(m, ty, v, image),
+    }
+    let prog = &m.rt.prog;
+    let data = m.load(v, Width::B8)?;
+    let dp = m.load(crate::exec::add_addr(v, 8)?, Width::B8)?;
+    let n = Ty::desc_size(&prog.types, t).ok_or_else(|| ice("descriptor size"))?;
+    let desc = if n == 0 {
+        Vec::new()
+    } else {
+        m.rd(dp, n)?.to_vec()
+    };
+    let (lay, _) = Ty::layout(&prog.types, &prog.consts, t, &desc).map_err(layout_err)?;
+    let val = m.rd(data, lay.size)?.to_vec();
+    composite_text(m, t, &desc, &val, image, false)
+}
+
+/// Whether arrays of the enumeration `lits` print as a string (`"01"`, `TO_STRING` its
+/// characters): every literal a character literal, or CHARACTER (whose other literals are the
+/// control character names).
+fn string_like(lits: &[String]) -> bool {
+    lits.iter().all(|l| l.starts_with('\''))
+        || (lits.len() == 256 && lits[0].eq_ignore_ascii_case("nul"))
+}
+
+/// The text of one value of `ty` given its descriptor and bytes (LRM 2019 16.2.2 `'IMAGE`,
+/// 5.7 `TO_STRING`): a record is `(e1,e2)`, an array `(e1,e2)` per dimension, a
+/// one-dimensional row of a string-like element type whose values are all character
+/// literals a string literal (`'IMAGE`) or its characters (`TO_STRING`). An array element
+/// that is a character literal prints without quotes (`bare`). docs/design/lrm-checks.md.
+fn composite_text(
+    m: &Machine,
+    ty: TyId,
+    desc: &[u8],
+    val: &[u8],
+    image: bool,
+    bare: bool,
+) -> R<Vec<u8>> {
+    let prog = &m.rt.prog;
+    let (types, consts) = (&prog.types, &prog.consts);
+    let t = types.get(ty).ok_or_else(|| ice(format!("no type {ty}")))?;
+    if let Some(w) = t.scalar_size() {
+        let v = le(val.get(..w as usize).unwrap_or(val));
+        if let (true, Ty::Enum { lits, .. }) = (bare, t)
+            && let Some(EnumLit::Char(c)) = lits.get(v as usize).map(|l| lit(l))
+        {
+            return Ok(vec![c]);
+        }
+        return scalar_text(m, Some(ty), v, image);
+    }
+    let mut out = Vec::new();
+    match t {
+        Ty::Record { fields } => {
+            let (lay, _) = Ty::layout(types, consts, ty, desc).map_err(layout_err)?;
+            let mut cur = 0;
+            out.push(b'(');
+            for (i, f) in fields.iter().enumerate() {
+                let fdesc = match f.desc {
+                    Some(c) => const_bytes(prog, c)?,
+                    None => {
+                        let n = Ty::desc_size(types, f.ty)
+                            .ok_or_else(|| ice("record field type"))?
+                            as usize;
+                        cur += n;
+                        desc.get(cur - n..cur).unwrap_or(&[]).to_vec()
+                    }
+                };
+                let (fl, _) = Ty::layout(types, consts, f.ty, &fdesc).map_err(layout_err)?;
+                let at = lay.offsets[i] as usize;
+                let fv = val
+                    .get(at..at + fl.size as usize)
+                    .ok_or_else(|| ice("record field out of its value"))?;
+                if i > 0 {
+                    out.push(b',');
+                }
+                out.extend(composite_text(m, f.ty, &fdesc, fv, image, false)?);
+            }
+            out.push(b')');
+        }
+        Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        } => {
+            let nd = usize::from(*dims);
+            let (lay, _) = Ty::layout(types, consts, ty, desc).map_err(layout_err)?;
+            let edesc = match elem_desc {
+                Some(c) => const_bytes(prog, *c)?,
+                None => desc.get(nd * 24..).unwrap_or(&[]).to_vec(),
+            };
+            let (el, _) = Ty::layout(types, consts, *elem, &edesc).map_err(layout_err)?;
+            let mut lens = Vec::with_capacity(nd);
+            for d in 0..nd {
+                let r = |k: usize| crate::reflect::rd64(desc, d * 24 + k * 8);
+                let len = yavs_ir::dim_len(r(0) as i64, r(1) as i64, r(2) == 1)
+                    .ok_or_else(|| Fault::Runtime("array too long".into()))?;
+                lens.push(len);
+            }
+            let et = types.get(*elem).ok_or_else(|| ice("array element type"))?;
+            let scalar = et.scalar_size().is_some();
+            let logic = Ty::logic_leaf(types, ty);
+            // Element `k` (row major) as the bytes `composite_text` takes.
+            let elem_val = |k: u64| -> R<Vec<u8>> {
+                if let Some(kind) = logic {
+                    if scalar {
+                        let code = plane_get(val, lay.count - 1 - k);
+                        return Ok(logic_pos(kind, code).to_le_bytes().to_vec());
+                    }
+                    let start = lay.count - (k + 1) * el.count;
+                    let mut b = vec![0u8; el.size as usize];
+                    for j in 0..el.count {
+                        plane_set(&mut b, j, plane_get(val, start + j));
+                    }
+                    return Ok(b);
+                }
+                let at = (k * lay.stride) as usize;
+                Ok(val
+                    .get(at..at + el.size as usize)
+                    .ok_or_else(|| ice("array element out of its value"))?
+                    .to_vec())
+            };
+            let chars = match et {
+                Ty::Enum { lits, .. } if string_like(lits) => Some(lits),
+                _ => None,
+            };
+            let row = lens.last().copied().unwrap_or(0);
+            let rows: u64 = lens[..nd.saturating_sub(1)].iter().product();
+            let mut texts = Vec::new();
+            for r in 0..rows {
+                let mut cs = Vec::new();
+                let mut items = Vec::new();
+                for k in r * row..(r + 1) * row {
+                    let b = elem_val(k)?;
+                    if let Some(lits) = chars
+                        && let Some(EnumLit::Char(c)) = lits.get(le(&b) as usize).map(|l| lit(l))
+                    {
+                        cs.push(c);
+                    }
+                    items.push(composite_text(m, *elem, &edesc, &b, image, true)?);
+                }
+                texts.push(if chars.is_some() && cs.len() as u64 == row {
+                    if image {
+                        let mut s = vec![b'"'];
+                        for c in cs {
+                            s.push(c);
+                            if c == b'"' {
+                                s.push(c);
+                            }
+                        }
+                        s.push(b'"');
+                        s
+                    } else {
+                        cs
+                    }
+                } else {
+                    paren(items)
+                });
+            }
+            // Group the rows by the outer dimensions, innermost first.
+            for &len in lens[..nd.saturating_sub(1)].iter().rev() {
+                texts = texts
+                    .chunks(len.max(1) as usize)
+                    .map(|c| paren(c.to_vec()))
+                    .collect();
+            }
+            out = texts.into_iter().next().unwrap_or_else(|| b"()".to_vec());
+        }
+        _ => return Err(ice(format!("text of type {ty}"))),
+    }
+    Ok(out)
+}
+
+fn paren(items: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut s = vec![b'('];
+    s.extend(items.join(&b','));
+    s.push(b')');
+    s
 }
 
 // ---- std.env ----

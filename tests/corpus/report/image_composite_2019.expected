@@ -1,0 +1,17 @@
+exit	0
+diag	note	0	0	:image_composite:_p0	(1,2,3)
+diag	note	0	0	:image_composite:_p0	(1,2,3)
+diag	note	0	0	:image_composite:_p0	(5,6)
+diag	note	0	0	:image_composite:_p0	()
+diag	note	0	0	:image_composite:_p0	(3,'1','a',"hi",true)
+diag	note	0	0	:image_composite:_p0	(3,'1','a',"hi",true)
+diag	note	0	0	:image_composite:_p0	(3,1,a,hi,true)
+diag	note	0	0	:image_composite:_p0	("01","10")
+diag	note	0	0	:image_composite:_p0	(01,10)
+diag	note	0	0	:image_composite:_p0	((1,2),(3,4))
+diag	note	0	0	:image_composite:_p0	(red,x)
+diag	note	0	0	:image_composite:_p0	"a""b"
+diag	note	0	0	:image_composite:_p0	((3,'1','a',"hi",true),(3,'1','a',"hi",true))
+diag	note	0	0	:image_composite:_p0	((7,'0','z',"ok",false),"01XZ")
+diag	note	0	0	:image_composite:_p0	((7,0,z,ok,false),01XZ)
+diag	note	0	0	:image_composite:_p0	image_composite ok

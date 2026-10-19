@@ -650,6 +650,8 @@ Missing: variables' values, `vhpiPtrVal`, `vhpiRawDataVal`, `vhpiSmallPhys*`, re
 whole (`W0904`); the element subtype of a resolved array subtype (`std_logic_vector`'s
 elements report `STD_ULOGIC`).
 
+Done (#273): `tools/vhpi-conformance/run.py` runs 5 C plugins (walk, props, values, cbs, put) on 2 small designs under yavs and the primary reference simulator and diffs the canonical traces, no install needed. Baseline at `ba53e23d` (reference lines matched): walk 28/172, props 158/328, values 159/230, cbs 78/114, put 108/149; put_value (#271) was still open.
+
 ## discrepancies (simulator catalogue)
 
 `docs/design/simulator-discrepancies.md` lists 80 constructs where the reference simulators

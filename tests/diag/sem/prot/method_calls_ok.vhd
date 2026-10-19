@@ -9,7 +9,6 @@ package pk is
     impure function get_plus (n : integer) return integer;
     impure function name return string;
   end protected;
-  shared variable sc : counter_t;
 end package;
 
 package body pk is
@@ -24,6 +23,12 @@ package body pk is
 end package body;
 
 use work.pk.all;
+package pk2 is
+  shared variable sc : counter_t;
+end package;
+
+use work.pk.all;
+use work.pk2.all;
 entity e is end entity;
 architecture a of e is
 begin
@@ -38,8 +43,8 @@ begin
     x := c.get + c.get_plus(1);
     ch := c.name(1);
     sc.inc;
-    work.pk.sc.inc(2);
-    x := work.pk.sc.get;
+    work.pk2.sc.inc(2);
+    x := work.pk2.sc.get;
     report c.name;
     wait;
   end process;

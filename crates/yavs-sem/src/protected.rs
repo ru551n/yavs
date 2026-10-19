@@ -128,6 +128,40 @@ impl Db {
         ))
     }
 
+    /// A shared variable of a protected type declared in the same region as the
+    /// type, before its body: the body is not elaborated yet (14.4.2, `E1230`).
+    /// In a package declaration the body is in the package body, so it is always
+    /// too early; a declaration in another unit is fine (the body is elaborated
+    /// with its package first).
+    pub fn check_shared_body_elaborated(
+        &mut self,
+        scope: ScopeId,
+        st: SubtypeId,
+        span: Span,
+    ) -> Result<(), Reported> {
+        let t = self.base(st);
+        let TypeKind::Protected { body: None, .. } = self.types[t].kind else {
+            return Ok(());
+        };
+        let tdecl = self.types[t].decl;
+        if self.decls[tdecl].scope != scope {
+            return Ok(());
+        }
+        Err(self.error(
+            Diagnostic::error(
+                diag::MISSING_BODY,
+                format!(
+                    "shared variable of protected type `{}` declared before its body",
+                    self.type_name(t)
+                ),
+            )
+            .with_primary(span, "the protected body is not elaborated yet")
+            .with_secondary(self.decls[tdecl].span, "protected type declared here")
+            .with_note("LRM 14.4.2: elaborating the declaration of an object of a protected type needs the protected body to be elaborated first")
+            .with_help("declare the shared variable after the protected body, in the package body or in another unit that uses the package"),
+        ))
+    }
+
     /// Which items a protected type declaration may hold (5.6.2): subprogram
     /// declarations and instances, use clauses, attribute specifications; 2019
     /// adds private variables and aliases.

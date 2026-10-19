@@ -84,7 +84,7 @@ An installed binary finds `lib/` next to itself (#43).
   or file type (or containing one) are `E1223` (#198; constant parameters are legal in 2019; 2008 protected method profiles too, #212); protected ones `E1905`.
 - Protected types (#52): signals and constants of a protected type, assignments to a protected
   variable and operators on protected operands are `E1905`; a shared variable of another type is
-  `E1904` (`W1904` with `--relaxed`); a method without a body is `E1230` at its name.
+  `E1904` (`W1904` with `--relaxed`); a method without a body is `E1230` at its name. A shared variable of a protected type declared before its body in the same region (a package declaration) is `E1230` at the variable (#258).
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms
   (8.3, `E1103` outside them), and with a protected type prefix inside its body (`pt.n`, `pt.get`,
   #250), body declarations named from outside the package (`E1105`), use

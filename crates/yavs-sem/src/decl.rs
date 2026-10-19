@@ -552,7 +552,9 @@ impl Db {
         let _ = match class {
             ObjClass::Constant => self.check_not_protected("constant", subtype, first),
             ObjClass::Signal => self.check_not_protected("signal", subtype, first),
-            ObjClass::SharedVariable => self.check_shared_variable(subtype, first),
+            ObjClass::SharedVariable => self
+                .check_shared_variable(subtype, first)
+                .and_then(|()| self.check_shared_body_elaborated(scope, subtype, first)),
             _ => Ok(()),
         };
         let default = o

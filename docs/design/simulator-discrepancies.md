@@ -115,6 +115,7 @@ there is untested.
 | `protected-type-expanded-name-method` | `pt.get` in the body of protected type `pt`: a method of the current object | 8.3, 12.1 | LRM clear | OK | REJECT | OK | to be filled | OK | accepted | agent (L74, #250) |
 | `protected-type-expanded-name-mixed` | `pt.n` (state hidden by a parameter `n`) and `pt.get` in one protected body | 8.3, 12.1 | LRM clear | REJECT | REJECT | OK | to be filled | OK | accepted (sim1 accepts each alone) | agent (L74, #250) |
 | `protected-type-expanded-name-state` | `pt.n` in the body of protected type `pt`, `n` hidden by a parameter | 8.3, 12.1 | LRM clear | OK | REJECT | OK | to be filled | OK | accepted | agent (L74, #250) |
+| `shared-variable-before-body` | shared variable of a protected type in a package declaration, before the protected body (in the package body) | 14.4.2 | LRM clear | REJECT | OK (warning) | REJECT | to be filled | REJECT | E1230 at the variable (type as secondary) | LRM clear, 2 of 3 reference simulators (#258) |
 | `signal-param-parts` | signal formals associated element by element | 6.5.7.1 | LRM clear | FATAL | OK | OK* | to be filled | OK | supported, results by hand | agent (#71) |
 | `signal-param-records` | signal formals with records associated field by field | 6.5.7.1 | LRM clear | REJECT | OK | OK | to be filled | OK | supported, results by hand | agent (#71) |
 | `signal-param-slices` | signal formals associated by slices | 6.5.7.1 | LRM clear | REJECT | FATAL | FATAL | to be filled | OK | supported, results by hand | agent (#71) |

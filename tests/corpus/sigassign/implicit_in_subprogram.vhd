@@ -1,6 +1,6 @@
 -- difftest: top=implicit_in_subprogram std=2008 ref=hand
 -- ref=hand: the reference simulator rejects these attributes in any subprogram body; the
--- second reference simulator gives this output (its delta and path not printed).
+-- second and third reference simulators give this output (they print no delta or path).
 -- 'stable, 'quiet, 'delayed and 'transaction of signals that are not formal parameters, named in
 -- a procedure declared in a process, a function declared in the architecture and a procedure
 -- of a package body naming a package signal (LRM

@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:transaction_init:mon	tr '0'
+diag	note	0	0	:transaction_init:mond	dl 0
+diag	note	0	0	:transaction_init:direct	transaction '0' stable true quiet true delayed 1
+diag	note	0	1	:transaction_init:mond	dl 1
+diag	note	0	1	:transaction_init:direct	transaction '0' stable true quiet true delayed 1
+diag	note	1000000	1	:transaction_init:direct	first transaction '1' delayed 1
+diag	note	1000000	2	:transaction_init:mon	tr '1'
+diag	note	3000000	1	:transaction_init:mond	dl 5
+diag	note	3000000	1	:transaction_init:direct	second transaction '0' delayed 5
+diag	note	3000000	2	:transaction_init:mon	tr '0'

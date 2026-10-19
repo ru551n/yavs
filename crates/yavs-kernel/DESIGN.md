@@ -89,7 +89,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    that schedules anything at `now` is an `ErrorKind::PostponedDelta`.
 
 Initialization (`settle` at build) computes driving values bottom-up and effective values
-top-down through ports without events; then every process runs once at 0 fs delta 0, after
+top-down through ports without events; no signal is active then, so `'transaction` keeps its
+initial '0' until the first transaction, `'stable`/`'quiet` start TRUE and `'delayed` at the
+prefix's initial value (LRM 14.7.5.2, `docs/design/lrm-checks.md` L67, #241); then every process runs once at 0 fs delta 0, after
 `StartOfSim`. The first cycle at 0 fs is delta 1.
 
 **Ports** (`Builder::port(formal, actual, mode, PortConv)`) relate a formal range to an actual

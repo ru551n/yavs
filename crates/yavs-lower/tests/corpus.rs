@@ -204,6 +204,7 @@ const PASS: &[&str] = &[
     "sigassign/signal_alias",
     "sigassign/signal_alias_subprogram",
     "sigassign/stable_quiet",
+    "sigassign/transaction_init",
     "sigassign/waveforms",
     "textio/file_roundtrip",
     "textio/std_logic_textio",

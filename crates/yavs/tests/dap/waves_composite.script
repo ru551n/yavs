@@ -1,0 +1,10 @@
+top vals
+request initialize {"adapterID": "yavs"}
+request launch {}
+request yavs/waveSubscribe {"include": ["**"], "exclude": ["vals.p.big"], "variables": true, "flushMs": 1000000}
+request yavs/waveSubscribe {"include": ["vals.nosuch"], "maxArrayElems": 1}
+request yavs/waveSubscribe {"include": ["vals.r", "vals.p.big", "vals.p.v"], "variables": true, "maxArrayElems": 4, "flushMs": 1000000}
+request configurationDone {}
+event exited
+event terminated
+request disconnect {}

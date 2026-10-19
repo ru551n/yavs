@@ -724,3 +724,63 @@ fn vhpi_reads_and_deposits_variables() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(again, out, "--threads=4");
 }
+
+/// `--vhpi` under `--dap` (#325): the plugin runs and ends the simulation. Over a port: the
+/// plugin's own prints go to stdout.
+#[test]
+fn plugin_under_dap() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+    let (lib, so) = setup();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["--color", "never", "run", &lib])
+        .arg(format!("--vhpi={}", so.display()))
+        .args(["--dap=0", "top"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("yavs");
+    let mut err = BufReader::new(child.stderr.take().expect("stderr"));
+    let mut line = String::new();
+    err.read_line(&mut line).expect("stderr");
+    let port = line
+        .trim()
+        .strip_prefix("yavs: DAP listening on 127.0.0.1:")
+        .unwrap_or_else(|| panic!("first stderr line: {line}"));
+    let s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
+    let mut w = s.try_clone().expect("clone");
+    let mut r = BufReader::new(s);
+    let mut req = |seq: i64, command: &str| {
+        let m =
+            serde_json::json!({"seq": seq, "type": "request", "command": command, "arguments": {}});
+        yavs_dap::write_message(&mut w, &m).expect("write");
+    };
+    req(1, "initialize");
+    req(2, "launch");
+    req(3, "configurationDone");
+    let mut text = String::new();
+    let exit = loop {
+        let m = yavs_dap::read_message(&mut r)
+            .expect("read")
+            .unwrap_or_else(|| panic!("end of input; output so far: {text}"));
+        if m["event"] == "output" {
+            text += m["body"]["output"].as_str().unwrap_or_default();
+        }
+        if m["event"] == "exited" {
+            break m;
+        }
+    };
+    assert_eq!(exit["body"]["exitCode"], 0, "{text}");
+    assert!(text.contains("FINISH called with status 0"), "{text}");
+    req(4, "disconnect");
+    while yavs_dap::read_message(&mut r).expect("read").is_some() {}
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .expect("stdout")
+        .read_to_string(&mut out)
+        .expect("stdout");
+    assert!(child.wait().expect("wait").success());
+    assert!(out.contains("plugin: start of simulation"), "{out}");
+}

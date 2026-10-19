@@ -27,5 +27,5 @@ pub use model::{
     ScopeKind, SigType, Signal, SignalId, Skipped,
 };
 pub use select::Selection;
-pub use sim::{Recorder, record};
+pub use sim::{Recorder, Sink, record, record_to};
 pub use writer::{Error, WaveConfig, WaveWriter};

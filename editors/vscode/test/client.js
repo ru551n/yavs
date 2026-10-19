@@ -70,6 +70,13 @@ async function main() {
   const threads = await dc.threadsRequest();
   assert.deepEqual(threads.body.threads.map((t) => t.name), [':tb:p', ':tb:q']);
 
+  // Live waves of `cnt` from here on: the hierarchy, then batches of time steps.
+  const waves = [];
+  dc.on('yavs/waves', (e) => waves.push(e.body));
+  const sub = await dc.customRequest('yavs/waveSubscribe', { include: ['tb.cnt'], flushMs: 0 });
+  assert.deepEqual(sub.body.scopes[0].children.map((c) => [c.name, c.id, c.type.kind]),
+    [['cnt', 0, 'integer']]);
+
   // VS Code asks for the first frame, then the rest.
   let st = await dc.stackTraceRequest({ threadId: 1, startFrame: 0, levels: 1 });
   const top = st.body.stackFrames[0];
@@ -196,6 +203,9 @@ async function main() {
   await Promise.all([dc.continueRequest({ threadId: 1 }), dc.waitForEvent('terminated')]);
   assert.match((await out).body.output, /done/);
   assert.equal((await exited).body.exitCode, 0);
+  const cnt = waves.flatMap((b) => b.changes.map((c) => c[2]));
+  assert.deepEqual(cnt.filter((v, i) => v !== cnt[i - 1]).slice(-3), ['2', '4', '6'], cnt);
+  assert.equal(waves[waves.length - 1].to, 30000000);
   await dc.disconnectRequest({ restart: false });
 }
 

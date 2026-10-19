@@ -77,7 +77,7 @@ struct Entry {
 }
 
 struct State {
-    writer: Option<WaveWriter>,
+    writer: Option<Box<dyn Sink>>,
     entries: Vec<Entry>,
     /// Per kernel leaf: its entries, by offset (disjoint).
     by_leaf: Vec<Vec<u32>>,
@@ -98,6 +98,26 @@ struct State {
 #[derive(Clone)]
 pub struct Recorder(Arc<Mutex<State>>);
 
+/// Where a [`Recorder`] puts the values: the FST [`WaveWriter`], or another consumer (the DAP
+/// server's live stream). Values follow the byte layouts of the crate docs.
+pub trait Sink: Send {
+    /// Times do not decrease.
+    fn change(&mut self, time: u64, id: SignalId, value: &[u8]) -> Result<(), Error>;
+    /// Every change of the time step at `time` has been given.
+    fn step(&mut self, _time: u64) {}
+    fn finish(self: Box<Self>) -> Result<(), Error>;
+}
+
+impl Sink for WaveWriter {
+    fn change(&mut self, time: u64, id: SignalId, value: &[u8]) -> Result<(), Error> {
+        WaveWriter::change(self, time, id, value)
+    }
+
+    fn finish(self: Box<Self>) -> Result<(), Error> {
+        WaveWriter::finish(*self)
+    }
+}
+
 /// Build the hierarchy of `e` under `sel`, create the FST at `path` and return the recorder
 /// and the arrays left out by the size cap.
 pub fn record(
@@ -108,6 +128,21 @@ pub fn record(
     cfg: WaveConfig,
     built: Option<&Built>,
 ) -> Result<(Recorder, Vec<Skipped>), Error> {
+    record_to(db, e, sel, built, |h| {
+        Ok(Box::new(WaveWriter::create(path, h, cfg)?))
+    })
+    .map(|(r, h)| (r, h.skipped))
+}
+
+/// [`record`] into the sink `sink` makes for the hierarchy; returns the recorder and the
+/// hierarchy.
+pub fn record_to(
+    db: &Db,
+    e: &Elaborated,
+    sel: Selection,
+    built: Option<&Built>,
+    sink: impl FnOnce(&Hierarchy) -> Result<Box<dyn Sink>, Error>,
+) -> Result<(Recorder, Hierarchy), Error> {
     let mut d = Design {
         db,
         e,
@@ -137,7 +172,7 @@ pub fn record(
         b, entries, vars, ..
     } = d;
     let h = b.finish();
-    let writer = WaveWriter::create(path, &h, cfg)?;
+    let writer = sink(&h)?;
     let mut by_leaf = vec![Vec::new(); e.nets.leaves.len()];
     for (i, en) in entries.iter().enumerate() {
         if let Src::Sig { leaf, .. } = &en.src {
@@ -160,12 +195,18 @@ pub fn record(
         step: 0,
         error: None,
     };
-    Ok((Recorder(Arc::new(Mutex::new(st))), h.skipped))
+    Ok((Recorder(Arc::new(Mutex::new(st))), h))
 }
 
 impl Recorder {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Record every signal's value from `now` (fs) on, for a recorder subscribed after the
+    /// start of the simulation (`Phase::StartOfSim` does this otherwise).
+    pub fn start(&self, now: u64) {
+        self.lock().start(now);
     }
 
     /// Write what is still pending (a run that paused or failed inside a time step), close the
@@ -195,6 +236,22 @@ impl Entry {
 }
 
 impl State {
+    fn start(&mut self, now: u64) {
+        self.at = now;
+        self.step = now;
+        for i in 0..self.entries.len() as u32 {
+            if matches!(self.entries[i as usize].src, Src::Sig { .. }) {
+                self.mark(i);
+            }
+        }
+    }
+
+    fn step_done(&mut self) {
+        if let (None, Some(w)) = (&self.error, &mut self.writer) {
+            w.step(self.step);
+        }
+    }
+
     /// Write the variable sub-elements that changed since the last sample, at the time of the
     /// step that just ended (every process is suspended).
     fn sample_vars(&mut self, hook: &mut Hook<'_>) {
@@ -388,25 +445,19 @@ impl Observer for Recorder {
     fn phase(&mut self, hook: &mut Hook<'_>, phase: Phase) {
         let mut st = self.lock();
         match phase {
-            Phase::StartOfSim => {
-                st.at = hook.now().as_fs();
-                st.step = st.at;
-                for i in 0..st.entries.len() as u32 {
-                    if matches!(st.entries[i as usize].src, Src::Sig { .. }) {
-                        st.mark(i);
-                    }
-                }
-            }
+            Phase::StartOfSim => st.start(hook.now().as_fs()),
             Phase::NextTimeStep => {
                 // The step in progress is complete: its signals, then its variables.
                 st.flush(|r| hook.value(r));
                 st.sample_vars(hook);
+                st.step_done();
                 st.step = hook.now().as_fs();
             }
             Phase::EndOfTimeStep => st.flush(|r| hook.value(r)),
             Phase::EndOfSim => {
                 st.flush(|r| hook.value(r));
                 st.sample_vars(hook);
+                st.step_done();
             }
             Phase::EndOfInit
             | Phase::NextCycle

@@ -532,11 +532,27 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
   (``:tb:u1:s`` or ``tb.u1.s``).
 * Every stop says its simulation time and delta, and reports and ``OUTPUT`` text appear in the
   debug console.
+* **Live waves**: see below.
 
 A stop is a defined point of the simulation: under ``--dap`` processes run on one thread, so
 ``--threads`` is ignored (warning ``W0109``) and every session behaves the same. When the
 simulation ends the client gets the exit status of the run; disconnecting ends the simulation
 (exit status 1 if it had not ended).
 
+``--wave`` and ``--vhpi`` work under ``--dap``: the waveform file is the one the same run
+without the debugger writes, finished when the session ends. A VHPI plugin's own prints go to
+standard output, which ``--dap=stdio`` uses for the protocol, so debug a run with ``--vhpi``
+over a port.
+
+**Live waves** for a waveform viewer: the custom request ``yavs/waveSubscribe`` selects signals
+(and variables) with the globs and limits of ``--wave-include``, ``--wave-exclude``,
+``--wave-max-array`` and ``--wave-variables`` and answers with the recorded hierarchy, as the
+waveform file declares it. From then on ``yavs/waves`` events carry the final value of every
+changed signal per time step, as text like the Variables view, sent at least every
+``flushMs`` (default 100) milliseconds and always before a stop or the end, so the waves reach
+the stop time. A slow client never holds up the simulation: if it falls behind, batches are
+merged and only the last change of each value in them is kept. ``yavs/waveUnsubscribe`` ends
+the stream.
+
 Not yet: function calls and attributes in breakpoint conditions, forcing a part of a signal,
-live waveforms, and ``--dap`` together with ``--wave``, ``--vhpi`` or ``--cov``.
+and ``--dap`` together with ``--cov``.

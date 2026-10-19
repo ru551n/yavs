@@ -494,20 +494,8 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     if a.dap.is_some() {
-        let with = if a.wave.is_some() {
-            Some("`--wave`")
-        } else if !a.vhpi.is_empty() {
-            Some("`--vhpi`")
-        } else if a.cov.is_some() {
-            Some("`--cov`")
-        } else {
-            None
-        };
-        if let Some(w) = with {
-            out.emit(
-                &none,
-                &unsupported(&format!("{w} together with `--dap` (M8)")),
-            );
+        if a.cov.is_some() {
+            out.emit(&none, &unsupported("`--cov` together with `--dap` (M8)"));
             return out.finish(2);
         }
         if a.threads > 1 {
@@ -592,7 +580,16 @@ pub fn run(
         return out.finish(2);
     }
     if let Some(t) = a.dap {
-        return match yavs_dap::serve(&db, &e, cfg, stop, t) {
+        let (db, e) = (Arc::new(db), Arc::new(e));
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let attach = |sim: &mut yavs_kernel::SimControl, built: Option<&yavs_elab::Built>| {
+            let rec = observers(&a, &db, &e, sim, built, &interrupted, &mut out)?;
+            Ok(rec.map(|(path, rec)| -> yavs_dap::Finish {
+                Box::new(move |sim| rec.finish(sim).err().map(|err| wave_error(&path, err)))
+            }))
+        };
+        let r = yavs_dap::serve(db.clone(), e.clone(), cfg, stop, t, attach);
+        return match r {
             Ok(code) => out.finish(code),
             Err(d) => {
                 out.emit(&db.sources, &d);
@@ -618,12 +615,6 @@ pub fn run(
     let names: Vec<String> = e.procs.iter().map(|p| e.proc_name(p)).collect();
     sim.subscribe(Box::new(Printer { names }));
     let rt = built.as_ref().map(|b| b.rt.clone());
-    if !a.vhpi.is_empty() {
-        if let Some(b) = built.clone() {
-            yavs_vhpi::set_runtime(b);
-        }
-        sim.subscribe(Box::new(yavs_vhpi::VhpiObserver));
-    }
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
     let toggles = kind(CovKindArg::Toggle).then(|| {
         let (t, skipped) = yavs_cov::toggle::toggles(&db, &e, a.cov_toggle_max);
@@ -643,67 +634,20 @@ pub fn run(
         sim.subscribe(Box::new(t.clone()));
         t
     });
-    let wave_error = |path: &str, err: yavs_wave::Error| {
-        Diagnostic::error("E0801", format!("cannot write the waveform file `{path}`"))
-            .with_note(err.to_string())
-    };
     let interrupted = Arc::new(AtomicBool::new(false));
-    let recorder = match &a.wave {
-        None => None,
-        Some(path) => {
-            let sel = yavs_wave::Selection {
-                include: a.wave_include.clone(),
-                exclude: a.wave_exclude.clone(),
-                max_array_elems: a.wave_max_array,
-            };
-            let cfg = yavs_wave::WaveConfig::default();
-            match yavs_wave::record(
-                &db,
-                &e,
-                std::path::Path::new(path),
-                sel,
-                cfg,
-                built.as_ref().filter(|_| a.wave_variables),
-            ) {
-                Ok((rec, skipped)) => {
-                    for s in skipped {
-                        let why = match s.elems {
-                            Some(n) => format!(
-                                "it has {n} elements, more than `--wave-max-array={}`",
-                                a.wave_max_array
-                            ),
-                            None => "its bounds are known only when the simulation runs".into(),
-                        };
-                        out.emit(
-                            &none,
-                            &Diagnostic::warning(
-                                "W0802",
-                                format!("`{}` is not recorded in the waveform", s.path),
-                            )
-                            .with_note(why),
-                        );
-                    }
-                    sim.subscribe(Box::new(rec.clone()));
-                    // Ctrl-C ends the run between cycles so the file is finished (rule 11).
-                    let (stop, flag) = (sim.interrupt(), interrupted.clone());
-                    if let Err(err) = yavs_wave::interrupt::install(move || {
-                        flag.store(true, Ordering::Relaxed);
-                        stop.stop();
-                    }) {
-                        out.emit(
-                            &none,
-                            &Diagnostic::error("E0803", "cannot install the Ctrl-C handler")
-                                .with_note(err.to_string()),
-                        );
-                        return out.finish(2);
-                    }
-                    Some((path, rec))
-                }
-                Err(err) => {
-                    out.emit(&none, &wave_error(path, err));
-                    return out.finish(2);
-                }
-            }
+    let recorder = match observers(
+        &a,
+        &db,
+        &e,
+        &mut sim,
+        built.as_ref(),
+        &interrupted,
+        &mut out,
+    ) {
+        Ok(r) => r,
+        Err(d) => {
+            out.emit(&none, &d);
+            return out.finish(2);
         }
     };
     let r = sim.run_until(stop);
@@ -748,7 +692,7 @@ pub fn run(
     if let Some((path, rec)) = recorder
         && let Err(err) = rec.finish(&sim)
     {
-        out.emit(&none, &wave_error(path, err));
+        out.emit(&none, &wave_error(&path, err));
         code = code.max(1);
     }
     // A report of severity error or failure fails the run even below `--exit-severity`, unless
@@ -794,6 +738,85 @@ pub fn run(
     }
     let code = if out.errors > 0 { code.max(1) } else { code };
     out.finish(code)
+}
+
+fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {
+    Diagnostic::error("E0801", format!("cannot write the waveform file `{path}`"))
+        .with_note(err.to_string())
+}
+
+/// Subscribe the VHPI observer (`--vhpi`) and the waveform recorder (`--wave`) to `sim`, for
+/// `yavs run` with or without `--dap`; returns the recorder and its file.
+fn observers(
+    a: &RunArgs,
+    db: &yavs_sem::Db,
+    e: &yavs_elab::Elaborated,
+    sim: &mut yavs_kernel::SimControl,
+    built: Option<&yavs_elab::Built>,
+    interrupted: &Arc<AtomicBool>,
+    out: &mut Out,
+) -> Result<Option<(String, yavs_wave::Recorder)>, Box<Diagnostic>> {
+    let none = SourceMap::default();
+    if !a.vhpi.is_empty() {
+        if let Some(b) = built.cloned() {
+            yavs_vhpi::set_runtime(b);
+        }
+        sim.subscribe(Box::new(yavs_vhpi::VhpiObserver));
+    }
+    let recorder = match &a.wave {
+        None => None,
+        Some(path) => {
+            let sel = yavs_wave::Selection {
+                include: a.wave_include.clone(),
+                exclude: a.wave_exclude.clone(),
+                max_array_elems: a.wave_max_array,
+            };
+            let cfg = yavs_wave::WaveConfig::default();
+            match yavs_wave::record(
+                db,
+                e,
+                std::path::Path::new(path),
+                sel,
+                cfg,
+                built.filter(|_| a.wave_variables),
+            ) {
+                Ok((rec, skipped)) => {
+                    for s in skipped {
+                        let why = match s.elems {
+                            Some(n) => format!(
+                                "it has {n} elements, more than `--wave-max-array={}`",
+                                a.wave_max_array
+                            ),
+                            None => "its bounds are known only when the simulation runs".into(),
+                        };
+                        out.emit(
+                            &none,
+                            &Diagnostic::warning(
+                                "W0802",
+                                format!("`{}` is not recorded in the waveform", s.path),
+                            )
+                            .with_note(why),
+                        );
+                    }
+                    sim.subscribe(Box::new(rec.clone()));
+                    // Ctrl-C ends the run between cycles so the file is finished (rule 11).
+                    let (stop, flag) = (sim.interrupt(), interrupted.clone());
+                    if let Err(err) = yavs_wave::interrupt::install(move || {
+                        flag.store(true, Ordering::Relaxed);
+                        stop.stop();
+                    }) {
+                        return Err(Box::new(
+                            Diagnostic::error("E0803", "cannot install the Ctrl-C handler")
+                                .with_note(err.to_string()),
+                        ));
+                    }
+                    Some((path.clone(), rec))
+                }
+                Err(err) => return Err(Box::new(wave_error(path, err))),
+            }
+        }
+    };
+    Ok(recorder)
 }
 
 /// Prints reports and `OUTPUT` text in NVC's format on stdout (cli-contract section 5;

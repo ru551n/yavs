@@ -1463,6 +1463,7 @@ dependencies = [
  "yavs-sem",
  "yavs-std",
  "yavs-syntax",
+ "yavs-wave",
 ]
 
 [[package]]

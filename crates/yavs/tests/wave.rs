@@ -647,3 +647,43 @@ fn wave_composite_and_shared_variables() {
     go(&t4, &["--threads=4"]);
     assert_eq!(dump(&t4), s);
 }
+
+/// `--wave` under `--dap` (#325): the debugger records the same file as a plain run.
+#[test]
+fn wave_under_dap() {
+    use std::io::BufReader;
+    use std::process::Stdio;
+    let dir = scratch("dap");
+    let src = repo().join("crates/yavs/tests/dap/tb.vhd");
+    assert!(analyze(&dir, &src, "2008"));
+    let plain = run(&dir, &["--wave=plain.fst", "tb"]);
+    assert!(plain.status.success(), "{plain:?}");
+    let mut child = yavs()
+        .current_dir(&dir)
+        .args(["run", &format!("--work=work:{}", dir.join("lib").display())])
+        .args(["--wave=dap.fst", "--dap=stdio", "tb"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("yavs");
+    let mut w = child.stdin.take().expect("stdin");
+    let mut r = BufReader::new(child.stdout.take().expect("stdout"));
+    let mut req = |seq: i64, command: &str| {
+        let m =
+            serde_json::json!({"seq": seq, "type": "request", "command": command, "arguments": {}});
+        yavs_dap::write_message(&mut w, &m).expect("write");
+    };
+    req(1, "initialize");
+    req(2, "launch");
+    req(3, "configurationDone");
+    while let Some(m) = yavs_dap::read_message(&mut r).expect("read") {
+        if m["event"] == "terminated" {
+            break;
+        }
+    }
+    req(4, "disconnect");
+    drop(w);
+    assert!(child.wait().expect("wait").success());
+    assert_eq!(dump(&dir.join("dap.fst")), dump(&dir.join("plain.fst")));
+    let _ = std::fs::remove_dir_all(&dir);
+}

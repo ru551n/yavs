@@ -121,6 +121,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "The Debug Adapter Protocol connection (`--dap`) cannot be opened: the port is in use or not allowed, or accepting the client failed.",
     ),
     (
+        "E0702",
+        "The live waves of a `yavs/waveSubscribe` subscription failed while the simulation ran (a value the recorder cannot encode); the note says why. The run fails.",
+    ),
+    (
         "E0110",
         "A coverage database or report cannot be written (`yavs run --cov=FILE`, `yavs cov merge -o FILE`, `yavs cov report --cobertura FILE`): the note gives the operating system's reason.",
     ),

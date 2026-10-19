@@ -1634,6 +1634,18 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   rejected when the breakpoint is set. Why: ir.md 3.4 plans a condition function nested in the
   statement's function, but the program is fixed once the simulation runs; this covers the
   conditions users write (`count = 3 and state = IDLE`), and lowering stays possible later.
+- **Live waves are a second sink of the `--wave` recorder** (#325): `yavs/waveSubscribe` builds a
+  `yavs_wave::Recorder` (`record_to`, a `Sink` beside the FST `WaveWriter`) for the client's
+  selection, so the stream has the hierarchy, selection rules, final value per time step and
+  entry order of the file. Values go out as text (as the Variables view and the value parser
+  write them), not the recorder's bytes. Why: one value syntax across the protocol and readable
+  transcripts; the subscribe response gives each value's type, which is all a viewer needs to
+  convert. Batches go through a bounded queue and are merged when it is full (only the last
+  change of each value kept, `merged`), so a slow client never blocks the simulation (user,
+  2026-10-19: never block the simulation); `docs/design/gui.md` 5.1 is updated to match.
+- **`--wave` and `--vhpi` work under `--dap`** (#325): the CLI attaches the same observers to the
+  debug build and the recorder finishes before `exited`. A VHPI plugin's stdout shares the
+  stdio transport, so `--vhpi` is debugged over a port (#389).
 - Details of ids, request routing and pause handling: `crates/yavs-dap/AGENTS.md` section 3.
 
 ## Code coverage (yavs-cov, yavs-lower, yavs-elab, CLI, M9, #131, 2026-10-19)

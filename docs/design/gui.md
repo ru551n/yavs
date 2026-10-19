@@ -36,8 +36,8 @@ The server (`crates/yavs-dap`, `yavs run --dap=PORT|stdio`) on main:
 Also on main: the editor extension in `editors/vscode/` (a client of the same requests, useful as
 a second reference client), and the wave recorder `crates/yavs-wave` (`yavs run --wave`: FST
 through `wavefst`, hierarchy with records and arrays as scopes, enum tables, include and exclude
-globs, an array size cap, final value per time step). Open: #325, live waves and `--wave`/`--vhpi`
-together with `--dap`.
+globs, an array size cap, final value per time step). Live waves and `--wave`/`--vhpi`
+together with `--dap` (#325) are in (section 5.1).
 
 ## 2. Process model
 
@@ -123,24 +123,31 @@ are absolute), an objects-while-running request (the Objects panel reads the wav
 
 ### 5.1 On the wire (P6, closes #325)
 
-- `yavs/waveSubscribe {include: [glob], exclude: [glob], maxArrayElems, variables: bool}` before
-  `configurationDone` (or later, with history only from then on). Globs and cap are those of
+- `yavs/waveSubscribe {include: [glob], exclude: [glob], maxArrayElems, variables: bool,
+  flushMs}` before `configurationDone` (or later, with history only from then on; it replaces
+  the subscription). Globs and cap are those of
   `yavs_wave::Selection`. The response is the wave hierarchy as `yavs-wave` builds it for FST:
   scopes (`kind`, name, generate alternative), and per variable an `id`, its `SigType` (vector
   width and element enumeration, enum literal table in original spelling, integer subtype name and
   width, real, time) and direction. The GUI then builds the same tree a written FST would show.
-- Event `yavs/waves {from, to, times: [<fs>], data: <base64>}`: the changes of completed time
-  steps, final value per time step as in the FST, `data` a sequence of `(u32 time index in this
-  batch, u32 id, value bytes)` with the byte layout per `SigType` of the `yavs-wave` crate docs.
-  A batch with no changes still carries `to`, so the status bar time moves while running.
-- The server flushes a batch at the end of a time step once 100 ms have passed or 256 KiB are
-  pending, always before `stopped`, `exited` and the response to `yavs/waveUnsubscribe`, so the
-  GUI's waves end where the stop is.
-- Server side, the `Recorder` gets a sink seam: the FST `WaveWriter` and the DAP stream are its two
-  sinks, so `--wave out.fst` and the stream work together under `--dap` (the other half of #325).
-- `ponytail:` the stream is JSON with base64 batches on the DAP pipe; while the GUI is slower than
-  the simulation the server blocks on the write (the simulation waits, nothing is dropped). A
-  binary side channel is the upgrade if measured throughput needs it.
+- Event `yavs/waves {from, to, times: [<fs>], changes: [[<time index>, <id>, <value>]]}`: the
+  changes of completed time steps, final value per time step as in the FST, in entry order; the
+  value is text as the Variables view and the value parser write it (`"01UX"` for a logic
+  vector, `'1'` or `IDLE` for an enumeration, `42`, `1.5`, `10 fs` for TIME). Implemented
+  differently from the first draft of this section (base64 of the FST byte layout): one value
+  syntax across the protocol and readable transcripts; the hierarchy gives each id's type, so the
+  GUI converts text to its store as cheaply as bytes. A batch with no changes still carries `to`,
+  so the status bar time moves while running.
+- The server flushes a batch at the end of a time step once `flushMs` (default 100) have passed
+  or 256 KiB are pending, always before `stopped`, `exited` and the response to
+  `yavs/waveUnsubscribe`, so the GUI's waves end where the stop is.
+- Server side, the `Recorder` has a sink seam (`yavs_wave::Sink`, `record_to`): the FST
+  `WaveWriter` and the DAP stream are two sinks, so `--wave out.fst` and the stream work together
+  under `--dap`.
+- The simulation never waits for the client (user, 2026-10-19): batches go through a bounded
+  queue to a sender thread; when it is full the newest batch is merged into the last one, keeping
+  only the last change of each value (`merged: true`). `ponytail:` JSON on the DAP pipe; a binary
+  side channel is the upgrade if measured throughput needs it.
 
 ### 5.2 In the GUI
 
@@ -163,7 +170,7 @@ libsurfer is not on crates.io; its public API (checked on its main branch, versi
 The live store: the GUI builds a `wellen::Hierarchy` with `wellen::HierarchyBuilder` from the
 subscribe response (same mapping as the FST: 9-state characters for the std_logic family, enum
 tables, integer widths) and feeds every batch into a `wellen::Encoder` (`time_change`,
-`vcd_value_change` with the value as text). On every stop, and at most twice a second while
+`vcd_value_change` with the value converted by its type). On every stop, and at most twice a second while
 running, it calls `Encoder::snapshot()` and hands libsurfer a new container with
 `WavesLoaded(.., KeepAll)`.
 

@@ -12,6 +12,7 @@
 
 mod cond;
 mod design;
+mod waves;
 mod wire;
 
 use std::collections::HashMap;
@@ -19,11 +20,11 @@ use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde_json::{Value as Json, json};
 use yavs_diag::{Diagnostic, MessageFormat};
-use yavs_elab::Elaborated;
+use yavs_elab::{Built, Elaborated};
 use yavs_interp::{
     DebugSession, Debugger, HitCond, Hits, LineBp, ProcState, Resume, SignalBreak, Stop,
     StopReason, Watches,
@@ -120,7 +121,18 @@ struct Shared {
     nodes: Mutex<Vec<Node>>,
     /// Line breakpoints with a condition, per statement.
     conds: Mutex<HashMap<yavs_ir::StmtId, Arc<LineCond>>>,
+    /// Live waves (`waves`): the subscription's recorder and the batches it streams; the
+    /// design and the shared state a recorder is built from.
+    wave: Arc<Mutex<Option<waves::Sub>>>,
+    stream: Arc<waves::Stream>,
+    db: Arc<Db>,
+    elab: Arc<Elaborated>,
+    built: OnceLock<Built>,
 }
+
+/// Work at the end of the run, before `exited` (the caller's `--wave` recorder finishing its
+/// file); a diagnostic fails the run.
+pub type Finish = Box<dyn FnOnce(&SimControl) -> Option<Diagnostic>>;
 
 /// The first variables reference of the per-stop table (`Shared::nodes`); the stateless
 /// references of scopes stay below it.
@@ -200,13 +212,37 @@ struct Op {
 }
 
 impl Shared {
-    fn send(&self, mut m: Json) {
+    /// Send `m` after the queued wave batches, so events keep the order they were made in.
+    fn send(&self, m: Json) {
         let mut out = self.out.lock().unwrap_or_else(|p| p.into_inner());
+        self.drain(&mut out);
+        self.write(&mut out, m);
+    }
+
+    /// Write the queued wave batches (`out` locked before the queue).
+    fn drain(&self, out: &mut Box<dyn Write + Send>) {
+        let q: Vec<_> = self
+            .stream
+            .queue
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain(..)
+            .collect();
+        for b in q {
+            self.write(out, b.event());
+        }
+    }
+
+    fn write(&self, out: &mut Box<dyn Write + Send>, mut m: Json) {
         let mut seq = self.seq.lock().unwrap_or_else(|p| p.into_inner());
         *seq += 1;
         m["seq"] = json!(*seq);
         // A broken connection ends the session through the reader's end of input.
         let _ = write_message(&mut **out, &m);
+    }
+
+    fn lock_wave(&self) -> MutexGuard<'_, Option<waves::Sub>> {
+        self.wave.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn event(&self, event: &str, body: Json) {
@@ -368,6 +404,8 @@ impl Debugger for Front {
 fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
     sh.nodes.lock().unwrap_or_else(|p| p.into_inner()).clear();
     sh.stopped.store(true, Ordering::Relaxed);
+    // The waves of the completed time steps, then the stop.
+    sh.stream.push();
     sh.event("stopped", stopped);
     let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
     loop {
@@ -422,6 +460,7 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
                 set_variable(sh, at, &req);
                 None
             }
+
             c => {
                 sh.fail(&req, &format!("`{c}` is not supported"));
                 None
@@ -1140,6 +1179,12 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
         "yavs/setSignalBreakpoints" => set_signal_breakpoints(sh, &req, 1),
         "setExceptionBreakpoints" => sh.respond(&req, json!({})),
         "yavs/hierarchy" => sh.respond(&req, hierarchy(sh)),
+        "yavs/waveSubscribe" => wave_subscribe(sh, &req),
+        "yavs/waveUnsubscribe" => {
+            sh.lock_wave().take();
+            sh.stream.push();
+            sh.respond(&req, json!({}));
+        }
         "configurationDone" => {
             sh.respond(&req, json!({}));
             let _ = tx.send(Msg::Start);
@@ -1251,6 +1296,49 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
     }
     set.insert(key, ids);
     sh.respond(req, json!({"breakpoints": out}));
+}
+
+/// `yavs/waveSubscribe`: replace the live wave subscription by a recorder of the signals (and,
+/// with `variables`, the variables) `include` and `exclude` select, as `--wave` records them;
+/// answers with the hierarchy. A subscription made while the simulation runs records from its
+/// next callback on.
+fn wave_subscribe(sh: &Shared, req: &Json) {
+    let a = &req["arguments"];
+    let globs = |k: &str| -> Vec<String> {
+        a[k].as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|g| g.as_str().map(String::from))
+            .collect()
+    };
+    let mut sel = yavs_wave::Selection {
+        include: globs("include"),
+        exclude: globs("exclude"),
+        ..Default::default()
+    };
+    if let Some(n) = a["maxArrayElems"].as_u64() {
+        sel.max_array_elems = n as usize;
+    }
+    let every = std::time::Duration::from_millis(a["flushMs"].as_u64().unwrap_or(100));
+    let built = sh.built.get().filter(|_| a["variables"] == true);
+    // The previous subscription's batches go first.
+    let mut cur = sh.lock_wave();
+    cur.take();
+    sh.stream.push();
+    let r = yavs_wave::record_to(&sh.db, &sh.elab, sel, built, |h| {
+        Ok(waves::sink(&sh.stream, h, every))
+    });
+    match r {
+        Ok((rec, h)) => {
+            *cur = Some(waves::Sub::new(rec));
+            drop(cur);
+            sh.respond(req, waves::hierarchy(&h));
+        }
+        Err(err) => {
+            drop(cur);
+            sh.fail(req, &err.to_string());
+        }
+    }
 }
 
 /// The process of thread `tid`, as the design shows it.
@@ -1426,14 +1514,18 @@ fn parse_hit(s: &str) -> Result<HitCond, String> {
 }
 
 /// Run the elaborated design under a DAP client until it ends; returns the exit status of
-/// the run (docs/cli-contract.md section 5).
+/// the run (docs/cli-contract.md section 5). `attach` subscribes the caller's observers
+/// (`--wave`, `--vhpi`) to the built simulation and returns what to do at its end.
 pub fn serve(
-    db: &Db,
-    e: &Elaborated,
+    db: Arc<Db>,
+    e: Arc<Elaborated>,
     cfg: Config,
     stop: Time,
     transport: Transport,
+    attach: impl FnOnce(&mut SimControl, Option<&Built>) -> Result<Option<Finish>, Box<Diagnostic>>,
 ) -> Result<u8, Box<Diagnostic>> {
+    let (db_arc, e_arc) = (db, e);
+    let (db, e) = (&*db_arc, &*e_arc);
     let Some(ir) = &e.ir else {
         return Err(Box::new(
             Diagnostic::error("E9999", "internal compiler error: this is a bug in yavs")
@@ -1483,12 +1575,17 @@ pub fn serve(
         prog: ir.program.clone(),
         nodes: Mutex::new(Vec::new()),
         conds: Mutex::new(HashMap::new()),
+        wave: Arc::default(),
+        stream: Arc::default(),
+        db: db_arc.clone(),
+        elab: e_arc.clone(),
+        built: OnceLock::new(),
     });
     let session = DebugSession::new(&ir.program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());
     // Stops inside a process need one thread (ir.md 3.4).
     let cfg = Config { threads: 1, ..cfg };
-    let (mut sim, rt) = match e.build_debug(cfg, &session) {
+    let (mut sim, built) = match e.build_debug(cfg, &session) {
         Ok(x) => x,
         Err(err) => return Err(Box::new(e.runtime_diagnostic(&err))),
     };
@@ -1502,6 +1599,24 @@ pub fn serve(
     let _ = sh.watches.set(brk.watches());
     let _ = sh.hits.set(brk.hits());
     sim.subscribe(Box::new(brk));
+    sim.subscribe(Box::new(waves::Tap {
+        sub: sh.wave.clone(),
+        last: 0,
+    }));
+    let finish = attach(&mut sim, built.as_ref())?;
+    let rt = built.as_ref().map(|b| b.rt.clone());
+    if let Some(b) = built {
+        let _ = sh.built.set(b);
+    }
+    {
+        let sh = sh.clone();
+        std::thread::spawn(move || {
+            waves::sender(sh.stream.clone(), || {
+                let mut out = sh.out.lock().unwrap_or_else(|p| p.into_inner());
+                sh.drain(&mut out);
+            })
+        });
+    }
     {
         let sh = sh.clone();
         std::thread::spawn(move || {
@@ -1634,7 +1749,21 @@ pub fn serve(
             + rt.assert_count(yavs_kernel::Severity::Failure)
             > 0
     });
-    let code = if code == 0 && failed { 1 } else { code };
+    let mut code = if code == 0 && failed { 1 } else { code };
+    // The live waves' last batch is queued here and sent before `exited`.
+    let live = sh.lock_wave().take().map(|s| s.rec);
+    let live = live.and_then(|rec| {
+        rec.finish(&sim).err().map(|err| {
+            Diagnostic::error("E0702", "the live waves failed").with_note(err.to_string())
+        })
+    });
+    for d in live.into_iter().chain(finish.and_then(|f| f(&sim))) {
+        sh.output(
+            "stderr",
+            &yavs_diag::render(&db.sources, &d, MessageFormat::Human, false),
+        );
+        code = code.max(1);
+    }
     sh.event("exited", json!({"exitCode": code}));
     sh.event("terminated", json!({}));
     // Answer the disconnect, or wait for it.

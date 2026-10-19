@@ -240,6 +240,17 @@ fn composites_and_hierarchy() {
     script_case("composite", &[]);
 }
 
+/// Live waves: subscriptions replaced before the run, batches per time step and before stops,
+/// unsubscribe and a new subscription at a stop (recorded from there on), with `--wave`
+/// recording at the same time. Composite signals and variables in one batch, a selection of
+/// nothing, an array over the cap. Identical at `--threads=4`.
+#[test]
+fn live_waves() {
+    script_case("waves", &[]);
+    script_case("waves", &["--threads=4", "--wave=waves.fst"]);
+    script_case("waves_composite", &[]);
+}
+
 /// Pause a simulation that would run forever, then read a signal and disconnect.
 #[test]
 fn pause() {

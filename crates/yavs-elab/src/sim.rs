@@ -434,9 +434,8 @@ impl Elaborated {
         &self,
         cfg: Config,
         session: &Arc<DebugSession>,
-    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+    ) -> Result<(SimControl, Option<Built>), SimError> {
         self.build_runtime_with(cfg, Some(session))
-            .map(|(s, b)| (s, b.map(|b| b.rt)))
     }
 
     /// The path of a process instance as reports and the debugger show it: `:top:u1:p`.

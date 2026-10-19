@@ -18,8 +18,8 @@
 //! - subtypes and expressions that mention none of the above keep their ids;
 //!   changed expressions lose their folded value and are folded again.
 
-use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use yavs_diag::{Diagnostic, Span};
 use yavs_syntax::Symbol;
@@ -82,7 +82,7 @@ pub struct Instance {
     /// (<>)`) this is the generic package's own region: its formals stay opaque.
     pub scope: ScopeId,
     /// Cloned body (lazy, when M2 asks: [`Db::instance_body`]).
-    pub body: OnceCell<ScopeId>,
+    pub body: OnceLock<ScopeId>,
     pub mangled: Symbol,
 }
 
@@ -582,7 +582,7 @@ impl Db {
                     site: decl,
                     map: GenericMap::default(),
                     scope: gscope,
-                    body: OnceCell::new(),
+                    body: OnceLock::new(),
                     mangled,
                 });
                 self.generic.maps.insert(inst, Remap::default());
@@ -1036,7 +1036,7 @@ impl Db {
             site,
             map,
             scope: inst_scope,
-            body: OnceCell::new(),
+            body: OnceLock::new(),
             mangled,
         });
         self.generic.maps.insert(inst, r);
@@ -1240,7 +1240,7 @@ impl Db {
             site: d,
             map,
             scope: new_scope,
-            body: OnceCell::new(),
+            body: OnceLock::new(),
             mangled,
         });
         self.generic.maps.insert(inst, r);
@@ -2904,7 +2904,7 @@ impl Db {
             site,
             map,
             scope,
-            body: OnceCell::new(),
+            body: OnceLock::new(),
             mangled,
         });
         self.generic.maps.insert(n, composed);

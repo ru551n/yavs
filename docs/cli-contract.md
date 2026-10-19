@@ -288,8 +288,9 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   an `output` event of category `stderr`. Processes run on one thread (`--threads` above 1 is
   warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as
   the `exited` event before `terminated`; a disconnect before the end stops the run (exit 1).
-  `--wave`, `--vhpi` or `--cov` with `--dap` is `E9999` not implemented (exit 2). A port that cannot be
-  opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and
+  `--wave` and `--vhpi` work with `--dap` (the waveform file is finished before `exited`; a
+  plugin's own prints go to stdout, so use a port with `--vhpi`); `--cov` with `--dap` is
+  `E9999` not implemented (exit 2). A port that cannot be opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and
   `yavs/runUntil` (argument `time`, a TIME literal such as `"10 ns"` or `"10ns"`, relative to the
   current time or absolute), `yavs/stepDelta` and `yavs/stepTimestep` (no arguments); each
   answers, sends `continued`, and the next `stopped` event's `description` gives the time and
@@ -314,7 +315,19 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `indexedVariables`, children named by field or index, paged by `start` and `count`).
   The scope `Hierarchy` and the custom request `yavs/hierarchy` (answered at any time;
   `regions: [{name, path, kind, regions, processes, signals: [{name, path, type}]}]`) give the
-  elaborated hierarchy. Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
+  elaborated hierarchy. Live waves (answered at any time): `yavs/waveSubscribe` (`include`,
+  `exclude`: globs as `--wave-include`/`--wave-exclude`; `maxArrayElems` as `--wave-max-array`;
+  `variables` as `--wave-variables`; `flushMs`, default 100) replaces the subscription and
+  answers with the recorded hierarchy as `--wave` declares it (`scopes: [{scope, kind,
+  component, children}]`, signals `{name, id, type, class, direction}`, `skipped`);
+  `yavs/waveUnsubscribe` ends it. Event `yavs/waves {from, to, times: [fs], changes: [[time
+  index, id, value]]}` carries the final value per completed time step of every recorded value
+  that changed (values as text, as the Variables view shows them; times as integers in fs),
+  sent at the end of a time step once `flushMs` have passed or enough text is pending, and
+  always before `stopped`, `exited` and the `yavs/waveUnsubscribe` response. The simulation
+  never waits for the client: when too many batches are queued the newest is merged into the
+  last (`merged: true`, only the last change of each value kept). A failure of the live waves
+  is `E0702` (the run fails). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
 - `--tier=interp|llvm` (`run`, default `interp`): `llvm` compiles every function of the design
   with the LLVM tier before time 0 and runs that code; the output is identical to `interp` (the
   interpreter is the reference). Elaboration-time code (package and instance initialisation)

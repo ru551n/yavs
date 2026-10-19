@@ -1,0 +1,17 @@
+request initialize {"adapterID": "yavs"}
+request launch {}
+request yavs/waveSubscribe {"include": ["tb.cnt"], "flushMs": 0}
+request yavs/waveSubscribe {"include": ["tb.*"], "exclude": ["tb.p"], "flushMs": 0}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 22}]}
+request configurationDone {}
+event stopped
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request yavs/stepTimestep {}
+event stopped
+request yavs/stepTimestep {}
+event stopped
+request yavs/waveUnsubscribe {}
+request yavs/waveSubscribe {"include": ["tb.v"], "flushMs": 0}
+request continue {}
+event terminated
+request disconnect {}

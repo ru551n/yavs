@@ -234,6 +234,21 @@ and an enumeration literal (12.4) are errors in yavs; some simulators accept the
 Subprogram calls
 ----------------
 
+Conversions on unconstrained ports
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: vhdl
+
+   u1 : entity work.sub port map (i => w4(u));    -- subtype w4 is bit_vector(1 to 4)
+   u2 : entity work.sub port map (u4(o) => s);    -- subtype u4 is unsigned(7 downto 4)
+
+An unconstrained port takes its index ranges from the conversion (5.3.2.2): the type mark or the
+function's result subtype in the actual part, the type mark or the function's parameter subtype
+in the formal part. A conversion that does not define them, ``i => bit_vector(u)``, is an error
+(``E1312``). Some simulators give the port the actual's bounds instead, or reject these forms.
+
+*Portable:* constrain the port, or convert into a signal of the wanted subtype.
+
 Conversions in call associations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

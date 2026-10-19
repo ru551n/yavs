@@ -1276,23 +1276,35 @@ impl Elab<'_> {
                     ));
                 };
                 let (al, ashape) = self.m.select(ao, &asels, aspan)?;
-                // An unconstrained formal takes the bounds of the conversion function's result
-                // subtype, when that is constrained.
-                let ret = actual_conv
-                    .and_then(|c| db.decls[c].kind.subprogram())
-                    .and_then(|sp| sp.ret);
-                let own = match (own, ret) {
-                    (None, Some(r)) if mode == PortMode::In => {
-                        self.m.shape(db, r, Some(sc), aspan)?
+                // An unconstrained formal takes the bounds of a conversion (LRM 5.3.2.2): the
+                // result subtype or type mark of the actual part's (modes in, inout), else the
+                // parameter subtype or type mark of the formal part's; sem made sure it has them.
+                let conv_st = |c: Option<DeclId>, result: bool| {
+                    c.and_then(|c| match &db.decls[c].kind {
+                        DeclKind::Subtype(st) => Some(*st),
+                        DeclKind::Type(t) => Some(db.types[*t].first_subtype),
+                        k => k.subprogram().and_then(|sp| match result {
+                            true => sp.ret,
+                            false => sp.params.first().map(|p| p.subtype),
+                        }),
+                    })
+                };
+                let by = match mode {
+                    PortMode::In => conv_st(*actual_conv, true),
+                    PortMode::Inout => {
+                        conv_st(*actual_conv, true).or_else(|| conv_st(*formal_conv, false))
                     }
+                    PortMode::Out | PortMode::Buffer => conv_st(*formal_conv, false),
+                };
+                let own = match (own, by) {
+                    (None, Some(st)) => self.m.shape(db, st, Some(sc), aspan)?,
                     (o, _) => o,
                 };
                 let Some(shape) = own else {
-                    return Err(unsupported(
+                    return Err(Box::new(ice(
                         span,
-                        "conversions of unconstrained ports",
-                        "M3",
-                    ));
+                        "a converted unconstrained port without bounds from its conversion",
+                    )));
                 };
                 let fshape = shape.clone();
                 let fo = self

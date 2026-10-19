@@ -59,7 +59,7 @@ codes! {
     NAMED_RETURN_CONTEXT = "E1304", "A function with a named return value (`return r of t`, VHDL-2019) takes its result subtype from the context of the call: the call must be the value of an assignment, initial value or `return`, an actual of a constrained formal or a qualified expression, of a fully constrained subtype.";
     FORMAL_TWICE = "E1310", "A formal is associated more than once.";
     MISSING_ACTUAL = "E1311", "A formal without a default has no actual.";
-    FORMAL_CONV_UNCONSTRAINED = "E1312", "A conversion on the formal side of an association needs a formal of a fully constrained subtype: its bounds would have to come back from the actual through the conversion (6.5.7.1; GHDL and Questa reject it too).";
+    FORMAL_CONV_UNCONSTRAINED = "E1312", "A conversion in the association of a formal that is not fully constrained must give the formal its bounds (5.3.2.2): in the formal part the parameter subtype of the function or the type mark of the type conversion, in the actual part the result subtype of the function or the type mark, must be constrained. No bounds flow back from the actual through a conversion.";
     CONV_MISUSE = "E1313", "A conversion in an association that the formal does not allow (6.5.7.1, 4.2.2.3): a formal conversion only for `out` and `inout` variable parameters (and ports other than `in`), an actual conversion only where data flows in, an `inout` parameter converts both ways or not at all, and a signal parameter takes no conversion.";
     AGG_NO_TYPE = "E1320", "The type of an aggregate comes only from its context, and this context does not give one, or gives a type that is not an array or record type.";
     AGG_MISSING = "E1321", "A record aggregate does not give a value for every element.";

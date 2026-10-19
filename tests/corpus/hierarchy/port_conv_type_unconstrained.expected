@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:port_conv_type_unconstrained:_p1	s1 changed 0000
+diag	note	1000000	0	:port_conv_type_unconstrained:i1:_p0	i 1 to 4: 1100
+diag	note	1000000	0	:port_conv_type_unconstrained:i1:_p0	p 1 to 3: 11 02 13 
+diag	note	1000000	0	:port_conv_type_unconstrained:i1:_p0	u.v 0 to 3: 1001
+diag	note	2000000	0	:port_conv_type_unconstrained:o1:_p0	o 7 4
+diag	note	2000000	1	:port_conv_type_unconstrained:_p1	s1 changed 0111
+diag	note	3000000	0	:port_conv_type_unconstrained:o2:_p0	o 7 4
+diag	note	4000000	0	:port_conv_type_unconstrained:o3:_p0	q 7 5
+diag	note	5000000	0	:port_conv_type_unconstrained:_p0	s1 0111 s2 0111
+diag	note	5000000	0	:port_conv_type_unconstrained:_p0	so '0'1'1'5

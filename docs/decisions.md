@@ -712,6 +712,15 @@ a note and a help suggesting an access type, as the reference simulators reject 
   simulators split: one follows the LRM, one ignores `inertial` on a part, one does not parse
   it; `docs/design/lrm-checks.md` L80): the HIR keeps the reserved word per part
   (`IndividualPart`), and an `inertial` part of a port that is not `in` is E1360.
+- **Conversions on unconstrained ports** (#262, portleft agent, 2026-10-19; LRM 5.3.2.2,
+  `docs/design/lrm-checks.md` L87): a formal that is not fully constrained takes its bounds
+  from its conversion, the actual part's result subtype or type mark for modes `in` and
+  `inout`, the formal part's parameter subtype or type mark for `out` and `buffer`. sem keeps
+  the type mark's own declaration for a type conversion actual (a subtype, not the base type)
+  and rejects a conversion that does not define the bounds (E1312 on both sides; #111 had
+  decided it for an unconstrained formal-part type mark). The reference simulators split
+  (one gives the formal the actual's bounds, one does so for formal-part type conversions,
+  one crashes on several forms), so the clear LRM text decides.
 
 - **Aliases of external signal names** (#19, LRM 6.6.2, 8.7, 14.4.1): `alias s is
   <<signal .tb.dut.x : t>>;` in an architecture, block, generate or process binds when the

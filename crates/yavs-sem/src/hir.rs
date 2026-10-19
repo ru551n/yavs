@@ -145,7 +145,8 @@ pub enum Actual {
     /// formal part as a name of the formal (`x(0)` in `x(0) => tl`).
     Individual(Box<[IndividualPart]>),
     /// A conversion in an association (6.5.7.1): `formal_conv(f) => actual_conv(actual)`,
-    /// with the function or type declaration of each conversion.
+    /// with the function, type or subtype declaration of each conversion (a type mark naming a
+    /// subtype keeps its constraint, which bounds an unconstrained formal, 5.3.2.2).
     Converted {
         formal_conv: Option<DeclId>,
         actual_conv: Option<DeclId>,

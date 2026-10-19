@@ -894,17 +894,29 @@ impl Db {
             }
         };
         // Decided on the rule 1 review (F8, #111): no bounds flow back through a formal
-        // conversion, so the formal must be fully constrained.
-        if formal_conv.is_some() && self.constrainedness(st) != crate::types::Constrainedness::Full
-        {
+        // conversion. A formal that is not fully constrained takes them from the conversion
+        // instead (5.3.2.2): the parameter subtype of a function, a type mark's subtype.
+        // ponytail: the conversion must be fully constrained, not just where the formal is
+        // open (5.3.2.2 asks only for the missing index ranges).
+        let full = crate::types::Constrainedness::Full;
+        let formal_open = self.constrainedness(st) != full;
+        let into = formal_conv.and_then(|c| match &self.decls[c].kind {
+            DeclKind::Type(t) => Some(self.types[*t].first_subtype),
+            DeclKind::Subtype(s) => Some(*s),
+            k => k
+                .subprogram()
+                .and_then(|s| s.params.first())
+                .map(|p| p.subtype),
+        });
+        if formal_open && into.is_some_and(|c| self.constrainedness(c) != full) {
             let name = self.decls[f].name;
             return Err(self.error(
                 Diagnostic::error(
                     diag::FORMAL_CONV_UNCONSTRAINED,
-                    format!("a conversion of formal `{name}` needs a fully constrained formal"),
+                    format!("a conversion of formal `{name}` needs a fully constrained formal or conversion"),
                 )
                 .with_primary(fspan, format!("`{name}` is of the unconstrained subtype `{}`", self.subtype_name(st)))
-                .with_help("associate the formal directly and convert on the actual side, or constrain the port"),
+                .with_help("use a constrained subtype as the type mark or as the function's parameter, or constrain the port"),
             ));
         }
         // With a formal conversion the actual has the conversion's result type, unless the
@@ -977,6 +989,19 @@ impl Db {
         // operator (`not s`) or an `inertial` actual is an expression.
         let call_syntax =
             matches!(a, ast::Actual::Expr(x) if matches!(x.kind, ast::ExprKind::Name(_)));
+        // The type mark of a type conversion actual, by its own declaration: a subtype keeps
+        // the constraint that bounds an unconstrained formal (5.3.2.2).
+        let mark = match (&self.exprs[id].kind, &e.kind) {
+            (ExprKind::Conv { .. }, ast::ExprKind::Name(n)) => match &n.kind {
+                ast::NameKind::Apply { prefix, .. } => Some(prefix),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mark = mark
+            .and_then(|p| self.expanded_name_decl(scope, p).ok())
+            .map(|d| self.entity(d))
+            .filter(|&d| matches!(self.decls[d].kind, DeclKind::Subtype(_)));
         let actual_conv = match &self.exprs[id].kind {
             _ if !call_syntax => None,
             ExprKind::Call { callee, args, .. } if args.len() == 1 => match &args[0].actual {
@@ -984,11 +1009,29 @@ impl Db {
                 _ => None,
             },
             ExprKind::Conv { to, operand } if self.is_signal_name(*operand) => {
-                let t = self.subtypes[*to].base;
-                Some((Some(self.types[t].decl), *operand))
+                let t = self.types[self.subtypes[*to].base].decl;
+                Some((Some(mark.unwrap_or(t)), *operand))
             }
             _ => None,
         };
+        // An actual conversion feeding a formal that is not fully constrained gives it its
+        // bounds (5.3.2.2): the function's result subtype or the type mark must define them.
+        if actual_conv.is_some()
+            && formal_open
+            && mode != Some(Mode::Out)
+            && mode != Some(Mode::Buffer)
+            && self.constrainedness(self.exprs[id].subtype) != full
+        {
+            let name = self.decls[f].name;
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::FORMAL_CONV_UNCONSTRAINED,
+                    format!("the conversion of the actual of unconstrained formal `{name}` must give its bounds"),
+                )
+                .with_primary(self.exprs[id].span, format!("of the unconstrained subtype `{}`", self.subtype_name(self.exprs[id].subtype)))
+                .with_help("use a constrained subtype as the type mark, or a function with a constrained result subtype"),
+            ));
+        }
         // An `inout` port converted on the actual side only would send the formal's value
         // back unconverted (2 of 3 reference simulators reject it, L72). A formal conversion
         // alone is legal: copy-out converts, copy-in passes the actual unchanged, so the

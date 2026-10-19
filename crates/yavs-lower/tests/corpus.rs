@@ -140,6 +140,7 @@ const PASS: &[&str] = &[
     "hierarchy/port_conv_inout_formal_only_composite",
     "hierarchy/port_conv_record",
     "hierarchy/port_conv_type_composite",
+    "hierarchy/port_conv_type_unconstrained",
     "hierarchy/port_expr_actual",
     "hierarchy/port_expr_generic_range",
     "hierarchy/port_expr_parts",

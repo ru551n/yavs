@@ -135,7 +135,8 @@ milestone users care about works.
   region), so generic-dependent bounds and integer widths match signals'. A shape whose
   evaluation would call a function with side effects on package state is not computed (the
   call is undone: the process makes it itself when it starts, #251) and the variable is left
-  out with `W0802`. Protected-type shared variables are not recorded: the accessor exposes no
+  out with `W0802` (user, 2026-10-19, confirmed: a variable whose bounds need a state-changing
+  function call during elaboration is left out of the waveform). Protected-type shared variables are not recorded: the accessor exposes no
   protected object state. A process that ends keeps the values of its last suspension (its
   frame is gone). Reading a serial process's variables holds the shared state: its composite
   variables live in the shared heap.

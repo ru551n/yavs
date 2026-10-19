@@ -445,6 +445,93 @@ created the JIT.
 Codegen at O1/O2 grows faster than linearly in the size of one function (10x the instructions
 costs 25x to 30x the time); O0 stays close to linear. Proposed threshold: O2 up to 40k
 instructions per function, larger units stay interpreted (docs/decisions.md).
+## performance (tiers against two reference simulators, 2026-10-19)
+
+Measurement only (#125, #383, #385, #386, #395). yavs at `d76a08b5`, release build with the
+`llvm` feature, `--tier=interp` and `--tier=llvm`, against two reference simulators (ref-A: JIT
+based; ref-B: in-process machine-code generator, which elaborates at the start of the run). Host:
+24 cores, heavily loaded by other jobs (load average about 16), so every cell is the median of 3 runs
+(5 for designs 4 and 6b) with the min-max range of the total; tools were interleaved, one
+simulation at a time, each under a memory cap. Analysis is not counted. Startup: yavs `run
+--stop-time 0fs` (elaboration, and for `llvm` the compilation of every function); ref-A `-e`; ref-B
+`-r --stop-time=0fs`; for designs 1 and 2 a generic empties the run instead. Simulation is total minus
+startup (median of the per-run differences, floored at 0); peak RSS is that of the full run. Native
+share is the static share of IR instructions the LLVM tier compiles inline (`--verbose`); the share
+of instructions *executed* natively is not reported (#387).
+
+Designs (outside the repository): (1) one process, integer and real loop, 20M iterations; (2a) 64
+clocked 16-bit LFSR processes and one process XOR-reducing the 64 registers each cycle, 5000
+cycles; (2b) the same without the reduction, 20000 cycles; (3) the maintenance testbench of a public
+verification library's queue and scoreboard packages; (4) an AXI-stream testbench of another public
+verification library, built from its project scripts; (5) all 314 `tests/corpus` testbenches
+summed (analysis of all of them: yavs 5.7 s, ref-A 4.5 s, ref-B 0.6 s); (6) two testbenches of a
+private accelerator project (window generator, 13 tests in one run; bias/requant, 14 tests in
+one run). That project's long testbenches (the conv core, the top level) need an embedded
+interpreter through foreign calls; yavs stops at the first one (the foreign subprogram is not in the yavs executable and
+needs `--load=LIB`) and the references need the same library, so they are not measured.
+
+| Design | Tool | Startup s | Simulation s | Total s | Peak RSS MB | Native share |
+|---|---|---:|---:|---:|---:|---:|
+| 1 compute loop, 20M iterations (integer and real) | yavs interp | 0.01 | 24.85 | 24.86 (21.05-27.11) | 57 |  |
+|  | yavs llvm | 0.08 | 10.77 | 10.85 (10.37-11.37) | 75 | 68% |
+|  | ref-A | 0.02 | 3.61 | 3.64 (3.61-3.71) | 57 |  |
+|  | ref-B | 0.00 | 0.31 | 0.31 (0.31-0.31) | 7 |  |
+| 2a signal-heavy RTL, 64 LFSR registers x 5000 cycles, XOR-reduced each cycle | yavs interp | 0.05 | 20.19 | 20.24 (19.13-20.43) | 65 |  |
+|  | yavs llvm | 0.33 | 16.43 | 16.78 (16.70-16.86) | 81 | 54% |
+|  | ref-A | 0.05 | 0.02 | 0.09 (0.06-0.09) | 78 |  |
+|  | ref-B | 0.03 | 0.19 | 0.22 (0.21-0.22) | 11 |  |
+| 2b same without the reduction, 64 x 20000 cycles | yavs interp | 0.04 | 16.96 | 17.01 (16.92-18.03) | 64 |  |
+|  | yavs llvm | 0.26 | 14.69 | 14.95 (14.52-15.09) | 79 | 53% |
+|  | ref-A | 0.06 | 0.07 | 0.12 (0.12-0.29) | 77 |  |
+|  | ref-B | 0.03 | 0.49 | 0.52 (0.52-0.53) | 11 |  |
+| 3 verification-library testbench, queues and scoreboard | yavs interp | 8.83 | 23.71 | 32.54 (30.56-35.42) | 313 |  |
+|  | yavs llvm | 33.56 | 22.23 | 54.96 (49.88-56.42) | 459 | 57% |
+|  | ref-A | 0.23 | 0.21 | 0.43 (0.43-0.47) | 144 |  |
+|  | ref-B | 0.42 | 0.29 | 0.72 (0.66-0.73) | 50 |  |
+| 4 verification-library testbench, AXI-stream (6524 checks) | yavs interp | 0.58 | 9.37 | 9.95 (8.92-12.78) | 104 |  |
+|  | yavs llvm | 56.58 | 8.68 | 67.81 (63.10-74.12) | 514 | 59% |
+|  | ref-A | 0.15 | 0.32 | 0.45 (0.38-0.66) | 159 |  |
+|  | ref-B | 0.31 | 0.09 | 0.47 (0.37-0.48) | 47 |  |
+| 6a project testbench, window generator (13 tests in one run) | yavs interp | 1.50 | 9.82 | 11.32 (11.24-13.53) | 122 |  |
+|  | yavs llvm | 19.24 | 9.22 | 28.46 (26.46-29.19) | 314 | 55% |
+|  | ref-A | 0.20 | 0.16 | 0.36 (0.36-0.37) | 137 |  |
+|  | ref-B | 0.30 | 0.09 | 0.38 (0.36-0.39) | 42 |  |
+| 6b project testbench, bias/requant (14 tests in one run) | yavs interp | 1.65 | 0.99 | 2.71 (2.52-3.19) | 116 |  |
+|  | yavs llvm | 23.99 | 0.04 | 24.84 (20.24-26.32) | 311 | 53% |
+|  | ref-A | 0.34 | 0.00 | 0.33 (0.26-0.53) | 120 |  |
+|  | ref-B | 0.32 | 0.00 | 0.31 (0.29-0.37) | 41 |  |
+| 5 corpus, 314 testbenches, summed | yavs interp | 8.9 | 0.5 | 9.4 (9.3-11.9) | 80 |  |
+|  | yavs llvm | 169.0 | 4.6 | 173.7 (169.1-179.6) | 183 | 62% |
+|  | ref-A | 7.4 | 7.0 | 14.3 (14.0-19.9) | 93 |  |
+|  | ref-B | 1.2 | 1.3 | 2.5 (2.4-3.2) | 20 |  |
+
+Findings.
+
+- Interpreted, yavs is 7x (loop, against ref-A) to 80x (against ref-B) slower than the references,
+  90x to 200x on the RTL designs and 20x to 75x on the testbenches. Two causes show in the data. The
+  IEEE vector operators run as interpreted VHDL: in a loop of 100000 operations a 16-bit `unsigned`
+  XOR costs 42 us, an `unsigned` `+` 250 us and a `bit_vector` XOR 1.8 us (same under
+  `--tier=llvm`), and a clocked process activation costs about 12 us (#395, #385). And elaborating
+  large library packages: 8.8 s of the 32.5 s in design 3 is startup, against 0.2 s in the references
+  (#383).
+- LLVM helps only pure computation: the loop is 2.3x faster (24.9 s to 10.9 s). The signal-heavy
+  designs gain 1.0x to 1.2x, and for the testbench designs the simulation phase is within noise of the
+  interpreter (design 3 23.7 s against 22.2 s, design 4 9.4 s against 8.7 s, design 6a 9.8 s against
+  9.2 s). Compiling every function at O2 before time 0 costs 19 s to 57 s for 120k to 220k IR
+  instructions (0.15 to 0.26 ms each) and 1.5x to 5x the memory, so the totals of the testbench
+  designs are 1.7x to 9x worse than interpreted and the corpus goes from 9.4 s to 174 s. The tier
+  pays only with tier-up of hot functions (#125) and a size threshold (#126).
+- The LLVM tier compiles 53% to 68% of the IR instructions inline (62% over the corpus). What stays
+  interpreted is mostly the memory and address kinds of #334: 71% over the corpus (Load 90311,
+  AddrOf 53015, Stmt 23256, Alloc 21362, Store 19879, Copy 12175), 75% in design 3, 83% in the
+  loop. Next the descriptor and layout kinds of #335 (DopeLen, LayoutOf, MakeDope, SubtypeCheck,
+  14% over the corpus), then calls and returns (#336, 3%) and natives and reports (#337, 1%). Signal
+  and wait instructions (#339), heap (#340), logic arrays (#338) and real kinds (#341) are each
+  below 3% in these designs. The loop gains only 2.3x with 68% of its instructions inline, so the
+  executed native share is probably lower than the static one.
+- Not measured: the long accelerator testbenches (above), a third reference simulator, executed
+  instruction shares, and design 2 at 1e6 clock cycles (yavs needs 17 s to 20 s for 5000 to 20000).
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

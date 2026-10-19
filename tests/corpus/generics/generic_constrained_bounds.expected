@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:generic_constrained_bounds:u:_p0	g 3 downto 0 = 1100, g(1 downto 0) = 00
+diag	note	0	0	:generic_constrained_bounds:u:_p0	h 1 to 3 = xyz, h(3) = z
+diag	note	0	0	:generic_constrained_bounds:u:_p0	k 0 to 1
+diag	note	0	0	:generic_constrained_bounds:u:_p0	s = 11

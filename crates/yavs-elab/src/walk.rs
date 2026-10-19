@@ -884,6 +884,9 @@ impl Elab<'_> {
                 ));
             }
         };
+        // An array generic of a constrained subtype takes that subtype's bounds, not the
+        // actual's (implicit subtype conversion, LRM 6.5.6.2, 6.5.7.1).
+        let v = self.m.as_subtype(db, o.subtype, v, Some(s), decl.span)?;
         // Scalar generic values must lie in the generic's subtype (LRM 6.5.6.2).
         if db.types[db.base(o.subtype)].kind.is_scalar()
             && let Some(x) = v.as_int()

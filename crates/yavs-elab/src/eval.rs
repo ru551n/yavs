@@ -840,7 +840,7 @@ impl Model {
 
     /// Array value `v` of a constant of subtype `st`: with the bounds of `st` when it is
     /// constrained, not those of the initial value (LRM 6.4.2.2, 5.3.2.2).
-    fn as_subtype(
+    pub(crate) fn as_subtype(
         &mut self,
         db: &Db,
         st: SubtypeId,

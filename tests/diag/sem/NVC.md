@@ -62,6 +62,15 @@ The reference simulator (the primary reference). Every file the reference simula
 | `gen/nested_package_signal_in_process` | rejects @8 | rejects @9 | The reference simulator does not parse a package in a process at all (rejects at the package line); the second reference simulator rejects the signal (LRM 4.7, 11.3, #34). |
 | `gen/nested_generic_unused_generic` | accepts | accepts | yavs-only warning (W1501), as `gen/unused_generic_warning`. |
 | `gen/nested_packages_ok` | rejects @23 | accepts | The reference simulator instantiates a generic package declared in a declarative part only after the enclosing unit is analysed ("cannot be instantiated until its body has been analysed"); the LRM has no such rule (4.9), permissive, the second reference simulator accepts (#34, L81). |
+| `grp/disconnect_ok` | rejects @17 | warns | LRM 7.4 is clear: `others` and `all` are signal list forms. The reference simulator does not parse them (#260, `disconnect-others`); the second reference simulator only warns about a hidden entity name. |
+| `grp/disconnect_all_ok` | rejects @12 | accepts | As `grp/disconnect_ok` (#260). |
+| `grp/group_ok` | crashes | rejects @16 | The reference simulator crashes on an attribute of a group (`group-attribute`). The second reference simulator rejects zero constituents for a `<>` entry (LRM silent, `group-template-box-empty`). |
+| `grp/group_use_after_failure` | crashes | rejects @6 | As `grp/group_ok`: the crash is in the attribute specification after the failed group. |
+| `grp/group_template_box_not_last` | accepts | rejects @5 | LRM 6.9 is clear: `<>` is only allowed on the last entry. The reference simulator does not check it. |
+| `grp/group_too_few` | accepts | rejects @7 | LRM 6.10 is clear: as many constituents as entries (`group-constituent-count`). The reference simulator does not check the count. |
+| `grp/group_too_many` | accepts | rejects @7 | As `grp/group_too_few`. |
+| `grp/group_wrong_class` | accepts | rejects @8 | LRM 6.10 is clear: a constituent has the entity class of its entry. The reference simulator does not check it. |
+| `grp/group_constituent_not_declared` | accepts | rejects @6 | The reference simulator does not look the constituent up at all; the name is undeclared (LRM 6.10). |
 
 The second reference simulator as second opinion: files where the second reference simulator disagrees but the reference simulator agrees.
 

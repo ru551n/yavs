@@ -1029,11 +1029,28 @@ impl Elab<'_> {
                         span,
                     )?;
                     if let Some(g) = guard {
-                        // ponytail: disconnection specifications are not in the HIR yet, so
-                        // the disconnection time is 0 ns.
+                        let mut disconnect = yavs_kernel::Time::ZERO;
+                        if let Some(&e) = db.disconnect_times.get(&d) {
+                            let fs = self.m.eval(db, e, Some(s))?.as_int().ok_or_else(|| {
+                                Box::new(ice(
+                                    db.exprs[e].span,
+                                    "disconnection time is not an integer",
+                                ))
+                            })?;
+                            disconnect = yavs_kernel::Time::from_vhdl(fs).map_err(|_| {
+                                Box::new(
+                                    Diagnostic::error(
+                                        codes::EVAL_FAILED,
+                                        "disconnection time is negative or out of range",
+                                    )
+                                    .with_primary(db.exprs[e].span, "here"),
+                                )
+                            })?;
+                        }
                         let (a, b) = self.m.nets.obj(obj).leaves;
                         for l in &mut self.m.nets.leaves[a.index()..b.index()] {
                             l.guard = Some(g);
+                            l.disconnect = disconnect;
                         }
                     }
                 }
@@ -2675,6 +2692,7 @@ impl Model {
                 ty: yavs_kernel::SignalType { elem: *elem, len },
                 resolution,
                 guard: None,
+                disconnect: yavs_kernel::Time::ZERO,
                 implicit: None,
                 implicit_more: Vec::new(),
                 init,

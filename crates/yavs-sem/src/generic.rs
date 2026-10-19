@@ -2237,6 +2237,10 @@ impl Db {
         let new_kind = self.r_decl_kind(r, n, &kind);
         self.decls[d].kind = kind;
         self.decls[n].kind = new_kind;
+        if let Some(&t) = self.disconnect_times.get(&d) {
+            let t = self.r_expr(r, t);
+            self.disconnect_times.insert(n, t);
+        }
         if let Some(&pv) = self.forwarding.get(&d) {
             let pv = self.r_decl(r, pv);
             self.forwarding.insert(n, pv);
@@ -2280,10 +2284,14 @@ impl Db {
             }),
             DeclKind::GenericType(t) => DeclKind::GenericType(self.r_ty(r, *t)),
             DeclKind::GenericPackage(i) => DeclKind::GenericPackage(*i),
-            DeclKind::Group { template } => DeclKind::Group {
+            DeclKind::Group {
+                template,
+                constituents,
+            } => DeclKind::Group {
                 template: self.r_decl(r, *template),
+                constituents: constituents.iter().map(|&c| self.r_decl(r, c)).collect(),
             },
-            DeclKind::GroupTemplate => DeclKind::GroupTemplate,
+            DeclKind::GroupTemplate(c) => DeclKind::GroupTemplate(c.clone()),
             DeclKind::Label(s) => DeclKind::Label(self.r_stmt(r, *s)),
             DeclKind::Element { record, index } => DeclKind::Element {
                 record: self.r_ty(r, *record),

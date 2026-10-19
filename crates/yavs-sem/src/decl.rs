@@ -4,6 +4,7 @@
 use yavs_diag::Span;
 use yavs_syntax::Symbol;
 use yavs_syntax::ast::{Ident, SignalKind};
+use yavs_syntax::token::Kw;
 
 use crate::LangRev;
 use crate::hir::Mode;
@@ -168,8 +169,11 @@ pub enum DeclKind {
     GenericPackage(InstId),
     Group {
         template: DeclId,
+        /// The named entities of the constituent list, in order (6.10).
+        constituents: Box<[DeclId]>,
     },
-    GroupTemplate,
+    /// Entity class entries; `true` when followed by `<>` (6.9).
+    GroupTemplate(Box<[(Kw, bool)]>),
     /// Statement labels are implicitly declared.
     Label(StmtId),
     /// Only reachable through selection, never in `Scope::names`.
@@ -461,6 +465,8 @@ impl Db {
             D::File(f) => f.names.iter().map(|&n| Designator::Ident(n)).collect(),
             D::Attribute(a) => vec![Designator::Ident(a.name)],
             D::Component(c) => vec![Designator::Ident(c.name)],
+            D::Group(g) => vec![Designator::Ident(g.name)],
+            D::GroupTemplate(g) => vec![Designator::Ident(g.name)],
             D::Alias(a) => match &a.designator {
                 ast::Designator::Ident(i) => vec![Designator::Ident(*i)],
                 _ => vec![],
@@ -516,9 +522,9 @@ impl Db {
             D::Package(x) => self.nested_package(scope, x),
             D::PackageBody(x) => self.nested_package_body(scope, x),
             D::PackageInstance(x) => self.package_instance_decl(scope, x),
-            D::Group(x) => Err(self.unsupported(x.span, "groups", "S6")),
-            D::GroupTemplate(x) => Err(self.unsupported(x.span, "group templates", "S6")),
-            D::Disconnect(x) => Err(self.unsupported(x.span, "disconnection specifications", "S5")),
+            D::Group(x) => self.group_decl(scope, x),
+            D::GroupTemplate(x) => self.group_template(scope, x),
+            D::Disconnect(x) => self.disconnect_spec(scope, x),
             D::ConfigSpec(x) => self.config_spec(scope, x),
             D::View(x) => {
                 let record = self.subtype_indication(scope, &x.subtype)?;

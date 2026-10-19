@@ -34,6 +34,7 @@ pub mod diag;
 pub mod expr;
 pub mod external;
 pub mod generic;
+mod group;
 pub mod hir;
 pub mod ids;
 pub mod implicit;

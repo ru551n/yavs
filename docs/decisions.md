@@ -875,8 +875,9 @@ which tools/difftest parses.
   drives the shorter prefix (#205). Indices are evaluated at run time as everywhere else.
 - **GUARD:** sem keeps a guarded block's condition as the GUARD signal's default; lowering
   emits the guard process (`GUARD <= condition`, zero delay) and guarded assignments that
-  disconnect `bus`/`register` targets when GUARD is false (disconnection after 0 fs until
-  disconnection specifications reach the HIR).
+  disconnect `bus`/`register` targets when GUARD is false, after the signal's disconnection
+  time: elab takes it from `Db::disconnect_times` (a disconnection specification, 7.4) and
+  gives it to the kernel signal, 0 fs without one (#260).
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for

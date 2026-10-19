@@ -107,6 +107,10 @@ codes! {
     ATTR_DIMENSION = "E1623", "The dimension argument of an array attribute is not a dimension of the prefix.";
     ATTR_TYPE = "E1625", "The type of an attribute may not be an access, file or protected type, or a composite type with such an element (LRM 6.7).";
     ATTR_TWICE = "E1626", "An attribute is given to the same named entity twice, or after an `others` or `all` specification for its entity class (LRM 7.2).";
+    GROUP_TEMPLATE = "E1640", "A group template's entity class entry list allows `<>` only on its last entry, and a group declaration names a group template (LRM 6.9, 6.10).";
+    GROUP_CONSTITUENT = "E1641", "A group constituent is not a name of a named entity, its entity class differs from the template's entry, or the list has too many or too few constituents (LRM 6.10).";
+    DISCONNECT_SPEC = "E1650", "A disconnection specification names guarded signals declared in the same declarative part, of the type its type mark denotes, and gives a static time expression of type TIME (LRM 7.4).";
+    DISCONNECT_TWICE = "E1651", "A guarded signal has at most one disconnection specification (LRM 7.4).";
     SIGNATURE_NONE = "E1630", "No declaration matches the signature.";
     // E17xx configurations, binding, components
     NOT_INSTANTIABLE = "E1700", "The instantiated name is not a component, an entity or a configuration.";

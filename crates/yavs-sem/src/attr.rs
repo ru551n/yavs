@@ -1113,7 +1113,7 @@ pub fn entity_class(db: &Db, d: DeclId) -> Option<Kw> {
 /// Does `d` belong to entity class `class`? An object alias is accepted for
 /// any object class (the LRM gives an alias the class of what it denotes;
 /// sem does not track that for object aliases).
-fn in_class(db: &Db, d: DeclId, class: Kw) -> bool {
+pub(crate) fn in_class(db: &Db, d: DeclId, class: Kw) -> bool {
     match &db.decls[d].kind {
         DeclKind::Alias(Alias::Object { .. }) => {
             matches!(class, Kw::Constant | Kw::Signal | Kw::Variable | Kw::File)
@@ -1219,6 +1219,14 @@ pub fn specify(
                         .with_primary(sp, "not found in this region")
                         .with_note("an attribute specification names entities declared in the same declarative part (LRM 7.2)"),
                     ));
+                    continue;
+                }
+                // A declaration that failed is silent (8.2).
+                if found
+                    .iter()
+                    .any(|&d| matches!(db.decls[d].kind, DeclKind::Error))
+                {
+                    failed = Some(Reported);
                     continue;
                 }
                 let first = found[0];

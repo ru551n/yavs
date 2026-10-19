@@ -466,8 +466,8 @@ impl Fx<'_, '_> {
                 Delay::Transport => DriveMode::Transport,
                 _ => DriveMode::Inertial,
             };
-            // ponytail: disconnection after 0 fs until disconnection specifications reach
-            // the HIR (yavs-elab uses 0 for the kernel's guarded signals too).
+            // `after: None`: the kernel signal's disconnection time (set by elab from the
+            // disconnection specification, 0 without one).
             self.emit(Inst::Disconnect {
                 driver: slot,
                 target: Some(sref),

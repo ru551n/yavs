@@ -105,8 +105,10 @@ An installed binary finds `lib/` next to itself (#43).
   declarations and specifications, aliases, protected types; packages and package bodies declared
   in declarative parts (2008, generic ones too; a nested body in the outer package's body),
   signals and shared variables in processes and subprograms `E1237`, also through a nested
-  package or a package instance (#34; groups, group templates and disconnection specifications
-  are still E9999, #260).
+  package or a package instance, also one whose body declares them (#34); group templates and
+  group declarations (`E1640`, `E1641`, attributes on groups) and disconnection specifications
+  (guarded signals, `others`, `all`, a static time; `E1650`, `E1651`; the time reaches the
+  kernel signal) (#260).
 - Types (S3): scalars, arrays, records, element/record/open constraints merged once, resolution
   indications, file element checks; the rule 1 representation is pinned on numeric_std
   (`numeric_std_subtypes_rule_1`, `numeric_std_body_rule_1`) and reviewed for the composite cases

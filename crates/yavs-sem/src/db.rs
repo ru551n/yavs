@@ -94,6 +94,9 @@ pub struct Db {
     /// 2019 method aliases `alias m is v.m;`: the alias to the object `v` (a private
     /// variable, a shared variable, a variable) whose method it forwards (5.6.2, 6.6.3).
     pub(crate) forwarding: HashMap<DeclId, DeclId>,
+    /// Disconnection specifications (7.4): the time expression of each guarded signal that has
+    /// one (a guarded signal without an entry disconnects after 0 fs).
+    pub disconnect_times: HashMap<DeclId, ExprId>,
     /// 2019 named return values (`return r of t`, 4.2.1), by the function's parameter region:
     /// the hidden constant whose descriptor is the call's result subtype (M2 passes it after
     /// the parameters) and the subtype `r` it constrains.
@@ -279,6 +282,7 @@ impl Db {
             attr_values: Arena::new(),
             attr_index: HashMap::new(),
             forwarding: HashMap::new(),
+            disconnect_times: HashMap::new(),
             ret_names: HashMap::new(),
             time_units: Vec::new(),
             attr_closed: HashSet::new(),

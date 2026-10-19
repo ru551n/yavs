@@ -346,6 +346,8 @@ pub struct Leaf {
     pub resolution: Option<LeafRes>,
     /// `bus` or `register` (a guarded signal, LRM 6.4.2.3).
     pub guard: Option<yavs_kernel::GuardKind>,
+    /// The disconnection time of a guarded signal (LRM 7.4), 0 without a specification.
+    pub disconnect: yavs_kernel::Time,
     /// An implicit signal: its kind and the source elements.
     pub implicit: Option<(ImplicitKind, LeafId, Range)>,
     /// The other sources of `'stable`, `'quiet` or `'transaction` of a prefix over several

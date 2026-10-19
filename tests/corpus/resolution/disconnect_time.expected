@@ -1,0 +1,5 @@
+exit	0
+diag	note	1000000	0	:disconnect_time:_p0	on '1''1'
+diag	note	2000000	0	:disconnect_time:_p0	off 1 ns '1''Z'
+diag	note	3000000	0	:disconnect_time:_p0	off 2 ns '1''Z'
+diag	note	4000000	0	:disconnect_time:_p0	off 3 ns 'Z''Z'

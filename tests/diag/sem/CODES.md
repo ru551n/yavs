@@ -110,6 +110,10 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1621 | unknown attribute / attribute not defined for the prefix | 8.1 |
 | E1622 | entity class mismatch in an attribute specification | 8.1 |
 | E1630 | signature matches nothing | 8.1 |
+| E1640 | group template or group declaration illegal (`<>` not last, not a template) | 6.9, 6.10 |
+| E1641 | group constituent illegal (class, count, not a named entity) | 6.10 |
+| E1650 | disconnection specification illegal (not a guarded signal of the part, type, not static) | 7.4 |
+| E1651 | second disconnection specification for a guarded signal | 7.4 |
 | E1701 | label is not an instance of the component | 8.1 |
 | E1702 | rebinding | 8.1 |
 | E1703 | component/entity port or generic mismatch | 8.1 |

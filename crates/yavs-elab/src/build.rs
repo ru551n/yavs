@@ -117,7 +117,7 @@ impl Elaborated {
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
             if let Some(g) = leaf.guard {
-                b.guard(id, g, yavs_kernel::Time::ZERO);
+                b.guard(id, g, leaf.disconnect);
             }
         }
         // Composites resolved as a whole (#193): the leaves of each object, as one group.

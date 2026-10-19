@@ -1,0 +1,5 @@
+# sim1, sim2 and sim3: syntax error on `type is ...` as a parameter type: unsupported, no vote; sim4 accepts it and runs it
+sim1 2019 REJECT
+sim2 2019 REJECT
+sim3 2019 REJECT
+sim4 2019 OK

@@ -121,6 +121,9 @@ pub struct GenericState {
     /// The anonymous interface types of the parameters of subprograms, which each call binds
     /// to its actuals' types (`implicit_instance`, #283).
     pub(crate) implicit: HashMap<DeclId, Box<[TypeId]>>,
+    /// The anonymous parameter types of formal subprograms: any type of their class in the
+    /// actual's profile, all uses of one type the same (#308).
+    pub(crate) formal_anon: HashMap<DeclId, Box<[TypeId]>>,
     /// Those instances, per region of the call and the actuals' subtypes.
     #[allow(clippy::type_complexity)]
     pub(crate) implicit_insts: HashMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
@@ -517,14 +520,10 @@ impl Db {
                     ));
                 }
                 let d = self.subprogram_spec(scope, &s.spec)?;
-                // ponytail: binding anonymous parameter types of a formal subprogram from the
-                // actual's profile is not done.
-                if self.generic.implicit.remove(&d).is_some() {
-                    return Err(self.unsupported(
-                        s.spec.span,
-                        "anonymous parameter types of a formal subprogram",
-                        "S7",
-                    ));
+                // Its anonymous parameter types match the actual's (`profile_fits`); nothing
+                // outside the formal's own region names them (#308).
+                if let Some(ts) = self.generic.implicit.remove(&d) {
+                    self.generic.formal_anon.insert(d, ts);
                 }
                 if let DeclKind::Subprogram(mut sp) =
                     std::mem::replace(&mut self.decls[d].kind, DeclKind::Error)
@@ -1229,6 +1228,18 @@ impl Db {
         if r.failed {
             return Err(Reported);
         }
+        // The anonymous parameter types the generic map did not bind stay anonymous in the
+        // instance, which is then instantiated per call (#308).
+        let kept: Vec<TypeId> = self
+            .generic
+            .implicit
+            .get(&g)
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|t| !map.types.contains_key(t))
+            .map(|&t| self.r_ty(&mut r, t))
+            .collect();
         let types: Vec<SubtypeId> = params.iter().map(|p| p.subtype).collect();
         let mangled = Symbol::intern(&crate::mangle::subprogram(self, scope, &dname, &types, ret));
         let inst = self.insts.push(Instance {
@@ -1249,7 +1260,45 @@ impl Db {
             body: Body::Instance(inst),
             mangled,
         });
+        if !kept.is_empty() {
+            self.generic.implicit.insert(d, kept.into());
+        }
         Ok(())
+    }
+
+    /// Whether profile `got` fits profile `want` of formal subprogram `f`: equal, except
+    /// that each anonymous parameter type of `f` stands for one type of its class (#308).
+    pub(crate) fn profile_fits(
+        &self,
+        f: DeclId,
+        want: &crate::scope::Profile,
+        got: &Option<crate::scope::Profile>,
+    ) -> bool {
+        let Some(got) = got else { return false };
+        let anon = self.generic.formal_anon.get(&f);
+        if anon.is_none() {
+            return want == got;
+        }
+        if want.params.len() != got.params.len() || want.ret.is_some() != got.ret.is_some() {
+            return false;
+        }
+        let mut bound: Vec<(TypeId, TypeId)> = Vec::new();
+        want.params
+            .iter()
+            .chain(&want.ret)
+            .zip(got.params.iter().chain(&got.ret))
+            .all(|(&w, &g)| {
+                if !anon.is_some_and(|a| a.contains(&w)) {
+                    return w == g;
+                }
+                match bound.iter().find(|b| b.0 == w) {
+                    Some(b) => b.1 == g,
+                    None => {
+                        bound.push((w, g));
+                        self.class_fits(w, g)
+                    }
+                }
+            })
     }
 
     /// Whether `t` is an anonymous parameter type of subprogram `e` (#283).
@@ -1296,6 +1345,36 @@ impl Db {
         args: &[ast::AssocElem],
         span: Span,
     ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
+        if !self.generic.implicit.contains_key(&e) {
+            return Some((e, HashMap::new()));
+        }
+        let s = self.decls[e].kind.subprogram()?;
+        let keys: Vec<Symbol> = s.params.iter().map(|p| p.name.key).collect();
+        let map = crate::expr::names::assoc_map(&keys, args).ok()?;
+        let actuals: Vec<Option<&ast::Expr>> = map
+            .iter()
+            .map(|m| match m {
+                crate::expr::names::Slot::Whole(a) => match &args[*a].actual {
+                    ast::Actual::Expr(x) => Some(x),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let at = args.first().map_or(span, |a| a.span);
+        self.implicit_instance_of(scope, e, &actuals, at, span)
+    }
+
+    /// [`Db::implicit_instance`] for actuals given by parameter index (`None`: not an
+    /// expression or missing); `at`: where a missing actual is reported.
+    pub(crate) fn implicit_instance_of(
+        &mut self,
+        scope: ScopeId,
+        e: DeclId,
+        actuals: &[Option<&ast::Expr>],
+        at: Span,
+        span: Span,
+    ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
         let Some(types) = self.generic.implicit.get(&e).cloned() else {
             return Some((e, HashMap::new()));
         };
@@ -1305,23 +1384,14 @@ impl Db {
             .iter()
             .map(|p| (p.name.key, self.base(p.subtype), p.decl))
             .collect();
-        let keys: Vec<Symbol> = params.iter().map(|p| p.0).collect();
-        let map = crate::expr::names::assoc_map(&keys, args).ok()?;
         let mut pre = HashMap::new();
         let mut bound: Vec<(TypeId, SubtypeId)> = Vec::new();
         for (k, &(_, ft, pdecl)) in params.iter().enumerate() {
             if !types.contains(&ft) {
                 continue;
             }
-            let actual = match &map[k] {
-                crate::expr::names::Slot::Whole(a) => match &args[*a].actual {
-                    ast::Actual::Expr(x) => Some(x),
-                    _ => None,
-                },
-                _ => None,
-            };
+            let actual = actuals.get(k).copied().flatten();
             let Some(x) = actual else {
-                let at = args.first().map_or(span, |a| a.span);
                 let who = pdecl.unwrap_or(e);
                 self.unbound_anonymous(who, at);
                 return None;
@@ -2054,18 +2124,19 @@ impl Db {
             s.ret,
             s.kind,
         );
+        // An anonymous parameter type stays itself (it is not an instance's type).
+        let anon = self.generic.formal_anon.get(&f).cloned().unwrap_or_default();
+        let mut mapped = |db: &mut Db, p: SubtypeId| {
+            let b = db.base(p);
+            if anon.contains(&b) {
+                return b;
+            }
+            let st = db.r_subtype(r, p);
+            db.base(st)
+        };
         let want = crate::scope::Profile {
-            params: fparams
-                .iter()
-                .map(|&p| {
-                    let st = self.r_subtype(r, p);
-                    self.base(st)
-                })
-                .collect(),
-            ret: fret.map(|t| {
-                let st = self.r_subtype(r, t);
-                self.base(st)
-            }),
+            params: fparams.iter().map(|&p| mapped(self, p)).collect(),
+            ret: fret.map(|t| mapped(self, t)),
         };
         // A failed generic type actual (already reported, or a cascade) leaves the profile
         // unknowable: no second error for the subprogram (8.2).
@@ -2084,7 +2155,7 @@ impl Db {
                 }
                 None => matches!(db.decls[e].kind, DeclKind::EnumLit { .. }) && fret.is_some(),
             };
-            kind_ok && db.profile(e).as_ref() == Some(&want)
+            kind_ok && db.profile_fits(f, &want, &db.profile(e))
         };
         let fname = self.decls[f].name;
         let actual = match a.map(|a| &a.actual) {
@@ -2441,6 +2512,14 @@ impl Db {
                 Some(s)
             }
             DeclKind::Subprogram(sp) => {
+                // An instance with anonymous parameter types left (#308) is cloned from the
+                // body of the instance it was made from.
+                if let Body::Instance(i0) = sp.body {
+                    self.instance_body(i0)?;
+                }
+                let DeclKind::Subprogram(sp) = &self.decls[g].kind else {
+                    return Ok(None);
+                };
                 let Body::Hir { scope, stmts } = &sp.body else {
                     return Err(self.error(
                         Diagnostic::error(

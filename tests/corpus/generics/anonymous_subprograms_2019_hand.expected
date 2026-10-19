@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:anonymous_subprograms_2019_hand:_p0	pick 7 8 green
+diag	note	0	0	:anonymous_subprograms_2019_hand:_p0	scale 12
+diag	note	0	0	:anonymous_subprograms_2019_hand:_p0	plus 42
+diag	note	0	0	:anonymous_subprograms_2019_hand:_p0	plus 42 1
+diag	note	0	0	:anonymous_subprograms_2019_hand:_p0	neg 99 99
+diag	note	0	0	:anonymous_subprograms_2019_hand:_p0	run 5 5

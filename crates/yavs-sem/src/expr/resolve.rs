@@ -409,6 +409,17 @@ impl Db {
             return self.poison_expr();
         };
         let callee = self.entity(d);
+        if self.decls[callee].kind.subprogram().is_none() {
+            return self.poison_expr();
+        }
+        // A user operator with anonymous parameter types goes to its instance for the
+        // operands' types (#308).
+        let actuals: Vec<Option<&ast::Expr>> = operands.iter().map(|o| Some(*o)).collect();
+        let Some((callee, pre)) =
+            self.implicit_instance_of(scope, callee, &actuals, span, span)
+        else {
+            return self.poison_expr();
+        };
         let Some(s) = self.decls[callee].kind.subprogram() else {
             return self.poison_expr();
         };
@@ -427,7 +438,10 @@ impl Db {
         };
         let mut hargs = Vec::new();
         for (k, (o, f)) in operands.iter().zip(formals).enumerate() {
-            let id = self.resolve(scope, o, Expected::Type(f));
+            let id = match pre.get(&k) {
+                Some(&id) => id,
+                None => self.resolve(scope, o, Expected::Type(f)),
+            };
             stat = stat.min(self.exprs[id].stat);
             hargs.push(Arg {
                 formal: k as u16,

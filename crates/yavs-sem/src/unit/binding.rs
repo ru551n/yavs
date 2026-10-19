@@ -1414,23 +1414,14 @@ impl Db {
         let Some(fs) = self.decls[f].kind.subprogram() else {
             return Err(Reported);
         };
-        let want: Vec<crate::ids::TypeId> =
-            fs.params.iter().map(|p| subst(self, p.subtype)).collect();
-        let want_ret = fs.ret.map(|r| subst(self, r));
+        let want = crate::scope::Profile {
+            params: fs.params.iter().map(|p| subst(self, p.subtype)).collect(),
+            ret: fs.ret.map(|r| subst(self, r)),
+        };
         let fits: Vec<DeclId> = cands
             .into_iter()
             .map(|d| self.entity(d))
-            .filter(|&d| match self.decls[d].kind.subprogram() {
-                Some(s) => {
-                    s.params.len() == want.len()
-                        && s.params
-                            .iter()
-                            .zip(&want)
-                            .all(|(p, &w)| self.base(p.subtype) == w)
-                        && s.ret.map(|r| self.base(r)) == want_ret
-                }
-                None => false,
-            })
+            .filter(|&d| self.profile_fits(f, &want, &self.profile(d)))
             .collect();
         match fits.as_slice() {
             [d] => Ok(Actual::Subprogram(*d)),

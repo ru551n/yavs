@@ -509,7 +509,7 @@ to the actual's index, element or designated subtype (#30). A literal converts i
 generic type of the integer or floating class. Generic constants, ports and parameters with an
 anonymous type (`c : type is range <>`, #283, L94) get their own anonymous generic type, bound to the type of the
 actual: package and subprogram instances through `bind_const`, entities, components and blocks through a hidden generic type
-appended to their generics (`with_hidden_args` adds its `Actual::Subtype`), subprogram calls through `implicit_instance`.
+appended to their generics (`with_hidden_args` adds its `Actual::Subtype`), subprogram calls and operators through `implicit_instance` (instances of generic subprograms keep their unbound anonymous types; the anonymous types of a formal subprogram match the actual's profile, `profile_fits`, #308).
 
 ### 2.10 Implicitly declared operations (5.x, `lib/NATIVE.md` section 2)
 

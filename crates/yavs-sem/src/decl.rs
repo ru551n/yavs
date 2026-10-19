@@ -1235,15 +1235,6 @@ impl Db {
             }
         }
         let anon_params = std::mem::take(&mut self.param_anon);
-        // ponytail: an instance of a generic subprogram would need the anonymous types
-        // bound too; one subprogram gets either a generic list or anonymous parameter types.
-        if generics.is_some() && !anon_params.is_empty() {
-            return Err(self.unsupported(
-                s.span,
-                "anonymous parameter types in a subprogram with a generic list",
-                "S7",
-            ));
-        }
         let name_span = match &s.designator {
             ast::Designator::Ident(i) => i.span,
             ast::Designator::Operator(_, sp) => *sp,

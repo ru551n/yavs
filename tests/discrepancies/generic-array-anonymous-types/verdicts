@@ -1,5 +1,5 @@
+# sim2 and sim3: the REJECT is a syntax error on any generic type with a type class, so unsupported: no vote
 sim1 2019 OK
 sim2 2019 REJECT
 sim3 2019 REJECT
-# sim2 and sim3: the REJECT is a syntax error on any generic type with a type class, so unsupported: no vote
 sim4 2019 OK

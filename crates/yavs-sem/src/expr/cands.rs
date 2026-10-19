@@ -274,10 +274,24 @@ impl Db {
                 continue;
             }
             let formals: Vec<TypeId> = s.params.iter().map(|p| self.base(p.subtype)).collect();
+            let mut ret = self.base(ret);
             let mut convs = 0;
             let mut ok = true;
+            // An anonymous parameter type takes any type of its class; a result of such a
+            // type is the type its operand binds (#308).
+            let mut bound: Vec<(TypeId, TypeId)> = Vec::new();
             for (c, &f) in ocs.iter().zip(&formals) {
-                match self.best_cost(c, Expected::Type(f)) {
+                let cost = if self.anonymous_param(e, f) {
+                    if !bound.iter().any(|b| b.0 == f)
+                        && let Some(t) = self.anonymous_binding(c, f)
+                    {
+                        bound.push((f, t));
+                    }
+                    self.anonymous_cost(c, f)
+                } else {
+                    self.best_cost(c, Expected::Type(f))
+                };
+                match cost {
                     Some(k) => convs += k,
                     None => {
                         ok = false;
@@ -285,10 +299,16 @@ impl Db {
                     }
                 }
             }
+            if ok && self.anonymous_param(e, ret) {
+                match bound.iter().find(|b| b.0 == ret) {
+                    Some(b) => ret = b.1,
+                    None => ok = false,
+                }
+            }
             if ok {
                 out.push(Interp {
                     convs,
-                    ..Interp::new(self.base(ret), Via::Call(d))
+                    ..Interp::new(ret, Via::Call(d))
                 });
             }
         }

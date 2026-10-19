@@ -1,0 +1,5 @@
+# sim2 and sim3: syntax error on `type is ...`: unsupported, no vote; sim1 and sim4 accept the declaration but find no operator for the operands of the infix call (no per-call binding)
+sim1 2019 REJECT
+sim2 2019 REJECT
+sim3 2019 REJECT
+sim4 2019 REJECT

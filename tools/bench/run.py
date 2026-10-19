@@ -185,9 +185,25 @@ def has_time_report(Y):
     return "--time-report" in sh([Y, "run", "--help"], None, check=False).stdout
 
 
+TIME = shutil.which("time") or ("/usr/bin/time" if os.path.exists("/usr/bin/time") else None)
+PEAK = re.compile(r"^peak-kb (\d+)\n?", re.M)
+
+
+def run_ru(argv, cwd):
+    """subprocess.run(capture_output) with the child's peak RSS in KiB (0 when `time` is missing).
+    A wait4 rusage of our own child is floored by this Python's RSS at fork, so `time -f %M` measures."""
+    pre = ["timeout", "300"]
+    if TIME:
+        pre += [TIME, "-f", "peak-kb %M"]
+    p = subprocess.run(pre + argv, cwd=cwd, capture_output=True, text=True, errors="replace")
+    m = PEAK.findall(p.stderr)
+    p.stderr = PEAK.sub("", p.stderr)
+    return p, int(m[-1]) if m else 0
+
+
 def measure(cmds, Y, tr):
     """One iteration of a benchmark: its commands in order; sums of wall, cpu and phases."""
-    wall = cpu = 0.0
+    wall = cpu = rss = 0.0
     ph = {}
     rc, tail = 0, ""
     for argv, cwd in cmds:
@@ -197,12 +213,13 @@ def measure(cmds, Y, tr):
         c0 = resource.getrusage(resource.RUSAGE_CHILDREN)
         t0 = time.perf_counter()
         try:
-            p = subprocess.run(["timeout", "300"] + argv, cwd=cwd, capture_output=True, text=True, errors="replace")
+            p, ru = run_ru(argv, cwd)
         except OSError as e:
             return {"rc": 127, "error": str(e)}
         wall += time.perf_counter() - t0
         c1 = resource.getrusage(resource.RUSAGE_CHILDREN)
         cpu += (c1.ru_utime + c1.ru_stime) - (c0.ru_utime + c0.ru_stime)
+        rss = max(rss, ru / 1024)
         if p.returncode and not rc:
             rc, tail = p.returncode, (p.stderr or p.stdout).strip()[-300:]
         for n, w, c in TR.findall(p.stderr):
@@ -210,7 +227,7 @@ def measure(cmds, Y, tr):
                 d = ph.setdefault(n, {"wall": 0.0, "cpu": 0.0})
                 d["wall"] += float(w)
                 d["cpu"] += float(c) if c != "n/a" else 0.0
-    return {"rc": rc, "wall": wall, "cpu": cpu, "phases": ph, "error": tail}
+    return {"rc": rc, "wall": wall, "cpu": cpu, "rss": rss, "phases": ph, "error": tail}
 
 
 def measure_sim(tpl, sub):
@@ -230,7 +247,7 @@ def summarize(samples):
     ok = [s for s in samples if s["rc"] == 0]
     out = {"ok": len(ok), "runs": len(samples), "rc": next((s["rc"] for s in samples if s["rc"]), 0),
            "error": next((s.get("error", "") for s in samples if s["rc"]), ""),
-           "cpu": med([s["cpu"] for s in ok]), "wall": med([s["wall"] for s in ok]), "phases": {}}
+           "rss": med([s.get("rss", 0) for s in ok]), "cpu": med([s["cpu"] for s in ok]), "wall": med([s["wall"] for s in ok]), "phases": {}}
     for p in PHASES:
         v = [s["phases"][p] for s in ok if p in s["phases"]]
         if v:
@@ -265,6 +282,7 @@ def report(names, labels, summ, thr, sims, simsumm):
         print(f"  {'phase':10} " + " ".join(f"{l + ' cpu':>10}" for l in labels) + (f" {'B/A':>6}" if cmp else "") + "   wall: " + " ".join(f"{l:>8}" for l in labels))
         rows = [(p, [x["phases"].get(p, {}).get("cpu") for x in s], [x["phases"].get(p, {}).get("wall") for x in s]) for p in PHASES]
         rows.append(("total", [x["cpu"] for x in s], [x["wall"] for x in s]))
+        rows.append(("peak MiB", [x.get("rss") for x in s], [None] * len(s)))
         for p, c, w in rows:
             ratio = f" {c[1] / c[0]:6.2f}{flag(c[0], c[1], thr)}" if cmp and c[0] and c[1] is not None else (" " * 7 if cmp else "")
             print(f"  {p:10} " + " ".join(f"{fmt(v):>10}" for v in c) + ratio + "         " + " ".join(f"{fmt(v):>8}" for v in w))

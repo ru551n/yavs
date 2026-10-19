@@ -43,7 +43,8 @@ Benchmarks (`run.py --list`):
 | The suite drivers of `tools/suites` are reused for the external libraries: they run with a recording stand-in for yavs that really analyzes but only writes down each `run` command; the harness replays the recorded command with `--time-report` | Same libraries, files and generics as the drivers, no second Tcl or test-list reader | #387, `tools/suites/AGENTS.md` |
 | Reference simulators (`--sims`) time the internal designs only, as one number (elaborate + run, analysis excluded), and are shown by label only. Labels map to commands through `BENCH_SIM1` etc. (else `DISCREP_SIM1` etc., else the untracked `tools/discrepancies/sims.local.conf`); never write a tool name, path or licence value into the repository or the JSON beyond the label | Root rule 3 and 11; reuses `tools/discrepancies/run.py` templates | #387 |
 | Every command runs under `timeout 300`; reference simulators also under `systemd-run --user --scope -p MemoryMax=2G`. One process at a time | Root rules 15 and 16 | root `AGENTS.md` |
-| The JSON file holds raw samples (`wall`, `cpu`, `phases`, `rc`, `error`) and medians per benchmark and binary, plus the binary hash and host CPU count | Tracking over time | #387 |
+| Peak RSS (`rss`, MiB, shown as `peak MiB`) is the child's own, measured with `time -f %M` inside the `timeout` wrapper. Without a `time` binary it is 0 | A wait4 rusage of our own child would be floored by the harness RSS at fork | #409 |
+| The JSON file holds raw samples (`wall`, `cpu`, `rss`, `phases`, `rc`, `error`) and medians per benchmark and binary, plus the binary hash and host CPU count | Tracking over time | #387 |
 
 ## 4. Invariants and pitfalls
 

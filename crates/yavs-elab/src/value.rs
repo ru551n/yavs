@@ -5,6 +5,9 @@
 //! fine for elaboration-time values (generics, constants, initial values); keep runs if a
 //! design folds huge aggregates here.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use yavs_interp::CallVal;
 use yavs_ir::{DOPE_DIM_BYTES, LogicKind, Program, Ty, TyId};
 use yavs_sem::stat::{ArrayConst, Elems};
@@ -397,6 +400,256 @@ pub fn decode(prog: &Program, ty: TyId, r: &CallVal) -> Option<Val> {
     match r {
         CallVal::Cell(c) => scalar_val(prog.types.get(ty)?, *c),
         CallVal::Composite { data, desc } => get(prog, ty, data, desc).map(|(v, _)| v),
+    }
+}
+
+/// How a scalar cell reads: an enumeration position, an integer or physical value, a real.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellKind {
+    Enum,
+    Int,
+    Real,
+}
+
+/// Where one leaf of a value lives in its IR data (the layout [`decode`] reads): a scalar
+/// cell, or a run of elements of a logic array's bit-planes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataLeaf {
+    /// `n` bytes at byte `at`.
+    Cell { at: u32, n: u8, kind: CellKind },
+    /// DataLeaf elements `from .. from + len` (row major) of the logic array of `total` leaf
+    /// elements whose planes start at byte `at`; `bias` is the code of position 0.
+    Planes {
+        at: u32,
+        total: u32,
+        from: u32,
+        len: u32,
+        bias: u8,
+    },
+}
+
+impl DataLeaf {
+    /// The leaf's value of `data` as the waveform layouts have it, appended to `out`: with
+    /// `logic`, one byte per enumeration position (the codes of a vector), else an
+    /// enumeration as a `u32`, integers and physicals as `i64`, reals as `f64`, little
+    /// endian. `None` when `data` does not hold the leaf (a bug of the caller's plan).
+    pub fn bytes(&self, data: &[u8], logic: bool, out: &mut Vec<u8>) -> Option<()> {
+        match *self {
+            DataLeaf::Cell { at, n, kind } => {
+                let c = read(data, at as usize, n as usize)?;
+                match kind {
+                    CellKind::Enum if logic => out.push(c as u8),
+                    CellKind::Enum => out.extend_from_slice(&(c as u32).to_le_bytes()),
+                    CellKind::Int | CellKind::Real => out.extend_from_slice(&c.to_le_bytes()),
+                }
+            }
+            DataLeaf::Planes {
+                at,
+                total,
+                from,
+                len,
+                bias,
+            } => {
+                for p in from..from + len {
+                    let i = (total - 1 - p) as usize;
+                    let base = at as usize + i / 64 * 32;
+                    let mut code = 0u64;
+                    for plane in 0..4 {
+                        code |= (read(data, base + plane * 8, 8)? >> (i % 64) & 1) << plane;
+                    }
+                    let v = u32::try_from(code.checked_sub(u64::from(bias))?).ok()?;
+                    if logic {
+                        out.push(u8::try_from(v).ok()?);
+                    } else {
+                        out.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+        }
+        Some(())
+    }
+}
+
+/// Where the leaf at each of `paths` lives in the data of a value of IR type `ty` with
+/// descriptor `desc`, without decoding the value (the same layout as [`decode`]). A path is
+/// the field index at a record and the row-major element index at an array; it ends at a
+/// scalar, or at a logic array (the whole array is then one run of its planes). `paths`
+/// are in order of first elements, so a group is one call. `None` when a path does not fit
+/// the type.
+pub fn leaf_locs(prog: &Program, ty: TyId, desc: &[u8], paths: &[&[u32]]) -> Option<Vec<DataLeaf>> {
+    let mut l = Locator {
+        prog,
+        memo: HashMap::new(),
+        out: vec![None; paths.len()],
+    };
+    let ents: Vec<(usize, &[u32])> = paths.iter().copied().enumerate().collect();
+    l.go(ty, desc, 0, &ents)?;
+    l.out.into_iter().collect()
+}
+
+type Ents<'a> = [(usize, &'a [u32])];
+/// Entries with the same first path element, with it removed.
+type Group<'a> = (u32, Vec<(usize, &'a [u32])>);
+
+struct Locator<'p> {
+    prog: &'p Program,
+    /// Layouts by type and descriptor slice (the elements of an array share theirs).
+    memo: HashMap<(TyId, usize, usize), Rc<(yavs_ir::Layout, usize)>>,
+    out: Vec<Option<DataLeaf>>,
+}
+
+impl Locator<'_> {
+    fn layout(&mut self, ty: TyId, desc: &[u8]) -> Option<Rc<(yavs_ir::Layout, usize)>> {
+        let key = (ty, desc.as_ptr() as usize, desc.len());
+        if let Some(l) = self.memo.get(&key) {
+            return Some(l.clone());
+        }
+        let l = Rc::new(Ty::layout(&self.prog.types, &self.prog.consts, ty, desc).ok()?);
+        self.memo.insert(key, l.clone());
+        Some(l)
+    }
+
+    /// Consecutive entries with the same first path element, with it removed.
+    fn groups<'a>(ents: &Ents<'a>) -> Option<Vec<Group<'a>>> {
+        let mut gs: Vec<Group<'a>> = Vec::new();
+        for &(i, p) in ents {
+            let (&k, rest) = p.split_first()?;
+            match gs.last_mut() {
+                Some((g, v)) if *g == k => v.push((i, rest)),
+                _ => gs.push((k, vec![(i, rest)])),
+            }
+        }
+        Some(gs)
+    }
+
+    fn go(&mut self, ty: TyId, desc: &[u8], at: usize, ents: &Ents<'_>) -> Option<()> {
+        let prog = self.prog;
+        let t = prog.types.get(ty)?;
+        if let Some(n) = t.scalar_size() {
+            let kind = match t {
+                Ty::Enum { .. } => CellKind::Enum,
+                Ty::Int { .. } | Ty::Physical { .. } => CellKind::Int,
+                Ty::Real => CellKind::Real,
+                _ => return None,
+            };
+            for &(i, p) in ents {
+                if !p.is_empty() {
+                    return None;
+                }
+                self.out[i] = Some(DataLeaf::Cell {
+                    at: u32::try_from(at).ok()?,
+                    n: n as u8,
+                    kind,
+                });
+            }
+            return Some(());
+        }
+        let lay = self.layout(ty, desc)?;
+        let l = &lay.0;
+        match t {
+            Ty::Array { .. } if Ty::logic_leaf(&prog.types, ty).is_some() => {
+                self.planes(ty, desc, at, l.count, ents)
+            }
+            Ty::Array {
+                elem, elem_desc, ..
+            } => {
+                let (_, dat) = dims_of(t, desc)?;
+                let ed = match elem_desc {
+                    Some(c) => pool(prog, *c)?,
+                    None => desc.get(dat..)?,
+                };
+                for (k, g) in Self::groups(ents)? {
+                    if u64::from(k) >= l.count {
+                        return None;
+                    }
+                    self.go(*elem, ed, at + k as usize * l.stride as usize, &g)?;
+                }
+                Some(())
+            }
+            Ty::Record { fields } => {
+                let mut used = 0;
+                let mut fds = Vec::with_capacity(fields.len());
+                for f in fields {
+                    let fd = match f.desc {
+                        Some(c) => pool(prog, c)?,
+                        None => desc.get(used..)?,
+                    };
+                    if f.desc.is_none() {
+                        used += self.layout(f.ty, fd)?.1;
+                    }
+                    fds.push(fd);
+                }
+                for (k, g) in Self::groups(ents)? {
+                    let k = k as usize;
+                    let f = fields.get(k)?;
+                    self.go(f.ty, fds[k], at + *l.offsets.get(k)? as usize, &g)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    /// The runs of a logic array of `total` leaf elements: each path index selects one
+    /// element of the nesting level it is at.
+    fn planes(
+        &mut self,
+        ty: TyId,
+        desc: &[u8],
+        at: usize,
+        total: u64,
+        ents: &Ents<'_>,
+    ) -> Option<()> {
+        let prog = self.prog;
+        let bias = if Ty::logic_leaf(&prog.types, ty)? == LogicKind::StdULogic {
+            0
+        } else {
+            2
+        };
+        // Element counts per nesting level, outermost first.
+        let (mut counts, mut t, mut d) = (Vec::new(), ty, desc);
+        while let Some(
+            tt @ Ty::Array {
+                elem, elem_desc, ..
+            },
+        ) = prog.types.get(t)
+        {
+            let (bounds, dat) = dims_of(tt, d)?;
+            counts.push(bounds.iter().map(|b| b.len()).product::<u64>());
+            d = match elem_desc {
+                Some(c) => pool(prog, *c)?,
+                None => d.get(dat..)?,
+            };
+            t = *elem;
+        }
+        // width[k]: leaf elements in one element of level k - 1 (`width[levels]` is 1).
+        let mut width = vec![1u64; counts.len() + 1];
+        for k in (0..counts.len()).rev() {
+            width[k] = width[k + 1].checked_mul(counts[k])?;
+        }
+        if width[0] != total {
+            return None;
+        }
+        for &(i, p) in ents {
+            if p.len() > counts.len() {
+                return None;
+            }
+            let mut from = 0u64;
+            for (k, &x) in p.iter().enumerate() {
+                if u64::from(x) >= counts[k] {
+                    return None;
+                }
+                from += u64::from(x) * width[k + 1];
+            }
+            self.out[i] = Some(DataLeaf::Planes {
+                at: u32::try_from(at).ok()?,
+                total: u32::try_from(total).ok()?,
+                from: u32::try_from(from).ok()?,
+                len: u32::try_from(width[p.len()]).ok()?,
+                bias,
+            });
+        }
+        Some(())
     }
 }
 

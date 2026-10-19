@@ -39,6 +39,15 @@ architecture rtl of wv_sub is
     n : integer range 0 to 7;
   end record;
   type ints_t is array (natural range <>) of integer;
+  type rec2_t is record
+    v   : std_logic_vector(3 downto 0);
+    b   : boolean;
+    r   : real;
+    arr : bit_vector(1 to 3);
+    t   : time;
+  end record;
+  type slv_arr_t is array (0 to 1) of std_logic_vector(2 downto 0);
+  type bool_arr_t is array (1 to 3) of boolean;
   shared variable acc : integer := 0;
   shared variable tab : ints_t(1 to 30) := (others => 0);
   shared variable cell : cell_t;
@@ -50,6 +59,9 @@ begin
     variable pr   : pair_t := ('U', 0);
     variable ints : ints_t(1 to 2) := (others => 0);
     variable big  : ints_t(1 to 30) := (others => 0);
+    variable sa   : slv_arr_t := ("000", "111");
+    variable ba   : bool_arr_t := (others => false);
+    variable r2   : rec2_t := ("0000", false, 0.5, "000", 0 ns);
     variable s    : string(1 to 2) := "ab";
     variable l    : line;
     variable dyn  : bit_vector(bump_width - 1 downto 0);
@@ -70,6 +82,14 @@ begin
         tab(3) := 6;
       elsif k = 1 then
         tab(3) := 5;
+        sa(0) := "101";
+        ba(2) := true;
+        r2 := ("1010", true, 1.5, "101", 5 ns);
+      end if;
+      if k = 3 then
+        sa(1) := "010";
+        ba(2) := false;
+        r2.arr := "110";
       end if;
       pcount := pcount + 1;
       cell.bump;

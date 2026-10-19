@@ -620,6 +620,26 @@ fn wave_composite_and_shared_variables() {
         changes(&s, "wave_vars_tb.u.tab.(3)"),
         format!("0={:032b} 20000000={:032b}", 5, 6)
     );
+    // Logic arrays nest: an array of vectors, an array of booleans (one bit-plane element each),
+    // a record of vectors, booleans, reals, bit vectors and times.
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.sa.(0)"), "0=101");
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.sa.(1)"),
+        "0=111 20000000=010"
+    );
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.ba.(1)"), "0=0");
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.ba.(2)"), "0=1 20000000=0");
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.r2.v"), "0=1010");
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.r2.b"), "0=1");
+    assert_eq!(changes(&s, "wave_vars_tb.u.main.r2.r"), "0=1.5");
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.r2.arr"),
+        "0=101 20000000=110"
+    );
+    assert_eq!(
+        changes(&s, "wave_vars_tb.u.main.r2.t"),
+        format!("0={:064b}", 5_000_000)
+    );
     // Shared variables: an architecture's in its instance, a package's in its package.
     assert_eq!(
         changes(&s, "wave_vars_tb.u.acc"),
@@ -668,6 +688,15 @@ fn wave_composite_and_shared_variables() {
             "wave_vars_tb.u.main.bv",
             "wave_vars_tb.u.main.ints.(1)",
             "wave_vars_tb.u.main.ints.(2)",
+            "wave_vars_tb.u.main.sa.(0)",
+            "wave_vars_tb.u.main.sa.(1)",
+            "wave_vars_tb.u.main.ba.(1)",
+            "wave_vars_tb.u.main.ba.(2)",
+            "wave_vars_tb.u.main.ba.(3)",
+            "wave_vars_tb.u.main.r2.b",
+            "wave_vars_tb.u.main.r2.r",
+            "wave_vars_tb.u.main.r2.arr",
+            "wave_vars_tb.u.main.r2.t",
             "wave_vars_tb.u.main.s.(1)",
             "wave_vars_tb.u.main.s.(2)"
         ]

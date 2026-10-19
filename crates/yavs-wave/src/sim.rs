@@ -13,12 +13,11 @@
 //! when it differs from the last written value. Their shapes are the elaborated ones
 //! (`Elaborated::var_shapes`), so records and arrays are scopes as for signals.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use yavs_elab::{Built, Elaborated, ObjKind, ScopeId, Shape, Val};
+use yavs_elab::{Built, DataLeaf, Elaborated, ObjKind, ScopeId, Shape, leaf_locs};
 use yavs_interp::{CallVal, InterpProcess, Stamp};
 use yavs_kernel::{
     Elem, Hook, Observer, Phase, PortMode, ProcId, SigRef, SimControl, SimError, Value,
@@ -27,7 +26,6 @@ use yavs_sem::Db;
 use yavs_sem::decl::Designator;
 use yavs_sem::decl::{DeclKind, ObjClass as SemClass};
 use yavs_sem::hir::{Direction, StmtKind};
-use yavs_sem::stat::Elems;
 use yavs_sem::types::TypeKind;
 
 use crate::model::*;
@@ -50,9 +48,8 @@ enum Conv {
 enum Src {
     /// Kernel leaf, offset and element count.
     Sig { leaf: u32, offset: u32, len: u32 },
-    /// Sub-element `path` of a variable (`Var::entries`): per step an array element (row
-    /// major) or a record field; a logic vector is the whole array at the end of the path.
-    Var { path: Box<[u64]> },
+    /// Sub-element of a variable: its place in the variable's value is `Var::plan`.
+    Var,
 }
 
 /// Where a variable is read.
@@ -63,12 +60,29 @@ enum VarAt {
     Shared { slot: u64, ty: yavs_ir::TyId },
 }
 
-/// A recorded variable, the run of entries of its sub-elements and the value last written
-/// to each (empty: none yet).
+/// The path of each sub-element of a variable from the variable itself: per step an array
+/// element (row major) or a record field; a logic vector is the whole array at the end of
+/// the path. All in one vector, `ends[j]` the end of entry `j`'s.
+#[derive(Default)]
+struct Paths {
+    data: Vec<u32>,
+    ends: Vec<u32>,
+}
+
+/// A recorded variable, the run of entries of its sub-elements and the values last written.
 struct Var {
     at: VarAt,
     entries: std::ops::Range<u32>,
-    last: Vec<Vec<u8>>,
+    /// The paths of the entries until the first read has made the plan.
+    paths: Option<Paths>,
+    /// Where each entry's value is in the raw value (`yavs_elab::leaf_locs`).
+    plan: Vec<DataLeaf>,
+    /// The descriptor the plan was made for.
+    plan_desc: Vec<u8>,
+    /// The values last written to the entries, one after the other (empty until `primed`).
+    last: Vec<u8>,
+    /// Every entry has been written once.
+    primed: bool,
     /// The process's `execs` at the last read (`u64::MAX`: never read): same means unchanged.
     execs: u64,
     /// The raw value at the last read: an equal one needs no decoding.
@@ -167,6 +181,8 @@ pub fn record_to(
         enums: HashMap::new(),
         vars: Vec::new(),
         pkg_vars: BTreeMap::new(),
+        vpath: Vec::new(),
+        paths: Paths::default(),
     };
     d.package_vars();
     for (i, s) in e.hier.scopes.iter().enumerate() {
@@ -275,7 +291,7 @@ impl Entry {
     fn span(&self) -> (u32, u32) {
         match self.src {
             Src::Sig { offset, len, .. } => (offset, len),
-            Src::Var { .. } => (0, 0),
+            Src::Var => (0, 0),
         }
     }
 }
@@ -305,93 +321,127 @@ impl State {
             if self.error.is_some() {
                 return;
             }
-            let v = match self.read_var(hook, k) {
-                Ok(Some(v)) => v,
+            match self.read_var(hook, k) {
+                Ok(true) => {}
                 // The process has not started yet, or has ended: its last values stay.
-                Ok(None) => continue,
+                Ok(false) => continue,
                 Err(m) => {
                     self.error = Some(Error::Value(m));
                     return;
                 }
-            };
-            let var = &mut self.vars[k];
-            for (i, last) in var.entries.clone().zip(&mut var.last) {
-                let en = &self.entries[i as usize];
-                let x = match &en.src {
-                    Src::Var { path } => sub(&v, path),
-                    Src::Sig { .. } => None,
-                };
-                let Some(x) = x else {
-                    let m = "this is a bug in yavs: a recorded variable's value has another shape";
-                    self.error = Some(Error::Value(m.into()));
-                    return;
-                };
-                bytes.clear();
-                convert_val(en.conv, &x, &mut bytes);
-                if *last == bytes {
-                    continue;
+            }
+            let State {
+                vars,
+                entries,
+                writer,
+                step,
+                ..
+            } = self;
+            let var = &mut vars[k];
+            let cell;
+            let data = match &var.raw {
+                Some(CallVal::Composite { data, .. }) => data.as_slice(),
+                Some(CallVal::Cell(c)) => {
+                    cell = c.to_le_bytes();
+                    &cell[..]
                 }
-                last.clone_from(&bytes);
-                let w = self.writer.as_mut().expect("writer open while recording");
-                if let Err(e) = w.change(self.step, SignalId(i), &bytes) {
+                None => continue,
+            };
+            let bug = |what: &str| {
+                Error::Value(format!(
+                    "this is a bug in yavs: a recorded variable's value: {what}"
+                ))
+            };
+            let mut at = 0;
+            for (leaf, i) in var.plan.iter().zip(var.entries.clone()) {
+                let logic = matches!(entries[i as usize].conv, Conv::Logic { .. });
+                bytes.clear();
+                if leaf.bytes(data, logic, &mut bytes).is_none() {
+                    self.error = Some(bug("it does not hold an entry"));
+                    return;
+                }
+                let end = at + bytes.len();
+                if var.primed {
+                    match var.last.get_mut(at..end) {
+                        Some(last) if *last == bytes[..] => {
+                            at = end;
+                            continue;
+                        }
+                        Some(last) => last.copy_from_slice(&bytes),
+                        None => {
+                            self.error = Some(bug("an entry changed its width"));
+                            return;
+                        }
+                    }
+                } else {
+                    var.last.extend_from_slice(&bytes);
+                }
+                at = end;
+                let w = writer.as_mut().expect("writer open while recording");
+                if let Err(e) = w.change(*step, SignalId(i), &bytes) {
                     self.error = Some(e);
                     return;
                 }
             }
+            var.primed = true;
         }
     }
 
-    /// The value of variable `k` if it may differ from the last read; `None` while its process
-    /// has no frame, has not run since, or the raw value is unchanged.
-    fn read_var(&mut self, hook: &mut Hook<'_>, k: usize) -> Result<Option<Val>, String> {
+    /// Read variable `k` if it may differ from the last read: whether its raw value changed
+    /// (then `Var::raw` is the new one and the plan is made). `false` while its process has
+    /// no frame, has not run since, or the value is unchanged.
+    fn read_var(&mut self, hook: &mut Hook<'_>, k: usize) -> Result<bool, String> {
         let bug =
             |what: &str| format!("this is a bug in yavs: reading a recorded variable: {what}");
         let var = &mut self.vars[k];
-        let (execs, raw, stamp) = (&mut var.execs, &mut var.raw, &mut var.stamp);
-        let (ty, prog, cv) = match &var.at {
-            VarAt::Proc { proc, name } => {
-                let r = hook
-                    .with_process(*proc, |p| {
-                        let p = p
-                            .as_any()
-                            .and_then(|a| a.downcast_mut::<InterpProcess>())
-                            .ok_or_else(|| bug("not an interpreter process"))?;
-                        if !p.has_vars() || p.execs() == *execs {
-                            return Ok(None);
-                        }
-                        // Compared in place: most variables of a process that ran are unchanged.
-                        if let Some(r) = raw.as_ref()
-                            && p.var_is(name, r, stamp).map_err(|m| bug(&m))?
-                        {
-                            *execs = p.execs();
-                            return Ok(None);
-                        }
-                        let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
+        let Var {
+            execs,
+            raw,
+            stamp,
+            paths,
+            plan,
+            plan_desc,
+            ..
+        } = var;
+        match &var.at {
+            VarAt::Proc { proc, name } => hook
+                .with_process(*proc, |p| {
+                    let p = p
+                        .as_any()
+                        .and_then(|a| a.downcast_mut::<InterpProcess>())
+                        .ok_or_else(|| bug("not an interpreter process"))?;
+                    if !p.has_vars() || p.execs() == *execs {
+                        return Ok(false);
+                    }
+                    // Compared in place: most variables of a process that ran are unchanged.
+                    if let Some(r) = raw.as_ref()
+                        && p.var_is(name, r, stamp).map_err(|m| bug(&m))?
+                    {
                         *execs = p.execs();
-                        let v = yavs_elab::ir_decode(p.program(), ty, &cv)
-                            .ok_or_else(|| bug("value not decoded"))?;
-                        *raw = Some(cv);
-                        Ok(Some(v))
-                    })
-                    .unwrap_or_else(|| Err(bug("no process")));
-                return r;
-            }
+                        return Ok(false);
+                    }
+                    let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
+                    *execs = p.execs();
+                    make_plan(paths, plan, plan_desc, p.program(), ty, &cv)?;
+                    *raw = Some(cv);
+                    Ok(true)
+                })
+                .unwrap_or_else(|| Err(bug("no process"))),
             VarAt::Shared { slot, ty } => {
                 let b = self.built.as_ref().ok_or_else(|| bug("no shared state"))?;
                 if let Some(r) = raw.as_ref()
                     && yavs_interp::shared_var_is(&b.rt, &b.shared, *slot, *ty, r, stamp)
                         .map_err(|m| bug(&m))?
                 {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 let cv =
                     yavs_interp::shared_var(&b.rt, &b.shared, *slot, *ty).map_err(|m| bug(&m))?;
-                (*ty, &b.rt.prog, cv)
+                make_plan(paths, plan, plan_desc, &b.rt.prog, *ty, &cv)?;
+                *raw = Some(cv);
+                Ok(true)
             }
-        };
-        let v = yavs_elab::ir_decode(prog, ty, &cv).ok_or_else(|| bug("value not decoded"))?;
-        *raw = Some(cv);
-        Ok(Some(v))
+        }
     }
 
     fn mark(&mut self, i: u32) {
@@ -457,55 +507,41 @@ fn convert(en: &Entry, v: &Value, out: &mut Vec<u8>) {
     }
 }
 
-/// A variable's value in the byte layout of its [`SigType`]: a logic enumeration as one byte
-/// (`Conv::Logic`, also per element of a vector), other enumerations as `u32`, integers and
-/// physicals as `i64`, reals as `f64`.
-fn convert_val(conv: Conv, v: &Val, out: &mut Vec<u8>) {
-    match (conv, v) {
-        (Conv::Logic { .. }, Val::Enum(p)) => out.push(*p as u8),
-        (Conv::Logic { .. }, Val::Array(a)) => match &a.elems {
-            Elems::Bytes(b) => out.extend_from_slice(b),
-            Elems::Runs(rs) => {
-                for (n, x) in rs.iter() {
-                    if let Val::Enum(p) = x {
-                        out.extend(std::iter::repeat_n(*p as u8, *n as usize));
-                    }
-                }
-            }
-        },
-        (_, Val::Enum(p)) => out.extend_from_slice(&p.to_le_bytes()),
-        (_, Val::Int(x) | Val::Phys(x)) => out.extend_from_slice(&x.to_le_bytes()),
-        (_, Val::Real(x)) => out.extend_from_slice(&x.to_le_bytes()),
-        // A mismatch reaches the writer as a wrong length, which it reports.
-        _ => {}
-    }
-}
-
-/// Sub-element `path` of `v` (see `Src::Var`).
-fn sub<'v>(v: &'v Val, path: &[u64]) -> Option<Cow<'v, Val>> {
-    let mut cur = Cow::Borrowed(v);
-    for &k in path {
-        cur = match cur {
-            Cow::Borrowed(Val::Record(fs)) => Cow::Borrowed(fs.get(k as usize)?),
-            Cow::Borrowed(Val::Array(a)) => match &a.elems {
-                Elems::Bytes(b) => Cow::Owned(Val::Enum(u32::from(*b.get(k as usize)?))),
-                Elems::Runs(rs) => {
-                    let mut at = k;
-                    let (_, x) = rs.iter().find(|(n, _)| {
-                        let hit = at < *n;
-                        if !hit {
-                            at -= n;
-                        }
-                        hit
-                    })?;
-                    Cow::Borrowed(x)
-                }
-            },
-            // Elements of an element are borrowed from `v`; an owned one is a scalar.
-            _ => return None,
+/// Make the plan of a variable at its first read: where each entry's value is in a raw
+/// value of IR type `ty`, from the entries' paths. Later values have the same descriptor.
+fn make_plan(
+    paths: &mut Option<Paths>,
+    plan: &mut Vec<DataLeaf>,
+    plan_desc: &mut Vec<u8>,
+    prog: &yavs_ir::Program,
+    ty: yavs_ir::TyId,
+    cv: &CallVal,
+) -> Result<(), String> {
+    let bug = |what: &str| format!("this is a bug in yavs: a recorded variable's value: {what}");
+    let desc: &[u8] = match cv {
+        CallVal::Composite { desc, .. } => desc,
+        CallVal::Cell(_) => &[],
+    };
+    let Some(ps) = paths.take() else {
+        return if desc == plan_desc.as_slice() {
+            Ok(())
+        } else {
+            Err(bug("its bounds changed"))
         };
-    }
-    Some(cur)
+    };
+    let mut start = 0;
+    let slices: Vec<&[u32]> = ps
+        .ends
+        .iter()
+        .map(|&e| {
+            let sl = &ps.data[start..e as usize];
+            start = e as usize;
+            sl
+        })
+        .collect();
+    *plan = leaf_locs(prog, ty, desc, &slices).ok_or_else(|| bug("it has another shape"))?;
+    *plan_desc = desc.to_vec();
+    Ok(())
 }
 
 impl Observer for Recorder {
@@ -579,10 +615,14 @@ struct Design<'a> {
     vars: Vec<Var>,
     /// The recorded shared variables of each package not yet declared, with their slots.
     pkg_vars: BTreeMap<yavs_sem::UnitId, Vec<(yavs_sem::DeclId, u64, yavs_ir::TyId)>>,
+    /// The path of the variable sub-element being declared (`Paths`), and the paths of the
+    /// variable's entries so far.
+    vpath: Vec<u32>,
+    paths: Paths,
 }
 
 /// Where a node's values come from.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum At {
     /// Row-major instance `k` of the node in the leaves from `leaf` on; `part`: the kernel
     /// range of `leaf` an `in` port collapsed into part of its actual's leaf covers
@@ -592,41 +632,48 @@ enum At {
         k: u64,
         part: Option<yavs_kernel::Range>,
     },
-    /// Sub-element `path` of a variable (`Src::Var`).
-    Var { path: Vec<u64> },
-}
-
-impl At {
-    /// Element `j` of an array node of `n` elements.
-    fn elem(&self, n: u64, j: u64) -> At {
-        match self {
-            At::Sig { leaf, k, part } => At::Sig {
-                leaf: *leaf,
-                k: k * n + j,
-                part: *part,
-            },
-            At::Var { path } => At::Var {
-                path: [path.as_slice(), &[j]].concat(),
-            },
-        }
-    }
-
-    /// Field `i` of a record node, whose leaves start `skip` leaves after its own.
-    fn field(&self, i: u64, skip: u32) -> At {
-        match self {
-            At::Sig { leaf, k, part } => At::Sig {
-                leaf: leaf + skip,
-                k: *k,
-                part: *part,
-            },
-            At::Var { path } => At::Var {
-                path: [path.as_slice(), &[i]].concat(),
-            },
-        }
-    }
+    /// A sub-element of a variable; its path is `Design::vpath`.
+    Var,
 }
 
 impl Design<'_> {
+    /// Element `j` of an array node of `n` elements; pair with [`Self::up_path`].
+    fn elem(&mut self, at: At, n: u64, j: u64) -> At {
+        match at {
+            At::Sig { leaf, k, part } => At::Sig {
+                leaf,
+                k: k * n + j,
+                part,
+            },
+            At::Var => {
+                self.vpath.push(j as u32);
+                At::Var
+            }
+        }
+    }
+
+    /// Field `i` of a record node, whose leaves start `skip` leaves after its own; pair with
+    /// [`Self::up_path`].
+    fn field(&mut self, at: At, i: u64, skip: u32) -> At {
+        match at {
+            At::Sig { leaf, k, part } => At::Sig {
+                leaf: leaf + skip,
+                k,
+                part,
+            },
+            At::Var => {
+                self.vpath.push(i as u32);
+                At::Var
+            }
+        }
+    }
+
+    fn up_path(&mut self, at: At) {
+        if matches!(at, At::Var) {
+            self.vpath.pop();
+        }
+    }
+
     fn scope(&mut self, id: ScopeId) {
         let sc = self.e.hier.scope(id);
         // A component scope holds the component ports; its bound instance carries the label.
@@ -837,7 +884,9 @@ impl Design<'_> {
                 if self.b.array(name, n) {
                     for j in 0..n {
                         let child = format!("{name}({})", index_image(dims, j));
-                        self.node(elem, &child, at.elem(n, j), port, class);
+                        let at = self.elem(at, n, j);
+                        self.node(elem, &child, at, port, class);
+                        self.up_path(at);
                     }
                 }
                 self.b.up();
@@ -846,13 +895,9 @@ impl Design<'_> {
                 self.b.scope(name, ScopeKind::Record, "");
                 let mut skip = 0;
                 for (i, (fname, f)) in fields.iter().enumerate() {
-                    self.node(
-                        f,
-                        fname.text.as_str(),
-                        at.field(i as u64, skip),
-                        port,
-                        class,
-                    );
+                    let at = self.field(at, i as u64, skip);
+                    self.node(f, fname.text.as_str(), at, port, class);
+                    self.up_path(at);
                     skip += f.leaves().len() as u32;
                 }
                 self.b.up();
@@ -896,7 +941,11 @@ impl Design<'_> {
                     len: len as u32,
                 }
             }
-            At::Var { path } => Src::Var { path: path.into() },
+            At::Var => {
+                self.paths.data.extend_from_slice(&self.vpath);
+                self.paths.ends.push(self.paths.data.len() as u32);
+                Src::Var
+            }
         };
         self.entries.push(Entry { src, conv });
     }
@@ -945,14 +994,19 @@ impl Design<'_> {
             return;
         };
         let first = self.entries.len() as u32;
-        let node = At::Var { path: Vec::new() };
-        self.node(shape, &name, node, PortDir::None, ObjClass::Variable);
+        self.vpath.clear();
+        self.paths = Paths::default();
+        self.node(shape, &name, At::Var, PortDir::None, ObjClass::Variable);
         let last = self.entries.len() as u32;
         if last > first {
             self.vars.push(Var {
                 at,
                 entries: first..last,
-                last: vec![Vec::new(); (last - first) as usize],
+                paths: Some(std::mem::take(&mut self.paths)),
+                plan: Vec::new(),
+                plan_desc: Vec::new(),
+                last: Vec::new(),
+                primed: false,
                 execs: u64::MAX,
                 raw: None,
                 stamp: None,

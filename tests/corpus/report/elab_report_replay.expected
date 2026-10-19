@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:elab_report_replay:_p0	c1 = 1, c2 = 11, c3 = 12
+err	** Note: (init): f1 returns 1
+err	** Note: (init): f1 returns 12
+err	** Note: (init): f1 returns 1
+err	** Note: (init): f1 returns 12

@@ -178,6 +178,19 @@ pub(crate) fn replay(
     sigs: &HashMap<DeclId, Sig>,
     log: &[Call],
 ) -> Result<(), String> {
+    // The reports of these calls were printed when they first ran (#390).
+    rt.set_replay(true);
+    let r = replay_calls(rt, shared, sigs, log);
+    rt.set_replay(false);
+    r
+}
+
+fn replay_calls(
+    rt: &Arc<Runtime>,
+    shared: &Arc<Mutex<SharedState>>,
+    sigs: &HashMap<DeclId, Sig>,
+    log: &[Call],
+) -> Result<(), String> {
     for c in log {
         let name = &c.name;
         let s = sigs

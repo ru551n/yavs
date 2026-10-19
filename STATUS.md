@@ -675,7 +675,7 @@ is not static (generic or parameter bounds) get their range at the `'reflect`, a
 index or designated subtypes. The CLI has no resolution option yet, so TIME mirrors are
 exercised end to end in femtoseconds only (other resolutions: a unit test).
 
-- A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`).
+- A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`). Calls replayed on fresh package state (a session rebuild, building the simulation) print and count their reports no more (#390; `report/elab_report_replay`).
 
 ### Shared heap collector: overhead measurement (#303, 2026-10-19)
 

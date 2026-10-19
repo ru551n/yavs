@@ -75,20 +75,22 @@ component (generator output compiled and simulated) are not run by the driver.
 ### Verification library: its own `.pro` regression (#276)
 
 `tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
-521 files in script order and runs each test (`yavs run`, release build of main at 9c853ae6, 4 in parallel). Pass = exit 0 and the
-library's own `DONE PASSED` summary line. 2008: 3 of 314 tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. Every failure
-ends at elaboration, so nothing past it is measured yet. 2019: the same, plus `DynamicVectorGenericPkg` (#30) and `file_open` with `APPEND_MODE` (#297); 0 pass.
+521 files in script order and runs each test (`yavs run`, release build of main at 2809229b, 4 in parallel). Pass = exit 0 and the
+library's own `DONE PASSED` summary line. 2008: 16 of 314 tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. The
+17 UART and Ethernet tests simulate but time out: their verification components are left unbound (#291). Every other failure
+ends at elaboration. 2019 (measured at 9c853ae6): the 2008 causes, plus `DynamicVectorGenericPkg` (#30) and `file_open` with `APPEND_MODE` (#297); 0 pass.
 
 | Test suite | Pass | Fail | First root cause (issues) |
 |---|---|---|---|
 | AddressBusTransactionPkg, AddressBusTransactionArrayPkg | 0 | 84 | `'range` of a package signal in a port subtype #294 |
 | Axi4Full | 0 | 72 | deferred constant as a component generic default #295 |
-| AxiStream | 0 | 68 | user resolution on a `std_ulogic` subtype #293 (31), no diagnostic after an alias of a port record element #292 (25), alias of a variable slice #296 (12) |
-| Axi4Lite, DpRam, Ethernet, Spi, UART, VideoBus | 0 | 48 | #293 |
-| StreamTransactionPkg, StreamTransactionArrayPkg | 0 | 28 | #293 (24), #292 (4) |
+| AxiStream | 0 | 68 | `'length` of a port record field in an entity constant #304 (31), no diagnostic after an alias of a port record element #292 (25, fixed after this run), alias of a variable slice #296 (12) |
+| Axi4Lite, DpRam | 0 | 18 | #304 |
+| UART, Ethernet | 0 | 17 | time out: verification components left unbound #291 |
+| StreamTransactionPkg, StreamTransactionArrayPkg | 0 | 28 | #304 (24), #292 (4) |
 | InterruptHandler_Gen, TbAxi4_MultipleMemory | 0 | 8 | #294 (7), #295 (1) |
 | Wishbone | 0 | 3 | #296 |
-| ModelParams, ModelParams_PT | 3 | 0 | none |
+| Spi, VideoBus, ModelParams, ModelParams_PT | 16 | 0 | none |
 
 Default binding of a component to an entity in the component package's library (#291) is warned about in 269 of the 314 runs.
 

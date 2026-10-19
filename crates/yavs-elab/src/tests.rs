@@ -1764,9 +1764,8 @@ fn external_names_in_package_subprograms() {
 }
 
 #[test]
-fn shared_variable_holding_access_values_is_not_lowered() {
-    // `--relaxed` accepts it; an access value in it would designate an object in one
-    // process's private heap (#285).
+fn shared_variable_holding_access_values_is_lowered() {
+    // `--relaxed` accepts it; its objects live in the shared heap (#303).
     let src = "
       package p is
         type ptr is access integer;
@@ -1789,12 +1788,7 @@ fn shared_variable_holding_access_values_is_not_lowered() {
     assert_eq!(db.error_count(), 0);
     let top = crate::find_top(&mut db, "work", "t").expect("top");
     let mut e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elab");
-    let ds = e.lower(&mut db).expect_err("not lowered");
-    let d = ds.first().expect("a diagnostic");
-    assert_eq!(d.code, "E2001");
-    assert!(d.message.contains("holding access values"), "{}", d.message);
-    let at = d.primary.as_ref().expect("span").span;
-    assert_eq!(&src[at.start as usize..at.end as usize], "v");
+    e.lower(&mut db).expect("lowered");
 }
 
 /// A record port with an unconstrained element associated individually takes the element's

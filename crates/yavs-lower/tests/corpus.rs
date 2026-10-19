@@ -283,6 +283,7 @@ const PASS: &[&str] = &[
     "scalar/subtype_range",
     "scalar/time_attrs",
     "scalar/time_bounds",
+    "shared/access_vars",
     "shared/pkg_vars",
     "shared/region_vars",
     "sigassign/assign_inertial",

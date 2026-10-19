@@ -23,6 +23,9 @@ pub struct Program {
     pub cases: IdVec<CaseTableId, CaseTable>,
     /// Subtype descriptions for `std.reflection` mirrors (`yavs.attr.reflect`).
     pub reflect: IdVec<ReflId, Refl>,
+    /// Root map of the shared variables area (`AddrSpace::Shared`), for the collection of
+    /// the shared heap (#303).
+    pub shared_roots: Vec<(u32, RootKind)>,
 }
 
 impl Program {

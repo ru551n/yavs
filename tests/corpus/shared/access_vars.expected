@@ -1,0 +1,12 @@
+exit	0
+diag	note	9000000	0	:access_vars:checker	t=1 bins: bin1=2  tree=10 log=4000 adder step 1 burst 4100 last=hitter 1 recent 1
+diag	note	19000000	0	:access_vars:checker	t=2 bins: bin2=1 bin1=3  tree=30 log=8000 adder step 2 burst 4100 last=hitter 2 recent 2
+diag	note	29000000	0	:access_vars:checker	t=3 bins: bin3=1 bin2=2 bin1=3  tree=60 log=12000 adder step 3 burst 4100 last=hitter 3 recent 3
+diag	note	39000000	0	:access_vars:checker	t=4 bins: bin4=1 bin3=1 bin2=3 bin1=3  tree=77 log=16000 adder step 4 burst 4100 last=hitter 4 recent 4
+diag	note	49000000	0	:access_vars:checker	t=5 bins: bin5=1 bin4=1 bin3=2 bin2=3 bin1=3  tree=104 log=20000 adder step 5 burst 4100 last=hitter 5 recent 5
+diag	note	59000000	0	:access_vars:checker	t=6 bins: bin6=1 bin5=1 bin4=1 bin3=3 bin2=3 bin1=3  tree=124 log=24000 adder step 6 burst 4100 last=hitter 6 recent 6
+diag	note	69000000	0	:access_vars:checker	t=7 bins: bin7=1 bin6=1 bin5=1 bin4=2 bin3=3 bin2=3 bin1=3  tree=131 log=28000 adder step 7 burst 4100 last=hitter 7 recent 7
+diag	note	79000000	0	:access_vars:checker	t=8 bins: bin8=1 bin7=1 bin6=1 bin5=1 bin4=3 bin3=3 bin2=3 bin1=3  tree=148 log=32000 adder step 8 burst 4100 last=hitter 8 recent 8
+diag	note	85000000	0	:access_vars:hitter	own list: mine8 sum=204
+diag	note	87000000	0	:access_vars:treeer	removed 3 8 1
+diag	note	89000000	0	:access_vars:checker	t=9 bins: bin7=1 bin6=1 bin5=1 bin4=3 bin2=3  tree=148 log=32000 adder step 8 burst 4100 last=hitter 8 recent 8

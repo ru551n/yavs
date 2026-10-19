@@ -33,6 +33,11 @@ impl ProgramBuilder {
         }
     }
 
+    /// A GC root at `off` in the shared variables area (`Program::shared_roots`).
+    pub fn shared_root(&mut self, off: u32, kind: RootKind) {
+        self.prog.shared_roots.push((off, kind));
+    }
+
     pub fn konst(&mut self, c: ConstData) -> ConstId {
         self.prog.consts.push(c)
     }

@@ -73,9 +73,19 @@ pub struct ProcDriver {
 /// Shared variables and the shared heap, used only by serial processes (ir.md 3.5).
 #[derive(Default)]
 pub struct SharedState {
-    /// Addressed by `AddrSpace::Shared`.
+    /// Addressed by `AddrSpace::Shared`; `Program::shared_roots` is its root map.
     pub vars: Vec<u8>,
     pub(crate) heap: Option<Heap>,
+    /// The shared-heap roots of every serial process that ran, as of its last suspension.
+    pub(crate) procs: Vec<ProcRoots>,
+}
+
+/// A serial process's shared-heap roots: handles from its frames' root maps (`None`: one
+/// could not be located) and the slots addresses in its frames and temporaries reach.
+#[derive(Default)]
+pub(crate) struct ProcRoots {
+    pub handles: Option<Vec<u64>>,
+    pub pinned: Vec<u32>,
 }
 
 impl SharedState {
@@ -83,6 +93,73 @@ impl SharedState {
         SharedState {
             vars,
             heap: Some(Heap::new(heap::SHARED)),
+            procs: Vec::new(),
+        }
+    }
+
+    /// Shared-heap slots that some serial process's frames address, sorted.
+    pub(crate) fn pinned(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.procs.iter().flat_map(|p| p.pinned.clone()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Collect the shared heap. Call only at a serial safepoint, when no process runs: roots
+    /// are the shared variables area (`Program::shared_roots`), the sealed objects and what
+    /// each serial process published at its last suspension. False (nothing freed) when a
+    /// root's handles cannot be located.
+    pub fn collect(&mut self, prog: &Program) -> bool {
+        let mut roots = Vec::new();
+        if !heap::slot_roots(prog, &prog.shared_roots, &self.vars, &mut roots) {
+            return false;
+        }
+        for p in &self.procs {
+            match &p.handles {
+                Some(h) => roots.extend(h),
+                None => return false,
+            }
+        }
+        let pinned = self.pinned();
+        self.heap
+            .as_mut()
+            .is_none_or(|h| h.collect(prog, &roots, &pinned))
+    }
+
+    /// Objects alive in the shared heap (for tests and statistics).
+    pub fn heap_live(&self) -> usize {
+        self.heap.as_ref().map_or(0, Heap::live)
+    }
+}
+
+/// Collects the shared heap at serial safepoints: seals it when the simulation starts
+/// ([`Heap::seal`]) and collects it at the start of a cycle, before any process runs, once
+/// more was allocated than [`Limits::gc_threshold`] and than the last collection kept
+/// (`Heap::gc_due`). Subscribe it to every simulation with a [`SharedState`].
+pub struct SharedGc {
+    pub rt: Arc<Runtime>,
+    pub shared: Arc<Mutex<SharedState>>,
+}
+
+impl yavs_kernel::Observer for SharedGc {
+    fn phase(&mut self, _hook: &mut yavs_kernel::Hook<'_>, phase: yavs_kernel::Phase) {
+        // A poisoned lock is reported by the next process that takes it.
+        let Ok(mut s) = self.shared.lock() else {
+            return;
+        };
+        match phase {
+            yavs_kernel::Phase::StartOfSim => {
+                if let Some(h) = s.heap.as_mut() {
+                    h.seal();
+                }
+            }
+            yavs_kernel::Phase::NextCycle => {
+                let t = self.rt.limits.gc_threshold;
+                if s.heap.as_ref().is_some_and(|h| h.gc_due(t)) {
+                    s.collect(&self.rt.prog);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -237,6 +314,8 @@ pub struct InterpProcess {
     started: bool,
     done: bool,
     shared: Option<Arc<Mutex<SharedState>>>,
+    /// This process's entry in `SharedState::procs`.
+    roots_slot: Option<usize>,
 }
 
 impl InterpProcess {
@@ -275,6 +354,7 @@ impl InterpProcess {
             started: false,
             done: false,
             shared,
+            roots_slot: None,
         })
     }
 
@@ -322,8 +402,8 @@ impl Process for InterpProcess {
             self.m.sh = Some(std::mem::take(&mut **g));
         }
         let r = self.m.run(Some(&mut *ctx), 0);
-        if matches!(r, Ok(Outcome::Suspended)) {
-            self.m.recycle_shared();
+        if r.is_ok() {
+            self.m.publish_shared(&mut self.roots_slot);
         }
         if let (Some(g), Some(st)) = (guard.as_mut(), self.m.sh.take()) {
             **g = st;

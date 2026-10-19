@@ -284,7 +284,7 @@ objects at run time (`Lowerer::package`: constants evaluated once, composites wi
 bounds too, shared protected variables, package signals and files); composite architecture
 constants evaluated once per region (#73); aliases of record elements of ports (#292) and of static logic elements and slices of variables (#296); `'range` of a package signal in subtypes (#294); bounds of record elements of ports in constants, signal subtypes and generate ranges (#304, difftest `composite/record_port_bounds`, `composite/record_in_port_bounds`); a lowering failure without a diagnostic is an ICE; non-protected shared variables (`--relaxed`) in
 packages, architectures, blocks and generates, one per declaring region, whose processes run
-serially (#285; types holding access values are `E2001`, #303). `tests/corpus.rs` runs every corpus group plus
+serially (#285), including types holding access values, whose objects live in the shared heap (#303). `tests/corpus.rs` runs every corpus group plus
 `crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
 `'element` attributes of objects with open element bounds (unconstrained ports, aliases of external names, parameters) read the object's descriptor (#235, #243; difftest `composite/element_attr_open`).
@@ -448,7 +448,7 @@ compact constants, natives by NATIVE.md symbol, foreign references, flag propaga
 (`crates/yavs-ir/README.md` says what is stable). `yavs-interp`: `InterpProcess` implements the
 kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
 yavs-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
-`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined),
+`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined; the shared heap, where serial processes allocate, collected between cycles from the shared variables, the objects elaboration made and every serial process's frames, #303),
 serial marking, kernel-free `call` / `call_shared` for elaboration (allocations with the shared state, at any call depth, in the shared heap, #246), protected objects,
 std.textio (read/write of every textio type, linear in the line length over many calls,
 readline/writeline/tee, hread/oread/sread, justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version

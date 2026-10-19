@@ -275,7 +275,7 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   `call_shared`). One of a non-protected type (`--relaxed`, #285): an instance cell with the
   address of its slot (`VarShape`) in the shared heap, created and initialised by its thunk;
   names of it are `Space::Region(cell)`, whose `Fx::addr` loads the cell and flags the function
-  `TOUCHES_SHARED`, so its processes are serial. A type holding access values is `E2001`. Composite constants of an architecture elaboration did not fold are
+  `TOUCHES_SHARED`, so its processes are serial. Types holding access values are allowed (#303): a package's variable adds its handle words to `Program::shared_roots`, a region's slot is typed for the GC. Composite constants of an architecture elaboration did not fold are
   computed once per region by a thunk returning their fat pair (`InstConst::comp`, #73).
   A 2019 variable port is an instance cell too (`UnitIr::var_ports`), with no thunk: yavs-elab
   writes the handle of the shared variable its actual chain ends at (#188).

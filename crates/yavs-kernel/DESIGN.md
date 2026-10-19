@@ -166,8 +166,9 @@ wake-ups and their numbering) is the same at any `--threads`; `tests/determinism
 traces with wake-ups at 1, 4 and 8 threads.
 
 **GC and heap safepoints.** The commit phase is the only point at which no process runs and no
-`Ctx` exists. That is where the shared heap collects; process heaps collect when their process
-suspends (docs/design/ir.md 1.6). Protected-type locks are never held across a suspension.
+`Ctx` exists. The shared heap collects between cycles, from an observer at `Phase::NextCycle`
+(`yavs_interp::SharedGc`, #303); process heaps collect when their process suspends
+(docs/design/ir.md 1.6). Protected-type locks are never held across a suspension.
 
 ## How the IR plugs in
 

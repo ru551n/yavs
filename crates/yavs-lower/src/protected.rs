@@ -457,13 +457,10 @@ pub(crate) fn shared_var(
         // returns its address; names of it reach it through the cell (`Space::Region`).
         let mut obj = None;
         let f = crate::func::thunk(db, pb, cx, &name, span, |fx| {
-            let shape = fx.shared_shape(d, t, span)?;
-            let tid = fx.ty(t, span)?;
+            let (shape, tid) = fx.shared_shape(d, t, span)?;
             let buf = fx.alloc_n(shape.size());
             let size = fx.int(i64::from(shape.size()));
             let h = fx.reg(yavs_ir::RegTy::I64);
-            // ponytail: the block holds the slot, not a value of `tid`; fine while the shared
-            // heap is never collected and the type holds no access values.
             fx.emit(yavs_ir::Inst::New {
                 dst: h,
                 ty: tid,

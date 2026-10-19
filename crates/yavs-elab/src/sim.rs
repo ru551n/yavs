@@ -591,7 +591,14 @@ impl Elaborated {
             },
             res,
         )
-        .map(|s| (s, Some(rt)))
+        .map(|mut s| {
+            // The shared heap is collected between cycles (#303).
+            s.subscribe(Box::new(yavs_interp::SharedGc {
+                rt: rt.clone(),
+                shared,
+            }));
+            (s, Some(rt))
+        })
     }
 
     /// The equivalent process of an expression actual (`ProcInst::actual`): the region's

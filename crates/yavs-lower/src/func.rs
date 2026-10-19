@@ -3,7 +3,7 @@
 use yavs_diag::Span;
 use yavs_ir::{
     AddrSpace, BlockId, FuncBuilder, FuncFlags, FuncId, FuncKind, Inst, Mode, ParamClass,
-    ProgramBuilder, Reg, RegTy, RootKind, StmtKind, TyId, Width,
+    ProgramBuilder, Reg, RegTy, RootKind, StmtKind, Ty, TyId, Width,
 };
 use yavs_sem::decl::{Alias, Body, DeclKind, ObjClass, ObjRole, Param, SubprogramKind};
 use yavs_sem::hir::{self, Mode as HMode, Sensitivity, StmtKind as HStmt, UnitHir};
@@ -547,6 +547,9 @@ impl<'a, 'b> Fx<'a, 'b> {
             return Err(self.cx.ice(decl.span, "not an object"));
         };
         let t = db.base(o.subtype);
+        if let yavs_sem::types::TypeKind::Access { .. } = db.types[t].kind {
+            return Ok(VarShape::Scalar(Width::B8)); // a shared variable's handle (#303)
+        }
         if self.is_general(t, decl.span)? {
             return Ok(VarShape::Comp);
         }
@@ -558,18 +561,40 @@ impl<'a, 'b> Fx<'a, 'b> {
         Ok(VarShape::Scalar(w))
     }
 
-    /// The shape of non-protected shared variable `d` of type `t`. An access value in it
-    /// would designate an object in one process's private heap, so such types are not
-    /// lowered.
-    pub fn shared_shape(&mut self, d: DeclId, t: yavs_sem::TypeId, span: Span) -> R<VarShape> {
+    /// The shape of non-protected shared variable `d` of type `t` and the IR type of the
+    /// shared-heap block holding its slot in a region (`Space::Region`), for the GC (#303):
+    /// `t` for a scalar, else a record whose third word is the handle of the variable's
+    /// object (`[data, desc, handle]`, `[data, dope, handle, descriptor]`).
+    pub fn shared_shape(
+        &mut self,
+        d: DeclId,
+        t: yavs_sem::TypeId,
+        span: Span,
+    ) -> R<(VarShape, TyId)> {
         let tid = self.ty(t, span)?;
-        if holds_access(self.fb.program().types(), tid) {
-            return Err(self.cx.unsupported(
-                span,
-                "shared variables of non-protected types holding access values",
-            ));
+        let shape = self.var_shape(d)?;
+        if let VarShape::Scalar(_) = shape {
+            return Ok((shape, tid));
         }
-        self.var_shape(d)
+        let pb = self.fb.program();
+        let word = pb.ty(Ty::Int {
+            lo: i64::MIN,
+            hi: i64::MAX,
+        });
+        let handle = pb.ty(Ty::Access { target: tid });
+        let field = |name: &str, ty| yavs_ir::Field {
+            name: name.into(),
+            ty,
+            desc: None,
+        };
+        let slot = pb.ty(Ty::Record {
+            fields: vec![
+                field("data", word),
+                field("desc", word),
+                field("handle", handle),
+            ],
+        });
+        Ok((shape, slot))
     }
 
     /// Initialise variable `d` in its slot at `slot` (`shape.size()` bytes): a scalar's value;
@@ -645,7 +670,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                 Ok(())
             }
             VarShape::Scalar(w) => {
+                let access = matches!(db.types[t].kind, yavs_sem::types::TypeKind::Access { .. });
                 let v = match o.default {
+                    Some(e) if access => self.scalar_expr(e)?,
+                    None if access => self.int(0),
                     Some(e) => {
                         let v = self.scalar_expr(e)?;
                         let what = ty::obj_desc(db, d);
@@ -2050,10 +2078,22 @@ impl Fx<'_, '_> {
                 ) {
                     // `--relaxed` (W1904): one object in the shared variables area; the
                     // functions naming it touch shared state, so their processes are serial.
-                    let shape = self.shared_shape(d, t, span)?;
+                    let (shape, _) = self.shared_shape(d, t, span)?;
                     self.stmt_start(StmtKind::Decl, span);
                     let off = self.cx.shared_size.next_multiple_of(8);
                     self.cx.shared_size = off + shape.size();
+                    // The GC root: an access value, or the handle of the variable's object.
+                    let root = match shape {
+                        VarShape::Scalar(_) => matches!(
+                            db.types[t].kind,
+                            yavs_sem::types::TypeKind::Access { .. }
+                        )
+                        .then_some(off),
+                        _ => Some(off + 16),
+                    };
+                    if let Some(r) = root {
+                        self.fb.program().shared_root(r, RootKind::Handle);
+                    }
                     let slot = self.addr(Space::Shared, off);
                     self.var_init(d, shape, slot, true)?;
                     self.cx.objs.insert(d, shape.obj(Space::Shared, off));
@@ -2352,14 +2392,4 @@ pub(crate) fn lsp_fields(l: &hir::Lsp) -> Vec<u32> {
             _ => None,
         })
         .collect()
-}
-
-/// Whether values of `tid` contain access values.
-fn holds_access(types: &yavs_ir::IdVec<yavs_ir::TyId, yavs_ir::Ty>, tid: yavs_ir::TyId) -> bool {
-    match types.get(tid) {
-        Some(yavs_ir::Ty::Access { .. }) => true,
-        Some(yavs_ir::Ty::Array { elem, .. }) => holds_access(types, *elem),
-        Some(yavs_ir::Ty::Record { fields }) => fields.iter().any(|f| holds_access(types, f.ty)),
-        _ => false,
-    }
 }

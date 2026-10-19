@@ -459,7 +459,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   precise roots from `Func::roots`; collection is skipped (never unsound) for objects whose
   handles cannot be located. Handles inside objects are found through the object's descriptor,
   so arrays whose elements need their own descriptor are scanned too (#80). The shared heap is
-  not collected yet.
+  collected between cycles (#303, "Shared heap collection" below).
 - **Heap addresses carry no generation; deallocated slots are quarantined instead** (#81,
   yavs-interp). The address format has no room for a generation next to a 24-bit slot index
   and a 32-bit offset, so a deallocated slot is not reused until its process suspends
@@ -467,7 +467,8 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   to an address of it. The same address search keeps such objects alive across a collection
   (a by-reference parameter of a waiting procedure). An access through a stale address
   therefore always meets the freed slot and is the runtime error `access to a deallocated
-  object`. Ceiling: for the shared heap only the suspending process's frames are searched.
+  object`. For the shared heap the addresses of every serial process's frames count, as each
+  published them at its last suspension (#303).
 - **2019 `std.env` assert state, call paths and time_record** (#99, yavs-interp `env.rs`):
   - The assert state (counts, enables, read severity) is global but read deterministically
     (rule 3): a process sees the state as of the start of its cycle plus its own changes;
@@ -987,8 +988,7 @@ which tools/difftest parses.
   that cell (`Space::Region`). Every function naming either is `TOUCHES_SHARED`, so the processes
   reaching it, through any chain of calls, are serial: output is identical at any `--threads`,
   and `--shuffle` exposes testbenches that depend on process order (`docs/plan.md` "Parallel
-  kernel design"). A type holding access values is `E2001`: a process allocates in its private
-  heap, so another process could not follow the value.
+  kernel design"). A type holding access values is allowed since #303 (below).
 - **Signal aliases** (#203, LRM 6.6.2) get no storage and no slot: every use lowers the aliased
   name (`Fx::alias_target`), with the alias subtype's descriptor when it is constrained (a
   length check at each use, `SubtypeCheck`). Sem's LSP of a name through an alias with an array
@@ -1028,9 +1028,31 @@ which tools/difftest parses.
   any depth, lands in the shared heap, so shared state never points into a private heap that
   dies with its process or with an elaboration call. The interpreter decides it per frame
   (`Frame::shared_alloc`, inherited by callees, `Machine::alloc_heap`), not the lowering, so a
-  function lowered once allocates in the right heap for every caller. ponytail: the shared
-  heap is never collected, so garbage made during elaboration stays; collect it from the
-  shared variables' roots if that ever matters.
+  function lowered once allocates in the right heap for every caller. The shared heap is
+  collected (#303, "Shared heap collection").
+- **Shared heap collection** (#303, user, 2026-10-19): objects reached through a non-protected
+  shared variable live in the shared heap, like those of protected objects and of elaboration
+  code, and the shared heap is collected by precise mark and sweep at a serial safepoint: the
+  start of a cycle (`Phase::NextCycle`), when no process runs (`yavs_interp::SharedGc`, an
+  observer yavs-elab subscribes). Rationale: allocating into the shared heap without collecting
+  it lets long runs of logging code grow without bound; copying objects on store would cost
+  every store. How:
+  - A serial process allocates everything in the shared heap (its root frame is
+    `shared_alloc`, inherited by callees), since a value it makes may end up in a shared
+    variable through any chain of calls; it already runs serially (#285).
+  - Roots: the shared variables area (`Program::shared_roots`, a root map like a frame's), the
+    objects alive when the simulation starts (`Heap::seal`: package and instance data, which
+    hold protected objects and region shared variables, have no root maps), and the frames of
+    every serial process, which each publishes at its suspensions (`SharedState::procs`: handles
+    from its root maps and the slots addresses reach). Signals cannot hold access values;
+    VHPI and observers hold none. A region's shared variable slot is typed for the GC (a
+    record whose third word is the handle of the variable's object).
+  - Trigger: once more was allocated since the last collection than both `Limits::gc_threshold`
+    and what the last collection kept, so the work stays proportional to the allocation
+    (ponytail: a fixed rule, no tuning by pause time). Never during a cycle; output identical at
+    any `--threads` and with `--shuffle`.
+  - Ceiling (ponytail in `Heap::seal`): garbage made during elaboration is kept with the sealed
+    objects; root maps for package and instance data would let it go.
 - **Record signals** have one `SignalIr` per leaf (`SignalIr::path`, field indices), mapped by
   yavs-elab to the kernel leaf with that path. A longest static prefix covers one driver slot
   per leaf below its fields, so `ProcessIr::drivers` is the flattening of `ProcInst::lsps`.

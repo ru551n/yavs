@@ -913,6 +913,135 @@ fn gc_keeps_roots() {
     assert!(has(&lines, "200 ns +0 p0 Note: keep.all = 7"), "{lines:#?}");
 }
 
+/// The shared heap under churn (#303): a serial process replaces the object of a shared
+/// variable 300 times without deallocate. Collected at the safepoints between cycles, the
+/// heap stays bounded while the objects a shared variable (`keep`) and the process's own
+/// variable (`mine`) designate survive; deallocating `keep` afterwards still works, and the
+/// output is the same at 1 and 4 threads.
+#[test]
+fn shared_heap_collected_at_safepoints() {
+    use std::sync::{Arc, Mutex};
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let acc = pb.ty(Ty::Access { target: int });
+    let what = pb.check_msg("keep.all", Dir::To);
+    // The shared variables area: `keep` at 0, `junk` at 8.
+    pb.shared_root(0, RootKind::Handle);
+    pb.shared_root(8, RootKind::Handle);
+    let p = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(p);
+        let mine = fb.local("mine", acc, 8, 8);
+        let i = fb.local("i", int, 8, 8);
+        fb.root(mine, RootKind::Handle);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let h = new_int(&mut fb, int, 7);
+        store(&mut fb, AddrSpace::Shared, 0, h, Width::B8);
+        let h = new_int(&mut fb, int, 5);
+        store(&mut fb, AddrSpace::Frame, mine, h, Width::B8);
+        let (lp, body, done) = (fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::Br { to: lp });
+        fb.at(lp);
+        stmt(&mut fb, StmtKind::Loop);
+        let iv = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+        let lim = fb.int(300);
+        let c = cmp(&mut fb, CmpOp::Lt, iv, lim);
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let h = new_int(&mut fb, int, 99);
+        store(&mut fb, AddrSpace::Shared, 8, h, Width::B8);
+        wait_for(&mut fb, NS);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let iv = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+        let one = fb.int(1);
+        let iv = bin(&mut fb, IntOp::Add, iv, one);
+        store(&mut fb, AddrSpace::Frame, i, iv, Width::B8);
+        fb.emit(Inst::Br { to: lp });
+        fb.at(done);
+        for (space, off, text) in [
+            (AddrSpace::Shared, 0, "keep.all = "),
+            (AddrSpace::Frame, mine, "mine.all = "),
+        ] {
+            stmt(&mut fb, StmtKind::Report);
+            let h = load(&mut fb, space, off, Width::B8);
+            let obj = deref(&mut fb, h, what);
+            let v = fb.reg(RegTy::I64);
+            fb.emit(Inst::Load {
+                dst: v,
+                addr: obj,
+                w: Width::B8,
+            });
+            report_image(&mut fb, text, int, v);
+        }
+        stmt(&mut fb, StmtKind::Call);
+        let a = fb.addr(AddrSpace::Shared, 0);
+        fb.emit(Inst::Free { ptr: a });
+        stmt(&mut fb, StmtKind::Report);
+        let v = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        report_image(&mut fb, "keep after deallocate = ", int, v);
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let prog = Arc::new(pb.finish().unwrap());
+    assert!(yavs_interp::proc_flags(&prog, p).serial);
+    let b = Bindings {
+        limits: Limits {
+            gc_threshold: 64,
+            ..Limits::default()
+        },
+        ..Bindings::default()
+    };
+    let rt = Runtime::new(prog.clone(), b).unwrap();
+    let mut out = Vec::new();
+    for threads in [1, 4] {
+        let shared = Arc::new(Mutex::new(yavs_interp::SharedState::new(vec![0; 16])));
+        let mut b = Builder::new();
+        let ip = yavs_interp::InterpProcess::new(
+            rt.clone(),
+            p,
+            Arc::new(yavs_interp::InstData::default()),
+            vec![],
+            Some(shared.clone()),
+        )
+        .unwrap();
+        b.process("p", yavs_interp::proc_flags(&prog, p), &[], ip);
+        let mut sim = b
+            .build(Config {
+                threads,
+                ..Config::default()
+            })
+            .unwrap();
+        sim.subscribe(Box::new(yavs_interp::SharedGc {
+            rt: rt.clone(),
+            shared: shared.clone(),
+        }));
+        let t = Trace::default();
+        sim.subscribe(Box::new(t.clone()));
+        let mut most = 0;
+        for k in 1..=310 {
+            sim.run_until(Time::ns(k)).unwrap();
+            most = most.max(shared.lock().unwrap().heap_live());
+        }
+        // 302 objects without collection; a few between two collections.
+        assert!(most <= 8, "{most} objects alive");
+        out.push(t.0.lock().unwrap().clone());
+    }
+    assert_eq!(out[0], out[1]);
+    assert_eq!(
+        out[0],
+        [
+            "300 ns +0 p0 Note: keep.all = 7",
+            "300 ns +0 p0 Note: mine.all = 5",
+            "300 ns +0 p0 Note: keep after deallocate = 0"
+        ]
+    );
+}
+
 /// `to_string` and `'image` natives on integer, real, enumeration and character values;
 /// an unimplemented native names its symbol; an unknown symbol fails early.
 #[test]

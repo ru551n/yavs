@@ -9,6 +9,11 @@
 //! not reused at once: it waits in quarantine until the owner suspends (registers are dead
 //! then) and [`Heap::recycle`] finds no address to it in the frames (#81). An access through
 //! a stale address therefore always meets the freed slot, a clean runtime error.
+//!
+//! The shared heap is collected the same way, at a serial safepoint between cycles
+//! (`crate::SharedGc`): roots are the shared variables area, the objects that existed when
+//! the simulation started ([`Heap::seal`]) and the frames every serial process published at
+//! its last suspension (#303).
 
 use yavs_ir::{Program, Ty, TyId};
 
@@ -58,6 +63,10 @@ pub struct Heap {
     quarantine: Vec<u32>,
     /// Bytes allocated since the last collection.
     pub since_gc: u64,
+    /// Bytes of the objects that survived the last collection.
+    pub live_bytes: u64,
+    /// Handles that are roots for good ([`Heap::seal`]).
+    sealed: Vec<u64>,
 }
 
 pub fn pack(tag: u8, index: u32, generation: u32) -> u64 {
@@ -76,6 +85,8 @@ impl Heap {
             free: Vec::new(),
             quarantine: Vec::new(),
             since_gc: 0,
+            live_bytes: 0,
+            sealed: Vec::new(),
         }
     }
 
@@ -182,12 +193,34 @@ impl Heap {
         s.data.as_deref_mut()?.get_mut(s.start..)
     }
 
+    /// Make every live object a root for good. The shared heap is sealed when the simulation
+    /// starts: the objects elaboration made are reached from package and instance data, which
+    /// have no root maps. ponytail: elaboration garbage is kept with them; root maps for
+    /// package and instance data would let it go.
+    pub fn seal(&mut self) {
+        let tag = self.tag;
+        self.sealed = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.data.is_some())
+            .map(|(i, s)| pack(tag, i as u32, s.generation))
+            .collect();
+    }
+
+    /// Whether a collection is due: more allocated since the last one than both `threshold`
+    /// and what survived it, so the work stays proportional to the allocation.
+    pub fn gc_due(&self, threshold: u64) -> bool {
+        self.since_gc > threshold.max(self.live_bytes)
+    }
+
     /// Mark from `roots` and from the objects in `pinned` (sorted slot indices that addresses
     /// still reach), sweep, then [`Heap::recycle`]. Returns false (and frees nothing) when an
     /// object's handles cannot be found from its type, so a collection is never unsound.
     pub fn collect(&mut self, prog: &Program, roots: &[u64], pinned: &[u32]) -> bool {
         let mut mark = vec![false; self.slots.len()];
         let mut work: Vec<u64> = roots.to_vec();
+        work.extend(&self.sealed);
         for &i in pinned {
             if let Some(s) = self.slots.get(i as usize).filter(|s| s.data.is_some()) {
                 work.push(pack(self.tag, i, s.generation));
@@ -220,14 +253,20 @@ impl Heap {
                 return false;
             }
         }
+        let mut live = 0;
         for (i, m) in mark.into_iter().enumerate() {
-            if !m && self.slots[i].data.is_some() {
-                self.release(i as u32);
-                self.free.push(i as u32);
+            match &self.slots[i].data {
+                Some(d) if m => live += d.len() as u64 + 32,
+                Some(_) => {
+                    self.release(i as u32);
+                    self.free.push(i as u32);
+                }
+                None => {}
             }
         }
         self.recycle(pinned);
         self.since_gc = 0;
+        self.live_bytes = live;
         true
     }
 }
@@ -238,6 +277,25 @@ fn read_u64(b: &[u8], at: u64) -> Option<u64> {
     let mut a = [0; 8];
     a.copy_from_slice(s);
     Some(u64::from_le_bytes(a))
+}
+
+/// Handles in the slots of `mem` that root map `map` names (a frame, the shared variables
+/// area). False when one cannot be located.
+pub fn slot_roots(
+    prog: &Program,
+    map: &[(u32, yavs_ir::RootKind)],
+    mem: &[u8],
+    out: &mut Vec<u64>,
+) -> bool {
+    map.iter()
+        .all(|&(off, kind)| match (mem.get(off as usize..), kind) {
+            (Some(d), yavs_ir::RootKind::Handle) => {
+                value_handles_raw(d, out);
+                true
+            }
+            (Some(d), yavs_ir::RootKind::Composite(t)) => value_handles(prog, t, d, out),
+            (None, _) => false,
+        })
 }
 
 /// The handle at the start of `data` (a `RootKind::Handle` slot).

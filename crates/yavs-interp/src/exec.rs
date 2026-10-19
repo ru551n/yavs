@@ -23,7 +23,7 @@ use yavs_std::arith;
 
 use crate::debug::{DebugSession, FrameView, ProcState, StepMode, Stop, StopReason};
 use crate::heap::{self, Heap, HeapError};
-use crate::{InstData, ProcDriver, Runtime, SharedState};
+use crate::{InstData, ProcDriver, ProcRoots, Runtime, SharedState};
 
 /// An execution failure before it becomes a `SimError` with a trace.
 #[derive(Debug)]
@@ -423,12 +423,13 @@ impl Machine {
             ret: None,
             temp_base: self.temp.len(),
             // A root frame entered with the shared state attached is elaboration code
-            // (`call_shared`, `init_package`, `call_values_shared`): a process enters its
-            // root frame before it first takes the shared state.
-            shared_alloc: self
-                .frames
-                .last()
-                .map_or(self.sh.is_some(), |f| f.shared_alloc),
+            // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
+            // root frame before it first takes the shared state, and allocates in the shared
+            // heap when it is serial: what it allocates may end up in a shared variable (#303).
+            shared_alloc: self.frames.last().map_or_else(
+                || self.sh.is_some() || f.kind == FuncKind::Process && self.rt.prog.is_serial(func),
+                |f| f.shared_alloc,
+            ),
         })
     }
 
@@ -499,33 +500,27 @@ impl Machine {
         }
     }
 
-    /// Collect the private heap from the frames' root maps (registers are dead at a
-    /// suspension point, ir.md 1.2).
-    pub(crate) fn collect(&mut self) -> bool {
+    /// Handles in the frames' root maps (registers are dead at a suspension point, ir.md
+    /// 1.2); `None` when one cannot be located.
+    fn frame_roots(&self) -> Option<Vec<u64>> {
         let prog = &self.rt.prog;
         let mut roots = Vec::new();
         for fr in &self.frames {
-            let Some(f) = prog.func(fr.func) else {
-                return false;
-            };
-            for &(off, kind) in &f.roots {
-                let Some(d) = fr.slots.get(off as usize..) else {
-                    return false;
-                };
-                let ok = match kind {
-                    yavs_ir::RootKind::Handle => {
-                        heap::value_handles_raw(d, &mut roots);
-                        true
-                    }
-                    yavs_ir::RootKind::Composite(t) => heap::value_handles(prog, t, d, &mut roots),
-                };
-                if !ok {
-                    return false;
-                }
+            let f = prog.func(fr.func)?;
+            if !heap::slot_roots(prog, &f.roots, &fr.slots, &mut roots) {
+                return None;
             }
         }
+        Some(roots)
+    }
+
+    /// Collect the private heap from the frames' root maps.
+    pub(crate) fn collect(&mut self) -> bool {
+        let Some(roots) = self.frame_roots() else {
+            return false;
+        };
         let pinned = self.pinned(HEAP);
-        self.heap.collect(prog, &roots, &pinned)
+        self.heap.collect(&self.rt.prog, &roots, &pinned)
     }
 
     /// Slot indices of `space` (a heap) that addresses in this process's frames and
@@ -547,19 +542,27 @@ impl Machine {
         v
     }
 
-    /// Make the shared heap's deallocated slots reusable at a suspension of this (serial)
-    /// process. ponytail: only this process's frames are searched for addresses; one that
-    /// another process holds across a wait (a shared object passed by reference to a
-    /// procedure that waits) is not seen. Search all serial processes if that ever matters.
-    pub(crate) fn recycle_shared(&mut self) {
-        if self
-            .sh
-            .as_ref()
-            .and_then(|s| s.heap.as_ref())
-            .is_some_and(Heap::has_quarantine)
-        {
-            let pinned = self.pinned(SHARED_HEAP);
-            if let Some(h) = self.sh.as_mut().and_then(|s| s.heap.as_mut()) {
+    /// At a suspension or the end of this (serial) process: publish its shared-heap roots as
+    /// entry `slot` of the shared state (assigned on the first call), for the collection at
+    /// the next safepoint (`crate::SharedGc`), and make the shared heap's deallocated slots
+    /// reusable that no serial process's frames still address.
+    pub(crate) fn publish_shared(&mut self, slot: &mut Option<usize>) {
+        let handles = self.frame_roots().map(|mut v| {
+            v.retain(|&h| heap::tag_of(h) == heap::SHARED);
+            v
+        });
+        let pinned = self.pinned(SHARED_HEAP);
+        let Some(sh) = self.sh.as_mut() else {
+            return;
+        };
+        let i = *slot.get_or_insert_with(|| {
+            sh.procs.push(ProcRoots::default());
+            sh.procs.len() - 1
+        });
+        sh.procs[i] = ProcRoots { handles, pinned };
+        if sh.heap.as_ref().is_some_and(Heap::has_quarantine) {
+            let pinned = sh.pinned();
+            if let Some(h) = sh.heap.as_mut() {
                 h.recycle(&pinned);
             }
         }

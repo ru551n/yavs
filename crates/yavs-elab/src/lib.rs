@@ -134,6 +134,10 @@ pub struct Elaborated {
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
     /// The protected object of each 2019 variable port, by (scope of the formal, formal).
     pub var_ports: std::collections::BTreeMap<(ScopeId, yavs_sem::DeclId), VarObj>,
+    /// Aliases of external shared variables by (region, alias): the region and declaration
+    /// of the variable, whose object the alias's instance data cell holds (#93).
+    pub ext_vars:
+        std::collections::HashMap<(ScopeId, yavs_sem::DeclId), (ScopeId, yavs_sem::DeclId)>,
     /// Warnings of a successful elaboration.
     pub warnings: Vec<Diagnostic>,
     /// Conversion functions of port associations (`PortEdge::to_formal`/`to_actual`).

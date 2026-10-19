@@ -1,0 +1,3 @@
+exit	0
+diag	note	5000000	0	:external_variable:early	early total=1007
+diag	note	35000000	0	:external_variable:late	late total=1021 seen=100

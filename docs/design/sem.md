@@ -977,6 +977,11 @@ Usage checks by class at sem (a constant external name is not a target, `E1601`)
 aliases too: `alias s is <<signal .tb.dut.s : t>>;` is an object alias of the external name
 (6.6.2, no subtype indication, `E1612`), bound by elab where the alias is declared. Package paths
 (`@lib.pkg.obj`) could be checked at analysis; for one code path they are also bound at elab.
+An external name used directly in a process, a concurrent statement, an expression port actual
+or inside an alias target is given an implicit alias by `Db::alias_external_uses` (called by
+elab, idempotent): the use's `ExprKind::External` becomes `ExprKind::Obj` of a hidden
+`Alias::Object` (`implicit: true`) whose target is a new `External` expression, so M2 lowers it
+as a declared alias (#93). Sem's own analysis never sees the rewritten form.
 
 ### 6.2 Aliases (6.6)
 

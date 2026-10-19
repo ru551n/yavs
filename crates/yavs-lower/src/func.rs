@@ -361,7 +361,10 @@ impl<'a, 'b> Fx<'a, 'b> {
                 // A signal alias has no storage: its uses lower the aliased name.
                 let signal = matches!(self.db.name_root(*target),
                     Some(yavs_sem::lsp::NameRoot::Obj(r)) if self.db.is_signal(r));
-                if !signal {
+                // An alias of a whole external name is an object of the region
+                // (`external_alias`).
+                let region = self.db.external_alias(d).is_some() && self.cx.objs.contains_key(&d);
+                if !signal && !region {
                     ok &= self.alias(d, *target, *subtype).is_ok();
                 }
                 continue;
@@ -936,6 +939,7 @@ pub(crate) fn architecture(
         processes: Vec::new(),
         names: Vec::new(),
         var_ports: Vec::new(),
+        ext_vars: Vec::new(),
     };
     cx.inst_size = 0;
     cx.names.clear();
@@ -1045,9 +1049,11 @@ fn region(
     if ok { Ok(()) } else { Err(Failed) }
 }
 
-/// An alias `d` of external signal `x`: an instance signal of the region, which the
-/// elaborator binds to the external name's target (LRM 8.7); uses of the alias and drivers
-/// rooted at `x` go through it.
+/// An alias `d` of external name `x` (declared, or implicit for a direct use, #93), which the
+/// elaborator binds to the external name's target (LRM 8.7): for a signal an instance
+/// signal of the region (one per leaf with records), for a constant an instance value, for a
+/// shared variable an instance cell holding its object. Uses of the alias and LSPs rooted at
+/// `x` go through it.
 fn external_alias(
     db: &Db,
     pb: &mut ProgramBuilder,
@@ -1056,16 +1062,68 @@ fn external_alias(
     d: DeclId,
     x: yavs_sem::ExternalId,
 ) -> R<()> {
+    use yavs_syntax::ast::ExternalClass;
     let decl = &db.decls[d];
+    let name = decl.name.to_string();
     let st = db.externals[x].subtype;
     let t = db.base(st);
-    if ty::has_record(db, t) {
-        return Err(cx.unsupported(decl.span, "aliases of external signals with records"));
-    }
     let tid = ty::lower(db, cx, pb, t, decl.span)?;
-    let dope = if ty::is_array(db, t) {
+    cx.ext_sigs.insert(x, d);
+    match db.externals[x].class {
+        ExternalClass::Constant => {
+            let comp = matches!(
+                db.types[t].kind,
+                yavs_sem::types::TypeKind::Array { .. } | yavs_sem::types::TypeKind::Record { .. }
+            );
+            let off = cx.inst_alloc(if comp { 16 } else { 8 });
+            ir.values.push(InstValue {
+                decl: d,
+                name,
+                off,
+                ty: tid,
+            });
+            let w = pb.types().get(tid).map_or(Width::B8, ty::width);
+            let obj = if comp {
+                Obj::InstArray { off }
+            } else {
+                Obj::Scalar {
+                    space: Space::Inst,
+                    off,
+                    w,
+                }
+            };
+            cx.objs.insert(d, obj);
+            return Ok(());
+        }
+        ExternalClass::Variable => {
+            if !matches!(
+                db.types[t].kind,
+                yavs_sem::types::TypeKind::Protected { .. }
+            ) {
+                return Err(cx.unsupported(decl.span, "external variables of non-protected types"));
+            }
+            let off = cx.inst_alloc(8);
+            ir.ext_vars.push(InstValue {
+                decl: d,
+                name,
+                off,
+                ty: tid,
+            });
+            cx.objs.insert(
+                d,
+                Obj::Scalar {
+                    space: Space::Inst,
+                    off,
+                    w: Width::B8,
+                },
+            );
+            return Ok(());
+        }
+        ExternalClass::Signal => {}
+    }
+    let dope = if yavs_ir::Ty::needs_desc(pb.types(), tid) {
         let Some(size) = yavs_ir::Ty::desc_size(pb.types(), tid) else {
-            return Err(cx.ice(decl.span, "array type without a descriptor size"));
+            return Err(cx.ice(decl.span, "composite type without a descriptor size"));
         };
         let off = cx.inst_alloc(size as u32);
         cx.sig_dopes.insert(d, (Space::Inst, off));
@@ -1073,7 +1131,27 @@ fn external_alias(
     } else {
         None
     };
-    cx.ext_sigs.insert(x, d);
+    if ty::has_record(db, t) {
+        // One instance signal per leaf of the target, as for a declared record signal.
+        let mut dope = dope;
+        let mut out = Vec::new();
+        for (path, lst) in ty::leaves(db, st) {
+            let lt = ty::lower(db, cx, pb, db.base(lst), decl.span)?;
+            let sig = ir.signals.len() as u32;
+            ir.signals.push(SignalIr {
+                decl: d,
+                name: name.clone(),
+                ty: lt,
+                init: None,
+                path: path.clone(),
+                dope: dope.take(),
+            });
+            out.push(crate::RecLeaf { path, st: lst, sig });
+        }
+        cx.rec_leaves.insert(d, out);
+        cx.objs.insert(d, Obj::RecSignal(None));
+        return Ok(());
+    }
     cx.objs.insert(
         d,
         Obj::Signal {
@@ -1082,13 +1160,25 @@ fn external_alias(
     );
     ir.signals.push(SignalIr {
         decl: d,
-        name: decl.name.to_string(),
+        name,
         ty: tid,
         init: None,
         path: Vec::new(),
         dope,
     });
     Ok(())
+}
+
+/// The external aliases declaration `d` brings: itself when it aliases a whole external name,
+/// the implicit aliases of an alias of a part of one (#93).
+fn decl_externals(db: &Db, d: DeclId) -> Vec<(DeclId, yavs_sem::ExternalId)> {
+    if let Some(x) = db.external_alias(d) {
+        return vec![(d, x)];
+    }
+    db.external_uses(yavs_sem::external::ExtOwner::Alias(d))
+        .iter()
+        .filter_map(|&h| Some((h, db.implicit_external(h)?)))
+        .collect()
 }
 
 /// A thunk evaluating one cell (an initial value), for the elaborator.
@@ -1120,8 +1210,11 @@ pub(crate) fn thunk(
 
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
     let decl = &db.decls[d];
-    if let Some(x) = db.external_signal_alias(d) {
-        return external_alias(db, pb, cx, ir, d, x);
+    if let DeclKind::Alias(_) = decl.kind {
+        for (h, x) in decl_externals(db, d) {
+            external_alias(db, pb, cx, ir, h, x)?;
+        }
+        return Ok(());
     }
     let DeclKind::Object(o) = &decl.kind else {
         return Ok(());
@@ -1236,8 +1329,11 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
             if comp {
                 cx.objs.insert(d, Obj::InstArray { off });
                 // A composite constant elaboration did not fold is computed once per region
-                // by a thunk returning the address of its fat pair (#73).
-                if let (Some(def), false) = (o.default, given) {
+                // by a thunk returning the address of its fat pair (#73); one initialised from
+                // an external name always has its elaborated value.
+                if let (Some(def), false) = (o.default, given)
+                    && !db.uses_external(def)
+                {
                     let (st, span) = (o.subtype, decl.span);
                     let init = thunk(db, pb, cx, &name, span, |fx| {
                         let (data, desc, _) = fx.const_comp(d, st, def, span)?;
@@ -1269,7 +1365,9 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 },
             );
             // Scalar constants the elaborator cannot fold are computed by a thunk.
-            if let (Some(def), false) = (o.default, given) {
+            if let (Some(def), false) = (o.default, given)
+                && !db.uses_external(def)
+            {
                 let st = o.subtype;
                 let init = thunk(db, pb, cx, &name, decl.span, |fx| {
                     let v = fx.scalar_expr(def)?;
@@ -1361,13 +1459,18 @@ fn process(
     if let Some(sc) = scope {
         cx.scope_func.insert(sc, (f, 0));
     }
-    // Aliases of external signals declared in the process are signals of its region.
+    // Aliases of external names declared in the process, and the implicit aliases of those
+    // its statements use directly, belong to its region.
     if let Some(sc) = scope {
         for &d in &db.scopes[sc].order {
-            if let Some(x) = db.external_signal_alias(d) {
-                external_alias(db, pb, cx, ir, d, x)?;
+            for (h, x) in decl_externals(db, d) {
+                external_alias(db, pb, cx, ir, h, x)?;
             }
         }
+    }
+    for &h in db.external_uses(yavs_sem::external::ExtOwner::Stmt(s)) {
+        let x = db.implicit_external(h).ok_or(Failed)?;
+        external_alias(db, pb, cx, ir, h, x)?;
     }
     // Driver slots: per longest static prefix, in `ProcessInfo::drivers` order, one per kernel
     // signal it covers (one, or the leaves of a record signal below its fields).
@@ -1504,6 +1607,10 @@ fn actual_process(
     } else {
         None
     };
+    for &h in db.external_uses(yavs_sem::external::ExtOwner::Expr(e)) {
+        let x = db.implicit_external(h).ok_or(Failed)?;
+        external_alias(db, pb, cx, ir, h, x)?;
+    }
     let name = "_actual".to_string();
     let f = pb.declare(&name, FuncKind::Process, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name);

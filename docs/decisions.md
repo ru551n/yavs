@@ -686,8 +686,25 @@ a note and a help suggesting an access type, as the reference simulators reject 
   instance data) that the elaborator maps to the bound target's kernel signal
   (`Elaborated::sigs` keyed by the alias), its descriptor written from the target's bounds; the
   process's drivers and sensitivity rooted at the external name go through that slot
-  (`Cx::ext_sigs`, `Cx::root_decl`). External names used directly in sequential code, external
-  constants and variables, and external signals with records stay `E2001`/`E9999` (#93).
+  (`Cx::ext_sigs`, `Cx::root_decl`).
+
+- **External names used directly, external constants and variables, records** (#93, LRM 8.7,
+  `docs/design/lrm-checks.md` L71): an external name in the statements of a process or
+  concurrent statement, in the initial values of its declarations, in its sensitivity, wait and
+  driver names, in an expression or `inertial` port actual, or inside the target of an alias of
+  a part of one gets an implicit alias (`Db::alias_external_uses`, one per name and owner,
+  `implicit`), and the use is rewritten to name the alias (`ExprKind::Obj`); everything after
+  treats it like a declared alias. Elab binds the implicit aliases of statements and actuals
+  after the whole hierarchy (`Elab::bind_late`), and processes whose drivers are rooted at
+  external names get their drivers then too, in their original process order; declarations bind
+  where they are elaborated. An alias of an external constant is an instance value holding the
+  target's elaborated value (a constant initialised from an external name is evaluated by elab,
+  never by a run-time thunk); of an external shared variable (protected types only) an instance
+  cell holding the variable's object, copied from the target region's data when the instance
+  data is built (`Elaborated::ext_vars`; regions may name each other's variables); of a signal
+  with records one instance signal per leaf. External names in subprograms and package
+  declarations stay `E2001`; external shared variables in packages and constants without an
+  elaboration-time value are `E9999`/`E2106`.
 
 - **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
   14.3.5, `docs/design/lrm-checks.md` L59): accepted in 2008 and 2019; the port takes the

@@ -14,9 +14,10 @@ use yavs_diag::{Diagnostic, Span};
 use yavs_syntax::ast::{self, ExternalClass, PathKind};
 
 use crate::db::{Db, Reported};
+use crate::decl::{Alias, DeclKind, Designator};
 use crate::diag;
-use crate::hir::{Expr, ExprKind, External};
-use crate::ids::{ExprId, ExternalId, SubtypeId};
+use crate::hir::{Expr, ExprKind, External, Lsp, ObjRoot, Sensitivity, StmtKind};
+use crate::ids::{DeclId, ExprId, ExternalId, ScopeId, StmtId, SubtypeId};
 use crate::stat::Staticness;
 
 /// Where an external name appears, for the checks that depend on it.
@@ -202,6 +203,192 @@ impl Db {
                 format!("declared with class `{}`", class_str(class)),
             ),
         ))
+    }
+}
+
+/// What owns the implicit aliases of the external names it uses directly (#93).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExtOwner {
+    /// A process or concurrent statement: its statements, the initial values of its
+    /// declarations, its sensitivity, wait and driver names.
+    Stmt(StmtId),
+    /// An object alias of a part of an external name (`alias b is <<signal ...>>(3)`).
+    Alias(DeclId),
+    /// An expression evaluated by its own equivalent process: an expression or `inertial`
+    /// port actual.
+    Expr(ExprId),
+}
+
+impl Db {
+    /// The implicit aliases [`Db::alias_external_uses`] made for `owner`.
+    pub fn external_uses(&self, owner: ExtOwner) -> &[DeclId] {
+        self.ext_uses.get(&owner).map_or(&[], |v| v)
+    }
+
+    /// Give each external name `owner` uses directly an implicit alias declared in `scope`
+    /// (`Alias::Object` of the external name, `implicit`), and make the uses name the alias:
+    /// elab binds the alias like a declared one, M2 lowers it like one (#93). Names that only
+    /// appear as the root of a sensitivity, wait or driver LSP get an alias too. Idempotent:
+    /// a second call returns the same aliases.
+    pub fn alias_external_uses(&mut self, owner: ExtOwner, scope: ScopeId) -> &[DeclId] {
+        if !self.ext_uses.contains_key(&owner) {
+            let mut exprs = Vec::new();
+            let mut roots = Vec::new();
+            match owner {
+                ExtOwner::Stmt(s) => self.stmt_externals(s, &mut exprs, &mut roots),
+                ExtOwner::Expr(e) => self.walk_expr(e, &mut |x| exprs.push(x)),
+                ExtOwner::Alias(d) => {
+                    if let DeclKind::Alias(Alias::Object { target, .. }) = self.decls[d].kind {
+                        self.walk_expr(target, &mut |e| {
+                            if e != target {
+                                exprs.push(e);
+                            }
+                        });
+                    }
+                }
+            }
+            let mut out: Vec<(ExternalId, DeclId)> = Vec::new();
+            for e in exprs {
+                let (x, made) = match self.exprs[e].kind {
+                    ExprKind::External(x) => (x, None),
+                    // An alias made for another owner sharing this expression.
+                    ExprKind::Obj(d) => match self.implicit_external(d) {
+                        Some(x) => (x, Some(d)),
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                let d = match out.iter().find(|(y, _)| *y == x) {
+                    Some(&(_, d)) => d,
+                    None => {
+                        let d = made.unwrap_or_else(|| self.implicit_alias(x, scope));
+                        out.push((x, d));
+                        d
+                    }
+                };
+                self.exprs[e].kind = ExprKind::Obj(d);
+            }
+            for x in roots {
+                if !out.iter().any(|(y, _)| *y == x) {
+                    let d = self.implicit_alias(x, scope);
+                    out.push((x, d));
+                }
+            }
+            self.ext_uses
+                .insert(owner, out.into_iter().map(|(_, d)| d).collect());
+        }
+        &self.ext_uses[&owner]
+    }
+
+    /// Whether expression `e` contains an external name: a constant initialised from one is
+    /// evaluated by elab, when its declaration is elaborated (LRM 8.7, 14.4.1).
+    pub fn uses_external(&self, e: ExprId) -> bool {
+        let mut found = false;
+        self.walk_expr(e, &mut |x| {
+            found |= matches!(self.exprs[x].kind, ExprKind::External(_));
+        });
+        found
+    }
+
+    /// The external name an implicit alias of [`Db::alias_external_uses`] stands for.
+    pub fn implicit_external(&self, d: DeclId) -> Option<ExternalId> {
+        let decl = &self.decls[d];
+        match &decl.kind {
+            DeclKind::Alias(Alias::Object { target, .. }) if decl.implicit => {
+                match self.exprs[*target].kind {
+                    ExprKind::External(x) => Some(x),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The external name a whole-name object alias (declared or implicit) aliases, of any
+    /// class: `alias c is <<constant .tb.dut.c : integer>>;`.
+    pub fn external_alias(&self, d: DeclId) -> Option<ExternalId> {
+        match &self.decls[d].kind {
+            DeclKind::Alias(Alias::Object { target, .. }) => match self.exprs[*target].kind {
+                ExprKind::External(x) => Some(x),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn implicit_alias(&mut self, x: ExternalId, scope: ScopeId) -> DeclId {
+        let ext = &self.externals[x];
+        let (st, span) = (ext.subtype, ext.span);
+        let name = ext.path.last().expect("an external path is never empty").0;
+        let stat = match ext.class {
+            ExternalClass::Constant => Staticness::Globally,
+            _ => Staticness::None,
+        };
+        let target = self.add_expr(Expr {
+            kind: ExprKind::External(x),
+            subtype: st,
+            span,
+            stat,
+            value: None,
+        });
+        let kind = DeclKind::Alias(Alias::Object {
+            target,
+            subtype: None,
+        });
+        let d = self.new_decl(scope, Designator::Ident(name), kind, span);
+        self.decls[d].implicit = true;
+        d
+    }
+
+    /// External names (and implicit aliases of them) in statement `s` and below; `roots`
+    /// gets the external names at the root of its LSPs.
+    fn stmt_externals(&self, s: StmtId, exprs: &mut Vec<ExprId>, roots: &mut Vec<ExternalId>) {
+        let mut lsps = |ls: &[Lsp]| {
+            roots.extend(ls.iter().filter_map(|l| match l.root {
+                ObjRoot::External(x) => Some(x),
+                _ => None,
+            }))
+        };
+        let mut push = |db: &Db, e: ExprId| {
+            db.walk_expr(e, &mut |e| {
+                if matches!(db.exprs[e].kind, ExprKind::External(_) | ExprKind::Obj(_)) {
+                    exprs.push(e);
+                }
+            })
+        };
+        match &self.stmts[s].kind {
+            StmtKind::Process {
+                sensitivity,
+                info,
+                scope,
+                ..
+            } => {
+                if let Sensitivity::List(ls) = sensitivity {
+                    lsps(ls);
+                }
+                lsps(&info.drivers);
+                lsps(info.reads_all.as_deref().unwrap_or(&[]));
+                for &d in &self.scopes[*scope].order {
+                    if let DeclKind::Object(o) = &self.decls[d].kind
+                        && let Some(e) = o.default
+                    {
+                        push(self, e);
+                    }
+                }
+            }
+            StmtKind::ConcSignalAssign { info, .. }
+            | StmtKind::ConcAssert { info, .. }
+            | StmtKind::ConcProcCall { info, .. } => {
+                lsps(&info.drivers);
+                lsps(info.reads_all.as_deref().unwrap_or(&[]));
+            }
+            StmtKind::Wait { on, .. } => lsps(on),
+            _ => {}
+        }
+        self.stmt_exprs(s, &mut |e, _| push(self, e));
+        for c in self.stmt_children(s) {
+            self.stmt_externals(c, exprs, roots);
+        }
     }
 }
 

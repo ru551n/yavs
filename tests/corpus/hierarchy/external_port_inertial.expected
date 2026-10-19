@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:external_port_inertial:m:_p0	i='0' k=-2147483648 c=101
+diag	note	0	1	:external_port_inertial:m:_p0	i='0' k=7 c=101
+diag	note	10000000	1	:external_port_inertial:m:_p0	i='1' k=7 c=101
+diag	note	15000000	1	:external_port_inertial:m:_p0	i='1' k=11 c=101
+diag	note	20000000	1	:external_port_inertial:m:_p0	i='0' k=11 c=101

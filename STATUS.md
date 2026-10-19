@@ -414,7 +414,7 @@ analysis order with `yavs_interp::init_package` (shared variables, constants com
 objects of generic package instances (design units with their own package data; instances in
 packages, entities, architectures, blocks, generates, processes and subprograms add theirs to
 that region, #101),
-external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), guarded blocks and `bus`/`register`
+external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), external names used directly in processes, concurrent statements and expression or `inertial` port actuals (bound once the hierarchy exists), external constants, external shared variables of protected types (method calls), external signals with records and aliases of parts of external names (#93; not yet: external names in subprograms and packages), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays

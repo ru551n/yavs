@@ -68,6 +68,9 @@ pub struct UnitIr {
     /// 2019 variable ports (LRM 6.5.2): the 8-byte cell at the offset holds the handle of the
     /// protected object the port's actual denotes, written by the elaborator (#188).
     pub var_ports: Vec<(DeclId, u32)>,
+    /// Aliases of external shared variables (#93): the elaborator stores the variable's
+    /// object (the cell its own region holds) at `off`.
+    pub ext_vars: Vec<InstValue>,
 }
 
 /// A `'path_name` (`instance: false`) or `'instance_name` of named entity `decl`, as seen from

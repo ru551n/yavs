@@ -129,6 +129,14 @@ impl Elaborated {
                 archs.push(arch);
             }
         }
+        // The regions of external shared variables hold their objects (#93).
+        for &(t, _) in self.ext_vars.values() {
+            if let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(t)).kind
+                && !archs.contains(&arch)
+            {
+                archs.push(arch);
+            }
+        }
         let packages = run_time_packages(db);
         // A declaration's constant calling a subprogram of its own package runs before the
         // body is elaborated (LRM 14.4.2): E2114, also for constants only processes read
@@ -405,10 +413,12 @@ impl Elaborated {
         crate::pkgcall::replay(&rt, &shared, &ir.elab_sigs, &self.elab_calls)
             .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?;
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
+        // Instance data waiting for its external shared variables (#93).
+        let mut base: HashMap<ScopeId, InstData> = HashMap::new();
         // Instance data of the regions whose resolution functions read it (#164).
         let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
         for (&leaf, &region) in &ir.res_regions {
-            let d = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts)?;
+            let d = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base)?;
             res_inst.insert(leaf, d);
         }
         let res =
@@ -445,7 +455,8 @@ impl Elaborated {
                 // One instance data per region (instance, block, generate iteration): values and
                 // signals are looked up from the process's enclosing region outwards.
                 let region = self.hier.scope(p.scope).parent.unwrap_or(i);
-                let inst = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts)?;
+                let inst =
+                    self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base)?;
                 if let Some(a) = &p.actual {
                     return self.actual_process(&rt, u, a, p, ds, inst);
                 }
@@ -545,6 +556,10 @@ impl Elaborated {
     }
 
     /// The instance data of `region` (instance, block, generate iteration), built once.
+    /// Aliases of external shared variables copy the variable's cell from its region's data,
+    /// taken before that region's own aliases are filled in (`base`), so regions may name
+    /// each other's variables (#93).
+    #[allow(clippy::too_many_arguments)]
     fn region_data(
         &self,
         rt: &Arc<Runtime>,
@@ -553,26 +568,65 @@ impl Elaborated {
         shared: &Arc<Mutex<SharedState>>,
         once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
         insts: &mut HashMap<ScopeId, Arc<InstData>>,
+        base: &mut HashMap<ScopeId, InstData>,
     ) -> Result<Arc<InstData>, SimError> {
         if let Some(d) = insts.get(&region) {
             return Ok(d.clone());
         }
-        let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(region)).kind
-        else {
-            return Err(sim_err("region outside an instance".into()));
+        let u = unit_ir(self, ir, region)?;
+        let mut d = match base.remove(&region) {
+            Some(d) => d,
+            None => self.inst_data(rt, ir, u, region, shared, once, insts, base)?,
         };
-        let u = ir
-            .units
-            .get(&arch)
-            .ok_or_else(|| sim_err("architecture not lowered".into()))?;
-        let d = Arc::new(self.inst_data(rt, ir, u, region, shared, once, insts)?);
+        for v in &u.ext_vars {
+            let Some((t, td)) = self.ext_var(region, v.decl) else {
+                continue; // an alias of a nested region: never read from this one
+            };
+            let tu = unit_ir(self, ir, t)?;
+            let c = tu
+                .consts
+                .iter()
+                .find(|c| c.decl == td)
+                .ok_or_else(|| sim_err(format!("shared variable `{}` not lowered", v.name)))?;
+            let from = c.off as usize;
+            let mut cell = [0u8; 8];
+            if t == region {
+                cell.copy_from_slice(&d.data[from..from + 8]);
+            } else {
+                if !insts.contains_key(&t) && !base.contains_key(&t) {
+                    let x = self.inst_data(rt, ir, tu, t, shared, once, insts, base)?;
+                    base.insert(t, x);
+                }
+                let tdata = match insts.get(&t) {
+                    Some(x) => &x.data,
+                    None => &base[&t].data,
+                };
+                cell.copy_from_slice(&tdata[from..from + 8]);
+            }
+            let at = v.off as usize;
+            d.data[at..at + 8].copy_from_slice(&cell);
+        }
+        let d = Arc::new(d);
         insts.insert(region, d.clone());
         Ok(d)
+    }
+
+    /// The shared variable alias `d` of `scope` (or of a region around it) is bound to.
+    fn ext_var(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<(ScopeId, yavs_sem::DeclId)> {
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(&t) = self.ext_vars.get(&(s, d)) {
+                return Some(t);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        None
     }
 
     /// The handle of protected object `obj` of a variable port: read from
     /// the instance data of the shared variable's region (built first if needed: it is an
     /// enclosing region), or from its package (#188).
+    #[allow(clippy::too_many_arguments)]
     fn var_handle(
         &self,
         rt: &Arc<Runtime>,
@@ -581,10 +635,11 @@ impl Elaborated {
         shared: &Arc<Mutex<SharedState>>,
         once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
         insts: &mut HashMap<ScopeId, Arc<InstData>>,
+        base: &mut HashMap<ScopeId, InstData>,
     ) -> Result<u64, SimError> {
         match obj {
             crate::VarObj::Region { region, decl } => {
-                let data = self.region_data(rt, ir, region, shared, once, insts)?;
+                let data = self.region_data(rt, ir, region, shared, once, insts, base)?;
                 let ScopeKind::Instance { arch, .. } =
                     self.hier.scope(self.instance_of(region)).kind
                 else {
@@ -633,6 +688,7 @@ impl Elaborated {
         shared: &Arc<Mutex<SharedState>>,
         once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
         insts: &mut HashMap<ScopeId, Arc<InstData>>,
+        base: &mut HashMap<ScopeId, InstData>,
     ) -> Result<InstData, SimError> {
         let mut inst = InstData {
             data: vec![0; u.inst_size as usize],
@@ -719,7 +775,7 @@ impl Elaborated {
         // region never name it.
         for &(d, off) in &u.var_ports {
             if let Some(obj) = self.var_port(i, d) {
-                let h = self.var_handle(rt, ir, obj, shared, once, insts)?;
+                let h = self.var_handle(rt, ir, obj, shared, once, insts, base)?;
                 inst.data[off as usize..off as usize + 8].copy_from_slice(&h.to_le_bytes());
             }
         }
@@ -902,4 +958,14 @@ fn time_resolution(u: yavs_kernel::Unit) -> yavs_std::arith::TimeResolution {
         // ponytail: the CLI offers fs..sec only; min and hr do not occur
         Unit::Sec | Unit::Min | Unit::Hr => R::Sec,
     }
+}
+
+/// The lowered architecture of the instance `region` belongs to.
+fn unit_ir<'a>(e: &Elaborated, ir: &'a Ir, region: ScopeId) -> Result<&'a UnitIr, SimError> {
+    let ScopeKind::Instance { arch, .. } = e.hier.scope(e.instance_of(region)).kind else {
+        return Err(sim_err("region outside an instance".into()));
+    };
+    ir.units
+        .get(&arch)
+        .ok_or_else(|| sim_err("architecture not lowered".into()))
 }

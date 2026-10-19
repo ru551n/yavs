@@ -50,6 +50,12 @@ pub struct Model {
     pub(crate) lib_scopes: HashMap<yavs_sem::LibId, ScopeId>,
     /// Conversions of port associations, indexed by `PortEdge::to_formal`/`to_actual`.
     pub convs: Vec<ConvFn>,
+    /// The declarative regions (yavs-sem scopes) of each elaborated scope, for external
+    /// constant and variable names (#93).
+    pub(crate) regions: HashMap<ScopeId, Vec<yavs_sem::ScopeId>>,
+    /// Aliases of external shared variables, by (region, alias): the region and declaration
+    /// of the variable (#93).
+    pub(crate) ext_vars: HashMap<(ScopeId, DeclId), (ScopeId, DeclId)>,
 }
 
 /// How a scalar crosses the kernel: its element and its class.
@@ -442,6 +448,7 @@ impl Model {
         match &ex.kind {
             ExprKind::Const(c) => return Ok(db.consts[*c].clone()),
             ExprKind::Obj(d) => return self.value_of(db, *d, scope, ex.span),
+            ExprKind::External(x) => return self.external_value(db, *x, scope),
             ExprKind::Attr { attr, prefix, args }
                 if matches!(
                     attr,
@@ -623,6 +630,9 @@ impl Model {
             return Ok(v.clone());
         }
         let decl = &db.decls[d];
+        if let DeclKind::Alias(yavs_sem::decl::Alias::Object { target, .. }) = &decl.kind {
+            return self.eval(db, *target, scope);
+        }
         let DeclKind::Object(o) = &decl.kind else {
             return Err(err(
                 codes::NOT_EVALUATED,

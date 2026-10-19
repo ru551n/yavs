@@ -229,7 +229,9 @@ impl<'a> Fx<'a, '_> {
             ExprKind::PrivateVar { object, var } => self.private_var(*object, *var, span),
             ExprKind::New { init } => self.allocator(init, e.subtype, span),
             ExprKind::Null => Ok(V::S(self.int(0))),
-            ExprKind::External(_) => Err(self.cx.unsupported(span, "external names (M3)")),
+            ExprKind::External(_) => Err(self
+                .cx
+                .unsupported(span, "external names in subprograms and packages (#93)")),
             // The value of a user-defined attribute is its specification's expression.
             ExprKind::AttrValue { spec } => {
                 let v = db.attr_values[*spec].value;
@@ -409,12 +411,12 @@ impl<'a> Fx<'a, '_> {
                 let s = self.sig_of(d, span)?;
                 let raw = self.reg(RegTy::I64);
                 self.emit(Inst::SigReadScalar { dst: raw, sig: s });
-                let bias = match &decl.kind {
-                    DeclKind::Object(o) => {
-                        let tid = self.ty(db.base(o.subtype), span)?;
+                let bias = match ty::obj_subtype(db, d) {
+                    Some(st) => {
+                        let tid = self.ty(db.base(st), span)?;
                         self.code_bias(tid)
                     }
-                    _ => 0,
+                    None => 0,
                 };
                 let dst = self.dec(raw, bias);
                 if self.obj_rt(d) == RegTy::F64 {
@@ -734,9 +736,9 @@ impl<'a> Fx<'a, '_> {
             let what = self.db.decls[d].name.to_string();
             return self.dope_as(dope, st, &what, span).map(Some);
         }
-        if let Some(x) = self.db.external_signal_alias(d) {
+        if self.db.external_signal_alias(d).is_some() {
             // An alias of an external signal: its descriptor slot holds the target's bounds.
-            if !ty::is_array(self.db, self.db.base(self.db.externals[x].subtype)) {
+            if !self.cx.sig_dopes.contains_key(&d) {
                 return Ok(None);
             }
             let (space, off) = *self.cx.sig_dopes.get(&d).ok_or(Failed)?;

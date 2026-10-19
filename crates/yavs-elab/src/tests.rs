@@ -1604,3 +1604,58 @@ fn variable_ports_denote_the_shared_variable() {
     )));
     assert!(objs.windows(2).all(|w| w[0] == w[1]));
 }
+
+/// External names used directly in a process bind once the hierarchy is complete (#93): a
+/// process before the instance reads and drives its signal; a second elaboration of the same
+/// design binds the same names again (rule 4); a name with no target is E2117.
+#[test]
+fn external_names_in_processes_bind_late() {
+    let sub = "entity sub is end; architecture a of sub is
+        signal s : bit; constant c : integer := 4; begin end;";
+    let src = format!(
+        "{sub} entity t is end; architecture a of t is
+         begin
+           p : process
+             variable v : integer := <<constant .t.u.c : integer>>;
+           begin
+             <<signal .t.u.s : bit>> <= '1';
+             wait on <<signal .t.u.s : bit>>;
+             wait;
+           end process;
+           u : entity work.sub;
+         end;"
+    );
+    let (mut db, e) = elab("ext_direct", &src, "t", &[]);
+    let p = &e.procs[0];
+    let s = e.nets.drivers[p.drivers[0]].leaf;
+    assert!(e.leaf_name(s).ends_with(":u:s"));
+    let top = crate::Top {
+        entity: e.top.entity,
+        arch: e.top.arch,
+        config: e.top.config,
+    };
+    let again = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("again");
+    assert_eq!(again.nets.drivers[again.procs[0].drivers[0]].leaf, s);
+    assert_eq!(again.model_vals, e.model_vals);
+    let missing = format!(
+        "{sub} entity t is end; architecture a of t is
+         begin
+           p : process begin report bit'image(<<signal .t.u.nope : bit>>); wait; end process;
+           u : entity work.sub;
+         end;"
+    );
+    assert_eq!(
+        err_codes("ext_missing", &missing, "t", &[]),
+        [codes::EXTERNAL_NOT_FOUND]
+    );
+    // A declaration binds in elaboration order: before the instance it names it is E2117.
+    let early = format!(
+        "{sub} entity t is end; architecture a of t is
+           constant k : integer := <<constant .t.u.c : integer>>;
+         begin u : entity work.sub; end;"
+    );
+    assert_eq!(
+        err_codes("ext_const_early", &early, "t", &[]),
+        [codes::EXTERNAL_NOT_FOUND]
+    );
+}

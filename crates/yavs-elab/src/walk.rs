@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use yavs_diag::{Diagnostic, Span};
 use yavs_kernel::{Elem, GuardKind, PortMode, Range};
 use yavs_sem::decl::{Alias, DeclKind, ObjClass, ObjRole};
+use yavs_sem::external::ExtOwner;
 use yavs_sem::generic::GenericActual;
 use yavs_sem::hir::{
     Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
@@ -14,7 +15,7 @@ use yavs_sem::hir::{
 use yavs_sem::loader::UnitKind;
 use yavs_sem::{Db, DeclId, ExprId, StmtId, UnitId};
 use yavs_syntax::Symbol;
-use yavs_syntax::ast::Ident;
+use yavs_syntax::ast::{ExternalClass, Ident};
 
 use crate::eval::{Model, Val, leaf_values, parse_override};
 use crate::hier::{
@@ -135,6 +136,12 @@ pub(crate) struct Elab<'d> {
     cfg: ElabConfig,
     /// The statement being elaborated: the instance or block whose port map is elaborated.
     stmt: Option<StmtId>,
+    /// Implicit aliases of external names used in processes, by region: bound once the
+    /// whole hierarchy is elaborated (#93).
+    pending: Vec<(ScopeId, DeclId)>,
+    /// Processes whose drivers are rooted at external names: their drivers are elaborated
+    /// once the whole hierarchy is (#93).
+    deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
 }
 
 pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<Diagnostic>> {
@@ -360,6 +367,8 @@ pub(crate) fn elaborate(
         warnings: Vec::new(),
         cfg: cfg.clone(),
         stmt: None,
+        pending: Vec::new(),
+        deferred: Vec::new(),
     };
     let name = e.db.units[top.entity].name;
     let cfgp = top.config.map(|u| CfgPath {
@@ -433,6 +442,13 @@ pub(crate) fn elaborate(
             }
         }
     }
+    // External names in processes refer to anything in the design (the reference
+    // simulators bind them once the hierarchy exists, #93).
+    if e.errors.is_empty()
+        && let Err(x) = e.bind_late()
+    {
+        e.errors.push(*x);
+    }
     if e.errors.is_empty() {
         e.check_sources();
     }
@@ -451,6 +467,7 @@ pub(crate) fn elaborate(
         model_vals: e.m.vals,
         sigs: e.m.sigs,
         var_ports: e.m.var_ports,
+        ext_vars: e.m.ext_vars,
         warnings: e.warnings,
         ir: None,
         elab_calls: std::mem::take(&mut e.m.session.log),
@@ -852,20 +869,29 @@ impl Elab<'_> {
 
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
+        if self.db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process {
+            self.m.regions.entry(s).or_default().push(region);
+        }
         for d in self.db.decls_with_instances(region) {
-            let db: &Db = self.db;
-            let decl = &db.decls[d];
-            if let Some(x) = db.external_signal_alias(d) {
-                // An alias of an external signal binds here, in elaboration order (LRM 8.7,
-                // 14.4.1); a process's alias belongs to its region's instance data.
-                let o = self.m.external(db, x, s)?;
-                let mut r = s;
-                while let ScopeKind::Process { .. } = self.m.hier.scope(r).kind {
-                    r = self.m.hier.scope(r).parent.expect("a process has a region");
+            if let DeclKind::Alias(Alias::Object { target, .. }) = self.db.decls[d].kind {
+                // An alias of an external name, or of a part of one, binds here, in
+                // elaboration order (LRM 8.7, 14.4.1).
+                if let Some(x) = self.db.external_alias(d) {
+                    self.m.bind(self.db, s, d, x)?;
+                } else if !matches!(self.db.exprs[target].kind, ExprKind::Obj(_)) {
+                    let hs = self
+                        .db
+                        .alias_external_uses(ExtOwner::Alias(d), region)
+                        .to_vec();
+                    for h in hs {
+                        let x = self.db.implicit_external(h).expect("an external alias");
+                        self.m.bind(self.db, s, h, x)?;
+                    }
                 }
-                self.m.sigs.insert((r, d), o);
                 continue;
             }
+            let db: &Db = self.db;
+            let decl = &db.decls[d];
             let DeclKind::Object(o) = &decl.kind else {
                 continue;
             };
@@ -926,6 +952,13 @@ impl Elab<'_> {
                 // and in order (LRM 14.4.2); other constants are evaluated when first needed.
                 // A process's declarative part is elaborated by the process itself when it
                 // starts (its lowered code): evaluating it here too ran the calls twice (#251).
+                // One initialised from an external name binds it now (LRM 8.7, 14.4.1).
+                (ObjClass::Constant, ObjRole::Plain)
+                    if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
+                        && o.default.is_some_and(|e| db.uses_external(e)) =>
+                {
+                    self.m.value_of(db, d, Some(s), decl.span)?;
+                }
                 (ObjClass::Constant, ObjRole::Plain)
                     if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
                         && o.default.is_some_and(|e| crate::eval::calls_impure(db, e)) =>
@@ -1312,6 +1345,11 @@ impl Elab<'_> {
             span,
         };
         self.process_refs(region, st, name, false, vec![(fo, fsels, span)])?;
+        // External names in the expression bind once the hierarchy is complete (#93).
+        if let Some(r) = self.m.regions.get(&region).and_then(|v| v.last().copied()) {
+            let hs = self.db.alias_external_uses(ExtOwner::Expr(e), r);
+            self.pending.extend(hs.iter().map(|&h| (region, h)));
+        }
         self.procs.last_mut().expect("just added").actual = Some(crate::PortActual {
             expr: e,
             formal,
@@ -1386,10 +1424,16 @@ impl Elab<'_> {
                 self.process(s, st, name, postponed, &lsps)?;
                 // Implicit signals ('stable, ...) named in the process belong to its enclosing
                 // region (LRM 16.2.4), where the region's instance data finds them.
-                match pscope {
-                    Some(r) => self.decls(s, r),
-                    None => Ok(()),
+                if let Some(r) = pscope {
+                    self.decls(s, r)?;
                 }
+                // External names used in the statements bind once the hierarchy is complete.
+                let region = pscope.or_else(|| self.m.regions.get(&s)?.last().copied());
+                if let Some(region) = region {
+                    let hs = self.db.alias_external_uses(ExtOwner::Stmt(st), region);
+                    self.pending.extend(hs.iter().map(|&h| (s, h)));
+                }
+                Ok(())
             }
             StmtKind::Block {
                 scope: bscope,
@@ -2046,12 +2090,38 @@ impl Elab<'_> {
         postponed: bool,
         lsps: &[Lsp],
     ) -> R<()> {
+        if lsps.iter().any(|l| matches!(l.root, ObjRoot::External(_))) {
+            // Drivers of external names bind once the hierarchy is complete (#93).
+            let idx = self.add_process(s, st, name, postponed);
+            self.deferred.push((idx, s, lsps.to_vec()));
+            return Ok(());
+        }
         let mut refs = Vec::with_capacity(lsps.len());
         for l in lsps {
             let (o, sels) = self.m.lsp_ref(self.db, l, s)?;
             refs.push((o, sels, l.span));
         }
         self.process_refs(s, st, name, postponed, refs)
+    }
+
+    /// Bind what [`Elab::pending`] and [`Elab::deferred`] hold, in elaboration order.
+    fn bind_late(&mut self) -> R<()> {
+        for (s, h) in std::mem::take(&mut self.pending) {
+            let db: &Db = self.db;
+            let x = db
+                .implicit_external(h)
+                .ok_or_else(|| Box::new(ice(db.decls[h].span, "not an external alias")))?;
+            self.m.bind(db, s, h, x)?;
+        }
+        for (idx, s, lsps) in std::mem::take(&mut self.deferred) {
+            let mut refs = Vec::with_capacity(lsps.len());
+            for l in &lsps {
+                let (o, sels) = self.m.lsp_ref(self.db, l, s)?;
+                refs.push((o, sels, l.span));
+            }
+            self.set_drivers(idx, refs)?;
+        }
+        Ok(())
     }
 
     /// A process instance driving the given static names (one entry per driver slot).
@@ -2063,11 +2133,29 @@ impl Elab<'_> {
         postponed: bool,
         refs: Vec<(ObjId, Vec<Sel>, Span)>,
     ) -> R<()> {
+        let idx = self.add_process(s, st, name, postponed);
+        self.set_drivers(idx, refs)
+    }
+
+    /// A process instance without drivers yet.
+    fn add_process(&mut self, s: ScopeId, st: StmtId, name: Ident, postponed: bool) -> ProcIdx {
         let ps = self
             .m
             .hier
             .add(Some(s), ScopeKind::Process { stmt: st }, name);
-        let idx = ProcIdx(self.procs.len() as u32);
+        self.procs.push(ProcInst {
+            scope: ps,
+            stmt: st,
+            postponed,
+            drivers: Vec::new(),
+            lsps: Vec::new(),
+            actual: None,
+        });
+        ProcIdx(self.procs.len() as u32 - 1)
+    }
+
+    /// The drivers of process `idx` for the given static names.
+    fn set_drivers(&mut self, idx: ProcIdx, refs: Vec<(ObjId, Vec<Sel>, Span)>) -> R<()> {
         // Merge the driven ranges per leaf: a process has one driver per scalar subelement.
         let mut per_lsp = Vec::with_capacity(refs.len());
         let mut by_leaf: Vec<(LeafId, Range)> = Vec::new();
@@ -2126,14 +2214,9 @@ impl Elab<'_> {
                     .collect()
             })
             .collect();
-        self.procs.push(ProcInst {
-            scope: ps,
-            stmt: st,
-            postponed,
-            drivers,
-            lsps,
-            actual: None,
-        });
+        let p = &mut self.procs[idx.index()];
+        p.drivers = drivers;
+        p.lsps = lsps;
         Ok(())
     }
 
@@ -2556,11 +2639,105 @@ impl Model {
         x: yavs_sem::ExternalId,
         scope: ScopeId,
     ) -> R<ObjId> {
-        use yavs_syntax::ast::{ExternalClass, PathKind};
+        match self.external_target(db, x, scope)? {
+            ExtTarget::Signal(o) => Ok(o),
+            ExtTarget::Value(..) => Err(Box::new(ice(
+                db.externals[x].span,
+                "external signal name bound to a constant or variable",
+            ))),
+        }
+    }
+
+    /// Bind alias `d` of external name `x` declared or used in scope `s`: the alias of a
+    /// signal is the signal object of its region, of a constant the constant's value, of a
+    /// shared variable that variable (`ext_vars`). A process's alias belongs to its region.
+    pub(crate) fn bind(
+        &mut self,
+        db: &Db,
+        s: ScopeId,
+        d: DeclId,
+        x: yavs_sem::ExternalId,
+    ) -> R<()> {
+        let mut r = s;
+        while let ScopeKind::Process { .. } = self.hier.scope(r).kind {
+            r = self.hier.scope(r).parent.expect("a process has a region");
+        }
+        match self.external_target(db, x, s)? {
+            ExtTarget::Signal(o) => {
+                self.sigs.insert((r, d), o);
+            }
+            ExtTarget::Value(t, td) if db.externals[x].class == ExternalClass::Constant => {
+                let v = self.value_of(db, td, t, db.externals[x].span)?;
+                self.set(r, d, v);
+            }
+            ExtTarget::Value(Some(t), td) => {
+                self.ext_vars.insert((r, d), (t, td));
+            }
+            ExtTarget::Value(None, _) => {
+                return Err(Box::new(ice(
+                    db.externals[x].span,
+                    "package shared variable",
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The value of external constant name `x` (LRM 8.7), bound now.
+    pub(crate) fn external_value(
+        &mut self,
+        db: &Db,
+        x: yavs_sem::ExternalId,
+        scope: Option<ScopeId>,
+    ) -> R<Val> {
+        let span = db.externals[x].span;
+        if db.externals[x].class != ExternalClass::Constant {
+            return Err(Box::new(
+                Diagnostic::error(
+                    codes::NOT_EVALUATED,
+                    "an external signal or variable has no value during elaboration",
+                )
+                .with_primary(span, "not a constant"),
+            ));
+        }
+        let target = match scope {
+            Some(s) => self.external_target(db, x, s)?,
+            None if db.externals[x].path_kind == yavs_syntax::ast::PathKind::Package => {
+                self.external_target(db, x, ScopeId(0))?
+            }
+            None => {
+                return Err(unsupported(
+                    span,
+                    "external names outside the design hierarchy (in a package)",
+                    "M3",
+                ));
+            }
+        };
+        match target {
+            ExtTarget::Value(t, d) if db.externals[x].class == ExternalClass::Constant => {
+                self.value_of(db, d, t, span)
+            }
+            _ => Err(Box::new(ice(
+                span,
+                "external constant name bound to a non-constant",
+            ))),
+        }
+    }
+
+    /// Bind external name `x` (LRM 8.7) against the hierarchy elaborated so far: a signal
+    /// object, or the region and declaration of a constant or shared variable.
+    pub(crate) fn external_target(
+        &mut self,
+        db: &Db,
+        x: yavs_sem::ExternalId,
+        scope: ScopeId,
+    ) -> R<ExtTarget> {
+        use yavs_syntax::ast::PathKind;
         let ext = &db.externals[x];
         let span = ext.span;
         let path: Vec<String> = ext.path.iter().map(|(i, _)| i.text.to_string()).collect();
         let shown = path.join(".");
+        let class = ext.class;
         let fail = |why: String| {
             Box::new(
                 Diagnostic::error(
@@ -2574,14 +2751,25 @@ impl Model {
                 ),
             )
         };
-        if ext.class != ExternalClass::Signal {
-            return Err(unsupported(span, "external constants and variables", "M3"));
-        }
         let Some(((last, _), steps)) = ext.path.split_last() else {
             return Err(fail("empty path".into()));
         };
+        let what = match class {
+            ExternalClass::Signal => "signal",
+            ExternalClass::Constant => "constant",
+            ExternalClass::Variable => "shared variable",
+        };
+        // A constant or shared variable `d` of the right class (LRM 8.7).
+        let value_decl = |d: DeclId| match &db.decls[d].kind {
+            DeclKind::Object(o) => matches!(
+                (class, o.class),
+                (ExternalClass::Constant, ObjClass::Constant)
+                    | (ExternalClass::Variable, ObjClass::SharedVariable)
+            ),
+            _ => false,
+        };
         if ext.path_kind == PathKind::Package {
-            // `@lib.pkg.obj`: the signal declared in the package.
+            // `@lib.pkg.obj`: the object declared in the package.
             let [(l, _), (p, _)] = steps else {
                 return Err(unsupported(span, "nested package paths", "M3"));
             };
@@ -2611,8 +2799,20 @@ impl Model {
                     p.text, last.text
                 )));
             };
+            if class != ExternalClass::Signal {
+                return match value_decl(d) {
+                    true if class == ExternalClass::Constant => Ok(ExtTarget::Value(None, d)),
+                    true => Err(unsupported(
+                        span,
+                        "external shared variables in packages",
+                        "M3",
+                    )),
+                    false => Err(fail(format!("`{}` is not a {what}", last.text))),
+                };
+            }
             return self
                 .signal_or_package(db, scope, d, span)?
+                .map(ExtTarget::Signal)
                 .ok_or_else(|| fail(format!("`{}` is not a signal", last.text)));
         }
         let (mut cur, rest) = match ext.path_kind {
@@ -2679,19 +2879,34 @@ impl Model {
                 ))
             })?;
         }
+        let missing = |m: &Self| {
+            fail(format!(
+                "{} has no {what} `{}` (yet)",
+                m.hier.path_name(cur, Case::Original),
+                last.text
+            ))
+        };
+        if class != ExternalClass::Signal {
+            let d = self.regions.get(&cur).into_iter().flatten().find_map(|&r| {
+                db.scopes[r]
+                    .names
+                    .get(&last.key)?
+                    .iter()
+                    .copied()
+                    .find(|&d| value_decl(d))
+            });
+            return d
+                .map(|d| ExtTarget::Value(Some(cur), d))
+                .ok_or_else(|| missing(self));
+        }
         self.hier
             .scope(cur)
             .objs
             .iter()
             .copied()
             .find(|&o| self.nets.obj(o).name.key == last.key)
-            .ok_or_else(|| {
-                fail(format!(
-                    "{} has no signal `{}` (yet)",
-                    self.hier.path_name(cur, Case::Original),
-                    last.text
-                ))
-            })
+            .map(ExtTarget::Signal)
+            .ok_or_else(|| missing(self))
     }
 
     /// The hierarchy scope of package `unit`, created on first use.
@@ -3007,6 +3222,14 @@ impl Model {
         }
         Ok(())
     }
+}
+
+/// What an external name denotes (LRM 8.7).
+pub(crate) enum ExtTarget {
+    Signal(ObjId),
+    /// A constant or shared variable: the region declaring it (`None`: a package) and its
+    /// declaration.
+    Value(Option<ScopeId>, DeclId),
 }
 
 /// A signal whose subtype is not fully constrained and whose initial value does not give

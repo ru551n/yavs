@@ -1,0 +1,21 @@
+exit	0
+diag	note	0	0	:external_direct:u:_p1	dut: req='0'
+diag	note	0	0	:external_direct:mon:_p0	rec.a=1 ra.b=5 b2='1' count=0 d2=17
+diag	note	0	0	:external_direct:_p2	mirror=0
+diag	note	1000000	0	:external_direct:stim	width=8 depth=16 tag=dut-a limit=42
+diag	note	5000000	1	:external_direct:mon:_p0	rec.a=3 ra.b=5 b2='1' count=1 d2=17
+diag	note	5000000	2	:external_direct:_p2	mirror=10
+diag	note	12000000	1	:external_direct:u:_p1	dut: req='1'
+diag	note	15000000	1	:external_direct:mon:_p0	rec.a=5 ra.b=5 b2='1' count=2 d2=17
+diag	note	15000000	2	:external_direct:_p2	mirror=20
+diag	note	16000000	0	:external_direct:stim	data=03 bit0='1'
+diag	note	25000000	1	:external_direct:mon:_p0	rec.a=7 ra.b=5 b2='1' count=3 d2=17
+diag	note	25000000	2	:external_direct:_p2	mirror=30
+diag	note	26000000	0	:external_direct:stim	req='1'
+diag	note	26000000	1	:external_direct:u:_p1	dut: req='0'
+diag	note	35000000	1	:external_direct:mon:_p0	rec.a=9 ra.b=5 b2='1' count=4 d2=17
+diag	note	35000000	2	:external_direct:_p2	mirror=40
+diag	note	45000000	1	:external_direct:mon:_p0	rec.a=11 ra.b=5 b2='1' count=5 d2=17
+diag	note	45000000	2	:external_direct:_p2	mirror=50
+diag	note	55000000	1	:external_direct:mon:_p0	rec.a=13 ra.b=5 b2='1' count=6 d2=17
+diag	note	55000000	2	:external_direct:_p2	mirror=60

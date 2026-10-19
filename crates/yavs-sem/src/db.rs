@@ -137,6 +137,9 @@ pub struct Db {
     /// External names of the current unit already built, by AST node address (built once:
     /// candidates need the subtype, the HIR is the same).
     pub(crate) ext_memo: HashMap<usize, ExprId>,
+    /// Implicit aliases of the external names used directly in a statement or an alias
+    /// target, made by [`Db::alias_external_uses`] (#93).
+    pub(crate) ext_uses: HashMap<crate::external::ExtOwner, Box<[DeclId]>>,
     /// The type mark as written of a parameter (by its object decl) and of a function's
     /// result (by the subprogram decl), for messages in the user's spelling (8.3).
     pub(crate) written_marks: HashMap<DeclId, Span>,
@@ -251,6 +254,7 @@ impl Db {
             required_ctx: false,
             inst_types: Vec::new(),
             ext_memo: HashMap::new(),
+            ext_uses: HashMap::new(),
             written_marks: HashMap::new(),
             incomplete_ok: false,
             context_subtype: None,

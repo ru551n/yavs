@@ -619,6 +619,22 @@ impl SimControl {
             sig.last_value = sig.cur.clone();
             self.push_down(s, false)?;
         }
+        // `s'delayed(t)` starts at the initial value of `s`: a port's is its actual's, known
+        // only now (the builder took the port's declared default).
+        for i in 0..self.implicits.len() {
+            let im = &self.implicits[i];
+            if !matches!(im.kind, ImplicitKind::Delayed(_)) {
+                continue;
+            }
+            let (s, r) = (im.sig.0 as usize, im.range);
+            let v =
+                (self.signals[im.src.0 as usize].cur).extract(r.offset as usize, r.len as usize);
+            let sig = &mut self.signals[s];
+            sig.driving.copy(0, &v, 0, r.len as usize);
+            sig.cur = sig.effective_of(sig.full());
+            sig.last_value = sig.cur.clone();
+            self.push_down(s as u32, false)?;
+        }
         Ok(())
     }
 

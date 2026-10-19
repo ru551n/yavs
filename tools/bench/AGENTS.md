@@ -68,6 +68,11 @@ python3 -I tools/bench/run.py --compare A B --bench elab_heavy,vunit_vc30 --fail
 BENCH_SIM1=<template-name> python3 -I tools/bench/run.py --compare A B --group internal --sims sim1
 ```
 
+- Extra `yavs run` flags for every benchmark: `YAVS_BENCH_RUN_FLAGS="--wave={out} --wave-variables"` (`{out}` is a scratch
+  file the harness deletes after each run; the report then shows the FST size). Every run also reports the peak RSS
+  (`wait4`, per child; the maximum over the commands of a benchmark).
+- Extra `yavs run` flags for every benchmark: `YAVS_BENCH_RUN_FLAGS="--wave={out} --wave-variables"` (`{out}` is a scratch
+  file the harness deletes after each run; the report then shows its size as `FST MiB`).
 - No diagnostic codes.
 
 ## 6. Coordination

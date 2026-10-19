@@ -21,6 +21,8 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 CACHE = Path(os.environ.get("YAVS_BENCH_CACHE", "~/.cache/yavs-bench")).expanduser()
 CORPUS = Path(os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus")).expanduser()
+RUN_FLAGS = os.environ.get("YAVS_BENCH_RUN_FLAGS", "").split()  # extra `yavs run` flags, e.g. "--wave={out}"
+OUT = CACHE / "bench-out.fst"
 PHASES = ["analyze", "elaborate", "init", "simulate"]
 STD = "2008"
 INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "elab_heavy"]
@@ -203,13 +205,14 @@ def run_ru(argv, cwd):
 
 def measure(cmds, Y, tr):
     """One iteration of a benchmark: its commands in order; sums of wall, cpu and phases."""
-    wall = cpu = rss = 0.0
+    wall = cpu = rss = fst = 0.0
     ph = {}
     rc, tail = 0, ""
     for argv, cwd in cmds:
         argv = [Y if a == "{Y}" else a for a in argv]
         if tr:
             argv.insert(2, "--time-report")
+        argv[2:2] = [f.replace("{out}", str(OUT)) for f in RUN_FLAGS]
         c0 = resource.getrusage(resource.RUSAGE_CHILDREN)
         t0 = time.perf_counter()
         try:
@@ -220,6 +223,9 @@ def measure(cmds, Y, tr):
         c1 = resource.getrusage(resource.RUSAGE_CHILDREN)
         cpu += (c1.ru_utime + c1.ru_stime) - (c0.ru_utime + c0.ru_stime)
         rss = max(rss, ru / 1024)
+        if RUN_FLAGS and OUT.exists():
+            fst += OUT.stat().st_size
+            OUT.unlink()
         if p.returncode and not rc:
             rc, tail = p.returncode, (p.stderr or p.stdout).strip()[-300:]
         for n, w, c in TR.findall(p.stderr):
@@ -227,7 +233,7 @@ def measure(cmds, Y, tr):
                 d = ph.setdefault(n, {"wall": 0.0, "cpu": 0.0})
                 d["wall"] += float(w)
                 d["cpu"] += float(c) if c != "n/a" else 0.0
-    return {"rc": rc, "wall": wall, "cpu": cpu, "rss": rss, "phases": ph, "error": tail}
+    return {"rc": rc, "wall": wall, "cpu": cpu, "rss": rss, "fst_bytes": fst, "phases": ph, "error": tail}
 
 
 def measure_sim(tpl, sub):
@@ -247,7 +253,7 @@ def summarize(samples):
     ok = [s for s in samples if s["rc"] == 0]
     out = {"ok": len(ok), "runs": len(samples), "rc": next((s["rc"] for s in samples if s["rc"]), 0),
            "error": next((s.get("error", "") for s in samples if s["rc"]), ""),
-           "rss": med([s.get("rss", 0) for s in ok]), "cpu": med([s["cpu"] for s in ok]), "wall": med([s["wall"] for s in ok]), "phases": {}}
+           "rss": med([s.get("rss", 0) for s in ok]), "fst_bytes": med([s.get("fst_bytes", 0) for s in ok]), "cpu": med([s["cpu"] for s in ok]), "wall": med([s["wall"] for s in ok]), "phases": {}}
     for p in PHASES:
         v = [s["phases"][p] for s in ok if p in s["phases"]]
         if v:
@@ -283,6 +289,8 @@ def report(names, labels, summ, thr, sims, simsumm):
         rows = [(p, [x["phases"].get(p, {}).get("cpu") for x in s], [x["phases"].get(p, {}).get("wall") for x in s]) for p in PHASES]
         rows.append(("total", [x["cpu"] for x in s], [x["wall"] for x in s]))
         rows.append(("peak MiB", [x.get("rss") for x in s], [None] * len(s)))
+        if any(x.get("fst_bytes") for x in s):
+            rows.append(("FST MiB", [x["fst_bytes"] / 1048576 for x in s], [None] * len(s)))
         for p, c, w in rows:
             ratio = f" {c[1] / c[0]:6.2f}{flag(c[0], c[1], thr)}" if cmp and c[0] and c[1] is not None else (" " * 7 if cmp else "")
             print(f"  {p:10} " + " ".join(f"{fmt(v):>10}" for v in c) + ratio + "         " + " ".join(f"{fmt(v):>8}" for v in w))

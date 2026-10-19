@@ -842,6 +842,15 @@ overflow, null access, delta limit, internal) still stop immediately, per the er
 Reports go to stdout in the reference simulator's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),
 which tools/difftest parses.
 
+## Report during elaboration (yavs-interp, #299)
+
+- **Decision:** a `report` or assertion run without a kernel (a function called while
+  elaborating, e.g. in a signal's initial value) prints `** <Severity>: (init): <message>` on
+  stderr at once, before the first cycle, and elaboration goes on. Severity failure stops
+  elaboration with a runtime error (`E2107`). Why: LRM 10.4 allows report in any subprogram;
+  the reference simulator prints the same line. Not counted in the VHDL assert counts (no
+  process context yet). Source: #299.
+
 ## Interpreter: BIT/BOOLEAN codes and file writes (orchestrator, 2026-10-18)
 
 - BIT and BOOLEAN elements of bit-plane arrays use the std_ulogic codes for '0'/'1' (2/3), not

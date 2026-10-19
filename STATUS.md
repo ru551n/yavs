@@ -473,6 +473,8 @@ is not static (generic or parameter bounds) get their range at the `'reflect`, a
 index or designated subtypes. The CLI has no resolution option yet, so TIME mirrors are
 exercised end to end in femtoseconds only (other resolutions: a unit test).
 
+- A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`).
+
 ## elab (`crates/yavs-elab`, M2)
 
 Done (without processes, which need yavs-lower and yavs-interp): `find_top` (`ENTITY`,

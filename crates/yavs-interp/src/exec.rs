@@ -2219,7 +2219,18 @@ impl Machine {
                             return Ok(Flow::Suspend);
                         }
                     }
-                    None => return rt_err(format!("report during elaboration: {text}")),
+                    // No kernel (elaboration, or a function run by a thunk): the message goes
+                    // to stderr at once, ahead of the first cycle, as the reference does. Severity failure stops
+                    // elaboration as it stops a run.
+                    None => {
+                        use std::io::Write;
+                        let name = ["Note", "Warning", "Error", "Failure"][s as usize];
+                        let mut o = std::io::stderr().lock();
+                        let _ = writeln!(o, "** {name}: (init): {text}");
+                        if s >= yavs_kernel::Severity::Failure {
+                            return rt_err(format!("report of severity failure: {text}"));
+                        }
+                    }
                 }
             }
             Inst::Output { addr, len } => {

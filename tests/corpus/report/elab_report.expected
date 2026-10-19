@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:elab_report:_p0	s = 1
+err	** Note: (init): hello from f
+err	** Note: (init): hello from f

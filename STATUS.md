@@ -215,7 +215,8 @@ An installed binary finds `lib/` next to itself (#43).
   result subtype from the call's context and run (`process/named_return_2019`), so do record
   types and named return values in generic subprograms, generic packages and protected
   methods (#239, `process/named_return_record_2019`, `process/named_return_generic_2019`);
-  scalar types are `E1233`. `return when c;` in procedures runs (#239,
+  so do scalar types, whose `r` takes the target's range (#327,
+  `process/named_return_scalar_2019`). `return when c;` in procedures runs (#239,
   `process/return_when_2019`).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).

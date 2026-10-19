@@ -1540,11 +1540,18 @@ impl<'a> Fx<'a, '_> {
                         let Some(dope) = self.subtype_dope(*st, span)? else {
                             return Err(self.cx.ice(span, "range of an unconstrained array type"));
                         };
-                        self.dope_range(dope, dim.saturating_sub(1) as u8)
+                        self.dope_range(dope, dim.saturating_sub(1) as u8, RegTy::I64)
                     }
                     AttrPrefix::Expr(e) => {
                         let dope = self.dope_of(*e)?;
-                        self.dope_range(dope, dim.saturating_sub(1) as u8)
+                        // A scalar named return value's range (`Db::scalar_range`): the
+                        // bounds of a floating point type are its values' bits.
+                        let t = if ty::is_real(self.db, self.db.base(self.db.exprs[*e].subtype)) {
+                            RegTy::F64
+                        } else {
+                            RegTy::I64
+                        };
+                        self.dope_range(dope, dim.saturating_sub(1) as u8, t)
                     }
                     AttrPrefix::Entity(_) => {
                         return Err(self.cx.ice(span, "range of a named entity"));
@@ -1577,11 +1584,12 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
-    fn dope_range(&mut self, dope: Reg, dim: u8) -> Rng {
+    /// Bounds `dim` of descriptor `dope`, as registers of type `t`.
+    fn dope_range(&mut self, dope: Reg, dim: u8, t: RegTy) -> Rng {
         let base = self.offset(dope, 24 * u32::from(dim));
-        let left = self.load(base, Width::B8, RegTy::I64);
+        let left = self.load(base, Width::B8, t);
         let r = self.offset(base, 8);
-        let right = self.load(r, Width::B8, RegTy::I64);
+        let right = self.load(r, Width::B8, t);
         let d = self.offset(base, 16);
         let dir = self.load(d, Width::B8, RegTy::I64);
         Rng {
@@ -2202,15 +2210,28 @@ impl<'a> Fx<'a, '_> {
         let st = res
             .or(decl.kind.subprogram().and_then(|s| s.ret))
             .unwrap_or(db.poison.subtype);
-        let Some(dope) = self.subtype_dope(st, span)? else {
-            return Err(self.cx.unsupported(
-                span,
-                &format!(
-                    "a call of `{}` (a named return value) whose context gives no \
-                     constrained result subtype",
-                    decl.name
-                ),
-            ));
+        let dope = if db.types[db.base(st)].kind.is_scalar() {
+            // A scalar: its range as a one-dimensional descriptor (`Db::scalar_range`).
+            let r = self.scalar_bounds(st, span)?;
+            let dope = self.alloc_n(24);
+            let dir = self.dir_reg(r.dir);
+            for (i, v) in [r.left, r.right, dir].into_iter().enumerate() {
+                let a = self.offset(dope, 8 * i as u32);
+                self.store(a, v, Width::B8);
+            }
+            dope
+        } else {
+            let Some(dope) = self.subtype_dope(st, span)? else {
+                return Err(self.cx.unsupported(
+                    span,
+                    &format!(
+                        "a call of `{}` (a named return value) whose context gives no \
+                         constrained result subtype",
+                        decl.name
+                    ),
+                ));
+            };
+            dope
         };
         cells.extend([dope, dope]);
         Ok(())
@@ -3519,7 +3540,7 @@ impl<'a> Fx<'a, '_> {
                         .ice(span, "array attribute of an unconstrained type"));
                 };
                 let k = dim(self);
-                let r = self.dope_range(dope, k);
+                let r = self.dope_range(dope, k, RegTy::I64);
                 self.range_attr(attr, r, Some((dope, k)), span)
             }
             AttrPrefix::Expr(e) if matches!(attr, Driving | DrivingValue) => {
@@ -3625,7 +3646,7 @@ impl<'a> Fx<'a, '_> {
             AttrPrefix::Expr(e) if ty::is_array(db, db.base(db.exprs[e].subtype)) => {
                 let dope = self.dope_of(e)?;
                 let k = dim(self);
-                let r = self.dope_range(dope, k);
+                let r = self.dope_range(dope, k, RegTy::I64);
                 self.range_attr(attr, r, Some((dope, k)), span)
             }
             AttrPrefix::Expr(_) => Err(self.cx.unsupported(

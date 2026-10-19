@@ -293,6 +293,15 @@ assignment target, an initial value, a ``return`` statement, a constrained forma
 expression; elsewhere it is an error (``E1304``). Some simulators accept fewer contexts
 (4.2.1, 2019).
 
+``t`` may be a scalar type (integer, enumeration, physical, floating point, a subtype with a range
+constraint, a generic type whose actual is scalar): ``r`` is then the target's subtype, so
+``r'low``, ``r'high``, a variable of subtype ``r`` and its range checks follow the target's range,
+and the returned value is checked against ``t``. Some simulators reject scalar named return
+values, and some give ``r`` the range of ``t`` instead of the target's (4.2.1, 2019).
+
+*Portable:* pass the range as a parameter, or return a value of ``t`` and let the assignment
+check it.
+
 Access and file types (2019)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

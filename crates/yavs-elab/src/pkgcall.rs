@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use yavs_diag::Diagnostic;
-use yavs_interp::{Bindings, InstData, Runtime, SharedState, Sources};
+use yavs_interp::{Bindings, CallVal, InstData, Runtime, SharedState, Sources};
 use yavs_ir::{FuncId, Program, TyId};
 use yavs_kernel::SimError;
 use yavs_lower::{LowerOptions, Lowerer, PackageIr};
@@ -83,10 +83,16 @@ pub(crate) fn run(
     let prog = rt.prog.clone();
     let mut cvs = Vec::with_capacity(args.len());
     for (v, &t) in args.iter().zip(&s.params) {
-        cvs.push(
-            crate::value::encode(&prog, t, v)
+        let scalar = prog.types.get(t).is_some_and(|t| t.scalar_size().is_some());
+        cvs.push(match v {
+            // A scalar named return value's range (`Evaluator::call`): a descriptor only.
+            Val::Array(a) if scalar => CallVal::Composite {
+                data: Vec::new(),
+                desc: crate::value::dope(&a.bounds),
+            },
+            _ => crate::value::encode(&prog, t, v)
                 .ok_or(Fail::Unsupported("an argument value of this type"))?,
-        );
+        });
     }
     let ret = s.ret.ok_or(Fail::Unsupported("not a function"))?;
     let composite = prog

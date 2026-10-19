@@ -122,7 +122,7 @@ fn pool(prog: &Program, c: yavs_ir::ConstId) -> Option<&[u8]> {
     }
 }
 
-fn dope(bounds: &[(i64, Direction, i64)]) -> Vec<u8> {
+pub(crate) fn dope(bounds: &[(i64, Direction, i64)]) -> Vec<u8> {
     bounds
         .iter()
         .flat_map(|&(l, d, r)| [l, r, i64::from(d == Direction::Downto)])

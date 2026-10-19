@@ -670,10 +670,19 @@ impl Model {
         if let yavs_sem::decl::Body::Hir { scope: ps, .. } = &sp.body
             && db.ret_names.contains_key(ps)
         {
-            let Some(shape) = self.shape(db, ex.subtype, scope, ex.span)? else {
-                return Err(not_scalar("a named return value of this subtype"));
-            };
-            vals.push(shape_value(&shape));
+            if db.types[db.base(ex.subtype)].kind.is_scalar() {
+                // A scalar: its range only (`pkgcall::run` passes it as a descriptor).
+                let b = self.scalar_bounds(db, ex.subtype, scope, ex.span)?;
+                vals.push(Val::Array(ArrayConst {
+                    bounds: Box::new([(b.left, b.dir, b.right)]),
+                    elems: Elems::Runs(Box::new([])),
+                }));
+            } else {
+                let Some(shape) = self.shape(db, ex.subtype, scope, ex.span)? else {
+                    return Err(not_scalar("a named return value of this subtype"));
+                };
+                vals.push(shape_value(&shape));
+            }
         }
         let failed = |f: crate::pkgcall::Fail| match f {
             crate::pkgcall::Fail::Unsupported(w) => not_scalar(w),

@@ -1338,8 +1338,12 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   is unaffected.
 - **Initial `'transaction` (L67, #241; user, 2026-10-19):** `S'transaction` does not toggle at
   initialization (LRM 14.7.5.2), as the third reference simulator and unlike the other two.
-- **Scalar named return values (L77, #239; user, 2026-10-19):** `function f return r of integer`
-  stays rejected with `E1233` (commit 2462e0aa).
+- **Scalar named return values (L77, #327; user, 2026-10-19, reverses the earlier ruling of the
+  same day that kept them rejected with `E1233`, commit 2462e0aa):** `function f return r of t`
+  with a scalar `t` is accepted; `r` is the call's target subtype and has its range, passed like
+  array and record bounds. `E1233` stays for access and file types. Of the references that run
+  it, one takes the target's range and one the type mark's; yavs keeps the reading of array and
+  record named returns.
 - **Incremental binding repeating the entity aspect (config-rebinding, 7.3.2.1; user, 2026-10-19: LRM
   and majority):** a component configuration may repeat the entity aspect of the configuration
   specification that binds the instance (same entity and architecture, or same configuration, after

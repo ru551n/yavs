@@ -98,8 +98,10 @@ a call into your module in a small commit.
   subtype (`Expr::subtype` of the call; the data cell repeats the descriptor and is never read);
   the hidden constant it binds gives `r` its bounds (`Constraint::FromObject`, #33). A
   record result passes its record descriptor the same way, and protected methods take it
-  after their arguments too (`named_return_cells`, #239). The elaborator passes a value of
-  that subtype in the same place.
+  after their arguments too (`named_return_cells`, #239). A scalar result passes a
+  one-dimensional descriptor of its range (`left`, `right`, direction; a floating point
+  bound as its bits), read back by `r`'s range (`Db::scalar_range`, #327). The elaborator
+  passes a value of that subtype in the same place (for a scalar: its bounds only).
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image`, `'value` `yavs.attr.value`
   (taking the string as a fat pair address). Array arguments to natives are fat pair addresses.

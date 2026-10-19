@@ -207,6 +207,7 @@ const PASS: &[&str] = &[
     "process/named_return_2019",
     "process/named_return_generic_2019",
     "process/named_return_record_2019",
+    "process/named_return_scalar_2019",
     "process/return_when_2019",
     "process/sensitivity",
     "process/subprograms",

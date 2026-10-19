@@ -1082,8 +1082,8 @@ impl Db {
         }
     }
 
-    /// The type mark of a named return value denotes a composite type (lrm-checks L77), or a
-    /// generic type that may be one.
+    /// The type mark of a named return value denotes a scalar or composite type (lrm-checks
+    /// L77), or a generic type that may be one.
     pub(crate) fn check_named_return_type(
         &mut self,
         span: Span,
@@ -1093,23 +1093,30 @@ impl Db {
         use crate::types::TypeKind as K;
         let base = self.base(ret);
         // A generic type is checked again in each instance (`fill_scope`).
-        if matches!(
-            self.types[base].kind,
-            K::Array { .. }
-                | K::Record { .. }
-                | K::Error
-                | K::Generic {
-                    class: G::Private,
-                    ..
-                }
-        ) {
+        let kind = &self.types[base].kind;
+        if kind.is_scalar()
+            || matches!(
+                kind,
+                K::Array { .. }
+                    | K::Record { .. }
+                    | K::Error
+                    | K::Generic {
+                        class: G::Private
+                            | G::Scalar
+                            | G::Discrete
+                            | G::Integer
+                            | G::Physical
+                            | G::Floating,
+                    }
+            )
+        {
             return Ok(());
         }
         Err(self.error(
             yavs_diag::Diagnostic::error(
                 crate::diag::NAMED_RETURN_TYPE,
                 format!(
-                    "a named return value needs an array or record type, not `{}`",
+                    "a named return value needs a scalar, array or record type, not `{}`",
                     self.type_name(base)
                 ),
             )

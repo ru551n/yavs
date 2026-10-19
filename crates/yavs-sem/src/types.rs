@@ -1848,6 +1848,16 @@ impl Db {
     pub fn scalar_range(&self, st: SubtypeId) -> Option<RangeC> {
         match &self.subtypes[st].constraint {
             Constraint::Range(r) => Some(r.clone()),
+            // A scalar named return value's subtype (2019, 4.2.1): the hidden object's range,
+            // which M2 passes as a one-dimensional descriptor.
+            &Constraint::FromObject {
+                expr,
+                elem_depth: 0,
+            } if self.types[self.base(st)].kind.is_scalar() => Some(RangeC::Attr {
+                prefix: crate::hir::AttrPrefix::Expr(expr),
+                reverse: false,
+                dim: 1,
+            }),
             Constraint::None => {
                 let t = self.base(st);
                 let b = self.types[t].base_subtype;

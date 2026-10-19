@@ -1,0 +1,16 @@
+exit	0
+diag	note	0	0	:named_return_scalar_2019:_p0	k 9 s 19
+diag	note	0	0	:named_return_scalar_2019:_p0	hi 9
+diag	note	0	0	:named_return_scalar_2019:_p0	hi down 20
+diag	note	0	0	:named_return_scalar_2019:_p0	left down 20
+diag	note	0	0	:named_return_scalar_2019:_p0	asc down 19
+diag	note	0	0	:named_return_scalar_2019:_p0	last white
+diag	note	0	0	:named_return_scalar_2019:_p0	cspan white
+diag	note	0	0	:named_return_scalar_2019:_p0	maxl 50 mm
+diag	note	0	0	:named_return_scalar_2019:_p0	lo_r -1000
+diag	note	0	0	:named_return_scalar_2019:_p0	cond true 3
+diag	note	0	0	:named_return_scalar_2019:_p0	cond false 20
+diag	note	0	0	:named_return_scalar_2019:_p0	mid 6
+diag	note	0	0	:named_return_scalar_2019:_p0	pi 15
+diag	note	0	0	:named_return_scalar_2019:_p0	gi 12
+diag	note	0	0	:named_return_scalar_2019:_p0	st 9

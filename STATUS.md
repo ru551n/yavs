@@ -611,7 +611,7 @@ Done (#271, #272 value changes): `vhpi_put_value` on signals, ports and their re
 array elements, in every format `vhpi_get_value` produces (`Read::decode`), queued in the state
 and handed to the kernel as `Hook::deposit`/`force`/`release` when the callback returns:
 `vhpiDeposit[Propagate]` deposits, `vhpiForce[Propagate]` forces (force mode `out` for ports of
-mode out/inout/buffer, `in` otherwise), `vhpiRelease` releases; refused in the read-only phases;
+mode out/inout/buffer, `in` otherwise), `vhpiRelease` releases (back to the drivers' value, also after a deposit, #310); refused in the read-only phases;
 constants, generics, records as a whole, bad values and `vhpiSizeConstraint` are `W0903`.
 `vhpiCbValueChange` on signals, ports and sub-elements, keyed by kernel signal and dispatched
 from `Observer::value_change`, once per cycle, with the value filled in the requested format;

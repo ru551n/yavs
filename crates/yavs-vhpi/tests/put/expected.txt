@@ -53,7 +53,7 @@ vhpi: d changed t=60 d=0
 vhpi: at t=65 d=0
 vhpi: release d=0
 vhpi: d changed t=65 d=0
-** Note: 65000000fs+0: d=77
+** Note: 65000000fs+0: d=3
     Process :top:_p1
 vhpi: q=0101 t=65 d=2
 vhpi: q(0)=1 t=65 d=2

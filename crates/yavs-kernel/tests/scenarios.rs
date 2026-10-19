@@ -434,6 +434,16 @@ fn force_release_and_deposit() {
     sim.deposit(u, &[9]).unwrap();
     sim.run_until(ns(46)).unwrap();
     assert_eq!((v(&sim, s), v(&sim, u)), (vec![3], vec![9]));
+    // A release after a deposit returns to the sources' value (#310); without sources the
+    // deposit stays.
+    sim.force(s, ForceMode::Effective, &[8]).unwrap();
+    sim.force(u, ForceMode::Effective, &[8]).unwrap();
+    sim.run_until(ns(47)).unwrap();
+    assert_eq!((v(&sim, s), v(&sim, u)), (vec![8], vec![8]));
+    sim.release(s, ForceMode::Effective).unwrap();
+    sim.release(u, ForceMode::Effective).unwrap();
+    sim.run_until(ns(48)).unwrap();
+    assert_eq!((v(&sim, s), v(&sim, u)), (vec![1], vec![9]));
     sim.run_until(ns(60)).unwrap();
     assert_eq!((v(&sim, s), v(&sim, u)), (vec![2], vec![9]));
     assert!(trace.take().contains(&"10 ns +1 s[0..1]=[5]".to_string()));

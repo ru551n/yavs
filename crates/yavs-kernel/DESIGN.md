@@ -77,7 +77,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
      the result is the same at any thread count. Everything else goes through the worklists
      below, serially;
    - **driving values bottom-up** over a worklist ordered by port level (formals before the
-     actuals they feed): resolve dirty ranges, apply queued forces/releases/deposits, then pass
+     actuals they feed): resolve dirty ranges, apply queued forces/releases/deposits (a release recomputes the
+     released range's driving value from the sources, dropping an earlier deposit, #310), then pass
      the formal's driving value (after `force out`, through `to_actual` conversion) into the
      actual's port source and mark it active and dirty (K1);
    - **effective values top-down** (actuals before formals): update effective values and record

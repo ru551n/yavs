@@ -251,9 +251,10 @@ milestone users care about works.
   the current cycle before the update, else the next delta) and is identical at any thread
   count. The non-propagating modes `vhpiDeposit` and `vhpiForce` act like their propagating
   forms: the kernel has no value change without a cycle, and the reference simulator with VHPI
-  refuses them. A deposit sets the driving value until a source next updates those elements,
-  so a release after a deposit returns to the deposited value while no driver has updated; the
-  reference simulator returns to the drivers' value instead (open question #310). Value-change callbacks repeat until
+  refuses them. A deposit sets the driving value until a source next updates those elements;
+  a release recomputes the driving value from the sources, so a force and release after a
+  deposit return to the drivers' value, as both references with VHPI do (#310; a signal
+  without sources keeps the deposit). Value-change callbacks repeat until
   removed and run once per cycle.
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved

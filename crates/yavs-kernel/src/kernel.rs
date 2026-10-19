@@ -1014,7 +1014,7 @@ impl SimControl {
             }
             sig.dirty = dirty;
             for op in ops.remove(&s).unwrap_or_default() {
-                apply_op(sig, &op, now, cycle);
+                apply_op(sig, &op, now, cycle)?;
             }
             if sig.queued_down != cycle {
                 sig.queued_down = cycle;
@@ -1493,7 +1493,7 @@ fn lock(m: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) {
+fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) -> Result<(), ErrorKind> {
     let (off, n) = (op.range.offset as usize, op.range.len as usize);
     match (op.mode, &op.value) {
         (OpMode::Force(m), Some(v)) => {
@@ -1513,12 +1513,16 @@ fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) {
             if let Some(l) = slot {
                 fill_bits(&mut l.mask, off, n, false);
             }
+            // The sources' value again, not a deposit made before the force (#310).
+            // ponytail: a composite group keeps it until its next resolution.
+            sig.compute_driving(op.range)?;
         }
         (OpMode::Deposit, Some(v)) => sig.driving.copy(off, v, 0, n),
         _ => unreachable!("make_op attaches a value to every force and deposit"),
     }
     sig.mark_active(op.range, now, cycle);
     sig.eff_dirty.push(op.range);
+    Ok(())
 }
 
 /// Fisher-Yates with splitmix64: deterministic per seed, no dependency.

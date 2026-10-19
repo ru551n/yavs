@@ -151,6 +151,9 @@ pub struct ProcInst {
     pub lsps: Vec<Vec<(usize, LeafId, yavs_kernel::Range)>>,
     /// The equivalent process of a port's expression actual (LRM 6.5.6.3).
     pub actual: Option<PortActual>,
+    /// A clocked process on one edge of one scalar signal: rising, and the element
+    /// (`yavs_kernel::EdgeTrigger`, `Walker::edge_trigger`).
+    pub trigger: Option<(bool, LeafId, u32)>,
 }
 
 /// The equivalent process `formal <= expr` of a port's expression actual: its one driver is

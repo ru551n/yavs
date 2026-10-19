@@ -2,7 +2,8 @@
 //! number of times on the same design (in-process restart, rule 4).
 
 use yavs_kernel::{
-    Builder, Config, DriverId, PortConv, ProcFlags, Process, Resolution, SimControl, SimError,
+    Builder, Config, DriverId, EdgeTrigger, PortConv, ProcFlags, Process, Resolution, SimControl,
+    SimError,
 };
 
 use crate::hier::{Case, ImplicitKind, LeafRes};
@@ -171,7 +172,7 @@ impl Elaborated {
             let proc = make(p, &ds)?;
             let name = self.hier.path_name(p.scope, Case::Lrm);
             let name = name.strip_suffix(':').unwrap_or(&name);
-            b.process(
+            let pid = b.process(
                 name,
                 ProcFlags {
                     postponed: p.postponed,
@@ -182,6 +183,17 @@ impl Elaborated {
                 &ds,
                 Boxed(proc),
             );
+            if let Some((rising, leaf, elem)) = p.trigger {
+                let signal = yavs_kernel::SignalId(leaf.0);
+                b.edge_trigger(
+                    pid,
+                    EdgeTrigger {
+                        signal,
+                        elem,
+                        rising,
+                    },
+                );
+            }
         }
         // The processes of foreign architectures' models: drivers only (#330).
         for p in &self.ext_procs {

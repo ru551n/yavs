@@ -1914,3 +1914,17 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - **Why not the existing `LNum`/`LogicOp` instructions:** they cover neither the bounds and
   warnings of the library functions nor `std_ulogic` tables per operand shape; the native call
   keeps one place that mirrors the library.
+
+## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
+
+- A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or
+  `falling_edge`, the IEEE 1164 functions; `c` a whole scalar signal, the only name in the
+  sensitivity list, no `else`/`elsif`, not postponed) is recognised at elaboration and handed to
+  the kernel as an edge trigger. The kernel does not resume it for an event that does not make
+  the edge true: running it would evaluate the condition and suspend again, nothing else.
+  Rationale: half the activations of a single-clock design are of that kind
+  (`docs/design/performance.md` R2d).
+- Off (`Config::edge_triggers`) with `--cov`, `--dap` and `--vhpi`: statement coverage, a
+  debugger and foreign callbacks can see the skipped activation. Output is otherwise unchanged;
+  the statistics count fewer process runs.
+

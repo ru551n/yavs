@@ -10,7 +10,7 @@ use yavs_sem::external::ExtOwner;
 use yavs_sem::generic::GenericActual;
 use yavs_sem::hir::{
     Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
-    InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, StmtKind, UnitHir,
+    InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, Sensitivity, StmtKind, UnitHir,
 };
 use yavs_sem::loader::UnitKind;
 use yavs_sem::{Db, DeclId, ExprId, StmtId, UnitId};
@@ -2400,7 +2400,81 @@ impl Elab<'_> {
             let (o, sels) = self.m.lsp_ref(self.db, l, s)?;
             refs.push((o, sels, l.span));
         }
-        self.process_refs(s, st, name, postponed, refs)
+        self.process_refs(s, st, name, postponed, refs)?;
+        let trigger = self.edge_trigger(s, st);
+        if let Some(p) = self.procs.last_mut() {
+            p.trigger = trigger;
+        }
+        Ok(())
+    }
+
+    /// `process (c) begin if rising_edge(c) then ... end if; end process;` (or
+    /// `falling_edge`, the IEEE 1164 functions) on a scalar signal `c`: the kernel resumes it
+    /// only on that edge (`yavs_kernel::EdgeTrigger`); on any other event it would evaluate
+    /// the `if` and suspend again. Returns rising and the element.
+    fn edge_trigger(&mut self, s: ScopeId, st: StmtId) -> Option<(bool, LeafId, u32)> {
+        let db: &Db = &*self.db;
+        let StmtKind::Process {
+            postponed: false,
+            sensitivity: Sensitivity::List(sens),
+            body,
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let ([l], [only]) = (&sens[..], &body[..]) else {
+            return None;
+        };
+        let StmtKind::If {
+            branches,
+            else_: None,
+        } = &db.stmts[*only].kind
+        else {
+            return None;
+        };
+        let [(cond, _)] = &branches[..] else {
+            return None;
+        };
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[*cond].kind
+        else {
+            return None;
+        };
+        let rising = match db.decls[*callee].name.key().as_str() {
+            "rising_edge" => true,
+            "falling_edge" => false,
+            _ => return None,
+        };
+        let owner = db.scopes[db.decls[*callee].scope].owner?;
+        if db.decls[owner].name.key().as_str() != "std_logic_1164" {
+            return None;
+        }
+        let [
+            Arg {
+                actual: Actual::Expr(a),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return None;
+        };
+        let ExprKind::Obj(d) = db.exprs[*a].kind else {
+            return None;
+        };
+        if l.root != ObjRoot::Decl(d) || !l.path.is_empty() {
+            return None;
+        }
+        // A probe: the same name is resolved for real when the process is lowered.
+        let (o, sels) = self.m.lsp_ref(db, l, s).ok()?;
+        match self.m.nets.select(o, &sels).ok()?.0[..] {
+            [(leaf, r)] if r.len == 1 => Some((rising, leaf, r.offset)),
+            _ => None,
+        }
     }
 
     /// Bind what [`Elab::pending`] and [`Elab::deferred`] hold, in elaboration order.
@@ -2467,6 +2541,7 @@ impl Elab<'_> {
             drivers: Vec::new(),
             lsps: Vec::new(),
             actual: None,
+            trigger: None,
         });
         ProcIdx(self.procs.len() as u32 - 1)
     }

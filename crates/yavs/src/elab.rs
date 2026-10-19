@@ -571,6 +571,9 @@ pub fn run(
             SeverityArg::Error => yavs_kernel::Severity::Error,
             SeverityArg::Failure => yavs_kernel::Severity::Failure,
         },
+        // A process left suspended by its edge trigger would be visible to statement coverage,
+        // a debugger stepping through it, and foreign callbacks.
+        edge_triggers: a.cov.is_none() && a.dap.is_none() && a.vhpi.is_empty(),
         ..Default::default()
     };
     let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do

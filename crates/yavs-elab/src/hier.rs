@@ -339,8 +339,9 @@ pub enum LeafRes {
     StdLogic,
     /// A user resolution function (needs the interpreter, M3).
     Func(DeclId),
-    /// A leaf of a signal whose subtype is a composite resolved as a whole by this function
-    /// (LRM 4.6): all leaves of the object are resolved together (#193).
+    /// A leaf of a composite resolved as a whole by this function (LRM 4.6): the signal or a
+    /// subelement of it whose subtype is resolved; its parts are resolved together (#193, a
+    /// [`Whole`] of `NetGraph::wholes`).
     Whole(DeclId),
 }
 
@@ -393,6 +394,17 @@ pub struct DriverDecl {
     pub range: Range,
 }
 
+/// A composite resolved as a whole (LRM 4.6, 14.7.3.1: a basic signal): a signal whose
+/// subtype has a resolution function, or a subelement of it that is the outermost resolved
+/// composite on its path (one instance per element of the arrays above it).
+pub struct Whole {
+    pub func: DeclId,
+    /// The resolved composite's subtype.
+    pub shape: Shape,
+    /// Per instance: its `(leaf, kernel range)` parts in leaf order (`NetGraph::select`).
+    pub instances: Vec<Vec<(LeafId, Range)>>,
+}
+
 #[derive(Default)]
 pub struct NetGraph {
     pub objs: Vec<SigObj>,
@@ -400,6 +412,7 @@ pub struct NetGraph {
     pub ports: Vec<PortEdge>,
     pub conv_ports: Vec<ConvPort>,
     pub drivers: Vec<DriverDecl>,
+    pub wholes: Vec<Whole>,
 }
 
 /// One static selector of a name (sub-element map key).
@@ -419,6 +432,16 @@ impl NetGraph {
 
     pub fn leaf(&self, l: LeafId) -> &Leaf {
         &self.leaves[l.index()]
+    }
+
+    /// The composite resolved as a whole that leaf `l` belongs to.
+    pub fn whole_of(&self, l: LeafId) -> Option<&Whole> {
+        // ponytail: linear in the composites resolved as a whole; index by leaf if many.
+        (self.wholes.iter()).find(|w| {
+            w.instances
+                .first()
+                .is_some_and(|i| i.iter().any(|p| p.0 == l))
+        })
     }
 
     /// The sub-element map (rule 2): the `(leaf, kernel range)` pairs of `obj` selected by

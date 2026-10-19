@@ -14,7 +14,7 @@ use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
     check_ref, make_op,
 };
-use crate::signal::{ForceMode, Range, Resolution, SigRef, Signal, SignalId, Waiter, apply_txn};
+use crate::signal::{ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn};
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
@@ -328,8 +328,11 @@ pub struct SimControl {
     /// and can run in parallel with other such signals.
     independent: Vec<bool>,
     implicits: Vec<Implicit>,
-    /// Leaves of each composite resolved as a whole (`Builder::resolved_composite`).
-    groups: Vec<Vec<u32>>,
+    /// Composites resolved as a whole (`Builder::resolved_composite`).
+    groups: Vec<Group>,
+    /// Per group: the cycle it was last resolved in (once per cycle, by its first part
+    /// popped with any part dirty).
+    group_cycle: Vec<u64>,
     slots: Vec<Mutex<Slot>>,
     procs: Vec<ProcMeta>,
     names: Vec<String>,
@@ -383,6 +386,13 @@ fn convert(
         .collect()
 }
 
+/// A composite resolved as a whole: its parts (leaf, elements) in concatenation order and its
+/// resolver.
+pub(crate) struct Group {
+    pub(crate) parts: Vec<(u32, Range)>,
+    pub(crate) f: crate::Resolver,
+}
+
 impl SimControl {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -391,7 +401,7 @@ impl SimControl {
         drivers: Vec<DriverInfo>,
         ports: Vec<PortEdge>,
         implicits: Vec<Implicit>,
-        groups: Vec<Vec<u32>>,
+        groups: Vec<Group>,
         slots: Vec<Mutex<Slot>>,
         procs: Vec<ProcMeta>,
     ) -> Result<SimControl, SimError> {
@@ -411,7 +421,7 @@ impl SimControl {
         };
         let mut ports_up = vec![Vec::new(); signals.len()];
         let mut ports_down = vec![Vec::new(); signals.len()];
-        let mut independent: Vec<bool> = signals.iter().map(|s| s.group.is_none()).collect();
+        let mut independent: Vec<bool> = signals.iter().map(|s| s.groups.is_empty()).collect();
         for (i, p) in ports.iter().enumerate() {
             let i = i as u32;
             for &(f, _) in &p.formal {
@@ -440,6 +450,7 @@ impl SimControl {
             ports_down,
             independent,
             implicits,
+            group_cycle: vec![0; groups.len()],
             groups,
             slots,
             procs,
@@ -470,14 +481,16 @@ impl SimControl {
     fn settle(&mut self) -> Result<(), ErrorKind> {
         let mut order: Vec<u32> = (0..self.signals.len() as u32).collect();
         order.sort_by_key(|&s| (Reverse(self.signals[s as usize].level), s));
+        let mut settled = vec![false; self.groups.len()];
         for &s in &order {
             let full = self.signals[s as usize].full();
             self.signals[s as usize].compute_driving(full)?;
-            if let Some(g) = self.signals[s as usize].group
-                && self.groups[g as usize].iter().min() == Some(&s)
-            {
-                // Leaves share one level and are settled in id order: the first resolves all.
-                self.resolve_group(g)?;
+            // Parts share one level and are settled in id order: the first resolves the group.
+            for i in 0..self.signals[s as usize].groups.len() {
+                let g = self.signals[s as usize].groups[i] as usize;
+                if !std::mem::replace(&mut settled[g], true) {
+                    self.resolve_group(g)?;
+                }
             }
             self.push_up(s, false)?;
         }
@@ -977,7 +990,8 @@ impl SimControl {
 
         // Driving values bottom-up: formals before the actuals they feed.
         while let Some((_, Reverse(s))) = up.pop() {
-            if let Some(g) = self.signals[s as usize].group {
+            for i in 0..self.signals[s as usize].groups.len() {
+                let g = self.signals[s as usize].groups[i] as usize;
                 self.update_group(g, cycle, &mut up)?;
             }
             let sig = &mut self.signals[s as usize];
@@ -1083,27 +1097,27 @@ impl SimControl {
         Ok(())
     }
 
-    /// The first leaf of a composite group popped with any leaf dirty resolves the whole
-    /// composite, before any leaf applies its forces and deposits; all leaves then continue
+    /// The first part of a composite group popped with any part dirty resolves the whole
+    /// composite, before any leaf applies its forces and deposits; all parts then continue
     /// through the worklists (they share one level, checked at build).
     fn update_group(
         &mut self,
-        g: u32,
+        g: usize,
         cycle: u64,
         up: &mut BinaryHeap<(u32, Reverse<u32>)>,
     ) -> Result<(), ErrorKind> {
-        let leaves = &self.groups[g as usize];
-        if leaves
+        let dirty = self.groups[g]
+            .parts
             .iter()
-            .all(|&l| self.signals[l as usize].dirty.is_empty())
-        {
+            .any(|&(l, r)| (self.signals[l as usize].dirty.iter()).any(|d| d.overlaps(r)));
+        if self.group_cycle[g] == cycle || !dirty {
             return Ok(());
         }
+        self.group_cycle[g] = cycle;
         self.resolve_group(g)?;
-        for &l in &self.groups[g as usize] {
+        for &(l, r) in &self.groups[g].parts {
             let sig = &mut self.signals[l as usize];
-            sig.dirty.clear();
-            sig.eff_dirty.push(sig.full());
+            sig.eff_dirty.push(r);
             if sig.queued_up != cycle {
                 sig.queued_up = cycle;
                 up.push((sig.level, Reverse(l)));
@@ -1112,43 +1126,46 @@ impl SimControl {
         Ok(())
     }
 
-    /// Driving values of all leaves of composite group `g` from one call of its resolver.
-    fn resolve_group(&mut self, g: u32) -> Result<(), ErrorKind> {
-        let leaves = &self.groups[g as usize];
-        let lead = &self.signals[leaves[0] as usize];
-        let Some(Resolution::Func(f)) = &lead.resolution else {
-            return Err(ErrorKind::Internal(format!(
-                "composite {} has no resolver",
-                lead.name
-            )));
+    /// Driving values of all parts of composite group `g` from one call of its resolver.
+    fn resolve_group(&mut self, g: usize) -> Result<(), ErrorKind> {
+        let Group { parts, f } = &self.groups[g];
+        let (l0, r0) = parts[0];
+        let lead = &self.signals[l0 as usize];
+        // The sources of each part, in order (the same owners for every part, checked at build).
+        let srcs_of = |l: u32, r: Range| {
+            let s = &self.signals[l as usize];
+            (s.drivers.iter().filter(move |d| d.range.overlaps(r))).map(move |d| {
+                d.value
+                    .codes((r.offset - d.range.offset) as usize, r.len as usize)
+            })
         };
-        let concat = |pick: &dyn Fn(&Signal) -> &Buf| -> Vec<u8> {
-            leaves
-                .iter()
-                .flat_map(|&l| {
-                    let s = &self.signals[l as usize];
-                    pick(s).codes(0, s.ty.len as usize)
-                })
-                .collect()
-        };
-        let srcs: Vec<Vec<u8>> = (0..lead.drivers.len())
-            .map(|i| concat(&|s| &s.drivers[i].value))
-            .collect();
+        let n = srcs_of(l0, r0).count();
+        let mut srcs: Vec<Vec<u8>> = vec![Vec::new(); n];
+        let mut out = Vec::new();
+        for &(l, r) in parts {
+            for (v, c) in srcs.iter_mut().zip(srcs_of(l, r)) {
+                v.extend(c);
+            }
+            out.extend(
+                self.signals[l as usize]
+                    .driving
+                    .codes(r.offset as usize, r.len as usize),
+            );
+        }
         let views: Vec<&[u8]> = srcs.iter().map(Vec::as_slice).collect();
-        let mut out = concat(&|s| &s.driving);
         f(&views, &mut out).map_err(|message| ErrorKind::Resolution {
             signal: lead.name.clone(),
             message,
         })?;
         let mut at = 0;
-        for &l in leaves {
+        for &(l, r) in &self.groups[g].parts {
             let s = &mut self.signals[l as usize];
-            let n = s.ty.len as usize
+            let n = r.len as usize
                 * match s.ty.elem {
                     Elem::Logic => 1,
                     Elem::Bytes(es) => es as usize,
                 };
-            s.driving.set_codes(0, &out[at..at + n]);
+            s.driving.set_codes(r.offset as usize, &out[at..at + n]);
             at += n;
         }
         Ok(())

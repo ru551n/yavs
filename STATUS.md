@@ -525,8 +525,9 @@ external signal names bound in elaboration order (E2117), aliases of external si
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays
-resolved as a whole (every driving process drives every leaf, #193; nested in another
-composite: E9999), an external name as an `in` port actual as a signal name actual, same
+resolved as a whole (every driving process drives every leaf, #193), also nested in another
+composite (each outermost resolved subelement, every array element of one, resolved with its own
+sources; resolution below it unused, #333), an external name as an `in` port actual as a signal name actual, same
 delta (#186), linkage ports and mode-view ports, entities with generic types,
 subprograms and packages (yavs-sem `Db::instantiate_entity` clones the entity and architecture
 once per distinct map of those actuals, with its own mangled identity; generic constants stay

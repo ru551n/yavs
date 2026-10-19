@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:nested_record_whole:_p0	a 'H' 2 'b'
+diag	note	0	0	:nested_record_whole:_p1	b '0' 2 'c'
+diag	note	0	0	:nested_record_whole:_p2	k 7
+diag	note	1000000	0	:nested_record_whole:_p0	a 'H' 11 'x'
+diag	note	1000000	0	:nested_record_whole:_p1	b '0' 2 'q'
+diag	note	1000000	0	:nested_record_whole:_p2	k 8
+diag	note	2000000	1	:nested_record_whole:_p0	a 'H' 15 'x'
+diag	note	3000000	1	:nested_record_whole:_p1	b '0' 40 'd'
+diag	note	5000000	0	:nested_record_whole:_p3	done

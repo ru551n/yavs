@@ -158,8 +158,9 @@ pub(crate) struct Signal {
     pub segments: Vec<Segment>,
     pub resolution: Option<Resolution>,
     pub guard: Option<GuardKind>,
-    /// Index into the kernel's composite groups: resolved together with other leaves.
-    pub group: Option<u32>,
+    /// Indices into the kernel's composite groups covering this signal: resolved together
+    /// with parts of other leaves.
+    pub groups: Vec<u32>,
     /// Disconnection time from a disconnection specification (default 0).
     pub disconnect: Time,
     pub force_eff: Option<Box<Layer>>,
@@ -199,7 +200,7 @@ impl Signal {
             segments: Vec::new(),
             resolution,
             guard: None,
-            group: None,
+            groups: Vec::new(),
             disconnect: Time::ZERO,
             force_eff: None,
             force_drv: None,
@@ -257,7 +258,7 @@ impl Signal {
     /// Recompute the driving value of `r` from the sources. A leaf of a composite group is
     /// resolved by the kernel with its group (`SimControl::resolve_group`).
     pub fn compute_driving(&mut self, r: Range) -> Result<(), ErrorKind> {
-        if self.group.is_some() {
+        if !self.groups.is_empty() {
             return Ok(());
         }
         for seg in &self.segments {

@@ -1306,24 +1306,40 @@ fn composite_resolved_as_a_whole() {
     assert_eq!(driven, [0, 1]);
 }
 
-/// A composite resolved as a whole inside another composite is not supported yet.
+/// Composites resolved as a whole inside another composite: one group per array element,
+/// and a process driving part of an element drives that element only (#333, LRM 14.7.2).
+/// The resolution of a field below a resolved composite is not used (LRM 14.7.3.1).
 #[test]
-fn nested_composite_resolution_fails_early() {
+fn nested_composite_resolution() {
     let src = "
+      library ieee; use ieee.std_logic_1164.all;
       entity t is end;
       architecture a of t is
-        type rec is record b : bit; n : integer; end record;
+        type rec is record b : bit; n : integer; l : std_logic; end record;
         type rec_vec is array (natural range <>) of rec;
         function res(v : rec_vec) return rec is begin return v(v'low); end;
         subtype rrec is res rec;
         type rarr is array (0 to 1) of rrec;
         signal s : rarr;
       begin
+        s(1).n <= 1;
       end;";
-    assert_eq!(
-        err_codes("nested_whole", src, "t", &[]),
-        [codes::NOT_IMPLEMENTED]
+    let (_, e) = elab("nested_whole", src, "t", &[]);
+    assert!(
+        e.nets
+            .leaves
+            .iter()
+            .all(|l| matches!(l.resolution, Some(crate::LeafRes::Whole(_))))
     );
+    let [w] = &e.nets.wholes[..] else {
+        panic!("one composite resolved as a whole")
+    };
+    assert_eq!(w.instances.len(), 2);
+    // Element 1: offset 0 of the logic leaves (mirrored), 1 of the integer leaf.
+    let driven: Vec<(u32, u32, u32)> = (e.nets.drivers.iter())
+        .map(|d| (d.leaf.0, d.range.offset, d.range.len))
+        .collect();
+    assert_eq!(driven, [(0, 0, 1), (1, 1, 1), (2, 0, 1)]);
 }
 
 /// 2019 signals of unconstrained subtypes take their bounds from the initial value, element

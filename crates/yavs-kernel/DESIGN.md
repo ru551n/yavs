@@ -31,10 +31,12 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   with `Planes::resolve_block` (an empty source set gives `Z`); `Resolution::Func` gets one byte
   per element (logic as `std_ulogic` codes, a transpose only for user resolution functions).
   A composite resolved as a whole (`Builder::resolved_composite`, #83) keeps its usual leaves,
-  logic ones on planes; the leaves form a group whose sources are the same processes and ports
-  over each whole leaf, at one port level. The first group leaf popped in the update phase with
-  any leaf dirty calls the resolver once with whole composite values (the leaves concatenated in
-  leaf order) and writes every leaf's driving value; at initialisation the lowest leaf id does.
+  logic ones on planes; parts of leaves (whole leaves, or slices for an element of an array of
+  resolved records, #333) form a group whose sources are the same processes and ports, each
+  covering its part, at one port level. A signal can hold several groups, which cover it. The
+  first part popped in the update phase with any part dirty calls the resolver once per cycle
+  with whole composite values (the parts concatenated in order) and writes every part's
+  driving value; at initialisation the lowest leaf id does.
 - **Transactions** carry `(time, range, Option<value>)`, `None` being a null transaction. LRM
   10.5.2.2 preemption (transport, inertial with rejection limit, the "same value immediately
   before" chain) is decided per element using chunked diffs; a partly preempted old transaction

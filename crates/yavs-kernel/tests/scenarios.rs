@@ -881,6 +881,70 @@ fn composite_resolved_as_a_whole() {
     );
 }
 
+/// An array of two records `(b : std_ulogic; n : integer)` resolved element by element, the
+/// record subtype resolved as a whole: one group per element over slices of the two leaves.
+/// Element 0 has two sources, element 1 one: each group sees only its own.
+#[test]
+fn composite_groups_over_slices() {
+    let mut b = Builder::new();
+    let bl = b.signal("a.b", SignalType::logic(2), &LogicVec::new(2, StdULogic::U));
+    let n = b.signal("a.n", SignalType::bytes(4, 2), &[0; 8]);
+    // Sum of n and the source count in b ('1' for two or more sources).
+    let f: Resolver = Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out[0] = if srcs.len() > 1 {
+            StdULogic::One
+        } else {
+            StdULogic::Zero
+        } as u8;
+        let sum: i32 = srcs
+            .iter()
+            .map(|s| i32::from_le_bytes(s[1..5].try_into().unwrap()))
+            .sum();
+        out[1..5].copy_from_slice(&sum.to_le_bytes());
+        Ok(())
+    });
+    // Logic leaves are mirrored: element 0 is offset 1.
+    for (lb, ln) in [(1, 0), (0, 4)] {
+        b.resolved_composite(&[bl.slice(lb, 1), n.slice(ln / 4, 1)], f.clone());
+    }
+    // p0 drives element 0, p1 the whole array.
+    for (k, whole) in [false, true].into_iter().enumerate() {
+        let (db, dn) = if whole {
+            (b.driver(bl), b.driver(n))
+        } else {
+            (b.driver(bl.slice(1, 1)), b.driver(n.slice(0, 1)))
+        };
+        b.process(
+            &format!("p{k}"),
+            ProcFlags::default(),
+            &[db, dn],
+            p(move |c| {
+                let v: Vec<u8> = if whole {
+                    [5i32, 7].iter().flat_map(|x| x.to_le_bytes()).collect()
+                } else {
+                    3i32.to_le_bytes().to_vec()
+                };
+                c.assign(dn, None, &[(ns(1), &v)], DelayMode::Transport)?;
+                Ok(())
+            }),
+        );
+    }
+    let mut sim = b.build(Config::default()).unwrap();
+    sim.run_until(ns(1)).unwrap();
+    let Value::Logic(l) = sim.value(bl).unwrap() else {
+        panic!("logic leaf not on planes")
+    };
+    // Element 0 (offset 1): two sources; element 1: one.
+    assert_eq!(l.to_string(), "10");
+    assert_eq!(
+        v(&sim, n),
+        [8i32, 7]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// #252: at initialisation elaboration order; then the processes with one suspension point in
 /// elaboration order, then the others in reverse, those resumed by a signal before those
 /// resumed by a timeout. The same at any thread count and with shuffled execution.

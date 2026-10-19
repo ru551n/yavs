@@ -547,8 +547,10 @@ impl Elaborated {
                     let tys = *ir.res_types.get(&d).ok_or_else(|| {
                         sim_err("types of a composite resolution function not lowered".into())
                     })?;
-                    let shape = &self.nets.obj(self.nets.leaf(leaf).obj).shape;
-                    return crate::whole::resolver(rt, f, inst, tys, shape).map_err(sim_err);
+                    let w = self.nets.whole_of(leaf).ok_or_else(|| {
+                        sim_err("a leaf resolved as a whole outside any composite".into())
+                    })?;
+                    return crate::whole::resolver(rt, f, inst, tys, &w.shape).map_err(sim_err);
                 }
                 // Element-wise: one call per element of the leaf (#293).
                 let (w, logic) = match self.nets.leaf(leaf).ty.elem {

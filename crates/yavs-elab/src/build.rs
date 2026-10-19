@@ -115,17 +115,21 @@ impl Elaborated {
                 b.guard(id, g, leaf.disconnect);
             }
         }
-        // Composites resolved as a whole (#193): the leaves of each object, as one group.
-        for o in &self.nets.objs {
-            let (a, z) = o.leaves;
-            if a == z || self.nets.leaf(a).implicit.is_some() {
-                continue;
-            }
-            let Some(LeafRes::Whole(d)) = &self.nets.leaf(a).resolution else {
+        // Composites resolved as a whole (#193): one group per instance, one resolver each.
+        for w in &self.nets.wholes {
+            let Some(&(a, _)) = w.instances.first().and_then(|i| i.first()) else {
                 continue;
             };
-            let leaves: Vec<_> = (a.0..z.0).map(yavs_kernel::SignalId).collect();
-            b.resolved_composite(&leaves, res(*d, a)?);
+            if self.nets.leaf(a).implicit.is_some() {
+                continue;
+            }
+            let f = res(w.func, a)?;
+            for parts in &w.instances {
+                let parts: Vec<_> = (parts.iter())
+                    .map(|&(l, r)| yavs_kernel::SignalId(l.0).slice(r.offset, r.len))
+                    .collect();
+                b.resolved_composite(&parts, f.clone());
+            }
         }
         let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| {
             yavs_kernel::SignalId(l.0).slice(r.offset, r.len)

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{ErrorKind, SimError};
-use crate::kernel::{Config, Implicit, ImplicitKind, PortEdge, ProcMeta, SimControl, Slot};
+use crate::kernel::{Config, Group, Implicit, ImplicitKind, PortEdge, ProcMeta, SimControl, Slot};
 use crate::process::{DriverInfo, ProcId, ProcState, Process, check_ref};
 use crate::signal::{
     DriverId, DriverSlot, GuardKind, Range, Resolution, SigRef, Signal, SignalId, Waveform,
@@ -67,7 +67,7 @@ pub struct Builder {
     procs: Vec<ProcDecl>,
     ports: Vec<PortEdge>,
     implicits: Vec<Implicit>,
-    groups: Vec<Vec<u32>>,
+    groups: Vec<Group>,
     error: Option<SimError>,
 }
 
@@ -143,29 +143,40 @@ impl Builder {
         SignalId(self.signals.len() as u32 - 1)
     }
 
-    /// Resolve the unresolved signals `leaves` together with `f`, as one composite resolved as
-    /// a whole (a record or array subtype with a resolution function, LRM 4.6). Each leaf keeps
-    /// its own storage, so logic leaves stay on bit-planes; `f` sees whole composite values
-    /// (see [`Resolver`](crate::Resolver)). Every leaf must get the same sources, each covering
-    /// the whole leaf, in the same order (checked by `build`), and none may be guarded.
-    pub fn resolved_composite(&mut self, leaves: &[SignalId], f: crate::Resolver) {
+    /// Resolve the unresolved signal parts `parts` together with `f`, as one composite resolved
+    /// as a whole (a record or array subtype with a resolution function, LRM 4.6), possibly a
+    /// subelement of a larger composite (an element of an array of resolved records: one
+    /// element of each leaf). Each leaf keeps its own storage, so logic leaves stay on
+    /// bit-planes; `f` sees whole composite values (see [`Resolver`](crate::Resolver)). A
+    /// signal may be split into several groups, but its groups must cover it; every part must
+    /// get the same sources, each covering the part, in the same order (checked by `build`),
+    /// and none may be guarded.
+    pub fn resolved_composite<R: Into<SigRef> + Copy>(&mut self, parts: &[R], f: crate::Resolver) {
         let g = self.groups.len() as u32;
-        if leaves.is_empty() {
+        if parts.is_empty() {
             return self.usage("a resolved composite needs at least one leaf".into());
         }
-        for &l in leaves {
-            let Some((l, _)) = self.chk(l.into()) else {
+        let mut members = Vec::with_capacity(parts.len());
+        for &p in parts {
+            let Some((l, r)) = self.chk(p.into()) else {
                 return;
             };
             let s = &mut self.signals[l.0 as usize];
-            if s.resolution.is_some() || s.group.is_some() {
+            let taken = s.groups.iter().any(|&h| {
+                self.groups[h as usize]
+                    .parts
+                    .iter()
+                    .any(|&(m, mr)| m == l.0 && mr.overlaps(r))
+            });
+            if s.resolution.is_some() && s.groups.is_empty() || taken {
                 let msg = format!("signal {} is already resolved", s.name);
                 return self.usage(msg);
             }
             s.resolution = Some(Resolution::Func(f.clone()));
-            s.group = Some(g);
+            s.groups.push(g);
+            members.push((l.0, r));
         }
-        self.groups.push(leaves.iter().map(|l| l.0).collect());
+        self.groups.push(Group { parts: members, f });
     }
 
     /// Make a resolved signal guarded (`bus` or `register`) with the disconnection time of
@@ -508,8 +519,9 @@ impl Builder {
 }
 
 impl Builder {
-    /// The leaves of each resolved composite share their sources: same owners in the same
-    /// order (a process driver or a port), each over the whole leaf, and the same port level.
+    /// The parts of each resolved composite share their sources: same owners in the same
+    /// order (a process driver or a port), each covering the part, and the same port level;
+    /// the groups of a signal cover it.
     fn check_groups(&self, infos: &[DriverInfo]) -> Result<(), String> {
         let owner = |s: u32, slot: usize| {
             infos
@@ -517,21 +529,49 @@ impl Builder {
                 .find(|d| d.signal.0 == s && d.slot as usize == slot)
                 .map(|d| d.owner)
         };
-        for leaves in &self.groups {
-            let lead = &self.signals[leaves[0] as usize];
-            for &l in leaves {
+        let owners = |s: u32, r: Range| -> Option<Vec<_>> {
+            let sig = &self.signals[s as usize];
+            let mut v = Vec::new();
+            for (i, d) in sig.drivers.iter().enumerate() {
+                if d.range.overlaps(r) {
+                    if !d.range.contains(r) {
+                        return None;
+                    }
+                    v.push(owner(s, i));
+                }
+            }
+            Some(v)
+        };
+        for g in &self.groups {
+            let (l0, r0) = g.parts[0];
+            let lead = &self.signals[l0 as usize];
+            let want = owners(l0, r0);
+            for &(l, r) in &g.parts {
                 let s = &self.signals[l as usize];
                 let bad = s.guard.is_some()
                     || s.level != lead.level
-                    || s.drivers.len() != lead.drivers.len()
-                    || s.drivers.iter().any(|d| d.range != s.full())
-                    || (0..s.drivers.len()).any(|i| owner(l, i) != owner(leaves[0], i));
+                    || want.is_none()
+                    || owners(l, r) != want;
                 if bad {
                     return Err(format!(
-                        "resolved composite {}: leaf {} does not share the sources of the                          composite (a guarded or partly driven composite is not implemented)",
+                        "resolved composite {}: leaf {} does not share the sources of the \
+                         composite (a guarded or partly driven composite is not implemented)",
                         lead.name, s.name
                     ));
                 }
+            }
+        }
+        for (i, s) in self.signals.iter().enumerate() {
+            let covered: u32 = (s.groups.iter())
+                .flat_map(|&g| &self.groups[g as usize].parts)
+                .filter(|&&(l, _)| l as usize == i)
+                .map(|(_, r)| r.len)
+                .sum();
+            if !s.groups.is_empty() && covered != s.ty.len {
+                return Err(format!(
+                    "signal {} is only partly resolved as a composite",
+                    s.name
+                ));
             }
         }
         Ok(())

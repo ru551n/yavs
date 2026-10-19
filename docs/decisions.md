@@ -426,7 +426,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   composite values, the leaves concatenated in leaf order. Why: bit-planes everywhere (user,
   2026-10-18) rules out one byte leaf per composite. The leaves must share their sources and
   port level; guarded or partly driven composites are refused (not implemented). Amends the
-  ir.md 5 leaf rule.
+  ir.md 5 leaf rule. A group's parts are leaf slices (#333: an element of an array of
+  resolved records is one element of each leaf); a signal may hold several groups, which must
+  cover it, and each group is resolved at most once per cycle.
 - **Implicit BIT/BOOLEAN signals on planes (#185):** `'transaction`, `'stable` and `'quiet` are
   one logic element with the codes of '0'/'1', as for every BIT and BOOLEAN signal (the 1-byte
   0/1 form reached the interpreter as BOOLEAN position -2). yavs-elab mirrors the type.
@@ -739,8 +741,18 @@ a note and a help suggesting an access type, as the reference simulators reject 
   whole composite (subelements it never assigns keep the signal's initial value). The resolver
   (`whole.rs`) repacks the concatenated leaves into the IR layout of an array of the composite,
   calls the function through `call_values` and unpacks the result. `(f) t` with a composite
-  element resolves each element as a whole. Not yet (E9999, #76): such a composite inside
-  another composite, and resolved subelements below one.
+  element resolves each element as a whole.
+- **Composites resolved as a whole inside other composites** (#333, elab agent, 2026-10-19;
+  LRM 4.6, 14.7.2, 14.7.3.1): the outermost resolved composite on each path of a signal is a
+  basic signal (`NetGraph::wholes`, one `Whole` per such subelement with one instance per
+  element of the arrays above it: a record field of a record, every element of an array of
+  resolved records or bit vectors). Each instance is one kernel group over slices of its
+  leaves (one element of each struct-of-arrays leaf), so each array element has its own
+  sources; a process driving part of an instance gets a driver over that instance only.
+  Resolution functions below a resolved composite (a `std_logic` field of a resolved record,
+  an inner resolved record) are not used: a subelement of a resolved signal is not a basic
+  signal. Two reference simulators agree; the other two crash, give wrong values or refuse
+  the partial drivers (catalogue `record-nested-resolved-whole`, `array-nested-resolved-whole`).
 - **User resolution of scalar leaves** (#293, elab agent, 2026-10-19; LRM 4.6, 14.7.3.2):
   the resolver of a leaf resolved element by element (`LeafRes::Func`) calls the function
   once per element of the leaf, with that element of every source. On a logic leaf

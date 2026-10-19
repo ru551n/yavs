@@ -20,7 +20,7 @@ use yavs_syntax::ast::{ExternalClass, Ident};
 use crate::eval::{Model, Val, leaf_values, parse_override};
 use crate::hier::{
     Case, DriverDecl, ImplicitKind, Leaf, LeafId, LeafRes, ObjId, ObjKind, PortEdge, ProcIdx,
-    ScopeId, ScopeKind, Sel, Shape, SigObj,
+    ScopeId, ScopeKind, Sel, Shape, SigObj, Whole,
 };
 use crate::{ElabConfig, Elaborated, ProcInst, Top, VarObj, codes};
 
@@ -2386,20 +2386,23 @@ impl Elab<'_> {
         }
         // LRM 14.7.2: a process driving a subelement of a composite resolved as a whole has a
         // driver for every scalar subelement of it, so the kernel sees whole composite sources.
-        let mut whole: Vec<ObjId> = Vec::new();
-        for &(l, _) in &by_leaf {
-            let leaf = self.m.nets.leaf(l);
-            if matches!(leaf.resolution, Some(LeafRes::Whole(_))) && !whole.contains(&leaf.obj) {
-                whole.push(leaf.obj);
+        let mut extra = Vec::new();
+        for &(l, r) in &by_leaf {
+            if !matches!(self.m.nets.leaf(l).resolution, Some(LeafRes::Whole(_))) {
+                continue;
+            }
+            let Some(w) = self.m.nets.whole_of(l) else {
+                continue;
+            };
+            // ponytail: linear in the instances of the composite; compute the element index if
+            // large arrays of resolved composites get many drivers.
+            for parts in &w.instances {
+                if parts.iter().any(|&(pl, pr)| pl == l && pr.overlaps(r)) {
+                    extra.extend(parts.iter().copied());
+                }
             }
         }
-        for o in whole {
-            let (a, z) = self.m.nets.obj(o).leaves;
-            for l in a.0..z.0 {
-                let n = self.m.nets.leaves[l as usize].ty.len;
-                by_leaf.push((LeafId(l), Range::new(0, n)));
-            }
-        }
+        by_leaf.extend(extra);
         by_leaf.sort_by_key(|(l, r)| (*l, r.offset));
         let mut merged: Vec<(LeafId, Range)> = Vec::new();
         for (l, r) in by_leaf {
@@ -2507,23 +2510,27 @@ impl Elab<'_> {
     }
 }
 
-/// Whether `s` has a resolved part below a composite resolved as a whole: any resolved
-/// scalar when `inside`, else a composite resolved as a whole below the root.
-fn nested_res(s: &Shape, inside: bool) -> bool {
+/// The outermost composites resolved as a whole in `s`: (field path, instances, resolution
+/// function, subtype), `outer` instances of `s` above.
+fn whole_nodes(
+    s: &Shape,
+    path: &mut Vec<u32>,
+    outer: u64,
+    out: &mut Vec<(Vec<u32>, u64, DeclId, Shape)>,
+) {
     match s {
-        Shape::Scalar { res, .. } => inside && res.is_some(),
-        Shape::Array { elem, .. } => {
-            matches!(
-                **elem,
-                Shape::Array { res: Some(_), .. } | Shape::Record { res: Some(_), .. }
-            ) || nested_res(elem, inside)
+        Shape::Array { res: Some(f), .. } | Shape::Record { res: Some(f), .. } => {
+            out.push((path.clone(), outer, *f, s.clone()));
         }
-        Shape::Record { fields, .. } => fields.iter().any(|(_, f)| {
-            matches!(
-                f,
-                Shape::Array { res: Some(_), .. } | Shape::Record { res: Some(_), .. }
-            ) || nested_res(f, inside)
-        }),
+        Shape::Scalar { .. } => {}
+        Shape::Array { elem, .. } => whole_nodes(elem, path, outer * s.len(), out),
+        Shape::Record { fields, .. } => {
+            for (i, (_, f)) in fields.iter().enumerate() {
+                path.push(i as u32);
+                whole_nodes(f, path, outer, out);
+                path.pop();
+            }
+        }
     }
 }
 
@@ -2658,19 +2665,11 @@ impl Model {
                 .with_primary(at, "here"),
             )
         })?;
-        // A composite resolved as a whole: every leaf is resolved together (#193).
-        let whole = match &shape {
-            Shape::Array { res, .. } | Shape::Record { res, .. } => *res,
-            Shape::Scalar { .. } => None,
-        };
-        if nested_res(&shape, whole.is_some()) {
-            return Err(unsupported(
-                at,
-                "a resolved subelement of a composite resolved as a whole, or a composite \
-                 resolved as a whole inside another composite,",
-                "#76",
-            ));
-        }
+        // Composites resolved as a whole, the signal or its outermost resolved subelements:
+        // their leaves are resolved together, resolution below them ignored (#193; LRM
+        // 14.7.3.1: a subelement of a resolved signal is not a basic signal).
+        let mut wholes = Vec::new();
+        whole_nodes(&shape, &mut Vec::new(), 1, &mut wholes);
         let id = ObjId(self.nets.objs.len() as u32);
         let first = LeafId(self.nets.leaves.len() as u32);
         for ((path, leaf, n), init) in shape.leaves().into_iter().zip(vals) {
@@ -2689,8 +2688,9 @@ impl Model {
                     .with_primary(at, "here"),
                 )
             })?;
+            let whole = wholes.iter().find(|w| path.starts_with(&w.0));
             let resolution = match res {
-                _ if whole.is_some() => whole.map(LeafRes::Whole),
+                _ if whole.is_some() => whole.map(|w| LeafRes::Whole(w.2)),
                 None => None,
                 Some(f)
                     if *elem == Elem::Logic
@@ -2725,6 +2725,32 @@ impl Model {
             shape,
             leaves: (first, end),
         });
+        for (path, outer, func, sub) in wholes {
+            // The parts of instance i of the resolved subelement, as `NetGraph::select` maps them.
+            let instances = (0..outer)
+                .map(|i| {
+                    (first.0..end.0)
+                        .map(LeafId)
+                        .filter(|&l| self.nets.leaf(l).path.starts_with(&path))
+                        .filter_map(|l| {
+                            let ty = self.nets.leaf(l).ty;
+                            let k = ty.len / outer as u32;
+                            let a = match ty.elem {
+                                Elem::Logic => ty.len - (i as u32 + 1) * k,
+                                Elem::Bytes(_) => i as u32 * k,
+                            };
+                            (k > 0).then(|| (l, Range::new(a, k)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .filter(|parts| !parts.is_empty())
+                .collect();
+            self.nets.wholes.push(Whole {
+                func,
+                shape: sub,
+                instances,
+            });
+        }
         self.hier.scopes[s.index()].objs.push(id);
         self.sigs.insert((s, decl), id);
         Ok(id)

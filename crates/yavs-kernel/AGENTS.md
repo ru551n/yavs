@@ -76,9 +76,10 @@ rule 24).
   breaks determinism silently, so `Builder::process` ORs in `Process::serial` (#107).
 - A composite resolved as a whole is its usual leaves joined by `Builder::resolved_composite`
   (#83): logic leaves stay on planes, and the resolver sees each source as the concatenation of
-  its leaves (leaf order, one code byte per logic element). The leaves must share their sources
-  (same owners in the same order, each over the whole leaf) and port level; `build` refuses
-  anything else, guarded composites included.
+  its leaves (leaf order, one code byte per logic element). The parts may be leaf slices (#333:
+  one element of an array of resolved records), a signal may be in several groups, which must
+  cover it. The parts must share their sources (same owners in the same order, each covering
+  the part) and port level; `build` refuses anything else, guarded composites included.
 - A new `ErrorKind` needs its own code in `ErrorKind::code` (registry range `E3000`-`E3099`) and
   an entry in the yavs-diag registry table if it opens a new sub-range.
 

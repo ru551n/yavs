@@ -928,6 +928,22 @@ impl Db {
             },
             None => st,
         };
+        // A formal conversion that is a type mark converts the formal to the actual's type
+        // (9.3.6): the two must be closely related.
+        if let Some(c) = formal_conv
+            && matches!(self.decls[c].kind, DeclKind::Type(_) | DeclKind::Subtype(_))
+            && !self.closely_related(self.base(st), self.base(back))
+        {
+            let (from, to) = (self.type_name(self.base(st)), self.type_name(self.base(back)));
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::BAD_CONVERSION,
+                    format!("cannot convert `{from}` to `{to}`"),
+                )
+                .with_primary(fspan, "these types are not closely related")
+                .with_note("9.3.6: a type mark as formal part is a type conversion of the formal"),
+            ));
+        }
         let id = self.expr_in_subtype(scope, e, if actual_converts { st } else { back });
         if self.is_poison_expr(id) {
             return Err(Reported);

@@ -24,7 +24,7 @@ to, and those documents win over your memory.
 | kernel (`yavs-kernel`) | `crates/yavs-kernel/AGENTS.md`, `crates/yavs-kernel/DESIGN.md` |
 | CLI, libraries, test-runner integration | `crates/yavs/AGENTS.md`, `crates/yavs-lib/AGENTS.md`, `docs/cli-contract.md` (external test runners depend on it: change it deliberately) |
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
-| FFI, VHPI, waves, DAP, LLVM | `crates/yavs-{ffi,vhpi,wave,dap,llvm}/AGENTS.md` |
+| FFI, VHPI, waves, DAP, coverage, LLVM | `crates/yavs-{ffi,vhpi,wave,dap,cov,llvm}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
 | tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
 
@@ -44,6 +44,7 @@ to, and those documents win over your memory.
 | `crates/yavs-vhpi` | VHPI C ABI and plugin loading; vendored IEEE `vhpi_user.h` |
 | `crates/yavs-wave` | FST waveform sink |
 | `crates/yavs-dap` | Debug Adapter Protocol server (`yavs run --dap`) |
+| `crates/yavs-cov` | Code coverage: counters to a mergeable database, text and Cobertura reports |
 | `crates/yavs-llvm` | LLVM 21 ORC JIT tier, behind the `llvm` feature (off by default) |
 | `crates/yavs` | The `yavs` binary |
 | `lib/` | Vendored IEEE std/ieee sources (2008, 2019), patched only via `tools/derive_libs.py` |

@@ -1515,3 +1515,33 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   are its locals plus the signals of the process's enclosing regions and the generics of its
   instance. Why: the plan's debugging list (call stack and locals per process).
 - Details of ids, request routing and pause handling: `crates/yavs-dap/AGENTS.md` section 3.
+
+## Code coverage (yavs-cov, yavs-lower, yavs-elab, CLI, M9, #131, 2026-10-19)
+
+- **Counters are IR:** lowering with `LowerOptions::coverage` emits `Inst::Cover` (plan rule 10),
+  so every tier counts them; without it the program has no counters and the runtime allocates
+  none (zero cost). Statement items: every `stmt_start` except `Decl`, `Process`, `Subprogram`
+  and `Implicit` markers. Branch items: `CovKind::Branch(arm)`, arms in source order; an `if`
+  without `else` and a conditional assignment without a final `else` get one more arm (no
+  condition held); a `for`/`while` loop has one arm, its body, counted per iteration. Files of
+  the std/ieee libraries yavs provides and the implicit processes of port actuals and guards
+  get no counters. Why: users want their own code's coverage, and a counter in `numeric_std`
+  is noise and run-time cost.
+- **Counter layout:** one row of `Program::cov.len()` counters per hierarchy scope plus row 0
+  (code without instance data); a region's instance data has `cov_base = (region + 1) * items`
+  (`Elaborated::cov_rows`). Atomic relaxed adds, so counts do not depend on `--threads`.
+  ponytail: dense rows, most unused; rows only for regions with instance data if memory matters.
+- **Identity (rule 10):** an item is (path, kind, FNV-1a of its statement's source text with
+  whitespace runs as one space, occurrence among same-text items of its unit in source order).
+  The path is the instance path (`:top:u1`) for items of architectures and entities, summed
+  over the instance's blocks and generate iterations, and `library.package` for everything
+  else, summed over all callers (a subprogram passed as a generic subprogram counts under the
+  unit declaring it). A unit owns the statements between its name and the next unit's name in
+  the file. Why: offsets would break merging after any edit above the statement; per-iteration
+  generate paths would make generate-heavy designs hard to read.
+- **Database:** text, `yavs-coverage 1` then one tab-separated line per item, sorted; one file
+  per run (`--cov=FILE`, default `yavs.ycov`, overwritten), written whatever the run's outcome;
+  `yavs cov merge` adds counts per key and keeps items only one input has. Cobertura output has
+  timestamp 0 so equal databases give byte-identical reports.
+- **Not yet:** toggle coverage (#343) and HTML reports (#344); the LLVM tier does not lower IR
+  yet, so the interpreter is the only tier today.

@@ -29,6 +29,7 @@ pub use sim::{Built, Ir};
 /// Values in IR memory and back (VHPI variables, #309).
 pub use value::{decode as ir_decode, encode as ir_encode};
 pub use yavs_interp::elaboration_reports;
+pub use yavs_lower::LowerOptions;
 
 use yavs_diag::Diagnostic;
 use yavs_sem::{Db, StmtId, UnitId};

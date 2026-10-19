@@ -625,4 +625,8 @@ fn package_subprograms() {
     assert!(flags("noisy").contains(yavs_ir::FuncFlags::MAY_SUSPEND));
     assert!(flags("fib").contains(yavs_ir::FuncFlags::PURE));
     assert!(!p.cov.is_empty());
+    // Without the option there are no counters at all (zero cost, #131).
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    l.subprograms_of(body).unwrap();
+    assert!(l.finish().unwrap().program.cov.is_empty());
 }

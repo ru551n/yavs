@@ -1,0 +1,49 @@
+# AGENTS.md: yavs-cov
+
+Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-cov`.
+Decisions are in `docs/decisions.md` "Code coverage"; the user view in `docs/usage.rst` "Code
+coverage"; the CLI side in `docs/cli-contract.md` section 5.
+
+## 1. Purpose and boundaries
+
+- Turns the coverage counters of a run (`yavs_interp::Runtime::coverage`) into a `Database`
+  keyed per plan rule 10, reads and writes its text form, merges databases, and renders the
+  text summary and Cobertura XML.
+- Does not: emit counters (yavs-lower, `LowerOptions::coverage`), count them (yavs-interp
+  `Inst::Cover`), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
+  (the `yavs` CLI: `run --cov`, `cov merge`, `cov report`).
+- Depends on: `yavs-diag`, `yavs-elab`, `yavs-ir`, `yavs-sem`. Called by: `yavs`.
+
+## 2. Map
+
+| File | Responsibility |
+|---|---|
+| `src/lib.rs` | `Kind`, `Key`, `Entry`, `Database` (`write`, `parse`, `merge`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
+| `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd`, thread identity, merge, reports |
+
+## 3. Design decisions that bind this module
+
+| Decision | Why | Source |
+|---|---|---|
+| Key = (path, kind with arm, FNV-1a of the statement text with whitespace runs as one space, occurrence of that text in its unit in source order); never offsets | Rule 10: databases of older runs stay mergeable after edits elsewhere | `docs/plan.md` rule 10 |
+| Architecture and entity items per instance path (`:top:u1`), summed over blocks and generate iterations; other items per `library.unit`, summed over callers | Readable reports; package code is shared | `docs/decisions.md` "Code coverage" |
+| A unit owns the statements between its name and the next unit's name in its file (`Unit::span` is the name only); the same statement lowered twice (package instances) is one item | Units do not nest | this file |
+| Every item is in the database, count 0 included; counts added with `saturating_add` | Uncovered code must show | this file |
+| Text format `yavs-coverage 1`, tab-separated, sorted by key; Cobertura with timestamp 0 | Deterministic files at any `--threads` | `docs/cli-contract.md` 5 |
+
+Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
+
+## 4. Invariants and pitfalls
+
+- `counts` must come from a design lowered with coverage on; its length is
+  `cov_rows() * program.cov.len()` and `collect` walks it in rows of `program.cov.len()`.
+- A new branch kind in lowering needs no change here as long as it is `CovKind::Branch(arm)`;
+  a new `CovKind` variant needs a `Kind` and a letter in the text format.
+- Not yet: toggle coverage (#343), HTML (#344).
+
+## 5. How to work here
+
+```sh
+CARGO_BUILD_JOBS=2 cargo test -p yavs-cov
+CARGO_BUILD_JOBS=2 cargo test -p yavs --test coverage
+```

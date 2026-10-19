@@ -96,13 +96,14 @@ impl Fx<'_, '_> {
                 Ok(())
             }
             H::If { branches, else_ } => {
+                let at = self.cur;
                 let j = self.block();
-                for (c, body) in branches.iter() {
+                for (k, (c, body)) in branches.iter().enumerate() {
                     let c = self.scalar_expr(*c)?;
                     let (t, f) = (self.block(), self.block());
                     self.branch(c, t, f);
                     self.at(t);
-                    self.cover_branch(span);
+                    self.cover_branch(at, k as u32);
                     let r = self.stmts(body);
                     if self.live {
                         self.jump(j);
@@ -110,8 +111,9 @@ impl Fx<'_, '_> {
                     self.at(f);
                     r?;
                 }
+                // The `else` arm, written or not.
+                self.cover_branch(at, branches.len() as u32);
                 if let Some(body) = else_ {
-                    self.cover_branch(span);
                     self.stmts(body)?;
                 }
                 if self.live {
@@ -127,11 +129,12 @@ impl Fx<'_, '_> {
             } => {
                 let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.0).collect();
                 let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
+                let at = self.cur;
                 let j = self.block();
                 let mut ok = true;
-                for ((_, body), b) in alts.iter().zip(blocks) {
+                for (k, ((_, body), b)) in alts.iter().zip(blocks).enumerate() {
                     self.at(b);
-                    self.cover_branch(span);
+                    self.cover_branch(at, k as u32);
                     ok &= self.stmts(body).is_ok();
                     if self.live {
                         self.jump(j);
@@ -717,7 +720,7 @@ impl Fx<'_, '_> {
             Rhs::Simple(e) => self.assign(target.expr, *e, &what, span),
             Rhs::Conditional(alts) => {
                 let j = self.block();
-                for &(e, c) in alts.iter() {
+                for (k, &(e, c)) in alts.iter().enumerate() {
                     let next = self.block();
                     if let Some(c) = c {
                         let c = self.scalar_expr(c)?;
@@ -725,10 +728,14 @@ impl Fx<'_, '_> {
                         self.branch(c, t, next);
                         self.at(t);
                     }
-                    self.cover_branch(span);
+                    self.cover_branch(self.cur, k as u32);
                     self.assign(target.expr, e, &what, span)?;
                     self.jump(j);
                     self.at(next);
+                }
+                // No final `else`: the arm where no condition holds.
+                if alts.last().is_some_and(|a| a.1.is_some()) {
+                    self.cover_branch(self.cur, alts.len() as u32);
                 }
                 self.jump(j);
                 self.at(j);
@@ -742,9 +749,9 @@ impl Fx<'_, '_> {
                 let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.1).collect();
                 let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
                 let j = self.block();
-                for (&(e, _), b) in alts.iter().zip(blocks) {
+                for (k, (&(e, _), b)) in alts.iter().zip(blocks).enumerate() {
                     self.at(b);
-                    self.cover_branch(span);
+                    self.cover_branch(self.cur, k as u32);
                     self.assign(target.expr, e, &what, span)?;
                     self.jump(j);
                 }
@@ -1110,7 +1117,7 @@ impl Fx<'_, '_> {
             Rhs::Simple(w) => self.drive(target, delay, w, span),
             Rhs::Conditional(alts) => {
                 let j = self.block();
-                for (w, c) in alts.iter() {
+                for (k, (w, c)) in alts.iter().enumerate() {
                     let next = self.block();
                     if let Some(c) = c {
                         let c = self.scalar_expr(*c)?;
@@ -1118,10 +1125,14 @@ impl Fx<'_, '_> {
                         self.branch(c, t, next);
                         self.at(t);
                     }
-                    self.cover_branch(span);
+                    self.cover_branch(self.cur, k as u32);
                     self.drive(target, delay, w, span)?;
                     self.jump(j);
                     self.at(next);
+                }
+                // No final `else`: the arm where no condition holds.
+                if alts.last().is_some_and(|a| a.1.is_some()) {
+                    self.cover_branch(self.cur, alts.len() as u32);
                 }
                 self.jump(j);
                 self.at(j);
@@ -1135,9 +1146,9 @@ impl Fx<'_, '_> {
                 let sets: Vec<&ChoiceSet> = alts.iter().map(|a| &a.1).collect();
                 let blocks = self.case_blocks(*expr, *matching, &sets, span)?;
                 let j = self.block();
-                for ((w, _), b) in alts.iter().zip(blocks) {
+                for (k, ((w, _), b)) in alts.iter().zip(blocks).enumerate() {
                     self.at(b);
-                    self.cover_branch(span);
+                    self.cover_branch(self.cur, k as u32);
                     self.drive(target, delay, w, span)?;
                     self.jump(j);
                 }
@@ -1970,7 +1981,7 @@ impl Fx<'_, '_> {
                 let c = self.scalar_expr(*c)?;
                 self.branch(c, b, exit);
                 self.at(b);
-                self.cover_branch(span);
+                self.cover_branch(self.cur, 0);
                 self.loops.push((id, head, exit));
                 let r = self.stmts(body);
                 self.loops.pop();
@@ -2029,7 +2040,7 @@ impl Fx<'_, '_> {
                 let (b, next, inc, exit) = (self.block(), self.block(), self.block(), self.block());
                 self.branch(null, exit, b);
                 self.at(b);
-                self.cover_branch(span);
+                self.cover_branch(self.cur, 0);
                 self.loops.push((id, next, exit));
                 let res = self.stmts(body);
                 self.loops.pop();

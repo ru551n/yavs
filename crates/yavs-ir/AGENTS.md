@@ -44,7 +44,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | Foreign calls without libffi through `yavs-ffi`; arrays as C-layout copies, records as aligned structs | ir.md 1.7 | `docs/decisions.md` "IR and interpreter" (Foreign arrays) |
 | Verifier checks register liveness across suspension within a block only | Cross-block needs dataflow (JIT tier) | `docs/decisions.md` "IR and interpreter" |
 | Time resolution is a runtime setting (`Bindings::resolution`), never baked into IR | Rule 7 | `docs/plan.md` rule 7 |
-| Coverage items identified by hierarchical path plus span hash (`CovInfo`); instrumentation is ordinary IR | Rule 10 | `docs/plan.md` rule 10 |
+| Coverage items identified by hierarchical path plus span hash (`CovInfo`: statement, `CovKind::Statement` or `Branch(arm)`; path and hash are made by yavs-cov); instrumentation is ordinary IR | Rule 10 | `docs/plan.md` rule 10 |
 
 Module-local decisions go in this section (and README "Stable"/"Changes") and ir.md section 9 in
 the same commit (root `AGENTS.md` rule 24).

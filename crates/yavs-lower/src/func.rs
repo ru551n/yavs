@@ -164,8 +164,10 @@ pub(crate) struct Fx<'a, 'b> {
     pub driver_base: Vec<u32>,
     /// Driver slots of a process: the signal declaration each slot drives.
     pub drivers: Vec<hir::Lsp>,
-    /// The IR statement being lowered.
-    pub cur: Option<yavs_ir::StmtId>,
+    /// The IR statement being lowered, and its span.
+    pub cur: Option<(yavs_ir::StmtId, Span)>,
+    /// Emit coverage counters (off in the implicit processes of port actuals and guards).
+    pub cov: bool,
     /// In a protected type method: the frame depth and slot of `self`.
     pub prot_self: Option<(u8, u32)>,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
@@ -201,6 +203,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             drivers: Vec::new(),
             driver_base: Vec::new(),
             cur: None,
+            cov: true,
             prot_self: None,
             guard: None,
             writeback: Vec::new(),
@@ -338,32 +341,36 @@ impl<'a, 'b> Fx<'a, 'b> {
         }
         let id = self.fb.stmt(kind, span);
         self.live = true;
-        self.cur = Some(id);
-        if let Some(item) = self
-            .cx
-            .cover(self.fb.program(), id, yavs_ir::CovKind::Statement)
+        self.cur = Some((id, span));
+        // Statement coverage counts the statements of the source, not declarations or the
+        // markers of processes, subprograms and implicit waits.
+        if self.cov
+            && !matches!(
+                kind,
+                StmtKind::Decl | StmtKind::Process | StmtKind::Subprogram | StmtKind::Implicit
+            )
+            && let Some(item) =
+                self.cx
+                    .cover(self.fb.program(), id, span, yavs_ir::CovKind::Statement)
         {
             self.emit(Inst::Cover { item });
         }
         id
     }
 
-    /// A branch counter at the head of a branch arm.
-    pub fn cover_branch(&mut self, span: Span) {
-        let _ = span;
-        let Some(stmt) = self.cur_stmt() else {
+    /// A counter for arm `arm` of branching statement `stmt` (the statement being lowered when
+    /// the caller started it: arms lower nested statements).
+    pub fn cover_branch(&mut self, stmt: Option<(yavs_ir::StmtId, Span)>, arm: u32) {
+        let Some((stmt, span)) = stmt else {
             return;
         };
-        if let Some(item) = self
-            .cx
-            .cover(self.fb.program(), stmt, yavs_ir::CovKind::Branch)
+        if self.cov
+            && let Some(item) =
+                self.cx
+                    .cover(self.fb.program(), stmt, span, yavs_ir::CovKind::Branch(arm))
         {
             self.emit(Inst::Cover { item });
         }
-    }
-
-    fn cur_stmt(&mut self) -> Option<yavs_ir::StmtId> {
-        self.cur
     }
 
     // ---- declarations ----
@@ -1790,6 +1797,7 @@ fn actual_process(
     let f = pb.declare(&name, FuncKind::Process, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name);
     fx.fb.flag(FuncFlags::IMPLICIT);
+    fx.cov = false;
     fx.stmt_start(StmtKind::Process, span);
     let top = fx.block();
     fx.jump(top);
@@ -1844,6 +1852,7 @@ fn guard_process(
     let f = pb.declare("_guard", FuncKind::Process, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, "_guard".into());
     fx.fb.flag(FuncFlags::IMPLICIT);
+    fx.cov = false;
     let lsp = hir::Lsp {
         root: hir::ObjRoot::Decl(g),
         path: Box::new([]),

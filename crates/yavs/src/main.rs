@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod analyze;
+mod cov;
 mod elab;
 mod explain;
 
@@ -64,6 +65,9 @@ enum Command {
     Elab(elab::Common),
     /// Elaborate and simulate a design.
     Run(elab::RunArgs),
+    /// Merge coverage databases and write reports.
+    #[command(subcommand)]
+    Cov(cov::Command),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -193,6 +197,7 @@ fn main() -> ExitCode {
         Command::Analyze(a) => return analyze::run(a, format, color, encoding),
         Command::Elab(a) => return guard(format, color, || elab::elab(a, format, color, encoding)),
         Command::Run(a) => return guard(format, color, || elab::run(a, format, color, encoding)),
+        Command::Cov(c) => return guard(format, color, || cov::run(c, format, color)),
     };
     let opts = Options {
         std: match std {

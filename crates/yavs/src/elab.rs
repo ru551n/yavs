@@ -101,6 +101,10 @@ pub struct RunArgs {
     /// Randomize process execution order, with an optional seed.
     #[arg(long, value_name = "SEED", num_args = 0..=1, require_equals = true, default_missing_value = "1")]
     shuffle: Option<u64>,
+    /// Count statement and branch coverage and write the run's coverage database to FILE
+    /// (default `yavs.ycov`).
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "yavs.ycov")]
+    cov: Option<String>,
     /// Load a shared library for foreign subprograms.
     #[arg(long, value_name = "LIB")]
     load: Vec<String>,
@@ -135,6 +139,7 @@ pub enum SeverityArg {
 /// The elaborated design, or the exit code of the failed stage.
 fn elaborate(
     c: &Common,
+    coverage: bool,
     format: MessageFormat,
     color: bool,
     encoding: yavs_syntax::Encoding,
@@ -227,7 +232,8 @@ fn elaborate(
             for d in &e.warnings {
                 out.emit(&db.sources, d);
             }
-            if let Err(ds) = e.lower(&mut db) {
+            let opts = yavs_elab::LowerOptions { coverage };
+            if let Err(ds) = e.lower_with(&mut db, opts) {
                 for d in &ds {
                     out.emit(&db.sources, d);
                 }
@@ -370,7 +376,7 @@ pub fn elab(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    match elaborate(&a, format, color, encoding) {
+    match elaborate(&a, false, format, color, encoding) {
         Ok((out, db, e)) => {
             if a.print_hierarchy {
                 print_hierarchy(&db, &e);
@@ -387,7 +393,7 @@ pub fn run(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    let (mut out, db, e) = match elaborate(&a.common, format, color, encoding) {
+    let (mut out, db, e) = match elaborate(&a.common, a.cov.is_some(), format, color, encoding) {
         Ok(x) => x,
         Err((out, code)) => return out.finish(code),
     };
@@ -404,6 +410,8 @@ pub fn run(
             Some("`--wave`")
         } else if !a.vhpi.is_empty() {
             Some("`--vhpi`")
+        } else if a.cov.is_some() {
+            Some("`--cov`")
         } else {
             None
         };
@@ -622,8 +630,24 @@ pub fn run(
     use yavs_kernel::Severity::{Error, Failure};
     let failed = yavs_elab::elaboration_reports(Error) + yavs_elab::elaboration_reports(Failure)
         > 0
-        || rt.is_some_and(|rt| rt.assert_count(Error) + rt.assert_count(Failure) > 0);
-    let code = if code == 0 && failed { 1 } else { code };
+        || rt
+            .as_ref()
+            .is_some_and(|rt| rt.assert_count(Error) + rt.assert_count(Failure) > 0);
+    let mut code = if code == 0 && failed { 1 } else { code };
+    // The coverage of the run so far, whatever its outcome.
+    if let Some(path) = &a.cov {
+        // A design without processes has no counters.
+        let counts = rt.as_ref().map(|rt| rt.coverage()).unwrap_or_default();
+        let cov = yavs_cov::collect(&db, &e, &counts);
+        if let Err(err) = std::fs::write(path, cov.write()) {
+            out.emit(
+                &none,
+                &Diagnostic::error("E0110", format!("cannot write coverage database `{path}`"))
+                    .with_note(err.to_string()),
+            );
+            code = code.max(1);
+        }
+    }
     out.finish(code)
 }
 

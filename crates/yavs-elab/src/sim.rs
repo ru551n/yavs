@@ -99,6 +99,15 @@ impl Elaborated {
         d.with_note(at)
     }
 
+    /// Rows of the coverage counters (`Runtime::coverage`), `Program::cov.len()` counters
+    /// each: row 0 counts code that runs without instance data (package initialisation),
+    /// row `r.index() + 1` code running with region `r`'s instance data.
+    // ponytail: dense rows for every scope, most of them unused; give rows only to regions
+    // with instance data if large designs need the memory.
+    pub fn cov_rows(&self) -> usize {
+        self.hier.scopes.len() + 1
+    }
+
     /// The instance scope a scope belongs to.
     pub fn instance_of(&self, s: ScopeId) -> ScopeId {
         self.hier.instance_of(s)
@@ -107,6 +116,11 @@ impl Elaborated {
     /// Lower the architectures that own processes, and the package bodies they may call.
     /// Fail early: lowering diagnostics are errors.
     pub fn lower(&mut self, db: &mut Db) -> Result<(), Vec<Diagnostic>> {
+        self.lower_with(db, LowerOptions::default())
+    }
+
+    /// [`Elaborated::lower`] with options (coverage counters).
+    pub fn lower_with(&mut self, db: &mut Db, opts: LowerOptions) -> Result<(), Vec<Diagnostic>> {
         let mut archs: Vec<UnitId> = Vec::new();
         for p in &self.procs {
             let i = self.instance_of(p.scope);
@@ -172,7 +186,7 @@ impl Elaborated {
         if archs.is_empty() {
             return Ok(());
         }
-        let mut l = Lowerer::new(db, LowerOptions::default());
+        let mut l = Lowerer::new(db, opts);
         l.externals_bound(self.ext_unbound.clone());
         // Package objects first (#183), in analysis order, which puts a package after those
         // its declaration uses (LRM 14.4.2).
@@ -467,6 +481,7 @@ impl Elaborated {
         // Package data, created once in order: each initialisation sees the packages before it.
         let rt = crate::pkgcall::init_packages(
             &ir.program,
+            self.cov_rows() * ir.program.cov.len(),
             &ir.packages,
             &ir.sources,
             &ir.foreign,
@@ -961,8 +976,11 @@ impl Elaborated {
         insts: &mut HashMap<ScopeId, Arc<InstData>>,
         base: &mut HashMap<ScopeId, InstData>,
     ) -> Result<InstData, SimError> {
+        let cov_base = u32::try_from((i.index() + 1) * rt.prog.cov.len())
+            .map_err(|_| sim_err("too many coverage counters".into()))?;
         let mut inst = InstData {
             data: vec![0; u.inst_size as usize],
+            cov_base,
             ..Default::default()
         };
         // Generics and constants elaboration computed; the rest come from their thunks.

@@ -118,6 +118,7 @@ pub(crate) fn run(
 #[allow(clippy::too_many_arguments)] // ponytail: one more setting; bundle into a struct when the next one comes
 pub(crate) fn init_packages(
     prog: &Arc<Program>,
+    cov_counters: usize,
     packages: &[PackageIr],
     sources: &Sources,
     foreign: &[(yavs_ir::ForeignId, yavs_ffi::ForeignFn)],
@@ -137,6 +138,7 @@ pub(crate) fn init_packages(
         searched: searched.to_string(),
         resolution,
         revision,
+        cov_counters: Some(cov_counters),
         ..Default::default()
     };
     for p in packages {
@@ -323,6 +325,7 @@ impl Session {
         // --load`), so calling one during elaboration is a runtime error.
         let rt = init_packages(
             &prog,
+            0,
             &lw.packages,
             &sources,
             &[],

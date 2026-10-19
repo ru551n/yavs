@@ -50,6 +50,7 @@ otherwise.
   never runs, is an error (``E2120``, LRM 5.2.4.2) that lists the locations; ``0 ps`` is allowed,
   and so is ``0.4 ns``, because the rule is about the unit and not the value.
 * ``--wave out.fst`` records waveforms, see `Waveforms`_.
+* ``--cov[=FILE]`` counts code coverage, see `Code coverage`_.
 
 Waveforms
 ---------
@@ -91,6 +92,44 @@ Waveforms
   simulation, at ``--stop-time`` and on Ctrl-C: the first Ctrl-C ends the run after the current
   cycle and exits with status 1, a second one exits at once (the file is then readable up to
   its last periodic write). A path that cannot be written is error ``E0801``.
+
+Code coverage
+-------------
+
+.. code-block:: bash
+
+    yavs run --work=lib:out/lib --cov=test_a.ycov tb -gtest=a
+    yavs run --work=lib:out/lib --cov=test_b.ycov tb -gtest=b
+    yavs cov merge test_a.ycov test_b.ycov -o all.ycov
+    yavs cov report all.ycov --cobertura coverage.xml
+
+``--cov[=FILE]`` counts how often every statement and every branch of the design ran, and writes
+the counts to the coverage database ``FILE`` (default ``yavs.ycov``) at the end of the run,
+whatever its outcome. Without ``--cov`` there are no counters and no cost.
+
+* **Statements**: every sequential statement and every concurrent statement (each time it
+  runs). Declarations are not counted.
+* **Branches**: each arm of an ``if``/``elsif``/``else`` (an ``if`` without ``else`` has an arm
+  for "no condition held"), each ``case`` alternative, each choice of a conditional
+  (``when ... else``) or selected (``with ... select``) assignment, sequential or concurrent
+  (one without a final ``else`` has the "no condition held" arm too), and the body of a ``for``
+  or ``while`` loop (counted per iteration).
+* Code of an architecture is counted per instance and shown under its path (``:tb:u_dut``),
+  blocks and generate iterations included. Code of a package is counted once under
+  ``library.package``. The ``std`` and ``ieee`` libraries are not counted.
+* Items are identified by their path and the text of their statement, not by its position in
+  the file, so a database stays mergeable after edits elsewhere in the file. Counts are the same
+  for any ``--threads``.
+
+``yavs cov merge A.ycov B.ycov ... -o OUT.ycov`` adds up the counts of several runs: write one
+database per run (one ``--cov=FILE`` each) and merge them. ``yavs cov report DB ...`` merges its
+inputs, prints statement and branch totals, one line per instance or package, and every
+statement or branch that never ran with its file and line; ``--cobertura FILE.xml`` also writes a
+Cobertura XML report (one entry per source line: the hits of its most executed statement, and
+how many of its branches ran) for CI services that show coverage. A database that cannot be read
+is error ``E0111``, a file that cannot be written ``E0110``.
+
+Toggle coverage and HTML reports are not available yet.
 
 Calling C from VHDL
 -------------------
@@ -343,4 +382,4 @@ simulation ends the client gets the exit status of the run; disconnecting ends t
 
 Not yet: conditions on breakpoints, forcing and depositing signal values,
 live waveforms, composite variables (shown as ``(...)``), and ``--dap``
-together with ``--wave`` or ``--vhpi``.
+together with ``--wave``, ``--vhpi`` or ``--cov``.

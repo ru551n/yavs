@@ -1423,6 +1423,7 @@ dependencies = [
  "clap",
  "serde_json",
  "wellen",
+ "yavs-cov",
  "yavs-dap",
  "yavs-diag",
  "yavs-elab",
@@ -1433,6 +1434,16 @@ dependencies = [
  "yavs-syntax",
  "yavs-vhpi",
  "yavs-wave",
+]
+
+[[package]]
+name = "yavs-cov"
+version = "0.7.0"
+dependencies = [
+ "yavs-diag",
+ "yavs-elab",
+ "yavs-ir",
+ "yavs-sem",
 ]
 
 [[package]]

@@ -324,7 +324,9 @@ impl ForeignRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CovKind {
     Statement,
-    Branch,
+    /// Arm `n` of a branching statement, in source order (an `if` without `else` and a
+    /// conditional assignment without a final `else` get one more arm: no choice taken).
+    Branch(u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]

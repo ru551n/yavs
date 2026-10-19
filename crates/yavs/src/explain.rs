@@ -112,6 +112,14 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0701",
         "The Debug Adapter Protocol connection (`--dap`) cannot be opened: the port is in use or not allowed, or accepting the client failed.",
     ),
+    (
+        "E0110",
+        "A coverage database or report cannot be written (`yavs run --cov=FILE`, `yavs cov merge -o FILE`, `yavs cov report --cobertura FILE`): the note gives the operating system's reason.",
+    ),
+    (
+        "E0111",
+        "A coverage database given to `yavs cov merge` or `yavs cov report` cannot be read, or is not a database `yavs run --cov` wrote: the note says which.",
+    ),
     // yavs-vhpi
     (
         "E0901",

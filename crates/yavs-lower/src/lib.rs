@@ -349,6 +349,8 @@ impl VarShape {
 /// State shared by the functions being lowered.
 pub(crate) struct Cx {
     pub opts: LowerOptions,
+    /// Files of the std/ieee libraries yavs provides: no coverage counters there.
+    pub cov_skip: std::collections::HashSet<yavs_diag::FileId>,
     pub diags: Vec<Diagnostic>,
     pub tys: HashMap<TypeId, TyId>,
     pub natives: HashMap<(String, Option<TyId>), NativeId>,
@@ -490,9 +492,11 @@ impl Cx {
         &mut self,
         pb: &mut ProgramBuilder,
         stmt: yavs_ir::StmtId,
+        span: Span,
         kind: CovKind,
     ) -> Option<CovItem> {
-        self.opts.coverage.then(|| pb.cov(CovInfo { stmt, kind }))
+        (self.opts.coverage && !self.cov_skip.contains(&span.file))
+            .then(|| pb.cov(CovInfo { stmt, kind }))
     }
 }
 
@@ -512,6 +516,17 @@ impl<'a> Lowerer<'a> {
             pb: ProgramBuilder::new(),
             cx: Cx {
                 opts,
+                cov_skip: db
+                    .units
+                    .iter()
+                    .filter(|(_, u)| {
+                        matches!(
+                            db.libs[u.lib].source,
+                            yavs_sem::loader::LibSource::StdDir(_)
+                        )
+                    })
+                    .map(|(_, u)| u.file)
+                    .collect(),
                 diags: Vec::new(),
                 tys: HashMap::new(),
                 natives: HashMap::new(),

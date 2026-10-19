@@ -4,13 +4,13 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 ## 1. Purpose and boundaries
 
-- The `yavs` executable: `parse`, `analyze`, `elab`, `run`. Parses options (clap), expands `@file`
+- The `yavs` executable: `parse`, `analyze`, `elab`, `run`, `cov`. Parses options (clap), expands `@file`
   response files, maps libraries, drives the stages in order and stops at the first failed one,
   renders diagnostics, maps outcomes to exit codes, prints reports in the reference simulator's format.
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
-  `yavs-kernel`, `yavs-wave`, `yavs-dap` (`--dap`), `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
+  `yavs-kernel`, `yavs-wave`, `yavs-dap` (`--dap`), `yavs-cov` (`--cov`, `cov`), `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
   `yavs-llvm` (M6). Nothing depends on this crate.
 
 ## 2. Map
@@ -19,9 +19,11 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|
 | `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding`; `parse` subcommand; `@file` expansion before clap |
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
+| `src/cov.rs` | `yavs cov merge` and `yavs cov report` (E0110, E0111) |
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
 | `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107) |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
+| `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd`, `--threads 4` identity, `cov merge`, `cov report` and Cobertura, E0111 |
 | `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
 | `tests/lib_parse.rs` | Every file in `lib/` parses (2008 and 2019) |
@@ -44,7 +46,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
 | A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and test runner users need the VHDL location | `docs/cli-contract.md` 5 |
 | Foreign symbols are bound after lowering, before `build`: `--load` libraries in order, then the executable; missing is warning W0108, E0107 only at the call (user decision 2026-10-18) | Warn early, fail at call | `docs/cli-contract.md` 5, `docs/decisions.md` "Foreign subprograms and `--load`" |
-| Unimplemented flags and combinations (`--dap` with `--wave` or `--vhpi`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
+| `--cov` writes the database after the run whatever its outcome (none after an elaboration failure); a write failure makes the exit status at least 1 | Coverage of failing tests is still wanted | `docs/cli-contract.md` 5, `docs/decisions.md` "Code coverage" |
+| Unimplemented flags and combinations (`--dap` with `--wave`, `--vhpi` or `--cov`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
 | `--dap` hands the elaborated design to `yavs_dap::serve` after `--load` binding and the resolution check; `--threads` above 1 is warning `W0109` | Stops need one thread | `docs/cli-contract.md` 5, `docs/decisions.md` "DAP server" |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
@@ -85,7 +88,8 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
 - Codes owned: `E0100`-`E0199`/`W0100`-`W0199` (in use: E0100 unreadable file, E0101 response
   file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
   cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound, W0109
-  `--threads` ignored with `--dap`).
+  `--threads` ignored with `--dap`, E0110 coverage file cannot be written, E0111 coverage database
+  cannot be read).
 
 ## 6. Coordination
 

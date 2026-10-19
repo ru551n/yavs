@@ -77,7 +77,7 @@ The test runner's capability answers for yavs (`SimulatorInterface` hooks):
 | `supports_vhdl_call_paths` | True | 2019 `std.env` call paths (`get_call_path`, `file_name`, `file_line`), implemented (#99) |
 | `has_valid_exit_code` | True | see section 5 |
 | `supports_vhpi` | True | M5 (`--vhpi`) |
-| `supports_coverage` | False | not in the contract (section 8) |
+| `supports_coverage` | False | `--cov` exists, the runner does not drive it yet (section 8) |
 | `supports_gui_flag` | True | waves opened in the viewer, section 6 |
 
 ## 2. Standards
@@ -181,7 +181,7 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
 yavs run  [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
           [--ieee-warnings=off] [yavs.global_flags] [yavs.elab_flags]
           [yavs.sim_flags] --exit-severity=LEVEL [--wave=FILE.fst]
-          TOP [-gNAME=VALUE ...] [+NAME[=VALUE] ...]
+          [--cov[=FILE]] TOP [-gNAME=VALUE ...] [+NAME[=VALUE] ...]
 yavs elab [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
           [yavs.global_flags] [yavs.elab_flags] TOP [-gNAME=VALUE ...]
 ```
@@ -285,7 +285,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   an `output` event of category `stderr`. Processes run on one thread (`--threads` above 1 is
   warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as
   the `exited` event before `terminated`; a disconnect before the end stops the run (exit 1).
-  `--wave` or `--vhpi` with `--dap` is `E9999` not implemented (exit 2). A port that cannot be
+  `--wave`, `--vhpi` or `--cov` with `--dap` is `E9999` not implemented (exit 2). A port that cannot be
   opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and
   `yavs/runUntil` (argument `time`, a TIME literal such as `"10 ns"` or `"10ns"`, relative to the
   current time or absolute), `yavs/stepDelta` and `yavs/stepTimestep` (no arguments); each
@@ -326,6 +326,16 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   and a note `at TIME, delta N, in process PATH`.
 - `--message-format=json` (section 0) is accepted by `run` and `elab` too, and
   covers runtime errors with their VHDL stacktrace; the test runner does not pass it today.
+- `--cov[=FILE]` (`run` only) writes the run's coverage database to `FILE` (default
+  `yavs.ycov`, relative to the working directory) after the simulation, whatever its exit
+  status; an elaboration failure writes none. The file is overwritten, never appended to:
+  one database per run, merged afterwards with `yavs cov merge A B ... -o OUT`. `yavs cov report
+  DB ... [--cobertura FILE.xml]` prints a text summary on stdout and writes Cobertura XML.
+  `yavs cov` exits 0, or 1 with `E0111` (a database cannot be read) or `E0110` (a file cannot
+  be written); `run` exits at least 1 when the database cannot be written (`E0110`). The
+  database format (a `yavs-coverage 1` line, then one tab-separated item per line: kind,
+  path, statement text hash, occurrence, count, line, file) is yavs's own and may change with
+  its version line.
 
 ## 6. GUI and waves
 
@@ -351,5 +361,5 @@ can add `elab_flags`, `run_flags` and run environment; the test runner applies
 
 ## 8. Not covered yet
 
-Coverage: not part of the test runner contract; the test runner reports
-`supports_coverage() == False`.
+Coverage through the test runner: the runner still reports `supports_coverage() == False`;
+users pass `--cov=FILE` in `yavs.sim_flags` and merge the databases themselves (section 5).

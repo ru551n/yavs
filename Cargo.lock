@@ -1564,9 +1564,12 @@ version = "0.6.0"
 dependencies = [
  "cc",
  "libloading",
+ "tempfile",
  "yavs-diag",
+ "yavs-elab",
  "yavs-ffi",
  "yavs-kernel",
+ "yavs-sem",
 ]
 
 [[package]]

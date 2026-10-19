@@ -15,7 +15,7 @@ use std::io::Write;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::callbacks::{Callback, RegisterError};
-use crate::model::{Control, Fault, Object, State};
+use crate::model::{Control, Fault, INT_PROPS, Iter, Object, STR_PROPS, State};
 use crate::sys::*;
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -45,11 +45,20 @@ fn not_implemented(name: &str) {
 }
 
 fn get_obj(s: &mut State, h: vhpiHandleT, func: &str) -> Option<Object> {
-    let obj = s.handles.get(h);
+    let obj = s.handles.get(h).cloned();
     if obj.is_none() {
         s.fail(Fault::Misuse, format!("{func}: invalid or released handle"));
     }
     obj
+}
+
+/// The object of an optional reference handle: `Ok(None)` for NULL, `Err` (reported) for a
+/// stale one.
+fn get_ref(s: &mut State, h: vhpiHandleT, func: &str) -> Result<Option<Object>, ()> {
+    if h.is_null() {
+        return Ok(None);
+    }
+    get_obj(s, h, func).map(Some).ok_or(())
 }
 
 // ---- Called from shim.c ----------------------------------------------
@@ -167,10 +176,10 @@ pub unsafe extern "C" fn vhpi_handle_by_name(
     // SAFETY: non-NULL and NUL-terminated per the contract.
     let name = unsafe { CStr::from_ptr(name) };
     with_state(|s| {
-        if !scope.is_null() && get_obj(s, scope, "vhpi_handle_by_name").is_none() {
+        let Ok(scope) = get_ref(s, scope, "vhpi_handle_by_name") else {
             return std::ptr::null_mut();
-        }
-        match s.lookup(name) {
+        };
+        match s.lookup(name, scope.as_ref()) {
             Some(obj) => s.handles.alloc(obj),
             None => {
                 s.fail(
@@ -189,25 +198,32 @@ pub unsafe extern "C" fn vhpi_handle_by_name(
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_handle(kind: vhpiOneToOneT, reference: vhpiHandleT) -> vhpiHandleT {
     with_state(|s| {
-        let obj = match (kind, reference.is_null()) {
-            (vhpiRootInst, true) => Object::Root,
-            (vhpiTool, true) => Object::Tool,
-            _ => {
-                s.fail(
-                    Fault::Unsupported,
-                    format!("vhpi_handle: relation {kind}: {NOT_IMPLEMENTED}"),
-                );
-                return std::ptr::null_mut();
-            }
+        let Ok(r) = get_ref(s, reference, "vhpi_handle") else {
+            return std::ptr::null_mut();
         };
-        s.handles.alloc(obj)
+        match s.one_to_one(kind, r.as_ref()) {
+            Ok(obj) => s.handles.alloc(obj),
+            Err(unsupported) => {
+                let what = r.as_ref().map_or(0, |o| s.kind(o));
+                let (fault, why) = if unsupported {
+                    (Fault::Unsupported, NOT_IMPLEMENTED)
+                } else {
+                    (Fault::NotFound, "no such object")
+                };
+                s.fail(
+                    fault,
+                    format!("vhpi_handle: relation {kind} of kind {what}: {why}"),
+                );
+                std::ptr::null_mut()
+            }
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_release_handle(h: vhpiHandleT) -> c_int {
     with_state(|s| {
-        let obj = s.handles.get(h);
+        let obj = s.handles.get(h).cloned();
         if s.handles.release(h) {
             if let Some(Object::Callback(id)) = obj {
                 s.cbs.handle_released(id);
@@ -231,6 +247,8 @@ pub extern "C" fn vhpi_compare_handles(a: vhpiHandleT, b: vhpiHandleT) -> c_int 
             get_obj(s, a, "vhpi_compare_handles"),
             get_obj(s, b, "vhpi_compare_handles"),
         ) {
+            // Iterators are equal only to themselves.
+            (Some(Object::Iter(_)), _) | (_, Some(Object::Iter(_))) => c_int::from(a == b),
             (Some(x), Some(y)) => c_int::from(x == y),
             _ => 0,
         }
@@ -239,17 +257,31 @@ pub extern "C" fn vhpi_compare_handles(a: vhpiHandleT, b: vhpiHandleT) -> c_int 
 
 // ---- Properties -------------------------------------------------------
 
+/// A property `obj` does not have: one yavs implements does not apply to this object (only
+/// reported through `vhpi_check_error`), or one it does not implement yet.
+fn no_property(s: &mut State, func: &str, prop: i32, obj: &Object, implemented: bool) {
+    let kind = s.kind(obj);
+    if implemented {
+        s.fail(
+            Fault::NotFound,
+            format!("{func}: property {prop} does not apply to kind {kind}"),
+        );
+    } else {
+        s.fail(
+            Fault::Unsupported,
+            format!("{func}: property {prop} of kind {kind}: {NOT_IMPLEMENTED}"),
+        );
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_get(prop: vhpiIntPropertyT, h: vhpiHandleT) -> vhpiIntT {
     with_state(|s| {
         let Some(obj) = get_obj(s, h, "vhpi_get") else {
             return vhpiUndefined;
         };
-        s.int_property(obj, prop).unwrap_or_else(|| {
-            s.fail(
-                Fault::Unsupported,
-                format!("vhpi_get: property {prop} of {obj:?}: {NOT_IMPLEMENTED}"),
-            );
+        s.int_property(&obj, prop).unwrap_or_else(|| {
+            no_property(s, "vhpi_get", prop, &obj, INT_PROPS.contains(&prop));
             vhpiUndefined
         })
     })
@@ -261,13 +293,10 @@ pub extern "C" fn vhpi_get_str(prop: vhpiStrPropertyT, h: vhpiHandleT) -> *const
         let Some(obj) = get_obj(s, h, "vhpi_get_str") else {
             return std::ptr::null();
         };
-        match s.str_property(obj, prop) {
+        match s.str_property(&obj, prop) {
             Some(v) => s.intern(v),
             None => {
-                s.fail(
-                    Fault::Unsupported,
-                    format!("vhpi_get_str: property {prop} of {obj:?}: {NOT_IMPLEMENTED}"),
-                );
+                no_property(s, "vhpi_get_str", prop, &obj, STR_PROPS.contains(&prop));
                 std::ptr::null()
             }
         }
@@ -291,6 +320,91 @@ pub extern "C" fn vhpi_get_phys(prop: vhpiPhysPropertyT, h: vhpiHandleT) -> vhpi
             format!("vhpi_get_phys: property {prop}: {NOT_IMPLEMENTED}"),
         );
         vhpiPhysT::default()
+    })
+}
+
+// ---- Iteration ----------------------------------------------------------
+
+fn iterate(s: &mut State, rel: vhpiOneToManyT, reference: vhpiHandleT, func: &str) -> Option<Iter> {
+    let r = get_ref(s, reference, func).ok()?;
+    match s.iterate(rel, r.as_ref()) {
+        Ok(it) => it,
+        Err(unsupported) => {
+            let what = r.as_ref().map_or(0, |o| s.kind(o));
+            let (fault, why) = if unsupported {
+                (Fault::Unsupported, NOT_IMPLEMENTED)
+            } else {
+                (Fault::Misuse, "not an object with sub-elements")
+            };
+            s.fail(
+                fault,
+                format!("{func}: relation {rel} of kind {what}: {why}"),
+            );
+            None
+        }
+    }
+}
+
+/// NULL when there is nothing to iterate.
+#[unsafe(no_mangle)]
+pub extern "C" fn vhpi_iterator(rel: vhpiOneToManyT, reference: vhpiHandleT) -> vhpiHandleT {
+    with_state(|s| match iterate(s, rel, reference, "vhpi_iterator") {
+        Some(it) => s.handles.alloc(Object::Iter(it)),
+        None => std::ptr::null_mut(),
+    })
+}
+
+/// The next object, or NULL at the end, which also releases the iterator.
+#[unsafe(no_mangle)]
+pub extern "C" fn vhpi_scan(iterator: vhpiHandleT) -> vhpiHandleT {
+    with_state(|s| {
+        let next = match s.handles.get_mut(iterator) {
+            Some(Object::Iter(it)) => it.scan(),
+            Some(_) => {
+                s.fail(Fault::Misuse, "vhpi_scan: not an iterator handle");
+                return std::ptr::null_mut();
+            }
+            None => {
+                s.fail(Fault::Misuse, "vhpi_scan: invalid or released handle");
+                return std::ptr::null_mut();
+            }
+        };
+        match next {
+            Some(obj) => s.handles.alloc(obj),
+            None => {
+                s.handles.release(iterator);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Object `index` (from 0) of the iteration `rel` of `parent`: for `vhpiIndexedNames` the
+/// element at that row-major position from the left, for `vhpiSelectedNames` that field.
+#[unsafe(no_mangle)]
+pub extern "C" fn vhpi_handle_by_index(
+    rel: vhpiOneToManyT,
+    parent: vhpiHandleT,
+    index: i32,
+) -> vhpiHandleT {
+    with_state(|s| {
+        let func = "vhpi_handle_by_index";
+        let it = iterate(s, rel, parent, func);
+        let found = u64::try_from(index)
+            .ok()
+            .and_then(|i| it.and_then(|it| it.nth(i)));
+        match found {
+            Some(obj) => s.handles.alloc(obj),
+            None => {
+                if s.error.is_none() {
+                    s.fail(
+                        Fault::NotFound,
+                        format!("{func}: no object at index {index}"),
+                    );
+                }
+                std::ptr::null_mut()
+            }
+        }
     })
 }
 
@@ -471,28 +585,6 @@ pub extern "C" fn vhpi_is_printable(ch: c_char) -> c_int {
 // ---- Not implemented yet (M5) -----------------------------------------
 // Present so plugins link and load; each fails cleanly and reports through
 // vhpi_check_error.
-
-#[unsafe(no_mangle)]
-pub extern "C" fn vhpi_handle_by_index(
-    _rel: vhpiOneToManyT,
-    _parent: vhpiHandleT,
-    _index: i32,
-) -> vhpiHandleT {
-    not_implemented("vhpi_handle_by_index");
-    std::ptr::null_mut()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn vhpi_iterator(_rel: vhpiOneToManyT, _reference: vhpiHandleT) -> vhpiHandleT {
-    not_implemented("vhpi_iterator");
-    std::ptr::null_mut()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn vhpi_scan(_iterator: vhpiHandleT) -> vhpiHandleT {
-    not_implemented("vhpi_scan");
-    std::ptr::null_mut()
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_protected_call(

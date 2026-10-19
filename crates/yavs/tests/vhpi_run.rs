@@ -106,13 +106,22 @@ fn setup() -> (String, PathBuf) {
 
 /// Compiles `yavs-vhpi/tests/plugin/<name>.c` and analyses the design.
 fn setup_plugin(name: &str) -> (String, PathBuf) {
+    setup_with(name, VHDL)
+}
+
+fn vhpi_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../yavs-vhpi")
+}
+
+/// Compiles `yavs-vhpi/tests/plugin/<name>.c` and analyses `vhdl`.
+fn setup_with(name: &str, vhdl: &str) -> (String, PathBuf) {
     // One directory per call: the tests run in parallel.
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = std::env::temp_dir().join(format!("yavs-cli-{}-vhpi-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("tmp");
-    let vhpi = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../yavs-vhpi");
+    let vhpi = vhpi_dir();
     let so = tmp.join(if cfg!(windows) {
         format!("{name}.dll")
     } else {
@@ -120,7 +129,7 @@ fn setup_plugin(name: &str) -> (String, PathBuf) {
     });
     build_plugin(&vhpi, &tmp, &so, name);
     let src = tmp.join("top.vhd");
-    std::fs::write(&src, VHDL).expect("write");
+    std::fs::write(&src, vhdl).expect("write");
     let lib = format!("--work=work:{}", tmp.join("lib").display());
     let (code, err, _) = yavs(&["analyze", &lib, &src.display().to_string()]);
     assert_eq!(code, 0, "{err}");
@@ -328,4 +337,27 @@ fn callback_misuse_is_reported() {
         out.contains("vhpi: remove=0\nvhpi: remove again=1\n"),
         "{out}"
     );
+}
+
+/// The design hierarchy object model (#269): a plugin walks regions, declarations and
+/// sub-elements and looks objects up by name and index; its output is
+/// `yavs-vhpi/tests/hier/expected.txt` (`YAVS_BLESS=1` rewrites it).
+#[test]
+fn plugin_walks_the_design_hierarchy() {
+    let dir = vhpi_dir().join("tests/hier");
+    let vhdl = std::fs::read_to_string(dir.join("design.vhd")).expect("design");
+    let (lib, so) = setup_with("hier", &vhdl);
+    let (code, err, out) = yavs(&["run", &lib, &format!("--vhpi={}", so.display()), "top"]);
+    assert_eq!(code, 0, "{err}");
+    // Only the deliberate compare of a released handle is reported.
+    assert_eq!(err.matches("warning[").count(), 1, "{err}");
+    assert!(err.contains("W0903"), "{err}");
+    let expected = dir.join("expected.txt");
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &out).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected dump")
+        .replace("\r\n", "\n");
+    assert_eq!(out, want);
 }

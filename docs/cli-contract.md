@@ -258,9 +258,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   (the read-write phase), `vhpiCb[Rep]EndOfTimeStep` (the read-only phase, after postponed
   processes) and `vhpiCb[Rep]AfterDelay`. VHPI times (`vhpi_get_time`, callback delays, the
   `time` field passed to callbacks) count in units of `--resolution`, which is what
-  `vhpi_get_phys(vhpiResolutionLimitP)` returns; `vhpi_get_time` gives the delta count as `cycles`. The
-  object model is a stub (design root named after the top-level entity, tool): value-change
-  callbacks and signal access need #269 to #271.
+  `vhpi_get_phys(vhpiResolutionLimitP)` returns; `vhpi_get_time` gives the delta count as `cycles`. Plugins see
+  the elaborated design hierarchy (#269: regions, declarations, record fields and array
+  elements, lookup by name and index; names as in `crates/yavs-vhpi/AGENTS.md`); value-change
+  callbacks and signal access need #270 and #271.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

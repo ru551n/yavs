@@ -10,7 +10,7 @@
 | M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 10 of 11 pass completely, `check` has one failure (#281, process order in a delta), table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
 | M3: full types and libraries | done per `docs/plan.md`: arrays, records, access and protected types, resolution (composite, access, protected and resolution groups in `tests/corpus/RESULTS.md`); `numeric_std`, fixed and float from source (#94); textio, `env`, package generics, external names; `--load` foreign subprograms (#95); bit-plane layout (user, 2026-10-18). Not done: binary file read/write of records and arrays of composites (ir and interp section) |
-| M5, M6, M8 to M10 | not started (M5: the `vhpi_*` export surface is done, #266; the object model is a stub, `crates/yavs-vhpi`) |
+| M5, M6, M8 to M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not, `crates/yavs-vhpi`) |
 
 ### External test runner: its own VHDL suites (#112)
 
@@ -594,7 +594,26 @@ and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs
 `tests/plugin/sched.c` scenarios: timed finish at T in resolution units, after-delay chains and
 a removed repeating one, read-write before postponed before read-only, enable/disable with
 100000 disabled callbacks, misuse; output identical at `--threads 1` and `4`.
-Missing: value-change callbacks and the real object model (#269 to #271, #121).
+Missing: value-change callbacks (#270, #271).
+
+Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
+the elaborated design made before plugins load: root and component instances, blocks, `for`
+iterations (`G(0)`), `if`/`case` generates, process statements, package instances (`@lib:pkg`),
+generics, ports (with mode), signals, constants (generate parameters included) and variables;
+record fields and array elements of any dimension and index type as `vhpiSelectedNameK` and
+`vhpiIndexedNameK` objects made on demand. `vhpi_handle` (root, tool, upper and immediate region,
+design and primary unit, prefix), `vhpi_handle_by_name` (absolute and relative, case-insensitive,
+`.field` and `(index)` selections), `vhpi_handle_by_index`, `vhpi_iterator`/`vhpi_scan`
+(`vhpiInternalRegions`, `vhpiDecls`, `vhpiSigDecls`, `vhpiPortDecls`, `vhpiGenericDecls`,
+`vhpiConstDecls`, `vhpiVarDecls`, `vhpiPackInsts`, `vhpiIndexedNames`, `vhpiSelectedNames`),
+`vhpiNameP`, `vhpiCaseNameP` (original spelling), full names, kind, file, line, mode,
+`vhpiDefNameP`, `vhpiIsCompositeP`, `vhpiSizeP`; `vhpi_compare_handles` compares objects.
+Checked by `crates/yavs/tests/vhpi_run.rs` `plugin_walks_the_design_hierarchy` (C plugin
+`crates/yavs-vhpi/tests/plugin/hier.c` against `tests/hier/expected.txt`) and unit tests;
+names and kinds agree with the reference simulator that has VHPI wherever it reports them.
+Missing: equivalent processes of concurrent statements, aliases, files, `vhpiGenerateIndexP`;
+sub-elements of variables whose bounds are only known at run time (`W0904`, with #270); values
+(#270, #271).
 
 ## discrepancies (simulator catalogue)
 

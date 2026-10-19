@@ -201,6 +201,10 @@ milestone users care about works.
   (stable Rust cannot define C-variadic functions) and call plain Rust functions.
   `vhpi_control` ignores the optional argument after `vhpiStop`/`vhpiFinish` (the Python testbench framework passes
   `vhpiDiagTimeLoc`).
+- **Design hierarchy (#269):** `yavs_vhpi::set_design(&db, &elaborated)` builds an owned
+  snapshot of the elaborated hierarchy before plugins load; yavs-elab exposes the yavs-sem
+  regions of each elaborated scope (`Elaborated::regions`) so VHPI lists declarations without a
+  second walk. Classes, names and lookup rules are in `crates/yavs-vhpi/AGENTS.md`.
 - **Unsafe:** the crate does not inherit the workspace lints, since `forbid(unsafe_code)` cannot
   be relaxed per crate; unsafe stays in `abi.rs` and `plugin.rs`, `model.rs` is safe Rust.
 - **State and handles:** VHPI has no context argument, so the model is one process-wide state

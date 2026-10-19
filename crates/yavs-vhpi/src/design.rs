@@ -1,0 +1,874 @@
+//! The design hierarchy as VHPI sees it (#269): an owned, read-only snapshot of the elaborated
+//! design, built once before plugins run. It holds no simulation state; the layers that read
+//! and write values (#270, #271) find the kernel objects through [`Origin`].
+//!
+//! Nodes are regions (root and component instances, blocks, generate iterations, processes,
+//! package instances), declarations (generics, ports, signals, constants, variables) and the
+//! design units instances name. Sub-elements of composite objects (record fields, array
+//! elements) are not nodes: they are paths into a declaration's [`Layout`], made on demand,
+//! so a large memory costs nothing until a plugin walks it.
+//!
+//! Names keep their original spelling (design rule 8): [`Node::name`] is `vhpiCaseNameP`,
+//! [`vhpi_name`] derives `vhpiNameP` (basic identifiers upper case, extended ones as written).
+
+// VHPI names are matched as written in the C standard.
+#![allow(non_upper_case_globals)]
+
+use std::collections::HashMap;
+
+use yavs_diag::Span;
+use yavs_elab::{Bounds, Elaborated, ObjId, ScopeId, ScopeKind, Shape};
+use yavs_sem::decl::{DeclKind, ObjClass, ObjRole};
+use yavs_sem::hir::{Direction, Mode, StmtKind, UnitHir};
+use yavs_sem::loader::UnitKind;
+use yavs_sem::stat::{ConstValue, Elems};
+use yavs_sem::types::{Constraint, RangeC, TypeKind};
+use yavs_sem::{Db, DeclId, SubtypeId, UnitId};
+
+use crate::sys::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct NodeId(pub(crate) u32);
+
+/// The root instance is always the first node.
+pub(crate) const ROOT: NodeId = NodeId(0);
+
+/// What a node is in the elaborated design.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// A region: an instance, block, generate iteration or process.
+    Scope(ScopeId),
+    /// A signal or port: its elaborated object (kernel leaves `nets.obj(o).leaves`).
+    Signal(ObjId),
+    /// A generic, constant or variable, declared in elaborated region `scope` (a package's
+    /// objects have none).
+    Decl {
+        scope: Option<ScopeId>,
+        decl: DeclId,
+    },
+    /// A package instance or a design unit.
+    Unit(UnitId),
+    /// The root of a design given by name only (`set_design_root`).
+    Named,
+}
+
+pub(crate) struct Node {
+    /// A `vhpi*K` class kind.
+    pub(crate) kind: vhpiClassKindT,
+    /// Original spelling (`vhpiCaseNameP`); `label(index)` for a generate iteration,
+    /// `lib:pkg` for a package instance.
+    pub(crate) name: String,
+    /// `vhpiFullCaseNameP`.
+    pub(crate) full: String,
+    /// The enclosing region (`vhpiUpperRegion`, `vhpiImmRegion`).
+    pub(crate) parent: Option<NodeId>,
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<i32>,
+    /// Internal regions, in elaboration order.
+    pub(crate) regions: Vec<NodeId>,
+    /// Declarations, in declaration order.
+    pub(crate) decls: Vec<NodeId>,
+    /// `vhpiDesignUnit` of an instance or package, `vhpiPrimaryUnit` of an architecture.
+    pub(crate) unit: Option<NodeId>,
+    /// `vhpiDefNameP` of an instance: `LIB.ENTITY(ARCH)`.
+    pub(crate) def_name: Option<String>,
+    pub(crate) mode: Option<vhpiModeT>,
+    /// The sub-element structure of an object; `None` for regions and design units.
+    pub(crate) layout: Option<Layout>,
+    #[expect(
+        dead_code,
+        reason = "the value layer (#270) reads kernel objects through it"
+    )]
+    pub(crate) origin: Origin,
+}
+
+/// The sub-element structure of an object (records and arrays are native, rule 9).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Layout {
+    Scalar,
+    Array {
+        dims: Vec<Dim>,
+        elem: Box<Layout>,
+    },
+    Record(Vec<(String, Layout)>),
+    /// A composite whose bounds elaboration does not know: a variable sized when its process
+    /// starts, an object of a partly constrained subtype.
+    Open,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Dim {
+    pub(crate) bounds: Bounds,
+    /// The literals of an enumeration index type, by position, for element names.
+    pub(crate) lits: Option<Vec<String>>,
+}
+
+impl Layout {
+    /// The number of scalar sub-elements (`vhpiSizeP`), if known.
+    pub(crate) fn scalars(&self) -> Option<u64> {
+        match self {
+            Layout::Scalar => Some(1),
+            Layout::Array { dims, elem } => elem
+                .scalars()?
+                .checked_mul(dims.iter().map(|d| d.bounds.len()).product()),
+            Layout::Record(fields) => fields.iter().map(|(_, f)| f.scalars()).sum(),
+            Layout::Open => None,
+        }
+    }
+
+    /// Direct sub-elements: record fields or array elements (all dimensions, row major).
+    pub(crate) fn count(&self) -> u64 {
+        match self {
+            Layout::Array { dims, .. } => dims.iter().map(|d| d.bounds.len()).product(),
+            Layout::Record(fields) => fields.len() as u64,
+            Layout::Scalar | Layout::Open => 0,
+        }
+    }
+
+    /// Sub-element `i`: its layout, the suffix naming it (`.F`, `(3)`, `(0,1)`) in original
+    /// spelling, and its class kind.
+    pub(crate) fn step(&self, i: u64) -> Option<(&Layout, String, vhpiClassKindT)> {
+        match self {
+            Layout::Record(fields) => {
+                let (name, f) = fields.get(usize::try_from(i).ok()?)?;
+                Some((f, format!(".{name}"), vhpiSelectedNameK))
+            }
+            Layout::Array { dims, elem } if i < self.count() => {
+                let mut rest = i;
+                let mut images = Vec::with_capacity(dims.len());
+                for d in dims.iter().rev() {
+                    let n = d.bounds.len();
+                    images.push(d.image(index_at(d.bounds, rest % n)));
+                    rest /= n;
+                }
+                images.reverse();
+                Some((elem, format!("({})", images.join(",")), vhpiIndexedNameK))
+            }
+            _ => None,
+        }
+    }
+
+    /// The sub-element named by `sel` (a field name or `(i,j)` index text, upper case).
+    fn find(&self, sel: &Sel) -> Option<u64> {
+        match (self, sel) {
+            (Layout::Record(fields), Sel::Field(f)) => fields
+                .iter()
+                .position(|(n, _)| vhpi_name(n) == *f)
+                .map(|p| p as u64),
+            (Layout::Array { dims, .. }, Sel::Index(ix)) if ix.len() == dims.len() => {
+                let mut lin = 0u64;
+                for (text, d) in ix.iter().zip(dims) {
+                    let v = d.parse(text)?;
+                    lin = lin * d.bounds.len() + d.bounds.pos(v)?;
+                }
+                Some(lin)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Dim {
+    fn image(&self, v: i64) -> String {
+        match &self.lits {
+            Some(lits) => usize::try_from(v)
+                .ok()
+                .and_then(|p| lits.get(p))
+                .cloned()
+                .unwrap_or_else(|| v.to_string()),
+            None => v.to_string(),
+        }
+    }
+
+    fn parse(&self, text: &str) -> Option<i64> {
+        match &self.lits {
+            Some(lits) => lits
+                .iter()
+                .position(|l| vhpi_name(l) == text)
+                .map(|p| p as i64),
+            None => text.parse().ok(),
+        }
+    }
+}
+
+fn index_at(b: Bounds, p: u64) -> i64 {
+    match b.dir {
+        Direction::To => b.left + p as i64,
+        Direction::Downto => b.left - p as i64,
+    }
+}
+
+enum Sel {
+    Field(String),
+    Index(Vec<String>),
+}
+
+/// `vhpiNameP` of a name in original spelling: basic identifiers upper case, extended
+/// identifiers (`\Foo\`) and character literals as written.
+pub(crate) fn vhpi_name(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut extended = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                // `\\` inside an extended identifier is one backslash, not its end.
+                if extended && chars.peek() == Some(&'\\') {
+                    out.push(c);
+                    out.push(chars.next().expect("peeked"));
+                    continue;
+                }
+                extended = !extended;
+                out.push(c);
+            }
+            '\'' if !extended => {
+                out.push(c);
+                out.extend(chars.by_ref().take(2));
+            }
+            _ if extended => out.push(c),
+            _ => out.push(c.to_ascii_uppercase()),
+        }
+    }
+    out
+}
+
+pub(crate) struct Design {
+    pub(crate) nodes: Vec<Node>,
+    pub(crate) packages: Vec<NodeId>,
+    /// `vhpiFullNameP` of every region and declaration.
+    by_name: HashMap<String, NodeId>,
+}
+
+impl Default for Design {
+    fn default() -> Design {
+        Design::named("")
+    }
+}
+
+impl Design {
+    pub(crate) fn node(&self, n: NodeId) -> &Node {
+        &self.nodes[n.0 as usize]
+    }
+
+    /// A design of only a root instance called `name`: the spike host has no elaborated
+    /// design.
+    pub(crate) fn named(name: &str) -> Design {
+        let mut d = Design::empty();
+        d.push(Node {
+            kind: vhpiRootInstK,
+            name: name.to_owned(),
+            full: format!(":{name}"),
+            parent: None,
+            file: None,
+            line: None,
+            regions: Vec::new(),
+            decls: Vec::new(),
+            unit: None,
+            def_name: None,
+            mode: None,
+            layout: None,
+            origin: Origin::Named,
+        });
+        d
+    }
+
+    fn empty() -> Design {
+        Design {
+            nodes: Vec::new(),
+            packages: Vec::new(),
+            by_name: HashMap::new(),
+        }
+    }
+
+    /// The snapshot of an elaborated design.
+    pub(crate) fn build(db: &Db, e: &Elaborated) -> Design {
+        let mut b = Builder {
+            db,
+            e,
+            d: Design::empty(),
+            units: HashMap::new(),
+        };
+        b.region(ScopeId(0), None);
+        b.packages();
+        b.d
+    }
+
+    /// Adds a node; a region or declaration also goes under its parent and into the name
+    /// index (design units are not found by name).
+    fn push(&mut self, n: Node) -> NodeId {
+        let id = NodeId(self.nodes.len() as u32);
+        let unit = matches!(n.kind, vhpiArchBodyK | vhpiEntityDeclK | vhpiPackDeclK);
+        if !unit {
+            self.by_name.entry(vhpi_name(&n.full)).or_insert(id);
+        }
+        if let Some(p) = n.parent {
+            let parent = &mut self.nodes[p.0 as usize];
+            if n.layout.is_some() {
+                parent.decls.push(id);
+            } else {
+                parent.regions.push(id);
+            }
+        }
+        self.nodes.push(n);
+        id
+    }
+
+    /// The layout of sub-element `path` of declaration `base`, with its names and kind.
+    pub(crate) fn elem(&self, base: NodeId, path: &[u64]) -> Option<ElemInfo<'_>> {
+        let n = self.node(base);
+        let mut l = n.layout.as_ref()?;
+        let (mut name, mut full, mut kind) = (n.name.clone(), n.full.clone(), n.kind);
+        for &i in path {
+            let (sub, suffix, k) = l.step(i)?;
+            name.push_str(&suffix);
+            full.push_str(&suffix);
+            (l, kind) = (sub, k);
+        }
+        Some(ElemInfo {
+            layout: l,
+            name,
+            full,
+            kind,
+        })
+    }
+
+    /// Looks up a VHPI name: absolute (`:top:u1:s`, `@lib:pkg:c`) or relative to `scope`
+    /// (the root when `None`), case-insensitive, with `.field` and `(index)` selections.
+    pub(crate) fn lookup(&self, name: &str, scope: Option<NodeId>) -> Option<(NodeId, Vec<u64>)> {
+        // Spaces are dropped (`m(1, 0)`), except inside extended identifiers.
+        let mut extended = false;
+        let name: String = name
+            .chars()
+            .filter(|&c| {
+                extended ^= c == '\\';
+                extended || !c.is_whitespace()
+            })
+            .collect();
+        let abs = if name.starts_with(':') || name.starts_with('@') {
+            name
+        } else if let Some(s) = scope {
+            format!("{}:{name}", self.node(s).full)
+        } else {
+            format!(":{name}")
+        };
+        let abs = vhpi_name(&abs);
+        if let Some(&n) = self.by_name.get(&abs) {
+            return Some((n, Vec::new()));
+        }
+        // The longest prefix that names a declaration, then selections into its layout.
+        let cuts = abs
+            .char_indices()
+            .filter(|&(_, c)| c == '.' || c == '(')
+            .map(|(i, _)| i);
+        let cuts: Vec<usize> = cuts.collect();
+        for &cut in cuts.iter().rev() {
+            let Some(&base) = self.by_name.get(&abs[..cut]) else {
+                continue;
+            };
+            let mut l = self.node(base).layout.as_ref()?;
+            let mut path = Vec::new();
+            for sel in selections(&abs[cut..])? {
+                let i = l.find(&sel)?;
+                l = l.step(i)?.0;
+                path.push(i);
+            }
+            return Some((base, path));
+        }
+        None
+    }
+}
+
+pub(crate) struct ElemInfo<'a> {
+    pub(crate) layout: &'a Layout,
+    pub(crate) name: String,
+    pub(crate) full: String,
+    pub(crate) kind: vhpiClassKindT,
+}
+
+/// `.a(1,2).b` as selections; `None` when malformed.
+fn selections(mut s: &str) -> Option<Vec<Sel>> {
+    let mut out = Vec::new();
+    while !s.is_empty() {
+        if let Some(rest) = s.strip_prefix('.') {
+            let end = rest.find(['.', '(']).unwrap_or(rest.len());
+            out.push(Sel::Field(rest[..end].to_owned()));
+            s = &rest[end..];
+        } else {
+            let rest = s.strip_prefix('(')?;
+            let end = rest.find(')')?;
+            out.push(Sel::Index(
+                rest[..end].split(',').map(str::to_owned).collect(),
+            ));
+            s = &rest[end + 1..];
+        }
+    }
+    Some(out)
+}
+
+struct Builder<'a> {
+    db: &'a Db,
+    e: &'a Elaborated,
+    d: Design,
+    units: HashMap<UnitId, NodeId>,
+}
+
+impl Builder<'_> {
+    fn place(&self, span: Span) -> (Option<String>, Option<i32>) {
+        let f = self.db.sources.get(span.file);
+        let line = i32::try_from(f.line_col(span.start).0).ok();
+        (Some(f.path.clone()), line)
+    }
+
+    fn lib(&self, u: UnitId) -> String {
+        self.db.libs[self.db.units[u].lib].name.text.to_string()
+    }
+
+    /// The node of design unit `u` (made once).
+    fn unit(&mut self, u: UnitId) -> NodeId {
+        if let Some(&n) = self.units.get(&u) {
+            return n;
+        }
+        let unit = &self.db.units[u];
+        let (kind, primary) = match &unit.hir {
+            UnitHir::Architecture { entity, .. } => (vhpiArchBodyK, Some(*entity)),
+            UnitHir::Entity { .. } => (vhpiEntityDeclK, None),
+            _ => (vhpiPackDeclK, None),
+        };
+        let name = unit.name.text.to_string();
+        let full = match primary {
+            Some(p) => format!("@{}:{}({name})", self.lib(u), self.db.units[p].name.text),
+            None => format!("@{}:{name}", self.lib(u)),
+        };
+        let primary = primary.map(|p| self.unit(p));
+        let (file, line) = self.place(unit.name.span);
+        let n = self.d.push(Node {
+            kind,
+            name,
+            full,
+            parent: None,
+            file,
+            line,
+            regions: Vec::new(),
+            decls: Vec::new(),
+            unit: primary,
+            def_name: None,
+            mode: None,
+            layout: None,
+            origin: Origin::Unit(u),
+        });
+        self.units.insert(u, n);
+        n
+    }
+
+    /// The region of elaborated scope `s` and everything below it.
+    fn region(&mut self, s: ScopeId, parent: Option<NodeId>) {
+        let (db, e) = (self.db, self.e);
+        let sc = e.hier.scope(s);
+        let mut sem_regions = e.regions.get(&s).cloned().unwrap_or_default();
+        let (kind, unit) = match &sc.kind {
+            // A component scope holds the component ports; its bound instance carries the label.
+            ScopeKind::Component { .. } => {
+                for &c in &sc.children {
+                    self.region(c, parent);
+                }
+                return;
+            }
+            ScopeKind::Instance { arch, .. } if parent.is_none() => (vhpiRootInstK, Some(*arch)),
+            ScopeKind::Instance { arch, .. } => (vhpiCompInstStmtK, Some(*arch)),
+            ScopeKind::Block => (vhpiBlockStmtK, None),
+            ScopeKind::ForGenerate { .. } => (vhpiForGenerateK, None),
+            // VHPI has one class for the chosen alternative of `if` and `case` generates.
+            ScopeKind::Generate => (vhpiIfGenerateK, None),
+            ScopeKind::Process { stmt } => match &db.stmts[*stmt].kind {
+                StmtKind::Process { scope, .. } => {
+                    sem_regions.push(*scope);
+                    (vhpiProcessStmtK, None)
+                }
+                // ponytail: equivalent processes of concurrent statements are not regions
+                // yet; add vhpiEqProcessStmts when a plugin needs them.
+                _ => return,
+            },
+            // Packages are listed by `packages`.
+            ScopeKind::Library | ScopeKind::Package { .. } => return,
+        };
+        let mut name = sc.name.text.to_string();
+        if let Some(i) = &sc.index {
+            name = format!("{name}({i})");
+        }
+        let full = match parent {
+            Some(p) => format!("{}:{name}", self.d.node(p).full),
+            None => format!(":{name}"),
+        };
+        let def_name = match sc.kind {
+            ScopeKind::Instance { entity, arch } => Some(vhpi_name(&format!(
+                "{}.{}({})",
+                self.lib(entity),
+                db.units[entity].name.text,
+                db.units[arch].name.text
+            ))),
+            _ => None,
+        };
+        let (file, line) = self.place(sc.name.span);
+        let n = self.d.push(Node {
+            kind,
+            name,
+            full,
+            parent,
+            file,
+            line,
+            regions: Vec::new(),
+            decls: Vec::new(),
+            unit: None,
+            def_name,
+            mode: None,
+            layout: None,
+            origin: Origin::Scope(s),
+        });
+        // After the region itself: the root instance is the first node.
+        if let Some(u) = unit {
+            let u = self.unit(u);
+            self.d.nodes[n.0 as usize].unit = Some(u);
+        }
+        // A for generate's parameter is a constant of its iteration.
+        let param = match sc.kind {
+            ScopeKind::ForGenerate { param, .. } => Some(param),
+            _ => None,
+        };
+        if let Some(p) = param {
+            self.decl(n, Some(s), p);
+        }
+        for r in sem_regions {
+            for &d in &db.scopes[r].order {
+                if Some(d) != param {
+                    self.decl(n, Some(s), d);
+                }
+            }
+        }
+        for &c in &sc.children {
+            self.region(c, Some(n));
+        }
+    }
+
+    /// Declaration `d` of region `n` (elaborated scope `s`), if VHPI lists it.
+    fn decl(&mut self, n: NodeId, s: Option<ScopeId>, d: DeclId) {
+        let (db, e) = (self.db, self.e);
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return;
+        };
+        let kind = match (&o.role, o.class) {
+            (ObjRole::Generic, ObjClass::Constant) => vhpiGenericDeclK,
+            (ObjRole::Port, ObjClass::Signal | ObjClass::Variable) => vhpiPortDeclK,
+            (ObjRole::Plain | ObjRole::Deferred, ObjClass::Signal) => vhpiSigDeclK,
+            (ObjRole::Plain | ObjRole::Deferred | ObjRole::GenerateParam, ObjClass::Constant) => {
+                vhpiConstDeclK
+            }
+            (ObjRole::Plain, ObjClass::Variable | ObjClass::SharedVariable) => vhpiVarDeclK,
+            // ponytail: files, aliases and implicit signals are not listed yet.
+            _ => return,
+        };
+        let name = decl.name.to_string();
+        let signal = match s {
+            Some(s) => e.sigs.get(&(s, d)).copied(),
+            // A package signal lives in its package's elaborated scope.
+            None if o.class == ObjClass::Signal => {
+                e.sigs.iter().find(|((_, x), _)| *x == d).map(|(_, &o)| o)
+            }
+            None => None,
+        };
+        let (layout, origin) = match signal {
+            Some(obj) => (
+                self.shape_layout(&e.nets.obj(obj).shape),
+                Origin::Signal(obj),
+            ),
+            None => {
+                let v = s.and_then(|s| e.value(s, d));
+                let v = v.or_else(|| o.default.and_then(|x| db.value(x)));
+                (
+                    self.layout(o.subtype, v, s),
+                    Origin::Decl { scope: s, decl: d },
+                )
+            }
+        };
+        let mode = match (kind, o.mode.as_ref()) {
+            (vhpiPortDeclK, Some(m)) => Some(match m {
+                Mode::In => vhpiInMode,
+                Mode::Out => vhpiOutMode,
+                Mode::Buffer => vhpiBufferMode,
+                Mode::Linkage => vhpiLinkageMode,
+                // A mode view has no VHPI mode: its elements go both ways.
+                Mode::Inout | Mode::View { .. } => vhpiInoutMode,
+            }),
+            _ => None,
+        };
+        let full = format!("{}:{name}", self.d.node(n).full);
+        let (file, line) = self.place(decl.name_span());
+        self.d.push(Node {
+            kind,
+            name,
+            full,
+            parent: Some(n),
+            file,
+            line,
+            regions: Vec::new(),
+            decls: Vec::new(),
+            unit: None,
+            def_name: None,
+            mode,
+            layout: Some(layout),
+            origin,
+        });
+    }
+
+    /// Package instances: every analyzed non-generic package and package instantiation the
+    /// design loaded, named `lib:pkg`, full name `@lib:pkg`.
+    fn packages(&mut self) {
+        let db = self.db;
+        for (u, unit) in db.units.iter() {
+            let region = match (&unit.kind, &unit.hir) {
+                (UnitKind::Package, UnitHir::Package { generics: None }) => unit.scope,
+                (UnitKind::PackageInst, UnitHir::PackageInst(i)) => db.insts[*i].scope,
+                _ => continue,
+            };
+            let name = format!("{}:{}", self.lib(u), unit.name.text);
+            let decl_unit = self.unit(u);
+            let (file, line) = self.place(unit.name.span);
+            let n = self.d.push(Node {
+                kind: vhpiPackInstK,
+                full: format!("@{name}"),
+                name,
+                parent: None,
+                file,
+                line,
+                regions: Vec::new(),
+                decls: Vec::new(),
+                unit: Some(decl_unit),
+                def_name: None,
+                mode: None,
+                layout: None,
+                origin: Origin::Unit(u),
+            });
+            self.d.packages.push(n);
+            for &d in &db.scopes[region].order {
+                self.decl(n, None, d);
+            }
+        }
+    }
+
+    fn enum_lits(&self, st: SubtypeId) -> Option<Vec<String>> {
+        let TypeKind::Enum { lits } = &self.db.types[self.db.base(st)].kind else {
+            return None;
+        };
+        Some(
+            lits.iter()
+                .map(|&l| self.db.decls[l].name.to_string())
+                .collect(),
+        )
+    }
+
+    fn shape_layout(&self, shape: &Shape) -> Layout {
+        let db = self.db;
+        match shape {
+            Shape::Scalar { .. } => Layout::Scalar,
+            Shape::Array { ty, dims, elem, .. } => {
+                let indexes = match &db.types[*ty].kind {
+                    TypeKind::Array { indexes, .. } => &indexes[..],
+                    _ => &[],
+                };
+                Layout::Array {
+                    dims: dims
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &bounds)| Dim {
+                            bounds,
+                            lits: indexes.get(i).and_then(|&ix| self.enum_lits(ix)),
+                        })
+                        .collect(),
+                    elem: Box::new(self.shape_layout(elem)),
+                }
+            }
+            Shape::Record { fields, .. } => Layout::Record(
+                fields
+                    .iter()
+                    .map(|(n, f)| (n.text.to_string(), self.shape_layout(f)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The layout of an object of subtype `st` with value `v` (generics and constants):
+    /// array bounds from the value, else from the subtype's constraint when elaboration's
+    /// values of region `s` fold it.
+    fn layout(&self, st: SubtypeId, v: Option<&ConstValue>, s: Option<ScopeId>) -> Layout {
+        let db = self.db;
+        match &db.types[db.base(st)].kind {
+            TypeKind::Array { indexes, elem } => {
+                let arr = match v {
+                    Some(ConstValue::Array(a)) => Some(a),
+                    _ => None,
+                };
+                let bounds: Option<Vec<Bounds>> = match (arr, &db.subtypes[st].constraint) {
+                    (Some(a), _) => Some(
+                        a.bounds
+                            .iter()
+                            .map(|&(left, dir, right)| Bounds { left, dir, right })
+                            .collect(),
+                    ),
+                    (None, Constraint::Array { dims: Some(ds), .. }) => {
+                        ds.iter().map(|r| self.range(r, s)).collect()
+                    }
+                    _ => None,
+                };
+                let Some(bounds) = bounds else {
+                    return Layout::Open;
+                };
+                let first = arr.and_then(|a| match &a.elems {
+                    Elems::Runs(r) => r.first().map(|(_, v)| v),
+                    Elems::Bytes(_) => None,
+                });
+                Layout::Array {
+                    dims: bounds
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, bounds)| Dim {
+                            bounds,
+                            lits: indexes.get(i).and_then(|&ix| self.enum_lits(ix)),
+                        })
+                        .collect(),
+                    elem: Box::new(self.layout(*elem, first, s)),
+                }
+            }
+            TypeKind::Record { elems } => Layout::Record(
+                elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, el)| {
+                        let fv = match v {
+                            Some(ConstValue::Record(r)) => r.get(i),
+                            _ => None,
+                        };
+                        (el.name.text.to_string(), self.layout(el.subtype, fv, s))
+                    })
+                    .collect(),
+            ),
+            _ => Layout::Scalar,
+        }
+    }
+
+    /// An explicit range whose bounds are static or fold with the generics and constants of
+    /// region `s`.
+    fn range(&self, r: &RangeC, s: Option<ScopeId>) -> Option<Bounds> {
+        let RangeC::Explicit { left, dir, right } = r else {
+            return None;
+        };
+        let (db, e) = (self.db, self.e);
+        let mut operand = |x: yavs_sem::ExprId| -> Option<ConstValue> {
+            if let Some(v) = db.value(x) {
+                return Some(v.clone());
+            }
+            match &db.exprs[x].kind {
+                yavs_sem::hir::ExprKind::Obj(d) => s.and_then(|s| e.value(s, *d)).cloned(),
+                _ => None,
+            }
+        };
+        let mut bound = |x| {
+            operand(x)
+                .or_else(|| db.fold_with(x, &mut operand).ok().flatten())?
+                .as_int()
+        };
+        Some(Bounds {
+            left: bound(*left)?,
+            dir: *dir,
+            right: bound(*right)?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn design(src: &str) -> Design {
+        let tmp = tempfile::tempdir().expect("scratch dir");
+        let p = tmp.path().join("t.vhd");
+        std::fs::write(&p, src).expect("write");
+        let rev = yavs_sem::LangRev::Vhdl2008;
+        let mut db = Db::new(yavs_sem::Options::new(rev, yavs_sem::default_stdlib()));
+        assert!(db.analyze_file("work", &p, rev).is_ok());
+        assert!(db.diagnostics().is_empty());
+        let top = yavs_elab::find_top(&mut db, "work", "top").expect("top");
+        let e = yavs_elab::elaborate(&mut db, top, &[], &Default::default()).expect("elab");
+        Design::build(&db, &e)
+    }
+
+    #[test]
+    fn builds_regions_declarations_and_finds_them_by_name() {
+        let d = design(
+            "entity Sub is generic (G : integer := 3); port (P : out bit_vector(G - 1 downto 0)); end;
+             architecture a of Sub is begin end;
+             entity Top is end;
+             architecture a of Top is
+               signal S : bit_vector(2 downto 0);
+             begin
+               Gen : for k in 1 to 2 generate
+                 U : entity work.Sub port map (P => open);
+               end generate;
+             end;",
+        );
+        let root = d.node(ROOT);
+        assert_eq!((root.kind, root.name.as_str()), (vhpiRootInstK, "Top"));
+        let names =
+            |ns: &[NodeId]| -> Vec<String> { ns.iter().map(|&n| d.node(n).full.clone()).collect() };
+        assert_eq!(names(&root.regions), [":Top:Gen(1)", ":Top:Gen(2)"]);
+        let (u, path) = d.lookup("top:gen(2):u", None).expect("instance");
+        assert!(path.is_empty());
+        let u = d.node(u);
+        assert_eq!(u.kind, vhpiCompInstStmtK);
+        assert_eq!(names(&u.decls), [":Top:Gen(2):U:G", ":Top:Gen(2):U:P"]);
+        // Bounds from the generic's value.
+        let (p, path) = d.lookup(":TOP:GEN(2):U:P(0)", None).expect("element");
+        assert_eq!(path, [2]);
+        assert_eq!(d.elem(p, &path).expect("elem").full, ":Top:Gen(2):U:P(0)");
+        assert_eq!(d.lookup(":top:gen(3)", None), None);
+        assert_eq!(d.lookup("s(3)", Some(ROOT)), None);
+    }
+
+    #[test]
+    fn names_upper_case_basic_identifiers_only() {
+        assert_eq!(vhpi_name(":Top:g(0):Sig"), ":TOP:G(0):SIG");
+        assert_eq!(vhpi_name(r":top:\Ext\Name.f"), r":TOP:\Ext\NAME.F");
+        assert_eq!(vhpi_name(r"\a\\b\x"), r"\a\\b\X");
+        assert_eq!(vhpi_name("m('a')"), "M('a')");
+    }
+
+    #[test]
+    fn layout_steps_name_elements_row_major() {
+        let dim = |left, right| Dim {
+            bounds: Bounds {
+                left,
+                dir: Direction::Downto,
+                right,
+            },
+            lits: None,
+        };
+        let l = Layout::Array {
+            dims: vec![dim(1, 0), dim(3, 2)],
+            elem: Box::new(Layout::Record(vec![
+                ("a".into(), Layout::Scalar),
+                ("B".into(), Layout::Open),
+            ])),
+        };
+        assert_eq!(l.count(), 4);
+        assert_eq!(l.scalars(), None);
+        let (e, s, k) = l.step(1).unwrap();
+        assert_eq!((s.as_str(), k), ("(1,2)", vhpiIndexedNameK));
+        assert_eq!(l.step(4), None);
+        assert_eq!(
+            e.step(1).map(|x| (x.1, x.2)),
+            Some((".B".into(), vhpiSelectedNameK))
+        );
+        assert_eq!(l.find(&Sel::Index(vec!["0".into(), "3".into()])), Some(2));
+        assert_eq!(l.find(&Sel::Index(vec!["2".into(), "3".into()])), None);
+        assert_eq!(e.find(&Sel::Field("B".into())), Some(1));
+    }
+}

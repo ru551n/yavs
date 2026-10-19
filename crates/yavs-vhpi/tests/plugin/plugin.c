@@ -86,7 +86,7 @@ static void start_of_sim(const vhpiCbDataT *cb) {
 
   vhpiHandleT tool = vhpi_handle(vhpiTool, NULL);
   vhpi_printf("plugin: tool=%s\n", vhpi_get_str(vhpiNameP, tool));
-  vhpi_iterator(vhpiSigDecls, root);
+  vhpi_iterator(vhpiStmts, root); /* not implemented yet */
   report_error("iterator");
   report_error("check twice");
 

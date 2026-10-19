@@ -7,9 +7,10 @@
 //! library is built or shipped. `build.rs` generates
 //! those files; see `docs/decisions.md` for the reasoning.
 //!
-//! The object model behind the ABI is a stub (a design root and the
-//! tool) until M5 puts the real one on the kernel. Simulation-phase and
-//! after-delay callbacks run from a kernel observer (`VhpiObserver`).
+//! The object model behind the ABI: the design hierarchy (`design`, a
+//! snapshot of the elaborated design) and the tool. Values follow in M5.
+//! Simulation-phase and after-delay callbacks run from a kernel observer
+//! (`VhpiObserver`).
 //!
 //! Unsafe code: a C ABI cannot be written without it, so this crate does
 //! not inherit the workspace `forbid(unsafe_code)` (see Cargo.toml). It is
@@ -20,6 +21,7 @@ pub mod sys;
 
 mod abi;
 mod callbacks;
+mod design;
 mod model;
 mod plugin;
 mod sim;
@@ -35,9 +37,16 @@ pub fn keep_exports() {
     std::hint::black_box(abi::exported_symbols());
 }
 
-/// Sets the name of the (stub) design root that plugins see.
+/// Sets the design plugins see: the elaborated hierarchy of `e`, with names from `db`. Call
+/// it before loading plugins (their startup routines may already walk the design).
+pub fn set_design(db: &yavs_sem::Db, e: &yavs_elab::Elaborated) {
+    let d = design::Design::build(db, e);
+    abi::with_state(|s| s.design = d);
+}
+
+/// Sets a design of only a root instance called `name` (a host without an elaborated design).
 pub fn set_design_root(name: &str) {
-    abi::with_state(|s| s.root_name = name.to_owned());
+    abi::with_state(|s| s.design = design::Design::named(name));
 }
 
 /// Sets the resolution limit (`yavs run --resolution`): VHPI times count in

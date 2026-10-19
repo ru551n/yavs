@@ -11,8 +11,10 @@ links = "yavs_vhpi"
 
 [dependencies]
 yavs-diag.workspace = true
+yavs-elab = { path = "../yavs-elab" }
 yavs-ffi = { path = "../yavs-ffi" }
 yavs-kernel = { path = "../yavs-kernel" }
+yavs-sem = { path = "../yavs-sem" }
 libloading = "0.9.0"
 
 [build-dependencies]
@@ -20,6 +22,7 @@ cc = "1.8.0"
 
 [dev-dependencies]
 cc = "1.8.0"
+tempfile = "3"
 
 # Not `workspace = true`: the workspace forbids unsafe code, and `forbid`
 # cannot be relaxed by a crate attribute. A C ABI layer needs unsafe, so

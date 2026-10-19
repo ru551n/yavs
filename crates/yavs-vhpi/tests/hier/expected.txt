@@ -1,0 +1,117 @@
+vhpiRootInstK Top name=TOP full=:TOP top.vhd:33 unit=vhpiArchBodyK:A of vhpiEntityDeclK:Top def=WORK.TOP(A)
+  vhpiSigDeclK Clk name=CLK full=:Top:Clk top.vhd:47 composite=0 size=1
+  vhpiSigDeclK R name=R full=:Top:R top.vhd:48 composite=1 size=3
+    vhpiSelectedNameK R.A name=R.A full=:Top:R.A composite=0 size=1
+    vhpiSelectedNameK R.B name=R.B full=:Top:R.B composite=1 size=2
+      vhpiIndexedNameK R.B(1) name=R.B(1) full=:Top:R.B(1) composite=0 size=1
+      vhpiIndexedNameK R.B(0) name=R.B(0) full=:Top:R.B(0) composite=0 size=1
+  vhpiSigDeclK Outs name=OUTS full=:Top:Outs top.vhd:49 composite=1 size=4
+    vhpiIndexedNameK Outs(0) name=OUTS(0) full=:Top:Outs(0) composite=1 size=2
+      vhpiIndexedNameK Outs(0)(1) name=OUTS(0)(1) full=:Top:Outs(0)(1) composite=0 size=1
+      vhpiIndexedNameK Outs(0)(0) name=OUTS(0)(0) full=:Top:Outs(0)(0) composite=0 size=1
+    vhpiIndexedNameK Outs(1) name=OUTS(1) full=:Top:Outs(1) composite=1 size=2
+      vhpiIndexedNameK Outs(1)(1) name=OUTS(1)(1) full=:Top:Outs(1)(1) composite=0 size=1
+      vhpiIndexedNameK Outs(1)(0) name=OUTS(1)(0) full=:Top:Outs(1)(0) composite=0 size=1
+  vhpiSigDeclK Counts name=COUNTS full=:Top:Counts top.vhd:50 composite=1 size=2
+    vhpiIndexedNameK Counts(Idle) name=COUNTS(IDLE) full=:Top:Counts(Idle) composite=0 size=1
+    vhpiIndexedNameK Counts(Run) name=COUNTS(RUN) full=:Top:Counts(Run) composite=0 size=1
+  vhpiSigDeclK \Ext Sig\ name=\Ext Sig\ full=:Top:\Ext Sig\ top.vhd:51 composite=0 size=1
+  vhpiConstDeclK N name=N full=:Top:N top.vhd:45 composite=0 size=1
+  vhpiConstDeclK M name=M full=:Top:M top.vhd:46 composite=1 size=4
+    vhpiIndexedNameK M(0,1) name=M(0,1) full=:Top:M(0,1) composite=0 size=1
+    vhpiIndexedNameK M(0,0) name=M(0,0) full=:Top:M(0,0) composite=0 size=1
+    vhpiIndexedNameK M(1,1) name=M(1,1) full=:Top:M(1,1) composite=0 size=1
+    vhpiIndexedNameK M(1,0) name=M(1,0) full=:Top:M(1,0) composite=0 size=1
+  vhpiForGenerateK G(0) name=G(0) full=:TOP:G(0) top.vhd:53
+    vhpiSigDeclK Local name=LOCAL full=:Top:G(0):Local top.vhd:54 composite=0 size=1
+    vhpiConstDeclK I name=I full=:Top:G(0):I top.vhd:53 composite=0 size=1
+    vhpiCompInstStmtK U name=U full=:TOP:G(0):U top.vhd:56 unit=vhpiArchBodyK:Rtl of vhpiEntityDeclK:Leaf def=WORK.LEAF(RTL)
+      vhpiGenericDeclK W name=W full=:Top:G(0):U:W top.vhd:14 composite=0 size=1
+      vhpiGenericDeclK Init name=INIT full=:Top:G(0):U:Init top.vhd:14 composite=1 size=2
+        vhpiIndexedNameK Init(0) name=INIT(0) full=:Top:G(0):U:Init(0) composite=0 size=1
+        vhpiIndexedNameK Init(1) name=INIT(1) full=:Top:G(0):U:Init(1) composite=0 size=1
+      vhpiPortDeclK Clk name=CLK full=:Top:G(0):U:Clk mode=1001 top.vhd:15 composite=0 size=1
+      vhpiPortDeclK D name=D full=:Top:G(0):U:D mode=1001 top.vhd:15 composite=1 size=3
+        vhpiSelectedNameK D.A name=D.A full=:Top:G(0):U:D.A composite=0 size=1
+        vhpiSelectedNameK D.B name=D.B full=:Top:G(0):U:D.B composite=1 size=2
+          vhpiIndexedNameK D.B(1) name=D.B(1) full=:Top:G(0):U:D.B(1) composite=0 size=1
+          vhpiIndexedNameK D.B(0) name=D.B(0) full=:Top:G(0):U:D.B(0) composite=0 size=1
+      vhpiPortDeclK Q name=Q full=:Top:G(0):U:Q mode=1002 top.vhd:15 composite=1 size=2
+        vhpiIndexedNameK Q(1) name=Q(1) full=:Top:G(0):U:Q(1) composite=0 size=1
+        vhpiIndexedNameK Q(0) name=Q(0) full=:Top:G(0):U:Q(0) composite=0 size=1
+      vhpiSigDeclK Reg name=REG full=:Top:G(0):U:Reg top.vhd:19 composite=1 size=2
+        vhpiIndexedNameK Reg(1) name=REG(1) full=:Top:G(0):U:Reg(1) composite=0 size=1
+        vhpiIndexedNameK Reg(0) name=REG(0) full=:Top:G(0):U:Reg(0) composite=0 size=1
+      vhpiProcessStmtK P_Main name=P_MAIN full=:TOP:G(0):U:P_MAIN top.vhd:22
+        vhpiVarDeclK Cnt name=CNT full=:Top:G(0):U:P_Main:Cnt top.vhd:23 composite=0 size=1
+  vhpiForGenerateK G(1) name=G(1) full=:TOP:G(1) top.vhd:53
+    vhpiSigDeclK Local name=LOCAL full=:Top:G(1):Local top.vhd:54 composite=0 size=1
+    vhpiConstDeclK I name=I full=:Top:G(1):I top.vhd:53 composite=0 size=1
+    vhpiCompInstStmtK U name=U full=:TOP:G(1):U top.vhd:56 unit=vhpiArchBodyK:Rtl of vhpiEntityDeclK:Leaf def=WORK.LEAF(RTL)
+      vhpiGenericDeclK W name=W full=:Top:G(1):U:W top.vhd:14 composite=0 size=1
+      vhpiGenericDeclK Init name=INIT full=:Top:G(1):U:Init top.vhd:14 composite=1 size=2
+        vhpiIndexedNameK Init(0) name=INIT(0) full=:Top:G(1):U:Init(0) composite=0 size=1
+        vhpiIndexedNameK Init(1) name=INIT(1) full=:Top:G(1):U:Init(1) composite=0 size=1
+      vhpiPortDeclK Clk name=CLK full=:Top:G(1):U:Clk mode=1001 top.vhd:15 composite=0 size=1
+      vhpiPortDeclK D name=D full=:Top:G(1):U:D mode=1001 top.vhd:15 composite=1 size=3
+        vhpiSelectedNameK D.A name=D.A full=:Top:G(1):U:D.A composite=0 size=1
+        vhpiSelectedNameK D.B name=D.B full=:Top:G(1):U:D.B composite=1 size=2
+          vhpiIndexedNameK D.B(1) name=D.B(1) full=:Top:G(1):U:D.B(1) composite=0 size=1
+          vhpiIndexedNameK D.B(0) name=D.B(0) full=:Top:G(1):U:D.B(0) composite=0 size=1
+      vhpiPortDeclK Q name=Q full=:Top:G(1):U:Q mode=1002 top.vhd:15 composite=1 size=2
+        vhpiIndexedNameK Q(1) name=Q(1) full=:Top:G(1):U:Q(1) composite=0 size=1
+        vhpiIndexedNameK Q(0) name=Q(0) full=:Top:G(1):U:Q(0) composite=0 size=1
+      vhpiSigDeclK Reg name=REG full=:Top:G(1):U:Reg top.vhd:19 composite=1 size=2
+        vhpiIndexedNameK Reg(1) name=REG(1) full=:Top:G(1):U:Reg(1) composite=0 size=1
+        vhpiIndexedNameK Reg(0) name=REG(0) full=:Top:G(1):U:Reg(0) composite=0 size=1
+      vhpiProcessStmtK P_Main name=P_MAIN full=:TOP:G(1):U:P_MAIN top.vhd:22
+        vhpiVarDeclK Cnt name=CNT full=:Top:G(1):U:P_Main:Cnt top.vhd:23 composite=0 size=1
+  vhpiBlockStmtK B1 name=B1 full=:TOP:B1 top.vhd:58
+    vhpiSigDeclK Inner name=INNER full=:Top:B1:Inner top.vhd:59 composite=0 size=1
+  vhpiIfGenerateK IG name=IG full=:TOP:IG top.vhd:62
+    vhpiCompInstStmtK E name=E full=:TOP:IG:E top.vhd:63 unit=vhpiArchBodyK:Rtl of vhpiEntityDeclK:Leaf def=WORK.LEAF(RTL)
+      vhpiGenericDeclK W name=W full=:Top:IG:E:W top.vhd:14 composite=0 size=1
+      vhpiGenericDeclK Init name=INIT full=:Top:IG:E:Init top.vhd:14 composite=1 size=2
+        vhpiIndexedNameK Init(0) name=INIT(0) full=:Top:IG:E:Init(0) composite=0 size=1
+        vhpiIndexedNameK Init(1) name=INIT(1) full=:Top:IG:E:Init(1) composite=0 size=1
+      vhpiPortDeclK Clk name=CLK full=:Top:IG:E:Clk mode=1001 top.vhd:15 composite=0 size=1
+      vhpiPortDeclK D name=D full=:Top:IG:E:D mode=1001 top.vhd:15 composite=1 size=3
+        vhpiSelectedNameK D.A name=D.A full=:Top:IG:E:D.A composite=0 size=1
+        vhpiSelectedNameK D.B name=D.B full=:Top:IG:E:D.B composite=1 size=2
+          vhpiIndexedNameK D.B(1) name=D.B(1) full=:Top:IG:E:D.B(1) composite=0 size=1
+          vhpiIndexedNameK D.B(0) name=D.B(0) full=:Top:IG:E:D.B(0) composite=0 size=1
+      vhpiPortDeclK Q name=Q full=:Top:IG:E:Q mode=1002 top.vhd:15 composite=1 size=2
+        vhpiIndexedNameK Q(1) name=Q(1) full=:Top:IG:E:Q(1) composite=0 size=1
+        vhpiIndexedNameK Q(0) name=Q(0) full=:Top:IG:E:Q(0) composite=0 size=1
+      vhpiSigDeclK Reg name=REG full=:Top:IG:E:Reg top.vhd:19 composite=1 size=2
+        vhpiIndexedNameK Reg(1) name=REG(1) full=:Top:IG:E:Reg(1) composite=0 size=1
+        vhpiIndexedNameK Reg(0) name=REG(0) full=:Top:IG:E:Reg(0) composite=0 size=1
+      vhpiProcessStmtK P_Main name=P_MAIN full=:TOP:IG:E:P_MAIN top.vhd:22
+        vhpiVarDeclK Cnt name=CNT full=:Top:IG:E:P_Main:Cnt top.vhd:23 composite=0 size=1
+  vhpiIfGenerateK CG name=CG full=:TOP:CG top.vhd:65
+    vhpiSigDeclK X name=X full=:Top:CG:X top.vhd:67 composite=0 size=1
+vhpiPackInstK work:Types_Pkg name=WORK:TYPES_PKG full=@WORK:TYPES_PKG top.vhd:4 unit=vhpiPackDeclK:Types_Pkg def=(null)
+  vhpiConstDeclK Pkg_C name=PKG_C full=@work:Types_Pkg:Pkg_C top.vhd:9 composite=0 size=1
+lookup :top:g(1):u:reg: :Top:G(1):U:Reg
+lookup :TOP:G(1):U:P_MAIN:CNT: :Top:G(1):U:P_Main:Cnt
+lookup top:ig:e:init(0): :Top:IG:E:Init(0)
+lookup r.b: :Top:R.B
+lookup R.B(0): :Top:R.B(0)
+lookup Outs(1)(0): :Top:Outs(1)(0)
+lookup counts(run): :Top:Counts(Run)
+lookup m(1, 0): :Top:M(1,0)
+lookup \Ext Sig\: :Top:\Ext Sig\
+lookup \EXT SIG\: null
+lookup @work:types_pkg:pkg_c: @work:Types_Pkg:Pkg_C
+lookup no_such: null
+lookup outs(2): null
+lookup r.c: null
+lookup local: :Top:G(0):Local
+lookup u:d.a: :Top:G(0):U:D.A
+index 1 of Outs: :Top:Outs(1)
+index 2 of Outs: null
+index 1 of R: :Top:R.B
+index 0 of R: null
+index 2 of Top: :Top:B1
+same element=1 different=0
+stale=0

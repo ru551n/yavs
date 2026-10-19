@@ -11,17 +11,19 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
   `#[repr(C)]` types and constants (`sys.rs`), the exported `vhpi_*` functions (`abi.rs`), the
   variadic shim (`shim.c`), plugin loading via `vhpi_startup_routines` or `LIB:ENTRY`
   (`plugin.rs`), and export files for the executable (`build.rs`; the `yavs` CLI passes them to its link, #266).
-- **The object model is a stub** (a design root, tool info) until M5 puts the real one on
-  `SimControl` and the event bus (#121). Simulation-phase and after-delay callbacks are real
+- The object model: the design hierarchy (`design.rs`, #269), a read-only snapshot of the
+  elaborated design with no simulation state, and the tool. Values (#270, #271) come with M5
+  (#121), on `SimControl` and the event bus. Simulation-phase and after-delay callbacks are real
   (#272): `VhpiObserver` (`sim.rs`) is a kernel `Observer`.
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
   or ship a separate VHPI DLL. `yavs run --vhpi` (#267, `crates/yavs/src/elab.rs`) sets the
-  resolution limit (`set_resolution`) and the root (`set_design_root`), loads plugins with
-  `load` and subscribes `VhpiObserver`, which runs the callbacks and turns `vhpi_control` into
-  `Hook::end(Finish|Stop(0))`.
+  resolution limit (`set_resolution`) and the design (`set_design(&db, &elaborated)`), loads
+  plugins with `load` and subscribes `VhpiObserver`, which runs the callbacks and turns
+  `vhpi_control` into `Hook::end(Finish|Stop(0))`.
 - Also loads `--load` libraries and binds VHPIDIRECT symbols (`load_foreign`, `bind_foreign`,
   #95), since it already owns `libloading` and the plugin path rules.
-- Depends on: `yavs-diag`, `yavs-ffi`, `yavs-kernel` (`Observer`, `Hook`, `Time`), `libloading`; build: `cc`. Called by: the `yavs` CLI
+- Depends on: `yavs-diag`, `yavs-elab`, `yavs-sem` (the design snapshot), `yavs-ffi`,
+  `yavs-kernel` (`Observer`, `Hook`, `Time`), `libloading`; build: `cc`. Called by: the `yavs` CLI
   (`--load`, `--vhpi`) and its spike binary `src/bin/yavs-vhpi-host.rs`.
 
 ## 2. Map
@@ -31,16 +33,18 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `include/vhpi_user.h` | Official IEEE header, vendored unchanged (Apache-2.0) |
 | `src/sys.rs` | `#[repr(C)]` types and one constant per enumerator (no bindgen), no unsafe |
 | `src/abi.rs` | Exported `extern "C"` VHPI functions, process-wide state behind a mutex (`with_state`, `fire`); unsafe confined here and in `plugin.rs` |
-| `src/model.rs` | Safe object model stub, handles, `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting |
+| `src/design.rs` | The design hierarchy snapshot: `Design::build(db, elaborated)`, `Node` (regions, declarations, design units; `Origin` links each to the elaborated design for the value layer), `Layout` (sub-element structure), `lookup` by name, `vhpi_name` |
+| `src/model.rs` | `Object` (tool, callback, node, sub-element path, iterator), handles, `State` (properties, one-to-one relations, iterators), `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting |
 | `src/callbacks.rs` | Callback registry: registration, enable/disable/remove, per-reason sets of enabled callbacks, after-delay wake-up bookkeeping, `Clock` (time in resolution units) |
 | `src/sim.rs` | `VhpiObserver`: phase callbacks at the matching `Phase`, after-delay callbacks on `Observer::wake`, kernel requests (wake-ups, cancels, end) after each batch |
 | `src/plugin.rs` | `PluginSpec`, `load`, `LoadError` (`E0901` cannot load, `E0902` no entry point); `ForeignLib`, `load_foreign`, `bind_foreign` (`--load`: libraries in order, then the executable; never unloaded) |
 | `src/shim.c` | `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` (C variadics) |
 | `src/exports.txt` | The one list of exported symbols |
 | `build.rs` | Generates the Linux version script, the Windows `.def`, the test import library `yavs-vhpi-host.lib` (no `yavs.lib`) and a Rust table referencing every symbol; exports `DEP_YAVS_VHPI_VERSION_SCRIPT`, `_DEF`, `_IMPORT_LIB_DIR` |
-| `src/lib.rs` | `set_design_root`, `set_resolution`, `run_callbacks` (outside a simulation, the spike host), `take_control` |
+| `src/lib.rs` | `set_design`, `set_design_root` (a root-only design for the spike host), `set_resolution`, `run_callbacks` (outside a simulation, the spike host), `take_control` |
 | `tests/vhpi.rs`, `tests/plugin/plugin.c` | ABI vs C header (`abi_matches_c_header`, all ~610 constants, sizes, offsets), C plugin loaded both ways, missing file/entry/symbol errors |
 | `tests/plugin/sched.c` | Callback scenarios (one entry each) run by `crates/yavs/tests/vhpi_run.rs` through `yavs run --vhpi` |
+| `tests/plugin/hier.c`, `tests/hier/` | Hierarchy dump plugin, its design and expected output; run through `yavs run --vhpi` by `crates/yavs/tests/vhpi_run.rs` (`YAVS_BLESS=1` rewrites the dump) |
 
 ## 3. Design decisions that bind this module
 
@@ -54,6 +58,15 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | Handles are `(index, generation)` packed into the pointer value; never NULL, never dereferenced; 64-bit only | Rule 9 | `docs/plan.md` rule 9 |
 | Disabled callbacks that are never removed must stay cheap | Python testbench frameworks never remove them | rule 9, #123 |
 | Records, arrays, generics and generates are native in the object model | Not a Verilog-shaped shim | rule 9 |
+| The hierarchy is a snapshot built once from `Elaborated` and the `Db` before plugins load (`set_design`), owned, with no simulation state; each node keeps its `Origin` (scope, signal object, declaration, unit) for the value layer | The model must outlive the borrow of the design and be `Send`; plugins walk it at startup | #269 |
+| Regions: root instance `vhpiRootInstK`, entity and component instances `vhpiCompInstStmtK` (the hidden component scope is skipped), blocks, `for` iterations `vhpiForGenerateK` named `label(index)`, `if` and `case` generates `vhpiIfGenerateK` (VHPI has no case-generate class), process statements; package instances `vhpiPackInstK` named `lib:pkg` (full name `@lib:pkg`), from `vhpiPackInsts` with a NULL or root reference, for every analyzed non-generic package and package instantiation. One reference simulator reports an `if` generate as a block and lists no `case` generate | The VHPI class model; `label(index)` is what Python testbench frameworks expect | #269 |
+| Declarations: generics `vhpiGenericDeclK`, ports `vhpiPortDeclK` (with `vhpiModeP`; a mode view is `vhpiInoutMode`), signals, constants (a `for` generate's parameter is a constant of its iteration), variables and shared variables `vhpiVarDeclK`, in declaration order. Not yet listed: files, aliases, implicit signals, equivalent processes of concurrent statements | What the issue and the framework need first | #269 |
+| Names: `vhpiCaseNameP` is the original spelling (rule 8), `vhpiNameP` upper-cases basic identifiers only (extended identifiers and character literals as written); full names `:Top:G(0):U:S` with `:` before regions and declarations, `.F` and `(i,j)` for sub-elements, enumeration indexes by literal (`C(Idle)`); `vhpiDefNameP` of an instance is `LIB.ENTITY(ARCH)`; a design unit's name is its simple name | Rule 8; the reference simulator agrees on every name it reports | #269 |
+| `vhpi_handle_by_name`: a name starting with `:` or `@` is absolute; otherwise relative to the scope handle, or with NULL to the top (`top:u1:s`); case-insensitive except extended identifiers; blanks ignored outside extended identifiers; the longest prefix naming a declaration, then `.field` and `(index)` selections. Dotted hierarchical paths are not names | Python testbench frameworks probe both forms; extended identifiers are case-sensitive in VHDL | #269 |
+| Sub-elements are not stored: an `Object::Elem` is a declaration plus a path of field indices and row-major element positions into its `Layout`; iterators over array elements are lazy. `vhpi_handle_by_index(vhpiIndexedNames, a, i)` is the element at row-major position `i` from the left | Arrays can be large; handles stay small | #269, rule 9 |
+| Array bounds come from the elaborated shape (signals, ports) or the elaborated value or a constraint folded with the region's generics (generics, constants); a variable whose bounds are known only at run time has an open layout: composite, no size, and iterating its elements is `W0904` until #270 | Elaboration does not evaluate process declarative parts | #269 |
+| `vhpi_compare_handles` compares objects (an iterator only equals itself); `vhpi_scan` releases the iterator when it returns NULL; an empty iteration is a NULL iterator | VHPI semantics | #269 |
+| A property or relation yavs implements that does not apply to an object only sets `vhpi_check_error`; one it does not implement is `W0904` | Frameworks probe properties routinely | #269 |
 | Plugin load failures are hard errors before simulation (`E0901`, `E0902`); misuse `W0903` every time; unimplemented calls `W0904` once per message; failed lookups only via `vhpi_check_error` | Fail early without breaking Python testbench framework probing | `docs/decisions.md` "VHPI ABI" |
 | `unsafe` allowed crate-wide in `Cargo.toml` but confined to `abi.rs`, `plugin.rs`, `shim.c` | Root `AGENTS.md` rule 11 | `Cargo.toml`, crate docs |
 | Logic values cross the boundary as std_ulogic codes (the `vhpiEnumT` value); BIT/BOOLEAN translated at the boundary | One encoding | `crates/yavs-logic/LAYOUT.md`, `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes" |
@@ -124,7 +137,7 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 ## 6. Coordination
 
 - The Python testbench framework itself is not installed; installing it needs the user's approval (#122).
-- Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
-  object model over `SimControl` and the event bus; #122 Python testbench framework regression (install needs
-  approval); #269 to #271 object model, values, puts (value-change
-  callbacks of #272 wait for #269). #123 (disabled callbacks stay cheap) is done.
+- Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
+  object model over `SimControl` and the event bus (hierarchy done, #269); #122 Python testbench
+  framework regression (install needs approval); #270, #271 values, puts (value-change
+  callbacks of #272 wait for them). #123 (disabled callbacks stay cheap) is done.

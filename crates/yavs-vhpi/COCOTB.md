@@ -30,8 +30,10 @@ framework's repository and are named by role ("bootstrap library", "VHPI impleme
 `vhpi_put_value`, `vhpi_register_cb`, `vhpi_release_handle`, `vhpi_remove_cb`,
 `vhpi_scan`. No data symbols (`vhpiFS` and friends are unused). This is the
 same list as the framework's `.def` file for the primary reference simulator. yavs exports these and the
-rest of the standard set (`src/exports.txt`); only the stub subset works
-before M5.
+rest of the standard set (`src/exports.txt`); the design hierarchy
+(`vhpi_handle`, `vhpi_handle_by_name`, `vhpi_handle_by_index`,
+`vhpi_iterator`, `vhpi_scan`, names and kinds, #269) works, values and the
+other callbacks come with M5.
 
 Behaviour the Python testbench framework relies on, for M5:
 - `vhpi_control(vhpiFinish, vhpiDiagTimeLoc)`: one extra `int` argument
@@ -44,7 +46,7 @@ Behaviour the Python testbench framework relies on, for M5:
   simulator (`compare_names`). yavs keeps the original spelling
   (rule 8), so it can be built without that define.
 - Generate labels: the Python testbench framework expects `label(index)` unless built with the define for a commercial simulator
-  (`label__index`). yavs should use the `(index)` form.
+  (`label__index`). yavs uses the `(index)` form (#269).
 
 ## Linux
 
@@ -112,8 +114,8 @@ testbenches:
 | `tests/cb_toggle` | `tb_cb_toggle.vhdl` | disabling and re-enabling callbacks |
 | `tests/foreignf` | `tb_foreignf.vhdl` | foreign subprograms through `vhpi_register_foreignf` |
 
-It is not a dependency yet: every plugin needs iterators and values, which
-the stub model lacks, and a Rust plugin has to be its own cdylib crate. The
+It is not a dependency yet: every plugin needs values, which the model lacks
+until #270, and a Rust plugin has to be its own cdylib crate. The
 M5 plan:
 
 1. A test (or `scripts/vhpi-conformance.sh`) that builds the crate's

@@ -366,10 +366,7 @@ pub fn run(
     // Plugins load after elaboration and before initialisation; a load failure is fatal.
     if !a.vhpi.is_empty() {
         yavs_vhpi::set_resolution(resolution);
-        let root = &e.hier.scope(yavs_elab::ScopeId(0)).kind;
-        if let yavs_elab::ScopeKind::Instance { entity, .. } = root {
-            yavs_vhpi::set_design_root(&db.units[*entity].name.text.to_string());
-        }
+        yavs_vhpi::set_design(&db, &e);
         for spec in &a.vhpi {
             let p: yavs_vhpi::PluginSpec = spec.parse().unwrap_or_else(|e| match e {});
             let loaded = yavs_vhpi::load(&p).map_err(|err| err.to_diagnostic());

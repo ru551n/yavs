@@ -220,6 +220,30 @@ host load about 16 (loop overhead about 2 us per iteration included):
 
 `tools/bench`: `ff_rtl` simulate 1.27 s to 0.05 s CPU (total 1.31 to 0.10), `compute_loop` 0.72 to 0.66.
 
+### Elaboration of short library tests (#383, 2026-10-19)
+
+Release builds, median CPU seconds (user+sys) of 3 runs on the busy shared host. The
+elaboration-time session (calls of functions using package state) lowered every run-time package
+again, initialised them and replayed the call log for each new function it called (13 times in the
+stream testbench), and building the simulation did all of it once more. Now one program grows with
+each new function and the simulation starts from a copy of the package state elaboration left.
+
+| Testbench (one test case) | `yavs elab` CPU before / after the session change | elaborate before / after starting from it | init before / after |
+|---|---|---|---|
+| `tb_axi_stream` | 5.37 / 1.55 | 0.63 / 0.51 | 0.28 / 0.01 |
+| `tb_wishbone_master` | 4.43 / 0.91 | 0.45 / 0.33 | 0.13 / 0.00 |
+| `tb_avalon_master` | 3.87 / 1.01 | 0.43 / 0.35 | 0.13 / 0.00 |
+| `tb_axi_stream_protocol_checker` | 2.21 / 0.97 | 0.42 / 0.35 | 0.15 / 0.00 |
+| `tb_memory` | 0.38 / 0.38 | 0.08 / 0.07 | 0.10 / 0.05 |
+
+The `yavs elab` column includes the analysis of the design closure (about 0.4 s then); the
+elaborate and init columns are `--time-report` phases. Harness (`--compare`, 5 runs), `vunit_vc30`:
+elaborate 9.98 to 8.42, init 3.76 to 0.25, total 26.27 to 21.84 CPU seconds. Every
+external-runner `check` and verification component test passes; the difftest corpus output is
+byte-identical at 1 and 4 threads. Left in elaborate: analysis of package bodies (now cached,
+#407), the one initialisation of the run-time packages, and the interpreted elaboration-time calls
+themselves (logger and checker factories).
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

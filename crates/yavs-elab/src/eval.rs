@@ -873,12 +873,23 @@ impl Model {
         }
     }
 
+    /// The shape of a signal or of a record element of one (`sig.rdata'range`): its bounds are
+    /// known from the signal's constraint although its value is not (LRM 6.4.2.3).
+    fn signal_shape(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> Option<Shape> {
+        match (&db.exprs[e].kind, scope) {
+            (ExprKind::Obj(d), Some(s)) => Some(self.nets.obj(self.signal(s, *d)?).shape.clone()),
+            (ExprKind::Field { prefix, elem }, _) => match self.signal_shape(db, *prefix, scope)? {
+                Shape::Record { fields, .. } => fields.into_iter().nth(*elem as usize).map(|f| f.1),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The shape of an object expression: a signal, or a constant's value.
     fn expr_shape(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> R<Option<Shape>> {
-        if let (ExprKind::Obj(d), Some(s)) = (&db.exprs[e].kind, scope)
-            && let Some(o) = self.signal(s, *d)
-        {
-            return Ok(Some(self.nets.obj(o).shape.clone()));
+        if let Some(sh) = self.signal_shape(db, e, scope) {
+            return Ok(Some(sh));
         }
         let span = db.exprs[e].span;
         // A signal of a package has no value during elaboration, but a constrained subtype

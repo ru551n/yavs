@@ -23,6 +23,7 @@ extend the VHPI conformance run (#273).
 | `plugins/cbs.c` | Callback reasons: registration, firing order, time and delta |
 | `plugins/nonprop.c`, `designs/nonprop.vhd` | The non-propagating put modes: accepted or not, the value, value-change callbacks and process events |
 | `plugins/intvec.c`, `designs/intvec.vhd` | An integer put into vectors: which bits each simulator takes, negative values, values that do not fit |
+| `plugins/strput.c`, `designs/strput.vhd` | `vhpiStrVal` puts shorter and longer than a string of either direction: accepted or not, which elements change to what |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
 | `designs/hier.vhd`, `designs/drive.vhd` | The designs |
 

@@ -475,6 +475,23 @@ fn vhpi_put_value_misuse_is_reported() {
     assert!(err.contains("warning[W0904]"), "{err}");
 }
 
+/// `vhpiStrVal` text fills a string from the left: shorter text is padded with NUL, longer
+/// text is cut to the array (#345).
+#[test]
+fn vhpi_put_string_shorter_or_longer_than_the_array() {
+    let (code, err, out) = put("strings", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("warning["), "{err}");
+    let want = "vhpi: str n=8 97 98 99 100 101 102 103 104\n\
+                vhpi: Testing: ok\n\
+                vhpi: str n=8 84 101 115 116 105 110 103 0\n\
+                vhpi: ab: ok\n\
+                vhpi: str n=8 97 98 0 0 0 0 0 0\n\
+                vhpi: TooLongStr: ok\n\
+                vhpi: str n=8 84 111 111 76 111 110 103 83\n";
+    assert!(out.contains(want), "{out}");
+}
+
 /// Runs entity `top` of `yavs-vhpi/tests/foreign/design.vhd` with the `foreign` plugin.
 fn foreign(top: &str, extra: &[&str]) -> (i32, String, String) {
     let vhdl =

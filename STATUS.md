@@ -609,7 +609,7 @@ a removed repeating one, read-write before postponed before read-only, enable/di
 
 Done (#271, #272 value changes): `vhpi_put_value` on signals, ports and their record fields and
 array elements, in every format `vhpi_get_value` produces (`Read::decode`) and integers into
-logic vectors (#319), queued in the state and handed to the kernel as
+logic vectors (#319) and `vhpiStrVal` text shorter or longer than a string (padded with NUL or cut, #345), queued in the state and handed to the kernel as
 `Hook::deposit`/`force`/`release` when the callback returns, always in a new delta (#319):
 `vhpiDepositPropagate` deposits, `vhpiForcePropagate` forces (the non-propagating modes are refused, user, 2026-10-19; force mode `out` for ports of
 mode out/inout/buffer, `in` otherwise), `vhpiRelease` releases (back to the drivers' value, also after a deposit, #310); refused in the read-only phases;

@@ -220,3 +220,37 @@ static void errors_start(const vhpiCbDataT *cb) {
 PLUGIN_EXPORT void errors(void) {
   reg(vhpiCbStartOfSimulation, 0, errors_start, NULL, NULL, "start");
 }
+
+/* ---- strings: vhpiStrVal shorter and longer than the array (#345) -------------------- */
+
+static int str_step;
+
+static void str_at(const vhpiCbDataT *cb) {
+  static const char *const texts[] = {"Testing", "ab", "TooLongStr"};
+  char got[16];
+  vhpiValueT v;
+  (void)cb;
+  memset(&v, 0, sizeof v);
+  memset(got, 0, sizeof got);
+  v.format = vhpiStrVal;
+  v.bufSize = sizeof got;
+  v.value.str = (vhpiCharT *)got;
+  vhpi_get_value(h("str"), &v);
+  char line[128];
+  int len = snprintf(line, sizeof line, "vhpi: str n=%d", (int)v.numElems);
+  for (int i = 0; i < v.numElems && i < 8; i++)
+    len += snprintf(line + len, sizeof line - len, " %d", (unsigned char)got[i]);
+  vhpi_printf("%s\n", line);
+  if (str_step == 3) {
+    vhpi_control(vhpiFinish);
+    return;
+  }
+  put_str(h("str"), vhpiStrVal, texts[str_step], vhpiDepositPropagate);
+  check(texts[str_step]);
+  str_step++;
+  reg(vhpiCbAfterDelay, 1, str_at, NULL, NULL, "str");
+}
+
+PLUGIN_EXPORT void strings(void) {
+  reg(vhpiCbAfterDelay, 1, str_at, NULL, NULL, "str");
+}

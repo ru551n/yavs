@@ -602,16 +602,24 @@ impl Read {
                     _ => return Err(mismatch()),
                 }
             }
+            // Text for an array fills it from the left: longer text is cut, shorter text is
+            // padded with NUL where the element type has it (two of three references, #345).
             (vhpiStrVal, Given::Text(t)) => match n {
-                Some(_) => Cells::Int(
-                    t.iter()
+                Some(n) => {
+                    let mut v = t
+                        .iter()
+                        .take(n)
                         .map(|&c| {
                             by_char(c)
                                 .map(|p| p as i64)
                                 .ok_or_else(|| bad(format!("no literal '{}'", c as char)))
                         })
-                        .collect::<Result<_, _>>()?,
-                ),
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if let Some(nul) = by_char(0) {
+                        v.resize(n, nul as i64);
+                    }
+                    Cells::Int(v)
+                }
                 None => {
                     let lits = lits.as_ref().ok_or_else(mismatch)?;
                     let text = String::from_utf8_lossy(t);

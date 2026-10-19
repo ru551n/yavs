@@ -42,6 +42,7 @@ architecture a of top is
   signal q : unsigned(3 downto 0);
   signal d : integer := 0;
   signal p : pair := (0, '0');
+  signal str : string(1 to 8) := "abcdefgh";
 begin
   u : entity work.counter port map (clk, rst, q);
   d <= 1 after 10 ns, 2 after 30 ns, 3 after 50 ns, 4 after 70 ns;

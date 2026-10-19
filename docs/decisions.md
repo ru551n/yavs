@@ -265,7 +265,10 @@ milestone users care about works.
   every value; acceptance is the majority. The bit reading is a 1-1 tie that sim3 does not
   break, so it stays the numeric reading, which the VHPI text does not rule out; a value that
   does not fit is refused, as no two references agree on it. Agent, 2026-10-19, flagged to the
-  user). The non-propagating modes `vhpiDeposit` and `vhpiForce` on a
+  user). `vhpiStrVal` text for an array fills it from the left: longer text is cut and
+  shorter text padded with NUL, as two of the three references with VHPI do (the third refuses
+  longer text and leaves the rest unchanged; agent, 2026-10-19, #345, `tools/vhpi-conformance`
+  plugin `strput`). The non-propagating modes `vhpiDeposit` and `vhpiForce` on a
   signal are misuse (`W0903`, return 1): two of the three references with VHPI refuse them, the
   third changes the value with no event and no delta (user, 2026-10-19: check that reference,
   then follow the majority; `tools/vhpi-conformance` plugin `nonprop`). A deposit sets the driving value until a source next updates those elements;

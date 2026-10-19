@@ -1,5 +1,6 @@
-# Root AGENTS.md rule 13 on the three release platforms (#134). Default features only: the LLVM
-# tier (`--features llvm`) needs an LLVM install and is not built here. The qemu/Wine ffi runs are not part of CI yet.
+# Root AGENTS.md rule 13 on the three release platforms (#134). The `check` job builds default
+# features only; the `llvm` job builds and tests the LLVM tier (`--features llvm`, LLVM 21) on the
+# same three platforms (#127, #128). The qemu/Wine ffi runs are not part of CI yet.
 # The `corpus` job gates the analysis corpora (#63) on Linux x86_64.
 name: CI
 
@@ -33,6 +34,74 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
+
+  # The LLVM tier on the three release platforms. LLVM 21 is pinned: apt.llvm.org on Linux, the
+  # official release tarball (sha256-checked, trimmed, cached) on Windows; see
+  # crates/yavs-llvm/WINDOWS.md. The simulation smoke runs a slice of tests/corpus with `--tier=llvm`.
+  llvm:
+    name: llvm (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      LLVM_VER: 21.1.8
+      LLVM_SHA256: 749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: llvm
+      - name: LLVM 21 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-21-dev libzstd-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        id: llvm
+        with:
+          path: C:\llvm
+          key: llvm-${{ env.LLVM_VER }}-x86_64-pc-windows-msvc-trim1
+      - name: LLVM 21 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $n = "clang+llvm-$env:LLVM_VER-x86_64-pc-windows-msvc"
+          if ($env:STEPS_CACHE_HIT -ne 'true') {
+            curl.exe -sSfLo llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VER/$n.tar.xz"
+            if ((Get-FileHash llvm.tar.xz -Algorithm SHA256).Hash -ne $env:LLVM_SHA256) { throw "LLVM sha256 mismatch" }
+            New-Item -ItemType Directory C:\x | Out-Null
+            tar -xf llvm.tar.xz -C C:\x
+            # keep only what llvm-sys needs (0.4 GB instead of 4 GB)
+            New-Item -ItemType Directory C:\llvm\bin, C:\llvm\lib | Out-Null
+            Copy-Item "C:\x\$n\bin\llvm-config.exe", "C:\x\$n\bin\llvm-lib.exe" C:\llvm\bin
+            Copy-Item "C:\x\$n\lib\LLVM*.lib" C:\llvm\lib
+            Copy-Item "C:\x\$n\include" C:\llvm\include -Recurse
+            Remove-Item C:\x -Recurse -Force
+            # libxml2s.lib is missing from the package (llvm-project#172890); an empty stub satisfies the linker
+            & C:\llvm\bin\llvm-lib.exe /llvmlibempty /out:C:\llvm\lib\libxml2s.lib
+          }
+          "LLVM_SYS_211_PREFIX=C:\llvm" >> $env:GITHUB_ENV
+          "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
+        env:
+          STEPS_CACHE_HIT: ${{ steps.llvm.outputs.cache-hit }}
+      - run: cargo clippy -p yavs-llvm -p yavs --features llvm --all-targets --locked -- -D warnings
+      - run: cargo test -p yavs-llvm -p yavs --features llvm --locked --no-fail-fast
+      - name: Simulation smoke with --tier=llvm
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p yavs --features llvm
+          YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-llvm --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
 
   # Analysis corpora (tools/corpus): fetched at pinned revisions into the runner cache, never
   # part of the repository. Fails on any difference from the checked-in expected lists, in

@@ -451,7 +451,7 @@ impl<'a, 'b> Fx<'a, 'b> {
                 dope,
                 off: None,
                 tid,
-                dims,
+                ..
             } => {
                 let dope = match subtype
                     .map(|st| self.subtype_dope(st, span))
@@ -459,18 +459,15 @@ impl<'a, 'b> Fx<'a, 'b> {
                     .flatten()
                 {
                     Some(want) => {
-                        let what = self.msg(&ty::obj_desc(db, d), yavs_ir::Dir::To);
-                        self.emit(Inst::SubtypeCheck {
-                            dope,
-                            want,
-                            dims,
-                            what,
-                        });
+                        let t = db.base(db.exprs[target].subtype);
+                        self.check_desc(t, tid, dope, want, &ty::obj_desc(db, d), span)?;
                         want
                     }
                     None => dope,
                 };
-                let bytes = 24 * u32::from(dims);
+                // The whole descriptor: a record's or an element's bounds follow the
+                // dimensions (#315).
+                let bytes = self.desc_size(tid);
                 let off = self.fb.local(&name, tid, 24 + bytes, 8);
                 let slot = self.addr(Space::Frame(self.depth), off);
                 self.store(slot, data, Width::B8);

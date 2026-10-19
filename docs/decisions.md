@@ -1190,6 +1190,12 @@ which tools/difftest parses.
   (`Fx::dope_of` through `Fx::comp_walk`) and from its elaborated shape in yavs-elab
   (`Model::sig_shape`), never from its value: constants, signal subtypes and generate ranges
   of an instance use the bounds the actual gives a record port (#304).
+- **`x'subtype` of an object whose bounds are open** (`variable v : port'subtype`,
+  `alias a : v.f'subtype is v.f`) is the object's own subtype: lowering takes the object's
+  descriptor, yavs-elab its shape (`Model::shape_c` on `Constraint::FromObject`: a signal's
+  elaborated shape, else the shape of its value). An alias of a composite variable part keeps
+  its whole descriptor (record and element bounds too), checked against the alias subtype
+  element by element (#315).
 - **A folded constant read as a whole** (`Fx::expr`, `e.value` of an `Obj`) takes the descriptor
   of its own subtype when that has one, so the element bounds of an array constant are the
   declared ones, not those of the literals that fold into its value (#247).

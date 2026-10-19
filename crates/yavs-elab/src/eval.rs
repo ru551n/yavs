@@ -1064,6 +1064,24 @@ impl Model {
         scope: Option<ScopeId>,
         span: Span,
     ) -> R<Option<Shape>> {
+        // `x'subtype`, `x'element` of an object whose bounds are open in its declared subtype:
+        // the object's own shape (a signal's, else its value's), `elem_depth` levels down.
+        if let Constraint::FromObject { expr, elem_depth } = *c {
+            let mut sh = match self.sig_shape(db, expr, scope)? {
+                Some(sh) => Some(sh),
+                None => {
+                    let v = self.eval(db, expr, scope)?;
+                    self.shape_init(db, db.exprs[expr].subtype, Some(&v), scope, span)?
+                }
+            };
+            for _ in 0..elem_depth {
+                sh = match sh {
+                    Some(Shape::Array { elem, .. }) => Some(*elem),
+                    _ => None,
+                };
+            }
+            return Ok(sh);
+        }
         let ty = db.base(st);
         match &db.types[ty].kind {
             k if k.is_scalar() => {

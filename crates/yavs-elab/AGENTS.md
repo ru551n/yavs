@@ -36,6 +36,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 
 | Decision | Why | Source |
 |---|---|---|
+| `x'subtype`/`x'element` with open bounds (`Constraint::FromObject`) has the object's shape (`Model::shape_c`): a signal's elaborated shape, else its value's | The subtype is the object's (#315) | LRM 16.2 |
 | `'range`/`'length`/... of a signal or of a record element of one (`p.data`, `b.resp.user`, `a(0).data`) take its bounds without a value (`Model::sig_shape`): a port's from its actual, a package signal's from its constrained subtype; an index into an array of records is still range-checked (E2107) | The bounds are known, the signal has no value during elaboration (#294, #304) | LRM 16.2 |
 | Elaboration is a pure, re-entrant function of (design, generics, configuration); no global state; `build_with` repeatable | In-process restart, rule 4 | `docs/plan.md` rule 4 |
 | Generic overrides of any type parsed with the normal value parser (`-g`, yavs-std `'value`) | A recurring bug class in other simulators | rule 4 |

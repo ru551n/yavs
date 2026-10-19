@@ -750,7 +750,7 @@ impl<'a> Lowerer<'a> {
         if !self.cx.diags.is_empty() {
             return Err(self.cx.take_failed());
         }
-        match self.pb.clone().finish() {
+        match self.pb.snapshot() {
             Ok(program) => Ok(Lowered {
                 program,
                 units: self.units.clone(),

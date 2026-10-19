@@ -785,6 +785,24 @@ impl Db {
             return Ok(());
         };
         for l in lsps {
+            if let ObjRoot::External(x) = l.root {
+                // LRM 10.5.2.1 names no exception for external names (#255).
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::DRIVER_OUTSIDE_PROCESS,
+                        "an external signal is driven from a subprogram declared outside a \
+                         process",
+                    )
+                    .with_primary(l.span, "")
+                    .with_secondary(self.externals[x].span, "external name")
+                    .with_note(
+                        "a subprogram that is not declared inside a process may drive only its signal parameters",
+                    )
+                    .with_help(
+                        "pass the signal as a `signal ... : out` parameter, or use `<= force` and `<= release`",
+                    ),
+                ));
+            }
             let ObjRoot::Decl(d) = l.root else { continue };
             let is_param =
                 matches!(&self.decls[d].kind, DeclKind::Object(o) if o.role == ObjRole::Param);

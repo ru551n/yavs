@@ -1703,3 +1703,62 @@ end;
         [codes::PORT_MISMATCH]
     );
 }
+
+/// External names in package subprograms bind once the hierarchy exists, as package objects
+/// (#255): the function reads the design's constant and signal at run time and a restart reads
+/// them again; one that cannot be bound fails only when it is called; a package declaration
+/// naming the hierarchy is E2117 (packages are elaborated first).
+#[test]
+fn external_names_in_package_subprograms() {
+    let pkg = "package p is impure function get return integer; impure function bad return integer;
+        end package;
+        package body p is
+          impure function get return integer is
+          begin return <<constant .t.u.c : integer>> + <<signal .t.u.s : integer>>; end function;
+          impure function bad return integer is
+          begin return <<constant .t.nope : integer>>; end function;
+        end package body;
+        entity sub is end; architecture a of sub is
+          signal s : integer := 1; constant c : integer := 40; begin s <= 2 after 1 ns; end;";
+    let src = format!(
+        "{pkg} use work.p.all; entity t is end; architecture a of t is begin
+           u : entity work.sub;
+           process begin
+             report integer'image(get); wait for 2 ns; report integer'image(get); wait;
+           end process;
+         end;"
+    );
+    let (mut db, mut e) = elab("ext_pkg", &src, "t", &[]);
+    assert_eq!(e.pkg_ext.len(), 2);
+    assert_eq!(e.ext_unbound.len(), 1);
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated| {
+        let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let first = run(&e);
+    assert_eq!(first, ["0 1 41", "2000000 1 42"]);
+    assert_eq!(first, run(&e));
+    // Calling the function whose name cannot be bound is a run-time error.
+    let calls_bad = format!(
+        "{pkg} use work.p.all; entity t is end; architecture a of t is begin
+           u : entity work.sub;
+           process begin report integer'image(bad); wait; end process;
+         end;"
+    );
+    let (mut db, mut e) = elab("ext_pkg_bad", &calls_bad, "t", &[]);
+    e.lower(&mut db).expect("lower");
+    let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+    let err = sim.run_until(yavs_kernel::Time::MAX).expect_err("unbound");
+    assert!(err.to_string().contains("t.nope"), "{err}");
+    let decl = "package q is constant k : integer := <<constant .t.c : integer>>; end package;
+        use work.q.all; entity t is end; architecture a of t is constant c : integer := 1;
+        begin end;";
+    assert_eq!(
+        err_codes("ext_pkg_decl", decl, "t", &[]),
+        [codes::EXTERNAL_NOT_FOUND]
+    );
+}

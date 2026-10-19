@@ -1368,7 +1368,7 @@ impl Fx<'_, '_> {
         let [lsp] = &target.lsps[..] else {
             return Err(self.cx.unsupported(span, "aggregate signal targets"));
         };
-        let Some(root) = self.cx.root_decl(lsp.root) else {
+        let Some(root) = self.cx.root_decl(self.db, lsp.root) else {
             return Err(self.cx.unsupported(
                 lsp.span,
                 "assignments to external names and implicit signals",
@@ -1549,7 +1549,7 @@ impl Fx<'_, '_> {
         for l in sens {
             let Some(d) = (match l.root {
                 ObjRoot::ImplicitSignal(d) => Some(d),
-                r => self.cx.root_decl(r),
+                r => self.cx.root_decl(self.db, r),
             }) else {
                 return Err(self.cx.unsupported(l.span, "sensitivity to external names"));
             };

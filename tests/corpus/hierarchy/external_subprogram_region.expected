@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:external_subprogram_region:g(1):u:_p0	leaf1 cnt=0
+diag	note	0	0	:external_subprogram_region:g(2):u:_p0	leaf2 cnt=0
+diag	note	1000000	1	:external_subprogram_region:g(1):u:_p0	leaf1 cnt=10
+diag	note	1000000	1	:external_subprogram_region:g(1):b:_p0	after await 10
+diag	note	1000000	1	:external_subprogram_region:g(2):u:_p0	leaf2 cnt=20
+diag	note	1000000	1	:external_subprogram_region:g(2):b:_p0	after await 20
+diag	note	1000000	2	:external_subprogram_region:g(1):u:_p0	leaf1 cnt=20
+diag	note	1000000	2	:external_subprogram_region:g(2):u:_p0	leaf2 cnt=40

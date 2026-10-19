@@ -56,6 +56,13 @@ pub struct Model {
     /// Aliases of external shared variables, by (region, alias): the region and declaration
     /// of the variable (#93).
     pub(crate) ext_vars: HashMap<(ScopeId, DeclId), (ScopeId, DeclId)>,
+    /// Aliases of external constants elaboration cannot evaluate (a run-time thunk computes
+    /// the target), by (region, alias): the region and declaration of the constant (#255).
+    pub(crate) ext_consts: HashMap<(ScopeId, DeclId), (ScopeId, DeclId)>,
+    /// Aliases of the external names in package subprograms (#255): bound, with their
+    /// package's scope, or why not (the subprogram fails when it is called).
+    pub(crate) pkg_ext: HashMap<DeclId, ScopeId>,
+    pub(crate) ext_unbound: HashMap<DeclId, String>,
 }
 
 /// How a scalar crosses the kernel: its element and its class.

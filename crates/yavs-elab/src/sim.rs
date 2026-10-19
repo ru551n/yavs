@@ -129,8 +129,9 @@ impl Elaborated {
                 archs.push(arch);
             }
         }
-        // The regions of external shared variables hold their objects (#93).
-        for &(t, _) in self.ext_vars.values() {
+        // The regions of external shared variables hold their objects (#93), those of
+        // external constants their run-time values (#255).
+        for &(t, _) in self.ext_vars.values().chain(self.ext_consts.values()) {
             if let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(t)).kind
                 && !archs.contains(&arch)
             {
@@ -157,6 +158,7 @@ impl Elaborated {
             return Ok(());
         }
         let mut l = Lowerer::new(db, LowerOptions::default());
+        l.externals_bound(self.ext_unbound.clone());
         // Package objects first (#183), in analysis order, which puts a package after those
         // its declaration uses (LRM 14.4.2).
         // ponytail: a body using a package analyzed after its declaration is initialised too
@@ -210,12 +212,26 @@ impl Elaborated {
             units.insert(a, lowered.units[i].clone());
         }
         let mut names = HashMap::new();
-        for p in &self.procs {
-            let i = self.instance_of(p.scope);
-            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+        // The regions processes run in, and those holding the targets of external names
+        // (their thunks may name entities, #255).
+        let regions = self
+            .procs
+            .iter()
+            .map(|p| {
+                let i = self.instance_of(p.scope);
+                self.hier.scope(p.scope).parent.unwrap_or(i)
+            })
+            .chain(
+                self.ext_vars
+                    .values()
+                    .chain(self.ext_consts.values())
+                    .map(|&(t, _)| t),
+            );
+        for region in regions {
+            let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(region)).kind
+            else {
                 continue;
             };
-            let region = self.hier.scope(p.scope).parent.unwrap_or(i);
             for n in units
                 .get(&arch)
                 .map(|u: &UnitIr| u.names.as_slice())
@@ -387,9 +403,13 @@ impl Elaborated {
             &shared,
             time_resolution(cfg.resolution),
             |p, d| {
-                // Descriptors of the package's array signals.
+                // Descriptors of the package's array signals (none for an unbound alias of an
+                // external signal: its subprogram fails when called).
                 for s in &p.signals {
                     let Some(off) = s.dope else { continue };
+                    if self.ext_unbound.contains_key(&s.decl) {
+                        continue;
+                    }
                     let o = self
                         .sigs
                         .iter()
@@ -415,6 +435,49 @@ impl Elaborated {
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         // Instance data waiting for its external shared variables (#93).
         let mut base: HashMap<ScopeId, InstData> = HashMap::new();
+        // The cells of the external constants and shared variables package subprograms name,
+        // before any process runs (#255).
+        for p in &ir.packages {
+            for v in &p.ext_consts {
+                let Some(&ps) = self.pkg_ext.get(&v.decl) else {
+                    continue; // unbound: its subprogram fails when called
+                };
+                let cv = match self.value(ps, v.decl) {
+                    Some(val) => encode_value(&rt.prog, v, val)?,
+                    None => {
+                        let &(t, td) = self.ext_consts.get(&(ps, v.decl)).ok_or_else(|| {
+                            sim_err(format!("external constant `{}` not bound", v.name))
+                        })?;
+                        self.target_const(
+                            &rt, ir, t, td, &shared, &mut once, &mut insts, &mut base,
+                        )?
+                    }
+                };
+                let mut s = shared
+                    .lock()
+                    .map_err(|_| sim_err("shared state poisoned".into()))?;
+                write_cell(&rt.prog, v, cv, &mut s.vars)?;
+            }
+            for v in &p.ext_vars {
+                let Some(&ps) = self.pkg_ext.get(&v.decl) else {
+                    continue;
+                };
+                let &(region, decl) = self
+                    .ext_vars
+                    .get(&(ps, v.decl))
+                    .ok_or_else(|| sim_err(format!("external variable `{}` not bound", v.name)))?;
+                let obj = crate::VarObj::Region { region, decl };
+                let h = self.var_handle(&rt, ir, obj, &shared, &mut once, &mut insts, &mut base)?;
+                let at = v.off as usize;
+                let mut s = shared
+                    .lock()
+                    .map_err(|_| sim_err("shared state poisoned".into()))?;
+                s.vars
+                    .get_mut(at..at + 8)
+                    .ok_or_else(|| sim_err("shared variables area too short".into()))?
+                    .copy_from_slice(&h.to_le_bytes());
+            }
+        }
         // Instance data of the regions whose resolution functions read it (#164).
         let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
         for (&leaf, &region) in &ir.res_regions {
@@ -620,9 +683,68 @@ impl Elaborated {
             let at = v.off as usize;
             d.data[at..at + 8].copy_from_slice(&cell);
         }
+        // Aliases of external constants only a run-time thunk computes (#255).
+        for v in &u.values {
+            let Some((t, td)) = self.ext_const(region, v.decl) else {
+                continue;
+            };
+            let cv = self.target_const(rt, ir, t, td, shared, once, insts, base)?;
+            write_cell(&rt.prog, v, cv, &mut d.data)?;
+        }
         let d = Arc::new(d);
         insts.insert(region, d.clone());
         Ok(d)
+    }
+
+    /// The constant alias `d` of `scope` (or of a region around it) is bound to, when only
+    /// the constant's run-time thunk computes its value.
+    fn ext_const(
+        &self,
+        scope: ScopeId,
+        d: yavs_sem::DeclId,
+    ) -> Option<(ScopeId, yavs_sem::DeclId)> {
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(&t) = self.ext_consts.get(&(s, d)) {
+                return Some(t);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        None
+    }
+
+    /// The value constant `td` of region `t` got from its thunk (the region's instance data
+    /// built first if needed, #255).
+    #[allow(clippy::too_many_arguments)]
+    fn target_const(
+        &self,
+        rt: &Arc<Runtime>,
+        ir: &Ir,
+        t: ScopeId,
+        td: yavs_sem::DeclId,
+        shared: &Arc<Mutex<SharedState>>,
+        once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
+        insts: &mut HashMap<ScopeId, Arc<InstData>>,
+        base: &mut HashMap<ScopeId, InstData>,
+    ) -> Result<CallVal, SimError> {
+        let tu = unit_ir(self, ir, t)?;
+        let c = tu
+            .consts
+            .iter()
+            .find(|c| c.decl == td)
+            .ok_or_else(|| sim_err("external constant without a run-time value".into()))?;
+        let key = if c.instance_level {
+            (self.instance_of(t), td)
+        } else {
+            (t, td)
+        };
+        if !once.contains_key(&key) && !insts.contains_key(&t) && !base.contains_key(&t) {
+            let x = self.inst_data(rt, ir, tu, t, shared, once, insts, base)?;
+            base.insert(t, x);
+        }
+        once.get(&key)
+            .cloned()
+            .ok_or_else(|| sim_err(format!("constant `{}` has no value", c.name)))
     }
 
     /// The shared variable alias `d` of `scope` (or of a region around it) is bound to.
@@ -809,7 +931,8 @@ impl Elaborated {
                 let Some(r) = cur else { continue };
                 Some((r, c.decl))
             } else {
-                None
+                // Kept for the aliases of external constants naming it (#255).
+                Some((i, c.decl))
             };
             let cached = key.and_then(|k| once.get(&k).cloned());
             let v = match cached {
@@ -907,7 +1030,8 @@ fn write_desc(
 }
 
 /// Packages outside std with objects that exist at run time: signals, shared variables,
-/// files, or constants sem did not fold (in the declaration or the body).
+/// files, or constants sem did not fold (in the declaration or the body), or the aliases of
+/// external names its subprograms use (#255).
 pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
     use yavs_sem::decl::{DeclKind, ObjClass};
     let run_time = |d: yavs_sem::DeclId| match &db.decls[d].kind {
@@ -915,7 +1039,10 @@ pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
             ObjClass::Constant => o.default.is_some_and(|e| db.exprs[e].value.is_none()),
             _ => true,
         },
-        _ => false,
+        _ => db.decl_subprograms(d).into_iter().any(|m| {
+            !db.external_uses(yavs_sem::external::ExtOwner::Sub(m))
+                .is_empty()
+        }),
     };
     db.units
         .iter()
@@ -992,4 +1119,41 @@ fn unit_ir<'a>(e: &Elaborated, ir: &'a Ir, region: ScopeId) -> Result<&'a UnitIr
     ir.units
         .get(&arch)
         .ok_or_else(|| sim_err("architecture not lowered".into()))
+}
+
+/// Value `v` of constant `iv` as call cells: a scalar's cell, a composite's elements and
+/// descriptor.
+fn encode_value(
+    prog: &yavs_ir::Program,
+    iv: &yavs_lower::InstValue,
+    v: &crate::Val,
+) -> Result<CallVal, SimError> {
+    crate::value::encode(prog, iv.ty, v)
+        .ok_or_else(|| sim_err(format!("`{}`: value does not fit its type", iv.name)))
+}
+
+/// Write `cv` into the cell of `iv` in `data`: a scalar's bytes, or a composite appended
+/// with its offsets at `iv.off` (`UnitIr::write_composite`).
+fn write_cell(
+    prog: &yavs_ir::Program,
+    iv: &yavs_lower::InstValue,
+    cv: CallVal,
+    data: &mut Vec<u8>,
+) -> Result<(), SimError> {
+    match cv {
+        CallVal::Cell(c) => {
+            let n = prog
+                .types
+                .get(iv.ty)
+                .and_then(|t| t.scalar_size())
+                .ok_or_else(|| sim_err(format!("`{}`: not a scalar", iv.name)))?
+                as usize;
+            let at = iv.off as usize;
+            data.get_mut(at..at + n)
+                .ok_or_else(|| sim_err(format!("no cell for `{}`", iv.name)))?
+                .copy_from_slice(&c.to_le_bytes()[..n]);
+        }
+        CallVal::Composite { data: e, desc } => UnitIr::write_composite(iv.off, &e, &desc, data),
+    }
+    Ok(())
 }

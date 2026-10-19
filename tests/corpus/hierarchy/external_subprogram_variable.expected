@@ -1,0 +1,2 @@
+exit	0
+diag	note	4000000	0	:external_subprogram_variable:_p0	hits=100 events=4 ones=2

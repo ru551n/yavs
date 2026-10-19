@@ -434,7 +434,7 @@ local generic packages in the same and nested regions and through an instance of
 generic package; `generics/nested_packages`, `local_generic_packages`,
 `local_generic_packages_hand`, #34), shared variables of blocks and generates one object per block, generate
 alternative or iteration, shared by the nested regions (#249),
-external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), external names used directly in processes, concurrent statements and expression or `inertial` port actuals (bound once the hierarchy exists), external constants, external shared variables of protected types (method calls), external signals with records and aliases of parts of external names (#93; not yet: external names in subprograms and packages), guarded blocks and `bus`/`register`
+external signal names bound in elaboration order (E2117), aliases of external signals in regions and processes (read, waited on, driven; #19), external names used directly in processes, concurrent statements and expression or `inertial` port actuals (bound once the hierarchy exists), external constants, external shared variables of protected types (method calls), external signals with records and aliases of parts of external names (#93), external names in subprograms of regions and packages, package paths of every class and external constants computed at run time (#255), guarded blocks and `bus`/`register`
 signals, blocks with generics and ports, incremental binding, nested and record element
 resolution, user resolution functions (one declared in an entity or architecture reads its
 instance's data; in a block, generate or subprogram it is E9999, #164), records and arrays

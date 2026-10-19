@@ -29,10 +29,10 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `package.rs` | packages and package bodies in declarative parts (`DeclKind::Package`, 4.7), `E1234` | S4 | owner: nestgen (#34) |
 | `generic/entity.rs` | design entities with generic types, subprograms or packages cloned per map (`Db::instantiate_entity`, 5.3) | S4 | owner: gentypes (#75); gencomp: components, blocks, cloned configuration specifications (#222) |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
-| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33; gencomp: generic blocks queued for `instantiate_blocks` (#222); namedret: `return when c;` #239; decisions1: range choices in aggregate targets, `reject_range_choices` (#244) |
+| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33; gencomp: generic blocks queued for `instantiate_blocks` (#222); namedret: `return when c;` #239; decisions1: range choices in aggregate targets, `reject_range_choices` (#244); extsub: `E1810` for external signal targets (#255) |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt; sem08: corpus false positives #167-#170 |
 | `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6; semalias: alias negative suite #46 |
-| `external.rs` | external names (6.1) | S6 | owner: s6; extseq: implicit aliases of external names used directly (`alias_external_uses`, #93) |
+| `external.rs` | external names (6.1) | S6 | owner: s6; extseq: implicit aliases of external names used directly (`alias_external_uses`, #93); extsub: subprogram owners (`ExtOwner::Sub`), package paths (`bind_package_paths`, #255) |
 | `protected.rs` | protected types and bodies (6.6) | S6 | owner: s6; protacc: #212 method profile check (small, in `decl.rs` `subprogram_spec`); semprot: protected and `--relaxed` negative suite #52 (wiring in `decl.rs` `object_decl`, `stmt.rs` variable assignment, `resolve.rs` operator errors) |
 | `alloc.rs` | allocators, dereference (`.all`, implicit), incomplete type uses, `'designated_subtype` (2.6, 3.7) | S6 | owner: alloc |
 | `view.rs` | mode views, `'converse` (6.7) | S7 | owner: s6; modeview: views in generic units, `'converse` checks, method aliases of private variables #32 |

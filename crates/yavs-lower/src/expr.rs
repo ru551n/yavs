@@ -229,9 +229,12 @@ impl<'a> Fx<'a, '_> {
             ExprKind::PrivateVar { object, var } => self.private_var(*object, *var, span),
             ExprKind::New { init } => self.allocator(init, e.subtype, span),
             ExprKind::Null => Ok(V::S(self.int(0))),
+            // Every external name elab binds is used through an alias; one left is in a package
+            // declaration and names the hierarchy (elab rejects those) or something not
+            // supported yet.
             ExprKind::External(_) => Err(self
                 .cx
-                .unsupported(span, "external names in subprograms and packages (#93)")),
+                .unsupported(span, "this use of an external name (#255)")),
             // The value of a user-defined attribute is its specification's expression.
             ExprKind::AttrValue { spec } => {
                 let v = db.attr_values[*spec].value;
@@ -387,8 +390,8 @@ impl<'a> Fx<'a, '_> {
                 let dope = self.load(dp, Width::B8, RegTy::Ptr);
                 Ok(V::A(data, dope))
             }
-            Some(Obj::InstArray { off }) => {
-                let (data, dope) = self.inst_array(off);
+            Some(Obj::InstArray { space, off }) => {
+                let (data, dope) = self.inst_array(space, off);
                 Ok(V::A(data, dope))
             }
             Some(Obj::Fixed { space, off, size }) => {
@@ -515,10 +518,10 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// Elements and descriptor of an array in instance data (`Obj::InstArray`).
-    pub fn inst_array(&mut self, off: u32) -> (Reg, Reg) {
-        let base = self.addr(Space::Inst, 0);
+    pub fn inst_array(&mut self, space: Space, off: u32) -> (Reg, Reg) {
+        let base = self.addr(space, 0);
         let at = |fx: &mut Self, k: u32| {
-            let cell = fx.addr(Space::Inst, off + k);
+            let cell = fx.addr(space, off + k);
             let o = fx.load(cell, Width::B8, RegTy::I64);
             let dst = fx.reg(RegTy::Ptr);
             fx.emit(Inst::Index {
@@ -1495,7 +1498,7 @@ impl<'a> Fx<'a, '_> {
                     let dp = self.offset(a, 8);
                     return Ok(self.load(dp, Width::B8, RegTy::Ptr));
                 }
-                Some(Obj::InstArray { off }) => return Ok(self.inst_array(off).1),
+                Some(Obj::InstArray { space, off }) => return Ok(self.inst_array(space, off).1),
                 Some(Obj::Fixed { space, off, size }) => return Ok(self.addr(space, off + size)),
                 Some(Obj::Signal { .. }) => {
                     let span = self.db.exprs[e].span;
@@ -3661,7 +3664,7 @@ impl<'a> Fx<'a, '_> {
                         off
                     }
                 };
-                let (data, dope) = self.inst_array(off);
+                let (data, dope) = self.inst_array(Space::Inst, off);
                 Ok(V::A(data, dope))
             }
             AttrPrefix::Entity(_) => Err(self.cx.unsupported(

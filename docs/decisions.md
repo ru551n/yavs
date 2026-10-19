@@ -730,9 +730,30 @@ a note and a help suggesting an access type, as the reference simulators reject 
   never by a run-time thunk); of an external shared variable (protected types only) an instance
   cell holding the variable's object, copied from the target region's data when the instance
   data is built (`Elaborated::ext_vars`; regions may name each other's variables); of a signal
-  with records one instance signal per leaf. External names in subprograms and package
-  declarations stay `E2001`; external shared variables in packages and constants without an
-  elaboration-time value are `E9999`/`E2106`.
+  with records one instance signal per leaf. External names in subprograms and packages,
+  external shared variables in packages and constants without an elaboration-time value: next
+  entry (#255).
+
+- **External names in subprograms and packages** (#255, LRM 8.7, `docs/design/lrm-checks.md`
+  L86): a subprogram's external names (its body, its declarations, the subprograms and
+  protected bodies nested in it, and its declared aliases of whole external names) get implicit
+  aliases owned by the subprogram (`ExtOwner::Sub`) that belong to the region declaring it, so
+  the shared code finds them where it finds that region's objects. In an architecture, block,
+  generate or process they are instance objects bound per elaborated region after the whole
+  hierarchy, as statement aliases are (`E2117` when a name names nothing, called or not: two of
+  the three reference simulators). In a package they are package objects bound once per design
+  after the hierarchy (`Elaborated::pkg_ext`): a signal is a package signal, a constant's value
+  and a shared variable's object are cells in the shared variables area written by `build`
+  (package data is complete before the regions holding the targets exist; ponytail: processes
+  reading them run serially). A name that cannot be bound (`Elaborated::ext_unbound`) makes its
+  subprogram fail when called, which is how two of the three reference simulators behave; before
+  elaboration is complete (elaboration-time calls) every such subprogram fails the same way. A
+  package path (`@lib.pkg.obj`) is resolved once by `Db::bind_package_paths` and becomes a name
+  of that package object (LRM 8.7: it denotes the object), so package shared variables named
+  that way are called directly. A package declaration naming the hierarchy is `E2117`. An
+  external constant whose target only a run-time thunk computes (`'path_name`) is bound to that
+  target (`Elaborated::ext_consts`) and takes its value when the instance data is built. A
+  procedure outside a process driving an external signal is `E1810` (LRM 10.5.2.1).
 
 - **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
   14.3.5, `docs/design/lrm-checks.md` L59): accepted in 2008 and 2019; the port takes the

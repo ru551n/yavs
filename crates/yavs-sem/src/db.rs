@@ -140,6 +140,9 @@ pub struct Db {
     /// Implicit aliases of the external names used directly in a statement or an alias
     /// target, made by [`Db::alias_external_uses`] (#93).
     pub(crate) ext_uses: HashMap<crate::external::ExtOwner, Box<[DeclId]>>,
+    /// The package object each resolved package-path external name denotes, made by
+    /// [`Db::bind_package_paths`] (#255).
+    pub(crate) pkg_targets: HashMap<ExternalId, DeclId>,
     /// The type mark as written of a parameter (by its object decl) and of a function's
     /// result (by the subprogram decl), for messages in the user's spelling (8.3).
     pub(crate) written_marks: HashMap<DeclId, Span>,
@@ -255,6 +258,7 @@ impl Db {
             inst_types: Vec::new(),
             ext_memo: HashMap::new(),
             ext_uses: HashMap::new(),
+            pkg_targets: HashMap::new(),
             written_marks: HashMap::new(),
             incomplete_ok: false,
             context_subtype: None,

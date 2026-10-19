@@ -143,6 +143,15 @@ pub struct Elaborated {
     /// of the variable, whose object the alias's instance data cell holds (#93).
     pub ext_vars:
         std::collections::HashMap<(ScopeId, yavs_sem::DeclId), (ScopeId, yavs_sem::DeclId)>,
+    /// Aliases of external constants bound to a constant only its run-time thunk computes,
+    /// by (region, alias): the region and declaration of the constant (#255).
+    pub ext_consts:
+        std::collections::HashMap<(ScopeId, yavs_sem::DeclId), (ScopeId, yavs_sem::DeclId)>,
+    /// Aliases of the external names in package subprograms bound once the hierarchy is
+    /// elaborated, with their package's scope, and why the others are not: a subprogram
+    /// using one fails when it is called (#255).
+    pub pkg_ext: std::collections::HashMap<yavs_sem::DeclId, ScopeId>,
+    pub ext_unbound: std::collections::HashMap<yavs_sem::DeclId, String>,
     /// Shared variables by (declaring region, declaration): one object each (#249).
     pub(crate) shared_vars: std::collections::HashSet<(ScopeId, yavs_sem::DeclId)>,
     /// Warnings of a successful elaboration.

@@ -257,6 +257,12 @@ pub struct PackageIr {
     /// `FuncKind::Thunk`: evaluates the constants and creates the shared variables.
     pub init: FuncId,
     pub signals: Vec<SignalIr>,
+    /// Aliases of external constants and shared variables used in the package's subprograms
+    /// (#255): cells in the shared variables area (`off`) where the elaborator writes the
+    /// constant's value (as [`UnitIr::write_value`] does, offsets relative to the area) or the
+    /// variable's object once the design is elaborated. Their signals are package signals.
+    pub ext_consts: Vec<InstValue>,
+    pub ext_vars: Vec<InstValue>,
 }
 
 /// Lowering failed; the diagnostics say why.
@@ -282,8 +288,9 @@ pub(crate) enum Obj {
     /// A composite of static layout stored in place: `size` bytes of elements at `off`, then
     /// its descriptor.
     Fixed { space: Space, off: u32, size: u32 },
-    /// An array in instance data: byte offsets of its elements and descriptor at `off`.
-    InstArray { off: u32 },
+    /// An array in instance data (or the shared variables area): byte offsets of its
+    /// elements and descriptor at `off`.
+    InstArray { space: Space, off: u32 },
     /// A signal parameter: the slot holds a signal reference (two cells).
     /// With `out`: an `out`/`inout` signal parameter, the caller's driver slot in the cell
     /// at `off + 16`.
@@ -343,6 +350,10 @@ pub(crate) struct Cx {
     /// External signal names aliased in the unit being lowered: the alias that holds the
     /// signal (`func::external_alias`).
     pub ext_sigs: HashMap<yavs_sem::ExternalId, DeclId>,
+    /// External aliases of subprograms (`ExtOwner::Sub`) that are not bound, with why: a
+    /// subprogram using one fails when it is called. `None` before the design is elaborated
+    /// (elaboration-time calls): none is bound yet (#255).
+    pub ext_unbound: Option<HashMap<DeclId, String>>,
 }
 
 /// One kernel signal of a record signal.
@@ -388,11 +399,13 @@ impl Cx {
     }
 
     /// The declaration a signal LSP root names: an object, or the alias of an external
-    /// signal name.
-    pub fn root_decl(&self, r: yavs_sem::hir::ObjRoot) -> Option<DeclId> {
+    /// signal name, or the package signal a package path names.
+    pub fn root_decl(&self, db: &Db, r: yavs_sem::hir::ObjRoot) -> Option<DeclId> {
         match r {
             yavs_sem::hir::ObjRoot::Decl(d) => Some(d),
-            yavs_sem::hir::ObjRoot::External(x) => self.ext_sigs.get(&x).copied(),
+            yavs_sem::hir::ObjRoot::External(x) => {
+                self.ext_sigs.get(&x).copied().or(db.package_target(x))
+            }
             yavs_sem::hir::ObjRoot::ImplicitSignal(_) => None,
         }
     }
@@ -465,6 +478,7 @@ impl<'a> Lowerer<'a> {
                 rec_leaves: HashMap::new(),
                 actuals: HashMap::new(),
                 ext_sigs: HashMap::new(),
+                ext_unbound: None,
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -482,6 +496,13 @@ impl<'a> Lowerer<'a> {
             }
             _ => Err(std::mem::take(&mut self.cx.diags)),
         }
+    }
+
+    /// The design is elaborated: the external aliases of subprograms are bound except
+    /// `unbound` (alias, why), which make their subprograms fail when called (#255). Call it
+    /// before lowering anything.
+    pub fn externals_bound(&mut self, unbound: HashMap<DeclId, String>) {
+        self.cx.ext_unbound = Some(unbound);
     }
 
     /// Give the actual `expr` of port `port` in instance statement `stmt` (its port map or

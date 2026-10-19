@@ -993,7 +993,12 @@ An external name used directly in a process, a concurrent statement, an expressi
 or inside an alias target is given an implicit alias by `Db::alias_external_uses` (called by
 elab, idempotent): the use's `ExprKind::External` becomes `ExprKind::Obj` of a hidden
 `Alias::Object` (`implicit: true`) whose target is a new `External` expression, so M2 lowers it
-as a declared alias (#93). Sem's own analysis never sees the rewritten form.
+as a declared alias (#93). Sem's own analysis never sees the rewritten form. A subprogram
+(`ExtOwner::Sub`) owns the names of its body, the subprograms and protected bodies nested in it
+and its declared aliases of whole external names, which elab binds per elaborated copy of the
+region declaring it, or once per design for a package (#255). `Db::bind_package_paths` (called
+by elab) turns every package path that names an analyzed package object of its class and type
+into `ExprKind::Obj` of that object (`Db::package_target` keeps the binding for LSP roots).
 
 ### 6.2 Aliases (6.6)
 

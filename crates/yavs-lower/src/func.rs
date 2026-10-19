@@ -899,6 +899,25 @@ pub(crate) fn subprogram(
             },
         );
     }
+    // An external name it uses that is not bound makes the call fail (LRM 8.7: the name is
+    // evaluated when the subprogram runs, #255).
+    let unbound = db
+        .external_uses(yavs_sem::external::ExtOwner::Sub(d))
+        .iter()
+        .find_map(|&h| match &fx.cx.ext_unbound {
+            Some(m) => m.get(&h).cloned(),
+            None => Some(format!(
+                "`{}` uses external name `{}`, which is bound only once the design hierarchy \
+                 is elaborated: it cannot be called during elaboration",
+                decl.name, db.decls[h].name
+            )),
+        });
+    if let Some(m) = unbound {
+        let what = fx.msg(&m, yavs_ir::Dir::To);
+        fx.term(Inst::Unreachable { what });
+        let b = fx.block();
+        fx.at(b);
+    }
     let decls = fx.decls(*scope);
     let body = fx.stmts(stmts);
     fx.end(decl.span);
@@ -1093,7 +1112,10 @@ fn external_alias(
             });
             let w = pb.types().get(tid).map_or(Width::B8, ty::width);
             let obj = if comp {
-                Obj::InstArray { off }
+                Obj::InstArray {
+                    space: Space::Inst,
+                    off,
+                }
             } else {
                 Obj::Scalar {
                     space: Space::Inst,
@@ -1179,14 +1201,23 @@ fn external_alias(
 }
 
 /// The external aliases declaration `d` brings: itself when it aliases a whole external name,
-/// the implicit aliases of an alias of a part of one (#93).
+/// the implicit aliases of an alias of a part of one (#93), those of a subprogram or of the
+/// methods of a protected body (#255).
 fn decl_externals(db: &Db, d: DeclId) -> Vec<(DeclId, yavs_sem::ExternalId)> {
+    use yavs_sem::external::ExtOwner;
     if let Some(x) = db.external_alias(d) {
         return vec![(d, x)];
     }
-    db.external_uses(yavs_sem::external::ExtOwner::Alias(d))
-        .iter()
-        .filter_map(|&h| Some((h, db.implicit_external(h)?)))
+    let mut owners: Vec<ExtOwner> = db
+        .decl_subprograms(d)
+        .into_iter()
+        .map(ExtOwner::Sub)
+        .collect();
+    owners.push(ExtOwner::Alias(d));
+    owners
+        .into_iter()
+        .flat_map(|o| db.external_uses(o))
+        .filter_map(|&h| Some((h, db.external_alias(h)?)))
         .collect()
 }
 
@@ -1219,7 +1250,7 @@ pub(crate) fn thunk(
 
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
     let decl = &db.decls[d];
-    if let DeclKind::Alias(_) = decl.kind {
+    if let DeclKind::Alias(_) | DeclKind::Subprogram(_) | DeclKind::Type(_) = decl.kind {
         for (h, x) in decl_externals(db, d) {
             external_alias(db, pb, cx, ir, h, x)?;
         }
@@ -1336,7 +1367,13 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 ty: t,
             });
             if comp {
-                cx.objs.insert(d, Obj::InstArray { off });
+                cx.objs.insert(
+                    d,
+                    Obj::InstArray {
+                        space: Space::Inst,
+                        off,
+                    },
+                );
                 // A composite constant elaboration did not fold is computed once per region
                 // by a thunk returning the address of its fat pair (#73); one initialised from
                 // an external name always has its elaborated value.
@@ -1486,7 +1523,7 @@ fn process(
     let mut sigs = Vec::new();
     let mut bases = Vec::new();
     for l in &info.drivers {
-        let Some(d) = cx.root_decl(l.root) else {
+        let Some(d) = cx.root_decl(db, l.root) else {
             return Err(cx.unsupported(l.span, "drivers of external names and implicit signals"));
         };
         bases.push(sigs.len() as u32);
@@ -1761,9 +1798,29 @@ pub(crate) fn package(
     let mut size = 0u32;
     let mut signals = Vec::new();
     let mut ok = true;
-    for s in scopes {
+    for &s in &scopes {
         for d in db.decls_with_instances(s) {
             ok &= fx.pkg_object(d, index, &mut size, &mut signals).is_ok();
+        }
+    }
+    // The aliases of the external names its subprograms use (#255).
+    let (mut ext_consts, mut ext_vars) = (Vec::new(), Vec::new());
+    for &s in &scopes {
+        for d in db.decls_with_instances(s) {
+            for m in db.decl_subprograms(d) {
+                for &h in db.external_uses(yavs_sem::external::ExtOwner::Sub(m)) {
+                    ok &= fx
+                        .pkg_external(
+                            h,
+                            index,
+                            &mut size,
+                            &mut signals,
+                            &mut ext_consts,
+                            &mut ext_vars,
+                        )
+                        .is_ok();
+                }
+            }
         }
     }
     fx.end(u.span);
@@ -1776,6 +1833,8 @@ pub(crate) fn package(
         size,
         init: f,
         signals,
+        ext_consts,
+        ext_vars,
     })
 }
 
@@ -1804,71 +1863,7 @@ impl Fx<'_, '_> {
             off
         };
         match o.class {
-            ObjClass::Signal if ty::has_record(db, t) => {
-                // One kernel signal per leaf, as in an architecture (`inst_object`); the whole
-                // signal's descriptor in package data on the first leaf entry.
-                let whole = self.ty(t, span)?;
-                let types = self.fb.program().types();
-                let mut dope = if yavs_ir::Ty::needs_desc(types, whole) {
-                    let n = yavs_ir::Ty::desc_size(types, whole)
-                        .ok_or_else(|| self.cx.ice(span, "composite without a descriptor"))?;
-                    let off = alloc(n as u32);
-                    self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
-                    Some((off, whole))
-                } else {
-                    None
-                };
-                let mut out = Vec::new();
-                for (path, st) in ty::leaves(db, o.subtype) {
-                    let ty = self.ty(db.base(st), span)?;
-                    let sig = self.cx.pkg_sigs.len() as u32;
-                    let s = SignalIr {
-                        decl: d,
-                        name: decl.name.to_string(),
-                        ty,
-                        init: None,
-                        path: path.clone(),
-                        dope: None,
-                    };
-                    self.cx.pkg_sigs.push(s.clone());
-                    signals.push(SignalIr {
-                        dope: dope.take(),
-                        ..s
-                    });
-                    out.push(crate::RecLeaf { path, st, sig });
-                }
-                self.cx.rec_leaves.insert(d, out);
-                self.cx.objs.insert(d, Obj::RecSignal(None));
-                Ok(())
-            }
-            ObjClass::Signal => {
-                let ty = self.ty(t, span)?;
-                let sig = self.cx.pkg_sigs.len() as u32;
-                let s = SignalIr {
-                    decl: d,
-                    name: decl.name.to_string(),
-                    ty,
-                    init: None,
-                    path: Vec::new(),
-                    dope: None,
-                };
-                self.cx.pkg_sigs.push(s.clone());
-                // An array signal's descriptor lives in package data, written by the
-                // elaborator from the signal's bounds (a 2019 signal may take them from its
-                // initial value, LRM 6.4.2.3).
-                let dope = if ty::is_array(db, t) {
-                    let n = yavs_ir::Ty::desc_size(self.fb.program().types(), ty)
-                        .ok_or_else(|| self.cx.ice(span, "array type without a descriptor size"))?;
-                    let off = alloc(n as u32);
-                    self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
-                    Some((off, ty))
-                } else {
-                    None
-                };
-                signals.push(SignalIr { dope, ..s });
-                self.cx.objs.insert(d, Obj::Signal { sig });
-                Ok(())
-            }
+            ObjClass::Signal => self.pkg_signal(d, o.subtype, p, size, signals),
             ObjClass::Constant => {
                 // A deferred constant without its body, and locally static constants (read
                 // through their folded value), have no slot.
@@ -2018,6 +2013,191 @@ impl Fx<'_, '_> {
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+
+    /// A package signal `d` of subtype `st` (a declared signal, or the alias of an external
+    /// signal name in a subprogram, #255): one kernel signal per leaf, an array's or a
+    /// composite's descriptor in package data.
+    fn pkg_signal(
+        &mut self,
+        d: DeclId,
+        st: SubtypeId,
+        p: u32,
+        size: &mut u32,
+        signals: &mut Vec<SignalIr>,
+    ) -> R<()> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let span = decl.span;
+        let t = db.base(st);
+        let mut alloc = |n: u32| {
+            let off = size.next_multiple_of(8);
+            *size = off + n;
+            off
+        };
+        if ty::has_record(db, t) {
+            // One kernel signal per leaf, as in an architecture (`inst_object`); the whole
+            // signal's descriptor in package data on the first leaf entry.
+            let whole = self.ty(t, span)?;
+            let types = self.fb.program().types();
+            let mut dope = if yavs_ir::Ty::needs_desc(types, whole) {
+                let n = yavs_ir::Ty::desc_size(types, whole)
+                    .ok_or_else(|| self.cx.ice(span, "composite without a descriptor"))?;
+                let off = alloc(n as u32);
+                self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
+                Some((off, whole))
+            } else {
+                None
+            };
+            let mut out = Vec::new();
+            for (path, lst) in ty::leaves(db, st) {
+                let ty = self.ty(db.base(lst), span)?;
+                let sig = self.cx.pkg_sigs.len() as u32;
+                let s = SignalIr {
+                    decl: d,
+                    name: decl.name.to_string(),
+                    ty,
+                    init: None,
+                    path: path.clone(),
+                    dope: None,
+                };
+                self.cx.pkg_sigs.push(s.clone());
+                signals.push(SignalIr {
+                    dope: dope.take(),
+                    ..s
+                });
+                out.push(crate::RecLeaf { path, st: lst, sig });
+            }
+            self.cx.rec_leaves.insert(d, out);
+            self.cx.objs.insert(d, Obj::RecSignal(None));
+            return Ok(());
+        }
+        let ty = self.ty(t, span)?;
+        let sig = self.cx.pkg_sigs.len() as u32;
+        let s = SignalIr {
+            decl: d,
+            name: decl.name.to_string(),
+            ty,
+            init: None,
+            path: Vec::new(),
+            dope: None,
+        };
+        self.cx.pkg_sigs.push(s.clone());
+        // An array signal's descriptor lives in package data, written by the elaborator from
+        // the signal's bounds (a 2019 signal may take them from its initial value, LRM
+        // 6.4.2.3).
+        let dope = if ty::is_array(db, t) {
+            let n = yavs_ir::Ty::desc_size(self.fb.program().types(), ty)
+                .ok_or_else(|| self.cx.ice(span, "array type without a descriptor size"))?;
+            let off = alloc(n as u32);
+            self.cx.sig_dopes.insert(d, (Space::Pkg(p), off));
+            Some((off, ty))
+        } else {
+            None
+        };
+        signals.push(SignalIr { dope, ..s });
+        self.cx.objs.insert(d, Obj::Signal { sig });
+        Ok(())
+    }
+
+    /// Alias `h` of an external name used in a subprogram of package `p` (#255): a signal is a
+    /// package signal; a constant's value and a shared variable's object are cells in the
+    /// shared variables area, written by the elaborator once the design is elaborated
+    /// (package data is complete before the regions holding the targets exist).
+    // ponytail: processes reading them run serially (ir.md 3.5); package data written after
+    // the regions are built would keep them parallel.
+    fn pkg_external(
+        &mut self,
+        h: DeclId,
+        p: u32,
+        size: &mut u32,
+        signals: &mut Vec<SignalIr>,
+        consts: &mut Vec<InstValue>,
+        vars: &mut Vec<InstValue>,
+    ) -> R<()> {
+        use yavs_syntax::ast::ExternalClass;
+        let db = self.db;
+        if self.cx.objs.contains_key(&h) {
+            return Ok(());
+        }
+        let span = db.decls[h].span;
+        let Some(x) = db.external_alias(h) else {
+            return Err(self.cx.ice(span, "not an external alias"));
+        };
+        let st = db.externals[x].subtype;
+        let t = db.base(st);
+        let name = db.decls[h].name.to_string();
+        self.cx.ext_sigs.insert(x, h);
+        let shared = |cx: &mut Cx, n: u32| {
+            let off = cx.shared_size.next_multiple_of(8);
+            cx.shared_size = off + n;
+            off
+        };
+        match db.externals[x].class {
+            ExternalClass::Signal => self.pkg_signal(h, st, p, size, signals),
+            ExternalClass::Constant => {
+                let ty = self.ty(t, span)?;
+                let comp = matches!(
+                    db.types[t].kind,
+                    yavs_sem::types::TypeKind::Array { .. }
+                        | yavs_sem::types::TypeKind::Record { .. }
+                );
+                let off = shared(self.cx, if comp { 16 } else { 8 });
+                let obj = if comp {
+                    Obj::InstArray {
+                        space: Space::Shared,
+                        off,
+                    }
+                } else {
+                    let w = self
+                        .fb
+                        .program()
+                        .types()
+                        .get(ty)
+                        .map_or(Width::B8, ty::width);
+                    Obj::Scalar {
+                        space: Space::Shared,
+                        off,
+                        w,
+                    }
+                };
+                consts.push(InstValue {
+                    decl: h,
+                    name,
+                    off,
+                    ty,
+                });
+                self.cx.objs.insert(h, obj);
+                Ok(())
+            }
+            ExternalClass::Variable => {
+                if !matches!(
+                    db.types[t].kind,
+                    yavs_sem::types::TypeKind::Protected { .. }
+                ) {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "external variables of non-protected types"));
+                }
+                let ty = self.ty(t, span)?;
+                let off = shared(self.cx, 8);
+                vars.push(InstValue {
+                    decl: h,
+                    name,
+                    off,
+                    ty,
+                });
+                self.cx.objs.insert(
+                    h,
+                    Obj::Scalar {
+                        space: Space::Shared,
+                        off,
+                        w: Width::B8,
+                    },
+                );
+                Ok(())
+            }
         }
     }
 

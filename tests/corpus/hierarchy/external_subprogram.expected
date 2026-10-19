@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:external_subprogram:dut:_p0	dut flag='0'
+diag	note	0	0	:external_subprogram:main	scaled=21 width=20
+diag	note	0	0	:external_subprogram:main	table=5,6,7 cfg=500,'1'
+diag	note	0	1	:external_subprogram:dut:_p0	dut flag='1'
+diag	note	1000000	0	:external_subprogram:main	peek=0101
+diag	note	1000000	1	:external_subprogram:dut:_p0	dut flag='0'
+diag	note	2000000	0	:external_subprogram:main	peek=1010
+diag	note	4000000	1	:external_subprogram:h1:_p0	harness1 saw count 2 width=20
+diag	note	6000000	1	:external_subprogram:h2:_p0	harness2 saw count 3 width=20
+diag	note	6000000	1	:external_subprogram:main	dut_count=3
+diag	note	6000000	2	:external_subprogram:main	flag='1'

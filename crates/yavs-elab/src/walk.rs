@@ -145,6 +145,8 @@ pub(crate) struct Elab<'d> {
     /// Processes whose drivers are rooted at external names: their drivers are elaborated
     /// once the whole hierarchy is (#93).
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
+    /// Aliases of the external names used in package subprograms, by package (#255).
+    pkg_uses: Vec<(UnitId, DeclId)>,
 }
 
 pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<Diagnostic>> {
@@ -292,6 +294,67 @@ fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
     )
 }
 
+/// The aliases of the external names used in the subprograms of every loaded package (not
+/// std), by package: they belong to the package and bind once the hierarchy is elaborated
+/// (#255). Made before any elaboration-time call lowers the packages.
+/// A package declaration naming the hierarchy (not another package's object) is an error:
+/// packages are elaborated before the design hierarchy (LRM 14.4.1, 8.7).
+fn package_externals(db: &mut Db) -> Result<Vec<(UnitId, DeclId)>, Vec<Diagnostic>> {
+    let units: Vec<UnitId> = db
+        .units
+        .iter()
+        .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
+        .map(|(id, _)| id)
+        .collect();
+    let mut out = Vec::new();
+    let mut errs = Vec::new();
+    for u in units {
+        for r in db.package_regions(u).unwrap_or_default() {
+            for d in db.decls_with_instances(r) {
+                let e = match &db.decls[d].kind {
+                    DeclKind::Object(o) => o.default,
+                    DeclKind::Alias(Alias::Object { target, .. }) => Some(*target),
+                    _ => None,
+                };
+                if let Some(e) = e {
+                    db.walk_expr(e, &mut |x| {
+                        if let ExprKind::External(x) = db.exprs[x].kind {
+                            let ext = &db.externals[x];
+                            let path: Vec<String> =
+                                ext.path.iter().map(|(i, _)| i.text.to_string()).collect();
+                            errs.push(
+                                Diagnostic::error(
+                                    codes::EXTERNAL_NOT_FOUND,
+                                    format!(
+                                        "external name `{}` cannot be bound: a package is \
+                                         elaborated before the design hierarchy",
+                                        path.join(".")
+                                    ),
+                                )
+                                .with_primary(ext.span, "external name in a package declaration")
+                                .with_note(
+                                    "a package declaration can name objects of other packages \
+                                     (`@lib.pkg.obj`); a subprogram of the package can name the \
+                                     hierarchy, bound when it is called (LRM 8.7, 14.4.1)",
+                                ),
+                            );
+                        }
+                    });
+                }
+                for m in db.decl_subprograms(d) {
+                    let Some(sc) = db.sub_scope(m) else { continue };
+                    for &h in db.alias_external_uses(ExtOwner::Sub(m), sc) {
+                        if !out.contains(&(u, h)) {
+                            out.push((u, h));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if errs.is_empty() { Ok(out) } else { Err(errs) }
+}
+
 /// Load the body of every loaded package (not std, whose subprograms are native), so
 /// elaboration-time calls and lowering see subprogram bodies. A package that needs a body
 /// (a subprogram without one, a deferred constant) but has none is an error (LRM 4.8).
@@ -385,6 +448,8 @@ pub(crate) fn elaborate(
     cfg: &ElabConfig,
 ) -> Result<Elaborated, Vec<Diagnostic>> {
     load_bodies(db)?;
+    db.bind_package_paths();
+    let pkg_uses = package_externals(db)?;
     let mut e = Elab {
         db,
         m: Model::default(),
@@ -395,6 +460,7 @@ pub(crate) fn elaborate(
         stmt: None,
         pending: Vec::new(),
         deferred: Vec::new(),
+        pkg_uses,
     };
     let name = e.db.units[top.entity].name;
     let cfgp = top.config.map(|u| CfgPath {
@@ -494,6 +560,9 @@ pub(crate) fn elaborate(
         sigs: e.m.sigs,
         var_ports: e.m.var_ports,
         ext_vars: e.m.ext_vars,
+        ext_consts: e.m.ext_consts,
+        pkg_ext: e.m.pkg_ext,
+        ext_unbound: e.m.ext_unbound,
         shared_vars: e.m.shared_vars,
         warnings: e.warnings,
         ir: None,
@@ -900,6 +969,15 @@ impl Elab<'_> {
             self.m.regions.entry(s).or_default().push(region);
         }
         for d in self.db.decls_with_instances(region) {
+            // External names in its subprograms bind once the hierarchy is elaborated, as
+            // those of its statements (#255).
+            for m in self.db.decl_subprograms(d) {
+                let Some(sc) = self.db.sub_scope(m) else {
+                    continue;
+                };
+                let hs = self.db.alias_external_uses(ExtOwner::Sub(m), sc);
+                self.pending.extend(hs.iter().map(|&h| (s, h)));
+            }
             if let DeclKind::Alias(Alias::Object { target, .. }) = self.db.decls[d].kind {
                 // An alias of an external name, or of a part of one, binds here, in
                 // elaboration order (LRM 8.7, 14.4.1).
@@ -2187,9 +2265,27 @@ impl Elab<'_> {
         for (s, h) in std::mem::take(&mut self.pending) {
             let db: &Db = self.db;
             let x = db
-                .implicit_external(h)
+                .external_alias(h)
                 .ok_or_else(|| Box::new(ice(db.decls[h].span, "not an external alias")))?;
             self.m.bind(db, s, h, x)?;
+        }
+        // Those of package subprograms: one that cannot be bound is an error when the
+        // subprogram is called (LRM 8.7: evaluated when the call evaluates it), not here.
+        for (u, h) in std::mem::take(&mut self.pkg_uses) {
+            let db: &Db = self.db;
+            let x = db
+                .external_alias(h)
+                .ok_or_else(|| Box::new(ice(db.decls[h].span, "not an external alias")))?;
+            let ps = self.m.pkg_scope(db, u);
+            match self.m.bind(db, ps, h, x) {
+                Ok(()) => {
+                    self.m.pkg_ext.insert(h, ps);
+                }
+                Err(d) if d.code == codes::EXTERNAL_NOT_FOUND => {
+                    self.m.ext_unbound.insert(h, d.message.clone());
+                }
+                Err(d) => return Err(d),
+            }
         }
         for (idx, s, lsps) in std::mem::take(&mut self.deferred) {
             let mut refs = Vec::with_capacity(lsps.len());
@@ -2745,8 +2841,19 @@ impl Model {
                 self.sigs.insert((r, d), o);
             }
             ExtTarget::Value(t, td) if db.externals[x].class == ExternalClass::Constant => {
-                let v = self.value_of(db, td, t, db.externals[x].span)?;
-                self.set(r, d, v);
+                let mark = self.session.mark();
+                match (self.value_of(db, td, t, db.externals[x].span), t) {
+                    (Ok(v), _) => self.set(r, d, v),
+                    // A constant only its run-time thunk computes (`'path_name`, say): the
+                    // alias takes the target's value when the simulation is built (#255).
+                    (Err(e), Some(t)) if e.code == codes::NOT_EVALUATED => {
+                        self.session
+                            .undo(db, mark)
+                            .map_err(|m| Box::new(ice(db.externals[x].span, &m)))?;
+                        self.ext_consts.insert((r, d), (t, td));
+                    }
+                    (Err(e), _) => return Err(e),
+                }
             }
             ExtTarget::Value(Some(t), td) => {
                 self.ext_vars.insert((r, d), (t, td));
@@ -2848,45 +2955,9 @@ impl Model {
         };
         if ext.path_kind == PathKind::Package {
             // `@lib.pkg.obj`: the object declared in the package.
-            let [(l, _), (p, _)] = steps else {
-                return Err(unsupported(span, "nested package paths", "M3"));
-            };
-            let unit = db
-                .libs
-                .iter()
-                .find(|(_, lib)| lib.name.key == l.key)
-                .and_then(|(_, lib)| {
-                    match lib.units.get(&yavs_sem::loader::UnitKey::Primary(p.key)) {
-                        Some(yavs_sem::loader::UnitSlot::Done(u)) => Some(*u),
-                        _ => None,
-                    }
-                });
-            let Some(u) = unit else {
-                return Err(fail(format!(
-                    "package `{}.{}` is not analyzed",
-                    l.text, p.text
-                )));
-            };
-            let d = db.scopes[db.units[u].scope]
-                .names
-                .get(&last.key)
-                .and_then(|v| v.first().copied());
-            let Some(d) = d else {
-                return Err(fail(format!(
-                    "package `{}` declares no `{}`",
-                    p.text, last.text
-                )));
-            };
+            let d = db.package_path_target(x).map_err(fail)?;
             if class != ExternalClass::Signal {
-                return match value_decl(d) {
-                    true if class == ExternalClass::Constant => Ok(ExtTarget::Value(None, d)),
-                    true => Err(unsupported(
-                        span,
-                        "external shared variables in packages",
-                        "M3",
-                    )),
-                    false => Err(fail(format!("`{}` is not a {what}", last.text))),
-                };
+                return Ok(ExtTarget::Value(None, d));
             }
             return self
                 .signal_or_package(db, scope, d, span)?

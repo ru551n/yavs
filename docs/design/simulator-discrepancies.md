@@ -145,6 +145,10 @@ there is untested.
 | `partial-driver-resolved-composite` | process driving one field of a record resolved as a whole: undriven fields in resolution | 4.6, 14.7.2 | LRM ambiguity | OK* | FATAL | OK | to be filled | OK | every leaf is driven by a driving process, resolver gets whole values | agent, 2026-10-18 (#193) |
 | `relative-external-name-port-actual` | relative external name as a port actual: where the pathname starts | 8.7 | LRM clear | FATAL | OK | OK | to be filled | OK | starts at the region that contains the port map; sim1 starts at the instantiated entity and fails at elaboration ("name not found") | agent (corpus hierarchy/external_port_forms) |
 | `unconstrained-records` | records with unconstrained fields | 5.3.3, 6.4.2.3 | LRM clear | OK* | OK | OK | to be filled | OK | LRM result, by hand | agent (ref=hand) |
+| `external-name-architecture-subprogram-unbound` | an external name naming nothing in a subprogram of an architecture that is never called | 8.7, 14.4.1 | LRM ambiguity | OK | REJECT | REJECT | to be filled | REJECT | bound once per elaborated region after the whole hierarchy: `E2117` | agent, 2026-10-19 (#255, L86, 2 of 3 reference simulators) |
+| `external-name-package-subprogram-unbound` | an external name naming nothing in a package subprogram that is never called | 8.7 | LRM ambiguity | OK | REJECT | OK | to be filled | OK | bound after the whole hierarchy; one that cannot be bound fails the call at run time | agent, 2026-10-19 (#255, L86, 2 of 3 reference simulators) |
+| `external-name-in-package-declaration` | a package constant initialised from an external name of the hierarchy | 8.7, 14.4.1 | LRM clear | REJECT | REJECT | FATAL | to be filled | REJECT | `E2117`: packages are elaborated before the hierarchy (sim3 crashes loading the design) | agent, 2026-10-19 (#255, L86) |
+| `procedure-in-process-drives-external` | a procedure declared in a process assigns an external signal | 14.7.2, 8.7 | LRM clear | OK | REJECT | REJECT | to be filled | OK | one driver, the process's (sim2 fails with an internal error, sim3 counts a second driver of the same process) | agent, 2026-10-19 (#255, L86) |
 
 ## Runtime semantics
 
@@ -172,6 +176,8 @@ there is untested.
 | `reflect-signal-mirrors` | std.reflection mirrors of signals and ports | 2019 16.11 | reference bug | FATAL | unsupported | unsupported | to be filled | OK | mirrors the signal's value; sim1 returns garbage or crashes | agent (reflect/generics, ref=hand) |
 | `shift-negative-count` | shift by a negative count | 9.2.4 | LRM clear | OK | OK | OK | to be filled | OK | `sla -k` is `sra k` | agent (decisions.md) |
 | `transaction-at-init` | `S'transaction` at initialization | 14.7.5.2 | LRM clear | OK* | OK* | OK | to be filled | OK | no toggle at time 0 | user, 2026-10-19 (#241) |
+| `external-name-subprogram-generate` | a relative external name in a subprogram of a block in each generate iteration | 8.7 | LRM clear | OK* | OK | OK | to be filled | OK | each iteration's own instance (sim1 binds the first iteration's for all) | agent, 2026-10-19 (#255, L86) |
+| `external-constant-run-time-value` | an external constant whose target is computed when its region is elaborated (`'path_name`) | 8.7, 16.2.5 | LRM clear | OK | OK* | OK | to be filled | OK | the target's value, read from its region's data (sim2 drops the instance from the path) | agent, 2026-10-19 (#255) |
 
 ## Adding a case
 

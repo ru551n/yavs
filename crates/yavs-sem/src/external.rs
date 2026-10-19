@@ -14,11 +14,12 @@ use yavs_diag::{Diagnostic, Span};
 use yavs_syntax::ast::{self, ExternalClass, PathKind};
 
 use crate::db::{Db, Reported};
-use crate::decl::{Alias, DeclKind, Designator};
+use crate::decl::{Alias, Body, DeclKind, Designator, ObjClass, ObjRole};
 use crate::diag;
 use crate::hir::{Expr, ExprKind, External, Lsp, ObjRoot, Sensitivity, StmtKind};
 use crate::ids::{DeclId, ExprId, ExternalId, ScopeId, StmtId, SubtypeId};
 use crate::stat::Staticness;
+use crate::types::TypeKind;
 
 /// Where an external name appears, for the checks that depend on it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -217,6 +218,12 @@ pub enum ExtOwner {
     /// An expression evaluated by its own equivalent process: an expression or `inertial`
     /// port actual.
     Expr(ExprId),
+    /// A subprogram declared in a package, an architecture, a block, a generate or a process
+    /// (or a method of a protected body declared there): its body, with the subprograms and
+    /// protected bodies nested in it. Its aliases belong to that region, bound once per
+    /// elaborated region; declared aliases of whole external names in it are among them
+    /// (#255).
+    Sub(DeclId),
 }
 
 impl Db {
@@ -234,8 +241,11 @@ impl Db {
         if !self.ext_uses.contains_key(&owner) {
             let mut exprs = Vec::new();
             let mut roots = Vec::new();
+            // Declared aliases of whole external names (`ExtOwner::Sub`).
+            let mut own = Vec::new();
             match owner {
                 ExtOwner::Stmt(s) => self.stmt_externals(s, &mut exprs, &mut roots),
+                ExtOwner::Sub(d) => self.sub_externals(d, &mut exprs, &mut roots, &mut own),
                 ExtOwner::Expr(e) => self.walk_expr(e, &mut |x| exprs.push(x)),
                 ExtOwner::Alias(d) => {
                     if let DeclKind::Alias(Alias::Object { target, .. }) = self.decls[d].kind {
@@ -274,8 +284,8 @@ impl Db {
                     out.push((x, d));
                 }
             }
-            self.ext_uses
-                .insert(owner, out.into_iter().map(|(_, d)| d).collect());
+            own.extend(out.into_iter().map(|(_, d)| d));
+            self.ext_uses.insert(owner, own.into());
         }
         &self.ext_uses[&owner]
     }
@@ -338,6 +348,173 @@ impl Db {
         let d = self.new_decl(scope, Designator::Ident(name), kind, span);
         self.decls[d].implicit = true;
         d
+    }
+
+    /// The subprograms with VHDL bodies declaration `d` brings: itself, or the methods of a
+    /// protected type's body (#255).
+    pub fn decl_subprograms(&self, d: DeclId) -> Vec<DeclId> {
+        match &self.decls[d].kind {
+            DeclKind::Subprogram(sp) if matches!(sp.body, Body::Hir { .. }) => vec![d],
+            // Methods are declared in the protected type declaration and completed in the body;
+            // the body's own subprograms are declared there.
+            DeclKind::Type(t) => match self.types[*t].kind {
+                TypeKind::Protected {
+                    decl_scope,
+                    body: Some(b),
+                    ..
+                } => {
+                    let mut out: Vec<DeclId> = Vec::new();
+                    for &m in self.scopes[decl_scope]
+                        .order
+                        .iter()
+                        .chain(&self.scopes[b].order)
+                    {
+                        if !out.contains(&m)
+                            && matches!(&self.decls[m].kind,
+                                DeclKind::Subprogram(sp) if matches!(sp.body, Body::Hir { .. }))
+                        {
+                            out.push(m);
+                        }
+                    }
+                    out
+                }
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// The scope of subprogram `d`'s body.
+    pub fn sub_scope(&self, d: DeclId) -> Option<ScopeId> {
+        match &self.decls[d].kind.subprogram()?.body {
+            Body::Hir { scope, .. } => Some(*scope),
+            _ => None,
+        }
+    }
+
+    /// External names in subprogram `d`'s body and the subprograms nested in it.
+    fn sub_externals(
+        &self,
+        d: DeclId,
+        exprs: &mut Vec<ExprId>,
+        roots: &mut Vec<ExternalId>,
+        own: &mut Vec<DeclId>,
+    ) {
+        let Some(sp) = self.decls[d].kind.subprogram() else {
+            return;
+        };
+        let Body::Hir { scope, stmts } = &sp.body else {
+            return;
+        };
+        let push = |db: &Db, e: ExprId, exprs: &mut Vec<ExprId>| {
+            db.walk_expr(e, &mut |e| {
+                if matches!(db.exprs[e].kind, ExprKind::External(_) | ExprKind::Obj(_)) {
+                    exprs.push(e);
+                }
+            })
+        };
+        for &x in &self.scopes[*scope].order {
+            match &self.decls[x].kind {
+                DeclKind::Object(o) if o.role != ObjRole::Param => {
+                    if let Some(e) = o.default {
+                        push(self, e, exprs);
+                    }
+                }
+                DeclKind::Alias(Alias::Object { target, .. }) => {
+                    if self.external_alias(x).is_some() {
+                        own.push(x);
+                    } else {
+                        push(self, *target, exprs);
+                    }
+                }
+                _ => {
+                    for m in self.decl_subprograms(x) {
+                        self.sub_externals(m, exprs, roots, own);
+                    }
+                }
+            }
+        }
+        for &s in stmts.iter() {
+            self.stmt_externals(s, exprs, roots);
+        }
+    }
+
+    /// Resolve every external name with a package path (`@lib.pkg.obj`) that names an
+    /// analyzed package object of its class and type: the name becomes a name of that object,
+    /// like any other use of it (LRM 8.7: it denotes the object itself), so it is never
+    /// bound per region. Names that do not resolve are left to elab, which reports them where
+    /// they are bound. Idempotent (#255).
+    pub fn bind_package_paths(&mut self) {
+        let uses: Vec<(ExprId, ExternalId)> = self
+            .exprs
+            .iter()
+            .filter_map(|(e, x)| match x.kind {
+                ExprKind::External(x) if self.externals[x].path_kind == PathKind::Package => {
+                    Some((e, x))
+                }
+                _ => None,
+            })
+            .collect();
+        for (e, x) in uses {
+            if let Ok(d) = self.package_path_target(x) {
+                self.pkg_targets.insert(x, d);
+                self.exprs[e].kind = ExprKind::Obj(d);
+            }
+        }
+    }
+
+    /// The package object a package-path external name resolved to ([`Db::bind_package_paths`]).
+    pub fn package_target(&self, x: ExternalId) -> Option<DeclId> {
+        self.pkg_targets.get(&x).copied()
+    }
+
+    /// The object package-path external name `x` (`@lib.pkg.obj`) names, or why there is
+    /// none.
+    pub fn package_path_target(&self, x: ExternalId) -> Result<DeclId, String> {
+        let ext = &self.externals[x];
+        let [(l, _), (p, _), (last, _)] = &ext.path[..] else {
+            return Err("nested package paths are not supported yet".into());
+        };
+        let unit = self
+            .libs
+            .iter()
+            .find(|(_, lib)| lib.name.key == l.key)
+            .and_then(
+                |(_, lib)| match lib.units.get(&crate::loader::UnitKey::Primary(p.key)) {
+                    Some(crate::loader::UnitSlot::Done(u)) => Some(*u),
+                    _ => None,
+                },
+            );
+        let Some(u) = unit else {
+            return Err(format!("package `{}.{}` is not analyzed", l.text, p.text));
+        };
+        let Some(d) = self.scopes[self.units[u].scope]
+            .names
+            .get(&last.key)
+            .and_then(|v| v.first().copied())
+        else {
+            return Err(format!("package `{}` declares no `{}`", p.text, last.text));
+        };
+        let what = class_str(ext.class);
+        match &self.decls[d].kind {
+            DeclKind::Object(o)
+                if matches!(
+                    (ext.class, o.class),
+                    (ExternalClass::Constant, ObjClass::Constant)
+                        | (ExternalClass::Signal, ObjClass::Signal)
+                        | (ExternalClass::Variable, ObjClass::SharedVariable)
+                ) =>
+            {
+                if self.base(o.subtype) != self.base(ext.subtype) {
+                    return Err(format!(
+                        "`{}` is not of the external name's type",
+                        last.text
+                    ));
+                }
+                Ok(d)
+            }
+            _ => Err(format!("`{}` is not a {what}", last.text)),
+        }
     }
 
     /// External names (and implicit aliases of them) in statement `s` and below; `roots`

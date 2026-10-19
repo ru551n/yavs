@@ -551,10 +551,8 @@ impl Db {
             self.check_not_sequential(scope, first, None)?;
         }
         match class {
-            ObjClass::Constant => {
-                self.check_not_access_or_file("constant", subtype, first, false)?
-            }
-            ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first, false)?,
+            ObjClass::Constant => self.check_not_access_or_file("constant", subtype, first)?,
+            ObjClass::Signal => self.check_not_access_or_file("signal", subtype, first)?,
             _ => {}
         }
         // Reported, but the names are still declared so their uses do not cascade.
@@ -1200,12 +1198,11 @@ impl Db {
             Some(g) => Some(self.generic_list(pscope, g)?),
             None => None,
         };
-        // 5.6.2 (2008): no access or file type in the profile of a method. 2019 drops the
-        // result check and the file parameter check (unclear, permissive); access parameters
-        // stay errors (majority of the reference simulators, user 2026-10-19).
-        let method = self.scopes[scope].kind == crate::scope::ScopeKind::Protected
+        // 5.6.2 (2008): no access or file type in the profile of a method; 2019 drops it
+        // (LCS-2016-004; user, 2026-10-19, rule 15).
+        let method_2008 = self.scopes[scope].kind == crate::scope::ScopeKind::Protected
+            && self.file_rev() < LangRev::Vhdl2019
             && !self.in_std_library(scope);
-        let method_2008 = method && self.file_rev() < LangRev::Vhdl2019;
         let mut params = Vec::new();
         self.param_anon.clear();
         for p in s.params.iter().flatten() {
@@ -1222,15 +1219,10 @@ impl Db {
             };
             let first = params.len();
             params.extend(self.param_decls(pscope, o, kind)?);
-            if method {
+            if method_2008 {
                 let at = o.names.first().map_or(o.span, |n| n.span);
                 for p in &params[first..] {
-                    self.check_not_access_or_file(
-                        "protected method parameter",
-                        p.subtype,
-                        at,
-                        !method_2008,
-                    )?;
+                    self.check_not_access_or_file("protected method parameter", p.subtype, at)?;
                 }
             }
         }
@@ -1274,7 +1266,7 @@ impl Db {
             self.written_marks.insert(decl, n.span);
         }
         if let (true, Some(r), Some(n)) = (method_2008, ret, &s.return_type) {
-            self.check_not_access_or_file("protected method result", r, n.span, false)?;
+            self.check_not_access_or_file("protected method result", r, n.span)?;
         }
         // 4.2.1 (2008, 2019): the result of a pure function is not of an access type and
         // has no access subelement (clear; sim2 and sim4 reject, sim1 and sim3 accept).
@@ -1580,7 +1572,7 @@ impl Db {
             }
         } else {
             let first = o.names.first().map_or(o.span, |n| n.span);
-            self.check_not_access_or_file(what, subtype, first, false)?;
+            self.check_not_access_or_file(what, subtype, first)?;
             if role == ObjRole::Port {
                 for n in &o.names {
                     self.check_not_protected("port", subtype, n.span)?;
@@ -1772,10 +1764,10 @@ impl Db {
         match class {
             _ if in_std => {}
             ObjClass::Constant => {
-                self.check_not_access_or_file("constant parameter", subtype, first, false)?
+                self.check_not_access_or_file("constant parameter", subtype, first)?
             }
             ObjClass::Signal => {
-                self.check_not_access_or_file("signal parameter", subtype, first, false)?
+                self.check_not_access_or_file("signal parameter", subtype, first)?
             }
             _ => {}
         }

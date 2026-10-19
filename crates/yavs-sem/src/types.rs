@@ -1459,21 +1459,17 @@ impl Db {
 
     /// `E1223` when a constant, signal, generic, port or constant or signal parameter
     /// (`what`) would be of an access or file type or contain one (6.4.2.2, 6.4.2.3, 6.5.2).
-    /// Protected types are `check_not_protected`'s. With `access_only` a file is accepted.
+    /// Protected types are `check_not_protected`'s.
     pub(crate) fn check_not_access_or_file(
         &mut self,
         what: &str,
         st: SubtypeId,
         span: Span,
-        access_only: bool,
     ) -> Result<(), Reported> {
         let t = self.base(st);
         let Some((kind, bad)) = self.bad_elem(t, false) else {
             return Ok(());
         };
-        if access_only && kind == "file" {
-            return Ok(());
-        }
         let msg = if bad == t {
             format!("a {what} cannot be of {kind} type `{}`", self.type_name(t))
         } else {

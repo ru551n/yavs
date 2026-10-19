@@ -1412,12 +1412,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Constant parameters of access type in 2019 (L46, #198; user, 2026-10-19, majority rule):** `E1223`
   in 2019 user code as in 2008, because all three reference simulators reject them. Only library
   `std` stays exempt (its `std.env` declares such parameters).
-- **Constant parameters of access type in 2019 (L46, #198; user, 2026-10-19, majority rule):** `E1223`
-  in 2019 user code as in 2008, because all three reference simulators reject them. Only library
-  `std` stays exempt (its `std.env` declares such parameters).
-- **Access parameters of protected methods in 2019 (L46, #212; user, 2026-10-19, majority rule):**
-  `E1223` in 2019 as in 2008, because at least two of the three reference simulators reject them.
-  Access results and file parameters stay accepted in 2019 (the simulators disagree).
+- **Access parameters of protected methods in 2019 (L46, #212, LCS-2016-004; user, 2026-10-19,
+  rule 15):** accepted in 2019, as access results and file parameters are: 2019 drops the 5.6.2
+  restriction on method profiles. 2008 keeps `E1223`. It replaces the morning's majority-rule
+  `E1223` in 2019.
 - **Negated literal at the i64 minimum (L58, #214; user, 2026-10-19, majority rule):** `-9223372036854775808`,
   for integer and physical types, is `E1402` in user code (all three reference simulators reject it;
   the range of `universal_integer` is implementation-defined). Library `std` stays exempt: its `TIME`

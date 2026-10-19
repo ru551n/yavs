@@ -1,4 +1,5 @@
 # tools/corpus/run.py expected results for vhdl-ideas-2019 (yavs); one line per manifest entry, in order
+# sim/frequency.vhdl FAIL is intended: E1101, two homograph generic subprogram instances in one region (LRM 12.3), docs/design/lrm-checks.md L89
 PASS work vhdl-ideas/interfaces/axi/axi4.vhdl
 PASS work vhdl-ideas/interfaces/axi/axi4-body.vhdl
 PASS work vhdl-ideas/interfaces/axi/axi4l.vhdl

@@ -9,7 +9,7 @@ package p is
     impure function get return integer;
   end protected;
   type pa is array (natural range <>) of pt;
-  type rec is record a : pt; c : pa(0 to 1); n : integer; end record;
+  type rec is record a : pt; c : pa(0 to 1); end record;
   type rec_ptr is access rec;
   type pa_ptr is access pa;
 end package;
@@ -39,7 +39,7 @@ begin
     bump(v);
     r.a.inc;
     r.c(1).inc;
-    r.n := v(1).get + sv(2).get;
+    r.a.inc;
     rp := new rec;
     rp.all.c(0).inc;
     rp.a.inc;

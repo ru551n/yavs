@@ -39,6 +39,7 @@ RUNS = {
     "nonprop": [("nonprop", "nonprop")],
     "intvec": [("intvec", "intvec")],
     "strput": [("strput", "strput")],
+    "vecedge": [("vecedge", "vecedge")],
 }
 SANDBOX = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 

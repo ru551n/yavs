@@ -492,6 +492,20 @@ fn vhpi_put_string_shorter_or_longer_than_the_array() {
     assert!(out.contains(want), "{out}");
 }
 
+/// A value-change callback that removes itself and registers a new one fires once per cycle,
+/// though the vector's changed elements form several runs (#346).
+#[test]
+fn vhpi_value_change_rearmed_fires_once_per_cycle() {
+    let (code, err, out) = put("edges", &[]);
+    assert_eq!(code, 0, "{err}");
+    let fires: Vec<_> = out.lines().filter(|l| l.starts_with("vhpi: e=")).collect();
+    assert_eq!(
+        fires,
+        ["vhpi: e=01011010 t=10 d=0", "vhpi: e=00000000 t=20 d=0"],
+        "{out}"
+    );
+}
+
 /// Runs entity `top` of `yavs-vhpi/tests/foreign/design.vhd` with the `foreign` plugin.
 fn foreign(top: &str, extra: &[&str]) -> (i32, String, String) {
     let vhdl =

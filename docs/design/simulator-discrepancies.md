@@ -217,7 +217,7 @@ and gives each library a legal identifier as its name.
 
 Reproducers are the C plugins of `tools/vhpi-conformance` (the case names the plugin and its trace
 lines), not `tests/discrepancies/`. sim1 and sim4 run every plugin; sim3 runs a plugin only with full design access enabled and was
-checked for `nonprop`, `cbs`, `intvec` and `strput`, loading the plugin by its startup table; sim2 is `unsupported` (no vote). There is no `tests/discrepancies` case:
+checked for `nonprop`, `cbs`, `intvec`, `strput` and `vecedge`, loading the plugin by its startup table; sim2 is `unsupported` (no vote). There is no `tests/discrepancies` case:
 that harness runs VHDL only. Rule (user, 2026-10-19): follow the LRM where it is clear, else the
 majority of the references that run it.
 
@@ -232,6 +232,7 @@ majority of the references that run it.
 | `put`: `last-known-delta` after a put at 15 ns, 25 ns | a propagating put from an after-delay callback | VHPI `vhpi_put_value` (timing not fixed) | LRM ambiguity | applied in a new delta (cycles 1) | unsupported | unsupported | applied in a new delta (cycles 1) | applied in a new delta | puts from before the update wait for the next delta | agent, 2026-10-19 (#319, both references) |
 | `nonprop` | `vhpi_put_value` with the non-propagating `vhpiDeposit` / `vhpiForce` on a signal | VHPI `vhpi_put_value` (modes listed, semantics for signals not given) | LRM ambiguity | refused | unsupported | refused | accepted: the value changes with no event, no value-change callback and no delta | refused (`W0903`, return 1) | follow the majority: refuse | user, 2026-10-19 (check sim4, then majority) |
 | `strput` | `vhpi_put_value(vhpiStrVal)` into a `string(1 to 8)` / `string(8 downto 1)` with 7, 2, 10 and 0 characters | VHPI `vhpi_put_value` (length rule not given) | LRM ambiguity | fills from the left, keeps the remaining elements; longer text refused | unsupported | fills from the left, pads with NUL; longer text cut | as sim3 | as sim3 and sim4 | follow the majority: pad with NUL, cut longer text | agent, 2026-10-19 (#345) |
+| `vecedge` | a `vhpiCbValueChange` callback registered from inside a value-change callback of the same cycle, on a vector whose changed elements form several runs and on a scalar that changes in that cycle | VHPI callbacks (when a new callback starts to see changes is not given) | LRM ambiguity | not fired until the next cycle with a change | unsupported | as sim1 | as sim1 (fires another signal's callback before the repeating one at the same cycle) | as sim1 | follow all three: from the next cycle | agent, 2026-10-19 (#346) |
 | `values`: `cnt`, `k` | `vhpi_get_value` with `vhpiEnumVal` on an integer object | VHPI clause, `vhpi_get_value` (formats per type, not strict) | LRM ambiguity | the integer | unsupported | unsupported | the integer | the integer | read the integer (a negative one does not fit and is `W0903`) | agent, 2026-10-19 (#318) |
 
 ## Adding a case

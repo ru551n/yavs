@@ -254,3 +254,25 @@ static void str_at(const vhpiCbDataT *cb) {
 PLUGIN_EXPORT void strings(void) {
   reg(vhpiCbAfterDelay, 1, str_at, NULL, NULL, "str");
 }
+
+/* ---- edges: a value-change callback re-armed from inside itself (#346) --------------- */
+
+static vhpiHandleT edge_h;
+
+static void edge(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  vhpi_printf("vhpi: e=%s t=%u d=%ld\n", cb->value->value.str, t, c);
+  /* Remove this one and register a fresh one, as Python testbench frameworks do. */
+  vhpi_remove_cb(edge_h);
+  edge_h = reg(vhpiCbValueChange, 0, edge, h("e"), cb->value, "e");
+}
+
+PLUGIN_EXPORT void edges(void) {
+  static char ebuf[16];
+  static vhpiValueT ev;
+  ev.format = vhpiBinStrVal;
+  ev.bufSize = sizeof ebuf;
+  ev.value.str = (vhpiCharT *)ebuf;
+  edge_h = reg(vhpiCbValueChange, 0, edge, h("e"), &ev, "e");
+}

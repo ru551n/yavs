@@ -275,7 +275,9 @@ milestone users care about works.
   a release recomputes the driving value from the sources, so a force and release after a
   deposit return to the drivers' value, as both references with VHPI do (#310; a signal
   without sources keeps the deposit). Value-change callbacks repeat until
-  removed and run once per cycle.
+  removed and run once per cycle; one registered while a cycle's value changes are dispatched
+  (a framework re-arming its callback from inside it) first sees the next cycle, as all three
+  references with VHPI do (agent, 2026-10-19, #346, `tools/vhpi-conformance` plugin `vecedge`).
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.

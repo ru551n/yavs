@@ -338,9 +338,30 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   rest of the file is analyzed, elaborated and simulated; the PSL itself never runs. A concurrent
   `assert`/`cover` is PSL when its property starts with `{`, `strong` or a PSL operator word
   (`always`, `never`, `eventually`, `forall`, `next*`) followed by something other than `;`,
-  `report` or `severity`. `-- psl` comments stay plain comments. `E0005` ("PSL is not
-  supported") is retired and never reused. Supporting a subset is the optional enhancement
-  tracked in a separate issue.
+  `report` or `severity`. `E0005` ("PSL is not
+  supported") is retired and never reused.
+- **A PSL subset runs as implicit checker processes (agent, 2026-10-19, #226, on the user's
+  request in the issue):** `default clock is c;` (in an architecture, block or generate; it holds
+  in nested blocks and generates), `assert`/`assume` with `always b`, `never b`, `always a -> b`,
+  `always a -> next b`, `always a -> next[n] b` (n up to 256) on VHDL conditions, a property in
+  parentheses, `cover b` or `cover {b}`, an `@c` clock after the property, `report` and `severity`
+  clauses. The parser turns each such directive into a process in the tree (`parser/psl.rs`):
+  `wait until c;` then the check, `next[n]` with `n` boolean variables as a shift register, so
+  sem, lowering and the kernel need nothing new, failures are ordinary assertion reports at the
+  clock event's delta (the values the signals have then, as the reference simulators sample) and
+  the output is the same at any thread count. `b` is a VHDL condition (`??` applies), so `never b`
+  fails only when `b` is true (`'X'` passes). Defaults: severity `error`, message `PSL assertion
+  failed` (the first reference simulator's text); a `cover` prints its `report` text as a note on
+  every hit and nothing without one (both references). A directive that does not fit (no clock,
+  SEREs, other operators, a PSL built-in call such as `rose(a)`, a name of a skipped `property`/
+  `sequence`, anything left after the property) is parsed again as before and skipped with
+  `W0004`; the attempt's diagnostics are dropped. `-- psl` comments are read without an option
+  (the references need one) when the text after `psl` starts with an optional `label :` and a PSL
+  directive or declaration keyword and reaches a `;` before a line that is not a comment or is
+  another `-- psl` comment; the following comment lines continue the statement up to its `;`.
+  Prose such as `-- PSL assert failed` (in the 2019 `std.env` source) stays a comment. `->` is
+  lexed as one token (never valid VHDL). yavs is permissive where the references reject: `@`
+  clocks, `assume` and `severity` (catalogue rows `psl-*`).
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993

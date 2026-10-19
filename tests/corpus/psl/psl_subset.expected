@@ -1,0 +1,10 @@
+exit	1
+diag	error	35000000	0	-	PSL assertion failed
+diag	error	45000000	0	-	PSL assertion failed
+diag	error	75000000	0	-	PSL assertion failed
+diag	note	85000000	0	-	eight
+diag	error	125000000	0	-	PSL assertion failed
+diag	error	135000000	0	-	next2 failed
+diag	error	165000000	0	-	flag set
+diag	error	185000000	0	-	n too big: 18
+diag	error	195000000	0	-	n too big: 19

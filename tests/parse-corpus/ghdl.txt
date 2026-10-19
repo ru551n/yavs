@@ -1304,7 +1304,7 @@ PASS 2008 ghdl/testsuite/gna/issue2116/pkg6.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2116/pkg7.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2116/pkg8.vhdl
 PASS 2008 ghdl/testsuite/gna/issue2116/pkg9.vhdl
-FAIL 2008 ghdl/testsuite/gna/issue2116/psl01.vhdl  # E0002 expected `;`, found `|`
+PASS 2008 ghdl/testsuite/gna/issue2116/psl01.vhdl
 FAIL 2008 ghdl/testsuite/gna/issue2116/psl02.vhdl  # E0002 expected `;`, found `|`
 FAIL 2008 ghdl/testsuite/gna/issue2116/psl03.vhdl  # E0002 expected `;`, found `|`
 FAIL 2008 ghdl/testsuite/gna/issue2116/psl04.vhdl  # E0002 expected `;`, found `|`

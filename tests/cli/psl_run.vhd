@@ -5,9 +5,13 @@ architecture t of psl_run is
   property never_true is always false;
 begin
   clk <= not clk after 1 ns when now < 10 ns;
-  -- psl assert always false;
-  assert always false;
+  -- Outside the subset, skipped with W0004.
+  -- psl assert always {clk; ok};
   cover {clk; ok};
+  -- In the subset: checked on every rising edge of clk.
+  assert always ok -> next ok;
+  -- psl hit: cover {ok = '0'}
+  --   report "cover hit";
   process
   begin
     wait for 5 ns;

@@ -1334,7 +1334,7 @@ PASS 2008 nvc/test/parse/issue893.vhd
 PASS 2008 nvc/test/parse/issue905.vhd
 PASS 2008 nvc/test/parse/issue917.vhd
 FAIL 2008 nvc/test/parse/issue942.vhd  # E0002 expected identifier, found `)`
-FAIL 2008 nvc/test/parse/issue952.vhd  # E0002 expected expression, found `>`
+PASS 2008 nvc/test/parse/issue952.vhd
 PASS 2008 nvc/test/parse/issue956.vhd
 PASS 2008 nvc/test/parse/issue961.vhd
 PASS 2008 nvc/test/parse/issue977.vhd

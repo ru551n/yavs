@@ -8,6 +8,7 @@
 
 mod decl;
 mod expr;
+mod psl;
 mod stmt;
 mod unit;
 
@@ -43,6 +44,10 @@ pub(crate) struct Parser<'a> {
     fuel: u64,
     /// The current design unit already got its PSL warning.
     psl_warned: bool,
+    /// Token index of the expression of the `default clock` in scope.
+    psl_clock: Option<usize>,
+    /// Keys of the PSL `property` and `sequence` declarations skipped so far.
+    psl_names: Vec<Symbol>,
 }
 
 pub(crate) fn parse(
@@ -70,6 +75,8 @@ pub(crate) fn parse(
         depth: 0,
         fuel,
         psl_warned: false,
+        psl_clock: None,
+        psl_names: Vec::new(),
     };
     p.design_file()
 }
@@ -241,12 +248,17 @@ impl<'a> Parser<'a> {
             self.psl_warned = true;
             let span = self.span();
             self.diags.push(
-                Diagnostic::warning(codes::PSL_SKIPPED, "PSL is skipped")
-                    .with_primary(span, "PSL starts here")
-                    .with_note(
-                        "yavs does not run PSL (IEEE 1850): PSL declarations and directives \
-                         are ignored, so no property is checked",
-                    ),
+                Diagnostic::warning(
+                    codes::PSL_SKIPPED,
+                    "PSL outside the supported subset is skipped",
+                )
+                .with_primary(span, "PSL starts here")
+                .with_note(
+                    "yavs runs only clocked `assert`/`assume` with `always`, `never`, `->` \
+                         and `next[n]` on booleans, and `cover` of a boolean; other PSL \
+                         declarations, directives and verification units are ignored, so their \
+                         properties are not checked",
+                ),
             );
         }
     }
@@ -262,7 +274,7 @@ impl<'a> Parser<'a> {
             let t = self.toks[i];
             match t.kind {
                 Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
-                Tok::LBrace | Tok::Kw(Kw::Next | Kw::Strong) => return true,
+                Tok::LBrace | Tok::Imply | Tok::Kw(Kw::Next | Kw::Strong) => return true,
                 Tok::Ident => {
                     let w = self.text(t).to_ascii_lowercase();
                     if matches!(w.as_str(), "always" | "never" | "eventually" | "forall")

@@ -22,10 +22,11 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/symbol.rs` | `Symbol`: global interner, leaked strings, `as_str() -> &'static str` |
 | `src/source.rs` | `Src` (bytes plus Latin-1 flag) |
 | `src/token.rs` | `Tok`, `Kw` (keywords per standard), `Token` |
-| `src/lexer.rs` | `lex`: bytes to tokens, `E0001`, `E0009`, `W0003` |
+| `src/lexer.rs` | `lex`: bytes to tokens, `-- psl` pragmas, `E0001`, `E0009`, `W0003` |
 | `src/directive.rs` | `preprocess`: `` `if/elsif/else/end ``, `` `warning/error ``, unknown directives `W0002`; standard identifiers (`VHDL_VERSION`, `TOOL_*`) |
 | `src/parser/mod.rs` | `Parser`, `PResult`/`Recover`, resync, `MAX_DEPTH = 64`, fuel counter |
 | `src/parser/unit.rs`, `decl.rs`, `stmt.rs`, `expr.rs` | Design units, declarations, statements, expressions and names |
+| `src/parser/psl.rs` | The PSL subset: `default clock`, directives to checker processes (#226) |
 | `src/ast.rs` | The tree: `DesignFile`, `DesignUnit`, `LibraryUnit`, `Decl`, `SeqStmt`, `ConcStmt`, `Expr`, `Name`/`NameKind::Apply`, `Range::Name`, `Ident` (`text`, `key`, `span`) |
 | `src/tests.rs` | Unit tests (about 1,000 lines) |
 
@@ -43,7 +44,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Strict on `abs x ** 2`, chained relations, mixed logical operators; `10ns` accepted with `W0003` | LRM grammar; common real code | `docs/decisions.md` "Parser" |
 | Encoding: `auto` (UTF-8 if valid else Latin-1), `latin1`, `utf8` (`E0010`); non-Latin-1 char in literal/identifier `E0009`; spans are file byte offsets | User decision | `docs/decisions.md` "Parser", source encoding |
 | A type mark takes no parentheses except the dimension of 2019 `A'INDEX(n)` (`NameKind::Apply` on the attribute) | The index subtype is scalar, so no index constraint can follow; #174 | `src/parser/expr.rs` `type_mark` |
-| PSL is skipped with one `W0004` per design unit (`E0005` retired, never reuse); the skip ends at the `;` outside `()`, `[]`, `{}` (`sync`), a `vunit`/`vmode`/`vprop` at its closing `}`; a concurrent `assert`/`cover` counts as PSL by its first property token (`at_psl_directive`) | User decision 2026-10-18: do not fail designs that merely carry assertions yavs cannot run | `docs/decisions.md` "Parser", #138 |
+| PSL outside the subset is skipped with one `W0004` per design unit (`E0005` retired, never reuse); the skip ends at the `;` outside `()`, `[]`, `{}` (`sync`), a `vunit`/`vmode`/`vprop` at its closing `}`; a concurrent `assert`/`cover` counts as PSL by its first property token (`at_psl_directive`) | User decision 2026-10-18: do not fail designs that merely carry assertions yavs cannot run | `docs/decisions.md` "Parser", #138 |
+| The PSL subset (`default clock`, `assert`/`assume` `always`/`never`/`->`/`next[n]`, `cover`, `@` clocks) becomes an implicit checker process in the tree (`parser/psl.rs`); an attempt that does not fit restores the position and drops its diagnostics, then the skip runs; `-- psl` comment pragmas are lexed as tokens (`lexer.rs` `comment`, `is_pragma`); `->` is one token (`Tok::Imply`) | Nothing new in sem, lowering or the kernel; deterministic at any thread count | `docs/decisions.md` "Parser", #226 |
 | No VHDL-93 mode: 93 code using 2008 reserved words is an expected corpus failure | Plan scope | `docs/decisions.md` "Parser", corpus lists |
 
 Module-local decisions go in this section in the same commit; LRM readings go to

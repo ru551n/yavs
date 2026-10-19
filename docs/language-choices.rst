@@ -329,6 +329,20 @@ specification already binds to a different entity aspect, is an error at analysi
 incremental binding may repeat the entity aspect of the primary binding (7.3.2.1). Some simulators
 check these only at elaboration.
 
+PSL
+---
+
+yavs runs a subset of PSL (see the usage page) and reads it in ``-- psl`` comments without
+any option; some simulators read PSL in comments only when asked to, and some reject PSL
+altogether. A directive is checked in the delta cycle of its clock event, with the values the
+signals have then. yavs also accepts an ``@`` clock on a directive, ``assume`` and a ``severity``
+clause on an assertion, which some simulators reject. The default failure message is ``PSL
+assertion failed``; simulators word it differently. PSL outside the subset is skipped with
+warning ``W0004`` instead of failing the design.
+
+*Portable:* use a ``default clock`` declaration and ``assert`` directives with a ``report``
+clause.
+
 Library
 -------
 

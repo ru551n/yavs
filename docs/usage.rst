@@ -118,6 +118,38 @@ against their VHDL type, as is a function result. A word between ``VHPIDIRECT`` 
 (a library name) is ignored; without a symbol the subprogram's name is used. A placeholder
 VHDL body is allowed and never runs.
 
+PSL assertions
+--------------
+
+yavs runs a simple subset of PSL, written as VHDL-2008 statements in an architecture, block or
+generate statement, or in comments that start with ``-- psl``:
+
+.. code-block:: text
+
+   default clock is rising_edge(clk);
+   ...
+   p1: assert always count < 16 report "count overflow";
+   p2: assert never (full and empty);
+   p3: assert always req -> next[2] ack severity warning;
+   p4: assume always (valid -> ready) @falling_edge(clk);
+   c1: cover {state = DONE} report "reached DONE";
+   -- psl p5: assert always start -> next busy;
+
+Supported: ``default clock is <condition>;``; ``assert`` and ``assume`` with ``always b``,
+``never b``, ``always a -> b``, ``always a -> next b`` and ``always a -> next[n] b`` on VHDL
+conditions (``boolean``, ``bit`` or ``std_ulogic``), a property optionally in parentheses;
+``cover {b}``; an ``@<condition>`` clock instead of the default clock; ``report`` and ``severity``
+clauses. Each directive is checked on every tick of its clock with the signal values at that
+tick. A failing ``assert`` or ``assume`` reports like a VHDL assertion, with severity ``error``
+and the message ``PSL assertion failed`` unless the directive gives others; a ``cover`` prints
+its ``report`` text, as a note, every time it is hit, and nothing without one. A ``-- psl``
+comment holds one statement, which may continue on the comment lines below it up to its ``;``.
+
+Everything else (``property`` and ``sequence`` declarations, sequences such as
+``{a; b}``, other operators, built-in functions such as ``rose``, directives without a clock,
+``restrict``, ``fairness`` and verification units) is skipped with warning ``W0004``, once per
+design unit; the rest of the design runs as usual.
+
 Diagnostics
 -----------
 

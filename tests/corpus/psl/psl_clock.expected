@@ -1,0 +1,7 @@
+exit	1
+diag	error	25000000	0	-	PSL assertion failed
+diag	error	30000000	0	-	fall
+diag	error	55000000	0	-	next0
+diag	warning	75000000	0	-	rise 7
+diag	warning	85000000	0	-	rise 8
+diag	warning	95000000	0	-	rise 9

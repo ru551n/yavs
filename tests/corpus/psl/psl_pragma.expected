@@ -1,0 +1,4 @@
+exit	1
+diag	note	35000000	0	-	ack seen
+diag	error	75000000	0	-	no ack
+diag	error	95000000	0	-	n reached 9

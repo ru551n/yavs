@@ -54,7 +54,10 @@ there is untested.
 | Case | Construct | LRM | Kind | sim1 | sim2 | sim3 | sim4 | yavs | yavs's choice | Decided |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `formal-package-per-element-box` | `<>` for one generic of a formal package map: `generic map (a => 1, b => <>)` | 2019 6.5.7.2 (text not at hand) | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | REJECT | not parsed; no simulator parses it either | open |
-| `psl-assert-always` | PSL `default clock` and `assert always` in an architecture | 2008 clause 17 (PSL by reference) | LRM ambiguity | OK | OK | REJECT | to be filled | OK | skipped with warning W0004, one per design unit | user, 2026-10-18 (#138) |
+| `psl-assert-always` | PSL `default clock` and `assert always` in an architecture | 2008 clause 17 (PSL by reference) | LRM ambiguity | OK | OK | REJECT | to be filled | OK | runs as an implicit checker process on the default clock (#226); PSL outside the subset is skipped with warning W0004, one per design unit | user, 2026-10-18 (#138); agent (#226) |
+| `psl-assert-severity` | `severity` clause on a PSL `assert` | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | to be filled | OK | accepted: the severity of the failure report (permissive, as sim2) | agent (#226, decisions.md "Parser") |
+| `psl-assume` | PSL `assume always` directive | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | to be filled | OK | accepted, checked like `assert` (permissive, as sim2) | agent (#226, decisions.md "Parser") |
+| `psl-explicit-clock` | PSL directive clocked with `@rising_edge(clk)`, no default clock | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | to be filled | OK | accepted after the property (permissive, as sim2); sim1 also crashes on `(always p) @c` with a default clock | agent (#226, decisions.md "Parser") |
 | `synopsys-arith-package` | `use ieee.std_logic_arith.all` and `std_logic_unsigned` (non-standard packages) | none (not IEEE packages) | library availability | OK | REJECT | OK | to be filled | REJECT | not shipped (clean-room, deferred): E1002 design unit not found | agent (plan: Synopsys packages deferred) |
 
 ## Sem

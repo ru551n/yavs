@@ -35,6 +35,9 @@ One line in the first 15 lines of each `.vhd`:
   an `.expected` whose exit status differs, so a broken test cannot be blessed by accident.
 - `ignore`: fields added to the ignore set for this test only (below), e.g. `ignore=order` for a
   test whose processes report in the same cycle. Say why in a comment.
+- PSL: the reference simulator templates read `-- psl` comments (`--psl`, `-fpsl`). A PSL failure
+  carries the directive's label or source line instead of a process path, so PSL tests set
+  `ignore=path`; the reference simulator's `Label L at file:line` line is dropped like a snippet.
 - `ref=hand`: the reference simulator is known to give a wrong result for this test. The `.expected` is edited by
   hand to the LRM result; `--bless` and the reference simulator candidate skip it. Say why in a comment.
 
@@ -105,5 +108,5 @@ Thread-count invariance: if the template contains `{threads}`, `--threads 4` run
 ## Corpus
 
 Grouped by directory: `scalar arith process delta sigassign postponed report env resolution
-force composite access protected textio generics hierarchy reflect implicit ieee`. Written from scratch (no
+force composite access protected textio generics hierarchy reflect implicit ieee psl`. Written from scratch (no
 the reference simulators test files). A few use `std=2019`. See `git log` and the file list (`--list`).

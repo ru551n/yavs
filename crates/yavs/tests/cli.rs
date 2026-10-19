@@ -263,8 +263,8 @@ fn snapshots() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// A design with PSL elaborates and runs; the PSL is skipped (#138), so `assert always false`
-/// does not fail the run.
+/// A design with PSL elaborates and runs: PSL outside the subset is skipped (#138), the
+/// subset runs as checker processes (#226), a `-- psl` pragma included.
 #[test]
 fn psl_run() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
@@ -284,6 +284,7 @@ fn psl_run() {
     assert_eq!(o.status.code(), Some(0));
     let out = String::from_utf8(o.stdout).expect("utf-8");
     assert!(out.contains("design with PSL ran"), "{out}");
+    assert_eq!(out.matches("cover hit").count(), 5, "{out}");
 }
 
 /// A runtime error is a rustc-style diagnostic on stderr (#84): the kernel's code, the failing

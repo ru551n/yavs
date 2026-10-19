@@ -3,6 +3,7 @@ architecture rtl of e is
   default clock is rising_edge(clk);
 begin
   assume always req -> next ack;
+  cover {req; ack};
   ok <= '1';
 end architecture;
 

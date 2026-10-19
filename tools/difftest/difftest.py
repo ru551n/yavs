@@ -19,12 +19,12 @@ RC_ANALYSE, RC_ELAB = 97, 98
 # {relaxed} is the candidate's own switch for the `relaxed` header (empty without it).
 # Analysis output is shown only when analysis fails: its warnings (those of `relaxed` tests)
 # are not simulation output.
-NVC = ("o=$(nvc --std={std} --work={work} -a {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
+NVC = ("o=$(nvc --std={std} --work={work} -a --psl {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
        "nvc --std={std} --work={work} -e {top} || exit 98; "
        "nvc --std={std} --work={work} -r {top} {stop_flag}")
-GHDL = ("mkdir -p {work} && o=$(ghdl -a --std={std2} --workdir={work} {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
-        "ghdl -e --std={std2} --workdir={work} {relaxed} {top} || exit 98; "
-        "ghdl -r --std={std2} --workdir={work} {top} {stop_flag}")
+GHDL = ("mkdir -p {work} && o=$(ghdl -a -fpsl --std={std2} --workdir={work} {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
+        "ghdl -e -fpsl --std={std2} --workdir={work} {relaxed} {top} || exit 98; "
+        "ghdl -r -fpsl --std={std2} --workdir={work} {top} {stop_flag}")
 # analyze fails -> 97; `yavs elab` fails (usage, elaboration, "not implemented") -> 98. `yavs run`
 # then passes its status through: `stop(2)` exits 2, the same code as an elaboration error.
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
@@ -97,9 +97,10 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
 # ---------------------------------------------------------------- normalise
 NVC_HDR = re.compile(r"^\*\* (Note|Warning|Error|Failure|Fatal): (\d+)([a-z]+)\+(\d+): (.*)$")
 NVC_TRACE = re.compile(r"^\s+(Process|Procedure|Function|Protected|Instance|Package)\b\s*(\S*)")
-NVC_SNIP = re.compile(r"^\s*(>|\||\d+ \|)")
+# Source snippets, and the "Label L at file:line" line of a PSL directive with a report.
+NVC_SNIP = re.compile(r"^\s*(>|\||\d+ \||Label \S+ at \S+:\d+$)")
 NVC_CTL = re.compile(r"^(FINISH|STOP) called(?: with status (\d+))?$")
-GHDL_HDR = re.compile(r"^\S+?:\d+:\d+:@(\d+)([a-z]+):\((?:report|assertion) (\w+)\): (.*)$")
+GHDL_HDR = re.compile(r"^\S+?:\d+:\d+:@(\d+)([a-z]+):\((?:psl )?(?:report|assertion|assumption|cover) (\w+)\): (.*)$")
 GHDL_CTL = re.compile(r"^simulation (finished|stopped) @(\d+)([a-z]+)(?: with status (\d+))?$")
 GHDL_ERR = re.compile(r"^ghdl:error: (.*)$")
 YAVS_RTE = re.compile(r"^error\[(?:E3\d{3}|E9999)\]: (.*)$")

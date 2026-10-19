@@ -230,6 +230,9 @@ const PASS: &[&str] = &[
     "reflect/scalars",
     "reflect/scalars2",
     "reflect/walk",
+    "psl/psl_clock",
+    "psl/psl_pragma",
+    "psl/psl_subset",
     "report/assert_user_message",
     "report/concurrent_assert",
     "report/error_then_end",
@@ -315,6 +318,7 @@ const GROUPS: &[&str] = &[
     "run",
     "reflect",
     "ieee",
+    "psl",
 ];
 
 fn corpus() -> PathBuf {
@@ -463,6 +467,20 @@ fn simulate(file: &Path) -> Result<String, String> {
     Ok(format!("exit\t{code}\n{out}"))
 }
 
+/// Replaces the process path of every `diag` event with `-`.
+fn path_mask(text: &str) -> String {
+    let mut out = String::new();
+    for l in text.lines() {
+        let mut f: Vec<&str> = l.split('\t').collect();
+        if f.len() == 6 && f[0] == "diag" {
+            f[4] = "-";
+        }
+        out.push_str(&f.join("\t"));
+        out.push('\n');
+    }
+    out
+}
+
 /// Sorts each run of `diag` events of one time and delta stably by process path.
 fn order_mask(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -516,14 +534,23 @@ fn corpus_groups() {
             // `ignore=order` in the header: same-cycle events of different processes are
             // compared per process, as `tools/difftest` does.
             let mut expected = expected;
-            if std::fs::read_to_string(&f)
-                .unwrap()
-                .lines()
-                .take(15)
-                .any(|l| l.contains("difftest:") && l.contains("ignore=order"))
-            {
+            let src = std::fs::read_to_string(&f).unwrap();
+            let header = src.lines().take(15).find(|l| l.contains("difftest:"));
+            let ignores = |field: &str| {
+                header.is_some_and(|h| {
+                    h.split_whitespace()
+                        .filter_map(|w| w.strip_prefix("ignore="))
+                        .any(|v| v.split(',').any(|f| f == field))
+                })
+            };
+            if ignores("order") {
                 expected = order_mask(&expected);
                 got = got.map(|o| order_mask(&o));
+            }
+            // `ignore=path`: the process path of `diag` events is not compared.
+            if ignores("path") {
+                expected = path_mask(&expected);
+                got = got.map(|o| path_mask(&o));
             }
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {

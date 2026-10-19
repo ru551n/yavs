@@ -155,8 +155,10 @@ impl Parser<'_> {
             }
             Tok::Kw(Kw::For) => Decl::ConfigSpec(self.config_spec()?),
             Tok::Kw(Kw::View) => Decl::View(self.view_decl()?),
+            Tok::Kw(Kw::Default) if self.psl_default_clock() => return Ok(None),
             Tok::Kw(Kw::Property | Kw::Sequence | Kw::Default) => {
-                // PSL `property`, `sequence`, `default clock`.
+                // PSL `property`, `sequence`, other `default` forms.
+                self.psl_skipped_name();
                 self.psl_skip();
                 return Ok(None);
             }

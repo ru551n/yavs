@@ -843,7 +843,6 @@ fn psl_warnings(src: &str) -> Vec<String> {
 fn psl_is_skipped_with_one_warning_per_unit() {
     // Every PSL form is skipped and the rest of the file still parses.
     let forms = [
-        "default clock is rising_edge(clk);",
         "property p is always (a -> next b);",
         "sequence s is {a; b[*2]; c};",
         "property q (boolean x) is always {x; x} |=> x;",
@@ -871,18 +870,106 @@ fn psl_is_skipped_with_one_warning_per_unit() {
         assert_eq!(a.stmts.len(), 1, "{f}: the assignment survives");
     }
     // Declaration forms, in a package.
-    for f in &forms[..4] {
+    for f in &forms[..3] {
         let w = psl_warnings(&pkg(&format!("{f}\nconstant c : integer := 1;")));
         assert_eq!(w, ["W0004"], "{f}");
     }
     // Several constructs in one unit still give one warning.
-    let src = conc("default clock is rising_edge(clk);\nassert always a;\ncover {a};");
+    let src = conc("assert always a;\ncover {a; b};");
     assert_eq!(psl_warnings(&src), ["W0004"]);
     // Two units, two warnings.
     let src = "vunit v (e) { assert always a; }\nvmode m (e) { assume always {a; b}; }\nvprop p (e) { }\nentity e is end;";
     assert_eq!(psl_warnings(src), ["W0004", "W0004", "W0004"]);
     // A plain VHDL assertion is not PSL, even on a signal named `always`.
     assert!(psl_warnings(&conc("assert always;\nassert a report \"x\";")).is_empty());
+}
+
+/// The architecture's statements: (label, process) of each checker, `None` for others.
+fn checkers(src: &str) -> Vec<(Option<String>, usize, usize)> {
+    assert_eq!(psl_warnings(src), Vec::<String>::new(), "{src}");
+    let p = parse_std(src, Std::Vhdl2008);
+    let LibraryUnit::Architecture(a) = &p.design.unwrap().units[0].unit else {
+        panic!()
+    };
+    a.stmts
+        .iter()
+        .map(|s| match &s.kind {
+            ConcStmtKind::Process(p) => (
+                s.label.map(|l| l.text.to_string()),
+                p.decls.len(),
+                p.stmts.len(),
+            ),
+            k => panic!("not a checker: {k:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn psl_subset_becomes_checker_processes() {
+    // (label, declarations, statements): `wait until` plus the check; `next[n]` adds one
+    // variable declaration and n shift statements.
+    let src = "architecture a of e is
+        default clock is rising_edge(clk);
+        begin
+        p1: assert always a;
+        assert never (b and c) report \"no\";
+        assume always (a -> b) severity warning;
+        assert always a -> next b;
+        p4: assert always (a -> next[3] (b)) @falling_edge(clk);
+        assert (always a) @rising_edge(clk);
+        cover {a = '1'} report \"hit\";
+        cover a;
+        end;";
+    assert_eq!(
+        checkers(src),
+        [
+            (Some("p1".into()), 0, 2),
+            (None, 0, 2),
+            (None, 0, 2),
+            (None, 1, 3),
+            (Some("p4".into()), 1, 5),
+            (None, 0, 2),
+            (None, 0, 2),
+            (None, 0, 2),
+        ]
+    );
+    // `-- psl` pragmas, one statement over several comment lines.
+    let src = "architecture a of e is
+        -- psl default clock is clk'event and clk = '1';
+        begin
+        -- psl l: assert never
+        --   (a = 1)
+        --   report \"x\";
+        -- PSL assert failed: prose, not a pragma
+        -- psl is great
+        end;";
+    assert_eq!(checkers(src), [(Some("l".into()), 0, 2)]);
+}
+
+#[test]
+fn psl_outside_the_subset_is_skipped() {
+    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nproperty p is always a;\nbegin\n";
+    for f in [
+        "assert always p;",
+        "assert always rose(a);",
+        "assert always a -> next_e[1 to 2] b;",
+        "assert always a until b;",
+        "assert always (a -> b) abort rst;",
+        "assert always a -> next[300] b;",
+        "assert always a -> next a -> next b;",
+        "assert eventually! a;",
+        "cover {a; b};",
+        "-- psl assert always {a; b};",
+    ] {
+        let src = format!("{pre}{f}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
+    }
+    // Without a clock: skipped.
+    assert_eq!(psl_warnings(&conc("assert always a;")), ["W0004"]);
+    // A default clock holds in its block only.
+    let src =
+        conc("b: block default clock is clk; begin assert always a; end block;\nassert always a;");
+    assert_eq!(psl_warnings(&src), ["W0004"]);
 }
 
 // Error recovery.

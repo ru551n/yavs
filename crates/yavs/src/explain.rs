@@ -57,7 +57,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W0004",
-        "A design unit contains PSL (IEEE 1850): default clock, property and sequence declarations, assert/assume/cover/restrict directives or vunit/vmode/vprop units. yavs does not run PSL; the constructs are skipped, so no property is checked and the simulation is unaffected. One warning is given per design unit. Use `-Werror=W0004` to make it an error, or `-Wno-W0004` to silence it.",
+        "A design unit contains PSL (IEEE 1850) outside the subset yavs runs. yavs runs `default clock is ...;`, clocked `assert`/`assume` directives with `always b`, `never b`, `always a -> b` and `always a -> next[n] b` on VHDL booleans, and `cover {b}`, written as VHDL-2008 statements or in `-- psl` comments. Everything else (property and sequence declarations, SERE sequences, other operators, unclocked directives, restrict and fairness directives, vunit/vmode/vprop units) is skipped, so that property is not checked and the simulation is otherwise unaffected. One warning is given per design unit. Use `-Werror=W0004` to make it an error, or `-Wno-W0004` to silence it.",
     ),
     // yavs command line
     (

@@ -54,6 +54,7 @@ impl Parser<'_> {
     fn design_unit(&mut self) -> PResult<Option<DesignUnit>> {
         let start = self.span();
         self.psl_warned = false;
+        self.psl_clock = None;
         let mut context = Vec::new();
         loop {
             match self.peek() {

@@ -23,7 +23,8 @@
 //!   component instantiation without maps.
 //!
 //! Identifiers keep their original spelling next to a case-folded lookup key
-//! (see [`ast::Ident`]). PSL is skipped with a warning (`W0004`).
+//! (see [`ast::Ident`]). PSL runs as checker processes for a
+//! simple subset; the rest is skipped with a warning (`W0004`).
 
 pub mod ast;
 pub mod directive;
@@ -84,7 +85,7 @@ pub mod codes {
     pub const UNKNOWN_DIRECTIVE: &str = "W0002";
     /// A number directly followed by an identifier, as in `10ns`.
     pub const NO_SEPARATOR: &str = "W0003";
-    /// PSL declarations and directives in a design unit, skipped.
+    /// PSL declarations and directives outside the subset in a design unit, skipped.
     pub const PSL_SKIPPED: &str = "W0004";
 }
 

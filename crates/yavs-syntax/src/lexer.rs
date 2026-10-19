@@ -16,6 +16,7 @@ pub(crate) fn lex(file: FileId, src: Src, std: Std, diags: &mut Vec<Diagnostic>)
         std,
         diags,
         toks: Vec::with_capacity(src.bytes.len() / 4),
+        pragma: Pragma::Off,
     };
     lx.run();
     lx.toks
@@ -29,6 +30,18 @@ struct Lexer<'a> {
     std: Std,
     diags: &'a mut Vec<Diagnostic>,
     toks: Vec<Token>,
+    pragma: Pragma,
+}
+
+/// Where the lexer is relative to a `-- psl` comment pragma: its text is lexed as tokens, and
+/// a statement it leaves open (no `;` yet) continues in the following comments.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pragma {
+    Off,
+    /// Inside the text of a pragma comment line.
+    Line,
+    /// After a pragma line whose statement has no `;` yet.
+    Open,
 }
 
 /// Bit string base specifiers, lower case.
@@ -95,6 +108,9 @@ impl Lexer<'_> {
     }
 
     fn push(&mut self, kind: Tok, start: usize) {
+        if self.pragma == Pragma::Open {
+            self.pragma = Pragma::Off;
+        }
         self.toks.push(Token {
             kind,
             start: start as u32,
@@ -107,8 +123,13 @@ impl Lexer<'_> {
             let start = self.pos;
             let c = self.b[self.pos];
             match c {
+                b'\n' if self.pragma == Pragma::Line => {
+                    self.pos += 1;
+                    let open = self.toks.last().is_some_and(|t| t.kind != Tok::Semi);
+                    self.pragma = if open { Pragma::Open } else { Pragma::Off };
+                }
                 b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c => self.pos += 1,
-                b'-' if self.peek(1) == b'-' => self.skip_line(),
+                b'-' if self.peek(1) == b'-' => self.comment(),
                 b'/' if self.peek(1) == b'*' => self.block_comment(),
                 b'0'..=b'9' => self.number(),
                 b'"' => {
@@ -145,6 +166,104 @@ impl Lexer<'_> {
             start: end as u32,
             end: end as u32,
         });
+    }
+
+    /// A `--` comment. One whose text is `psl` followed by a PSL directive or declaration that
+    /// ends with `;` in it or in the comments right below is a PSL pragma (#226): that text is
+    /// lexed as tokens, the following comments too while its statement is open.
+    fn comment(&mut self) {
+        if self.pragma == Pragma::Line {
+            return self.skip_line();
+        }
+        let mut p = self.pos + 2;
+        while matches!(self.b.get(p), Some(b' ' | b'\t')) {
+            p += 1;
+        }
+        let psl = self
+            .b
+            .get(p..p + 3)
+            .is_some_and(|w| w.eq_ignore_ascii_case(b"psl"))
+            && matches!(self.b.get(p + 3), Some(b' ' | b'\t'));
+        if psl && self.is_pragma(p + 3) {
+            self.pos = p + 3;
+            self.pragma = Pragma::Line;
+        } else if self.pragma == Pragma::Open {
+            self.pos += 2;
+            self.pragma = Pragma::Line;
+        } else {
+            self.skip_line();
+        }
+    }
+
+    /// Does the comment text from `p` hold a PSL statement: an optional `label :`, a directive
+    /// or declaration keyword, and a `;` before the first line that is not a comment or is
+    /// another `-- psl` comment? Prose such as `-- PSL assert failed` stays a comment.
+    fn is_pragma(&self, mut p: usize) -> bool {
+        const STARTS: &[&str] = &[
+            "default",
+            "assert",
+            "assume",
+            "assume_guarantee",
+            "cover",
+            "restrict",
+            "restrict_guarantee",
+            "fairness",
+            "property",
+            "sequence",
+        ];
+        let word = |p: &mut usize| {
+            while matches!(self.b.get(*p), Some(b' ' | b'\t')) {
+                *p += 1;
+            }
+            let s = *p;
+            while self
+                .b
+                .get(*p)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+            {
+                *p += 1;
+            }
+            String::from_utf8_lossy(&self.b[s..*p]).to_ascii_lowercase()
+        };
+        let mut w = word(&mut p);
+        let mut q = p;
+        while matches!(self.b.get(q), Some(b' ' | b'\t')) {
+            q += 1;
+        }
+        if self.b.get(q) == Some(&b':') && self.b.get(q + 1) != Some(&b'=') {
+            p = q + 1;
+            w = word(&mut p);
+        }
+        if !STARTS.contains(&w.as_str()) {
+            return false;
+        }
+        loop {
+            match self.b.get(p) {
+                None => return false,
+                Some(b';') => return true,
+                Some(b'\n') => {
+                    p += 1;
+                    while matches!(self.b.get(p), Some(b' ' | b'\t' | b'\r')) {
+                        p += 1;
+                    }
+                    if self.b.get(p..p + 2) != Some(b"--") {
+                        return false;
+                    }
+                    p += 2;
+                    while matches!(self.b.get(p), Some(b' ' | b'\t')) {
+                        p += 1;
+                    }
+                    if self
+                        .b
+                        .get(p..p + 4)
+                        .is_some_and(|w| w.eq_ignore_ascii_case(b"psl "))
+                    {
+                        return false;
+                    }
+                }
+                _ => p += 1,
+            }
+        }
     }
 
     fn skip_line(&mut self) {
@@ -197,6 +316,7 @@ impl Lexer<'_> {
             (b'*', ..) => (Tok::Star, 1),
             (b'+', ..) => (Tok::Plus, 1),
             (b',', ..) => (Tok::Comma, 1),
+            (b'-', b'>', _) => (Tok::Imply, 2),
             (b'-', ..) => (Tok::Minus, 1),
             (b'.', ..) => (Tok::Dot, 1),
             (b'/', ..) => (Tok::Slash, 1),

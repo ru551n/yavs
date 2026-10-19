@@ -572,10 +572,13 @@ impl Parser<'_> {
                 self.need_label(label, "a block statement");
                 ConcStmtKind::Block(self.block(label)?)
             }
-            Tok::Kw(Kw::Assert) if self.at_psl_directive() => {
-                self.psl_skip();
-                return Ok(None);
-            }
+            Tok::Kw(Kw::Assert) if self.at_psl_directive() => match self.psl_directive() {
+                Some(k) => k,
+                None => {
+                    self.psl_skip();
+                    return Ok(None);
+                }
+            },
             Tok::Kw(Kw::Assert) => {
                 let a = self.assertion()?;
                 self.semi()?;
@@ -665,6 +668,13 @@ impl Parser<'_> {
                 let name = self.type_mark()?;
                 ConcStmtKind::Instance(self.instance_rest(InstantiatedUnit::Component(name))?)
             }
+            Tok::Kw(Kw::Assume | Kw::Cover) => match self.psl_directive() {
+                Some(k) => k,
+                None => {
+                    self.psl_skip();
+                    return Ok(None);
+                }
+            },
             t if is_psl_start(t) => {
                 self.psl_skip();
                 return Ok(None);
@@ -741,7 +751,15 @@ impl Parser<'_> {
         })
     }
 
+    /// A block statement; a `default clock` in it holds only inside.
     fn block(&mut self, label: Option<&Ident>) -> PResult<BlockStmt> {
+        let clock = self.psl_clock;
+        let b = self.block_inner(label);
+        self.psl_clock = clock;
+        b
+    }
+
+    fn block_inner(&mut self, label: Option<&Ident>) -> PResult<BlockStmt> {
         let open = self.expect_kw(Kw::Block)?;
         let guard = if self.eat(Tok::LParen) {
             let e = self.expr()?;
@@ -779,6 +797,13 @@ impl Parser<'_> {
 
     /// A generate body, including an inner `end [alt_label];`.
     fn generate_body(&mut self) -> PResult<GenerateBody> {
+        let clock = self.psl_clock;
+        let body = self.generate_body_inner();
+        self.psl_clock = clock;
+        body
+    }
+
+    fn generate_body_inner(&mut self) -> PResult<GenerateBody> {
         let start = self.span();
         let decls = self.decls(true);
         let has_begin = self.eat_kw(Kw::Begin);

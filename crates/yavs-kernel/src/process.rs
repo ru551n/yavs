@@ -101,6 +101,8 @@ pub(crate) struct ProcState {
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
     pub scheduled: Vec<(Time, DriverId)>,
+    /// Scratch for the transactions of one assignment.
+    pub new: Vec<Txn>,
 }
 
 pub(crate) struct DriverInfo {
@@ -296,13 +298,21 @@ impl Ctx<'_> {
     ) -> Result<(), SimError> {
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
-        let mut new = Vec::with_capacity(waveform.len());
+        let local = self.own(d)?.local as usize;
+        let mut new = std::mem::take(&mut self.st.new);
+        new.clear();
         for &(delay, v) in waveform {
-            let buf = Buf::from_ref(elem, r.len as usize, v.into())
-                .map_err(|m| self.error(ErrorKind::InvalidAssign(m)))?;
+            let (n, v) = (r.len as usize, v.into());
+            let buf = match self.st.waveforms[local].spare.pop() {
+                Some(mut b) => b.refill(elem, n, v).map(|()| b),
+                None => Buf::from_ref(elem, n, v),
+            }
+            .map_err(|m| self.error(ErrorKind::InvalidAssign(m)))?;
             self.push_txn(&mut new, r, delay, Some(buf))?;
         }
-        self.schedule(d, r, new, mode)
+        let res = self.schedule(d, r, &mut new, mode);
+        self.st.new = new;
+        res
     }
 
     /// `d <= value;` on the whole driver (zero-delay inertial).
@@ -335,7 +345,7 @@ impl Ctx<'_> {
         let delay = after.unwrap_or(s.disconnect);
         let mut new = Vec::with_capacity(1);
         self.push_txn(&mut new, r, delay, None)?;
-        self.schedule(d, r, new, mode)
+        self.schedule(d, r, &mut new, mode)
     }
 
     fn target(&self, d: DriverId, target: Option<Range>) -> Result<(usize, Range), SimError> {
@@ -377,7 +387,7 @@ impl Ctx<'_> {
         &mut self,
         d: DriverId,
         r: Range,
-        new: Vec<Txn>,
+        new: &mut Vec<Txn>,
         mode: DelayMode,
     ) -> Result<(), SimError> {
         let fail = |m: &str| self.error(ErrorKind::InvalidAssign(m.into()));

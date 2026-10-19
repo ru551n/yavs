@@ -290,6 +290,8 @@ pub(crate) struct Signal {
     pub changed: Vec<Range>,
     /// Ranges whose driving value must be recomputed this cycle.
     pub dirty: Vec<Range>,
+    /// Scratch for the ranges of the transactions applied to one driver.
+    pub applied: Vec<Range>,
     /// Ranges whose effective value must be recomputed this cycle.
     pub eff_dirty: Vec<Range>,
     /// The simulation runs (not initialising): reports of its resolution function are
@@ -326,6 +328,7 @@ impl Signal {
             waiters: Waiters::new(ty.len),
             changed: Vec::new(),
             dirty: Vec::new(),
+            applied: Vec::new(),
             eff_dirty: Vec::new(),
             live: false,
             callouts: Vec::new(),
@@ -560,12 +563,20 @@ fn connected_runs(
     runs
 }
 
-/// Apply a matured transaction to a driver slot.
-pub(crate) fn apply_txn(d: &mut DriverSlot, t: &Txn) {
+/// Apply a matured transaction to a driver slot. A value covering the whole driver is
+/// swapped in rather than copied; the buffer left over goes back to `spare`.
+fn apply_txn(d: &mut DriverSlot, t: Txn, spare: &mut Vec<Buf>) {
     let rel = (t.range.offset - d.range.offset) as usize;
-    match &t.value {
-        Some(v) => {
-            d.value.copy(rel, v, 0, t.range.len as usize);
+    match t.value {
+        Some(mut v) => {
+            if t.range == d.range && v.len() == d.value.len() {
+                std::mem::swap(&mut d.value, &mut v);
+            } else {
+                d.value.copy(rel, &v, 0, t.range.len as usize);
+            }
+            if spare.len() < SPARE_BUFS {
+                spare.push(v);
+            }
             if let Some(off) = &mut d.off {
                 fill_bits(off, rel, t.range.len as usize, false);
             }
@@ -602,10 +613,16 @@ impl DelayMode {
     pub const INERTIAL: DelayMode = DelayMode::Inertial { reject: None };
 }
 
+/// Transaction buffers a driver keeps for reuse.
+const SPARE_BUFS: usize = 4;
+
 /// The projected output waveform of one driver, sorted by time.
 #[derive(Default)]
 pub(crate) struct Waveform {
     pub pending: Vec<Txn>,
+    /// Values of applied transactions, reused by the next assignments (no allocation per
+    /// transaction in the steady state).
+    pub spare: Vec<Buf>,
 }
 
 /// Per element of `t` (relative), whether its value equals `first` (covering `r`).
@@ -639,7 +656,15 @@ impl Waveform {
     /// Apply LRM 10.5.2.2 to target elements `r` for a new waveform whose first transaction is
     /// at `t1`, then insert the new transactions. `reject_from` is `t1 - reject` for inertial
     /// delay, `None` for transport.
-    pub fn schedule(&mut self, r: Range, reject_from: Option<Time>, new: Vec<Txn>) {
+    pub fn schedule(&mut self, r: Range, reject_from: Option<Time>, new: &mut Vec<Txn>) {
+        // Nothing pending on these elements (the usual zero-delay case): nothing to preempt.
+        if !self.pending.iter().any(|t| t.range.overlaps(r)) {
+            for t in new.drain(..) {
+                let at = self.pending.partition_point(|p| p.time <= t.time);
+                self.pending.insert(at, t);
+            }
+            return;
+        }
         let t1 = new[0].time;
         let first = &new[0].value;
         let in_window = |t: &Txn| reject_from.is_some_and(|from| t.time >= from && t.time < t1);
@@ -682,16 +707,20 @@ impl Waveform {
                 }
             }
         }
-        for t in new {
+        for t in new.drain(..) {
             let at = self.pending.partition_point(|p| p.time <= t.time);
             self.pending.insert(at, t);
         }
     }
 
-    /// Remove and return the transactions due at or before `now`.
-    pub fn take_due(&mut self, now: Time) -> std::vec::Drain<'_, Txn> {
+    /// Apply the transactions due at or before `now` to driver slot `d`, in order, calling
+    /// `applied` with each one's elements.
+    pub fn apply_due(&mut self, now: Time, d: &mut DriverSlot, mut applied: impl FnMut(Range)) {
         let n = self.pending.partition_point(|t| t.time <= now);
-        self.pending.drain(..n)
+        for t in self.pending.drain(..n) {
+            applied(t.range);
+            apply_txn(d, t, &mut self.spare);
+        }
     }
 }
 
@@ -755,9 +784,9 @@ mod tests {
     #[test]
     fn transport_deletes_at_or_after() {
         let mut w = Waveform::default();
-        w.schedule(Range::new(0, 1), None, vec![txn(10, 0, &[1])]);
-        w.schedule(Range::new(0, 1), None, vec![txn(20, 0, &[2])]);
-        w.schedule(Range::new(0, 1), None, vec![txn(15, 0, &[3])]);
+        w.schedule(Range::new(0, 1), None, &mut vec![txn(10, 0, &[1])]);
+        w.schedule(Range::new(0, 1), None, &mut vec![txn(20, 0, &[2])]);
+        w.schedule(Range::new(0, 1), None, &mut vec![txn(15, 0, &[3])]);
         assert_eq!(w.pending, vec![txn(10, 0, &[1]), txn(15, 0, &[3])]);
     }
 
@@ -770,7 +799,7 @@ mod tests {
         w.schedule(
             Range::new(0, 2),
             Some(Time::ZERO),
-            vec![txn(20, 0, &[0, 1])],
+            &mut vec![txn(20, 0, &[0, 1])],
         );
         assert_eq!(w.pending, vec![txn(10, 0, &[0]), txn(20, 0, &[0, 1])]);
     }
@@ -779,7 +808,11 @@ mod tests {
     fn inertial_outside_window_kept() {
         let mut w = Waveform::default();
         w.pending.push(txn(1, 0, &[7]));
-        w.schedule(Range::new(0, 1), Some(Time::ns(5)), vec![txn(10, 0, &[1])]);
+        w.schedule(
+            Range::new(0, 1),
+            Some(Time::ns(5)),
+            &mut vec![txn(10, 0, &[1])],
+        );
         assert_eq!(w.pending.len(), 2);
     }
 
@@ -787,7 +820,7 @@ mod tests {
     fn sub_element_assignment_splits_only_its_range() {
         let mut w = Waveform::default();
         w.pending.push(txn(10, 0, &[1, 2, 3, 4]));
-        w.schedule(Range::new(1, 2), None, vec![txn(5, 1, &[9, 9])]);
+        w.schedule(Range::new(1, 2), None, &mut vec![txn(5, 1, &[9, 9])]);
         assert_eq!(
             w.pending,
             vec![txn(5, 1, &[9, 9]), txn(10, 0, &[1]), txn(10, 3, &[4])]
@@ -806,7 +839,7 @@ mod tests {
         };
         let mut w = Waveform::default();
         w.pending.push(lt(10, "10"));
-        w.schedule(Range::new(0, 2), Some(Time::ZERO), vec![lt(20, "11")]);
+        w.schedule(Range::new(0, 2), Some(Time::ZERO), &mut vec![lt(20, "11")]);
         // Element 1 ('1' both times) keeps the 10 ns transaction, element 0 does not.
         assert_eq!(w.pending.len(), 2);
         assert_eq!(w.pending[0].range, Range::new(1, 1));
@@ -817,7 +850,7 @@ mod tests {
         };
         let mut w = Waveform::default();
         w.pending.push(null(10));
-        w.schedule(Range::new(0, 2), Some(Time::ZERO), vec![null(20)]);
+        w.schedule(Range::new(0, 2), Some(Time::ZERO), &mut vec![null(20)]);
         assert_eq!(w.pending, vec![null(10), null(20)]);
     }
 }

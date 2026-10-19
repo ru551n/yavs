@@ -226,6 +226,25 @@ impl Buf {
         }
     }
 
+    /// `from_ref` into this buffer's storage when it already has that kind and size, so a
+    /// recycled transaction value costs no allocation.
+    pub fn refill(&mut self, elem: Elem, n: usize, v: ValueRef<'_>) -> Result<(), String> {
+        match (&mut *self, elem, v) {
+            (Buf::Bytes { es, data }, Elem::Bytes(e), ValueRef::Bytes(d))
+                if *es == e as usize && d.len() == n * *es && data.len() == d.len() =>
+            {
+                data.copy_from_slice(d)
+            }
+            (Buf::Planes { len, b }, Elem::Logic, ValueRef::Logic(l))
+                if l.len() == n && *len == n =>
+            {
+                b.copy_from_slice(l.repr().blocks())
+            }
+            _ => *self = Buf::from_ref(elem, n, v)?,
+        }
+        Ok(())
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Buf::Bytes { es, data } => data.len() / es,
@@ -492,6 +511,20 @@ mod tests {
         let mut out = [0u8; 4];
         assert!(bytes.write_to(1, 2, &mut out));
         assert_eq!(out, [3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn refill_reuses_or_replaces() {
+        let mut b = Buf::from_ref(Elem::Logic, 2, (&lv("01")).into()).unwrap();
+        b.refill(Elem::Logic, 2, (&lv("ZX")).into()).unwrap();
+        assert_eq!(b.to_value(), Value::Logic(lv("ZX")));
+        b.refill(Elem::Logic, 3, (&lv("1HL")).into()).unwrap();
+        assert_eq!(b.to_value(), Value::Logic(lv("1HL")));
+        assert!(b.refill(Elem::Logic, 2, (&lv("1HL")).into()).is_err());
+        let mut b = Buf::from_ref(Elem::Bytes(2), 1, (&[1u8, 2]).into()).unwrap();
+        b.refill(Elem::Bytes(1), 2, (&[7u8, 8]).into()).unwrap();
+        assert_eq!(b.to_value(), Value::Bytes(vec![7, 8]));
+        assert_eq!(b.len(), 2);
     }
 
     #[test]

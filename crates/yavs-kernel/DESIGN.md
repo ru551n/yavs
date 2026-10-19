@@ -45,8 +45,14 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 - **Layers** (`Layer { mask, value }` over the whole signal): effective value per element =
   `force in`, else port input (`in`/`inout` formal), else `force out`, else `driving`.
 - **Event queue**: one binary heap of `(time, Driver | Timeout(proc, generation) |
-  Implicit(i))`. A zero-delay transaction is queued at `now` and matures in the next delta.
-  Stale entries are dropped when they reach the top, so they never cause an empty cycle.
+  Implicit(i))`. A zero-delay transaction is queued at `now` and matures in the next delta;
+  entries at `now` go to a plain list instead of the heap, merged with the heap's due entries
+  in the same `(time, entry)` order at the drain. Stale entries are dropped when they reach
+  the top, so they never cause an empty cycle.
+- **Transaction values** are recycled: a driver's waveform keeps a few buffers of applied
+  transactions (a value covering the whole driver is swapped into the driver, not copied), and
+  the next assignment refills one, so a steady stream of assignments allocates nothing. An
+  assignment to elements with nothing pending skips the preemption scan.
 - **Observer wake-ups** (`Hook::wake_at(t) -> WakeId`, `Hook::cancel`, #268) live in their own
   ordered map `WakeId (time, registration number) -> observer index`, not in the event queue,
   so a cancel removes the entry at once and an empty map costs one check per cycle. `Tn` is the
@@ -233,8 +239,7 @@ process code, and a panic anywhere in the kernel (a broken invariant), is caught
 ## Open questions
 
 - The scalar byte path is 10 to 15% slower than the first byte-only kernel because of the
-  storage enum and the port/implicit machinery; allocation-free transactions are the next step
-  if real designs show it. Measured 2026-10-18 (#103, bench 10000 counters, 8 threads, work
+  storage enum and the port/implicit machinery (transactions are allocation-free since #385). Measured 2026-10-18 (#103, bench 10000 counters, 8 threads, work
   1000, before the parallel update): update 2.0 s, wake 0.3 s, run 1.4 s, commit 0.5 s. The
   update phase of independent signals is now parallel (see "The cycle"); still serial: the
   queue drain, port and composite-group signals, implicit signals, the wake and the commit

@@ -14,9 +14,7 @@ use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
     check_ref, make_op,
 };
-use crate::signal::{
-    DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn,
-};
+use crate::signal::{DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Waiter};
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
@@ -1126,15 +1124,21 @@ impl SimControl {
                     }
                     let mut slot = lock(&self.slots[info.owner.0 as usize]);
                     let sig = &mut self.signals[info.signal.0 as usize];
-                    for txn in slot.st.waveforms[info.local as usize].take_due(now) {
-                        apply_txn(&mut sig.drivers[info.slot as usize], &txn);
-                        sig.mark_active(txn.range, now, cycle);
-                        sig.dirty.push(txn.range);
+                    let mut ranges = std::mem::take(&mut sig.applied);
+                    slot.st.waveforms[info.local as usize].apply_due(
+                        now,
+                        &mut sig.drivers[info.slot as usize],
+                        |r| ranges.push(r),
+                    );
+                    for r in ranges.drain(..) {
+                        sig.mark_active(r, now, cycle);
+                        sig.dirty.push(r);
                         if sig.queued_up != cycle {
                             sig.queued_up = cycle;
                             up.push((sig.level, Reverse(info.signal.0)));
                         }
                     }
+                    sig.applied = ranges;
                 }
             }
         }
@@ -1219,11 +1223,17 @@ impl SimControl {
             for &(_, d) in run.iter() {
                 let info = &drivers[d as usize];
                 let mut slot = lock(&slots[info.owner.0 as usize]);
-                for txn in slot.st.waveforms[info.local as usize].take_due(now) {
-                    apply_txn(&mut sig.drivers[info.slot as usize], &txn);
-                    sig.mark_active(txn.range, now, cycle);
-                    sig.dirty.push(txn.range);
+                let mut ranges = std::mem::take(&mut sig.applied);
+                slot.st.waveforms[info.local as usize].apply_due(
+                    now,
+                    &mut sig.drivers[info.slot as usize],
+                    |r| ranges.push(r),
+                );
+                for r in ranges.drain(..) {
+                    sig.mark_active(r, now, cycle);
+                    sig.dirty.push(r);
                 }
+                sig.applied = ranges;
             }
             let mut dirty = std::mem::take(&mut sig.dirty);
             for &r in &dirty {

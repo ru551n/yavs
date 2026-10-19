@@ -570,7 +570,12 @@ impl Parser<'_> {
     /// A name; in an expression (`in_expr`) a VHDL-2019 `generic map` suffix
     /// is part of it, elsewhere it belongs to an instantiation.
     fn name_opts(&mut self, in_expr: bool) -> PResult<Name> {
-        let mut n = self.name_prefix()?;
+        let n = self.name_prefix()?;
+        self.name_suffixes(n, in_expr)
+    }
+
+    /// The suffixes after `n`; `in_expr` as for `name_opts`.
+    pub(super) fn name_suffixes(&mut self, mut n: Name, in_expr: bool) -> PResult<Name> {
         loop {
             match self.peek() {
                 Tok::Kw(Kw::Generic) if in_expr && self.nth(1) == Tok::Kw(Kw::Map) => {

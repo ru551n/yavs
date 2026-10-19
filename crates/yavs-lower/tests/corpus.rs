@@ -99,6 +99,8 @@ const PASS: &[&str] = &[
     "force/force_out_port",
     "force/force_resolved_composite",
     "force/force_selected",
+    "generics/call_generic_map_2019",
+    "generics/call_generic_map_2019_hand",
     "generics/composite_eval",
     "generics/deferred_constant",
     "generics/elab_calls",

@@ -238,7 +238,11 @@ impl Parser<'_> {
                         SeqStmtKind::VariableAssign { target, rhs }
                     }
                     _ => {
-                        let name = expr_into_name(self, target, "a procedure name")?;
+                        let mut name = expr_into_name(self, target, "a procedure name")?;
+                        if self.at_kw(Kw::Generic) && self.nth(1) == Tok::Kw(Kw::Map) {
+                            // 2019 `p generic map (..) (..);` (LCS-2016-049).
+                            name = self.name_suffixes(name, true)?;
+                        }
                         self.semi()?;
                         SeqStmtKind::ProcedureCall(name)
                     }
@@ -682,6 +686,35 @@ impl Parser<'_> {
             _ => {
                 let target = self.target()?;
                 match self.peek() {
+                    Tok::Kw(Kw::Generic) if self.nth(1) == Tok::Kw(Kw::Map) => {
+                        let name = expr_into_name(self, target, "a component name")?;
+                        let start = self.span();
+                        let generic_map = self.map_aspect(Kw::Generic)?;
+                        if self.at(Tok::LParen) {
+                            // 2019 concurrent `p generic map (..) (..);` (LCS-2016-049);
+                            // without parameters it stays a component instantiation.
+                            self.require_2019(start, "a generic map in a subprogram call");
+                            let span = self.span_from(name.span);
+                            let name = Name {
+                                kind: NameKind::GenericMap {
+                                    prefix: Box::new(name),
+                                    args: generic_map,
+                                },
+                                span,
+                            };
+                            let name = self.name_suffixes(name, true)?;
+                            self.semi()?;
+                            ConcStmtKind::ProcedureCall(name)
+                        } else {
+                            let port_map = self.opt_map(Kw::Port)?;
+                            self.semi()?;
+                            ConcStmtKind::Instance(InstanceStmt {
+                                unit: InstantiatedUnit::Component(name),
+                                generic_map: Some(generic_map),
+                                port_map,
+                            })
+                        }
+                    }
                     Tok::Kw(Kw::Generic | Kw::Port) => {
                         let name = expr_into_name(self, target, "a component name")?;
                         ConcStmtKind::Instance(

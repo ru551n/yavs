@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	0	:call_generic_map_2019_hand:_p0	tick 9
+diag	note	1000000	0	:call_generic_map_2019_hand:_p1	q 8

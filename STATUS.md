@@ -141,6 +141,10 @@ An installed binary finds `lib/` next to itself (#43).
   difftest `generics/subprog_header_map_2019`. A type, subprogram or package interface in a
   parameter list is `E1232` (4.2.2.1), in a port clause `E1234` (6.5.6.3); a generic list or map on a formal generic
   subprogram is `E1235` (6.5.4, #236).
+- 2019 calls with a generic map (`f generic map (t => integer) (x)`, LCS-2016-049, #362, L103):
+  functions, procedures and concurrent procedure calls instantiate the one generic subprogram the
+  name denotes, once per call, and run: `tests/diag/sem/gen/call_generic_map_*`, difftest
+  `generics/call_generic_map_2019`, `generics/call_generic_map_2019_hand`.
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

@@ -127,6 +127,9 @@ pub struct GenericState {
     /// Those instances, per region of the call and the actuals' subtypes.
     #[allow(clippy::type_complexity)]
     pub(crate) implicit_insts: HashMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
+    /// Instances of 2019 calls with a generic map (`call_instance`), per region and call
+    /// span; `None` after an error.
+    pub(crate) call_insts: HashMap<(ScopeId, Span), Option<DeclId>>,
     /// Uninstantiated subprograms of headers with a generic map (`header_instance`).
     pub(crate) header: HashSet<DeclId>,
     /// Generic constants, types and packages of packages and subprograms not yet
@@ -1109,6 +1112,80 @@ impl Db {
         let d = self.instantiate_subprogram(scope, g, assocs, dname, x.span)?;
         self.declare(scope, d);
         Ok(())
+    }
+
+    /// `f generic map (...)` in a 2019 call (LCS-2016-049): the instance of the one
+    /// generic subprogram `f` names, made once per call and kept in the order of
+    /// `scope`'s declarations but not visible by name.
+    pub(crate) fn call_instance(
+        &mut self,
+        scope: ScopeId,
+        name: &ast::Name,
+        assocs: &[ast::AssocElem],
+        span: Span,
+    ) -> crate::expr::names::NameRes {
+        use crate::expr::names::NameRes;
+        if let Some(&d) = self.generic.call_insts.get(&(scope, span)) {
+            return d.map_or(NameRes::Error, |d| NameRes::Overloads(vec![d]));
+        }
+        let d = self.call_instance_uncached(scope, name, assocs, span).ok();
+        self.generic.call_insts.insert((scope, span), d);
+        d.map_or(NameRes::Error, |d| NameRes::Overloads(vec![d]))
+    }
+
+    fn call_instance_uncached(
+        &mut self,
+        scope: ScopeId,
+        name: &ast::Name,
+        assocs: &[ast::AssocElem],
+        span: Span,
+    ) -> Result<DeclId, Reported> {
+        use crate::expr::names::NameRes;
+        let cands = match self.classify(scope, name) {
+            NameRes::One(d) => vec![d],
+            NameRes::Overloads(ds) => ds,
+            other => return Err(self.report_name(scope, other, name.span, "a subprogram name")),
+        };
+        let mut gens: Vec<DeclId> = Vec::new();
+        for d in cands.into_iter().map(|d| self.entity(d)) {
+            if self.decls[d]
+                .kind
+                .subprogram()
+                .is_some_and(|s| s.generics.is_some())
+                && !gens.contains(&d)
+            {
+                gens.push(d);
+            }
+        }
+        let g = match gens.as_slice() {
+            [g] => *g,
+            [] => {
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NOT_GENERIC,
+                        format!("`{}` is not a generic subprogram", last_name(name)),
+                    )
+                    .with_primary(name.span, "expected an uninstantiated subprogram")
+                    .with_help("a generic map in a call needs an uninstantiated subprogram"),
+                ));
+            }
+            many => {
+                let mut d = Diagnostic::error(
+                    diag::AMBIGUOUS,
+                    "several generic subprograms match the called name",
+                )
+                .with_primary(name.span, "ambiguous")
+                .with_help("instantiate one with `is new g [t return t] generic map (...)`");
+                for &c in many {
+                    d = d.with_secondary(self.decls[c].span, "candidate");
+                }
+                return Err(self.error(d));
+            }
+        };
+        let dname = self.decls[g].name;
+        let d = self.instantiate_subprogram(scope, g, assocs, dname, span)?;
+        self.scopes[scope].order.push(d);
+        Ok(d)
     }
 
     /// A subprogram declaration with a generic list and a generic map in its header

@@ -1,0 +1,7 @@
+exit	0
+diag	note	1000000	0	:call_generic_map_2019:_p0	c 7
+diag	note	1000000	0	:call_generic_map_2019:_p0	hello 5
+diag	note	1000000	0	:call_generic_map_2019:_p0	hello 3
+diag	note	1000000	0	:call_generic_map_2019:_p0	i 42
+diag	note	1000000	0	:call_generic_map_2019:_p0	tick 9
+diag	note	1000000	0	:call_generic_map_2019:_p0	o 3 true

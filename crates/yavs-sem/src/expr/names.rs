@@ -185,6 +185,9 @@ impl Db {
             ast::NameKind::External(_)
             | ast::NameKind::Apply { .. }
             | ast::NameKind::Attribute { .. } => NameRes::Value,
+            ast::NameKind::GenericMap { prefix, args } => {
+                self.call_instance(scope, prefix, args, n.span)
+            }
             _ => NameRes::Unsupported(n.span, "this form of name", "S4"),
         }
     }

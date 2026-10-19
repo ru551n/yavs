@@ -26,7 +26,7 @@ with the result of the four reference simulators (`sim1` to `sim4`, labels as in
 
 ## Summary
 
-46 LCS rows: 36 supported, 2 partial, 3 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
+46 LCS rows: 37 supported, 2 partial, 2 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
 
 For comparison, over the rows that have a probe, the references run the probe (`ok` or `ok (output differs)`) for the following number of rows: sim1 37, sim2 11, sim3 22, sim4 39 (rows with several probes count only when all probes agree).
 
@@ -65,7 +65,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 045a | Mode view declarations | supported | ok | ok/fatal/ok | ok | ok | view ports, signal parameters of a view, an array of a viewed record; gaps in #254, #265 |
 | 045c | `'CONVERSE` of a mode view | supported | ok | ok | ok | ok |  |
 | 047 | Variable ports of protected type | supported | ok | reject | reject | ok |  |
-| 049 | Generic map on a subprogram call | unsupported | ok | reject | reject | ok | `E9999` (#362); subprogram instantiation works |
+| 049 | Generic map on a subprogram call | supported | ok | reject | reject | ok | each call instantiates the generic subprogram (#362, L103); expanded names and concurrent calls too (sim1 rejects those two forms) |
 | 050 | Assert API | supported | ok | reject | ok | ok | `GetVhdlAssertCount`, `IsVhdlAssertFailed`, `ClearVhdlAssert` |
 | 055a | Syntax regularisation: component declarations | supported | ok | reject | ok | ok | `end;` ending a component declaration |
 | 059 | Array type generics and the generic type classes | supported | ok | reject | reject | ok | all class forms analyze; an instance with an array type generic runs |
@@ -94,7 +94,7 @@ occur in those sources.
 |---|---|---|
 | 1 | `'IMAGE` and `TO_STRING` of arrays and records (LCS-012) | #360 |
 | 2 | Generic protected type instantiation (LCS-034) | #29 |
-| 3 | Generic map on a subprogram call (LCS-049) | #362 |
+| 3 | Generic map on a subprogram call (LCS-049): done | #362 |
 | 4 | Arrays and records of protected types (LCS-014, 014a): done | #361 |
 | 5 | Signature in a generic map formal (LCS-I03) | #363 |
 | 6 | Anonymous types (LCS-016): intended syntax unverified, no reference accepts the probe | none |

@@ -1489,6 +1489,15 @@ impl Db {
         prefix: &ast::Name,
         attr: Ident,
     ) -> Result<SubtypeId, Reported> {
+        if self.file_rev() < yavs_syntax::Std::Vhdl2019 {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_IN_REVISION,
+                    "`'record` of a range attribute is not available in VHDL-2008",
+                )
+                .with_primary(attr.span, "needs VHDL-2019"),
+            ));
+        }
         let Some(r) = self.range_attr(scope, prefix) else {
             return Err(self.error(
                 Diagnostic::error(

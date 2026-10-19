@@ -10,10 +10,11 @@ fuzz_target!(|data: &[u8]| {
     // Both readings of the same bytes.
     for encoding in [Encoding::Auto, Encoding::Latin1] {
         let (file, _) = load_source(&mut sources, "fuzz.vhd", data.to_vec(), encoding);
-        for std in [Std::Vhdl2008, Std::Vhdl2019] {
+        for (std, psl) in [(Std::Vhdl2008, false), (Std::Vhdl2019, true)] {
             let opts = Options {
                 std,
                 defines: Vec::new(),
+                psl,
             };
             let parsed = parse_file(file, sources.get(file), &opts);
             // Rendering exercises every span the parser produced.

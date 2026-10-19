@@ -278,6 +278,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   elements, lookup by name and index; names as in `crates/yavs-vhpi/AGENTS.md`) and read
   values with `vhpi_get_value` (#270, formats as in `crates/yavs-vhpi/AGENTS.md`);
   value-change callbacks and `vhpi_put_value` need #271.
+- `--dap=PORT|stdio`: run under a Debug Adapter Protocol client instead of printing to stdout.
+  With a port, yavs listens on `127.0.0.1:PORT` (`0` picks a free one) for one client, and its
+  first line on stderr is exactly `yavs: DAP listening on 127.0.0.1:<port>`; with `stdio` stdout
+  carries only DAP messages. Reports and `OUTPUT` text become `output` events, a runtime error
+  an `output` event of category `stderr`. Processes run on one thread (`--threads` above 1 is
+  warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as
+  the `exited` event before `terminated`; a disconnect before the end stops the run (exit 1).
+  `--wave` or `--vhpi` with `--dap` is `E9999` not implemented (exit 2). A port that cannot be
+  opened is `E0701` (exit 2). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with
@@ -320,8 +329,8 @@ values other than `fst`.
 
 Later: when `yavs-gui` lands, `-g` will run `yavs run --dap=0 ...` and start
 `yavs-gui` attached to it. `--dap=0` makes yavs pick a free port, and its first
-line on stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>`;
-the test runner reads that line to connect the GUI. `--dap=PORT` with a fixed port
+line on stderr is then exactly `yavs: DAP listening on 127.0.0.1:<port>` (implemented, section
+5); the test runner reads that line to connect the GUI. `--dap=PORT` with a fixed port
 prints the same line.
 
 ## 7. Environment

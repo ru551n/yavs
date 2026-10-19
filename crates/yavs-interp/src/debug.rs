@@ -208,6 +208,12 @@ impl DebugSession {
         self.pause.store(true, Ordering::Relaxed);
     }
 
+    /// Withdraw a pause request no process has taken (the simulation paused between cycles
+    /// first).
+    pub fn cancel_pause(&self) {
+        self.pause.store(false, Ordering::Relaxed);
+    }
+
     pub(crate) fn take_pause(&self) -> bool {
         self.pause.swap(false, Ordering::Relaxed)
     }

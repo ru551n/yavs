@@ -103,6 +103,15 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0107",
         "A foreign subprogram cannot be bound or called: its VHPIDIRECT C signature cannot be called, its VHPI model is registered as the other kind of subprogram, or (at the call) no `--load` library and not the executable defines its symbol or no `--vhpi` plugin registered its model.",
     ),
+    (
+        "W0109",
+        "`--threads` is ignored with `--dap`: the debugger stops inside processes, which needs the simulation on one thread. The run is the same as with `--threads=1`.",
+    ),
+    // yavs-dap
+    (
+        "E0701",
+        "The Debug Adapter Protocol connection (`--dap`) cannot be opened: the port is in use or not allowed, or accepting the client failed.",
+    ),
     // yavs-vhpi
     (
         "E0901",

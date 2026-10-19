@@ -420,10 +420,11 @@ impl DebugSession {   // one per simulation, shared by all attached processes
     fn new(prog, Box<dyn Debugger>) -> Arc<Self>;
     fn set_breakpoint(&self, StmtId, LineBp) -> Option<Arc<LineBp>>;  // LineBp { cond: Option<FuncId>, hit: HitCond }
     fn clear_breakpoint(&self, StmtId);
-    fn request_global_step(&self); fn request_pause(&self);
+    fn request_global_step(&self); fn request_pause(&self); fn cancel_pause(&self);
     fn processes(&self) -> Vec<ProcStatus>;  // name, NotStarted|Running|Waiting|Terminated, wait stmt, sensitivity, absolute timeout
 }
 InterpProcess::with_debug(self, Arc<DebugSession>, name) -> InterpProcess
+Elaborated::build_debug(cfg, &Arc<DebugSession>)   // every process attached (yavs-elab)
 SignalBreak::new(sim.interrupt()).watch(signal, Option<Value>)   // a kernel Observer
 ```
 

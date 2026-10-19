@@ -235,7 +235,44 @@ tb +seed=7 +verbose``. A plugin reads them with ``vhpi_get(vhpiArgcP, tool)`` an
 name ``yavs``. VHDL code cannot see them. Any other argument after the top level, apart from
 ``-gNAME=VALUE``, is a usage error (exit 2).
 
-Not implemented yet
--------------------
+Debugging
+---------
 
-``--dap`` is accepted but reports that it is not implemented yet, instead of being ignored.
+``yavs run --dap=PORT`` runs the design under a debugger that speaks the Debug Adapter Protocol
+(DAP), the protocol of most editors' debug views. yavs listens on ``127.0.0.1:PORT`` for one
+client and prints ``yavs: DAP listening on 127.0.0.1:PORT`` on stderr first; ``--dap=0`` picks a
+free port. ``--dap=stdio`` talks DAP on standard input and output instead, for clients that start
+the debugger themselves. The design given on the command line is the one debugged; the client's
+``launch`` request only starts it (``"stopOnEntry": true`` stops at the first statement).
+
+.. code-block:: bash
+
+    yavs run --work=lib:out/lib --dap=4711 tb
+
+In the editor, attach to the port (for example with a ``debugServer`` launch setting).
+
+* **Threads are processes**, named by their path such as ``:tb:u1:p``.
+* **Line breakpoints** stop at the statements that start on the line, or on the next line that
+  has one; a hit condition (``3``, ``>= 3``, ``% 3``) is supported.
+* **Stepping** within the stopped process: step over (``next``), into a subprogram (``stepIn``)
+  and out of it (``stepOut``). Stepping over a ``wait`` stops when the process resumes. After a
+  pause between simulation cycles, a step stops at the next statement of any process.
+* **Pause** stops a running simulation: inside a process if one is running, otherwise between
+  cycles.
+* **Call stack**: one frame per subprogram with its source position; a waiting process shows its
+  ``wait`` statement.
+* **Variables**: the locals of each frame (process variables, parameters, subprogram variables),
+  the signals and ports of the regions around the process, and the generics of its instance.
+* **Evaluate** reads a local, a signal visible from the process, or a signal by path
+  (``:tb:u1:s`` or ``tb.u1.s``).
+* Every stop says its simulation time and delta, and reports and ``OUTPUT`` text appear in the
+  debug console.
+
+A stop is a defined point of the simulation: under ``--dap`` processes run on one thread, so
+``--threads`` is ignored (warning ``W0109``) and every session behaves the same. When the
+simulation ends the client gets the exit status of the run; disconnecting ends the simulation
+(exit status 1 if it had not ended).
+
+Not yet: conditions on breakpoints, signal breakpoints, forcing and depositing signal values,
+running to a time, live waveforms, composite variables (shown as ``(...)``), and ``--dap``
+together with ``--wave`` or ``--vhpi``.

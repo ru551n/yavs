@@ -1,0 +1,17 @@
+request initialize {"adapterID": "yavs"}
+request launch {"stopOnEntry": true}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 12, "hitCondition": ">= 2"}, {"line": 4}, {"line": 99}, {"line": 22, "hitCondition": "x"}]}
+request configurationDone {}
+event stopped
+request stackTrace {"threadId": 1}
+request stepIn {"threadId": 1}
+event stopped
+request stepIn {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request continue {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request evaluate {"expression": "x", "frameId": 65537}
+request evaluate {"expression": "nosuch", "frameId": 65537}
+request disconnect {}

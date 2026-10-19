@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
-  `yavs-kernel`, `yavs-wave`, `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
+  `yavs-kernel`, `yavs-wave`, `yavs-dap` (`--dap`), `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
   `yavs-llvm` (M6). Nothing depends on this crate.
 
 ## 2. Map
@@ -25,6 +25,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
 | `tests/lib_parse.rs` | Every file in `lib/` parses (2008 and 2019) |
+| `tests/dap.rs` | `--dap`: scripted DAP sessions over stdio (`tests/dap/*.script` and `.expected`), pause, TCP |
 | `tests/corpus.rs` | External parse corpora vs `tests/parse-corpus/` lists (`--features corpus`, `YAVS_CORPUS`) |
 
 ## 3. Design decisions that bind this module
@@ -43,7 +44,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Runtime errors are diagnostics on stderr (`E3001`-`E3010`, statement span, `called from here` per frame, time/delta/process note) via `Elaborated::runtime_diagnostic` | Same format as every other error | `docs/cli-contract.md` 5 |
 | A runtime error while package or instance data is initialised (`Elaborated::build`) is exit 2 with the runtime diagnostic; an internal one is exit 3 | It is elaboration, and test runner users need the VHDL location | `docs/cli-contract.md` 5 |
 | Foreign symbols are bound after lowering, before `build`: `--load` libraries in order, then the executable; missing is warning W0108, E0107 only at the call (user decision 2026-10-18) | Warn early, fail at call | `docs/cli-contract.md` 5, `docs/decisions.md` "Foreign subprograms and `--load`" |
-| Unimplemented flags (`--vhpi`, `--dap`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
+| Unimplemented flags and combinations (`--dap` with `--wave` or `--vhpi`) are `E9999` "not implemented yet" naming the milestone, exit 2 | No silent ignore | root `AGENTS.md` rule 1 |
+| `--dap` hands the elaborated design to `yavs_dap::serve` after `--load` binding and the resolution check; `--threads` above 1 is warning `W0109` | Stops need one thread | `docs/cli-contract.md` 5, `docs/decisions.md` "DAP server" |
 | `yavs analyze` holds one exclusive library session for the whole batch; elab/run only read | Rule 14 locking | `docs/plan.md` rule 14, `docs/cli-contract.md` 3 |
 
 Module-local decisions go in this section in the same commit; CLI or test-runner-facing behaviour goes
@@ -82,7 +84,8 @@ cargo run -p yavs -- run --work=work:$HOME/.cache/<dir>/work top --threads 4
 - Env vars: `YAVS_STDLIB` (std/ieee tree), `YAVS_BLESS=1`, `YAVS_CORPUS`, `NO_COLOR`.
 - Codes owned: `E0100`-`E0199`/`W0100`-`W0199` (in use: E0100 unreadable file, E0101 response
   file, E0102 std/ieee mapped, E0103 `-W` form, E0104 no top level, E0105 bad `--stop-time`, E0106 `--load` library
-  cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound).
+  cannot be loaded, E0107 foreign subprogram cannot be bound or called, W0108 foreign symbol not bound, W0109
+  `--threads` ignored with `--dap`).
 
 ## 6. Coordination
 

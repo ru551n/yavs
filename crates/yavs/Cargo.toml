@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 clap.workspace = true
 yavs-diag.workspace = true
+yavs-dap = { path = "../yavs-dap" }
 yavs-elab = { path = "../yavs-elab" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-lib = { path = "../yavs-lib" }
@@ -31,4 +32,5 @@ required-features = ["corpus"]
 
 [dev-dependencies]
 cc = "1.8.0"
+serde_json = "1"
 wellen = "0.25.7"

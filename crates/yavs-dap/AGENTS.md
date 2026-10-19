@@ -1,0 +1,63 @@
+# AGENTS.md: yavs-dap
+
+Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-dap`.
+The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
+`docs/design/ir.md` 3.4.
+
+## 1. Purpose and boundaries
+
+- The Debug Adapter Protocol server behind `yavs run --dap=PORT|stdio`: builds the simulation
+  with every process attached to one `yavs_interp::DebugSession`, runs it, and answers a DAP
+  client: breakpoints, stepping, pause, stack, variables, evaluate, output, exit.
+- Does not: elaborate or lower (the CLI hands it an `Elaborated` with IR), parse the command line,
+  or drive the kernel other than through `SimControl` and the session (plan: nothing else drives
+  simulation).
+- Depends on: `yavs-diag`, `yavs-elab`, `yavs-interp`, `yavs-ir`, `yavs-kernel`, `yavs-sem`,
+  `serde_json`. Called by: `yavs` (`src/elab.rs`, `run`).
+
+## 2. Map
+
+| File | Responsibility |
+|---|---|
+| `src/lib.rs` | `serve` (transport, session, run loop, end of run), `Transport`/`parse_transport`, `Shared` state, reader-thread requests (`handle`, `set_breakpoints`, `parse_hit`), stop-time requests (`Front::on_stop`, `serve_stop`, `stack_trace`, `scopes`, `variables`, `evaluate`), `Output` observer |
+| `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, signals (`Sig`, value text from kernel leaves), per process its regions, signals and generics |
+| `src/wire.rs` | `Content-Length` framing (`read_message`, `write_message`) |
+| `../yavs/tests/dap.rs`, `../yavs/tests/dap/` | Scripted sessions over stdio (`NAME.script` in, `NAME.expected` transcript, `YAVS_BLESS=1`), pause, TCP |
+
+## 3. Design decisions that bind this module
+
+| Decision | Why | Source |
+|---|---|---|
+| Processes run on one thread under `--dap` (`Config::threads = 1`, the CLI warns `W0109` for more) | A stop inside a process is mid-delta; one thread makes every stop a defined point and sessions identical at any `--threads` | ir.md 3.4, `docs/decisions.md` "DAP server" |
+| DAP threads are processes: `threadId` = session process index + 1, named by `Elaborated::proc_name` | One debuggable sequential thing per process | plan `yavs-gui` debugging list |
+| Frame id `threadId << 16 \| depth` (outermost 0), variables reference `frameId << 2 \| scope` (1 locals, 2 signals, 3 generics) | Stateless ids, valid for one stop | this file |
+| Requests that need no stop (`initialize`, `launch`, `setBreakpoints`, `configurationDone`, `threads`, `pause`) are answered on the reader thread; the rest go to the simulation thread and are served only while stopped (`the simulation is running` otherwise) | The simulation thread is busy inside `SimControl::run_until` | this file |
+| A line breakpoint is set on the outermost statements starting on the line, or the next line with any (`Design::line_stmts`); the response gives the actual line | Editors expect breakpoints to slide to code | this file |
+| Pause sets both the session pause (a running process stops at its next statement) and the kernel `Interrupt` (between cycles); the kernel pause that follows a process stop is swallowed (`paused_in_process`), an untaken session pause cancelled (`DebugSession::cancel_pause`) | An endless loop inside a process must be pausable; one pause is one stop | this file |
+| From a stop between cycles, every step request is a global step (next statement of any process) | No process is current there | ir.md 3.4 |
+| Reports and `OUTPUT` text are `output` events (stdout carries DAP in `stdio` mode); runtime errors an `output` event of category `stderr` | stdout is the protocol channel | `docs/cli-contract.md` 5 |
+| Disconnect stops the run (`Interrupt::stop`), then `exited`, `terminated` and the disconnect response, in that order | Deterministic transcript | this file |
+| Paths in frames and breakpoints are `std::path::absolute` of the source path (lower-cased as a key on Windows) | No `\\?\` prefixes; clients differ in drive letter case | this file |
+
+## 4. Invariants and pitfalls
+
+- `Front::on_stop` runs on the simulation thread inside a process's statement; it must not call
+  `SimControl`. It reads signals through `Stop::ctx` (`At::read`).
+- `Shared::rx` is locked only by the simulation thread (configuration wait, stops, end of run).
+- The transcript tests depend on message order: only send from the simulation thread while it
+  runs, and keep reader-thread answers to requests a client sends while stopped or before start.
+- Codes owned: `E0700`-`E0799`/`W0700`-`W0799` (in use: `E0701` connection cannot be opened).
+
+## 5. How to work here
+
+```sh
+CARGO_BUILD_JOBS=6 cargo test -p yavs-dap -p yavs --test dap
+YAVS_BLESS=1 cargo test -p yavs --test dap      # rewrite tests/dap/*.expected; review the diff
+yavs run --work=lib:out/lib tb --dap=4711       # then attach an editor to 127.0.0.1:4711
+```
+
+## 6. Open issues
+
+#322 signal breakpoints, #323 force/deposit/release, #324 run to a time, next delta and time step,
+#325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
+variables, hierarchy browsing.

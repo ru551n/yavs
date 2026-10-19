@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use yavs_diag::Diagnostic;
-use yavs_interp::{CallVal, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState};
+use yavs_interp::{
+    CallVal, DebugSession, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState,
+};
 use yavs_kernel::{Config, ErrorKind, SimControl, SimError};
 use yavs_lower::{LowerOptions, Lowerer, UnitIr};
 use yavs_sem::{Db, UnitId};
@@ -394,6 +396,36 @@ impl Elaborated {
         cfg: Config,
         probes: Option<&yavs_interp::VarProbes>,
     ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+        self.build_runtime_with(cfg, probes, None)
+    }
+
+    /// [`Elaborated::build_runtime`] with every process attached to the debug session (ir.md
+    /// 3.4), named by [`Elaborated::proc_name`] in the session's process table. Run it with
+    /// one thread: stops inside a process need it.
+    pub fn build_debug(
+        &self,
+        cfg: Config,
+        session: &Arc<DebugSession>,
+    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+        self.build_runtime_with(cfg, None, Some(session))
+    }
+
+    /// The path of a process instance as reports and the debugger show it: `:top:u1:p`.
+    pub fn proc_name(&self, p: &crate::ProcInst) -> String {
+        let n = self.hier.path_name(p.scope, crate::Case::Lrm);
+        n.strip_suffix(':').unwrap_or(&n).to_string()
+    }
+
+    fn build_runtime_with(
+        &self,
+        cfg: Config,
+        probes: Option<&yavs_interp::VarProbes>,
+        dbg: Option<&Arc<DebugSession>>,
+    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+        let attach = |proc: InterpProcess, p: &crate::ProcInst| match dbg {
+            Some(s) => proc.with_debug(s.clone(), &self.proc_name(p)),
+            None => proc,
+        };
         let Some(ir) = &self.ir else {
             if self.procs.is_empty() {
                 return self
@@ -560,7 +592,8 @@ impl Elaborated {
                 let inst =
                     self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base)?;
                 if let Some(a) = &p.actual {
-                    return self.actual_process(&rt, u, a, p, ds, inst);
+                    let proc = self.actual_process(&rt, u, a, p, ds, inst)?;
+                    return Ok(Box::new(attach(proc, p)));
                 }
                 let pir = u
                     .processes
@@ -607,7 +640,7 @@ impl Elaborated {
                     probes.insert(p.scope.0, v.clone());
                     proc = proc.with_vars(v);
                 }
-                Ok(Box::new(proc))
+                Ok(Box::new(attach(proc, p)))
             },
             res,
         )
@@ -632,7 +665,7 @@ impl Elaborated {
         p: &crate::ProcInst,
         ds: &[yavs_kernel::DriverId],
         inst: Arc<InstData>,
-    ) -> Result<Box<dyn yavs_kernel::Process>, SimError> {
+    ) -> Result<InterpProcess, SimError> {
         let path = || self.hier.path_name(p.scope, crate::Case::Original);
         let (pir, a) = u
             .processes
@@ -679,8 +712,7 @@ impl Elaborated {
                 ty: self.nets.leaf(leaf).ty,
             });
         }
-        let proc = InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)?;
-        Ok(Box::new(proc))
+        InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)
     }
 
     /// The instance data of `region` (instance, block, generate iteration), built once.

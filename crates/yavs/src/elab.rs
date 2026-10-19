@@ -107,9 +107,10 @@ pub struct RunArgs {
     /// Load a VHPI plugin, `LIB[:ENTRY]`.
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
-    /// Serve the Debug Adapter Protocol on this port.
-    #[arg(long, value_name = "PORT")]
-    dap: Option<u16>,
+    /// Run under a Debug Adapter Protocol client: on 127.0.0.1:PORT (0 picks a free port) or
+    /// on standard input and output (`stdio`).
+    #[arg(long, value_name = "PORT|stdio", value_parser = yavs_dap::parse_transport)]
+    dap: Option<yavs_dap::Transport>,
     /// Plusargs `+NAME[=VALUE]` after the top level, seen by VHPI plugins as tool arguments.
     #[arg(value_name = "+NAME[=VALUE]", value_parser = plusarg)]
     plusargs: Vec<String>,
@@ -399,8 +400,27 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     if a.dap.is_some() {
-        out.emit(&none, &unsupported("`--dap` (M8)"));
-        return out.finish(2);
+        let with = if a.wave.is_some() {
+            Some("`--wave`")
+        } else if !a.vhpi.is_empty() {
+            Some("`--vhpi`")
+        } else {
+            None
+        };
+        if let Some(w) = with {
+            out.emit(
+                &none,
+                &unsupported(&format!("{w} together with `--dap` (M8)")),
+            );
+            return out.finish(2);
+        }
+        if a.threads > 1 {
+            out.emit(
+                &none,
+                &Diagnostic::warning("W0109", "`--threads` is ignored with `--dap`")
+                    .with_note("a stop inside a process needs the simulation on one thread"),
+            );
+        }
     }
     let resolution = match a.resolution {
         ResolutionArg::Fs => yavs_kernel::Unit::Fs,
@@ -464,6 +484,15 @@ pub fn run(
         out.emit(&db.sources, &d);
         return out.finish(2);
     }
+    if let Some(t) = a.dap {
+        return match yavs_dap::serve(&db, &e, cfg, stop, t) {
+            Ok(code) => out.finish(code),
+            Err(d) => {
+                out.emit(&db.sources, &d);
+                out.finish(2)
+            }
+        };
+    }
     let probes = a.wave_variables.then(yavs_wave::VarProbes::default);
     let (mut sim, rt) = match e.build_probed(cfg, probes.as_ref()) {
         Ok(s) => s,
@@ -473,14 +502,7 @@ pub fn run(
             return out.finish(if err.exit_status() == 101 { 3 } else { 2 });
         }
     };
-    let names: Vec<String> = e
-        .procs
-        .iter()
-        .map(|p| {
-            let n = e.hier.path_name(p.scope, yavs_elab::Case::Lrm);
-            n.strip_suffix(':').unwrap_or(&n).to_string()
-        })
-        .collect();
+    let names: Vec<String> = e.procs.iter().map(|p| e.proc_name(p)).collect();
     sim.subscribe(Box::new(Printer { names }));
     if !a.vhpi.is_empty() {
         sim.subscribe(Box::new(yavs_vhpi::VhpiObserver));

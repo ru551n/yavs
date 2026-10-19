@@ -1,0 +1,33 @@
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 20}, {"line": 12}]}
+request configurationDone {}
+event stopped
+request threads {}
+request stackTrace {"threadId": 1}
+request scopes {"frameId": 65536}
+request variables {"variablesReference": 262145}
+request variables {"variablesReference": 262146}
+request variables {"variablesReference": 262147}
+request evaluate {"expression": "v", "frameId": 65536}
+request evaluate {"expression": "tb.cnt"}
+request continue {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request variables {"variablesReference": 262149}
+request next {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request stepOut {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request next {"threadId": 1}
+event stopped
+request next {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request stackTrace {"threadId": 2}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request continue {"threadId": 1}
+event terminated
+request disconnect {}

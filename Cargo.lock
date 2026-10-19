@@ -1421,7 +1421,9 @@ version = "0.7.0"
 dependencies = [
  "cc",
  "clap",
+ "serde_json",
  "wellen",
+ "yavs-dap",
  "yavs-diag",
  "yavs-elab",
  "yavs-kernel",
@@ -1431,6 +1433,19 @@ dependencies = [
  "yavs-syntax",
  "yavs-vhpi",
  "yavs-wave",
+]
+
+[[package]]
+name = "yavs-dap"
+version = "0.7.0"
+dependencies = [
+ "serde_json",
+ "yavs-diag",
+ "yavs-elab",
+ "yavs-interp",
+ "yavs-ir",
+ "yavs-kernel",
+ "yavs-sem",
 ]
 
 [[package]]

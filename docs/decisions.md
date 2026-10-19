@@ -1407,3 +1407,19 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   constraint, and every constrained level is length-checked against the actual (signal and
   non-signal array parameters alike); `x'element` of such a formal is the formal's constrained
   element subtype, not a `FromObject` one (L79).
+
+## DAP server (yavs-dap, M8, #130, 2026-10-19)
+
+- **`yavs run --dap=PORT|stdio`:** the design on the command line is the one debugged; the
+  client's `launch`/`attach` only starts it (`stopOnEntry` is a global step before the run).
+  `stdio` is for clients that start the adapter; a port is for clients that attach (and for the
+  later GUI, `docs/cli-contract.md` 6). Why: test runners and the GUI already build the command
+  line; a second way to name the design would be a second contract.
+- **One thread under `--dap`:** processes run serially (`--threads` above 1 is warning `W0109`),
+  so a breakpoint stops the whole simulation at a defined statement, and a session is the same
+  at any `--threads`. Why: a stop inside a process is mid-delta (ir.md 3.4); parallel workers
+  cannot all stop at one point without a kernel barrier the interpreter does not need otherwise.
+- **DAP threads are processes**, frames are VHDL subprogram calls, and the variables of a frame
+  are its locals plus the signals of the process's enclosing regions and the generics of its
+  instance. Why: the plan's debugging list (call stack and locals per process).
+- Details of ids, request routing and pause handling: `crates/yavs-dap/AGENTS.md` section 3.

@@ -34,7 +34,10 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
     let rest = symbol.strip_prefix("yavs.implicit.")?;
     let (fam, ty) = rest.split_once('.')?;
     // The form follows `#`, which no type name contains.
-    let form = ty.split_once('#').map(|(_, f)| f).filter(|f| FORMS.contains(f));
+    let form = ty
+        .split_once('#')
+        .map(|(_, f)| f)
+        .filter(|f| FORMS.contains(f));
     let f: NativeFn = match (fam, form.unwrap_or("")) {
         ("eq", "") => |m, _, t, a| rel(m, t, a, Rel::Eq),
         ("neq", "") => |m, _, t, a| rel(m, t, a, Rel::Ne),
@@ -372,7 +375,9 @@ fn rel(m: &mut Machine, t: Option<TyId>, a: &[u64], r: Rel) -> R<Option<u64>> {
             }
         }
         Ty::Record { .. } => {
-            return rt_err("predefined \"=\" on record types is not a native (lowering inlines it)");
+            return rt_err(
+                "predefined \"=\" on record types is not a native (lowering inlines it)",
+            );
         }
         _ => r.holds(order(scalar(m, t)?, x, y)?),
     };

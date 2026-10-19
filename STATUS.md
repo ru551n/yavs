@@ -165,7 +165,7 @@ instructions per element). Equal elements are now written by one `Fill` or by do
 | one verification-component test, package initialisation | 128 ms | 14 ms |
 
 `elab_heavy` init (0.60 s) is the kernel model build (`Builder::build`, about 0.54 s of it for 20000 instances), not
-package or instance data; it belongs to the kernel work. The UVVM and OSVVM benchmarks have no init cost (0.01 s).
+package or instance data; it belongs to the kernel work (fixed by #411, see "Simulation kernel" below: 0.26 s). The UVVM and OSVVM benchmarks have no init cost (0.01 s).
 
 ### Memory footprint (#409)
 
@@ -333,6 +333,53 @@ on the AXI-stream testbench is its 2.07 million variable entries (large records 
 every large variable per time step. The FST is read-back identical (hierarchy and every value change) before and
 after, and identical at `--threads 1` and 4; its bytes can differ between runs of a run longer than the 5 s flush
 interval, because a block ends on the wall clock.
+
+### Simulation kernel (#385, #411)
+
+Kernel and kernel/interpreter boundary costs for signal-heavy designs, one commit each, output byte-identical
+(difftest corpus at 1 and 4 threads and shuffled, the external runner's `check` and `verification_components`
+suites 257/257 and 579/579, the AXI-stream verification component testbench log identical before and after).
+CPU seconds (user + sys), median of 5 interleaved runs unless noted, release builds, host shared with other
+agents (load about 15). Each row compares the binary before and after that change only. Designs (scratch, not
+in the repository): `ff` 4096 flip-flops with one process each (100 cycles), `lfsr` 512 16-bit LFSRs (300
+cycles), `chain` a 1000-deep chain of concurrent assignments over one vector (1000 clock edges, 1000 deltas
+each), `fan` 4000 processes on one clock, `bus` a 32-bit resolved bus with 32 drivers, plus the two long local
+testbenches and the harness benchmarks.
+
+| Change | Benchmark | Before | After |
+|---|---|---|---|
+| Signal reads copied straight into interpreter memory (`Ctx::read_into`) | `ff` / `lfsr` / `chain` | 16.16 / 13.01 / 8.90 | 8.05 / 3.95 / 7.12 |
+| A dirty range finds its segments by binary search | `ff` / `chain` | 8.05 / 7.12 | 6.96 / 5.77 |
+| Waiters bucketed by 64-element chunk | `chain` / `ff` | 5.77 / 6.96 | 4.26 / 6.65 |
+| The three above, harness | `delta_chain` / `resolved_bus` | 0.53 / 0.60 | 0.31 / 0.56 |
+| Zero-delay entries in a list, transaction buffers recycled | kernel example bench (`examples/bench.rs`, 10000 processes, all three parts) | 18.17 | 16.33 |
+| Small batches run inline (`--threads 4`) | `chain`, 500 edges, 3 runs | 11.88 | 1.16 |
+| Sources and segments of wide signals built in O(n log n) (#411) | `elab_heavy` init / total | 0.60 / 1.23 | 0.26 / 0.87 |
+| Edge triggers (clocked processes not resumed on the other edge) | `ff` | 1.38 | 1.28 |
+| One element of an array signal read, not the whole signal | `ff` | 1.32 | 0.81 |
+
+`bus`, `fan`, the two local testbenches (`vai_window_gen`, `vai_bias_requant`) and the harness's `ff_rtl` stay
+within the noise for every change: their time is in process code, not in the kernel. Sampled profiles (a
+debugger-based sampler; no hardware profiler on this host) put the kernel at 1 to 10 percent of those runs.
+
+Against a reference simulator (elaborate and run, its analysis excluded), main at the last of these commits:
+
+| Benchmark | yavs | reference |
+|---|---|---|
+| `ff` | 0.81 | 0.25 |
+| `lfsr` | 1.12 | 0.06 |
+| `bus` | 1.21 | 0.70 |
+| `chain` | 1.43 | 0.10 |
+| `fan` | 1.60 | 0.26 |
+| `vai_window_gen` | 2.36 | 1.12 |
+| `vai_bias_requant` | 0.33 | 0.47 |
+
+The AXI-stream verification component testbench (first generic set, full run, 1 run each) took 577 s CPU on main
+before this work (`7110f09f`) and 173 s after it (most of the gain is the interpreter work of #386 and the native
+operators of #395 that landed in the same period); it now runs to the end and its alert summary fails (#419,
+identical before and after). Still open from `docs/design/performance.md` R2/R3: skipping unchanged assignments
+(R2b, needs the elaborator's activity analysis), static sensitivity (R2c), resolution tables (R3), and edge
+triggers for more shapes (an element of a vector, `elsif` with an asynchronous reset).
 
 ## CI and releases
 

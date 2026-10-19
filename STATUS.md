@@ -601,7 +601,7 @@ and `vhpiResolutionLimitP` follow `--resolution`. `crates/yavs/tests/vhpi_run.rs
 `tests/plugin/sched.c` scenarios: timed finish at T in resolution units, after-delay chains and
 a removed repeating one, read-write before postponed before read-only, enable/disable with
 100000 disabled callbacks, misuse; output identical at `--threads 1` and `4`.
-Missing: value-change callbacks (#270, #271).
+Missing: value-change callbacks (#271).
 
 Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
 the elaborated design made before plugins load: root and component instances, blocks, `for`
@@ -619,8 +619,22 @@ Checked by `crates/yavs/tests/vhpi_run.rs` `plugin_walks_the_design_hierarchy` (
 `crates/yavs-vhpi/tests/plugin/hier.c` against `tests/hier/expected.txt`) and unit tests;
 names and kinds agree with the reference simulator that has VHPI wherever it reports them.
 Missing: equivalent processes of concurrent statements, aliases, files, `vhpiGenerateIndexP`;
-sub-elements of variables whose bounds are only known at run time (`W0904`, with #270); values
-(#270, #271).
+sub-elements of variables whose bounds are only known at run time (`W0904`); puts (#271).
+
+Done (#270, values): `vhpi_get_value` (`crates/yavs-vhpi/src/value.rs`) on signals, ports,
+generics and constants and their record fields and array elements (any dimension), from callbacks
+through the observer's `Hook` (signals) or the elaborated value (generics, constants), in
+`vhpiObjTypeVal`, `vhpiBinStrVal`, `vhpiOctStrVal`, `vhpiDecStrVal`, `vhpiHexStrVal`,
+`vhpiStrVal`, `vhpiCharVal`, `vhpiEnumVal`, `vhpiSmallEnumVal`, `vhpiLogicVal`, `vhpiIntVal`,
+`vhpiLongIntVal`, `vhpiRealVal`, `vhpiTimeVal`, `vhpiPhysVal` and the vector forms
+(`vhpiEnumVecVal`, `vhpiSmallEnumVecVal`, `vhpiLogicVecVal`, `vhpiIntVecVal`,
+`vhpiLongIntVecVal`, `vhpiRealVecVal`, `vhpiTimeVecVal`, `vhpiPhysVecVal`), with the
+buffer-size protocol. `crates/yavs/tests/vhpi_run.rs` `plugin_reads_values_in_every_format`
+(C plugin `tests/plugin/values.c`, 27 objects by 22 formats, against `tests/values/expected.txt`)
+plus unit tests; every value the reference simulator with VHPI reports correctly agrees.
+Missing: type and constraint objects (`vhpiBaseType`, `vhpiType`, `vhpiConstraints`, enum
+literals, record element and unit declarations), variables' values, `vhpiPtrVal`,
+`vhpiRawDataVal`, `vhpiSmallPhys*`, records as a whole (`W0904`).
 
 ## discrepancies (simulator catalogue)
 

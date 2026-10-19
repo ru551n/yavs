@@ -10,15 +10,42 @@
 // VHPI names are matched as written in the C standard.
 #![allow(non_upper_case_globals)]
 
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::io::Write;
+use std::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::callbacks::{Callback, RegisterError};
 use crate::model::{Control, Fault, INT_PROPS, Iter, Object, STR_PROPS, State};
 use crate::sys::*;
+use crate::value::{self, Encoded};
+use yavs_kernel::Hook;
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+thread_local! {
+    /// The kernel hook of the observer call that is running plugin callbacks on this thread.
+    static HOOK: Cell<Option<NonNull<Hook<'static>>>> = const { Cell::new(None) };
+}
+
+/// Runs `f` (which calls plugins) with `hook` available to the ABI through [`with_hook`].
+pub(crate) fn hooked<R>(hook: &mut Hook<'_>, f: impl FnOnce() -> R) -> R {
+    let p = NonNull::from(hook).cast::<Hook<'static>>();
+    let prev = HOOK.with(|c| c.replace(Some(p)));
+    let r = f();
+    HOOK.with(|c| c.set(prev));
+    r
+}
+
+/// Calls `f` with the hook of the running observer call; `None` outside one.
+pub(crate) fn with_hook<R>(f: impl FnOnce(&mut Hook<'_>) -> R) -> Option<R> {
+    let p = HOOK.with(Cell::get)?;
+    // SAFETY: `hooked` set the pointer from a `&mut Hook` that outlives its call, and the
+    // caller does not use that borrow until `hooked` returns; the lifetime is erased only
+    // for the duration of the call, and calls on this thread do not overlap.
+    Some(f(unsafe { &mut *p.cast::<Hook<'_>>().as_ptr() }))
+}
 
 // SAFETY: the raw pointers in a callback's `vhpiCbDataT` (user data, the
 // trigger object) belong to the plugin. yavs never dereferences them, it
@@ -596,10 +623,63 @@ pub extern "C" fn vhpi_protected_call(
     1
 }
 
+/// Reads the value of `expr` in `value.format` (`vhpiObjTypeVal`: the object's own format,
+/// written back). Returns 0, the buffer size in bytes the value needs when `value.bufSize` is
+/// smaller (or `value.value.ptr` is NULL), or -1 on error.
+///
+/// # Safety
+/// `value` is NULL or points to a writable `vhpiValueT` whose buffer pointer, when the format
+/// needs one, has `bufSize` writable bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn vhpi_get_value(_expr: vhpiHandleT, _value: *mut vhpiValueT) -> c_int {
-    not_implemented("vhpi_get_value");
-    -1
+pub unsafe extern "C" fn vhpi_get_value(expr: vhpiHandleT, value: *mut vhpiValueT) -> c_int {
+    // SAFETY: NULL or writable per the contract.
+    let Some(v) = (unsafe { value.as_mut() }) else {
+        with_state(|s| s.fail(Fault::Misuse, "vhpi_get_value: NULL value_p"));
+        return -1;
+    };
+    let encoded = with_state(|s| {
+        let obj = get_obj(s, expr, "vhpi_get_value")?;
+        let read = match s.read(&obj, |r| with_hook(|h| h.value(r))) {
+            Ok(r) => r,
+            Err((fault, m)) => {
+                s.fail(fault, m);
+                return None;
+            }
+        };
+        if v.format == vhpiObjTypeVal {
+            v.format = read.natural();
+        }
+        match read.encode(v.format, s.clock.resolution.fs()) {
+            Ok(e) => Some(e),
+            Err(value::Error::Unsupported(m)) => {
+                s.fail(Fault::Unsupported, format!("{m}: {NOT_IMPLEMENTED}"));
+                None
+            }
+            Err(value::Error::Mismatch(m)) => {
+                s.fail(Fault::Misuse, format!("vhpi_get_value: {m}"));
+                None
+            }
+        }
+    });
+    match encoded {
+        None => -1,
+        Some(Encoded::Scalar(u)) => {
+            v.value = u;
+            v.numElems = 1;
+            0
+        }
+        Some(Encoded::Buffer { bytes, n }) => {
+            v.numElems = i32::try_from(n).unwrap_or(i32::MAX);
+            // SAFETY: reading the pointer member of the union; every member is plain data.
+            let ptr = unsafe { v.value.ptr };
+            if ptr.is_null() || v.bufSize < bytes.len() {
+                return c_int::try_from(bytes.len()).unwrap_or(c_int::MAX);
+            }
+            // SAFETY: the plugin's buffer has `bufSize` writable bytes.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast::<u8>(), bytes.len()) };
+            0
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

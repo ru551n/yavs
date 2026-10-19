@@ -14,18 +14,21 @@
 // VHPI names are matched as written in the C standard.
 #![allow(non_upper_case_globals)]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use yavs_diag::Span;
 use yavs_elab::{Bounds, Elaborated, ObjId, ScopeId, ScopeKind, Shape};
+use yavs_sem::decl::Designator;
 use yavs_sem::decl::{DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::{Direction, Mode, StmtKind, UnitHir};
 use yavs_sem::loader::UnitKind;
 use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::{Constraint, RangeC, TypeKind};
-use yavs_sem::{Db, DeclId, SubtypeId, UnitId};
+use yavs_sem::{Db, DeclId, SubtypeId, TypeId, UnitId};
 
 use crate::sys::*;
+use crate::value::{Lit, Scalar};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct NodeId(pub(crate) u32);
@@ -34,17 +37,23 @@ pub(crate) struct NodeId(pub(crate) u32);
 pub(crate) const ROOT: NodeId = NodeId(0);
 
 /// What a node is in the elaborated design.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+#[expect(
+    dead_code,
+    reason = "the elaborated ids are for value puts and value-change callbacks (#271, #272)"
+)]
 pub(crate) enum Origin {
     /// A region: an instance, block, generate iteration or process.
     Scope(ScopeId),
-    /// A signal or port: its elaborated object (kernel leaves `nets.obj(o).leaves`).
-    Signal(ObjId),
+    /// A signal or port: its elaborated object and its first kernel leaf (its leaves are
+    /// consecutive, one per scalar of the layout's record structure).
+    Signal { obj: ObjId, leaf: u32 },
     /// A generic, constant or variable, declared in elaborated region `scope` (a package's
-    /// objects have none).
+    /// objects have none), with its value when elaboration knows it (generics, constants).
     Decl {
         scope: Option<ScopeId>,
         decl: DeclId,
+        value: Option<ConstValue>,
     },
     /// A package instance or a design unit.
     Unit(UnitId),
@@ -75,17 +84,14 @@ pub(crate) struct Node {
     pub(crate) mode: Option<vhpiModeT>,
     /// The sub-element structure of an object; `None` for regions and design units.
     pub(crate) layout: Option<Layout>,
-    #[expect(
-        dead_code,
-        reason = "the value layer (#270) reads kernel objects through it"
-    )]
     pub(crate) origin: Origin,
 }
 
 /// The sub-element structure of an object (records and arrays are native, rule 9).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Layout {
-    Scalar,
+    /// A scalar of this type.
+    Scalar(Scalar),
     Array {
         dims: Vec<Dim>,
         elem: Box<Layout>,
@@ -107,7 +113,7 @@ impl Layout {
     /// The number of scalar sub-elements (`vhpiSizeP`), if known.
     pub(crate) fn scalars(&self) -> Option<u64> {
         match self {
-            Layout::Scalar => Some(1),
+            Layout::Scalar(_) => Some(1),
             Layout::Array { dims, elem } => elem
                 .scalars()?
                 .checked_mul(dims.iter().map(|d| d.bounds.len()).product()),
@@ -121,7 +127,7 @@ impl Layout {
         match self {
             Layout::Array { dims, .. } => dims.iter().map(|d| d.bounds.len()).product(),
             Layout::Record(fields) => fields.len() as u64,
-            Layout::Scalar | Layout::Open => 0,
+            Layout::Scalar(_) | Layout::Open => 0,
         }
     }
 
@@ -287,6 +293,7 @@ impl Design {
             e,
             d: Design::empty(),
             units: HashMap::new(),
+            scalars: RefCell::default(),
         };
         b.region(ScopeId(0), None);
         b.packages();
@@ -410,6 +417,8 @@ struct Builder<'a> {
     e: &'a Elaborated,
     d: Design,
     units: HashMap<UnitId, NodeId>,
+    /// Scalar types by base type: enumeration literals are shared.
+    scalars: RefCell<HashMap<TypeId, Scalar>>,
 }
 
 impl Builder<'_> {
@@ -579,14 +588,21 @@ impl Builder<'_> {
         let (layout, origin) = match signal {
             Some(obj) => (
                 self.shape_layout(&e.nets.obj(obj).shape),
-                Origin::Signal(obj),
+                Origin::Signal {
+                    obj,
+                    leaf: e.nets.obj(obj).leaves.0.0,
+                },
             ),
             None => {
                 let v = s.and_then(|s| e.value(s, d));
                 let v = v.or_else(|| o.default.and_then(|x| db.value(x)));
                 (
                     self.layout(o.subtype, v, s),
-                    Origin::Decl { scope: s, decl: d },
+                    Origin::Decl {
+                        scope: s,
+                        decl: d,
+                        value: v.cloned(),
+                    },
                 )
             }
         };
@@ -666,10 +682,55 @@ impl Builder<'_> {
         )
     }
 
+    /// The value type of scalars of base type `t`.
+    fn scalar(&self, t: TypeId) -> Scalar {
+        let db = self.db;
+        let wk = &db.well_known;
+        let mut cache = self.scalars.borrow_mut();
+        cache
+            .entry(t)
+            .or_insert_with(|| match &db.types[t].kind {
+                TypeKind::Enum { lits } => {
+                    let character = Some(t) == wk.character;
+                    let bit01 = Some(t) == wk.bit || Some(t) == wk.boolean;
+                    let lits = lits
+                        .iter()
+                        .enumerate()
+                        .map(|(p, &l)| {
+                            let name = &db.decls[l].name;
+                            let ch = match name {
+                                _ if character => u8::try_from(p).ok(),
+                                Designator::Char(c) => u8::try_from(u32::from(*c)).ok(),
+                                _ => None,
+                            };
+                            Lit {
+                                name: name.to_string(),
+                                ch,
+                            }
+                        })
+                        .collect();
+                    Scalar::Enum {
+                        lits,
+                        // std_ulogic is the logic enumeration that is neither BIT nor BOOLEAN.
+                        logic: Some(t) == wk.bit
+                            || (!bit01 && yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Logic),
+                        character,
+                        bit01,
+                    }
+                }
+                TypeKind::Floating | TypeKind::UniversalReal => Scalar::Real,
+                TypeKind::Physical { .. } => Scalar::Phys {
+                    time: Some(t) == wk.time,
+                },
+                _ => Scalar::Int,
+            })
+            .clone()
+    }
+
     fn shape_layout(&self, shape: &Shape) -> Layout {
         let db = self.db;
         match shape {
-            Shape::Scalar { .. } => Layout::Scalar,
+            Shape::Scalar { ty, .. } => Layout::Scalar(self.scalar(*ty)),
             Shape::Array { ty, dims, elem, .. } => {
                 let indexes = match &db.types[*ty].kind {
                     TypeKind::Array { indexes, .. } => &indexes[..],
@@ -751,7 +812,7 @@ impl Builder<'_> {
                     })
                     .collect(),
             ),
-            _ => Layout::Scalar,
+            _ => Layout::Scalar(self.scalar(db.base(st))),
         }
     }
 
@@ -854,7 +915,7 @@ mod tests {
         let l = Layout::Array {
             dims: vec![dim(1, 0), dim(3, 2)],
             elem: Box::new(Layout::Record(vec![
-                ("a".into(), Layout::Scalar),
+                ("a".into(), Layout::Scalar(Scalar::Int)),
                 ("B".into(), Layout::Open),
             ])),
         };

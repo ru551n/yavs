@@ -361,3 +361,31 @@ fn plugin_walks_the_design_hierarchy() {
         .replace("\r\n", "\n");
     assert_eq!(out, want);
 }
+
+/// `vhpi_get_value` (#270): a plugin reads scalars, logic vectors, integers, reals, time,
+/// physical and enumeration values, strings, record fields and 2-D arrays in every format,
+/// with the buffer-size protocol; its output is `yavs-vhpi/tests/values/expected.txt`
+/// (`YAVS_BLESS=1` rewrites it).
+#[test]
+fn plugin_reads_values_in_every_format() {
+    let dir = vhpi_dir().join("tests/values");
+    let vhdl = std::fs::read_to_string(dir.join("design.vhd")).expect("design");
+    let (lib, so) = setup_with("values", &vhdl);
+    let (code, err, out) = yavs(&["run", &lib, &format!("--vhpi={}", so.display()), "top"]);
+    assert_eq!(code, 0, "{err}");
+    // Formats that do not apply are misuse; records and pointers are not values.
+    assert!(err.contains("W0903"), "{err}");
+    assert!(
+        err.contains("unsupported VHPI call: vhpi_get_value of a record"),
+        "{err}"
+    );
+    assert!(!err.contains("bug in yavs"), "{err}");
+    let expected = dir.join("expected.txt");
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &out).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected dump")
+        .replace("\r\n", "\n");
+    assert_eq!(out, want);
+}

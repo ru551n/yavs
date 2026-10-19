@@ -12,8 +12,9 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
   variadic shim (`shim.c`), plugin loading via `vhpi_startup_routines` or `LIB:ENTRY`
   (`plugin.rs`), and export files for the executable (`build.rs`; the `yavs` CLI passes them to its link, #266).
 - The object model: the design hierarchy (`design.rs`, #269), a read-only snapshot of the
-  elaborated design with no simulation state, and the tool. Values (#270, #271) come with M5
-  (#121), on `SimControl` and the event bus. Simulation-phase and after-delay callbacks are real
+  elaborated design with no simulation state, and the tool. `vhpi_get_value` (#270,
+  `value.rs`) reads signals through the kernel `Hook` of the running observer call and
+  generics and constants from their elaborated value; puts (#271) are next. Simulation-phase and after-delay callbacks are real
   (#272): `VhpiObserver` (`sim.rs`) is a kernel `Observer`.
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
   or ship a separate VHPI DLL. `yavs run --vhpi` (#267, `crates/yavs/src/elab.rs`) sets the
@@ -33,7 +34,8 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `include/vhpi_user.h` | Official IEEE header, vendored unchanged (Apache-2.0) |
 | `src/sys.rs` | `#[repr(C)]` types and one constant per enumerator (no bindgen), no unsafe |
 | `src/abi.rs` | Exported `extern "C"` VHPI functions, process-wide state behind a mutex (`with_state`, `fire`); unsafe confined here and in `plugin.rs` |
-| `src/design.rs` | The design hierarchy snapshot: `Design::build(db, elaborated)`, `Node` (regions, declarations, design units; `Origin` links each to the elaborated design for the value layer), `Layout` (sub-element structure), `lookup` by name, `vhpi_name` |
+| `src/design.rs` | The design hierarchy snapshot: `Design::build(db, elaborated)`, `Node` (regions, declarations, design units; `Origin` links each to the elaborated design for the value layer), `Layout` (sub-element structure, each scalar with its value type), `lookup` by name, `vhpi_name` |
+| `src/value.rs` | `Scalar` (a scalar's value type), `Read` (a value as positions, integers or reals, from a kernel `Value` or an elaborated `ConstValue`), `natural` (the `vhpiObjTypeVal` format) and `encode` (every format); no unsafe |
 | `src/model.rs` | `Object` (tool, callback, node, sub-element path, iterator), handles, `State` (properties, one-to-one relations, iterators), `Control` (`vhpi_control` requests), `W0903`/`W0904` reporting |
 | `src/callbacks.rs` | Callback registry: registration, enable/disable/remove, per-reason sets of enabled callbacks, after-delay wake-up bookkeeping, `Clock` (time in resolution units) |
 | `src/sim.rs` | `VhpiObserver`: phase callbacks at the matching `Phase`, after-delay callbacks on `Observer::wake`, kernel requests (wake-ups, cancels, end) after each batch |
@@ -44,6 +46,7 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `src/lib.rs` | `set_design`, `set_design_root` (a root-only design for the spike host), `set_resolution`, `run_callbacks` (outside a simulation, the spike host), `take_control` |
 | `tests/vhpi.rs`, `tests/plugin/plugin.c` | ABI vs C header (`abi_matches_c_header`, all ~610 constants, sizes, offsets), C plugin loaded both ways, missing file/entry/symbol errors |
 | `tests/plugin/sched.c` | Callback scenarios (one entry each) run by `crates/yavs/tests/vhpi_run.rs` through `yavs run --vhpi` |
+| `tests/plugin/values.c`, `tests/values/` | `vhpi_get_value` in every format over a design with every kind of object; run like `hier.c` |
 | `tests/plugin/hier.c`, `tests/hier/` | Hierarchy dump plugin, its design and expected output; run through `yavs run --vhpi` by `crates/yavs/tests/vhpi_run.rs` (`YAVS_BLESS=1` rewrites the dump) |
 
 ## 3. Design decisions that bind this module
@@ -70,6 +73,11 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | Plugin load failures are hard errors before simulation (`E0901`, `E0902`); misuse `W0903` every time; unimplemented calls `W0904` once per message; failed lookups only via `vhpi_check_error` | Fail early without breaking Python testbench framework probing | `docs/decisions.md` "VHPI ABI" |
 | `unsafe` allowed crate-wide in `Cargo.toml` but confined to `abi.rs`, `plugin.rs`, `shim.c` | Root `AGENTS.md` rule 11 | `Cargo.toml`, crate docs |
 | Logic values cross the boundary as std_ulogic codes (the `vhpiEnumT` value); BIT/BOOLEAN translated at the boundary | One encoding | `crates/yavs-logic/LAYOUT.md`, `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes" |
+
+| `vhpi_get_value` reads signals only inside an observer call: `sim.rs` runs plugin callbacks inside `abi::hooked`, which puts the kernel `Hook` in a thread-local slot that `abi::with_hook` borrows (also the way in for puts, #271). Outside a callback a signal read is `W0903` | VHPI has no context argument; the observer holds the only kernel access while callbacks run | #270 |
+| Value formats: enumeration values are positions (std_ulogic `vhpiU`..`vhpiDontCare`; BIT and BOOLEAN, kernel codes 2 and 3, become 0 and 1, as `vhpibit0`/`vhpiFalse`). `vhpiObjTypeVal` gives `vhpiLogicVal`/`vhpiLogicVecVal` for std_ulogic and BIT, `vhpiCharVal`/`vhpiStrVal` for CHARACTER, `vhpiSmallEnumVal`/`vhpiSmallEnumVecVal` for other enumerations of up to 256 literals (`vhpiEnumVal` beyond), `vhpiIntVal`, `vhpiRealVal`, `vhpiTimeVal` and `vhpiPhysVal` and their vector forms, and writes `numElems`; multi-dimensional arrays are flattened row major. Times count in the resolution limit, other physical values in base units | What the reference simulator with VHPI reports for every object it reads correctly | #270 |
+| Permissive where the reference simulator is: enumeration formats and `vhpiIntVal` apply to every enumeration value, `vhpiStrVal` to an enumeration value (its literal: `TRUE`, `H`) and to arrays of character literals, `vhpiCharVal` to a character literal. Beyond it: binary/octal/hex strings of logic values (a group of bits that is not all `0`/`1` shows its common metavalue or `X`; decimal of a value with a metavalue is an error), radix strings of integer, enumeration and physical scalars (signed). A format that does not fit the value (a scalar format on an array, `vhpiIntVal` out of 32 bits) is `W0903` and -1, never a converted value; formats yavs does not produce (`vhpiPtrVal`, `vhpiRawDataVal`, `vhpiSmallPhys*`) and records or arrays of composites as a whole are `W0904` | No wrong values; the reference simulator returns zeros for several of these | #270 |
+| Buffer protocol: a string or vector format returns the size it needs in bytes (strings with their NUL) when `bufSize` is smaller or the buffer pointer is NULL, with `numElems` already set | IEEE `vhpi_get_value` | #270 |
 
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
@@ -139,5 +147,5 @@ cargo run -p yavs-vhpi --bin yavs-vhpi-host -- <plugin>[:entry]
 - The Python testbench framework itself is not installed; installing it needs the user's approval (#122).
 - Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:vhpi`): #121 real
   object model over `SimControl` and the event bus (hierarchy done, #269); #122 Python testbench
-  framework regression (install needs approval); #270, #271 values, puts (value-change
+  framework regression (install needs approval); #271 puts (value-change
   callbacks of #272 wait for them). #123 (disabled callbacks stay cheap) is done.

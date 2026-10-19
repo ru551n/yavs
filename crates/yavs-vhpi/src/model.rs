@@ -9,10 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, SourceMap, render};
+use yavs_kernel::{SigRef, SignalId, SimError, Value};
+use yavs_sem::stat::{ConstValue, Elems};
 
 use crate::callbacks::{Callbacks, Clock};
-use crate::design::{Design, Layout, NodeId, ROOT, vhpi_name};
+use crate::design::{Design, Layout, NodeId, Origin, ROOT, vhpi_name};
 use crate::sys::*;
+use crate::value::{Read, Scalar};
 
 /// What a handle points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,6 +285,107 @@ impl State {
         }
     }
 
+    /// `vhpi_get_value`: the value of a declaration or sub-element, a scalar or an array of
+    /// scalars. Signals are read through `kernel` (`None` outside a simulation callback).
+    pub(crate) fn read(
+        &self,
+        obj: &Object,
+        kernel: impl FnOnce(SigRef) -> Option<Result<Value, SimError>>,
+    ) -> Result<Read, (Fault, String)> {
+        let misuse = |m: &str| (Fault::Misuse, format!("vhpi_get_value: {m}"));
+        let (base, path): (NodeId, &[u64]) = match obj {
+            Object::Node(n) => (*n, &[]),
+            Object::Elem { base, path } => (*base, path),
+            _ => return Err(misuse("the object has no value")),
+        };
+        let node = self.design.node(base);
+        let mut l = node
+            .layout
+            .as_ref()
+            .ok_or_else(|| misuse("the object has no value"))?;
+        // Signals: the kernel leaf, the row-major instance among the leaf's
+        // repetitions and the number of repetitions.
+        let (mut leaf, mut k, mut reps) = match node.origin {
+            Origin::Signal { leaf, .. } => (leaf, 0u64, 1u64),
+            _ => (0, 0, 1),
+        };
+        let mut cv = match &node.origin {
+            Origin::Decl { value, .. } => value.clone(),
+            _ => None,
+        };
+        for &i in path {
+            match l {
+                Layout::Array { elem, .. } => {
+                    let n = l.count();
+                    (k, reps) = (k * n + i, reps * n);
+                    cv = cv.and_then(|v| const_elem(&v, i));
+                    l = elem;
+                }
+                Layout::Record(fields) => {
+                    let i = i as usize;
+                    leaf += fields[..i].iter().map(|(_, f)| leaves(f)).sum::<u32>();
+                    cv = match cv {
+                        Some(ConstValue::Record(r)) => r.get(i).cloned(),
+                        _ => None,
+                    };
+                    l = &fields[i].1;
+                }
+                _ => unreachable!("element handles follow the layout"),
+            }
+        }
+        let (ty, len, array) = match l {
+            Layout::Scalar(t) => (t, 1, false),
+            Layout::Array { elem, .. } => match &**elem {
+                Layout::Scalar(t) => (t, l.count(), true),
+                _ => {
+                    return Err((
+                        Fault::Unsupported,
+                        "vhpi_get_value of an array of composites: read its elements".into(),
+                    ));
+                }
+            },
+            Layout::Record(_) => {
+                return Err((
+                    Fault::Unsupported,
+                    "vhpi_get_value of a record: read its elements".into(),
+                ));
+            }
+            Layout::Open => return Err(misuse("the object's bounds are not known")),
+        };
+        match &node.origin {
+            Origin::Signal { .. } => {
+                // A logic leaf stores its rightmost element at offset 0 (yavs-elab `hier`).
+                let logic = matches!(
+                    ty,
+                    Scalar::Enum { logic: true, .. } | Scalar::Enum { bit01: true, .. }
+                );
+                let first = k * len;
+                let offset = if logic {
+                    reps * len - first - len
+                } else {
+                    first
+                };
+                let r = SignalId(leaf).slice(offset as u32, len as u32);
+                let v = kernel(r)
+                    .ok_or_else(|| misuse("signal values are read in simulation callbacks"))?
+                    .map_err(|e| {
+                        (
+                            Fault::Misuse,
+                            format!("vhpi_get_value: this is a bug in yavs: {e:?}"),
+                        )
+                    })?;
+                Read::from_kernel(ty.clone(), array, &v).ok_or_else(|| {
+                    misuse("this is a bug in yavs: the kernel value does not match the type")
+                })
+            }
+            Origin::Decl { value: Some(_), .. } => cv
+                .as_ref()
+                .and_then(|v| Read::from_const(ty.clone(), v))
+                .ok_or_else(|| misuse("this is a bug in yavs: no elaborated value")),
+            _ => Err((Fault::Unsupported, "vhpi_get_value of a variable".into())),
+        }
+    }
+
     /// The declaration an object is or is part of.
     fn base(obj: &Object) -> Option<NodeId> {
         match obj {
@@ -353,7 +457,7 @@ impl State {
             (_, vhpiLineNoP) => node?.line?,
             (_, vhpiModeP) => node?.mode?,
             (_, vhpiIsCompositeP) => match self.layout(obj)? {
-                Layout::Scalar => vhpiFalse,
+                Layout::Scalar(_) => vhpiFalse,
                 _ => vhpiTrue,
             },
             (_, vhpiSizeP) => i32::try_from(self.layout(obj)?.scalars()?).ok()?,
@@ -471,6 +575,32 @@ impl State {
                 }))
             }
             _ => Err(true),
+        }
+    }
+}
+
+/// Kernel leaves of a layout: one per scalar of its record structure.
+fn leaves(l: &Layout) -> u32 {
+    match l {
+        Layout::Scalar(_) | Layout::Open => 1,
+        Layout::Array { elem, .. } => leaves(elem),
+        Layout::Record(fields) => fields.iter().map(|(_, f)| leaves(f)).sum(),
+    }
+}
+
+/// Row-major element `i` of an array value.
+fn const_elem(v: &ConstValue, i: u64) -> Option<ConstValue> {
+    let ConstValue::Array(a) = v else {
+        return None;
+    };
+    match &a.elems {
+        Elems::Bytes(b) => b.get(i as usize).map(|&x| ConstValue::Enum(x.into())),
+        Elems::Runs(runs) => {
+            let mut at = 0;
+            runs.iter().find_map(|(n, v)| {
+                at += n;
+                (i < at).then(|| v.clone())
+            })
         }
     }
 }

@@ -25,6 +25,7 @@ mod design;
 mod model;
 mod plugin;
 mod sim;
+mod value;
 
 pub use model::Control;
 pub use plugin::{ForeignLib, LoadError, PluginSpec, bind_foreign, load, load_foreign};

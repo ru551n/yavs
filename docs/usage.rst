@@ -173,8 +173,17 @@ initialization, next time step, start of each cycle, last known delta cycle (the
 phase: values put here take effect in one more delta), end of time step (the read-only phase,
 after postponed processes), each also in its repeating ``Rep`` form, and after a delay. They can
 be disabled, enabled again and removed; a disabled callback costs nothing while it waits. VHPI
-times count in units of ``--resolution``. The object model behind the plugin API is still a
-stub: it offers the design root and the tool, not yet signals or value-change callbacks.
+times count in units of ``--resolution``.
+
+Plugins walk the elaborated design and read values with ``vhpi_get_value`` from a callback:
+signals, ports, generics and constants, and their record fields and array elements, in every
+standard format (binary, octal, decimal and hexadecimal strings, strings, characters,
+enumeration, logic, integer, real, time and physical values and their vectors).
+``vhpiObjTypeVal`` reports the object's own format; a buffer that is too small makes the call
+return the size it needs. Enumeration values are positions: a ``std_ulogic`` gives ``vhpiU`` to
+``vhpiDontCare``, ``bit`` and ``boolean`` give 0 and 1. A format that does not fit the value is a
+``W0903`` warning and returns -1, never a converted value. Writing values and value-change
+callbacks are not implemented yet.
 
 Not implemented yet
 -------------------

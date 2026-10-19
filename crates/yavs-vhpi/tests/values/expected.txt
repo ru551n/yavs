@@ -1,0 +1,597 @@
+t=0 cnt Int rc=0 0
+t=2000000 cnt Int rc=0 17
+sl ObjType rc=0 fmt=7 7
+sl BinStr rc=2 then rc=0 n=1 "H"
+sl OctStr rc=2 then rc=0 n=1 "X"
+sl DecStr rc=-1 error
+sl HexStr rc=2 then rc=0 n=1 "X"
+sl Str rc=2 then rc=0 n=1 "H"
+sl Char rc=0 'H'
+sl Enum rc=0 7
+sl SmallEnum rc=0 7
+sl Logic rc=0 7
+sl Int rc=0 7
+sl LongInt rc=0 7
+sl Real rc=-1 error
+sl Time rc=-1 error
+sl Phys rc=-1 error
+sl EnumVec rc=-1 error
+sl SmallEnumVec rc=-1 error
+sl LogicVec rc=-1 error
+sl IntVec rc=-1 error
+sl RealVec rc=-1 error
+sl TimeVec rc=-1 error
+sl Ptr rc=-1 error
+slv ObjType rc=32 fmt=17 then rc=0 n=8 3 2 1 4 2 3 0 7
+slv BinStr rc=9 then rc=0 n=8 "10XZ01UH"
+slv OctStr rc=4 then rc=0 n=3 "2XX"
+slv DecStr rc=-1 error
+slv HexStr rc=3 then rc=0 n=2 "XX"
+slv Str rc=9 then rc=0 n=8 "10XZ01UH"
+slv Char rc=-1 error
+slv Enum rc=-1 error
+slv SmallEnum rc=-1 error
+slv Logic rc=-1 error
+slv Int rc=-1 error
+slv LongInt rc=-1 error
+slv Real rc=-1 error
+slv Time rc=-1 error
+slv Phys rc=-1 error
+slv EnumVec rc=32 then rc=0 n=8 3 2 1 4 2 3 0 7
+slv SmallEnumVec rc=8 then rc=0 n=8 3 2 1 4 2 3 0 7
+slv LogicVec rc=32 then rc=0 n=8 3 2 1 4 2 3 0 7
+slv IntVec rc=-1 error
+slv RealVec rc=-1 error
+slv TimeVec rc=-1 error
+slv Ptr rc=-1 error
+sv ObjType rc=24 fmt=17 then rc=0 n=6 3 3 2 2 3 2
+sv BinStr rc=7 then rc=0 n=6 "110010"
+sv OctStr rc=3 then rc=0 n=2 "62"
+sv DecStr rc=3 then rc=0 n=2 "50"
+sv HexStr rc=3 then rc=0 n=2 "32"
+sv Str rc=7 then rc=0 n=6 "110010"
+sv Char rc=-1 error
+sv Enum rc=-1 error
+sv SmallEnum rc=-1 error
+sv Logic rc=-1 error
+sv Int rc=-1 error
+sv LongInt rc=-1 error
+sv Real rc=-1 error
+sv Time rc=-1 error
+sv Phys rc=-1 error
+sv EnumVec rc=24 then rc=0 n=6 3 3 2 2 3 2
+sv SmallEnumVec rc=6 then rc=0 n=6 3 3 2 2 3 2
+sv LogicVec rc=24 then rc=0 n=6 3 3 2 2 3 2
+sv IntVec rc=-1 error
+sv RealVec rc=-1 error
+sv TimeVec rc=-1 error
+sv Ptr rc=-1 error
+bv ObjType rc=16 fmt=17 then rc=0 n=4 1 0 1 0
+bv BinStr rc=5 then rc=0 n=4 "1010"
+bv OctStr rc=3 then rc=0 n=2 "12"
+bv DecStr rc=3 then rc=0 n=2 "10"
+bv HexStr rc=2 then rc=0 n=1 "A"
+bv Str rc=5 then rc=0 n=4 "1010"
+bv Char rc=-1 error
+bv Enum rc=-1 error
+bv SmallEnum rc=-1 error
+bv Logic rc=-1 error
+bv Int rc=-1 error
+bv LongInt rc=-1 error
+bv Real rc=-1 error
+bv Time rc=-1 error
+bv Phys rc=-1 error
+bv EnumVec rc=16 then rc=0 n=4 1 0 1 0
+bv SmallEnumVec rc=4 then rc=0 n=4 1 0 1 0
+bv LogicVec rc=16 then rc=0 n=4 1 0 1 0
+bv IntVec rc=-1 error
+bv RealVec rc=-1 error
+bv TimeVec rc=-1 error
+bv Ptr rc=-1 error
+b ObjType rc=0 fmt=7 1
+b BinStr rc=2 then rc=0 n=1 "1"
+b OctStr rc=2 then rc=0 n=1 "1"
+b DecStr rc=2 then rc=0 n=1 "1"
+b HexStr rc=2 then rc=0 n=1 "1"
+b Str rc=2 then rc=0 n=1 "1"
+b Char rc=0 '1'
+b Enum rc=0 1
+b SmallEnum rc=0 1
+b Logic rc=0 1
+b Int rc=0 1
+b LongInt rc=0 1
+b Real rc=-1 error
+b Time rc=-1 error
+b Phys rc=-1 error
+b EnumVec rc=-1 error
+b SmallEnumVec rc=-1 error
+b LogicVec rc=-1 error
+b IntVec rc=-1 error
+b RealVec rc=-1 error
+b TimeVec rc=-1 error
+b Ptr rc=-1 error
+bo ObjType rc=0 fmt=23 1
+bo BinStr rc=2 then rc=0 n=1 "1"
+bo OctStr rc=2 then rc=0 n=1 "1"
+bo DecStr rc=2 then rc=0 n=1 "1"
+bo HexStr rc=2 then rc=0 n=1 "1"
+bo Str rc=5 then rc=0 n=4 "TRUE"
+bo Char rc=-1 error
+bo Enum rc=0 1
+bo SmallEnum rc=0 1
+bo Logic rc=0 1
+bo Int rc=0 1
+bo LongInt rc=0 1
+bo Real rc=-1 error
+bo Time rc=-1 error
+bo Phys rc=-1 error
+bo EnumVec rc=-1 error
+bo SmallEnumVec rc=-1 error
+bo LogicVec rc=-1 error
+bo IntVec rc=-1 error
+bo RealVec rc=-1 error
+bo TimeVec rc=-1 error
+bo Ptr rc=-1 error
+i ObjType rc=0 fmt=6 -42
+i BinStr rc=8 then rc=0 n=7 "-101010"
+i OctStr rc=4 then rc=0 n=3 "-52"
+i DecStr rc=4 then rc=0 n=3 "-42"
+i HexStr rc=4 then rc=0 n=3 "-2A"
+i Str rc=-1 error
+i Char rc=-1 error
+i Enum rc=-1 error
+i SmallEnum rc=-1 error
+i Logic rc=-1 error
+i Int rc=0 -42
+i LongInt rc=0 -42
+i Real rc=-1 error
+i Time rc=-1 error
+i Phys rc=-1 error
+i EnumVec rc=-1 error
+i SmallEnumVec rc=-1 error
+i LogicVec rc=-1 error
+i IntVec rc=-1 error
+i RealVec rc=-1 error
+i TimeVec rc=-1 error
+i Ptr rc=-1 error
+r ObjType rc=0 fmt=8 2.5
+r BinStr rc=-1 error
+r OctStr rc=-1 error
+r DecStr rc=-1 error
+r HexStr rc=-1 error
+r Str rc=-1 error
+r Char rc=-1 error
+r Enum rc=-1 error
+r SmallEnum rc=-1 error
+r Logic rc=-1 error
+r Int rc=-1 error
+r LongInt rc=-1 error
+r Real rc=0 2.5
+r Time rc=-1 error
+r Phys rc=-1 error
+r EnumVec rc=-1 error
+r SmallEnumVec rc=-1 error
+r LogicVec rc=-1 error
+r IntVec rc=-1 error
+r RealVec rc=-1 error
+r TimeVec rc=-1 error
+r Ptr rc=-1 error
+t ObjType rc=0 fmt=11 0:3000000
+t BinStr rc=23 then rc=0 n=22 "1011011100011011000000"
+t OctStr rc=9 then rc=0 n=8 "13343300"
+t DecStr rc=8 then rc=0 n=7 "3000000"
+t HexStr rc=7 then rc=0 n=6 "2DC6C0"
+t Str rc=-1 error
+t Char rc=-1 error
+t Enum rc=-1 error
+t SmallEnum rc=-1 error
+t Logic rc=-1 error
+t Int rc=-1 error
+t LongInt rc=-1 error
+t Real rc=-1 error
+t Time rc=0 0:3000000
+t Phys rc=0 0:3000000
+t EnumVec rc=-1 error
+t SmallEnumVec rc=-1 error
+t LogicVec rc=-1 error
+t IntVec rc=-1 error
+t RealVec rc=-1 error
+t TimeVec rc=-1 error
+t Ptr rc=-1 error
+d ObjType rc=0 fmt=12 0:2000
+d BinStr rc=12 then rc=0 n=11 "11111010000"
+d OctStr rc=5 then rc=0 n=4 "3720"
+d DecStr rc=5 then rc=0 n=4 "2000"
+d HexStr rc=4 then rc=0 n=3 "7D0"
+d Str rc=-1 error
+d Char rc=-1 error
+d Enum rc=-1 error
+d SmallEnum rc=-1 error
+d Logic rc=-1 error
+d Int rc=-1 error
+d LongInt rc=-1 error
+d Real rc=-1 error
+d Time rc=-1 error
+d Phys rc=0 0:2000
+d EnumVec rc=-1 error
+d SmallEnumVec rc=-1 error
+d LogicVec rc=-1 error
+d IntVec rc=-1 error
+d RealVec rc=-1 error
+d TimeVec rc=-1 error
+d Ptr rc=-1 error
+st ObjType rc=0 fmt=23 1
+st BinStr rc=2 then rc=0 n=1 "1"
+st OctStr rc=2 then rc=0 n=1 "1"
+st DecStr rc=2 then rc=0 n=1 "1"
+st HexStr rc=2 then rc=0 n=1 "1"
+st Str rc=4 then rc=0 n=3 "RUN"
+st Char rc=-1 error
+st Enum rc=0 1
+st SmallEnum rc=0 1
+st Logic rc=0 1
+st Int rc=0 1
+st LongInt rc=0 1
+st Real rc=-1 error
+st Time rc=-1 error
+st Phys rc=-1 error
+st EnumVec rc=-1 error
+st SmallEnumVec rc=-1 error
+st LogicVec rc=-1 error
+st IntVec rc=-1 error
+st RealVec rc=-1 error
+st TimeVec rc=-1 error
+st Ptr rc=-1 error
+s ObjType rc=6 fmt=9 then rc=0 n=5 "hello"
+s BinStr rc=-1 error
+s OctStr rc=-1 error
+s DecStr rc=-1 error
+s HexStr rc=-1 error
+s Str rc=6 then rc=0 n=5 "hello"
+s Char rc=-1 error
+s Enum rc=-1 error
+s SmallEnum rc=-1 error
+s Logic rc=-1 error
+s Int rc=-1 error
+s LongInt rc=-1 error
+s Real rc=-1 error
+s Time rc=-1 error
+s Phys rc=-1 error
+s EnumVec rc=20 then rc=0 n=5 104 101 108 108 111
+s SmallEnumVec rc=5 then rc=0 n=5 104 101 108 108 111
+s LogicVec rc=20 then rc=0 n=5 104 101 108 108 111
+s IntVec rc=-1 error
+s RealVec rc=-1 error
+s TimeVec rc=-1 error
+s Ptr rc=-1 error
+ch ObjType rc=0 fmt=10 'Q'
+ch BinStr rc=8 then rc=0 n=7 "1010001"
+ch OctStr rc=4 then rc=0 n=3 "121"
+ch DecStr rc=3 then rc=0 n=2 "81"
+ch HexStr rc=3 then rc=0 n=2 "51"
+ch Str rc=2 then rc=0 n=1 "Q"
+ch Char rc=0 'Q'
+ch Enum rc=0 81
+ch SmallEnum rc=0 81
+ch Logic rc=0 81
+ch Int rc=0 81
+ch LongInt rc=0 81
+ch Real rc=-1 error
+ch Time rc=-1 error
+ch Phys rc=-1 error
+ch EnumVec rc=-1 error
+ch SmallEnumVec rc=-1 error
+ch LogicVec rc=-1 error
+ch IntVec rc=-1 error
+ch RealVec rc=-1 error
+ch TimeVec rc=-1 error
+ch Ptr rc=-1 error
+rec ObjType rc=-1 fmt=13 error
+rec BinStr rc=-1 error
+rec OctStr rc=-1 error
+rec DecStr rc=-1 error
+rec HexStr rc=-1 error
+rec Str rc=-1 error
+rec Char rc=-1 error
+rec Enum rc=-1 error
+rec SmallEnum rc=-1 error
+rec Logic rc=-1 error
+rec Int rc=-1 error
+rec LongInt rc=-1 error
+rec Real rc=-1 error
+rec Time rc=-1 error
+rec Phys rc=-1 error
+rec EnumVec rc=-1 error
+rec SmallEnumVec rc=-1 error
+rec LogicVec rc=-1 error
+rec IntVec rc=-1 error
+rec RealVec rc=-1 error
+rec TimeVec rc=-1 error
+rec Ptr rc=-1 error
+rec.a ObjType rc=0 fmt=7 2
+rec.a BinStr rc=2 then rc=0 n=1 "0"
+rec.a OctStr rc=2 then rc=0 n=1 "0"
+rec.a DecStr rc=2 then rc=0 n=1 "0"
+rec.a HexStr rc=2 then rc=0 n=1 "0"
+rec.a Str rc=2 then rc=0 n=1 "0"
+rec.a Char rc=0 '0'
+rec.a Enum rc=0 2
+rec.a SmallEnum rc=0 2
+rec.a Logic rc=0 2
+rec.a Int rc=0 2
+rec.a LongInt rc=0 2
+rec.a Real rc=-1 error
+rec.a Time rc=-1 error
+rec.a Phys rc=-1 error
+rec.a EnumVec rc=-1 error
+rec.a SmallEnumVec rc=-1 error
+rec.a LogicVec rc=-1 error
+rec.a IntVec rc=-1 error
+rec.a RealVec rc=-1 error
+rec.a TimeVec rc=-1 error
+rec.a Ptr rc=-1 error
+rec.b ObjType rc=0 fmt=6 7
+rec.b BinStr rc=4 then rc=0 n=3 "111"
+rec.b OctStr rc=2 then rc=0 n=1 "7"
+rec.b DecStr rc=2 then rc=0 n=1 "7"
+rec.b HexStr rc=2 then rc=0 n=1 "7"
+rec.b Str rc=-1 error
+rec.b Char rc=-1 error
+rec.b Enum rc=-1 error
+rec.b SmallEnum rc=-1 error
+rec.b Logic rc=-1 error
+rec.b Int rc=0 7
+rec.b LongInt rc=0 7
+rec.b Real rc=-1 error
+rec.b Time rc=-1 error
+rec.b Phys rc=-1 error
+rec.b EnumVec rc=-1 error
+rec.b SmallEnumVec rc=-1 error
+rec.b LogicVec rc=-1 error
+rec.b IntVec rc=-1 error
+rec.b RealVec rc=-1 error
+rec.b TimeVec rc=-1 error
+rec.b Ptr rc=-1 error
+rec.c ObjType rc=16 fmt=17 then rc=0 n=4 3 3 2 2
+rec.c BinStr rc=5 then rc=0 n=4 "1100"
+rec.c OctStr rc=3 then rc=0 n=2 "14"
+rec.c DecStr rc=3 then rc=0 n=2 "12"
+rec.c HexStr rc=2 then rc=0 n=1 "C"
+rec.c Str rc=5 then rc=0 n=4 "1100"
+rec.c Char rc=-1 error
+rec.c Enum rc=-1 error
+rec.c SmallEnum rc=-1 error
+rec.c Logic rc=-1 error
+rec.c Int rc=-1 error
+rec.c LongInt rc=-1 error
+rec.c Real rc=-1 error
+rec.c Time rc=-1 error
+rec.c Phys rc=-1 error
+rec.c EnumVec rc=16 then rc=0 n=4 3 3 2 2
+rec.c SmallEnumVec rc=4 then rc=0 n=4 3 3 2 2
+rec.c LogicVec rc=16 then rc=0 n=4 3 3 2 2
+rec.c IntVec rc=-1 error
+rec.c RealVec rc=-1 error
+rec.c TimeVec rc=-1 error
+rec.c Ptr rc=-1 error
+mem ObjType rc=24 fmt=16 then rc=0 n=6 1 2 3 4 5 6
+mem BinStr rc=-1 error
+mem OctStr rc=-1 error
+mem DecStr rc=-1 error
+mem HexStr rc=-1 error
+mem Str rc=-1 error
+mem Char rc=-1 error
+mem Enum rc=-1 error
+mem SmallEnum rc=-1 error
+mem Logic rc=-1 error
+mem Int rc=-1 error
+mem LongInt rc=-1 error
+mem Real rc=-1 error
+mem Time rc=-1 error
+mem Phys rc=-1 error
+mem EnumVec rc=-1 error
+mem SmallEnumVec rc=-1 error
+mem LogicVec rc=-1 error
+mem IntVec rc=24 then rc=0 n=6 1 2 3 4 5 6
+mem RealVec rc=-1 error
+mem TimeVec rc=-1 error
+mem Ptr rc=-1 error
+mem(1,2) ObjType rc=0 fmt=6 6
+mem(1,2) BinStr rc=4 then rc=0 n=3 "110"
+mem(1,2) OctStr rc=2 then rc=0 n=1 "6"
+mem(1,2) DecStr rc=2 then rc=0 n=1 "6"
+mem(1,2) HexStr rc=2 then rc=0 n=1 "6"
+mem(1,2) Str rc=-1 error
+mem(1,2) Char rc=-1 error
+mem(1,2) Enum rc=-1 error
+mem(1,2) SmallEnum rc=-1 error
+mem(1,2) Logic rc=-1 error
+mem(1,2) Int rc=0 6
+mem(1,2) LongInt rc=0 6
+mem(1,2) Real rc=-1 error
+mem(1,2) Time rc=-1 error
+mem(1,2) Phys rc=-1 error
+mem(1,2) EnumVec rc=-1 error
+mem(1,2) SmallEnumVec rc=-1 error
+mem(1,2) LogicVec rc=-1 error
+mem(1,2) IntVec rc=-1 error
+mem(1,2) RealVec rc=-1 error
+mem(1,2) TimeVec rc=-1 error
+mem(1,2) Ptr rc=-1 error
+iv ObjType rc=12 fmt=16 then rc=0 n=3 10 -20 30
+iv BinStr rc=-1 error
+iv OctStr rc=-1 error
+iv DecStr rc=-1 error
+iv HexStr rc=-1 error
+iv Str rc=-1 error
+iv Char rc=-1 error
+iv Enum rc=-1 error
+iv SmallEnum rc=-1 error
+iv Logic rc=-1 error
+iv Int rc=-1 error
+iv LongInt rc=-1 error
+iv Real rc=-1 error
+iv Time rc=-1 error
+iv Phys rc=-1 error
+iv EnumVec rc=-1 error
+iv SmallEnumVec rc=-1 error
+iv LogicVec rc=-1 error
+iv IntVec rc=12 then rc=0 n=3 10 -20 30
+iv RealVec rc=-1 error
+iv TimeVec rc=-1 error
+iv Ptr rc=-1 error
+iv(1) ObjType rc=0 fmt=6 -20
+iv(1) BinStr rc=7 then rc=0 n=6 "-10100"
+iv(1) OctStr rc=4 then rc=0 n=3 "-24"
+iv(1) DecStr rc=4 then rc=0 n=3 "-20"
+iv(1) HexStr rc=4 then rc=0 n=3 "-14"
+iv(1) Str rc=-1 error
+iv(1) Char rc=-1 error
+iv(1) Enum rc=-1 error
+iv(1) SmallEnum rc=-1 error
+iv(1) Logic rc=-1 error
+iv(1) Int rc=0 -20
+iv(1) LongInt rc=0 -20
+iv(1) Real rc=-1 error
+iv(1) Time rc=-1 error
+iv(1) Phys rc=-1 error
+iv(1) EnumVec rc=-1 error
+iv(1) SmallEnumVec rc=-1 error
+iv(1) LogicVec rc=-1 error
+iv(1) IntVec rc=-1 error
+iv(1) RealVec rc=-1 error
+iv(1) TimeVec rc=-1 error
+iv(1) Ptr rc=-1 error
+rv ObjType rc=16 fmt=18 then rc=0 n=2 1.5 -0.25
+rv BinStr rc=-1 error
+rv OctStr rc=-1 error
+rv DecStr rc=-1 error
+rv HexStr rc=-1 error
+rv Str rc=-1 error
+rv Char rc=-1 error
+rv Enum rc=-1 error
+rv SmallEnum rc=-1 error
+rv Logic rc=-1 error
+rv Int rc=-1 error
+rv LongInt rc=-1 error
+rv Real rc=-1 error
+rv Time rc=-1 error
+rv Phys rc=-1 error
+rv EnumVec rc=-1 error
+rv SmallEnumVec rc=-1 error
+rv LogicVec rc=-1 error
+rv IntVec rc=-1 error
+rv RealVec rc=16 then rc=0 n=2 1.5 -0.25
+rv TimeVec rc=-1 error
+rv Ptr rc=-1 error
+slv(5) ObjType rc=0 fmt=7 1
+slv(5) BinStr rc=2 then rc=0 n=1 "X"
+slv(5) OctStr rc=2 then rc=0 n=1 "X"
+slv(5) DecStr rc=-1 error
+slv(5) HexStr rc=2 then rc=0 n=1 "X"
+slv(5) Str rc=2 then rc=0 n=1 "X"
+slv(5) Char rc=0 'X'
+slv(5) Enum rc=0 1
+slv(5) SmallEnum rc=0 1
+slv(5) Logic rc=0 1
+slv(5) Int rc=0 1
+slv(5) LongInt rc=0 1
+slv(5) Real rc=-1 error
+slv(5) Time rc=-1 error
+slv(5) Phys rc=-1 error
+slv(5) EnumVec rc=-1 error
+slv(5) SmallEnumVec rc=-1 error
+slv(5) LogicVec rc=-1 error
+slv(5) IntVec rc=-1 error
+slv(5) RealVec rc=-1 error
+slv(5) TimeVec rc=-1 error
+slv(5) Ptr rc=-1 error
+p ObjType rc=16 fmt=17 then rc=0 n=4 2 3 4 1
+p BinStr rc=5 then rc=0 n=4 "01ZX"
+p OctStr rc=3 then rc=0 n=2 "0X"
+p DecStr rc=-1 error
+p HexStr rc=2 then rc=0 n=1 "X"
+p Str rc=5 then rc=0 n=4 "01ZX"
+p Char rc=-1 error
+p Enum rc=-1 error
+p SmallEnum rc=-1 error
+p Logic rc=-1 error
+p Int rc=-1 error
+p LongInt rc=-1 error
+p Real rc=-1 error
+p Time rc=-1 error
+p Phys rc=-1 error
+p EnumVec rc=16 then rc=0 n=4 2 3 4 1
+p SmallEnumVec rc=4 then rc=0 n=4 2 3 4 1
+p LogicVec rc=16 then rc=0 n=4 2 3 4 1
+p IntVec rc=-1 error
+p RealVec rc=-1 error
+p TimeVec rc=-1 error
+p Ptr rc=-1 error
+g ObjType rc=0 fmt=6 5
+g BinStr rc=4 then rc=0 n=3 "101"
+g OctStr rc=2 then rc=0 n=1 "5"
+g DecStr rc=2 then rc=0 n=1 "5"
+g HexStr rc=2 then rc=0 n=1 "5"
+g Str rc=-1 error
+g Char rc=-1 error
+g Enum rc=-1 error
+g SmallEnum rc=-1 error
+g Logic rc=-1 error
+g Int rc=0 5
+g LongInt rc=0 5
+g Real rc=-1 error
+g Time rc=-1 error
+g Phys rc=-1 error
+g EnumVec rc=-1 error
+g SmallEnumVec rc=-1 error
+g LogicVec rc=-1 error
+g IntVec rc=-1 error
+g RealVec rc=-1 error
+g TimeVec rc=-1 error
+g Ptr rc=-1 error
+k ObjType rc=0 fmt=6 99
+k BinStr rc=8 then rc=0 n=7 "1100011"
+k OctStr rc=4 then rc=0 n=3 "143"
+k DecStr rc=3 then rc=0 n=2 "99"
+k HexStr rc=3 then rc=0 n=2 "63"
+k Str rc=-1 error
+k Char rc=-1 error
+k Enum rc=-1 error
+k SmallEnum rc=-1 error
+k Logic rc=-1 error
+k Int rc=0 99
+k LongInt rc=0 99
+k Real rc=-1 error
+k Time rc=-1 error
+k Phys rc=-1 error
+k EnumVec rc=-1 error
+k SmallEnumVec rc=-1 error
+k LogicVec rc=-1 error
+k IntVec rc=-1 error
+k RealVec rc=-1 error
+k TimeVec rc=-1 error
+k Ptr rc=-1 error
+cnt ObjType rc=0 fmt=6 17
+cnt BinStr rc=6 then rc=0 n=5 "10001"
+cnt OctStr rc=3 then rc=0 n=2 "21"
+cnt DecStr rc=3 then rc=0 n=2 "17"
+cnt HexStr rc=3 then rc=0 n=2 "11"
+cnt Str rc=-1 error
+cnt Char rc=-1 error
+cnt Enum rc=-1 error
+cnt SmallEnum rc=-1 error
+cnt Logic rc=-1 error
+cnt Int rc=0 17
+cnt LongInt rc=0 17
+cnt Real rc=-1 error
+cnt Time rc=-1 error
+cnt Phys rc=-1 error
+cnt EnumVec rc=-1 error
+cnt SmallEnumVec rc=-1 error
+cnt LogicVec rc=-1 error
+cnt IntVec rc=-1 error
+cnt RealVec rc=-1 error
+cnt TimeVec rc=-1 error
+cnt Ptr rc=-1 error
+short buffer rc=6

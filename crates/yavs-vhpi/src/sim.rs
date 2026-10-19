@@ -9,7 +9,7 @@
 
 use yavs_kernel::{EndReason, Hook, Phase, WakeId};
 
-use crate::abi::{fire, with_state};
+use crate::abi::{fire, hooked, with_state};
 use crate::model::{Control, State};
 use crate::sys::*;
 
@@ -30,7 +30,7 @@ impl VhpiObserver {
             ids
         });
         if !ids.is_empty() {
-            fire(&ids);
+            hooked(hook, || fire(&ids));
             with_state(|s| requests(s, hook));
         }
     }

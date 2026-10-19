@@ -58,7 +58,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Cascade suppression with poison values; a failed file hides all its units in the session | No cascades; per-file results equal one `yavs analyze` per file | sem.md 8.2, `docs/decisions.md` "Semantic analysis" |
 | Codes `E1xxx`/`W1xxx` with explain texts; one warning code per `--relaxed` relaxation (R1 `W1904`, R2 `W1830`) | Rule 13 | sem.md 8.1, 8.4 |
 | Generic instance identity by mangling | Rule 4 | sem.md 5.3 |
-| Default binding: directly visible entity wins over `work`, `W1703` when both; last architecture | Q4 | `docs/decisions.md` "Design units and binding" |
+| Default binding: directly visible entity, then the component declaration's library, then `work`; `W1703` when `work` has another; last architecture | Q4 | `docs/decisions.md` "Design units and binding" |
 | Formal packages with a generic map are checked against the actual (`E1503`) | LRM clear, the third reference simulator rejects | `docs/decisions.md` "Generics" |
 | Incomplete types in protected method profiles only in library `std` (user, 2026-10-18, amends U-2) | `std.reflection` needs it | `docs/decisions.md` "Incomplete types in protected method profiles" |
 | 2019 method aliases in a protected type declaration forward to the private variable: the call's object is `ExprKind::PrivateVar` (`Db::forwarding`); an alias of a method of another object (shared variable, variable, by simple or expanded name) forwards to that object, the call's object an `Obj` of it (#32, #237) | 5.6.2, 6.6.3; the reference simulator agrees for private variables, the references differ on other objects (permissive) | sem.md 6.6, `docs/design/lrm-checks.md` L15 |

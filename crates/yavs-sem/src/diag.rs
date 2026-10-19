@@ -141,7 +141,7 @@ codes! {
     W_OVERFLOW = "W1401", "Static arithmetic overflows in a context that does not require the value; the runtime check stays.";
     W_UNUSED_GENERIC = "W1501", "A generic is never used.";
     W_GENERIC_EQ = "W1506", "An instance of a generic with a 2008 `type T` (or 2019 `type T is private`) compares values with the actual type's predefined `=`/`/=` (LRM 6.5.3), while a different user `\"=\"` for the actual type is visible at the instantiation; NVC would use that one (decision U-6). To use the user operator, declare a formal `function \"=\" (l, r : t) return boolean is <>`.";
-    W_DEFAULT_BINDING = "W1703", "Default binding found a directly visible entity and a different one in `work`; the directly visible one is used.";
+    W_DEFAULT_BINDING = "W1703", "Default binding found an entity in the library of the component declaration (or a directly visible one) and a different one in `work`; the former is used.";
     W_PURE_IMPURE = "W1830", "`--relaxed` (R2): a pure function reads or calls something impure.";
     W_SHARED_NOT_PROTECTED = "W1904", "`--relaxed` (R1): a shared variable of a non-protected type is accepted; the processes using it run serially.";
 }

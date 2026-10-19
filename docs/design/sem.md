@@ -1076,15 +1076,18 @@ and result) is unique among homographs, so there is no code for it.
 - **Default binding** (7.3.3) is computed by elab through `sem::default_binding(instance)`:
   1. an entity with the component's simple name that is **directly visible** at the instance
      (through `use l.e` or `use l.all`);
-  2. else the entity of that name in the library that contains the instantiating design unit
+  2. else the entity of that name in the library that contains the design unit declaring the
+     component (a component from a package of another library binds to that library's entity,
+     #291);
+  3. else the entity of that name in the library that contains the instantiating design unit
      (`work`);
-  3. architecture: the most recently analyzed one (7.3.3); with no cache, "most recently
+  4. architecture: the most recently analyzed one (7.3.3); with no cache, "most recently
      analyzed" is defined by manifest order (Q4);
-  4. generics and ports associated by name; a component port with no entity port of the same
+  5. generics and ports associated by name; a component port with no entity port of the same
      name is an error, an entity port with no component port is `open` if it has a default or is
      an `out` (7.3.3).
-  One reported case is the ambiguity between rules 1 and 2 (directly visible vs the work library) when both
-  exist with different targets: yavs takes the directly visible one and emits `W1703` naming both.
+  One reported case is the ambiguity between rules 1 or 2 and rule 3 (the work library) when both
+  exist with different targets: yavs takes the first and emits `W1703` naming both.
 - M1 checks every configuration that is analyzed; elab applies them.
 
 ### 6.6 Protected types (5.6)

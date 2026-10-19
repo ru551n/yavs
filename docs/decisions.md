@@ -546,8 +546,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 
 ## Design units and binding (yavs-sem, S5)
 
-- **Default binding (Q4, 7.3.3):** an entity made directly visible by a use clause wins over the
-  one in the design unit's library (`W1703` when both exist); the architecture is the last one in
+- **Default binding (Q4, 7.3.3):** an entity made directly visible by a use clause wins, then the
+  one in the library of the design unit that declares the component (#291; majority of the
+  reference simulators, one of three picks the instantiating unit's library instead), then the one in
+  the instantiating design unit's library (`W1703` when a different one exists there); the architecture is the last one in
   manifest or analysis order. `Db::default_binding(scope, component)` with the instance's
   `StmtKind::Instance::scope`.
 - **Selected entity names:** `architecture a of lib.e` is accepted (LRM 3.3.1 gives a name; the reference simulator,

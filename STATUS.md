@@ -92,7 +92,7 @@ ends at elaboration. 2019 (measured at 9c853ae6): the 2008 causes, plus `Dynamic
 | Wishbone | 0 | 3 | #296 |
 | Spi, VideoBus, ModelParams, ModelParams_PT | 16 | 0 | none |
 
-Default binding of a component to an entity in the component package's library (#291) is warned about in 269 of the 314 runs.
+Default binding finds the entity in the library of the component's package (#291, fixed); the earlier W2108 in 269 of the 314 runs came from this.
 
 ## CI and releases
 

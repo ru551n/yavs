@@ -198,7 +198,7 @@ impl Db {
         let d = self.entity(d);
         match &self.decls[d].kind {
             DeclKind::Component(_) => {
-                self.note_default_binding(scope, self.decls[d].name.key(), n.span);
+                self.note_default_binding(scope, d, n.span);
                 Ok(InstTarget::Component(d))
             }
             DeclKind::Error => Err(Reported),
@@ -397,11 +397,17 @@ impl Db {
         }
     }
 
-    /// The library of the entity default binding picks for a component named
-    /// `key` instantiated in `scope` (7.3.3, Q4): an entity made directly
-    /// visible by a use clause, else the one in the library of the design unit.
-    /// The second value is the `work` candidate when it differs (GHDL #66).
-    fn default_entity_lib(&self, scope: ScopeId, key: Symbol) -> (Option<LibId>, Option<LibId>) {
+    /// The library of the entity default binding picks for component `comp` instantiated
+    /// in `scope` (7.3.3, Q4): an entity made directly visible by a use clause, else the
+    /// one in the library of the design unit that declares the component (#291), else the
+    /// one in the library of the instantiating design unit. The second value is the `work`
+    /// candidate when it differs, and the third says what the first one is.
+    fn default_entity_lib(
+        &self,
+        scope: ScopeId,
+        comp: DeclId,
+    ) -> (Option<LibId>, Option<LibId>, &'static str) {
+        let key = self.decls[comp].name.key();
         let mut visible = None;
         let mut cur = Some(scope);
         'walk: while let Some(s) = cur {
@@ -426,11 +432,15 @@ impl Db {
             }
             cur = self.scopes[s].parent;
         }
-        let work = self.unit_lib_of(scope).filter(|&l| self.has_entity(l, key));
-        match visible {
-            Some(v) => (Some(v), work.filter(|&w| w != v)),
-            None => (work, None),
-        }
+        let has = |l: Option<LibId>| l.filter(|&l| self.has_entity(l, key));
+        let work = has(self.unit_lib_of(scope));
+        let declared = has(self.unit_lib_of(self.decls[comp].scope));
+        let (first, why) = match (visible, declared) {
+            (Some(v), _) => (Some(v), "directly visible through a use clause"),
+            (None, Some(c)) => (Some(c), "in the library of the component declaration"),
+            (None, None) => (work, "in the library of this design unit"),
+        };
+        (first, work.filter(|&w| Some(w) != first), why)
     }
 
     /// The library of the design unit whose region contains `scope`.
@@ -449,8 +459,9 @@ impl Db {
 
     /// Records the default-bound entity of a component instance as a
     /// dependency, and warns when two candidates exist (`W1703`).
-    fn note_default_binding(&mut self, scope: ScopeId, key: Symbol, span: Span) {
-        let (chosen, other) = self.default_entity_lib(scope, key);
+    fn note_default_binding(&mut self, scope: ScopeId, comp: DeclId, span: Span) {
+        let key = self.decls[comp].name.key();
+        let (chosen, other, why) = self.default_entity_lib(scope, comp);
         let Some(lib) = chosen else { return };
         self.add_ref(lib, LibKind::Entity, key.to_string());
         if let Some(w) = other {
@@ -462,7 +473,7 @@ impl Db {
                 )
                 .with_primary(span, "bound by default")
                 .with_note(format!(
-                    "`{a}.{key}` is directly visible through a use clause; `{b}` is the library of this design unit (LRM 7.3.3)"
+                    "`{a}.{key}` is {why}; `{b}` is the library of this design unit (LRM 7.3.3)"
                 ))
                 .with_help("bind it explicitly with a configuration specification to silence this"),
             );
@@ -478,7 +489,7 @@ impl Db {
         comp: DeclId,
     ) -> Option<(UnitId, Option<Symbol>)> {
         let key = self.decls[comp].name.key();
-        let lib = self.default_entity_lib(scope, key).0?;
+        let lib = self.default_entity_lib(scope, comp).0?;
         let entity = self.load_unit(lib, UnitKey::Primary(key), None).ok()?;
         let arch = match &self.libs[lib].source {
             LibSource::Manifest(m) => m

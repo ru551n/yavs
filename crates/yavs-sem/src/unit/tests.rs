@@ -330,6 +330,52 @@ fn default_binding_prefers_the_directly_visible_entity() {
     assert_eq!(arch.map(|a| a.to_string()).as_deref(), Some("x"));
 }
 
+/// A component declared in a package binds by default to the entity in the package's library,
+/// also when the design unit's own library has none (#291) or has another one (`W1703`).
+#[test]
+fn default_binding_uses_the_library_of_the_component_declaration() {
+    let pkg = (
+        "liba",
+        "package comp_pkg is component leaf is end component; end package;
+         entity leaf is end entity; architecture x of leaf is begin end architecture;",
+    );
+    let user = (
+        "work",
+        "library liba; use liba.comp_pkg.all;
+         entity top is end entity;
+         architecture a of top is begin u : leaf; end architecture;",
+    );
+    for own in [
+        None,
+        Some("entity leaf is end entity; architecture y of leaf is begin end architecture;"),
+    ] {
+        let mut files = vec![pkg];
+        files.extend(own.map(|o| ("work", o)));
+        files.push(user);
+        let r = run("default_decl_lib", &files);
+        assert_eq!(
+            r.codes(),
+            if own.is_some() {
+                vec![("W1703", 3)]
+            } else {
+                vec![]
+            }
+        );
+        let StmtKind::Instance {
+            target: InstTarget::Component(c),
+            scope,
+            ..
+        } = r.db.stmts[r.arch_stmts("a")[0]].kind
+        else {
+            panic!("component instance");
+        };
+        let mut db = r.db;
+        let (e, arch) = db.default_binding(scope, c).expect("bound");
+        assert_eq!(db.libs[db.units[e].lib].name.key.as_str(), "liba");
+        assert_eq!(arch.map(|a| a.to_string()).as_deref(), Some("x"));
+    }
+}
+
 #[test]
 fn default_binding_takes_the_last_architecture() {
     let r = run(

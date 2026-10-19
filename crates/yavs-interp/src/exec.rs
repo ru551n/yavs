@@ -270,6 +270,33 @@ fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| Fault::Runtime(format!("negative time value {v} fs")))
 }
 
+/// The little-endian value of 1, 4 or 8 bytes (fixed-size copies, no `memcpy` call).
+#[inline(always)]
+fn le_bytes(b: &[u8]) -> u64 {
+    match *b {
+        [a] => u64::from(a),
+        [a, b, c, d] => u64::from(u32::from_le_bytes([a, b, c, d])),
+        [a, b, c, d, e, f, g, h] => u64::from_le_bytes([a, b, c, d, e, f, g, h]),
+        _ => {
+            let mut x = [0u8; 8];
+            let n = b.len().min(8);
+            x[..n].copy_from_slice(&b[..n]);
+            u64::from_le_bytes(x)
+        }
+    }
+}
+
+/// Store the low `b.len()` bytes of `v`, little-endian.
+#[inline(always)]
+fn put_le(b: &mut [u8], v: u64) {
+    match b.len() {
+        1 => b[0] = v as u8,
+        4 => b.copy_from_slice(&(v as u32).to_le_bytes()),
+        8 => b.copy_from_slice(&v.to_le_bytes()),
+        n => b.copy_from_slice(&v.to_le_bytes()[..n]),
+    }
+}
+
 fn arith_r(r: Result<i64, arith::ArithError>) -> R<u64> {
     r.map(|v| v as u64).map_err(|e| match e {
         arith::ArithError::DivisionByZero { .. } => Fault::Runtime("division by zero".into()),
@@ -286,6 +313,33 @@ fn int_op(op: IntOp, x: i64, y: i64) -> Result<i64, arith::ArithError> {
         IntOp::Rem => arith::rem(x, y),
         IntOp::Mod => arith::modulo(x, y),
         IntOp::Pow => arith::pow(x, y),
+    }
+}
+
+/// `int_op` for the cases that cannot fail, inlined; `None`: use `int_op` for the result or
+/// the error.
+#[inline(always)]
+fn fast_op(op: IntOp, x: i64, y: i64) -> Option<i64> {
+    match op {
+        IntOp::Add => x.checked_add(y),
+        IntOp::Sub => x.checked_sub(y),
+        IntOp::Mul => x.checked_mul(y),
+        // Natural operands below 2^32 (the common case) divide in 32 bits: much faster.
+        IntOp::Div | IntOp::Rem | IntOp::Mod if y != 0 && (x | y) as u64 >> 32 == 0 => {
+            let (a, b) = (x as u32, y as u32);
+            Some(i64::from(if op == IntOp::Div { a / b } else { a % b }))
+        }
+        IntOp::Div if y != 0 => x.checked_div(y),
+        IntOp::Rem if y != 0 => Some(x.checked_rem(y).unwrap_or(0)),
+        IntOp::Mod if y != 0 => {
+            let r = x.checked_rem(y).unwrap_or(0);
+            Some(if r != 0 && ((r < 0) != (y < 0)) {
+                r + y
+            } else {
+                r
+            })
+        }
+        _ => None,
     }
 }
 
@@ -1018,22 +1072,32 @@ impl Machine {
     #[inline]
     pub(crate) fn load(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
-        // Fast path: a cell of a frame (registers spill to frame slots all the time).
+        // Fast path: a frame (registers spill to frame slots all the time), temporary or
+        // instance memory.
         let (sp, idx, off) = split(a);
-        if sp == FRAME
-            && let Some(b) = self
-                .frames
-                .get(idx as usize)
-                .and_then(|f| f.slots.get(off as usize..(off + n) as usize))
-        {
-            let mut x = [0u8; 8];
-            x[..n as usize].copy_from_slice(b);
-            return Ok(u64::from_le_bytes(x));
+        let mem: Option<&[u8]> = match sp {
+            FRAME => self.frames.get(idx as usize).map(|f| &f.slots[..]),
+            TEMP => Some(&self.temp),
+            INST => Some(&self.inst.data),
+            _ => None,
+        };
+        if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
+            return Ok(le_bytes(b));
         }
-        let b = self.rd(a, n)?;
-        let mut x = [0u8; 8];
-        x[..n as usize].copy_from_slice(b);
-        Ok(u64::from_le_bytes(x))
+        Ok(le_bytes(self.rd(a, n)?))
+    }
+
+    /// Bounds and direction word of dimension `dim` of the descriptor at `base`.
+    #[inline(always)]
+    fn dim_of(&self, base: u64, dim: u64) -> R<(i64, i64, u64)> {
+        let d = add_addr(base, dim * 24)?;
+        let b = self.rd(d, 24)?;
+        let word = |k: usize| {
+            b.get(k * 8..k * 8 + 8)
+                .map(le_bytes)
+                .ok_or_else(|| ice("short descriptor"))
+        };
+        Ok((word(0)? as i64, word(1)? as i64, word(2)?))
     }
 
     #[inline]
@@ -1046,10 +1110,12 @@ impl Machine {
                 .get_mut(idx as usize)
                 .and_then(|f| f.slots.get_mut(off as usize..off as usize + n))
         {
-            b.copy_from_slice(&v.to_le_bytes()[..n]);
+            put_le(b, v);
             return Ok(());
         }
-        self.put(a, &v.to_le_bytes()[..n])
+        let mut x = [0u8; 8];
+        put_le(&mut x[..n], v);
+        self.put(a, &x[..n])
     }
 
     pub(crate) fn temp_alloc(&mut self, n: u64) -> R<u64> {
@@ -1350,10 +1416,10 @@ impl Machine {
             })
     }
 
-    fn check_msg(&self, m: yavs_ir::CheckMsgId) -> (String, Dir) {
+    fn check_msg(&self, m: yavs_ir::CheckMsgId) -> (&str, Dir) {
         match self.rt.prog.checks.get(m) {
-            Some(c) => (c.what.clone(), c.dir),
-            None => (String::from("?"), Dir::To),
+            Some(c) => (&c.what, c.dir),
+            None => ("?", Dir::To),
         }
     }
 
@@ -1445,14 +1511,113 @@ impl Machine {
                     .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?
                     as usize;
                 self.top().pc = pc as u32;
-                let inst = *f
+                let inst = f
                     .code
                     .get(pc)
                     .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
                 if DEBUG {
-                    self.debug_tick(prog, f, pc, &inst, ctx)?;
+                    self.debug_tick(prog, f, pc, inst, ctx)?;
                 }
-                match self.step(prog, f, inst, ctx)? {
+                // The common instructions are executed here; the rest go through `step`.
+                macro_rules! jump {
+                    ($b:expr) => {{
+                        let b = $b;
+                        let blk = f
+                            .blocks
+                            .get(b)
+                            .ok_or_else(|| ice(format!("no block {b}")))?;
+                        pc = blk.start as usize;
+                        if self.pause == Some(b) && self.frames.len() == 1 {
+                            self.pause = None;
+                            return Ok(Outcome::Suspended);
+                        }
+                        continue;
+                    }};
+                }
+                match *inst {
+                    Inst::Br { to } => jump!(to),
+                    Inst::CondBr { c, t, f: e } => jump!(if self.r(c) != 0 { t } else { e }),
+                    Inst::Stmt => {
+                        let base = self.top().temp_base;
+                        self.temp.truncate(base);
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Move { dst, src } => {
+                        let v = self.r(src);
+                        self.set(dst, v);
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Load { dst, addr, w } => {
+                        self.do_load(dst, addr, w)?;
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Store { addr, src, w } => {
+                        self.do_store(addr, src, w)?;
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } => {
+                        self.do_index(dst, base, pos, stride)?;
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Pos {
+                        dst,
+                        dope,
+                        dim,
+                        idx,
+                        what,
+                    } => {
+                        self.do_pos(dst, dope, dim, idx, what)?;
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Bin { op, dst, a, b } => {
+                        self.do_bin(op, dst, a, b)?;
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::BinRange {
+                        op,
+                        dst,
+                        a,
+                        b,
+                        lo,
+                        hi,
+                        what,
+                    } => {
+                        self.do_bin_range(op, dst, a, b, lo, hi, what)?;
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Cmp { op, dst, a, b } => {
+                        let v = cmp(op, self.ri(a).cmp(&self.ri(b)));
+                        self.set(dst, v.into());
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::Check {
+                        kind,
+                        v,
+                        lo,
+                        hi,
+                        what,
+                    } => {
+                        self.do_check(kind, v, lo, hi, what)?;
+                        pc += 1;
+                        continue;
+                    }
+                    _ => {}
+                }
+                match self.step(prog, f, *inst, ctx)? {
                     Flow::Next => pc += 1,
                     Flow::Jump(b) => {
                         let blk = f
@@ -1766,6 +1931,216 @@ impl Machine {
     }
 
     #[inline(always)]
+    fn do_load(&mut self, dst: Reg, addr: Reg, w: Width) -> R<()> {
+        let a = self.r(addr);
+        if w == Width::Sig {
+            let lo = self.load(a, Width::B8)?;
+            let hi = self.load(add_addr(a, 8)?, Width::B8)?;
+            self.set(dst, lo);
+            self.set(Reg(dst.0 + 1), hi);
+        } else {
+            let v = self.load(a, w)?;
+            self.set(dst, v);
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn do_store(&mut self, addr: Reg, src: Reg, w: Width) -> R<()> {
+        let a = self.r(addr);
+        if w == Width::Sig {
+            let (lo, hi) = (self.r(src), self.r(Reg(src.0 + 1)));
+            self.store(a, Width::B8, lo)?;
+            self.store(add_addr(a, 8)?, Width::B8, hi)?;
+        } else {
+            let v = self.r(src);
+            self.store(a, w, v)?;
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn do_index(&mut self, dst: Reg, base: Reg, pos: Reg, stride: u32) -> R<()> {
+        let off = self
+            .r(pos)
+            .checked_mul(u64::from(stride))
+            .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
+        let a = add_addr(self.r(base), off)?;
+        self.set(dst, a);
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn do_pos(
+        &mut self,
+        dst: Reg,
+        dope: Reg,
+        dim: u8,
+        idx: Reg,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
+        let (l, rr, dir) = self.dim_of(self.r(dope), u64::from(dim))?;
+        let i = self.ri(idx);
+        let pos = match dir {
+            // The distance fits a u64 even when it does not fit an i64.
+            0 if l <= i && i <= rr => i.wrapping_sub(l),
+            1 if rr <= i && i <= l => l.wrapping_sub(i),
+            _ => return self.pos_fail(l, rr, dir, i, what),
+        };
+        self.set(dst, pos as u64);
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn pos_fail(&self, l: i64, rr: i64, dir: u64, i: i64, what: yavs_ir::CheckMsgId) -> R<()> {
+        match dir {
+            0 | 1 => {
+                let b = if dir == 0 {
+                    format!("{l} to {rr}")
+                } else {
+                    format!("{l} downto {rr}")
+                };
+                rt_err(outside("index", &i.to_string(), &b, &self.msg(what)))
+            }
+            _ => Err(ice(format!("direction {dir} in a descriptor"))),
+        }
+    }
+
+    #[inline(always)]
+    fn do_bin(&mut self, op: IntOp, dst: Reg, a: Reg, b: Reg) -> R<()> {
+        let (x, y) = (self.ri(a), self.ri(b));
+        let v = match fast_op(op, x, y) {
+            Some(v) => v as u64,
+            None => arith_r(int_op(op, x, y))?,
+        };
+        self.set(dst, v);
+        Ok(())
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn do_bin_range(
+        &mut self,
+        op: IntOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        lo: Reg,
+        hi: Reg,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
+        let (x, y) = (self.ri(a), self.ri(b));
+        let (l, h) = (self.ri(lo), self.ri(hi));
+        match fast_op(op, x, y) {
+            Some(v) if l <= v && v <= h => {
+                self.set(dst, v as u64);
+                Ok(())
+            }
+            _ => self.bin_range_slow(op, x, y, l, h, dst, what),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn bin_range_slow(
+        &mut self,
+        op: IntOp,
+        x: i64,
+        y: i64,
+        l: i64,
+        h: i64,
+        dst: Reg,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
+        match int_op(op, x, y) {
+            Ok(v) if l <= v && v <= h => {
+                self.set(dst, v as u64);
+                Ok(())
+            }
+            r => self.bin_range_fail(op, x, y, r, what),
+        }
+    }
+
+    fn bin_range_fail(
+        &self,
+        op: IntOp,
+        x: i64,
+        y: i64,
+        r: Result<i64, arith::ArithError>,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
+        match r {
+            Err(arith::ArithError::DivisionByZero { .. }) => rt_err("division by zero"),
+            Err(e @ arith::ArithError::NegativeExponent { .. }) => rt_err(e.to_string()),
+            _ => {
+                let m = self.msg(what);
+                let t = if m.subtype.is_empty() {
+                    "the result type"
+                } else {
+                    &m.subtype
+                };
+                rt_err(format!(
+                    "result of {x} {} {y} cannot be represented as {t}",
+                    op_symbol(op)
+                ))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn do_check(
+        &mut self,
+        kind: CheckKind,
+        v: Reg,
+        lo: Reg,
+        hi: Reg,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
+        let x = self.ri(v);
+        let bad = match kind {
+            CheckKind::Range | CheckKind::Index => x < self.ri(lo) || x > self.ri(hi),
+            CheckKind::Length => x != self.ri(lo),
+            CheckKind::Null => x == 0,
+        };
+        if bad {
+            return self.check_fail(kind, x, lo, hi, what);
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn check_fail(
+        &self,
+        kind: CheckKind,
+        x: i64,
+        lo: Reg,
+        hi: Reg,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
+        let (w, dir) = self.check_msg(what);
+        match kind {
+            CheckKind::Range | CheckKind::Index => {
+                let (l, h) = (self.ri(lo), self.ri(hi));
+                let k = if kind == CheckKind::Index {
+                    "index"
+                } else {
+                    "value"
+                };
+                let m = self.msg(what);
+                rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m))
+            }
+            CheckKind::Length => {
+                let l = self.ri(lo);
+                rt_err(format!("value length {x} does not match {w} length {l}"))
+            }
+            CheckKind::Null => rt_err(format!("null access value: {w}")),
+        }
+    }
+
+    #[inline(always)]
     fn step(
         &mut self,
         prog: &Program,
@@ -1832,29 +2207,8 @@ impl Machine {
                 let a = mk_addr(PKG, *p, off)?;
                 self.set(dst, a);
             }
-            Inst::Load { dst, addr, w } => {
-                let a = self.r(addr);
-                if w == Width::Sig {
-                    let lo = self.load(a, Width::B8)?;
-                    let hi = self.load(add_addr(a, 8)?, Width::B8)?;
-                    self.set(dst, lo);
-                    self.set(Reg(dst.0 + 1), hi);
-                } else {
-                    let v = self.load(a, w)?;
-                    self.set(dst, v);
-                }
-            }
-            Inst::Store { addr, src, w } => {
-                let a = self.r(addr);
-                if w == Width::Sig {
-                    let (lo, hi) = (self.r(src), self.r(Reg(src.0 + 1)));
-                    self.store(a, Width::B8, lo)?;
-                    self.store(add_addr(a, 8)?, Width::B8, hi)?;
-                } else {
-                    let v = self.r(src);
-                    self.store(a, w, v)?;
-                }
-            }
+            Inst::Load { dst, addr, w } => self.do_load(dst, addr, w)?,
+            Inst::Store { addr, src, w } => self.do_store(addr, src, w)?,
             Inst::Copy { dst, src, bytes } => {
                 let b = self.rd(self.r(src), self.r(bytes))?.to_vec();
                 self.put(self.r(dst), &b)?;
@@ -1876,43 +2230,13 @@ impl Machine {
                 dim,
                 idx,
                 what,
-            } => {
-                let d = add_addr(self.r(dope), u64::from(dim) * 24)?;
-                let (l, rr, dir) = (
-                    self.load(d, Width::B8)? as i64,
-                    self.load(add_addr(d, 8)?, Width::B8)? as i64,
-                    self.load(add_addr(d, 16)?, Width::B8)?,
-                );
-                let i = self.ri(idx);
-                let pos = match dir {
-                    // The distance fits a u64 even when it does not fit an i64.
-                    0 if l <= i && i <= rr => i.wrapping_sub(l),
-                    1 if rr <= i && i <= l => l.wrapping_sub(i),
-                    0 | 1 => {
-                        let b = if dir == 0 {
-                            format!("{l} to {rr}")
-                        } else {
-                            format!("{l} downto {rr}")
-                        };
-                        return rt_err(outside("index", &i.to_string(), &b, &self.msg(what)));
-                    }
-                    _ => return Err(ice(format!("direction {dir} in a descriptor"))),
-                };
-                self.set(dst, pos as u64);
-            }
+            } => self.do_pos(dst, dope, dim, idx, what)?,
             Inst::Index {
                 dst,
                 base,
                 pos,
                 stride,
-            } => {
-                let off = self
-                    .r(pos)
-                    .checked_mul(u64::from(stride))
-                    .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
-                let a = add_addr(self.r(base), off)?;
-                self.set(dst, a);
-            }
+            } => self.do_index(dst, base, pos, stride)?,
             Inst::Field {
                 dst,
                 base,
@@ -1923,11 +2247,7 @@ impl Machine {
                 let a = add_addr(self.r(base), off)?;
                 self.set(dst, a);
             }
-            Inst::Bin { op, dst, a, b } => {
-                let (x, y) = (self.ri(a), self.ri(b));
-                let v = arith_r(int_op(op, x, y))?;
-                self.set(dst, v);
-            }
+            Inst::Bin { op, dst, a, b } => self.do_bin(op, dst, a, b)?,
             Inst::Un { op, dst, a } => {
                 let x = self.ri(a);
                 let v = arith_r(match op {
@@ -2017,31 +2337,7 @@ impl Machine {
                 lo,
                 hi,
                 what,
-            } => {
-                let (x, y) = (self.ri(a), self.ri(b));
-                let (l, h) = (self.ri(lo), self.ri(hi));
-                match int_op(op, x, y) {
-                    Ok(v) if l <= v && v <= h => self.set(dst, v as u64),
-                    Err(arith::ArithError::DivisionByZero { .. }) => {
-                        return rt_err("division by zero");
-                    }
-                    Err(e @ arith::ArithError::NegativeExponent { .. }) => {
-                        return rt_err(e.to_string());
-                    }
-                    _ => {
-                        let m = self.msg(what);
-                        let t = if m.subtype.is_empty() {
-                            "the result type"
-                        } else {
-                            &m.subtype
-                        };
-                        return rt_err(format!(
-                            "result of {x} {} {y} cannot be represented as {t}",
-                            op_symbol(op)
-                        ));
-                    }
-                }
-            }
+            } => self.do_bin_range(op, dst, a, b, lo, hi, what)?,
             Inst::Cmp { op, dst, a, b } => {
                 let v = cmp(op, self.ri(a).cmp(&self.ri(b)));
                 self.set(dst, v.into());
@@ -2156,37 +2452,7 @@ impl Machine {
                 lo,
                 hi,
                 what,
-            } => {
-                let x = self.ri(v);
-                let (w, dir) = self.check_msg(what);
-                match kind {
-                    CheckKind::Range | CheckKind::Index => {
-                        let (l, h) = (self.ri(lo), self.ri(hi));
-                        if x < l || x > h {
-                            let k = if kind == CheckKind::Index {
-                                "index"
-                            } else {
-                                "value"
-                            };
-                            let m = self.msg(what);
-                            return rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m));
-                        }
-                    }
-                    CheckKind::Length => {
-                        let l = self.ri(lo);
-                        if x != l {
-                            return rt_err(format!(
-                                "value length {x} does not match {w} length {l}"
-                            ));
-                        }
-                    }
-                    CheckKind::Null => {
-                        if x == 0 {
-                            return rt_err(format!("null access value: {w}"));
-                        }
-                    }
-                }
-            }
+            } => self.do_check(kind, v, lo, hi, what)?,
             Inst::MakeDope { at, parts } => {
                 let regs = f.regs(parts).ok_or_else(|| ice("operand list"))?;
                 let mut out = Vec::with_capacity(regs.len() * 8);
@@ -2196,12 +2462,7 @@ impl Machine {
                 self.put(self.r(at), &out)?;
             }
             Inst::DopeLen { dst, dope, dim } => {
-                let d = add_addr(self.r(dope), u64::from(dim) * 24)?;
-                let (l, rr, dir) = (
-                    self.load(d, Width::B8)? as i64,
-                    self.load(add_addr(d, 8)?, Width::B8)? as i64,
-                    self.load(add_addr(d, 16)?, Width::B8)?,
-                );
+                let (l, rr, dir) = self.dim_of(self.r(dope), u64::from(dim))?;
                 let n = yavs_ir::dim_len(l, rr, dir == 1)
                     .filter(|&n| n <= i64::MAX as u64)
                     .ok_or_else(|| Fault::Runtime(format!("range {l} .. {rr} too long")))?;
@@ -2382,7 +2643,6 @@ impl Machine {
             }
             Inst::Deref { dst, handle, what } => {
                 let h = self.r(handle);
-                let (w, _) = self.check_msg(what);
                 if h == 0 {
                     // NVC's wording; the statement span names the place.
                     return rt_err("null access dereference");
@@ -2391,6 +2651,7 @@ impl Machine {
                 let i = match hp.resolve(h) {
                     Ok(i) => i,
                     Err(HeapError::Stale) => {
+                        let (w, _) = self.check_msg(what);
                         return rt_err(format!(
                             "access value designates an object that was deallocated: {w}"
                         ));

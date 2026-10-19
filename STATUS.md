@@ -434,6 +434,22 @@ One commit per change; each table is an interleaved A/B of the binary before and
 | `protected_scoreboard` | 0.34 | 0.28 | 0.85 |
 | `uvvm_util_rand_tb` | 17.74 | 15.46 | 0.87 |
 
+2. The common instructions (loads, stores, index and position arithmetic, checked arithmetic, compares,
+   checks, branches, moves) run in the dispatch loop itself instead of through the general `step` and its
+   `Result<Flow>`; checks look their message up only when they fail; arithmetic that cannot fail is inlined
+   (32-bit division for natural operands); loads and stores of 1, 4 and 8 bytes are fixed-size copies
+   instead of `memcpy` calls; descriptors are read in one access.
+
+| Benchmark | before | after | ratio |
+|---|---|---|---|
+| `compute_loop` | 0.39 | 0.36 | 0.92 |
+| `ff_rtl` | 0.99 | 0.68 | 0.69 |
+| `resolved_bus` | 0.38 | 0.36 | 0.93 |
+| `delta_chain` | 0.20 | 0.17 | 0.86 |
+| `textio_heavy` | 0.38 | 0.35 | 0.93 |
+| `protected_scoreboard` | 0.30 | 0.28 | 0.93 |
+| `uvvm_util_rand_tb` | 16.32 | 12.37 | 0.76 |
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

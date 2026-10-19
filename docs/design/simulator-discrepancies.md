@@ -14,13 +14,16 @@ fourth simulator can be tested the same way when it is available).
   analysis corpora.
 - Verdicts: `REJECT` (analysis or elaboration error), `OK` (accepted, and for a runnable case the
   same messages as yavs's expected output), `OK*` (accepted, different messages), `CRASH`
-  (internal error or signal), `FATAL` (run-time failure), `TIMEOUT`. For cases with two standard
+  (internal error or signal), `FATAL` (run-time failure), `TIMEOUT`. `unsupported` (the simulator rejects only because it lacks the feature, such as a missing
+  `std.reflection`: no verdict, never counted in a majority; the case's `verdicts` file keeps the
+  raw `REJECT`). For cases with two standard
   revisions the cell reads `08: V / 19: V` when they differ. Observed versions: sim1 1.23-devel,
   sim2 7.0.0-dev, sim3 2025.3 (starter edition), as recorded on 2026-10-19.
 - Kind: **LRM ambiguity** (the text is unclear or silent, yavs follows root rule 2: permissive,
   match the other simulators, warn where they differ), **LRM clear** (the text decides; a
   simulator that deviates is wrong or not yet complete), **reference bug** (a crash or an
-  unsupported construct in a reference). Where the kind is "LRM clear" and a simulator crashes
+  unsupported construct in a reference), **library availability** (the case depends on a
+  non-IEEE package that a simulator may or may not ship; no LRM reading applies). Where the kind is "LRM clear" and a simulator crashes
   or rejects, the deviation is that simulator's bug.
 - "yavs" is yavs's recorded verdict from `expected-yavs` (the messages are in the file).
   "Decided" says who chose yavs's behaviour: `user, date` for a user ruling, `agent` for an
@@ -52,20 +55,20 @@ there is untested.
 |---|---|---|---|---|---|---|---|---|---|---|
 | `formal-package-per-element-box` | `<>` for one generic of a formal package map: `generic map (a => 1, b => <>)` | 2019 6.5.7.2 (text not at hand) | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | REJECT | not parsed; no simulator parses it either | open |
 | `psl-assert-always` | PSL `default clock` and `assert always` in an architecture | 2008 clause 17 (PSL by reference) | LRM ambiguity | OK | OK | REJECT | to be filled | OK | skipped with warning W0004, one per design unit | user, 2026-10-18 (#138) |
-| `synopsys-arith-package` | `use ieee.std_logic_arith.all` and `std_logic_unsigned` (non-standard packages) | none (not IEEE packages) | LRM ambiguity | OK | REJECT | OK | to be filled | REJECT | not shipped (clean-room, deferred): E1002 design unit not found | agent (plan: Synopsys packages deferred) |
+| `synopsys-arith-package` | `use ieee.std_logic_arith.all` and `std_logic_unsigned` (non-standard packages) | none (not IEEE packages) | library availability | OK | REJECT | OK | to be filled | REJECT | not shipped (clean-room, deferred): E1002 design unit not found | agent (plan: Synopsys packages deferred) |
 
 ## Sem
 
 | Case | Construct | LRM | Kind | sim1 | sim2 | sim3 | sim4 | yavs | yavs's choice | Decided |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `access-constant-parameter` | constant parameter of an access type (2008 and 2019) | 6.4.2.2, 6.5.2 | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | 08: REJECT / 19: OK | 2008: E1223; 2019: accepted (the 2019 std.env source declares such parameters, so the exemption is by revision) | agent, 2026-10-18/19 (lrm-checks L46) |
+| `access-constant-parameter` | constant parameter of an access type (2008 and 2019) | 6.4.2.2, 6.5.2 | LRM clear | REJECT | REJECT | REJECT | to be filled | 08: REJECT / 19: OK | 2008: E1223; 2019: accepted (against the LRM: the 2019 6.5.2 still forbids an interface constant of an access type, and the std.env declarations that use one are a confirmed defect, VI#259; decision pending) | agent, 2026-10-18/19 (lrm-checks L46) |
 | `access-to-protected` | access type designating a protected type | 5.4.1 | LRM ambiguity | 08: REJECT / 19: OK | 08: REJECT / 19: OK | REJECT | to be filled | 08: REJECT / 19: OK | 2008: E1221; 2019: accepted | agent (lrm-checks L19) |
 | `actual-conversion-in-variable-parameter` | actual conversion of an in variable parameter | 6.5.7.1, 4.2.2.2 | LRM clear | REJECT | OK | OK | to be filled | OK | accepted | agent (#229, L66) |
 | `alias-of-external-method` | method call through an alias of an external shared variable | 6.6.2, 8.7 | LRM clear | REJECT | OK | OK | to be filled | OK | accepted | agent (NVC.md) |
 | `block-config-default-bound` | block configuration of a default-bound instance | 3.4.3 | LRM ambiguity | REJECT | REJECT | OK | to be filled | OK | accepted | agent (NVC.md) |
 | `call-conversions` | conversions in subprogram call associations (formal and actual, scalar and composite) | 6.5.7.1 | LRM clear | REJECT | OK* | OK | to be filled | OK | supported, results by hand | agent (#229) |
 | `config-label-wrong-component` | configuration names an instance of another component | 3.4.2, 7.3 | LRM clear | OK | REJECT | REJECT | to be filled | REJECT | E1701 at analysis (some simulators check at elaboration) | agent (NVC.md) |
-| `config-rebinding` | configuration re-binds an instance already bound by a specification | 7.3.2 | LRM clear | OK | REJECT | OK | to be filled | REJECT | E1702 | agent (NVC.md) |
+| `config-rebinding` | configuration re-binds an instance already bound by a specification | 7.3.2 | LRM clear | OK | REJECT | OK | to be filled | REJECT | E1702 (against the LRM: an incremental binding may repeat the primary binding's entity aspect, 7.3.2.1; only a different entity aspect is an error; decision pending) | agent (NVC.md) |
 | `div-by-zero-in-range` | division by zero in a constant type-range bound | 9.4.2 | LRM ambiguity | OK | REJECT | REJECT | to be filled | REJECT | folded at analysis, E1401 | agent (sem.md 4.2) |
 | `duplicate-interface-param` | two parameters with one name in a subprogram declaration | 12.3 (homographs) | LRM clear | OK | REJECT | REJECT | to be filled | REJECT | E1101 | agent (NVC.md) |
 | `formal-conversion-unconstrained-port` | formal conversion on an unconstrained out port | 6.5.7.1 | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | REJECT | E1312: a conversion of a formal needs a fully constrained formal | agent (rule1-review F8) |
@@ -73,22 +76,22 @@ there is untested.
 | `formal-package-subprograms` | calling a formal subprogram through a formal package | 6.5.7.2 | LRM clear | FATAL | REJECT | OK | to be filled | OK | run (hand-checked) | agent (#101) |
 | `generic-class-array-elem-mismatch` | 2019 generic array type: element type of the actual does not match | 6.5.3 (2019) | LRM clear | OK | REJECT | REJECT | to be filled | REJECT | E1503 | agent (NVC.md) |
 | `generic-subprogram-of-block` | a generic subprogram of a block or component as the actual of an entity's generic subprogram | 6.5.7.2, 7.3.3, 11.2 | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | REJECT | E1506 (all three reference simulators reject) | agent, 2026-10-19 (#222, L63) |
-| `generic-subprogram-of-enclosing-entity` | an enclosing entity's own generic subprogram passed down as the actual of a nested instance's generic subprogram | 6.5.7.2 | LRM ambiguity | REJECT | OK | FATAL | to be filled | OK | accepted (2 of 3 reference simulators accept) | user, 2026-10-19 (majority rule) |
-| `i64-min-literal` | `-9223372036854775808 fs`: negated literal at the i64 minimum | 9.3, 5.2.3 (range of universal_integer implementation-defined) | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | OK | accepted, folds to i64::MIN | agent, 2026-10-18 (#214, L58) |
-| `implicit-condition-operator` | implicit `??` of a condition when only the type is visible (`use ieee.std_logic_1164.std_ulogic`) | 9.2.9 | LRM ambiguity | OK | REJECT | REJECT | to be filled | OK | the `??` of the type's region is found | agent, 2026-10-18 (#48, L53) |
+| `generic-subprogram-of-enclosing-entity` | an enclosing entity's own generic subprogram passed down as the actual of a nested instance's generic subprogram | 6.5.7.2 | LRM ambiguity | REJECT | OK | FATAL | to be filled | OK | accepted (sim2 runs it; sim3 accepts it and crashes at run time, recorded as FATAL; sim1 rejects) | user, 2026-10-19 (majority rule) |
+| `i64-min-literal` | `-9223372036854775808 fs`: negated literal at the i64 minimum | 9.3, 5.2.3 (range of universal_integer implementation-defined) | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | OK | accepted, folds to i64::MIN (all three reference simulators reject: no majority for it; decision pending) | agent, 2026-10-18 (#214, L58) |
+| `implicit-condition-operator` | implicit `??` of a condition when only the type is visible (`use ieee.std_logic_1164.std_ulogic`) | 9.2.9 | LRM ambiguity | OK | REJECT | REJECT | to be filled | OK | the `??` of the type's region is found (sim2 and sim3 reject: the majority rejects; decision pending) | agent, 2026-10-18 (#48, L53) |
 | `implicit-signal-in-subprogram` | `'stable`, `'quiet`, `'delayed`, `'transaction` named in a subprogram body | 4.2.2.2, 14.7.5 | LRM ambiguity | REJECT | OK | OK | to be filled | OK | accepted and run | agent, 2026-10-19 (L67) |
 | `incomplete-type-never-completed` | incomplete type never completed | 5.4.2 | LRM clear | OK | OK | REJECT | to be filled | REJECT | E1220 (the simulators that accept are lenient) | agent (NVC.md) |
 | `incremental-binding` | incremental binding: generic map with an open entity aspect in a configuration | 7.3.2.3 | LRM clear | REJECT | OK | OK | to be filled | OK | supported | agent (hierarchy/incremental_binding, ref=hand) |
 | `individual-assoc-parts` | individual association of parameters by slices and record elements | 6.5.7.1 | LRM clear | REJECT | FATAL | OK | to be filled | OK | supported, results by hand | agent (#71) |
-| `method-alias-objects-full` | aliases of methods through shared variables of packages and object aliases | 5.6.2, 6.6.3 | LRM clear | REJECT | FATAL | REJECT | to be filled | OK | accepted | user, 2026-10-19 (#237) |
-| `method-alias-of-object` | 2019 alias of a method of a shared variable, called through the alias | 5.6.2, 6.6.3 | LRM clear | REJECT | FATAL | REJECT | to be filled | OK | accepted | user, 2026-10-19 (#237) |
-| `method-alias-of-process-variable` | 2019 alias of a method of a process variable | 5.6.2, 6.6.3 | LRM clear | REJECT | FATAL | REJECT | to be filled | OK | accepted | user, 2026-10-19 (#237) |
+| `method-alias-objects-full` | aliases of methods through shared variables of packages and object aliases | 5.6.2, 6.6.3 | LRM ambiguity | REJECT | FATAL | REJECT | to be filled | OK | accepted | user, 2026-10-19 (#237) |
+| `method-alias-of-object` | 2019 alias of a method of a shared variable, called through the alias | 5.6.2, 6.6.3 | LRM ambiguity | REJECT | FATAL | REJECT | to be filled | OK | accepted | user, 2026-10-19 (#237) |
+| `method-alias-of-process-variable` | 2019 alias of a method of a process variable | 5.6.2, 6.6.3 | LRM ambiguity | REJECT | FATAL | REJECT | to be filled | OK | accepted | user, 2026-10-19 (#237) |
 | `method-alias-private-variable` | 2019 method alias with the implicit object inside the protected body | 5.6.2 (2019) | LRM clear | REJECT | REJECT | REJECT | to be filled | OK | accepted | agent (lrm-checks L15) |
-| `multiple-sources-two-processes` | unresolved signal driven by two processes | 14.7.3.1 | LRM clear | OK | OK | REJECT | to be filled | REJECT | E1812 at analysis where static (others report at elaboration) | agent (NVC.md) |
+| `multiple-sources-two-processes` | unresolved signal driven by two processes | 6.4.2.3, 14.7.3.1 | LRM clear | OK | OK | REJECT | to be filled | REJECT | E1812 at analysis where static; the other two reference simulators reject it at elaboration (6.4.2.3: the error is defined after elaboration), so all three reject the design | agent (NVC.md) |
 | `named-return-in-return-and-formal` | named-return function call in a return statement and as the actual of a constrained formal | 4.2.1 (2019) | LRM ambiguity | REJECT | FATAL | REJECT | to be filled | OK | result subtype taken from the context | agent (L62, #33) |
 | `named-return-record-generic-method` | named return values of a record type, of generic subprograms (also of a generic type) and of a protected method | 4.2.1 (2019) | LRM ambiguity | REJECT | REJECT | REJECT | to be filled | OK | result subtype taken from the target, as for arrays | agent (L62, #239) |
-| `named-return-scalar` | named return value whose type mark denotes a scalar type, `return r of integer` | 4.2.1 (2019) | LRM ambiguity | REJECT | OK | REJECT | to be filled | REJECT | E1233 (sim2 accepts the analysis and fails at elaboration) | agent (L71, #239) |
-| `nested-generic-packages` | nested generic packages and a chain of formal packages | 4.7, 6.5.7.2 | LRM clear | REJECT | REJECT | OK | to be filled | OK | run (hand-checked) | agent (#101) |
+| `named-return-scalar` | named return value whose type mark denotes a scalar type, `return r of integer` | 4.2.1 (2019) | LRM ambiguity | REJECT | OK | REJECT | to be filled | REJECT | E1233 (sim2 accepts the analysis and fails at elaboration) | user, 2026-10-19 (L77, #239)
+| `nested-generic-packages` | nested generic packages and a chain of formal packages | 4.7, 6.5.7.2 | LRM clear | REJECT | REJECT | OK | to be filled | OK | run (hand-checked); sim1 and sim2 crash (recorded as REJECT) | agent (#101) |
 | `others-with-other-choice` | `others` combined with another choice in one association | 9.3.3.3 | LRM clear | OK | REJECT | REJECT | to be filled | REJECT | E1325 | agent (NVC.md) |
 | `overflow-in-addition` | integer overflow of a constant addition in a non-required context | 9.2.2 | LRM ambiguity | REJECT | OK | OK | to be filled | OK | warning W1401, run-time check kept | agent (sem.md Q5) |
 | `overload-by-conversion-type` | overloads of a conversion function distinguished only by the formal conversion's type | 4.5.3, 6.5.7.1 | LRM ambiguity | REJECT | REJECT | OK | to be filled | OK | resolved per candidate | agent (#229, L66) |
@@ -145,15 +148,15 @@ there is untested.
 | `integer-low-2019` | range of INTEGER in 2019 files | 5.2.3.1 (2019: at least -2**63+1 to 2**63-1) | LRM ambiguity | 08: OK / 19: OK* | 08: OK / 19: OK* | 08: OK / 19: OK* | to be filled | OK | 2008: 32 bits; 2019: -9223372036854775807 to 9223372036854775807 | agent (#214 area) |
 | `last-value-slice` | `'last_value` of a slice of a signal | 16.2.4 | LRM clear | OK | FATAL | OK | to be filled | OK | the previous value of the slice | agent (#215) |
 | `process-order-in-cycle` | order of the processes resumed in one cycle: sensitivity lists, one wait, several waits, a wait in a procedure, timeouts, an instance | 14.7.5.3 (order unspecified) | LRM ambiguity | OK* | OK* | OK | to be filled | OK | one-suspension-point processes in elaboration order, then the others in reverse elaboration order, signal-resumed before timeout-resumed; initialisation in elaboration order (the per-case majority) | user, 2026-10-19 (#252) |
-| `reflect-access-get` | std.reflection `get` on an access to INTEGER | 2019 16.11 | reference bug | OK* | REJECT | REJECT | to be filled | OK | returns the designated value; sim3 has no std.reflection; sim1 returns the pointer | agent (reflect/access_file_prot, ref=hand) |
-| `reflect-array-of-records` | std.reflection mirror of an array of records | 2019 16.11 | reference bug | FATAL | REJECT | REJECT | to be filled | OK | walks the elements; sim1 crashes | agent (reflect/walk, ref=hand) |
-| `reflect-enum-subtype-range` | std.reflection mirror of an enumeration subtype's range | 2019 16.11 | reference bug | FATAL | REJECT | REJECT | to be filled | OK | the subtype's range; sim1 ignores it | agent (reflect/enums, ref=hand) |
-| `reflect-index-bases` | bases of std.reflection indices (enumeration literals, elements 0; units 1) | 2019 16.11 (prose fixes no base) | LRM ambiguity | OK | REJECT | REJECT | to be filled | OK | same bases as sim1 | agent, 2026-10-18 (#156) |
-| `reflect-multidim-get` | `array_value_mirror.get` on a two-dimensional array (index normalisation) | 2019 16.11 | reference bug | FATAL | REJECT | REJECT | to be filled | OK | LRM indices | agent (reflect/multidim, ref=hand) |
-| `reflect-physical-time-value` | std.reflection value of a TIME mirror: unit of the integer | 2019 16.11 | LRM ambiguity | OK | REJECT | REJECT | to be filled | OK | resolution-limit units; sim1 uses femtoseconds | user ruling (decisions.md, reflection) |
-| `reflect-signal-mirrors` | std.reflection mirrors of signals and ports | 2019 16.11 | reference bug | FATAL | REJECT | REJECT | to be filled | OK | mirrors the signal's value; sim1 returns garbage or crashes | agent (reflect/generics, ref=hand) |
+| `reflect-access-get` | std.reflection `get` on an access to INTEGER | 2019 16.11 | reference bug | OK* | unsupported | unsupported | to be filled | OK | returns the designated value; sim3 has no std.reflection; sim1 returns the pointer | agent (reflect/access_file_prot, ref=hand) |
+| `reflect-array-of-records` | std.reflection mirror of an array of records | 2019 16.11 | reference bug | FATAL | unsupported | unsupported | to be filled | OK | walks the elements; sim1 crashes | agent (reflect/walk, ref=hand) |
+| `reflect-enum-subtype-range` | std.reflection mirror of an enumeration subtype's range | 2019 16.11 | reference bug | FATAL | unsupported | unsupported | to be filled | OK | the subtype's range; sim1 ignores it | agent (reflect/enums, ref=hand) |
+| `reflect-index-bases` | bases of std.reflection indices (enumeration literals, elements 0; units 1) | 2019 16.11 (prose fixes no base) | LRM ambiguity | OK | unsupported | unsupported | to be filled | OK | same bases as sim1 | agent, 2026-10-18 (#156) |
+| `reflect-multidim-get` | `array_value_mirror.get` on a two-dimensional array (index normalisation) | 2019 16.11 | reference bug | FATAL | unsupported | unsupported | to be filled | OK | LRM indices | agent (reflect/multidim, ref=hand) |
+| `reflect-physical-time-value` | std.reflection value of a TIME mirror: unit of the integer | 2019 16.11 | LRM ambiguity | OK | unsupported | unsupported | to be filled | OK | resolution-limit units; sim1 uses femtoseconds | user ruling (decisions.md, reflection) |
+| `reflect-signal-mirrors` | std.reflection mirrors of signals and ports | 2019 16.11 | reference bug | FATAL | unsupported | unsupported | to be filled | OK | mirrors the signal's value; sim1 returns garbage or crashes | agent (reflect/generics, ref=hand) |
 | `shift-negative-count` | shift by a negative count | 9.2.4 | LRM clear | OK | OK | OK | to be filled | OK | `sla -k` is `sra k` | agent (decisions.md) |
-| `transaction-at-init` | `S'transaction` at initialization | 14.7.5.2 | LRM ambiguity | OK* | OK* | OK | to be filled | OK | no toggle at time 0 | user, 2026-10-19 (#241) |
+| `transaction-at-init` | `S'transaction` at initialization | 14.7.5.2 | LRM clear | OK* | OK* | OK | to be filled | OK | no toggle at time 0 | user, 2026-10-19 (#241) |
 
 ## Adding a case
 

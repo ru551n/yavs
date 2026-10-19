@@ -993,7 +993,7 @@ impl Db {
         Ok(())
     }
 
-    /// The type mark of a named return value denotes a composite type (lrm-checks L71), or a
+    /// The type mark of a named return value denotes a composite type (lrm-checks L77), or a
     /// generic type that may be one.
     pub(crate) fn check_named_return_type(
         &mut self,

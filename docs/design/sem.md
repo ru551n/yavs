@@ -1163,7 +1163,7 @@ pub enum LspStep { Field(u32), Index(Box<[ExprId]>), Slice(RangeC), Rebase(Subty
   to both. A call of such a function has the context subtype as its `Expr::subtype` (lrm-checks
   L62, `E1304` without one), and M2 passes its descriptor as a trailing parameter
   (`crates/yavs-lower/DESIGN.md`). No HIR shape changed. The type is an array or record type
-  or a generic type (`E1233` otherwise, L71); instance cloning (`fill_scope`) copies the
+  or a generic type (`E1233` otherwise, L77); instance cloning (`fill_scope`) copies the
   `Db::ret_names` entry of every cloned region and checks a generic type's actual, and a
   generic body that completes its spec does not reuse the spec's `r` (#239).
 

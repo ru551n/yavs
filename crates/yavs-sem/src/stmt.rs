@@ -877,8 +877,7 @@ impl Db {
     where
         H: HasType,
     {
-        if let ast::ExprKind::Aggregate(assocs) = &target.kind {
-            self.reject_range_choices(assocs)?;
+        if let ast::ExprKind::Aggregate(_) = &target.kind {
             let rhs = self.rhs(scope, rhs, None, each)?;
             let Some(ty) = rhs_type(self, &rhs) else {
                 return Err(self.error(
@@ -901,31 +900,6 @@ impl Db {
             let rhs = self.rhs(scope, rhs, Some(st), each)?;
             Ok((Target { expr: e, lsps }, rhs))
         }
-    }
-
-    /// A range choice in an aggregate target has no specified mapping of the value's
-    /// elements (10.5.2.1, 10.6.2.1; user, 2026-10-19): E1333 at the choice.
-    fn reject_range_choices(&mut self, assocs: &[ast::ElementAssoc]) -> Result<(), Reported> {
-        let mut errs = Errs::default();
-        for a in assocs {
-            for c in &a.choices {
-                if let ast::Choice::Range(r) = c {
-                    let span = drange_span(r);
-                    errs.keep::<()>(Err(self.error(
-                        Diagnostic::error(
-                            diag::AGG_RANGE_TARGET,
-                            "a range choice in an aggregate target is not supported: how it maps the value's elements is not specified",
-                        )
-                        .with_primary(span, "")
-                        .with_help("name the elements one by one, or assign to a slice of a single object"),
-                    )));
-                }
-            }
-            if let ast::ExprKind::Aggregate(inner) = &a.value.kind {
-                errs.keep(self.reject_range_choices(inner));
-            }
-        }
-        errs.finish(())
     }
 
     fn signal_assign(

@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:aggregate_target_ranges:_p0	desc/desc hi= 50 40 30 20 lo= 10 0
+diag	note	0	0	:aggregate_target_ranges:_p0	asc/desc a= 50 40 b= 30 20 10 0
+diag	note	0	0	:aggregate_target_ranges:_p0	desc/asc hi= 0 10 20 30 lo= 40 50
+diag	note	0	0	:aggregate_target_ranges:_p0	asc/asc a= 0 10 b= 20 30 40 50
+diag	note	0	0	:aggregate_target_ranges:_p0	shifted h0= 50 40 30 20 a= 10 0
+diag	note	0	0	:aggregate_target_ranges:_p0	mixed e5=50 m= 40 30 20 e1=10 e0=0
+diag	note	0	0	:aggregate_target_ranges:_p0	element first e0=50 m5= 40 30 20 10 0
+diag	note	0	0	:aggregate_target_ranges:_p0	names hi= 0 10 20 30 lo= 40 50
+diag	note	0	0	:aggregate_target_ranges:_p0	descending index subtype da=50 40
+diag	note	0	0	:aggregate_target_ranges:_p0	one range va= 50 40 30 20 10 0

@@ -786,6 +786,7 @@ impl Fx<'_, '_> {
         let (_, rt, w) = self.scalar(elem, span)?;
         let count = self.dope_len(dope);
         let m = self.msg("aggregate target", Dir::To);
+        let named = self.named_target_positions(assocs, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
         if assocs.iter().any(|a| a.slice_piece) {
@@ -800,18 +801,16 @@ impl Fx<'_, '_> {
             });
         }
         let mut k = self.int(0);
-        for a in assocs.iter() {
+        for (i, a) in assocs.iter().enumerate() {
             if a.slice_piece {
-                if !a.choices.is_empty() {
-                    return Err(self
-                        .cx
-                        .unsupported(span, "named slices in aggregate targets"));
-                }
                 let what = self.target_name(a.value);
                 let p = self.place(a.value)?;
                 let Place::Array { dope: pd, .. } = p else {
                     return Err(self.cx.ice(span, "slice piece of a scalar target"));
                 };
+                if let Some(ps) = &named {
+                    k = self.named_piece(ps[i], pd);
+                }
                 let len = self.dope_len(pd);
                 let (size, _) = self.layout(tid, pd);
                 let src = if logic {
@@ -850,6 +849,7 @@ impl Fx<'_, '_> {
                     k = self.bin(IntOp::Add, k, one);
                     pos
                 }
+                Some(Choice::Expr(_)) if let Some(ps) = &named => self.int(ps[i].0),
                 Some(Choice::Expr(c)) if a.choices.len() == 1 => {
                     let i = self.scalar_expr(*c)?;
                     let p = self.reg(RegTy::I64);
@@ -890,6 +890,89 @@ impl Fx<'_, '_> {
             self.store_place(p, crate::expr::V::S(x), elem, &what, span)?;
         }
         Ok(())
+    }
+
+    /// Value positions of the associations of an aggregate target with a range choice, and
+    /// each one's choice length (#244, user, 2026-10-19, lrm-checks L68): the aggregate runs
+    /// from its lowest to its highest choice in the direction of its first range choice, its
+    /// leftmost index takes the value's leftmost element, and a piece takes the elements of its
+    /// range in the aggregate's order. `None` without a range choice (element choices then
+    /// name the value's own indices).
+    fn named_target_positions(
+        &mut self,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        span: Span,
+    ) -> R<Option<Vec<(i64, i64)>>> {
+        use yavs_sem::expr::aggregate::{StaticRange, range_value};
+        let db = self.db;
+        let first = assocs
+            .iter()
+            .flat_map(|a| a.choices.iter())
+            .find_map(|c| match c {
+                Choice::Range(rc) => Some(rc),
+                _ => None,
+            });
+        let Some(first) = first else {
+            return Ok(None);
+        };
+        let mut rs = Vec::with_capacity(assocs.len());
+        for a in assocs {
+            let r = match &a.choices[..] {
+                [Choice::Range(rc)] => range_value(db, rc),
+                [Choice::Expr(e)] => db
+                    .value(*e)
+                    .and_then(yavs_sem::stat::ConstValue::as_int)
+                    .map(|i| StaticRange::new(i, Direction::To, i)),
+                _ => None,
+            };
+            let Some(r) = r else {
+                return Err(self.cx.unsupported(
+                    span,
+                    "range choices in aggregate targets with several or non-static choices",
+                ));
+            };
+            rs.push(r);
+        }
+        let Some(dir) = range_value(db, first).map(|r| r.dir) else {
+            return Err(self
+                .cx
+                .ice(span, "unfolded range choice in an aggregate target"));
+        };
+        let live = rs.iter().filter(|r| !r.is_null());
+        let (Some(low), Some(high)) = (
+            live.clone().map(|r| r.low()).min(),
+            live.map(|r| r.high()).max(),
+        ) else {
+            // Only null choices: nothing is assigned.
+            return Ok(Some(rs.iter().map(|_| (0, 0)).collect()));
+        };
+        let len = |r: &StaticRange| i64::try_from(r.len()).unwrap_or(i64::MAX);
+        Ok(Some(
+            rs.iter()
+                .map(|r| match dir {
+                    _ if r.is_null() => (0, 0),
+                    Direction::To => (r.low() - low, len(r)),
+                    Direction::Downto => (high - r.high(), len(r)),
+                })
+                .collect(),
+        ))
+    }
+
+    /// The start of a named piece (`pos`, choice length) of an aggregate target, after
+    /// checking that its choice has as many elements as the piece `pd`.
+    fn named_piece(&mut self, (pos, len): (i64, i64), pd: Reg) -> Reg {
+        let (z, one) = (self.int(0), self.int(1));
+        let n = self.int(len);
+        let last = self.bin(IntOp::Sub, n, one);
+        let dope = self.one_dope(z, last, z);
+        let what = self.msg("target", Dir::To);
+        self.emit(Inst::SubtypeCheck {
+            dope,
+            want: pd,
+            dims: 1,
+            what,
+        });
+        self.int(pos)
     }
 
     /// A descriptor `0 to n - 1` for the `n` elements a positional aggregate target with
@@ -1179,6 +1262,7 @@ impl Fx<'_, '_> {
             }
         };
         let m = self.msg("aggregate target", Dir::To);
+        let named = self.named_target_positions(assocs, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
         if assocs.iter().any(|a| a.slice_piece) {
@@ -1195,18 +1279,16 @@ impl Fx<'_, '_> {
             }
         }
         let mut k = self.int(0);
-        for (a, lsp) in assocs.iter().zip(target.lsps.iter()) {
+        for (i, (a, lsp)) in assocs.iter().zip(target.lsps.iter()).enumerate() {
             if a.slice_piece {
-                if !a.choices.is_empty() {
-                    return Err(self
-                        .cx
-                        .unsupported(span, "named slices in aggregate signal targets"));
-                }
                 let slot = self.driver_of(lsp)?;
                 let (_, sref, tdope) = self.sig_name(a.value)?;
                 let Some(td) = tdope else {
                     return Err(self.cx.ice(span, "slice piece of a scalar signal"));
                 };
+                if let Some(ps) = &named {
+                    k = self.named_piece(ps[i], td);
+                }
                 let len = self.dope_len(td);
                 let (size, _) = self.layout(vtid, td);
                 // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
@@ -1294,6 +1376,7 @@ impl Fx<'_, '_> {
             for (j, &(at, (data, dope))) in vals.iter().enumerate() {
                 let pos = match a.choices.first() {
                     None => k,
+                    Some(Choice::Expr(_)) if let Some(ps) = &named => self.int(ps[i].0),
                     Some(Choice::Expr(c)) if a.choices.len() == 1 => {
                         let i = self.scalar_expr(*c)?;
                         let p = self.reg(RegTy::I64);

@@ -980,10 +980,17 @@ which tools/difftest parses.
   take the choices' direction, two reject a mix; lrm-checks L84). An element subtype the type leaves open takes its constraint from a fully
   constrained context, else from the first value, and every value is checked against it.
   Pieces exist in 1-D aggregates only (LRM 9.3.3.3; sem rejects them in more dimensions, as
-  the reference simulators do). A range choice in an aggregate *target* is `E1333` at analysis
-  (#244, user, 2026-10-19): the LRM does not say how it maps the value's elements and the
-  reference simulators disagree (one rejects it, the other takes the direction from the first
-  choice). Positional and element-choice targets stay legal (lrm-checks L68).
+  the reference simulators do). Range choices in aggregate *targets* are accepted (#244, user, 2026-10-19: accept,
+  majority; this replaces the earlier ruling that made them `E1333`), with the mapping of the
+  two reference simulators that accept them: the aggregate runs from its lowest to its highest
+  choice in the direction of its range choices, its leftmost index takes the value's
+  leftmost element, and each piece takes the elements of its range in that order (so
+  `(0 to 1 => a, 2 to 5 => b) := v` gives `a` the two leftmost elements of `v` whatever `v`'s
+  bounds). Where the two disagree yavs keeps choices order-independent (associations written
+  out of index order); range choices of both directions are `E1334`, as in aggregate values
+  (2 of 3 reference simulators reject them; lrm-checks L68, L84). A piece must have as many
+  elements as its choice, checked before it is assigned; element-only targets keep naming the
+  value's own indices.
 - **`&` on arrays of composites** (#234, LRM 9.2.5): arrays of arrays and of records
   concatenate like arrays of scalars (bounds from the index subtype, two null operands give
   the right operand), each element copied as a row with the piece copy shared with

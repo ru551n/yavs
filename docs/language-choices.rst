@@ -161,8 +161,12 @@ Aggregate targets with range choices
 
    (5 downto 2 => hi, 1 downto 0 => lo) := v;
 
-Rejected at analysis (``E1333``): the standard does not say how the choices map to the value's
-elements, and simulators disagree on whether it is legal. Standard: 10.5.2.1.
+Accepted. The standard does not say how the choices map to the value's elements, and one
+simulator rejects the form. yavs gives the aggregate the bounds of its choices, in the
+direction of its range choices, and matches its leftmost index with the value's leftmost
+element: ``(0 to 1 => a, 2 to 5 => b) := v`` gives ``a`` the two leftmost elements of ``v``,
+whatever ``v``'s bounds. Associations may be written in any order. Each target must have as
+many elements as its choice. Standard: 10.5.2.1, 10.6.2.1.
 
 *Portable:* assign slices: ``hi := v(5 downto 2); lo := v(1 downto 0);``.
 

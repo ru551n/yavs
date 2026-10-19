@@ -1,0 +1,7 @@
+exit	0
+diag	note	1000000	0	:aggregate_target_ranges_signal:_p2	desc hi= 50 40 30 20 lo= 10 0 a= 50 40 b= 30 20 10 0
+diag	note	1000000	0	:aggregate_target_ranges_signal:_p2	concurrent hi= 50 40 30 20 lo= 10 0
+diag	note	1000000	0	:aggregate_target_ranges_signal:_p2	bits bh=1100 bl=10
+diag	note	2000000	0	:aggregate_target_ranges_signal:_p2	asc hi= 0 10 20 30 lo= 40 50
+diag	note	4000000	0	:aggregate_target_ranges_signal:_p2	later hi= 50 40 30 20 lo= 10 0
+diag	note	5000000	0	:aggregate_target_ranges_signal:_p2	concurrent again hi= 5 4 3 2 lo= 1 0

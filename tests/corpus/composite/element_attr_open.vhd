@@ -1,7 +1,9 @@
 -- difftest: top=element_attr_open std=2008
 -- 'element attributes of objects whose element bounds are open (#235, #243): the
 -- bounds come from the object (an unconstrained port, a subprogram parameter, an alias,
--- a variable, a signal), for 'length, 'left, 'right, 'low, 'high and 'range.
+-- a variable, a signal), for 'length, 'left, 'right, 'low, 'high and 'range; also an
+-- unconstrained parameter, a generic and a constant (#247), whose element bounds are the
+-- declared subtype's, not those of the literals that initialise it.
 library ieee;
 use ieee.std_logic_1164.all;
 package element_attr_open_pkg is
@@ -14,6 +16,7 @@ use ieee.std_logic_1164.all;
 use work.element_attr_open_pkg.all;
 
 entity inner is
+  generic (g : ram_t := (x"1", x"2"));
   port (p : in ram_t; q : in sram_t);
 end;
 
@@ -36,6 +39,8 @@ begin
       & integer'image(q'element'right);
     report "external " & integer'image(ea'element'length) & " " & integer'image(ea'element'left)
       & " " & integer'image(ea'element'right) & " " & integer'image(ea'length);
+    report "generic " & integer'image(g'element'length) & " " & integer'image(g'element'left)
+      & " " & integer'image(g'element'right);
     wait;
   end process;
 end;
@@ -51,6 +56,15 @@ architecture t of element_attr_open is
   signal sr : sram_t(1 to 2)(0 to 4);
   signal u : ram_t(0 to 1)(2 to 5);
   alias ua : ram_t is u;
+  constant kc : ram_t(0 to 1)(3 downto 0) := (others => "0000");
+  constant kd : ram_t(0 to 1)(3 downto 0) := ("0000", "1111");
+  constant ke : ram_t := (x"1", x"2", x"3");
+
+  function lft(m : ram_t) return string is
+  begin
+    return integer'image(m'element'left) & " " & integer'image(m'element'right) & " "
+      & integer'image(m'element'length);
+  end;
 
   function show(m : ram_t) return string is
     variable s : string(1 to m'length * (m'element'length + 1));
@@ -59,7 +73,7 @@ architecture t of element_attr_open is
       & integer'image(m'element'right) & " " & integer'image(m'element'high);
   end;
 begin
-  i0 : entity work.inner port map (p => r, q => sr);
+  i0 : entity work.inner generic map (g => (x"ab", x"cd")) port map (p => r, q => sr);
 
   process
     variable v : ram_t(0 to 2)(15 downto 8);
@@ -78,6 +92,8 @@ begin
       & integer'image(sr'element'right);
     report "param " & show(v);
     report "param2 " & show(r);
+    report "constant " & lft(kc) & " " & lft(kd) & " " & lft(ke) & " " & lft(kc(0 to 0))
+      & " " & integer'image(kc'element'left);
     wait;
   end process;
 end;

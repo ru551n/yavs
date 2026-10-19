@@ -908,6 +908,9 @@ which tools/difftest parses.
   (`Fx::subtype_dope`); instance data now gets the signal descriptors before the constant
   thunks run, so `constant w : natural := p'element'length` (or `p'length`) of a port sees the
   actual's bounds (#235, #243).
+- **A folded constant read as a whole** (`Fx::expr`, `e.value` of an `Obj`) takes the descriptor
+  of its own subtype when that has one, so the element bounds of an array constant are the
+  declared ones, not those of the literals that fold into its value (#247).
 
 ## Foreign subprograms and `--load` (yavs-lower, yavs-vhpi, CLI, #95, 2026-10-18)
 

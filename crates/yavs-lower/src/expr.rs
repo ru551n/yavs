@@ -174,7 +174,16 @@ impl<'a> Fx<'a, '_> {
         let e = &db.exprs[id];
         let span = e.span;
         if let Some(c) = e.value {
-            return self.konst(&db.consts[c], e.subtype, span);
+            let v = self.konst(&db.consts[c], e.subtype, span)?;
+            // A folded constant keeps the bounds of its subtype, element bounds too, not those
+            // of its initialiser's literals (LRM 6.4.2.2): `'element'left` of it, or of a
+            // parameter it is passed to, reads them.
+            if let (ExprKind::Obj(_), V::A(data, _)) = (&e.kind, v)
+                && let Some(want) = self.subtype_dope(e.subtype, span)?
+            {
+                return Ok(V::A(data, want));
+            }
+            return Ok(v);
         }
         match &e.kind {
             ExprKind::Const(c) => self.konst(&db.consts[*c], e.subtype, span),

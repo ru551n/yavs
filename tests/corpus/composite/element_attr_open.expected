@@ -3,9 +3,11 @@ diag	note	0	0	:element_attr_open:i0:_p0	port 8 7 0 0 7 8
 diag	note	0	0	:element_attr_open:i0:_p0	range 8 24
 diag	note	0	0	:element_attr_open:i0:_p0	sport 5 0 4
 diag	note	0	0	:element_attr_open:i0:_p0	external 5 0 4 2
+diag	note	0	0	:element_attr_open:i0:_p0	generic 8 0 7
 diag	note	1000000	0	:element_attr_open:_p0	variable 8 15 8 8 15
 diag	note	1000000	0	:element_attr_open:_p0	vrange 8
 diag	note	1000000	0	:element_attr_open:_p0	signal 4 2 5 4 5
 diag	note	1000000	0	:element_attr_open:_p0	sig2 5 4
 diag	note	1000000	0	:element_attr_open:_p0	param 27 15 8 15
 diag	note	1000000	0	:element_attr_open:_p0	param2 36 7 0 7
+diag	note	1000000	0	:element_attr_open:_p0	constant 3 0 4 3 0 4 0 3 4 3 0 4 3

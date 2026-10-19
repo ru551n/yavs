@@ -283,7 +283,7 @@ fn read_write_before_read_only_and_phase_order() {
 }
 
 /// Every phase once per occurrence. Start and end of processes bracket each cycle's processes
-/// (#317), start of postponed only when postponed processes run. The read-write phase (last known delta) runs before the
+/// (#317; end of processes also fires after initialization's process run), start of postponed only when postponed processes run. The read-write phase (last known delta) runs before the
 /// postponed processes and the read-only phase (end of time step) after them; an after-delay of
 /// 0 from it creates one more delta; a callback registered in the read-only phase for the same
 /// phase runs at the next time step.
@@ -291,6 +291,7 @@ const ORDER: &str = "vhpi: start_of_sim t=0 d=0 cb_time=0\n\
      vhpi: start_of_init t=0 d=0 cb_time=0\n\
      ** Note: 0fs+0: s='0'\n\
      ** Note: 0fs+0: postponed s='0'\n\
+     vhpi: end_procs t=0 d=0 cb_time=0\n\
      vhpi: end_of_init t=0 d=0 cb_time=0\n\
      vhpi: next_time_step_once t=10 d=0 cb_time=10\n\
      vhpi: next_time_step t=10 d=0 cb_time=10\n\

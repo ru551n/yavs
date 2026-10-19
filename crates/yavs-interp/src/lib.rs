@@ -324,6 +324,10 @@ pub fn proc_flags(prog: &Program, func: FuncId) -> ProcFlags {
         postponed: false,
         serial: prog.is_serial(func),
         several_waits: !prog.single_suspend(func),
+        concurrent_call: prog
+            .func(func)
+            .is_some_and(|f| f.flags.contains(yavs_ir::FuncFlags::IMPLICIT))
+            && !prog.single_suspend(func),
     }
 }
 
@@ -405,6 +409,13 @@ impl Process for InterpProcess {
 
     fn several_waits(&self) -> bool {
         !self.m.rt.prog.single_suspend(self.m.entry)
+    }
+
+    fn concurrent_call(&self) -> bool {
+        let p = &self.m.rt.prog;
+        p.func(self.m.entry)
+            .is_some_and(|f| f.flags.contains(yavs_ir::FuncFlags::IMPLICIT))
+            && !p.single_suspend(self.m.entry)
     }
 
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {

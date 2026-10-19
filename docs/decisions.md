@@ -1404,6 +1404,17 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   in the same cycle pass. Rejected: plain reverse order after initialisation (against the
   majority for sensitivity-list monitors), numbering child scopes first (minority for the
   hierarchy sub-cases), and keeping elaboration order (fails those testbenches).
+- **Concurrent procedure calls (user, 2026-10-19, #281):** among the processes with several
+  suspension points, the concurrent procedure calls (IR `IMPLICIT` and not `single_suspend`: the
+  procedure loops on a wait) run before the other ones; each group in reverse elaboration order,
+  signal-resumed before timeout-resumed as before. One-suspension-point processes stay first,
+  in elaboration order. Why: a protocol checker written as a concurrent call must see a
+  testbench process's report of the same edge after its own, as all three reference simulators
+  do for the real `tb_check_stable` test (the external runner's `check` suite goes from 243 to
+  257 of 257). The rule goes against sim2 and sim3 in a reduced reproducer (checkers before a
+  one-wait testbench at the first edge) and matches the majority in the shapes of the real test;
+  no rule over process shape, order and resume reason matches every sub-case. Kernel:
+  `ProcFlags::concurrent_call`, `Process::concurrent_call`.
 - Corpus tests whose processes report in one cycle and whose order the reference simulator does
   not share carry `ignore=order`; `process/process_order` is `ref=hand`.
 - **Formals with open dimensions and constrained elements** (`Fx::param_dope`, #257): the

@@ -12,6 +12,7 @@ const NONE: ProcFlags = ProcFlags {
     postponed: false,
     serial: false,
     several_waits: false,
+    concurrent_call: false,
 };
 
 fn u32_of(v: &[u8]) -> u32 {
@@ -289,6 +290,7 @@ fn postponed_runs_once_at_end_of_time_step() {
         postponed: true,
         serial: false,
         several_waits: false,
+        concurrent_call: false,
     };
     b.process(
         "watch",
@@ -351,6 +353,7 @@ fn postponed_zero_delay_is_an_error() {
             postponed: true,
             serial: false,
             several_waits: false,
+            concurrent_call: false,
         },
         &[d],
         p(move |c| {
@@ -901,6 +904,7 @@ fn process_order_by_shape() {
             let mut started = false;
             let flags = ProcFlags {
                 several_waits: several,
+                concurrent_call: k == 0, // p0: a concurrent call goes first among the several-waits ones
                 ..NONE
             };
             b.process(
@@ -944,8 +948,8 @@ fn process_order_by_shape() {
         "0 fs +0 p4 Note: init",
         "1 ns +0 p1 Note: resumed",
         "1 ns +0 p4 Note: resumed",
-        "1 ns +0 p3 Note: resumed",
         "1 ns +0 p0 Note: resumed",
+        "1 ns +0 p3 Note: resumed",
         "1 ns +0 p2 Note: resumed",
     ]
     .map(String::from)

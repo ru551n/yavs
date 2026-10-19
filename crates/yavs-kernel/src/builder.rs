@@ -25,6 +25,7 @@ pub struct ProcFlags {
     /// procedure): after initialisation it runs after the processes with one suspension point,
     /// in reverse elaboration order (#252, DESIGN.md "Parallel evaluation").
     pub several_waits: bool,
+    pub concurrent_call: bool,
 }
 
 /// Port mode of a formal (LRM 6.5.2).
@@ -293,6 +294,7 @@ impl Builder {
         let flags = ProcFlags {
             serial: flags.serial || process.serial(),
             several_waits: flags.several_waits || process.several_waits(),
+            concurrent_call: flags.concurrent_call || process.concurrent_call(),
             ..flags
         };
         self.procs.push(ProcDecl {

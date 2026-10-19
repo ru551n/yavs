@@ -81,7 +81,8 @@ The standard does not say in which order the processes resumed in one simulation
 initialization every process runs in elaboration order. After that, the processes with one
 suspension point (a sensitivity list, or exactly one wait statement and no wait in a called
 procedure) run first, in elaboration order; then the other processes, in reverse elaboration
-order, those resumed by a signal before those resumed by a timeout. Reports, ``textio`` output
+order, those resumed by a signal before those resumed by a timeout; among them the concurrent
+procedure calls come before the other processes. Reports, ``textio`` output
 and ``stop``/``finish`` appear in that order, and processes that share a variable see each
 other's updates in it. ``--shuffle`` permutes the run order but not the order of the output.
 

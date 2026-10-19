@@ -20,6 +20,9 @@ impl Process for Boxed {
     fn several_waits(&self) -> bool {
         self.0.several_waits()
     }
+    fn concurrent_call(&self) -> bool {
+        self.0.concurrent_call()
+    }
 }
 
 fn usage(m: String) -> SimError {
@@ -167,6 +170,7 @@ impl Elaborated {
                     postponed: p.postponed,
                     serial: false,
                     several_waits: false,
+                    concurrent_call: false,
                 },
                 &ds,
                 Boxed(proc),

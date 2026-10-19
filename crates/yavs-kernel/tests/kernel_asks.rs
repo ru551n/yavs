@@ -12,6 +12,7 @@ const NONE: ProcFlags = ProcFlags {
     postponed: false,
     serial: false,
     several_waits: false,
+    concurrent_call: false,
 };
 
 fn lv(s: &str) -> LogicVec {

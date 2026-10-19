@@ -398,7 +398,8 @@ own and their callers serial (#82). Serial marking reaches the kernel through `P
 so shared-variable, protected-type and file users run in order at any `--threads` (#107). The order
 of the processes of one cycle is fixed (#252): elaboration order at initialisation; then the
 processes with one suspension point in elaboration order, then the others
-(`Process::several_waits`) in reverse, signal-resumed before timeout-resumed. Observers
+(`Process::several_waits`) in reverse, signal-resumed before timeout-resumed; concurrent
+procedure calls (`Process::concurrent_call`) before the other several-wait ones (#281). Observers
 schedule and cancel wake-ups at an absolute time (`Hook::wake_at`, `Hook::cancel`,
 `Observer::wake`, #268): a wake-up gives a cycle at its time with the usual phase callbacks,
 forces and deposits from it apply in that cycle, a wake-up in the past is E3005, and the

@@ -2,6 +2,7 @@
 -- Order of the processes resumed in one cycle: the LRM leaves it open (14.7.5.3). yavs: at
 -- initialisation elaboration order; then the processes with one suspension point in
 -- elaboration order, then the others in reverse, signal-resumed before timeout-resumed (#252).
+-- A concurrent procedure call whose procedure loops on one wait counts as several waits (#281).
 -- Each process reports its position in the run order of the cycle.
 package process_order_pkg is
   type counter is protected
@@ -40,6 +41,12 @@ use work.process_order_pos.all;
 entity process_order is end;
 architecture t of process_order is
   signal go : bit;
+  procedure watch (signal s : in bit) is
+  begin
+    loop
+      wait on s; report "RES cc concurrent call " & integer'image(pos.take);
+    end loop;
+  end procedure;
 begin
   go <= '1' after 1 ns;
   m1 : process begin
@@ -66,4 +73,5 @@ begin
   begin
     wait_go; report "RES pr wait in a procedure " & integer'image(pos.take); wait;
   end process;
+  cc : watch (go);
 end;

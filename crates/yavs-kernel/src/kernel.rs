@@ -1261,9 +1261,9 @@ impl SimControl {
         pids.sort_unstable_by_key(|&p| {
             let m = &self.procs[p as usize];
             if m.flags.several_waits {
-                (true, m.by_timeout, Reverse(p))
+                (true, m.by_timeout, !m.flags.concurrent_call, Reverse(p))
             } else {
-                (false, false, Reverse(u32::MAX - p))
+                (false, false, false, Reverse(u32::MAX - p))
             }
         });
     }

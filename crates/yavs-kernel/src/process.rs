@@ -48,6 +48,10 @@ pub trait Process: Send {
     fn several_waits(&self) -> bool {
         false
     }
+
+    fn concurrent_call(&self) -> bool {
+        false
+    }
 }
 
 impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {

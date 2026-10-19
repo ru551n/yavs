@@ -332,6 +332,23 @@ impl Runtime {
         }))
     }
 
+    /// Run `prog`, a program that extends this one (every id of this one names the same item
+    /// there, `Lowerer::snapshot`), with `sources` for it. Everything else stays: package
+    /// data, open files, assert counts, coverage counters. Elaboration adds the functions it
+    /// calls to one program this way instead of initialising the packages again.
+    pub fn extend(&mut self, prog: Arc<Program>, sources: Sources) -> Result<(), SimError> {
+        for (_, n) in prog.natives.iter().skip(self.natives.len()) {
+            self.natives.push(native::lookup(&n.symbol).map_err(usage)?);
+        }
+        self.foreign.resize(prog.foreign.len(), None);
+        self.models.resize(prog.foreign.len(), None);
+        self.expanded
+            .resize_with(prog.consts.len(), Default::default);
+        self.sources = sources;
+        self.prog = prog;
+        Ok(())
+    }
+
     /// The VHDL assert count of severity `s` (`GetVhdlAssertCount(s)`) as it stands now:
     /// the CLI's exit status follows the error and failure counts at the end of the run.
     pub fn assert_count(&self, s: yavs_kernel::Severity) -> u64 {

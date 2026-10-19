@@ -119,6 +119,7 @@ impl ProgramBuilder {
             operands: Vec::new(),
             resume: Vec::new(),
             flags: FuncFlags::default(),
+            body: None,
             size: 0,
             defined: false,
         })
@@ -139,6 +140,7 @@ impl ProgramBuilder {
             stmt: None,
             operands: Vec::new(),
             flags: FuncFlags::default(),
+            body: None,
         }
     }
 
@@ -320,6 +322,7 @@ pub struct FuncBuilder<'a> {
     stmt: Option<StmtId>,
     operands: Vec<Reg>,
     flags: FuncFlags,
+    body: Option<BlockId>,
 }
 
 impl FuncBuilder<'_> {
@@ -390,6 +393,11 @@ impl FuncBuilder<'_> {
             });
         }
         slot
+    }
+
+    /// Marks `b` as where a process's statements start (its declarative part ends).
+    pub fn body(&mut self, b: BlockId) {
+        self.body = Some(b);
     }
 
     pub fn flag(&mut self, f: FuncFlags) {
@@ -484,6 +492,7 @@ impl FuncBuilder<'_> {
         f.loc = loc;
         f.operands = self.operands;
         f.flags = self.flags;
+        f.body = self.body;
         f.defined = true;
     }
 }

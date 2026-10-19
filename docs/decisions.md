@@ -292,7 +292,7 @@ milestone users care about works.
   process variable by name in the process's frame, and a shared variable at its slot (`Built::vars`): a
   region's address is what its instance cell holds once its thunk ran, a package's comes from
   a slot thunk (`Lowerer::var_slots`); no thunk runs only for VHPI, so nothing changes for a
-  design without plugins, and a region variable no process uses has no slot to read. Values
+  design without plugins; a region variable no process uses gets its slot when the design is built (#342). Values
   cross as elaborated values (`ConstValue`, the IR memory codec of yavs-elab), so variables of
   any composite type share one path. Only from simulation callbacks: every process is
   suspended there, so reads and writes are the same at any `--threads`, and VHPI calls from a
@@ -301,10 +301,21 @@ milestone users care about works.
   the one reference simulator that exposes variables through VHPI also writes at once (the
   reference simulator with VHPI used elsewhere here finds no handle for them). Forces and releases of
   variables are `W0903` (that simulator treats a force as a deposit and has no release); the
-  read-only phases refuse writes as for signals. A process variable is readable once its
-  process ran (yavs creates the variables then), from `vhpiCbEndOfInitialization` on; that
-  simulator also reads it before. Array bounds of an object with a constrained subtype come
+  read-only phases refuse writes as for signals. A process variable is readable from the
+  start of simulation (#342, below). Array bounds of an object with a constrained subtype come
   from the subtype, not from its initial value (`x"00"` of a `(7 downto 0)` variable).
+- **Variables before their process ran (#342):** a process whose variables VHPI touches before
+  its first run has its declarative part run then (`InterpProcess::prestart`: the entry stops at
+  the block `Func::body` names, where the statements start) and continues with its statements at
+  the first run, so a variable holds its initial value from the start of simulation and a
+  deposit before the first run is seen by it. It runs outside the kernel: a declarative part
+  that needs the running simulation (a signal value) is `W0903` with its reason, and the process
+  stays unstarted. Only processes VHPI touches are affected, at any thread count (observer
+  calls run with every process suspended). Reference simulators: both return the initial values
+  at the start of simulation; one has run the processes' first cycle by then (a deposit comes
+  after it), the other shows a deposit at the first run, which yavs does (user rule: majority of
+  those that run it; `tools/vhpi-conformance` `vars`). The reference without variable handles
+  gives no vote.
 - **Verified:** Linux x86_64 by `cargo test` (C plugin built against only the header, loaded
   through `vhpi_startup_routines` and through `LIB:ENTRY`, plus missing file, missing entry and
   unresolved-symbol errors). Windows x86_64 GNU by cross-building with MinGW and running under

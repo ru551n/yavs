@@ -1,6 +1,6 @@
 vhpi: put constant: error: vhpi_put_value: an object of kind 1028 cannot be written, only signals and ports
 vhpi: put generic: error: vhpi_put_value: an object of kind 1053 cannot be written, only signals and ports
-vhpi: put variable: error: vhpi_put_value: the process has not started yet
+vhpi: put variable: ok
 vhpi: size constraint: error: vhpi_put_value: vhpiSizeConstraint applies to the result of a foreign function
 vhpi: non-propagating deposit: error: vhpi_put_value: the non-propagating mode vhpiDeposit does not apply to a signal; use vhpiDepositPropagate
 vhpi: non-propagating force: error: vhpi_put_value: the non-propagating mode vhpiForce does not apply to a signal; use vhpiForcePropagate

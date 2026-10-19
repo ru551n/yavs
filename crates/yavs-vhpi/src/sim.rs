@@ -132,11 +132,7 @@ pub(crate) fn shared_var(
     update: Update<'_>,
 ) -> Result<ConstValue, String> {
     let Some(&(slot, ty)) = b.vars.get(&(scope, decl)) else {
-        return Err(
-            "this shared variable has no value to read (a protected object, or no process \
-             uses it)"
-                .into(),
-        );
+        return Err("this shared variable has no value to read (a protected object)".into());
     };
     let v = yavs_interp::shared_var(&b.rt, &b.shared, slot, ty)?;
     let (v, new) = change(&b.rt.prog, ty, &v, "shared", update)?;

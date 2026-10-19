@@ -163,6 +163,8 @@ pub struct Func {
     /// procedure, in code order. `Suspend::resume` indexes this.
     pub resume: Vec<u32>,
     pub flags: FuncFlags,
+    /// A process: the block its statements start at, after the declarative part (#342).
+    pub body: Option<BlockId>,
     /// Instruction count, for the LLVM size threshold.
     pub size: u32,
     pub defined: bool,

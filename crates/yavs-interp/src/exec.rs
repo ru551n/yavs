@@ -206,6 +206,8 @@ pub(crate) struct Machine {
     pub entry: FuncId,
     dbg: Option<Dbg>,
     waits: Waits,
+    /// Stop when the entry frame jumps to this block (a process's body, #342).
+    pub pause: Option<yavs_ir::BlockId>,
 }
 
 fn sev(v: u64) -> R<Severity> {
@@ -374,6 +376,7 @@ impl Machine {
             entry,
             dbg: None,
             waits: Waits::default(),
+            pause: None,
         }
     }
 
@@ -1106,6 +1109,10 @@ impl Machine {
                         .get(b)
                         .ok_or_else(|| ice(format!("no block {b}")))?;
                     self.top().pc = blk.start;
+                    if self.pause == Some(b) && self.frames.len() == 1 {
+                        self.pause = None;
+                        return Ok(Outcome::Suspended);
+                    }
                 }
                 Flow::Call(fr) => self.frames.push(fr),
                 Flow::Ret(v) => {

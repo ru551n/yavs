@@ -37,6 +37,7 @@ architecture a of top is
   signal clk : std_logic := '0';
   shared variable sv : integer := 5;
   shared variable pc : work.pkg.counter_t;
+  shared variable un : integer := 7;
 begin
   clk <= not clk after 5 ns when now < 40 ns;
 
@@ -65,6 +66,14 @@ begin
       sv := sv + 1;
       report "sv=" & integer'image(sv) & " pv=" & to_string(work.pkg.pv);
     end if;
+  end process;
+
+  -- Deposited before it first runs (#342): the first run sees the deposited value.
+  d : process
+    variable m : integer := 1;
+  begin
+    report "m=" & integer'image(m);
+    wait;
   end process;
 
   -- Suspended inside a procedure: its variable is still the process's.

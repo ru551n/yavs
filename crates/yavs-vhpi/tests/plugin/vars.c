@@ -82,6 +82,7 @@ static void dump(const char *when) {
   show("p:x", vhpiRealVal);
   show("q:k", vhpiIntVal);
   show("sv", vhpiIntVal);
+  show("un", vhpiIntVal);
   show("@work:pkg:pv", vhpiBinStrVal);
   show("@work:pkg:pv(3)", vhpiLogicVal);
 }
@@ -161,8 +162,12 @@ static void start(const vhpiCbDataT *cb) {
   (void)cb;
   memset(&v, 0, sizeof v);
   v.format = vhpiIntVal;
-  vhpi_get_value(h("p:n"), &v);
-  check("read before the process ran");
+  dump("start of simulation");
+  put_int("d:m", vhpiIntVal, 9, vhpiDeposit);
+  put_int("un", vhpiIntVal, 8, vhpiDeposit);
+  check("deposit before the process ran");
+  show("d:m", vhpiIntVal);
+  show("un", vhpiIntVal);
   vhpi_get_value(h("pc"), &v);
   check("read a protected object");
   reg(vhpiCbEndOfInitialization, 0, end_of_init);

@@ -60,8 +60,8 @@ pub struct Built {
     pub shared: Arc<Mutex<SharedState>>,
     /// The slot address and value type of each non-protected shared variable, by declaring
     /// region (`None` for a package's) and declaration: VHPI reads and writes it there
-    /// (`yavs_interp::shared_var`, #309). A region's is listed when a process uses it (its
-    /// slot exists then).
+    /// (`yavs_interp::shared_var`, #309). Every region's is listed, used by a process or not
+    /// (#342).
     pub vars: HashMap<(Option<ScopeId>, yavs_sem::DeclId), (u64, yavs_ir::TyId)>,
 }
 
@@ -705,8 +705,20 @@ impl Elaborated {
                     vars.insert((None, d), (slot, ty));
                 }
                 None => {
-                    for &(r, x) in self.shared_vars.iter().filter(|&&(_, x)| x == d) {
-                        if let Some(&CallVal::Cell(slot)) = once.get(&(r, x)) {
+                    // Sorted: the thunks of regions no process uses run in a fixed order.
+                    let mut regions: Vec<_> = self
+                        .shared_vars
+                        .iter()
+                        .filter(|&&(_, x)| x == d)
+                        .map(|&(r, _)| r)
+                        .collect();
+                    regions.sort();
+                    for r in regions {
+                        // A region no process uses has no slot yet (#342).
+                        let v = self.target_const(
+                            &rt, ir, r, d, &shared, &mut once, &mut insts, &mut base,
+                        )?;
+                        if let CallVal::Cell(slot) = v {
                             vars.insert((Some(r), d), (slot, ty));
                         }
                     }

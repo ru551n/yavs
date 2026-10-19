@@ -461,7 +461,7 @@ fn vhpi_drives_a_clocked_design() {
 }
 
 /// Constants, generics, records and read-only phases cannot be written; bad values are
-/// misuse (W0903), and so is a variable before its process ran.
+/// misuse (W0903).
 #[test]
 fn vhpi_put_value_misuse_is_reported() {
     let (code, err, out) = put("errors", &[]);

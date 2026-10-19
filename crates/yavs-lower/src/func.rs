@@ -1668,6 +1668,9 @@ fn process(
         r = fx.decls(sc);
     }
     let top = fx.block();
+    if scope.is_some() {
+        fx.fb.body(top);
+    }
     fx.jump(top);
     fx.at(top);
     let body = match &st.kind {

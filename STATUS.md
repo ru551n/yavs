@@ -624,7 +624,7 @@ variables through the kernel's `Hook::with_process` and `Process::as_any` into t
 interpreter's frame (`InterpProcess::var`/`set_var`), shared variables at the slot address
 elaboration computes (`Elaborated::build_full`, `yavs_interp::shared_var`); values cross as
 elaborated values (`yavs_elab::ir_decode`/`ir_encode`). A deposit is written at once, so
-later reads in the callback and the process when it resumes see it. Forces, releases, the
+later reads in the callback and the process when it resumes see it. Before the process first ran (#342) its declarative part runs on first access (`InterpProcess::prestart`), and every region shared variable has a slot even when no process uses it. Forces, releases, the
 read-only phases and a process variable before its process first ran (before
 `vhpiCbEndOfInitialization`) are `W0903`; a protected object has no value. Array bounds of
 objects with a constrained subtype now come from the subtype, not the initial value.

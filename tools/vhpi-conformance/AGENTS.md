@@ -27,6 +27,7 @@ extend the VHPI conformance run (#273).
 | `plugins/vecedge.c`, `designs/vecedge.vhd` | Value-change callbacks on a vector with several changed runs per cycle: a repeating one, one re-armed from inside itself, one registered mid-cycle on another signal |
 | `plugins/tport.c`, `designs/tport.vhd` | Read-write and read-only callbacks at time 0 of a design with no delta there, a put from the read-write one, value changes through a transport delay on an integer port |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
+| `plugins/vars.c`, `designs/vars.vhd` | Variables read and deposited before their process ran, and a shared variable no process uses (#342) |
 | `designs/hier.vhd`, `designs/drive.vhd` | The designs |
 
 ## 3. Design decisions that bind this module

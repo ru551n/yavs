@@ -408,9 +408,9 @@ impl InterpProcess {
 
     /// Variable `name` of the process's declarative part, read while the process is
     /// suspended (VHPI, #309): its IR type and value (a composite's data and descriptor, as
-    /// [`call_values`] returns them). An error before the process first ran (its variables
-    /// are created then) or for a name the process does not declare.
-    pub fn var(&self, name: &str) -> Result<(yavs_ir::TyId, CallVal), String> {
+    /// [`call_values`] returns them). The declarative part of a process that has not run
+    /// yet runs first ([`InterpProcess::prestart`]). An error for a name the process does not declare.
+    pub fn var(&mut self, name: &str) -> Result<(yavs_ir::TyId, CallVal), String> {
         let (ty, a) = self.var_slot(name)?;
         let v = read_slot(&self.m, ty, a).map_err(fault_text)?;
         Ok((ty, v))
@@ -424,11 +424,9 @@ impl InterpProcess {
     }
 
     /// The IR type and slot address of variable `name` in the process's frame.
-    fn var_slot(&self, name: &str) -> Result<(yavs_ir::TyId, u64), String> {
+    fn var_slot(&mut self, name: &str) -> Result<(yavs_ir::TyId, u64), String> {
+        self.prestart()?;
         let m = &self.m;
-        if !m.frames.first().is_some_and(|f| f.func == m.entry) {
-            return Err("the process has not started yet".into());
-        }
         // ponytail: by name; the declarative part is lowered before the statements, so the
         // first local of a name is the variable (a loop parameter may reuse the name later).
         // Key locals by declaration if two ever share a name in one frame.
@@ -580,23 +578,7 @@ impl Process for InterpProcess {
                 return Err(self.m.error(e, Some(ctx)));
             }
         }
-        let shared = self.shared.clone();
-        let mut guard = match &shared {
-            Some(s) => Some(s.lock().map_err(|_| {
-                ctx.error(ErrorKind::Internal("shared state lock poisoned".into()))
-            })?),
-            None => None,
-        };
-        if let Some(g) = guard.as_mut() {
-            self.m.sh = Some(std::mem::take(&mut **g));
-        }
-        let r = self.m.run(Some(&mut *ctx), 0);
-        if r.is_ok() {
-            self.m.publish_shared(&mut self.roots_slot);
-        }
-        if let (Some(g), Some(st)) = (guard.as_mut(), self.m.sh.take()) {
-            **g = st;
-        }
+        let r = self.exec(Some(&mut *ctx));
         match r {
             Ok(Outcome::Suspended) => {
                 // Frame 0 is the process's own: its slots hold the process variables.
@@ -614,6 +596,64 @@ impl Process for InterpProcess {
                 Ok(())
             }
             Err(e) => Err(self.m.error(e, Some(ctx))),
+        }
+    }
+}
+
+impl InterpProcess {
+    /// Runs the machine with the shared state locked, until it suspends or returns.
+    fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
+        let shared = self.shared.clone();
+        let mut guard = match &shared {
+            Some(s) => Some(
+                s.lock()
+                    .map_err(|_| Fault::Internal("shared state lock poisoned".into()))?,
+            ),
+            None => None,
+        };
+        if let Some(g) = guard.as_mut() {
+            self.m.sh = Some(std::mem::take(&mut **g));
+        }
+        let r = self.m.run(ctx, 0);
+        if r.is_ok() {
+            self.m.publish_shared(&mut self.roots_slot);
+        }
+        if let (Some(g), Some(st)) = (guard.as_mut(), self.m.sh.take()) {
+            **g = st;
+        }
+        r
+    }
+
+    /// Runs the declarative part of a process that has not started, so its variables hold
+    /// their initial values (VHPI at the start of simulation, #342); the first run then
+    /// continues with the statements. Runs outside the kernel: a declarative part that
+    /// needs the running simulation (a signal value, say) is an error, and the process is
+    /// left unstarted.
+    pub fn prestart(&mut self) -> Result<(), String> {
+        if self.started {
+            return Ok(());
+        }
+        let Some(body) = self.m.rt.prog.func(self.m.entry).and_then(|f| f.body) else {
+            return Err("this process has no declarative part to run".into());
+        };
+        self.m.pause = Some(body);
+        let r = self
+            .m
+            .enter(self.m.entry, &[])
+            .and_then(|()| self.exec(None));
+        self.m.pause = None;
+        match r {
+            Ok(Outcome::Suspended) => {
+                self.started = true;
+                Ok(())
+            }
+            r => {
+                self.m.frames.clear();
+                Err(match r {
+                    Err(e) => format!("its declarative part cannot run yet: {}", fault_text(e)),
+                    _ => "this is a bug in yavs: a process ended in its declarative part".into(),
+                })
+            }
         }
     }
 }

@@ -41,7 +41,10 @@ RUNS = {
     "strput": [("strput", "strput")],
     "vecedge": [("vecedge", "vecedge")],
     "tport": [("tport", "tport")],
+    "vars": [("vars", "vars")],
 }
+# Designs with shared variables of non-protected types: analysed with the relaxed option.
+RELAXED = {"vars"}
 SANDBOX = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 
 
@@ -62,18 +65,20 @@ def run_yavs(so, design, top, work):
     yavs = os.environ.get("YAVS_BIN", "yavs")
     f = str(HERE / "designs" / f"{design}.vhd")
     w = f"work:{work}"
-    for step in (["analyze", "--std=2008", f"--work={w}", f], ["elab", "--std=2008", f"--work={w}", top]):
+    rx = ["--relaxed"] if design in RELAXED else []
+    for step in (["analyze", "--std=2008", f"--work={w}"] + rx + [f], ["elab", "--std=2008", f"--work={w}"] + rx + [top]):
         rc, o, e = sh([yavs] + step, work.parent)
         if rc:
             return None, f"{step[0]} failed: {e.strip().splitlines()[:1]}"
-    rc, o, e = sh([yavs, "run", "--std=2008", f"--work={w}", f"--vhpi={so}", top], work.parent)
+    rc, o, e = sh([yavs, "run", "--std=2008", f"--work={w}"] + rx + [f"--vhpi={so}", top], work.parent)
     return trace(o, e, rc), e
 
 
 def run_ref(so, design, top, work):
     f = str(HERE / "designs" / f"{design}.vhd")
     base = ["nvc", "--std=2008", f"--work=work:{work}"]
-    for step in (["-a", f], ["-e", top]):
+    rx = ["--relaxed"] if design in RELAXED else []
+    for step in (["-a"] + rx + [f], ["-e", top]):
         rc, o, e = sh(base + step, work.parent)
         if rc:
             return None, f"{step[0]} failed: {e.strip().splitlines()[:1]}"

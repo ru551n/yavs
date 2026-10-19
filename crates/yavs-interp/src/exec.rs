@@ -2261,11 +2261,8 @@ impl Machine {
             Inst::SigRead { dst, sig } => {
                 let (sr, ty) = self.sigref(sig)?;
                 let c = kc!();
-                let v = match ty.elem {
-                    Elem::Bytes(_) => Value::Bytes(c.value(sr)?.to_vec()),
-                    Elem::Logic => Value::Logic(c.logic(sr)?),
-                };
-                self.put_value(self.r(dst), &v)?;
+                let n = value_size(ty.elem, sr.range.map_or(0, |r| r.len));
+                c.read_into(sr, self.wr(self.r(dst), n)?)?;
             }
             Inst::SigReadScalar { dst, sig } => {
                 let (sr, ty) = match self.sigparts(sig)?.as_slice() {
@@ -2282,11 +2279,13 @@ impl Machine {
                         u64::from_le_bytes(a)
                     }
                     Elem::Logic => {
-                        let l = c.logic(sr)?;
-                        if l.is_empty() {
+                        let Some(r) = sr.range.filter(|r| r.len > 0) else {
                             return Err(ice("scalar read of a null signal range"));
-                        }
-                        l.get(0) as u64
+                        };
+                        // The first element in one block: its code is bit 0 of each plane.
+                        let mut b = [0u8; 32];
+                        c.read_into(sr.signal.slice(r.offset, 1), &mut b)?;
+                        (0..4).fold(0, |v, p| v | u64::from(b[p * 8] & 1) << p)
                     }
                     Elem::Bytes(es) => {
                         return Err(ice(format!("scalar read of a {es}-byte element")));

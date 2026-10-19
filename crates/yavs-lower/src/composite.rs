@@ -1069,6 +1069,57 @@ impl Fx<'_, '_> {
                 }
                 let (_, count) = self.layout(tid, desc);
                 let _ = etid;
+                if !(self.prot_defaults && holds_protected(db, db.base(est))) {
+                    // Every element has the same default: write the first, then double.
+                    let (some, first, done) = (self.block(), self.block(), self.block());
+                    let zero = self.int(0);
+                    let any = self.cmp(CmpOp::Gt, count, zero);
+                    self.branch(any, first, done);
+                    self.at(first);
+                    let a0 = self.elem_addr(tid, addr, desc, zero);
+                    self.default_into(est, &ec, a0, ed, span)?;
+                    let l = self.lay(tid, desc);
+                    let sa = self.offset(l, 16);
+                    let stride = self.load(sa, Width::B8, RegTy::I64);
+                    let filled = self.reg(RegTy::I64);
+                    let one = self.int(1);
+                    self.emit(Inst::Move {
+                        dst: filled,
+                        src: one,
+                    });
+                    let head = self.block();
+                    self.jump(head);
+                    self.at(head);
+                    let more = self.cmp(CmpOp::Lt, filled, count);
+                    self.branch(more, some, done);
+                    self.at(some);
+                    // n = min(filled, count - filled) elements, from the start to `filled`.
+                    let rest = self.bin(IntOp::Sub, count, filled);
+                    let fits = self.cmp(CmpOp::Le, filled, rest);
+                    let n = self.select(fits, filled, rest, RegTy::I64);
+                    let off = self.bin(IntOp::Mul, filled, stride);
+                    let to = self.reg(RegTy::Ptr);
+                    self.emit(Inst::Index {
+                        dst: to,
+                        base: addr,
+                        pos: off,
+                        stride: 1,
+                    });
+                    let bytes = self.bin(IntOp::Mul, n, stride);
+                    self.emit(Inst::Copy {
+                        dst: to,
+                        src: addr,
+                        bytes,
+                    });
+                    let next = self.bin(IntOp::Add, filled, n);
+                    self.emit(Inst::Move {
+                        dst: filled,
+                        src: next,
+                    });
+                    self.jump(head);
+                    self.at(done);
+                    return Ok(());
+                }
                 self.for_n(count, |fx, i| {
                     let a = fx.elem_addr(tid, addr, desc, i);
                     fx.default_into(est, &ec, a, ed, span)
@@ -1414,6 +1465,12 @@ impl Fx<'_, '_> {
             }
         };
         let last = k + 1 == dims;
+        // Equal scalar elements of a one-dimensional aggregate are written by `Fill`.
+        let fill = if last && base.is_none() {
+            self.fill_width(tid)
+        } else {
+            None
+        };
         let m = self.msg("aggregate", Dir::To);
         let put = |fx: &mut Self, pos: Reg, e: ExprId| -> R<()> {
             let f = flat(fx, pos);
@@ -1436,6 +1493,18 @@ impl Fx<'_, '_> {
             .filter(|a| a.choices.iter().any(|c| matches!(c, Choice::Others)))
         {
             let e = a.value;
+            if let Some(w) = fill.filter(|_| self.fill_value(e)) {
+                let (go, done) = (self.block(), self.block());
+                let zero = self.int(0);
+                let any = self.cmp(CmpOp::Gt, len, zero);
+                self.branch(any, go, done);
+                self.at(go);
+                let v = self.fill_element(est, e, span)?;
+                self.fill_scalars(data, zero, len, v, w);
+                self.jump(done);
+                self.at(done);
+                continue;
+            }
             self.for_n(len, |fx, i| put(fx, i, e))?;
         }
         let mut n = 0i64;
@@ -1479,6 +1548,21 @@ impl Fx<'_, '_> {
                         let left = r.left;
                         let dope = self.offset(desc, 24 * u32::from(k));
                         let e = a.value;
+                        let done = self.block();
+                        if let Some(w) = fill.filter(|_| self.fill_value(e)) {
+                            let right = r.right;
+                            self.fill_run_or_fall(
+                                data,
+                                dope,
+                                left,
+                                right,
+                                cnt,
+                                w,
+                                m,
+                                done,
+                                |fx| fx.fill_element(est, e, span),
+                            )?;
+                        }
                         self.for_n(cnt, |fx, i| {
                             let o = fx.bin(IntOp::Mul, i, step);
                             let idx = fx.bin(IntOp::Add, left, o);
@@ -1492,12 +1576,47 @@ impl Fx<'_, '_> {
                             });
                             put(fx, pos, e)
                         })?;
+                        self.jump(done);
+                        self.at(done);
                     }
                     _ => return Err(self.cx.ice(span, "element choice in an array aggregate")),
                 }
             }
         }
         Ok(())
+    }
+
+    /// Width of the elements of array type `tid` when they are plain scalars (not bit-planes).
+    fn fill_width(&mut self, tid: TyId) -> Option<Width> {
+        let p = self.fb.program();
+        if Ty::logic_leaf(p.types(), tid).is_some() {
+            return None;
+        }
+        match p.types().get(tid) {
+            Some(Ty::Array { elem, .. }) => scalar_w(p, *elem),
+            _ => None,
+        }
+    }
+
+    /// Does `e` give the same scalar every time, without side effects (so a fill may
+    /// evaluate it once)?
+    fn fill_value(&self, e: ExprId) -> bool {
+        match &self.db.exprs[e].kind {
+            ExprKind::Const(_) | ExprKind::Null | ExprKind::Obj(_) => true,
+            ExprKind::ImplicitConv { operand } | ExprKind::Qualified { operand, .. } => {
+                self.fill_value(*operand)
+            }
+            _ => false,
+        }
+    }
+
+    /// The scalar element value of `e`, checked against the element subtype `est`.
+    fn fill_element(&mut self, est: SubtypeId, e: ExprId, span: Span) -> R<Reg> {
+        let V::S(r) = self.expr(e)? else {
+            return Err(self.cx.ice(span, "aggregate element of the wrong shape"));
+        };
+        self.check_scalar(r, Some(self.db.exprs[e].subtype), est, "", span)?;
+        Ok(r)
     }
 
     /// Element `pos` (flat, from the left) of an aggregate's array.
@@ -1838,4 +1957,15 @@ fn planes(codes: &[u8]) -> Vec<u8> {
         .iter()
         .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
         .collect()
+}
+
+/// Does a value of type `t` hold a protected object (arrays and records are searched)?
+fn holds_protected(db: &Db, t: TypeId) -> bool {
+    match &db.types[t].kind {
+        TypeKind::Protected { .. } => true,
+        TypeKind::Record { elems } => elems
+            .iter()
+            .any(|e| holds_protected(db, db.base(e.subtype))),
+        _ => ty::array_of(db, t).is_some_and(|(e, _)| holds_protected(db, db.base(e))),
+    }
 }

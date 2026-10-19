@@ -1846,10 +1846,15 @@ impl<'a> Fx<'a, '_> {
             .filter(|a| a.choices.iter().any(|c| matches!(c, Choice::Others)))
         {
             let v = elem_value(self, a.value)?;
-            self.for_n(count, |fx, i| {
-                set(fx, i, v);
-                Ok(())
-            })?;
+            if logic {
+                self.for_n(count, |fx, i| {
+                    set(fx, i, v);
+                    Ok(())
+                })?;
+            } else {
+                let zero = self.int(0);
+                self.fill_scalars(data, zero, count, v, w);
+            }
         }
         let mut k = 0i64;
         for a in assocs.iter() {
@@ -1888,6 +1893,15 @@ impl<'a> Fx<'a, '_> {
                         let m1 = self.int(-1);
                         let step = self.select(up, one, m1, RegTy::I64);
                         let left = r.left;
+                        let done = self.block();
+                        if logic {
+                            let slow = self.block();
+                            self.jump(slow);
+                            self.at(slow);
+                        } else {
+                            let (right, d) = (r.right, done);
+                            self.fill_run_or_fall(data, dope, left, right, n, w, m, d, |_| Ok(v))?;
+                        }
                         self.for_n(n, |fx, i| {
                             let off = fx.bin(IntOp::Mul, i, step);
                             let idx = fx.bin(IntOp::Add, left, off);
@@ -1902,12 +1916,107 @@ impl<'a> Fx<'a, '_> {
                             set(fx, pos, v);
                             Ok(())
                         })?;
+                        self.jump(done);
+                        self.at(done);
                     }
                     _ => return Err(self.cx.ice(span, "element choice in an array aggregate")),
                 }
             }
         }
         Ok(V::A(data, dope))
+    }
+
+    /// `n` copies of scalar `v` (width `w`) at element `start` of the array at `data`.
+    pub(crate) fn fill_scalars(&mut self, data: Reg, start: Reg, n: Reg, v: Reg, w: Width) {
+        let cell = self.alloc_n(8);
+        self.store(cell, v, w);
+        let at = self.reg(RegTy::Ptr);
+        self.emit(Inst::Index {
+            dst: at,
+            base: data,
+            pos: start,
+            stride: w.bytes(),
+        });
+        self.emit(Inst::Fill {
+            dst: at,
+            elem: cell,
+            n,
+            size: w.bytes(),
+        });
+    }
+
+    /// A run of `n` elements from index `left` to `right` that lies inside the array at
+    /// `data` (descriptor `dope`) is written as one fill of the scalar `value` gives (width
+    /// `w`), then control goes to `done`. An empty run or one partly outside falls through
+    /// (the current block afterwards) to the caller's loop and its index checks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fill_run_or_fall(
+        &mut self,
+        data: Reg,
+        dope: Reg,
+        left: Reg,
+        right: Reg,
+        n: Reg,
+        w: Width,
+        what: yavs_ir::CheckMsgId,
+        done: yavs_ir::BlockId,
+        value: impl FnOnce(&mut Self) -> R<Reg>,
+    ) -> R<()> {
+        let (chk, inside, slow) = (self.block(), self.block(), self.block());
+        let z = self.int(0);
+        let any = self.cmp(CmpOp::Gt, n, z);
+        self.branch(any, chk, slow);
+        self.at(chk);
+        let (l0, r0, d0) = self.dope_parts(dope);
+        let up = self.cmp(CmpOp::Eq, d0, z);
+        let lo = self.select(up, l0, r0, RegTy::I64);
+        let hi = self.select(up, r0, l0, RegTy::I64);
+        let mut ok = self.cmp(CmpOp::Le, lo, left);
+        for (a, b) in [(left, hi), (lo, right), (right, hi)] {
+            let c = self.cmp(CmpOp::Le, a, b);
+            ok = self.bool_and(ok, c);
+        }
+        self.branch(ok, inside, slow);
+        self.at(inside);
+        let v = value(self)?;
+        let [pl, pr] = [left, right].map(|idx| {
+            let pos = self.reg(RegTy::I64);
+            self.emit(Inst::Pos {
+                dst: pos,
+                dope,
+                dim: 0,
+                idx,
+                what,
+            });
+            pos
+        });
+        let first = self.cmp(CmpOp::Le, pl, pr);
+        let start = self.select(first, pl, pr, RegTy::I64);
+        self.fill_scalars(data, start, n, v, w);
+        self.jump(done);
+        self.at(slow);
+        Ok(())
+    }
+
+    /// Left, right and direction cells of the descriptor part at `dope`.
+    fn dope_parts(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
+        let l = self.load(dope, Width::B8, RegTy::I64);
+        let ra = self.offset(dope, 8);
+        let r = self.load(ra, Width::B8, RegTy::I64);
+        let da = self.offset(dope, 16);
+        let d = self.load(da, Width::B8, RegTy::I64);
+        (l, r, d)
+    }
+
+    fn bool_and(&mut self, a: Reg, b: Reg) -> Reg {
+        let dst = self.reg(RegTy::I64);
+        self.emit(Inst::Bool {
+            op: yavs_ir::BoolOp::And,
+            dst,
+            a,
+            b,
+        });
+        dst
     }
 
     /// `body(i)` for `i` in `0 .. n`.

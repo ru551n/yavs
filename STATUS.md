@@ -223,7 +223,7 @@ go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/
 subset runs as implicit checker processes, also in `-- psl` comments with `--psl` (#226); other PSL is skipped
 with one `W0004` warning per design unit (#138).
 
-Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): 952 of 1073 files analyze since the VITAL packages are built in (#118); the other 121 (114 `unisim`, 7 `unimacro`) all stop on the missing Synopsys `std_logic_arith`, `std_logic_signed` or `std_logic_unsigned` (#117), with no other root cause. The 6 hdl-modules files that need `unisim` analyze against it.
+Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): all 1073 files analyze (952 of the 1073 before the Synopsys packages; the 121 failures were exactly the missing `std_logic_arith`, `std_logic_signed` and `std_logic_unsigned`), with the VITAL (#118) and Synopsys (#117) packages built in. The Synopsys packages `std_logic_arith`, `std_logic_unsigned`, `std_logic_signed` and `std_logic_misc` are the original files, unmodified, in `lib/ieee/{2008,2019}` (`lib/SOURCES.md`, `lib/LICENSE-SYNOPSYS`), visible without a flag; `tests/corpus/synopsys/` (20 testbenches, reference simulator or the original package text for 6, `--threads 1` and `4`) passes 20 of 20. The 6 hdl-modules files that need `unisim` analyze against it.
 
 Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
 `YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus` compares them with the
@@ -232,7 +232,7 @@ updates the lists). Plain `cargo test --workspace` still parses `lib/` and runs 
 
 | Corpus | Files | Pass | Expected failures |
 |---|---:|---:|---|
-| `lib/` std and ieee, 2008 and 2019 (in repo) | 67 | 67 | none |
+| `lib/` std and ieee, 2008 and 2019 (in repo) | 83 | 83 | none |
 | External test runner library (`vunit`) | 194 | 194 | none |
 | External verification library (`osvvm`) | 36 | 36 | none |
 | Third-party parser library sources (std, ieee2008, synopsys, vital2000) | 37 | 37 | none |

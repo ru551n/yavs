@@ -160,7 +160,7 @@ the component package and nothing else for analysis:
     yavs analyze --std=2008 --work=unisim:out/unisim "$VENDOR_SIM_DIR/unisims/unisim_retarget_VCOMP.vhd"
     yavs analyze --std=2008 --work=work:out/work --map=unisim:out/unisim my_design.vhd
 
-The primitive models themselves need the VITAL packages and the Synopsys arithmetic packages in
-``ieee``, which yavs does not ship yet (issues 118 and 117), so they do not analyze today.
+The primitive models themselves use the VITAL and Synopsys packages in ``ieee``, which yavs
+ships built in.
 ``tools/corpus/run.py unisim-2008`` measures this against a local installation when
 ``YAVS_VENDOR_UNISIM`` is set and is skipped otherwise.

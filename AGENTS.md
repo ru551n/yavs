@@ -82,8 +82,9 @@ to, and those documents win over your memory.
    fine. Write everything fresh from the LRM and our design docs.
 7. **External corpora are inputs, never repository content.** Fetch them with
    `tools/fetch-corpus.sh` into a cache directory. Never commit their files.
-8. **Clean-room areas stay clean.** Do not reproduce third-party package sources (e.g. the
-   Synopsys packages, which are deferred) from memory.
+8. **Third-party package sources are vendored, never rewritten.** The Synopsys and VITAL packages
+   are the original files, byte for byte (`lib/SOURCES.md`); do not reproduce or edit third-party
+   package text from memory.
 9. **Dependencies:** a crate that cargo fetches and builds by itself is fine. Anything that needs a
    manual install must be approved by the user first. Approved so far: LLVM 21 (optional feature),
    a C compiler at build time, reference simulators as dev-only references, qemu-user and the aarch64

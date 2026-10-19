@@ -22,7 +22,7 @@ Decisions made with the user:
 - **Foreign subprograms:** yavs needs `foreign` subprograms in the VHPIDIRECT style plus `--load <lib>` (M3), so test-runner packages that call C (and Python through C) from VHDL work.
 - **Vendor libraries:**
   - UNISIM/UNIMACRO, Altera `altera_mf`/`lpm`, and Lattice/Microchip are supported, **functional only**: VITAL compiles and runs with zero delay, and there is no SDF.
-  - Synopsys `std_logic_arith`/`unsigned`/`signed` are **deferred to M4b** (user, 2026-10-18). A clean-room implementation is deferred until then. The black-box testbenches and runner stay in `lib/synopsys/test/`.
+  - Synopsys `std_logic_arith`/`unsigned`/`signed`/`misc` are **built in as the original files, unmodified** (user, 2026-10-19, #117; supersedes the clean-room plan of 2026-10-18). Black-box testbenches: `tests/corpus/synopsys/`.
 - **Test-runner integration** (user, 2026-10-18):
   - **Mixing VHDL-2008 and 2019 files in one project is allowed.** The manifest records the standard per file. Each file is parsed with its own standard's syntax. A design is analyzed and elaborated against **one** `std`/`ieee` revision, the newest one in its closure, so types such as `INTEGER` are the same type everywhere. A construct that is illegal under that revision is a fail-early error naming the file and its standard. A construct whose **meaning changes** (e.g. `integer'high` going 64-bit) is a **warning**, given once per construct and escalatable with `-Werror`, so external test runners and verification libraries keep working from 2019 testbenches.
   - **Each yavs defaults to `--threads 1`** under a test runner's parallel option (`-p N`); users opt in through `yavs.sim_flags`.
@@ -122,7 +122,7 @@ Other open source simulators kept running into these bug classes.
   - The packed-logic layout benchmark and decision.
 - **M4: external test runner end to end.** A minimal testbench, then the runner's own VHDL test suites. Add a yavs simulator interface to the runner so that `run.py --simulator yavs` works.
 - **M4b: ecosystem libraries.**
-  - The clean-room Synopsys packages.
+  - The Synopsys packages (built in, #117).
   - Functional VITAL.
   - UNISIM/UNIMACRO, altera_mf/lpm and Lattice/Microchip primitives analyze and simulate, each with a documented test-runner recipe.
   - Python called from VHDL through VHPIDIRECT foreign subprograms and `--load` works under a test runner.

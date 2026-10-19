@@ -77,10 +77,11 @@ jobs:
           name="yavs-$VERSION-${{ matrix.target }}"
           mkdir -p "dist/$name"
           # The built-in std/ieee sources are Apache-2.0 (lib/LICENSE, lib/SOURCES.md); the VITAL
-          # packages are IEEE-copyrighted without a grant (lib/LICENSE-IEEE-VITAL).
+          # packages are IEEE-copyrighted without a grant (lib/LICENSE-IEEE-VITAL); the Synopsys packages
+          # keep their notice (lib/LICENSE-SYNOPSYS).
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
           cp lib/LICENSE "dist/$name/LICENSE-IEEE"
-          cp lib/LICENSE-IEEE-VITAL "dist/$name/"
+          cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS "dist/$name/"
           cd dist
           if [[ "$RUNNER_OS" == Windows ]]; then
             cp "../$BIN" "$name/"

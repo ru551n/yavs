@@ -74,5 +74,5 @@ YAVS_LOG=debug cargo run -p yavs -- elab ...     # show lock-free reads
   fail clearly on the old one rather than reading both.
 - Open issues (snapshot 2026-10-18, `gh issue list -R ru551n/yavs --label crate:lib`): #21 a
   `--map`ped library without a manifest must be empty, not L0001; #60 E1004 for an external AXI4 library; #61 UNISIM/vendor libraries missing;
-  #94 numeric_std, fixed and float from source; #117 to #119
-  Synopsys, VITAL, vendor primitives (M4b).
+  #94 numeric_std, fixed and float from source; #117 Synopsys (done), #118 VITAL (done), #119
+  vendor primitives (M4b).

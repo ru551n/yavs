@@ -1,0 +1,1044 @@
+exit	0
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|true|0 => 3|3|true|0
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|true|1 => 3|3|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|true|U => 0|0|true|U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|false|Z => 3|3|false|Z
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|true|W => 3|3|true|W
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|false|- => 0|0|false|-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|0|true|L => 0|0|true|L
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|false|X => 3|3|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|3|true|H => 3|3|true|H
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|1|true|00 => 0|1|true|00
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 4|3|false|11 => 4|3|false|11
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 1|0|false|01 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|1|true|10 => 0|1|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 4|3|false|01 => 4|3|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 1|0|false|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|1|true|1X => 0|1|true|1X
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 4|3|false|1U => 4|3|false|1U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|4|true|Z1 => 3|4|true|Z1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 1|0|false|W1 => 1|0|false|W1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|1|true|0- => 0|1|true|0-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 4|3|false|LL => 4|3|false|LL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|4|true|XX => 3|4|true|XX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 1|0|false|H1 => 1|0|false|H1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 9|3|false|0000000 => 9|3|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|9|true|1111111 => 3|9|true|1111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 6|0|false|1010101 => 6|0|false|1010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|6|true|0101010 => 0|6|true|0101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 9|3|false|1000000 => 9|3|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|9|true|0000001 => 3|9|true|0000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 6|0|false|0111010 => 6|0|false|0111010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|6|true|0111110 => 0|6|true|0111110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 9|3|false|110X110 => 9|3|false|110X110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|9|true|110101U => 3|9|true|110101U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 6|0|false|Z111010 => 6|0|false|Z111010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|6|true|10W0001 => 0|6|true|10W0001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 9|3|false|110000- => 9|3|false|110000-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|9|true|LLHLHHH => 3|9|true|LLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|6|true|H011001 => 0|6|true|H011001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|10|true|00000000 => 3|10|true|00000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 7|0|false|11111111 => 7|0|false|11111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|7|true|10101010 => 0|7|true|10101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 10|3|false|01010101 => 10|3|false|01010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|10|true|10000000 => 3|10|true|10000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 7|0|false|00000001 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|7|true|11010111 => 0|7|true|11010111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 10|3|false|11110100 => 10|3|false|11110100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|10|true|1000X011 => 3|10|true|1000X011
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 7|0|false|1100000U => 7|0|false|1100000U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|7|true|Z0101111 => 0|7|true|Z0101111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 10|3|false|11W00011 => 10|3|false|11W00011
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|10|true|0011001- => 3|10|true|0011001-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 7|0|false|HLHHLHHL => 7|0|false|HLHHLHHL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|7|true|XXXXXXXX => 0|7|true|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 10|3|false|H0010110 => 10|3|false|H0010110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|30|true|1111111111111111111111111111111 => 0|30|true|1111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 33|3|false|1010101010101010101010101010101 => 33|3|false|1010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|33|true|0101010101010101010101010101010 => 3|33|true|0101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|30|true|0000000000000000000000000000001 => 0|30|true|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 33|3|false|0100010111000111010000100100100 => 33|3|false|0100010111000111010000100100100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|33|true|1010001010011000001000010111101 => 3|33|true|1010001010011000001000010111101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 30|0|false|011011100111110X110011111001100 => 30|0|false|011011100111110X110011111001100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|30|true|011010110011001010001011110111U => 0|30|true|011010110011001010001011110111U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 33|3|false|Z011001111101111010001011011000 => 33|3|false|Z011001111101111010001011011000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|33|true|1011011011W00111101010010111010 => 3|33|true|1011011011W00111101010010111010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 30|0|false|001011110111101000010000101111- => 30|0|false|001011110111101000010000101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|33|true|H101100111110111101000010000101 => 3|33|true|H101100111110111101000010000101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|31|true|00000000000000000000000000000000 => 0|31|true|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 34|3|false|11111111111111111111111111111111 => 34|3|false|11111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|34|true|10101010101010101010101010101010 => 3|34|true|10101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 31|0|false|01010101010101010101010101010101 => 31|0|false|01010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|31|true|10000000000000000000000000000000 => 0|31|true|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 34|3|false|00000000000000000000000000000001 => 34|3|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|34|true|01101011001100101000101111011110 => 3|34|true|01101011001100101000101111011110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 31|0|false|00110011111011110100010110110000 => 31|0|false|00110011111011110100010110110000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|31|true|1011011011100111X010100101110100 => 0|31|true|1011011011100111X010100101110100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 34|3|false|0010111101111010000100001011110U => 34|3|false|0010111101111010000100001011110U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|34|true|Z0001100110000010000100100100001 => 3|34|true|Z0001100110000010000100100100001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 31|0|false|0111101111W100001001001000110000 => 31|0|false|0111101111W100001001001000110000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|31|true|0101100111110111101000010000101- => 0|31|true|0101100111110111101000010000101-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 31|0|false|H1110100001011110011101100101111 => 31|0|false|H1110100001011110011101100101111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 35|3|false|000000000000000000000000000000000 => 35|3|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|35|true|111111111111111111111111111111111 => 3|35|true|111111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 32|0|false|101010101010101010101010101010101 => 32|0|false|101010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|32|true|010101010101010101010101010101010 => 0|32|true|010101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 35|3|false|100000000000000000000000000000000 => 35|3|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|35|true|000000000000000000000000000000001 => 3|35|true|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 32|0|false|001011110111101000010000101111011 => 32|0|false|001011110111101000010000101111011
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|32|true|000011001100000100001001001000010 => 0|32|true|000011001100000100001001001000010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 35|3|false|0111101111010000X0010010001100000 => 35|3|false|0111101111010000X0010010001100000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|35|true|01011001111101111010000100001011U => 3|35|true|01011001111101111010000100001011U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|Z00011101000010111010000101110101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|32|true|11101000010W000111110100110111000 => 0|32|true|11101000010W000111110100110111000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 35|3|false|01110100001011110011101100101111- => 35|3|false|01110100001011110011101100101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->UNSIGNED] 0|32|true|H01100000110011000001000010111010 => 0|32|true|H01100000110011000001000010111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|true|0 => 3|3|true|0
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|true|1 => 3|3|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|true|U => 0|0|true|U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|false|Z => 3|3|false|Z
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|true|W => 3|3|true|W
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|false|- => 0|0|false|-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|0|true|L => 0|0|true|L
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|false|X => 3|3|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|3|true|H => 3|3|true|H
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|1|true|00 => 0|1|true|00
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 4|3|false|11 => 4|3|false|11
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 1|0|false|01 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|1|true|10 => 0|1|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 4|3|false|01 => 4|3|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 1|0|false|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|1|true|1X => 0|1|true|1X
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 4|3|false|1U => 4|3|false|1U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|4|true|Z1 => 3|4|true|Z1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 1|0|false|W1 => 1|0|false|W1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|1|true|0- => 0|1|true|0-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 4|3|false|LL => 4|3|false|LL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|4|true|XX => 3|4|true|XX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 1|0|false|H1 => 1|0|false|H1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 9|3|false|0000000 => 9|3|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|9|true|1111111 => 3|9|true|1111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 6|0|false|1010101 => 6|0|false|1010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|6|true|0101010 => 0|6|true|0101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 9|3|false|1000000 => 9|3|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|9|true|0000001 => 3|9|true|0000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 6|0|false|0111010 => 6|0|false|0111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|6|true|0111110 => 0|6|true|0111110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 9|3|false|110X110 => 9|3|false|110X110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|9|true|110101U => 3|9|true|110101U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 6|0|false|Z111010 => 6|0|false|Z111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|6|true|10W0001 => 0|6|true|10W0001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 9|3|false|110000- => 9|3|false|110000-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|9|true|LLHLHHH => 3|9|true|LLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|6|true|H011001 => 0|6|true|H011001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|10|true|00000000 => 3|10|true|00000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 7|0|false|11111111 => 7|0|false|11111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|7|true|10101010 => 0|7|true|10101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 10|3|false|01010101 => 10|3|false|01010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|10|true|10000000 => 3|10|true|10000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 7|0|false|00000001 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|7|true|11010111 => 0|7|true|11010111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 10|3|false|11110100 => 10|3|false|11110100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|10|true|1000X011 => 3|10|true|1000X011
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 7|0|false|1100000U => 7|0|false|1100000U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|7|true|Z0101111 => 0|7|true|Z0101111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 10|3|false|11W00011 => 10|3|false|11W00011
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|10|true|0011001- => 3|10|true|0011001-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 7|0|false|HLHHLHHL => 7|0|false|HLHHLHHL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|7|true|XXXXXXXX => 0|7|true|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 10|3|false|H0010110 => 10|3|false|H0010110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|30|true|1111111111111111111111111111111 => 0|30|true|1111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 33|3|false|1010101010101010101010101010101 => 33|3|false|1010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|33|true|0101010101010101010101010101010 => 3|33|true|0101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|30|true|0000000000000000000000000000001 => 0|30|true|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 33|3|false|0100010111000111010000100100100 => 33|3|false|0100010111000111010000100100100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|33|true|1010001010011000001000010111101 => 3|33|true|1010001010011000001000010111101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 30|0|false|011011100111110X110011111001100 => 30|0|false|011011100111110X110011111001100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|30|true|011010110011001010001011110111U => 0|30|true|011010110011001010001011110111U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 33|3|false|Z011001111101111010001011011000 => 33|3|false|Z011001111101111010001011011000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|33|true|1011011011W00111101010010111010 => 3|33|true|1011011011W00111101010010111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 30|0|false|001011110111101000010000101111- => 30|0|false|001011110111101000010000101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|33|true|H101100111110111101000010000101 => 3|33|true|H101100111110111101000010000101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|31|true|00000000000000000000000000000000 => 0|31|true|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 34|3|false|11111111111111111111111111111111 => 34|3|false|11111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|34|true|10101010101010101010101010101010 => 3|34|true|10101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 31|0|false|01010101010101010101010101010101 => 31|0|false|01010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|31|true|10000000000000000000000000000000 => 0|31|true|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 34|3|false|00000000000000000000000000000001 => 34|3|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|34|true|01101011001100101000101111011110 => 3|34|true|01101011001100101000101111011110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 31|0|false|00110011111011110100010110110000 => 31|0|false|00110011111011110100010110110000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|31|true|1011011011100111X010100101110100 => 0|31|true|1011011011100111X010100101110100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 34|3|false|0010111101111010000100001011110U => 34|3|false|0010111101111010000100001011110U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|34|true|Z0001100110000010000100100100001 => 3|34|true|Z0001100110000010000100100100001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 31|0|false|0111101111W100001001001000110000 => 31|0|false|0111101111W100001001001000110000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|31|true|0101100111110111101000010000101- => 0|31|true|0101100111110111101000010000101-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 31|0|false|H1110100001011110011101100101111 => 31|0|false|H1110100001011110011101100101111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 35|3|false|000000000000000000000000000000000 => 35|3|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|35|true|111111111111111111111111111111111 => 3|35|true|111111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 32|0|false|101010101010101010101010101010101 => 32|0|false|101010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|32|true|010101010101010101010101010101010 => 0|32|true|010101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 35|3|false|100000000000000000000000000000000 => 35|3|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|35|true|000000000000000000000000000000001 => 3|35|true|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 32|0|false|001011110111101000010000101111011 => 32|0|false|001011110111101000010000101111011
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|32|true|000011001100000100001001001000010 => 0|32|true|000011001100000100001001001000010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 35|3|false|0111101111010000X0010010001100000 => 35|3|false|0111101111010000X0010010001100000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|35|true|01011001111101111010000100001011U => 3|35|true|01011001111101111010000100001011U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|Z00011101000010111010000101110101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|32|true|11101000010W000111110100110111000 => 0|32|true|11101000010W000111110100110111000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 35|3|false|01110100001011110011101100101111- => 35|3|false|01110100001011110011101100101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->SIGNED] 0|32|true|H01100000110011000001000010111010 => 0|32|true|H01100000110011000001000010111010
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|true|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|true|1 => 0|0|false|1
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|false|X => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|true|U => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|false|Z => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|true|W => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|false|- => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|0|true|L => 0|0|false|0
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|3|true|H => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|1|true|00 => 1|0|false|00
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 4|3|false|11 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 1|0|false|01 => 1|0|false|11
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|1|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 4|3|false|01 => 1|0|false|11
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 1|0|false|10 => 1|0|false|10
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|1|true|1X => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 4|3|false|1U => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|4|true|Z1 => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 1|0|false|W1 => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|1|true|0- => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 4|3|false|LL => 1|0|false|00
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|4|true|XX => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 1|0|false|H1 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 9|3|false|0000000 => 6|0|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|9|true|1111111 => 6|0|false|0000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 6|0|false|1010101 => 6|0|false|0101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|6|true|0101010 => 6|0|false|1010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 9|3|false|1000000 => 6|0|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|9|true|0000001 => 6|0|false|1111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 6|0|false|0111010 => 6|0|false|1000110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|6|true|0111110 => 6|0|false|1000010
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 9|3|false|110X110 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|9|true|110101U => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 6|0|false|Z111010 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|6|true|10W0001 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 9|3|false|110000- => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|9|true|LLHLHHH => 6|0|false|1101001
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|6|true|H011001 => 6|0|false|0100111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|10|true|00000000 => 7|0|false|00000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 7|0|false|11111111 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|7|true|10101010 => 7|0|false|01010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 10|3|false|01010101 => 7|0|false|10101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|10|true|10000000 => 7|0|false|10000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 7|0|false|00000001 => 7|0|false|11111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|7|true|11010111 => 7|0|false|00101001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 10|3|false|11110100 => 7|0|false|00001100
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|10|true|1000X011 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 7|0|false|1100000U => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|7|true|Z0101111 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 10|3|false|11W00011 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|10|true|0011001- => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 7|0|false|HLHHLHHL => 7|0|false|01001010
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|7|true|XXXXXXXX => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 10|3|false|H0010110 => 7|0|false|01101010
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|30|true|1111111111111111111111111111111 => 30|0|false|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 33|3|false|1010101010101010101010101010101 => 30|0|false|0101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|33|true|0101010101010101010101010101010 => 30|0|false|1010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|30|true|0000000000000000000000000000001 => 30|0|false|1111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 33|3|false|0100010111000111010000100100100 => 30|0|false|1011101000111000101111011011100
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|33|true|1010001010011000001000010111101 => 30|0|false|0101110101100111110111101000011
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 30|0|false|011011100111110X110011111001100 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|30|true|011010110011001010001011110111U => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 33|3|false|Z011001111101111010001011011000 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|33|true|1011011011W00111101010010111010 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 30|0|false|001011110111101000010000101111- => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 30|0|false|1111001100111110111101101110000
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|33|true|H101100111110111101000010000101 => 30|0|false|0010011000001000010111101111011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|31|true|00000000000000000000000000000000 => 31|0|false|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 34|3|false|11111111111111111111111111111111 => 31|0|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|34|true|10101010101010101010101010101010 => 31|0|false|01010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 31|0|false|01010101010101010101010101010101 => 31|0|false|10101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|31|true|10000000000000000000000000000000 => 31|0|false|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 34|3|false|00000000000000000000000000000001 => 31|0|false|11111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|34|true|01101011001100101000101111011110 => 31|0|false|10010100110011010111010000100010
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 31|0|false|00110011111011110100010110110000 => 31|0|false|11001100000100001011101001010000
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|31|true|1011011011100111X010100101110100 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 34|3|false|0010111101111010000100001011110U => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|34|true|Z0001100110000010000100100100001 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 31|0|false|0111101111W100001001001000110000 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|31|true|0101100111110111101000010000101- => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 31|0|false|01110001011110100010111101000110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 31|0|false|H1110100001011110011101100101111 => 31|0|false|00001011110100001100010011010001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 35|3|false|000000000000000000000000000000000 => 32|0|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|35|true|111111111111111111111111111111111 => 32|0|false|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 32|0|false|101010101010101010101010101010101 => 32|0|false|010101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|32|true|010101010101010101010101010101010 => 32|0|false|101010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 35|3|false|100000000000000000000000000000000 => 32|0|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|35|true|000000000000000000000000000000001 => 32|0|false|111111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 32|0|false|001011110111101000010000101111011 => 32|0|false|110100001000010111101111010000101
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|32|true|000011001100000100001001001000010 => 32|0|false|111100110011111011110110110111110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 35|3|false|0111101111010000X0010010001100000 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|35|true|01011001111101111010000100001011U => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|32|true|11101000010W000111110100110111000 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 35|3|false|01110100001011110011101100101111- => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 32|0|false|010000100000110011100010111101001
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->SIGNED] 0|32|true|H01100000110011000001000010111010 => 32|0|false|010011111001100111110111101000110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|true|0 => 3|3|true|0
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|true|1 => 0|0|false|1
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|false|X => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|true|U => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|false|Z => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|true|W => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|false|- => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|0|true|L => 0|0|true|L
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|3|true|H => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|1|true|00 => 0|1|true|00
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 4|3|false|11 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 1|0|false|01 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|1|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 4|3|false|01 => 4|3|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 1|0|false|10 => 1|0|false|10
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|1|true|1X => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 4|3|false|1U => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|4|true|Z1 => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 1|0|false|W1 => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|1|true|0- => 0|1|true|0-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 4|3|false|LL => 4|3|false|LL
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|4|true|XX => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 1|0|false|H1 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 9|3|false|0000000 => 9|3|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|9|true|1111111 => 6|0|false|0000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 6|0|false|1010101 => 6|0|false|0101011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|6|true|0101010 => 0|6|true|0101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 9|3|false|1000000 => 6|0|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|9|true|0000001 => 3|9|true|0000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 6|0|false|0111010 => 6|0|false|0111010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|6|true|0111110 => 0|6|true|0111110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 9|3|false|110X110 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|9|true|110101U => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 6|0|false|Z111010 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|6|true|10W0001 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 9|3|false|110000- => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|9|true|LLHLHHH => 3|9|true|LLHLHHH
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|6|true|H011001 => 6|0|false|0100111
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|10|true|00000000 => 3|10|true|00000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 7|0|false|11111111 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|7|true|10101010 => 7|0|false|01010110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 10|3|false|01010101 => 10|3|false|01010101
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|10|true|10000000 => 7|0|false|10000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 7|0|false|00000001 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|7|true|11010111 => 7|0|false|00101001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 10|3|false|11110100 => 7|0|false|00001100
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|10|true|1000X011 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 7|0|false|1100000U => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|7|true|Z0101111 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 10|3|false|11W00011 => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|10|true|0011001- => 3|10|true|0011001-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 7|0|false|HLHHLHHL => 7|0|false|01001010
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|7|true|XXXXXXXX => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 10|3|false|H0010110 => 7|0|false|01101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|30|true|1111111111111111111111111111111 => 30|0|false|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 33|3|false|1010101010101010101010101010101 => 30|0|false|0101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|33|true|0101010101010101010101010101010 => 3|33|true|0101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|30|true|0000000000000000000000000000001 => 0|30|true|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 33|3|false|0100010111000111010000100100100 => 33|3|false|0100010111000111010000100100100
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|33|true|1010001010011000001000010111101 => 30|0|false|0101110101100111110111101000011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 30|0|false|011011100111110X110011111001100 => 30|0|false|011011100111110X110011111001100
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|30|true|011010110011001010001011110111U => 0|30|true|011010110011001010001011110111U
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 33|3|false|Z011001111101111010001011011000 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|33|true|1011011011W00111101010010111010 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 30|0|false|001011110111101000010000101111- => 30|0|false|001011110111101000010000101111-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|33|true|H101100111110111101000010000101 => 30|0|false|0010011000001000010111101111011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|31|true|00000000000000000000000000000000 => 0|31|true|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 34|3|false|11111111111111111111111111111111 => 31|0|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|34|true|10101010101010101010101010101010 => 31|0|false|01010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 31|0|false|01010101010101010101010101010101 => 31|0|false|01010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|31|true|10000000000000000000000000000000 => 31|0|false|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 34|3|false|00000000000000000000000000000001 => 34|3|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|34|true|01101011001100101000101111011110 => 3|34|true|01101011001100101000101111011110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 31|0|false|00110011111011110100010110110000 => 31|0|false|00110011111011110100010110110000
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|31|true|1011011011100111X010100101110100 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 34|3|false|0010111101111010000100001011110U => 34|3|false|0010111101111010000100001011110U
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|34|true|Z0001100110000010000100100100001 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 31|0|false|0111101111W100001001001000110000 => 31|0|false|0111101111W100001001001000110000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|31|true|0101100111110111101000010000101- => 0|31|true|0101100111110111101000010000101-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 31|0|false|01110001011110100010111101000110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 31|0|false|H1110100001011110011101100101111 => 31|0|false|00001011110100001100010011010001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 35|3|false|000000000000000000000000000000000 => 35|3|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|35|true|111111111111111111111111111111111 => 32|0|false|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 32|0|false|101010101010101010101010101010101 => 32|0|false|010101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|32|true|010101010101010101010101010101010 => 0|32|true|010101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 35|3|false|100000000000000000000000000000000 => 32|0|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|35|true|000000000000000000000000000000001 => 3|35|true|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 32|0|false|001011110111101000010000101111011 => 32|0|false|001011110111101000010000101111011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|32|true|000011001100000100001001001000010 => 0|32|true|000011001100000100001001001000010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 35|3|false|0111101111010000X0010010001100000 => 35|3|false|0111101111010000X0010010001100000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|35|true|01011001111101111010000100001011U => 3|35|true|01011001111101111010000100001011U
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|32|true|11101000010W000111110100110111000 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 35|3|false|01110100001011110011101100101111- => 35|3|false|01110100001011110011101100101111-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 32|0|false|010000100000110011100010111101001
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->SIGNED] 0|32|true|H01100000110011000001000010111010 => 32|0|false|010011111001100111110111101000110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|true|0 => 3|3|true|0
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|true|1 => 3|3|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|true|U => 0|0|true|U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|false|Z => 3|3|false|Z
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|true|W => 3|3|true|W
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|false|- => 0|0|false|-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|0|true|L => 0|0|true|L
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|false|X => 3|3|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|3|true|H => 3|3|true|H
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|1|true|00 => 0|1|true|00
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 4|3|false|11 => 4|3|false|11
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 1|0|false|01 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|1|true|10 => 0|1|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 4|3|false|01 => 4|3|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 1|0|false|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|1|true|1X => 0|1|true|1X
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 4|3|false|1U => 4|3|false|1U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|4|true|Z1 => 3|4|true|Z1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 1|0|false|W1 => 1|0|false|W1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|1|true|0- => 0|1|true|0-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 4|3|false|LL => 4|3|false|LL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|4|true|XX => 3|4|true|XX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 1|0|false|H1 => 1|0|false|H1
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 9|3|false|0000000 => 9|3|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|9|true|1111111 => 3|9|true|1111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 6|0|false|1010101 => 6|0|false|1010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|6|true|0101010 => 0|6|true|0101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 9|3|false|1000000 => 9|3|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|9|true|0000001 => 3|9|true|0000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 6|0|false|0111010 => 6|0|false|0111010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|6|true|0111110 => 0|6|true|0111110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 9|3|false|110X110 => 9|3|false|110X110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|9|true|110101U => 3|9|true|110101U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 6|0|false|Z111010 => 6|0|false|Z111010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|6|true|10W0001 => 0|6|true|10W0001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 9|3|false|110000- => 9|3|false|110000-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|9|true|LLHLHHH => 3|9|true|LLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|6|true|H011001 => 0|6|true|H011001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|10|true|00000000 => 3|10|true|00000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 7|0|false|11111111 => 7|0|false|11111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|7|true|10101010 => 0|7|true|10101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 10|3|false|01010101 => 10|3|false|01010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|10|true|10000000 => 3|10|true|10000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 7|0|false|00000001 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|7|true|11010111 => 0|7|true|11010111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 10|3|false|11110100 => 10|3|false|11110100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|10|true|1000X011 => 3|10|true|1000X011
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 7|0|false|1100000U => 7|0|false|1100000U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|7|true|Z0101111 => 0|7|true|Z0101111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 10|3|false|11W00011 => 10|3|false|11W00011
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|10|true|0011001- => 3|10|true|0011001-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 7|0|false|HLHHLHHL => 7|0|false|HLHHLHHL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|7|true|XXXXXXXX => 0|7|true|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 10|3|false|H0010110 => 10|3|false|H0010110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|30|true|1111111111111111111111111111111 => 0|30|true|1111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 33|3|false|1010101010101010101010101010101 => 33|3|false|1010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|33|true|0101010101010101010101010101010 => 3|33|true|0101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|30|true|0000000000000000000000000000001 => 0|30|true|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 33|3|false|0100010111000111010000100100100 => 33|3|false|0100010111000111010000100100100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|33|true|1010001010011000001000010111101 => 3|33|true|1010001010011000001000010111101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 30|0|false|011011100111110X110011111001100 => 30|0|false|011011100111110X110011111001100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|30|true|011010110011001010001011110111U => 0|30|true|011010110011001010001011110111U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 33|3|false|Z011001111101111010001011011000 => 33|3|false|Z011001111101111010001011011000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|33|true|1011011011W00111101010010111010 => 3|33|true|1011011011W00111101010010111010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 30|0|false|001011110111101000010000101111- => 30|0|false|001011110111101000010000101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|33|true|H101100111110111101000010000101 => 3|33|true|H101100111110111101000010000101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|31|true|00000000000000000000000000000000 => 0|31|true|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 34|3|false|11111111111111111111111111111111 => 34|3|false|11111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|34|true|10101010101010101010101010101010 => 3|34|true|10101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 31|0|false|01010101010101010101010101010101 => 31|0|false|01010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|31|true|10000000000000000000000000000000 => 0|31|true|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 34|3|false|00000000000000000000000000000001 => 34|3|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|34|true|01101011001100101000101111011110 => 3|34|true|01101011001100101000101111011110
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 31|0|false|00110011111011110100010110110000 => 31|0|false|00110011111011110100010110110000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|31|true|1011011011100111X010100101110100 => 0|31|true|1011011011100111X010100101110100
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 34|3|false|0010111101111010000100001011110U => 34|3|false|0010111101111010000100001011110U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|34|true|Z0001100110000010000100100100001 => 3|34|true|Z0001100110000010000100100100001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 31|0|false|0111101111W100001001001000110000 => 31|0|false|0111101111W100001001001000110000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|31|true|0101100111110111101000010000101- => 0|31|true|0101100111110111101000010000101-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 31|0|false|H1110100001011110011101100101111 => 31|0|false|H1110100001011110011101100101111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 35|3|false|000000000000000000000000000000000 => 35|3|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|35|true|111111111111111111111111111111111 => 3|35|true|111111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 32|0|false|101010101010101010101010101010101 => 32|0|false|101010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|32|true|010101010101010101010101010101010 => 0|32|true|010101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 35|3|false|100000000000000000000000000000000 => 35|3|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|35|true|000000000000000000000000000000001 => 3|35|true|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 32|0|false|001011110111101000010000101111011 => 32|0|false|001011110111101000010000101111011
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|32|true|000011001100000100001001001000010 => 0|32|true|000011001100000100001001001000010
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 35|3|false|0111101111010000X0010010001100000 => 35|3|false|0111101111010000X0010010001100000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|35|true|01011001111101111010000100001011U => 3|35|true|01011001111101111010000100001011U
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|Z00011101000010111010000101110101
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|32|true|11101000010W000111110100110111000 => 0|32|true|11101000010W000111110100110111000
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 35|3|false|01110100001011110011101100101111- => 35|3|false|01110100001011110011101100101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[UNSIGNED->STD_LOGIC_VECTOR] 0|32|true|H01100000110011000001000010111010 => 0|32|true|H01100000110011000001000010111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|true|0 => 3|3|true|0
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 3|3|false|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|true|1 => 3|3|true|1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|true|U => 0|0|true|U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|false|Z => 3|3|false|Z
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|true|W => 3|3|true|W
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|false|- => 0|0|false|-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|0|true|L => 0|0|true|L
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|false|X => 3|3|false|X
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|3|true|H => 3|3|true|H
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|1|true|00 => 0|1|true|00
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 4|3|false|11 => 4|3|false|11
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 1|0|false|01 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|1|true|10 => 0|1|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 4|3|false|01 => 4|3|false|01
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 3|4|true|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 1|0|false|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|1|true|1X => 0|1|true|1X
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 4|3|false|1U => 4|3|false|1U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|4|true|Z1 => 3|4|true|Z1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 1|0|false|W1 => 1|0|false|W1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|1|true|0- => 0|1|true|0-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 4|3|false|LL => 4|3|false|LL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|4|true|XX => 3|4|true|XX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 1|0|false|H1 => 1|0|false|H1
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 9|3|false|0000000 => 9|3|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|9|true|1111111 => 3|9|true|1111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 6|0|false|1010101 => 6|0|false|1010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|6|true|0101010 => 0|6|true|0101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 9|3|false|1000000 => 9|3|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|9|true|0000001 => 3|9|true|0000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 6|0|false|0111010 => 6|0|false|0111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|6|true|0111110 => 0|6|true|0111110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 9|3|false|110X110 => 9|3|false|110X110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|9|true|110101U => 3|9|true|110101U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 6|0|false|Z111010 => 6|0|false|Z111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|6|true|10W0001 => 0|6|true|10W0001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 9|3|false|110000- => 9|3|false|110000-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|9|true|LLHLHHH => 3|9|true|LLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|6|true|H011001 => 0|6|true|H011001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|10|true|00000000 => 3|10|true|00000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 7|0|false|11111111 => 7|0|false|11111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|7|true|10101010 => 0|7|true|10101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 10|3|false|01010101 => 10|3|false|01010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|10|true|10000000 => 3|10|true|10000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 7|0|false|00000001 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|7|true|11010111 => 0|7|true|11010111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 10|3|false|11110100 => 10|3|false|11110100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|10|true|1000X011 => 3|10|true|1000X011
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 7|0|false|1100000U => 7|0|false|1100000U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|7|true|Z0101111 => 0|7|true|Z0101111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 10|3|false|11W00011 => 10|3|false|11W00011
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|10|true|0011001- => 3|10|true|0011001-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 7|0|false|HLHHLHHL => 7|0|false|HLHHLHHL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|7|true|XXXXXXXX => 0|7|true|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 10|3|false|H0010110 => 10|3|false|H0010110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|30|true|1111111111111111111111111111111 => 0|30|true|1111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 33|3|false|1010101010101010101010101010101 => 33|3|false|1010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|33|true|0101010101010101010101010101010 => 3|33|true|0101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|30|true|0000000000000000000000000000001 => 0|30|true|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 33|3|false|0100010111000111010000100100100 => 33|3|false|0100010111000111010000100100100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|33|true|1010001010011000001000010111101 => 3|33|true|1010001010011000001000010111101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 30|0|false|011011100111110X110011111001100 => 30|0|false|011011100111110X110011111001100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|30|true|011010110011001010001011110111U => 0|30|true|011010110011001010001011110111U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 33|3|false|Z011001111101111010001011011000 => 33|3|false|Z011001111101111010001011011000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|33|true|1011011011W00111101010010111010 => 3|33|true|1011011011W00111101010010111010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 30|0|false|001011110111101000010000101111- => 30|0|false|001011110111101000010000101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|33|true|H101100111110111101000010000101 => 3|33|true|H101100111110111101000010000101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|31|true|00000000000000000000000000000000 => 0|31|true|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 34|3|false|11111111111111111111111111111111 => 34|3|false|11111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|34|true|10101010101010101010101010101010 => 3|34|true|10101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 31|0|false|01010101010101010101010101010101 => 31|0|false|01010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|31|true|10000000000000000000000000000000 => 0|31|true|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 34|3|false|00000000000000000000000000000001 => 34|3|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|34|true|01101011001100101000101111011110 => 3|34|true|01101011001100101000101111011110
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 31|0|false|00110011111011110100010110110000 => 31|0|false|00110011111011110100010110110000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|31|true|1011011011100111X010100101110100 => 0|31|true|1011011011100111X010100101110100
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 34|3|false|0010111101111010000100001011110U => 34|3|false|0010111101111010000100001011110U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|34|true|Z0001100110000010000100100100001 => 3|34|true|Z0001100110000010000100100100001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 31|0|false|0111101111W100001001001000110000 => 31|0|false|0111101111W100001001001000110000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|31|true|0101100111110111101000010000101- => 0|31|true|0101100111110111101000010000101-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 31|0|false|H1110100001011110011101100101111 => 31|0|false|H1110100001011110011101100101111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 35|3|false|000000000000000000000000000000000 => 35|3|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|35|true|111111111111111111111111111111111 => 3|35|true|111111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 32|0|false|101010101010101010101010101010101 => 32|0|false|101010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|32|true|010101010101010101010101010101010 => 0|32|true|010101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 35|3|false|100000000000000000000000000000000 => 35|3|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|35|true|000000000000000000000000000000001 => 3|35|true|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 32|0|false|001011110111101000010000101111011 => 32|0|false|001011110111101000010000101111011
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|32|true|000011001100000100001001001000010 => 0|32|true|000011001100000100001001001000010
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 35|3|false|0111101111010000X0010010001100000 => 35|3|false|0111101111010000X0010010001100000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|35|true|01011001111101111010000100001011U => 3|35|true|01011001111101111010000100001011U
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|Z00011101000010111010000101110101
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|32|true|11101000010W000111110100110111000 => 0|32|true|11101000010W000111110100110111000
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 35|3|false|01110100001011110011101100101111- => 35|3|false|01110100001011110011101100101111-
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	+[SIGNED->STD_LOGIC_VECTOR] 0|32|true|H01100000110011000001000010111010 => 0|32|true|H01100000110011000001000010111010
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|true|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|true|1 => 0|0|false|1
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|false|X => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|true|U => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|false|Z => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|true|W => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|false|- => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|0|true|L => 0|0|false|0
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|3|true|H => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|1|true|00 => 1|0|false|00
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 4|3|false|11 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 1|0|false|01 => 1|0|false|11
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|1|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 4|3|false|01 => 1|0|false|11
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 1|0|false|10 => 1|0|false|10
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|1|true|1X => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 4|3|false|1U => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|4|true|Z1 => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 1|0|false|W1 => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|1|true|0- => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 4|3|false|LL => 1|0|false|00
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|4|true|XX => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 1|0|false|H1 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 9|3|false|0000000 => 6|0|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|9|true|1111111 => 6|0|false|0000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 6|0|false|1010101 => 6|0|false|0101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|6|true|0101010 => 6|0|false|1010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 9|3|false|1000000 => 6|0|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|9|true|0000001 => 6|0|false|1111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 6|0|false|0111010 => 6|0|false|1000110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|6|true|0111110 => 6|0|false|1000010
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 9|3|false|110X110 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|9|true|110101U => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 6|0|false|Z111010 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|6|true|10W0001 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 9|3|false|110000- => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|9|true|LLHLHHH => 6|0|false|1101001
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|6|true|H011001 => 6|0|false|0100111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|10|true|00000000 => 7|0|false|00000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 7|0|false|11111111 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|7|true|10101010 => 7|0|false|01010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 10|3|false|01010101 => 7|0|false|10101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|10|true|10000000 => 7|0|false|10000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 7|0|false|00000001 => 7|0|false|11111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|7|true|11010111 => 7|0|false|00101001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 10|3|false|11110100 => 7|0|false|00001100
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|10|true|1000X011 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 7|0|false|1100000U => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|7|true|Z0101111 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 10|3|false|11W00011 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|10|true|0011001- => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 7|0|false|HLHHLHHL => 7|0|false|01001010
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|7|true|XXXXXXXX => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 10|3|false|H0010110 => 7|0|false|01101010
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|30|true|1111111111111111111111111111111 => 30|0|false|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 33|3|false|1010101010101010101010101010101 => 30|0|false|0101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|33|true|0101010101010101010101010101010 => 30|0|false|1010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|30|true|0000000000000000000000000000001 => 30|0|false|1111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 33|3|false|0100010111000111010000100100100 => 30|0|false|1011101000111000101111011011100
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|33|true|1010001010011000001000010111101 => 30|0|false|0101110101100111110111101000011
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 30|0|false|011011100111110X110011111001100 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|30|true|011010110011001010001011110111U => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 33|3|false|Z011001111101111010001011011000 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|33|true|1011011011W00111101010010111010 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 30|0|false|001011110111101000010000101111- => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 30|0|false|1111001100111110111101101110000
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|33|true|H101100111110111101000010000101 => 30|0|false|0010011000001000010111101111011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|31|true|00000000000000000000000000000000 => 31|0|false|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 34|3|false|11111111111111111111111111111111 => 31|0|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|34|true|10101010101010101010101010101010 => 31|0|false|01010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 31|0|false|01010101010101010101010101010101 => 31|0|false|10101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|31|true|10000000000000000000000000000000 => 31|0|false|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 34|3|false|00000000000000000000000000000001 => 31|0|false|11111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|34|true|01101011001100101000101111011110 => 31|0|false|10010100110011010111010000100010
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 31|0|false|00110011111011110100010110110000 => 31|0|false|11001100000100001011101001010000
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|31|true|1011011011100111X010100101110100 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 34|3|false|0010111101111010000100001011110U => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|34|true|Z0001100110000010000100100100001 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 31|0|false|0111101111W100001001001000110000 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|31|true|0101100111110111101000010000101- => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 31|0|false|01110001011110100010111101000110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 31|0|false|H1110100001011110011101100101111 => 31|0|false|00001011110100001100010011010001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 35|3|false|000000000000000000000000000000000 => 32|0|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|35|true|111111111111111111111111111111111 => 32|0|false|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 32|0|false|101010101010101010101010101010101 => 32|0|false|010101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|32|true|010101010101010101010101010101010 => 32|0|false|101010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 35|3|false|100000000000000000000000000000000 => 32|0|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|35|true|000000000000000000000000000000001 => 32|0|false|111111111111111111111111111111111
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 32|0|false|001011110111101000010000101111011 => 32|0|false|110100001000010111101111010000101
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|32|true|000011001100000100001001001000010 => 32|0|false|111100110011111011110110110111110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 35|3|false|0111101111010000X0010010001100000 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|35|true|01011001111101111010000100001011U => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|32|true|11101000010W000111110100110111000 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 35|3|false|01110100001011110011101100101111- => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 32|0|false|010000100000110011100010111101001
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	-[SIGNED->STD_LOGIC_VECTOR] 0|32|true|H01100000110011000001000010111010 => 32|0|false|010011111001100111110111101000110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|false|0 => 0|0|false|0
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|true|0 => 3|3|true|0
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|true|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|false|1 => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|true|1 => 0|0|false|1
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|false|X => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|true|U => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|false|Z => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|true|W => 0|0|false|X
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|false|- => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|0|true|L => 0|0|true|L
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|false|X => 0|0|false|X
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|3|true|H => 0|0|false|1
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|1|true|00 => 0|1|true|00
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 4|3|false|11 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 1|0|false|01 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|1|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 4|3|false|01 => 4|3|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|4|true|10 => 1|0|false|10
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 1|0|false|10 => 1|0|false|10
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|1|true|1X => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 4|3|false|1U => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|4|true|Z1 => 1|0|false|XX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 1|0|false|W1 => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|1|true|0- => 0|1|true|0-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 4|3|false|LL => 4|3|false|LL
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|4|true|XX => 1|0|false|XX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 1|0|false|H1 => 1|0|false|01
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 9|3|false|0000000 => 9|3|false|0000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|9|true|1111111 => 6|0|false|0000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 6|0|false|1010101 => 6|0|false|0101011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|6|true|0101010 => 0|6|true|0101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 9|3|false|1000000 => 6|0|false|1000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|9|true|0000001 => 3|9|true|0000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 6|0|false|0111010 => 6|0|false|0111010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|6|true|0111110 => 0|6|true|0111110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 9|3|false|110X110 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|9|true|110101U => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 6|0|false|Z111010 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|6|true|10W0001 => 6|0|false|XXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 9|3|false|110000- => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|9|true|LLHLHHH => 3|9|true|LLHLHHH
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 6|0|false|XXXXXXX => 6|0|false|XXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|6|true|H011001 => 6|0|false|0100111
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|10|true|00000000 => 3|10|true|00000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 7|0|false|11111111 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|7|true|10101010 => 7|0|false|01010110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 10|3|false|01010101 => 10|3|false|01010101
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|10|true|10000000 => 7|0|false|10000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 7|0|false|00000001 => 7|0|false|00000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|7|true|11010111 => 7|0|false|00101001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 10|3|false|11110100 => 7|0|false|00001100
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|10|true|1000X011 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 7|0|false|1100000U => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|7|true|Z0101111 => 7|0|false|XXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 10|3|false|11W00011 => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|10|true|0011001- => 3|10|true|0011001-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 7|0|false|HLHHLHHL => 7|0|false|01001010
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|7|true|XXXXXXXX => 7|0|false|XXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 10|3|false|H0010110 => 7|0|false|01101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 30|0|false|0000000000000000000000000000000 => 30|0|false|0000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|30|true|1111111111111111111111111111111 => 30|0|false|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 33|3|false|1010101010101010101010101010101 => 30|0|false|0101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|33|true|0101010101010101010101010101010 => 3|33|true|0101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 30|0|false|1000000000000000000000000000000 => 30|0|false|1000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|30|true|0000000000000000000000000000001 => 0|30|true|0000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 33|3|false|0100010111000111010000100100100 => 33|3|false|0100010111000111010000100100100
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|33|true|1010001010011000001000010111101 => 30|0|false|0101110101100111110111101000011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 30|0|false|011011100111110X110011111001100 => 30|0|false|011011100111110X110011111001100
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|30|true|011010110011001010001011110111U => 0|30|true|011010110011001010001011110111U
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 33|3|false|Z011001111101111010001011011000 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|33|true|1011011011W00111101010010111010 => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 30|0|false|001011110111101000010000101111- => 30|0|false|001011110111101000010000101111-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 30|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|33|true|H101100111110111101000010000101 => 30|0|false|0010011000001000010111101111011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|31|true|00000000000000000000000000000000 => 0|31|true|00000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 34|3|false|11111111111111111111111111111111 => 31|0|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|34|true|10101010101010101010101010101010 => 31|0|false|01010101010101010101010101010110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 31|0|false|01010101010101010101010101010101 => 31|0|false|01010101010101010101010101010101
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|31|true|10000000000000000000000000000000 => 31|0|false|10000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 34|3|false|00000000000000000000000000000001 => 34|3|false|00000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|34|true|01101011001100101000101111011110 => 3|34|true|01101011001100101000101111011110
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 31|0|false|00110011111011110100010110110000 => 31|0|false|00110011111011110100010110110000
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|31|true|1011011011100111X010100101110100 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 34|3|false|0010111101111010000100001011110U => 34|3|false|0010111101111010000100001011110U
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|34|true|Z0001100110000010000100100100001 => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 31|0|false|0111101111W100001001001000110000 => 31|0|false|0111101111W100001001001000110000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|31|true|0101100111110111101000010000101- => 0|31|true|0101100111110111101000010000101-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => 31|0|false|01110001011110100010111101000110
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 31|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 31|0|false|H1110100001011110011101100101111 => 31|0|false|00001011110100001100010011010001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 35|3|false|000000000000000000000000000000000 => 35|3|false|000000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|35|true|111111111111111111111111111111111 => 32|0|false|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 32|0|false|101010101010101010101010101010101 => 32|0|false|010101010101010101010101010101011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|32|true|010101010101010101010101010101010 => 0|32|true|010101010101010101010101010101010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 35|3|false|100000000000000000000000000000000 => 32|0|false|100000000000000000000000000000000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|35|true|000000000000000000000000000000001 => 3|35|true|000000000000000000000000000000001
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 32|0|false|001011110111101000010000101111011 => 32|0|false|001011110111101000010000101111011
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|32|true|000011001100000100001001001000010 => 0|32|true|000011001100000100001001001000010
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 35|3|false|0111101111010000X0010010001100000 => 35|3|false|0111101111010000X0010010001100000
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|35|true|01011001111101111010000100001011U => 3|35|true|01011001111101111010000100001011U
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 32|0|false|Z00011101000010111010000101110101 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|32|true|11101000010W000111110100110111000 => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 35|3|false|01110100001011110011101100101111- => 35|3|false|01110100001011110011101100101111-
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 3|35|true|HLHHHHLHHHHHLLHHLLLHHHLHLLLLHLHHH => 32|0|false|010000100000110011100010111101001
+diag	warning	0	0	:tb_arith_unary:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 32|0|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+diag	note	0	0	:tb_arith_unary:_p0	abs[SIGNED->STD_LOGIC_VECTOR] 0|32|true|H01100000110011000001000010111010 => 32|0|false|010011111001100111110111101000110
+diag	note	0	0	:tb_arith_unary:_p0	DONE

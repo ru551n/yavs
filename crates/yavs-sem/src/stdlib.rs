@@ -48,6 +48,6 @@ mod tests {
                 .join("standard.vhdl")
         ));
         assert!(!is_file(&Path::new(EMBEDDED).join("ieee/2008/nope.vhdl")));
-        assert_eq!(FILES.len(), 67);
+        assert_eq!(FILES.len(), 83);
     }
 }

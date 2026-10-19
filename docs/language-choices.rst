@@ -366,5 +366,7 @@ clause.
 Library
 -------
 
-The non-standard arithmetic packages ``std_logic_arith`` and ``std_logic_unsigned`` are not part
-of the standard libraries that ship with yavs (``E1002``); use ``numeric_std``.
+The non-standard Synopsys packages ``std_logic_arith``, ``std_logic_unsigned``,
+``std_logic_signed`` and ``std_logic_misc`` are built into library ``ieee`` as the original
+files and are visible without a flag, so existing designs that use them analyze and simulate.
+New code should prefer ``numeric_std``.

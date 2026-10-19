@@ -2,7 +2,7 @@
 """Differential test harness for yavs: run corpus testbenches on a candidate
 simulator and diff the normalised output against checked-in NVC reference
 outputs (`.expected`). Stdlib only. See README.md."""
-import shutil, argparse, zlib, concurrent.futures as cf, difflib, os, re, shlex, subprocess, sys
+import gzip, shutil, argparse, zlib, concurrent.futures as cf, difflib, os, re, shlex, subprocess, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -12,6 +12,7 @@ CORPUS = ROOT / "tests" / "corpus"
 CACHE = Path(os.environ.get("DIFFTEST_CACHE") or Path.home() / ".cache" / "yavs-difftest" / f"run-{os.getpid()}")
 MAX_JOBS = 8
 TIMEOUT = 300
+GZ_MIN = 1 << 20  # outputs larger than this are stored as .expected.gz
 RC_ANALYSE, RC_ELAB = 97, 98
 
 # Candidate command templates (run with bash -c). Placeholders: {file} {top}
@@ -263,6 +264,26 @@ def expected_path(vhd):
     return vhd.with_suffix(".expected")
 
 
+def read_expected(vhd):
+    """The reference text: `.expected`, or `.expected.gz` for outputs over GZ_MIN bytes."""
+    ep = expected_path(vhd)
+    if ep.exists():
+        return ep.read_text()
+    gz = ep.with_name(ep.name + ".gz")
+    return gzip.decompress(gz.read_bytes()).decode() if gz.exists() else None
+
+
+def write_expected(vhd, text):
+    ep = expected_path(vhd)
+    gz = ep.with_name(ep.name + ".gz")
+    for p in (ep, gz):
+        p.unlink(missing_ok=True)
+    if len(text) > GZ_MIN:
+        gz.write_bytes(gzip.compress(text.encode(), 9, mtime=0))
+    else:
+        ep.write_text(text)
+
+
 def one(vhd, args, template, ignore):
     rel = vhd.relative_to(CORPUS)
     hdr = parse_header(vhd)
@@ -290,12 +311,12 @@ def one(vhd, args, template, ignore):
                 return {**res, "msg": "skipped, hand-maintained .expected"}
             if outs[0][0] != "exit\t%d" % hdr["exit"]:
                 return {**res, "ok": False, "msg": f"bless refused: exit {outs[0][0]} but header says exit={hdr['exit']}"}
-            expected_path(vhd).write_text("\n".join(outs[0]) + "\n")
+            write_expected(vhd, "\n".join(outs[0]) + "\n")
             return {**res, "msg": "blessed"}
-        ep = expected_path(vhd)
-        if not ep.exists():
+        text = read_expected(vhd)
+        if text is None:
             return {**res, "ok": False, "msg": "no .expected (run with --bless using --candidate nvc)"}
-        want = mask(ep.read_text().splitlines(), ignore)
+        want = mask(text.splitlines(), ignore)
         problems = []
         for th, o in zip(thread_list, outs):
             got = mask(o, ignore)

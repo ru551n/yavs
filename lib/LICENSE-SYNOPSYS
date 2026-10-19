@@ -1,0 +1,19 @@
+Synopsys packages (ieee.std_logic_arith, std_logic_unsigned, std_logic_signed, std_logic_misc)
+
+Files: lib/ieee/{2008,2019}/std_logic_{arith,unsigned,signed,misc}{,-body}.vhdl
+
+These sixteen files are Copyright (c) 1990-1992 Synopsys, Inc. All rights reserved. Each
+package carries this notice in its header, which is kept byte for byte:
+
+  This source file may be used and distributed without restriction provided that this
+  copyright statement is not removed from the file and that any derivative work contains
+  this copyright notice.
+
+They are redistributed unmodified and are not covered by the MIT or Apache-2.0 licences of yavs
+itself. Their origin is listed in lib/SOURCES.md. The package declaration and body of
+std_logic_arith, std_logic_unsigned and std_logic_signed are one source file upstream; here the
+file is cut at the line between the two units, so the declaration file followed by the -body
+file is the upstream file byte for byte, and the notice stays in the declaration file.
+
+The Apache-2.0 sources of the other built-in std and ieee packages are covered by
+LICENSE-IEEE (lib/LICENSE); the VITAL packages by LICENSE-IEEE-VITAL.

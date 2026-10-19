@@ -1,0 +1,209 @@
+exit	0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|false|0 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|true|1 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|false|1 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|true|0 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|false|1 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|true|1 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|false|1 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|true|1 => -1
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|false|X => 0
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|true|U => 0
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|false|Z => 0
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|true|W => 0
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|false|- => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|0|true|L => 0
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|false|X => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|3|true|H => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|1|true|00 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 4|3|false|11 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|4|true|10 => -2
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 1|0|false|01 => 1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|1|true|10 => -2
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 4|3|false|01 => 1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|4|true|10 => -2
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 1|0|false|10 => -2
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|1|true|1X => -2
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 4|3|false|1U => -2
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|4|true|Z1 => 1
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 1|0|false|W1 => 1
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|1|true|0- => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 4|3|false|LL => 0
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|4|true|XX => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 1|0|false|H1 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 9|3|false|0000000 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|9|true|1111111 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 6|0|false|1010101 => -43
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|6|true|0101010 => 42
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 9|3|false|1000000 => -64
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|9|true|0000001 => 1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 6|0|false|0111010 => 58
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|6|true|0111110 => 62
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 9|3|false|110X110 => -26
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|9|true|110101U => -22
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 6|0|false|Z111010 => 58
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|6|true|10W0001 => -63
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 9|3|false|110000- => -32
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|9|true|LLHLHHH => 23
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 6|0|false|XXXXXXX => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|6|true|H011001 => -39
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|10|true|00000000 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 7|0|false|11111111 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|7|true|10101010 => -86
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 10|3|false|01010101 => 85
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|10|true|10000000 => -128
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 7|0|false|00000001 => 1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|7|true|11010111 => -41
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 10|3|false|11110100 => -12
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|10|true|1000X011 => -125
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 7|0|false|1100000U => -64
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|7|true|Z0101111 => 47
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 10|3|false|11W00011 => -61
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|10|true|0011001- => 50
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 7|0|false|HLHHLHHL => -74
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|7|true|XXXXXXXX => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 10|3|false|H0010110 => -106
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 30|0|false|0000000000000000000000000000000 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|30|true|1111111111111111111111111111111 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 33|3|false|1010101010101010101010101010101 => -715827883
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|33|true|0101010101010101010101010101010 => 715827882
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 30|0|false|1000000000000000000000000000000 => -1073741824
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|30|true|0000000000000000000000000000001 => 1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 33|3|false|0100010111000111010000100100100 => 585343268
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|33|true|1010001010011000001000010111101 => -783544131
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 30|0|false|011011100111110X110011111001100 => 926836684
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|30|true|011010110011001010001011110111U => 899237358
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 33|3|false|Z011001111101111010001011011000 => 435659480
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|33|true|1011011011W00111101010010111010 => -614214470
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 30|0|false|001011110111101000010000101111- => 398264414
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|30|true|LLLLHHLLHHLLLLLHLLLLHLLHLLHLLLL => 106988688
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 33|3|false|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|33|true|H101100111110111101000010000101 => -319041403
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|31|true|00000000000000000000000000000000 => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 34|3|false|11111111111111111111111111111111 => -1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|34|true|10101010101010101010101010101010 => -1431655766
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 31|0|false|01010101010101010101010101010101 => 1431655765
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|31|true|10000000000000000000000000000000 => -2147483648
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 34|3|false|00000000000000000000000000000001 => 1
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|34|true|01101011001100101000101111011110 => 1798474718
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 31|0|false|00110011111011110100010110110000 => 871318960
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|31|true|1011011011100111X010100101110100 => -1226364556
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 34|3|false|0010111101111010000100001011110U => 796528828
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|34|true|Z0001100110000010000100100100001 => 213977377
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 31|0|false|0111101111W100001001001000110000 => 2077266480
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 0|31|true|0101100111110111101000010000101- => 1509400842
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 34|3|false|HLLLHHHLHLLLLHLHHHLHLLLLHLHHHLHL => -1903832902
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER: There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, and it has been converted to 0.
+diag	warning	0	0	:tb_signed_conv_integer:_p0	There is an 'U'|'X'|'W'|'Z'|'-' in an arithmetic operand, the result will be 'X'(es).
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 3|34|true|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX => 0
+diag	note	0	0	:tb_signed_conv_integer:_p0	CONV_INTEGER[STD_LOGIC_VECTOR->INTEGER] 31|0|false|H1110100001011110011101100101111 => -198231249
+diag	note	0	0	:tb_signed_conv_integer:_p0	DONE

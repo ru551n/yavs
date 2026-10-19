@@ -55,6 +55,17 @@ milestone users care about works.
   a vital pure function are still E1830. The same units are also exempt from the 4.2.1 rule that
   a pure function's result is not of an access type and has no access subelement
   (`VitalTimingDataInit`), which user code gets (E1830, L95). `tools/update-ieee-libs.sh` preserves them.
+- **The original Synopsys packages are built in, unmodified** (user, 2026-10-19, #117; supersedes the
+  clean-room plan deferred to M4b, and the "do not reproduce" rule). `ieee.std_logic_arith`,
+  `std_logic_unsigned`, `std_logic_signed` and `std_logic_misc` (2008 text for both revisions) are the
+  original files, byte for byte with their copyright header, always visible in `ieee` with no flag
+  (as in the reference simulator), so `use ieee.std_logic_arith.all` just works. Package and body of
+  the first three are one upstream file; they are cut at the line between the two units for the
+  loader's `p.vhdl` / `p-body.vhdl` convention. `std_logic_textio` is not needed (2008 moved its
+  procedures into `std_logic_1164`). Origin, cross-check and licence: `lib/SOURCES.md`,
+  `lib/LICENSE-SYNOPSYS` (shipped in the release archive). The unmodified text passes yavs-sem
+  without an exemption. Black-box testbenches: `tests/corpus/synopsys/` (reference: the reference
+  simulator, whose own copy of the package differs in warning texts).
 - **No VHPI import library** (user, 2026-10-18). The release builds and ships no `yavs.lib`; a VHPI plugin brings its own
   import library for `yavs.exe`'s exports (Python testbench frameworks ship `.def` files per simulator). #124 is
   reduced to checking that the exports are there.

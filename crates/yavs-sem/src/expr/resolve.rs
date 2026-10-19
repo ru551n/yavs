@@ -910,6 +910,31 @@ impl Db {
             {
                 return;
             }
+            // `f(x).m`: a call under the selections that no overload accepts is the real
+            // problem, reported like a bare call (type mismatch of the argument).
+            if let K::Name(n) = &e.kind {
+                let mut under = n;
+                while let ast::NameKind::Selected { prefix, .. } = &under.kind {
+                    under = prefix;
+                }
+                if let ast::NameKind::Apply { prefix, args } = &under.kind
+                    && !std::ptr::eq(under, n)
+                    && matches!(self.name_cands(scope, under), CandSet::Types(v) if v.is_empty())
+                {
+                    if let NameRes::Overloads(ds) = self.classify(scope, prefix) {
+                        self.no_function(scope, prefix, args, &ds);
+                    } else {
+                        self.report(
+                            Diagnostic::error(
+                                diag::NO_OVERLOAD,
+                                "no visible subprogram accepts these arguments",
+                            )
+                            .with_primary(prefix.span, "no matching subprogram"),
+                        );
+                    }
+                    return;
+                }
+            }
             self.report(
                 Diagnostic::error(diag::NOT_AN_OBJECT, "this name does not denote a value")
                     .with_primary(e.span, "not an object, literal or function"),

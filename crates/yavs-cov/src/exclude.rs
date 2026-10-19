@@ -174,10 +174,9 @@ fn matches(r: &Rule, k: &Key, e: &Entry) -> bool {
         }
         Rule::Unit(u) => k.path.eq_ignore_ascii_case(u),
         Rule::File(g) => {
-            glob(g, &e.file)
-                || e.file
-                    .match_indices('/')
-                    .any(|(i, _)| glob(g, &e.file[i + 1..]))
+            // Either separator in the row and in the recorded path (Windows paths use `\`).
+            let (g, f) = (g.replace('\\', "/"), e.file.replace('\\', "/"));
+            glob(&g, &f) || f.match_indices('/').any(|(i, _)| glob(&g, &f[i + 1..]))
         }
     }
 }
@@ -434,6 +433,23 @@ mod tests {
             "{codes:?}"
         );
         assert!(a.kept.items.is_empty());
+    }
+
+    #[test]
+    fn file_rows_ignore_path_separator_style() {
+        let mut d = db();
+        for e in d.items.values_mut() {
+            e.file = "src\\sub\\a.vhd".into();
+        }
+        for row in [
+            "file a.vhd",
+            "file sub/a.vhd",
+            "file sub\\a.vhd",
+            "file src/*/a.vhd",
+        ] {
+            let a = apply(&d, &parse(&format!("{row}\r\n")).unwrap(), "ex");
+            assert!(a.kept.items.is_empty(), "{row}");
+        }
     }
 
     #[test]

@@ -148,7 +148,8 @@ current value and an error while it is disconnected.
 
 Within a delta the kernel has two phases that never overlap:
 
-- **Run phase.** The ready processes run on a rayon pool (`Config::threads`, 1 means inline).
+- **Run phase.** The ready processes run on a rayon pool (`Config::threads`, 1 means inline;
+  a batch of fewer than 32 processes also runs inline, the hand-off costing more than it saves).
   Each gets a `Ctx` holding a shared read-only view (`Shared`: time, delta, cycle number, all
   signals, driver table) and `&mut` to its own `ProcState` behind its own uncontended mutex. A
   process can only read current-cycle values and write its own waveforms, its own wait state and

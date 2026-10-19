@@ -19,6 +19,9 @@ use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
 
+/// Smallest batch of ready processes handed to the thread pool.
+const PAR_BATCH: usize = 32;
+
 /// Kernel settings.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -1507,14 +1510,16 @@ impl SimControl {
                     });
             };
             match &self.pool {
-                Some(pool) => {
+                // ponytail: fixed cut-off; below it the pool hand-off costs more than the
+                // processes. Inline or pooled, the commit order is the batch order.
+                Some(pool) if pids.len() >= PAR_BATCH => {
                     let (serial, par): (Vec<u32>, Vec<u32>) = pids
                         .iter()
                         .partition(|&&p| self.procs[p as usize].flags.serial);
                     pool.install(|| par.par_iter().for_each(run));
                     serial.iter().for_each(run);
                 }
-                None => pids.iter().for_each(run),
+                _ => pids.iter().for_each(run),
             }
         }
         self.stats.process_runs += pids.len() as u64;

@@ -25,6 +25,20 @@ starts at its own default and lags by one delta. Standard: 6.5.6.3, 8.7, 14.7.
 *Portable:* do not depend on the delta in which such a port changes, or connect through an
 ordinary port.
 
+Relative external name as a port actual
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: vhdl
+
+   l : entity work.leaf;
+   m : entity work.mon port map (i => << signal l.hidden : natural >>);
+
+A relative pathname starts at the region that contains the port map (here the one holding ``l``),
+not at the instantiated entity (``mon``). Some simulators start it at the instantiated entity and
+fail to elaborate the design. Standard: 8.7.
+
+*Portable:* name the signal with an absolute pathname or a ``^`` pathname.
+
 Open unconstrained ``in`` port with a default
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

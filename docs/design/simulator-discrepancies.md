@@ -142,6 +142,7 @@ there is untested.
 | `external-name-in-port-init` | external name as the actual of an in port: the port's initial value | 8.7, 6.5.6.3 | LRM ambiguity | OK* | OK | OK* | to be filled | OK | the actual's initial value, not the port's default | user, 2026-10-19 (#186, 2 of 3 reference simulators) |
 | `open-port-default` | open unconstrained in port with a default: bounds of the default | 6.5.6.3, 14.3.5 | LRM ambiguity | OK | OK | OK | to be filled | OK | bounds from the default | agent, 2026-10-18 (#218, L59) |
 | `partial-driver-resolved-composite` | process driving one field of a record resolved as a whole: undriven fields in resolution | 4.6, 14.7.2 | LRM ambiguity | OK* | FATAL | OK | to be filled | OK | every leaf is driven by a driving process, resolver gets whole values | agent, 2026-10-18 (#193) |
+| `relative-external-name-port-actual` | relative external name as a port actual: where the pathname starts | 8.7 | LRM clear | FATAL | OK | OK | to be filled | OK | starts at the region that contains the port map; sim1 starts at the instantiated entity and fails at elaboration ("name not found") | agent (corpus hierarchy/external_port_forms) |
 | `unconstrained-records` | records with unconstrained fields | 5.3.3, 6.4.2.3 | LRM clear | OK* | OK | OK | to be filled | OK | LRM result, by hand | agent (ref=hand) |
 
 ## Runtime semantics

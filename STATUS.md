@@ -495,7 +495,7 @@ runs the test as written.
 
 ## discrepancies (simulator catalogue)
 
-`docs/design/simulator-discrepancies.md` lists 79 constructs where the reference simulators
+`docs/design/simulator-discrepancies.md` lists 80 constructs where the reference simulators
 disagree with each other, the LRM or yavs, each with a reproducer in `tests/discrepancies/` and a
 recorded verdict per simulator. `python3 tools/discrepancies/run.py --sims sim1,sim2,sim3 --check`
 runs them all (yavs plus the configured simulators; the label mapping is local) and fails when yavs

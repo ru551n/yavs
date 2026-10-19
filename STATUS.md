@@ -118,6 +118,37 @@ a type evaluated twice, `log2` precision, 2019 mode view parameters). Analysis a
 failures (about 160) are mostly "not lowered yet" (`E2001`) features and VHDL-93 code read as
 2008; the analysis corpora cover them.
 
+## performance (`tools/bench`, #387)
+
+The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`.
+
+Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
+host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
+
+| Benchmark | analyze | elaborate | init | simulate | total CPU |
+|---|---|---|---|---|---|
+| `compute_loop` | 0.00 | 0.00 | 0.00 | 0.96 | 0.97 |
+| `ff_rtl` | 0.00 | 0.03 | 0.00 | 1.51 | 1.56 |
+| `resolved_bus` | 0.00 | 0.01 | 0.00 | 0.59 | 0.61 |
+| `delta_chain` | 0.00 | 0.00 | 0.00 | 0.52 | 0.53 |
+| `textio_heavy` | 0.00 | 0.00 | 0.00 | 0.59 | 0.60 |
+| `protected_scoreboard` | 0.00 | 0.00 | 0.00 | 0.44 | 0.45 |
+| `elab_heavy` | 0.00 | 0.19 | 0.58 | 0.60 | 1.60 |
+| `vunit_vc30` | 8.61 | 10.32 | 4.37 | 3.04 | 27.03 |
+| `uvvm_axistream_vvc_tb` | 1.56 | 0.22 | 0.09 | 6.99 | 8.89 |
+| `uvvm_util_rand_tb` | 1.48 | 0.08 | 0.01 | 30.85 | 32.53 |
+| `vai_pe_array` | 0.29 | 0.25 | 0.10 | 8.78 | 9.49 |
+| `vai_window_gen` | 0.30 | 0.30 | 0.11 | 5.03 | 5.77 |
+| `osvvm_axistream` | 0.44 | 0.12 | 0.00 | 3.41 | 3.99 |
+
+Reading it: `vunit_vc30` is 30 `yavs run` calls, so its analyze and elaborate columns are the per-process
+start-up cost times 30 (analysis of the design closure is a third of it); `uvvm_axistream_vvc_tb` is capped at
+10 us of simulated time (the full run takes minutes); `elab_heavy` is the elaboration and initialisation stress
+(20000 instances). Findings while building it: a numeric_std-style flip-flop lane costs about 150 us CPU per
+process activation (`ff_rtl`, 512 lanes x 400 cycles takes 29 s); for the 30 short test cases of `vunit_vc30`
+86 percent of the CPU time is spent before the first delta (analyze 32, elaborate 38, init 16 percent).
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

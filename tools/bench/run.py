@@ -108,7 +108,9 @@ def record(Y, key, tag, driver):
         shim.chmod(0o755)
         env = {"YAVS_BENCH_REAL": str(Path(Y).resolve()), "YAVS_BENCH_REC": str(rec)}
         sh([sys.executable, "-I", str(REPO / "tools/suites" / driver[0])] + list(driver[1:]) + ["--yavs", str(shim), "--out", str(wd / "out")],
-           REPO, env=env, timeout=3600)
+           REPO, env=env, timeout=3600, check=False)  # a driver reports the stand-in's runs as failures
+    if not rec.exists():
+        raise Skip(f"the {driver[0]} driver recorded no run")
     return [json.loads(l) for l in rec.read_text().splitlines()]
 
 

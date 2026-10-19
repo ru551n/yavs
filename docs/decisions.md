@@ -1867,6 +1867,7 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   cannot make an entry stale. Library manifests are never stored: they are read again on restore.
   Anything that does not match, or does not decode, is a miss and analysis runs from source; the cache
   can only make a run faster.
+- **The image is taken after `yavs_elab::load_bodies`** (the bodies of every loaded package, std/ieee included), because loading them was a third of the per-run cost; a body error is reported with the analysis errors.
 - **What is stored.** The arenas and tables of `Db`, the source map and the diagnostics (warnings replay
   identically); never an analysis with errors; never one with pending work. Transient analysis state
   (memo tables, the parsed-file cache) is cleared by `Db::settle` after the closure on both paths, so a

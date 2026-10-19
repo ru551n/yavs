@@ -48,6 +48,19 @@ fn debug(msg: String) {
     }
 }
 
+/// Analyze `files` and load the package bodies elaboration needs (`yavs_elab::load_bodies`),
+/// so that the image holds them too; a body error is reported like any analysis error.
+fn analyze(db: &mut Db, files: &[ClosureFile]) -> Result<(), Reported> {
+    db.analyze_closure(files)?;
+    if let Err(ds) = yavs_elab::load_bodies(db) {
+        for d in ds {
+            db.report(d);
+        }
+        return Err(Reported);
+    }
+    Ok(())
+}
+
 /// Analyze `files` into a `Db` for `opts`: from the cache of library directory `work_dir` when
 /// possible, else from source (and then stored there when it analyzed cleanly).
 pub fn analyze_closure(
@@ -60,7 +73,7 @@ pub fn analyze_closure(
     let enabled = enabled && opts.stdlib == Path::new(yavs_sem::stdlib::EMBEDDED);
     if !enabled {
         let mut db = Db::new(opts);
-        let r = db.analyze_closure(files);
+        let r = analyze(&mut db, files);
         db.settle();
         return (db, r);
     }
@@ -78,7 +91,7 @@ pub fn analyze_closure(
         }
     }
     let mut db = Db::new(opts);
-    let r = db.analyze_closure(files);
+    let r = analyze(&mut db, files);
     db.settle();
     if r.is_ok() {
         match db.to_image() {

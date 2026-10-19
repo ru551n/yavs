@@ -248,6 +248,25 @@ byte-identical at 1 and 4 threads. Left in elaborate: analysis of package bodies
 #407), the one initialisation of the run-time packages, and the interpreted elaboration-time calls
 themselves (logger and checker factories).
 
+### Compilation cache (#407)
+
+`elab`/`run` keep the analyzed closure (and the package bodies elaboration loads) in
+`<work dir>/yavs-cache/` (`docs/decisions.md` "Compilation cache"). `vunit_vc30`, median CPU seconds of
+5 runs, main before the cache against main with it (warm; each of the 12 testbenches pays one cold run
+in the first iteration only):
+
+| | analyze | elaborate | init | simulate | total CPU |
+|---|---|---|---|---|---|
+| before | 7.82 | 6.36 | 0.15 | 2.20 | 17.30 |
+| after (stage 1) | 1.12 | 2.03 | 0.10 | 2.28 | 6.17 |
+
+The remaining analyze time is reading the image (about 40 ms per call). Elaboration is now the elaboration
+walk of the design itself (about 0.2 s per call, design- and generics-specific; the lowering and
+initialisation of the packages is about 30 ms), so caching lowered IR (stage 2) would gain little for
+this benchmark. Analysis of `std`/`ieee` units a design uses is 10 to 20 ms, so a precomputed `std`/`ieee`
+base was not built. Tests: `crates/yavs/tests/cache.rs`, `crates/yavs-cache`; the difftest corpus (342
+tests at 1 and 4 threads) and the external runner's `check` suite pass with the cache on.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

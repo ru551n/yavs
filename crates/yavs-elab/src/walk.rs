@@ -359,7 +359,7 @@ fn package_externals(db: &mut Db) -> Result<Vec<(UnitId, DeclId)>, Vec<Diagnosti
 /// (a subprogram without one, a deferred constant) but has none is an error (LRM 4.8).
 // ponytail: every loaded package, not a call graph walk; enough until designs with many
 // unused packages get slow.
-fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
+pub fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
     use yavs_sem::decl::Body;
     use yavs_sem::loader::{UnitKey, UnitSlot};
     let n_units = db.units.len();

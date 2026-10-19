@@ -275,7 +275,7 @@ plugin: stale compare=0
 plugin: release again=1
 plugin: tool=yavs
 plugin: argc=0
-plugin: iterator: error severity=3: vhpi_iterator: relation 1551 of kind 1090: not implemented in yavs yet
+plugin: iterator: error severity=3: vhpi_iterator: relation 1563 of kind 1090: not implemented in yavs yet
 plugin: check twice: no error
 plugin: resolution=0/1 ns=0/1000000 hr=838190317/661127168
 plugin: finish=0

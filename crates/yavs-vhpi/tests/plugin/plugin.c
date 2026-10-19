@@ -95,7 +95,7 @@ static void start_of_sim(const vhpiCbDataT *cb) {
       vhpi_release_handle(a);
     }
   }
-  vhpi_iterator(vhpiStmts, root); /* not implemented yet */
+  vhpi_iterator(vhpiGenerateStmts, root); /* not implemented yet */
   report_error("iterator");
   report_error("check twice");
 

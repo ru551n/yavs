@@ -211,12 +211,9 @@ pub fn severity_level_type() -> EnumType {
 pub fn file_open_kind_type(rev: Revision) -> EnumType {
     match rev {
         Revision::Vhdl2008 => EnumType::from_idents(&["READ_MODE", "WRITE_MODE", "APPEND_MODE"]),
-        Revision::Vhdl2019 => EnumType::from_idents(&[
-            "READ_MODE",
-            "READ_WRITE_MODE",
-            "WRITE_MODE",
-            "APPEND_MODE",
-        ]),
+        Revision::Vhdl2019 => {
+            EnumType::from_idents(&["READ_MODE", "READ_WRITE_MODE", "WRITE_MODE", "APPEND_MODE"])
+        }
     }
 }
 

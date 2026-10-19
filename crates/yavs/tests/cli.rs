@@ -855,3 +855,61 @@ fn standalone_binary() {
     assert!(err.contains(&looked.display().to_string()), "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// The same source file analyzed into two libraries gives each library its own units, and a
+/// design using both elaborates (#290).
+#[test]
+fn same_file_in_two_libraries() {
+    let tmp = tempdir("two_libs");
+    let write = |name: &str, text: &str| std::fs::write(tmp.join(name), text).expect("write");
+    write(
+        "shared.vhd",
+        "package shared_pkg is constant C : integer := 1; end package;\n",
+    );
+    write(
+        "user.vhd",
+        "use work.shared_pkg.all;\npackage user_pkg is constant D : integer := C + 1; end package;\n",
+    );
+    write(
+        "top.vhd",
+        "library liba, libb;\nuse liba.user_pkg.all;\nuse libb.user_pkg.all;\n\
+         entity top is end entity;\n\
+         architecture a of top is begin process begin report \"ok\"; wait; end process; end;\n",
+    );
+    let dir = |l: &str| format!("{}/{l}", tmp.display());
+    let maps = [
+        format!("--map=liba:{}", dir("liba")),
+        format!("--map=libb:{}", dir("libb")),
+    ];
+    let run = |args: &[String]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let analyze = |lib: &str, file: &str| {
+        let mut a = vec!["analyze".to_string(), format!("--work={lib}:{}", dir(lib))];
+        a.extend(maps.iter().cloned());
+        a.push(tmp.join(file).display().to_string());
+        let o = run(&a);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    for lib in ["liba", "libb"] {
+        analyze(lib, "shared.vhd");
+        analyze(lib, "user.vhd");
+    }
+    analyze("libc", "top.vhd");
+    let mut a = vec!["run".to_string(), format!("--work=libc:{}", dir("libc"))];
+    a.extend(maps.iter().cloned());
+    a.push("top".into());
+    let o = run(&a);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).contains("ok"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}

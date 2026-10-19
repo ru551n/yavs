@@ -10,6 +10,7 @@ use yavs_syntax::ast;
 
 use crate::attr::PredefAttr;
 use crate::expr::names::NameRes;
+use crate::ids::LibId;
 use crate::ids::{SubtypeId, UnitId};
 use crate::loader::UnitKey;
 use crate::stat::ConstValue;
@@ -27,6 +28,7 @@ impl Db {
     /// Compare std/ieee primary unit `unit` (from `path` under `<lib>/2019`) with its 2008 copy.
     pub(crate) fn fresh_in_2019(
         &mut self,
+        lib: LibId,
         key: UnitKey,
         path: &Path,
         unit: &ast::DesignUnit,
@@ -44,12 +46,12 @@ impl Db {
             return Fresh::Unit;
         }
         if self
-            .parse_into_cache(&old, LangRev::Vhdl2008, None)
+            .parse_into_cache(lib, &old, LangRev::Vhdl2008, None)
             .is_err()
         {
             return Fresh::Items(Vec::new());
         }
-        let fc = &self.files[&old];
+        let fc = &self.files[&(lib, old)];
         let old_sigs: Vec<String> = fc
             .units
             .iter()

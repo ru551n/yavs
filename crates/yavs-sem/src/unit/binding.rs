@@ -382,7 +382,7 @@ impl Db {
                 self.units[*u].kind == UnitKind::Entity
             }
             Some(UnitSlot::NotLoaded { file, .. }) => {
-                self.files.get(file).and_then(|f| f.units.as_ref()).is_some_and(|us| {
+                self.files.get(&(lib, file.clone())).and_then(|f| f.units.as_ref()).is_some_and(|us| {
                     us.iter().any(|(k, u)| {
                         *k == pk
                             && matches!(u, Some(du) if matches!(du.unit, ast::LibraryUnit::Entity(_)))

@@ -78,7 +78,9 @@ pub(crate) fn file_info(m: &Machine, value: u64) -> R<(Vec<u8>, u64)> {
             let kind = f.mode().map_err(file_err)?;
             (f.logical_name().to_vec(), kind.pos(m.rt.revision))
         }
-        FileSlot::Output { open: true } => (STD_OUTPUT.to_vec(), FileOpenKind::Write.pos(m.rt.revision)),
+        FileSlot::Output { open: true } => {
+            (STD_OUTPUT.to_vec(), FileOpenKind::Write.pos(m.rt.revision))
+        }
         FileSlot::Output { open: false } => return Err(file_err(FileError::NotOpen)),
     })
 }

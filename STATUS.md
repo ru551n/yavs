@@ -38,8 +38,8 @@ entity, architecture and generic set the component's own regression script lists
 Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. Non-protected shared
 variables (#285) are no longer a root cause; every run still stops before time 0, most on a
 `report` in a function evaluated during elaboration (#299, the library's licence banner). Only
-the first root cause of each run is counted. Without `--private-copies`, 7 runs (the uart
-testbenches) fail in analysis on #290 instead.
+the first root cause of each run is counted. Before the fix of #290, 7 runs (the uart
+testbenches) failed in analysis without `--private-copies`.
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|

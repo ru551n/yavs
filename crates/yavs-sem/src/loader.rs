@@ -250,11 +250,12 @@ impl Db {
     /// Parse a file into the cache (all its units). Errors are reported once.
     pub(crate) fn parse_into_cache(
         &mut self,
+        lib: LibId,
         path: &Path,
         rev: LangRev,
         at: Option<Span>,
     ) -> Result<(), Reported> {
-        if let Some(fc) = self.files.get(path) {
+        if let Some(fc) = self.files.get(&(lib, path.to_path_buf())) {
             return if fc.units.is_some() {
                 Ok(())
             } else {
@@ -274,7 +275,7 @@ impl Db {
                 }
                 let file = self.sources.add(path.display().to_string(), String::new());
                 self.files
-                    .insert(path.to_path_buf(), FileCache { file, units: None });
+                    .insert((lib, path.to_path_buf()), FileCache { file, units: None });
                 return Err(self.error(d));
             }
         };
@@ -286,7 +287,7 @@ impl Db {
         );
         if let Some(d) = bad {
             self.files
-                .insert(path.to_path_buf(), FileCache { file, units: None });
+                .insert((lib, path.to_path_buf()), FileCache { file, units: None });
             return Err(self.error(d));
         }
         let opts = yavs_syntax::Options {
@@ -305,7 +306,7 @@ impl Db {
         });
         let ok = units.is_some();
         self.files
-            .insert(path.to_path_buf(), FileCache { file, units });
+            .insert((lib, path.to_path_buf()), FileCache { file, units });
         if ok { Ok(()) } else { Err(Reported) }
     }
 
@@ -329,11 +330,14 @@ impl Db {
         let Some((path, rev)) = self.locate(lib, key) else {
             return Err(self.not_found(lib, key, at));
         };
-        if self.parse_into_cache(&path, rev, at).is_err() {
+        if self.parse_into_cache(lib, &path, rev, at).is_err() {
             self.libs[lib].units.insert(key, UnitSlot::Failed);
             return Err(Reported);
         }
-        let fc = self.files.get_mut(&path).expect("parsed above");
+        let fc = self
+            .files
+            .get_mut(&(lib, path.clone()))
+            .expect("parsed above");
         let file = fc.file;
         let ast = fc
             .units
@@ -347,7 +351,7 @@ impl Db {
         let fresh = (self.rev == LangRev::Vhdl2019
             && matches!(key, UnitKey::Primary(_))
             && matches!(self.libs[lib].source, LibSource::StdDir(_)))
-        .then(|| self.fresh_in_2019(key, &path, &ast, file));
+        .then(|| self.fresh_in_2019(lib, key, &path, &ast, file));
         let r = self.analyze_unit(lib, key, ast, file, rev);
         if let (Ok(u), Some(f)) = (&r, fresh) {
             self.mark_fresh(*u, f);
@@ -453,8 +457,8 @@ impl Db {
                 self.lib_by_key.insert(name.key, Some(l));
                 l
             };
-        self.parse_into_cache(path, rev, None)?;
-        let keys: Vec<UnitKey> = self.files[path]
+        self.parse_into_cache(lib, path, rev, None)?;
+        let keys: Vec<UnitKey> = self.files[&(lib, path.to_path_buf())]
             .units
             .as_ref()
             .expect("parsed")

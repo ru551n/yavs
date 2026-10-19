@@ -118,7 +118,9 @@ pub struct Db {
     pub(crate) root: ScopeId,
     /// `None`: the library is unknown and that was reported.
     pub(crate) lib_by_key: HashMap<Symbol, Option<LibId>>,
-    pub(crate) files: HashMap<PathBuf, FileCache>,
+    /// Parsed files per library: a file analyzed into several libraries is parsed once for
+    /// each, as each library's units are separate (#290).
+    pub(crate) files: HashMap<(LibId, PathBuf), FileCache>,
     pub(crate) stack: Vec<UnitCx>,
     #[allow(dead_code)]
     /// Undeclared names already reported, per (unit, key) (8.2).

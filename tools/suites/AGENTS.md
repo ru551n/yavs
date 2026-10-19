@@ -27,7 +27,7 @@ change a driver that simulates an external library's own testbenches on yavs.
 | Library sources compile in the order of `script/component_list.txt` and each component's `script/compile_order.txt` (reusing the `tools/corpus` conventions), blocks reordered so a block follows the libraries it names; testbench files by the dependency scan of `tools/corpus/gen_manifests.py` | The listed order is not always a dependency order | #277 |
 | A testbench entity with several architectures runs once per architecture; an entity with a `GC_TESTCASE` generic and no default runs once per `GC_TESTCASE = "name"` it tests | What the project's tool does | #277 |
 | Pass = exit 0, a `>> Simulation SUCCESS` line and no `>> Simulation FAILED` line in the output | The library's own final summary | #277 |
-| `--private-copies` analyzes every library source from a per-library copy of the file | The same source file compiled into several libraries is a yavs defect (#290); the option measures past it. The default run measures the defect | #277, #290 |
+| `--private-copies` analyzes every library source from a per-library copy of the file | The same source file compiled into several libraries was a yavs defect (#290, fixed); the option is no longer needed | #277, #290 |
 | A testbench whose third-party design files are not in the pinned checkout is skipped with the missing directories named | Not a yavs result | #277 |
 | Each yavs call is `timeout 300 systemd-run --user --scope -p MemoryMax=...` (2G for analysis, `--mem` for runs, default 4G); `-j` calls at once (default 4) | Root rules 15 and 16: a testbench over 5 minutes is reported as skipped, never shortened | root `AGENTS.md` |
 

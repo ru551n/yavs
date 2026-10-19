@@ -296,7 +296,8 @@ impl Session {
             .iter()
             .map(|d| (**d).clone())
             .collect();
-        let shared = live.shared.lock().ok()?.clone();
+        // Moved, not copied: the session ends here, and a copy doubled the shared heap (#409).
+        let shared = std::mem::take(&mut *live.shared.lock().ok()?);
         Some(Start {
             lowerer,
             pkgs,

@@ -501,7 +501,7 @@ pub fn run(
     }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
     let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
-    let (mut out, db, e) = match elaborate(&a.common, counters, format, color, encoding) {
+    let (mut out, mut db, e) = match elaborate(&a.common, counters, format, color, encoding) {
         Ok(x) => x,
         Err((out, code)) => return out.finish(code),
     };
@@ -620,7 +620,12 @@ pub fn run(
             }
         };
     }
-    let (mut sim, built) = match e.build_full(cfg) {
+    // Nothing below reads the design but its source map unless a plugin, the waveform
+    // recorder or coverage does: free the analysis results before the runtime is built (#409).
+    if a.vhpi.is_empty() && a.wave.is_none() && a.cov.is_none() {
+        db.release_analysis();
+    }
+    let (mut sim, built) = match e.build_full_once(cfg) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.
         Err(err) => {

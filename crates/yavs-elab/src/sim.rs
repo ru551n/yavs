@@ -432,6 +432,18 @@ impl Elaborated {
         }
     }
 
+    /// [`Elaborated::build_full`] for a run that builds once: the package state elaboration
+    /// left (#383) is moved into the runtime instead of copied, so the two copies never
+    /// coexist (#409). A later build initialises the packages again and replays the
+    /// elaboration-time calls (same result, slower).
+    pub fn build_full_once(
+        &mut self,
+        cfg: Config,
+    ) -> Result<(SimControl, Option<Built>), SimError> {
+        let start = self.ir.as_mut().and_then(|ir| ir.start.take());
+        self.build_runtime_with(cfg, None, start)
+    }
+
     /// The kernel model with interpreter processes (after [`Elaborated::lower`]). Can be
     /// called again for an in-process restart.
     pub fn build(&self, cfg: Config) -> Result<SimControl, SimError> {
@@ -450,7 +462,8 @@ impl Elaborated {
     /// [`Elaborated::build_runtime`] with the shared state and where the shared variables
     /// are (VHPI and waves, #309).
     pub fn build_full(&self, cfg: Config) -> Result<(SimControl, Option<Built>), SimError> {
-        self.build_runtime_with(cfg, None)
+        let start = self.ir.as_ref().and_then(|ir| ir.start.clone());
+        self.build_runtime_with(cfg, None, start)
     }
 
     /// [`Elaborated::build_runtime`] with every process attached to the debug session (ir.md
@@ -461,7 +474,8 @@ impl Elaborated {
         cfg: Config,
         session: &Arc<DebugSession>,
     ) -> Result<(SimControl, Option<Built>), SimError> {
-        self.build_runtime_with(cfg, Some(session))
+        let start = self.ir.as_ref().and_then(|ir| ir.start.clone());
+        self.build_runtime_with(cfg, Some(session), start)
     }
 
     /// The path of a process instance as reports and the debugger show it: `:top:u1:p`.
@@ -474,6 +488,7 @@ impl Elaborated {
         &self,
         cfg: Config,
         dbg: Option<&Arc<DebugSession>>,
+        start: Option<Arc<crate::pkgcall::StartState>>,
     ) -> Result<(SimControl, Option<Built>), SimError> {
         let attach = |proc: InterpProcess, p: &crate::ProcInst| match dbg {
             Some(s) => proc.with_debug(s.clone(), &self.proc_name(p)),
@@ -489,9 +504,20 @@ impl Elaborated {
                 "the design has processes but was not lowered".into(),
             ));
         };
-        let shared = Arc::new(Mutex::new(match &ir.start {
-            Some(s) => {
-                let mut st = s.shared.clone();
+        // The start state's shared heap and variables: moved when this build owns the state.
+        let mut start_shared = None;
+        let start = start.map(|a| match Arc::try_unwrap(a) {
+            Ok(mut s) => {
+                start_shared = Some(std::mem::take(&mut s.shared));
+                Arc::new(s)
+            }
+            Err(a) => {
+                start_shared = Some(a.shared.clone());
+                a
+            }
+        });
+        let shared = Arc::new(Mutex::new(match start_shared {
+            Some(mut st) => {
                 st.vars.resize(ir.shared_size as usize, 0);
                 st
             }
@@ -511,7 +537,7 @@ impl Elaborated {
             &shared,
             time_resolution(cfg.resolution),
             ir.revision,
-            ir.start.as_ref().map(|s| &s.data[..]),
+            start.as_ref().map(|s| &s.data[..]),
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an
                 // external signal: its subprogram fails when called).
@@ -539,7 +565,7 @@ impl Elaborated {
                 Ok(())
             },
         )?;
-        match &ir.start {
+        match &start {
             // The packages hold what elaboration-time calls left; so does the assert state.
             Some(s) => rt.inherit(&s.rt),
             // The side effects of elaboration-time calls on package state, in their order

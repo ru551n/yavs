@@ -230,6 +230,48 @@ pub struct TimeUnitUse {
 }
 
 impl Db {
+    /// Free the analysis results (units, declarations, expressions, statements, types, scopes
+    /// and the analysis caches), keeping only the source map, for a run that needs nothing
+    /// else of the design once it is elaborated and lowered (#409). Nothing may use the
+    /// design below the source map afterwards: ids into the arenas dangle.
+    pub fn release_analysis(&mut self) {
+        macro_rules! free {
+            ($($f:ident),*) => {$(drop(std::mem::take(&mut self.$f));)*};
+        }
+        free!(
+            libs,
+            units,
+            decls,
+            scopes,
+            types,
+            subtypes,
+            exprs,
+            stmts,
+            consts,
+            insts,
+            views,
+            externals,
+            attr_values,
+            attr_index,
+            forwarding,
+            disconnect_times,
+            ret_names,
+            lookup_cache,
+            memo,
+            name_memo,
+            files,
+            ext_memo,
+            ext_uses,
+            pkg_targets,
+            written_marks,
+            config_specs,
+            range_records,
+            time_units,
+            lib_by_key,
+            generic
+        );
+    }
+
     /// The recorded uses of a TIME unit smaller than `limit_fs` femtoseconds, in source order
     /// of analysis, each location once.
     pub fn fine_time_units(&self, limit_fs: i64) -> Vec<TimeUnitUse> {

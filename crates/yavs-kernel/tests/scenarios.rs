@@ -1288,3 +1288,78 @@ fn observer_wake_ups_of_many_observers() {
         ]
     );
 }
+
+/// A clocked process with an edge trigger runs only on its edge, and sees the same edges as
+/// without the trigger (`To_X01` of value and `'last_value`: 'H' after 'L' rises, 'X' does not).
+#[test]
+fn edge_trigger_skips_other_events() {
+    let run = |triggers: bool, rising: bool| {
+        let mut b = Builder::new();
+        let clk = b.signal(
+            "clk",
+            SignalType::logic(1),
+            &LogicVec::new(1, StdULogic::Zero),
+        );
+        let d = b.driver(clk);
+        let mut step = 0;
+        b.process(
+            "stim",
+            NONE,
+            &[d],
+            p(move |c| {
+                if let Some(ch) = "1H0L1X1L0H".chars().nth(step) {
+                    let l: LogicVec = ch.to_string().parse().unwrap();
+                    c.assign(d, None, &[(Time::ZERO, &l)], DelayMode::INERTIAL)?;
+                    step += 1;
+                    c.wait_for(ns(5))?;
+                }
+                Ok(())
+            }),
+        );
+        let (mut runs, mut edges) = (0u32, 0u32);
+        let seen = Arc::new(std::sync::Mutex::new((0, 0)));
+        let out = seen.clone();
+        let reg = b.process(
+            "reg",
+            NONE,
+            &[],
+            p(move |c| {
+                runs += 1;
+                let to_x01 = |l: LogicVec| match l.get(0) {
+                    StdULogic::One | StdULogic::H => Some(true),
+                    StdULogic::Zero | StdULogic::L => Some(false),
+                    _ => None,
+                };
+                let now = to_x01(c.logic(clk)?);
+                let Value::Logic(before) = c.last_value(clk)? else {
+                    unreachable!()
+                };
+                if c.event(clk)? && now == Some(rising) && to_x01(before) == Some(!rising) {
+                    edges += 1;
+                }
+                *out.lock().unwrap() = (runs, edges);
+                c.wait_on(clk)
+            }),
+        );
+        b.edge_trigger(
+            reg,
+            EdgeTrigger {
+                signal: clk,
+                elem: 0,
+                rising,
+            },
+        );
+        let cfg = Config {
+            edge_triggers: triggers,
+            ..Config::default()
+        };
+        let (mut sim, _) = build(b, cfg);
+        sim.run_until(ns(100)).unwrap();
+        *seen.lock().unwrap()
+    };
+    // Rising: 0->1, L->1, 0->H (X->1 is not one). Falling: H->0, 1->L. Events: 10.
+    assert_eq!(run(false, true), (11, 3));
+    assert_eq!(run(true, true), (4, 3));
+    assert_eq!(run(false, false), (11, 2));
+    assert_eq!(run(true, false), (3, 2));
+}

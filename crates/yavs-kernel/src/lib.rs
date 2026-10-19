@@ -13,7 +13,7 @@ mod signal;
 mod time;
 mod value;
 
-pub use builder::{Builder, Converter, PortConv, PortMode, ProcFlags};
+pub use builder::{Builder, Converter, EdgeTrigger, PortConv, PortMode, ProcFlags};
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
     Config, EndReason, Hook, Interrupt, Observer, Phase, Report, RunStatus, SimControl, Stats,

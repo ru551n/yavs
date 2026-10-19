@@ -60,6 +60,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | Observer wake-ups are a separate ordered map, not queue entries; `Tn` includes the first one, so no `Idle` end while one is pending; past is E3005 (#268) | Cheap cancel and nothing to pay with no observer (plan rule 9); VHPI after-delay callbacks and DAP run-to-time | DESIGN.md "Data layout", "The cycle" |
 | Observers run serially on the kernel thread between phases | Callbacks and wake-up numbering identical at any thread count | DESIGN.md "Parallel evaluation" |
 | Observers reach a process only through `Hook::with_process`, and its state only through `Process::as_any` (the kernel does not know the process tier); every process is suspended then (#309) | VHPI reads and deposits variables; waves can sample them the same way | `docs/decisions.md` "VHPI ABI and symbol export" |
+| A process with an edge trigger (`Builder::edge_trigger`) is not resumed by an event that does not make its edge true; `Config::edge_triggers` turns it off (coverage, debugger, foreign callbacks) | Half the activations of a single-clock design do nothing visible (#385, `docs/design/performance.md` R2d) | DESIGN.md "The cycle" |
 | GC safepoint: the commit phase (no `Ctx` exists) | A deadlock class seen in other simulators | DESIGN.md "Parallel evaluation" |
 
 Module-local decisions go in this section and DESIGN.md in the same commit (root `AGENTS.md`

@@ -245,6 +245,17 @@ impl Buf {
         Ok(())
     }
 
+    /// Element `i` as one byte: its first byte, or its logic code.
+    pub fn code(&self, i: usize) -> u8 {
+        match self {
+            Buf::Bytes { es, data } => data[i * es],
+            Buf::Planes { b, .. } => {
+                let blk = get_block(b, i, 1);
+                (0..4).fold(0u8, |c, k| c | ((blk[k] & 1) as u8) << k)
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Buf::Bytes { es, data } => data.len() / es,

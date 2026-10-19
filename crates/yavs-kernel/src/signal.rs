@@ -152,6 +152,7 @@ const WAIT_NARROW: u32 = 4;
 /// chunks (or none) sit in a wide list that every event scans. Each list keeps its count
 /// right after the last compaction, so lists of signals that rarely change do not grow
 /// without bound.
+#[derive(Default)]
 pub(crate) struct Waiters {
     /// Per chunk, then the wide list last.
     lists: Vec<(Vec<Waiter>, usize)>,
@@ -205,11 +206,12 @@ impl Waiters {
 
     /// Remove the live waiters overlapping `runs` (sorted, disjoint) and put their
     /// `(registration, process)` in `out`, in registration order, each waiter once; drop
-    /// stale ones on the way.
+    /// stale ones on the way. Waiters for which `hold` is true stay, not woken.
     pub fn take_woken(
         &mut self,
         runs: &[Range],
         live: impl Fn(&Waiter) -> bool,
+        hold: impl Fn(&Waiter) -> bool,
         out: &mut Vec<(u64, u32)>,
     ) {
         let hit = |r: Range| {
@@ -237,7 +239,7 @@ impl Waiters {
                 if !live(w) {
                     return false;
                 }
-                if hit(w.range) {
+                if hit(w.range) && !hold(w) {
                     out.push((w.seq, w.proc));
                     return false;
                 }
@@ -834,6 +836,7 @@ mod tests {
     #[test]
     fn waiters_wake_once_in_registration_order() {
         let all = |_: &Waiter| true;
+        let none = |_: &Waiter| false;
         let mut w = Waiters::new(300);
         w.add(1, Range::new(200, 1), 0, all); // chunk 3
         w.add(2, Range::new(0, 300), 0, all); // five chunks: the wide list
@@ -842,14 +845,19 @@ mod tests {
         w.add(5, Range::new(0, 0), 0, all); // null: never woken
         let mut out = Vec::new();
         let procs = |o: &[(u64, u32)]| o.iter().map(|x| x.1).collect::<Vec<_>>();
-        w.take_woken(&[Range::new(65, 1), Range::new(200, 2)], all, &mut out);
+        w.take_woken(
+            &[Range::new(65, 1), Range::new(200, 2)],
+            all,
+            none,
+            &mut out,
+        );
         assert_eq!(procs(&out), [1, 2, 3]);
         // The woken processes resumed (their other copies are stale), and so did 4.
         let live = |w: &Waiter| w.proc > 4;
-        w.take_woken(&[Range::new(0, 300)], live, &mut out);
+        w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert!(out.is_empty());
         w.add(6, Range::new(299, 1), 0, all);
-        w.take_woken(&[Range::new(0, 300)], live, &mut out);
+        w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert_eq!(procs(&out), [6]);
     }
 

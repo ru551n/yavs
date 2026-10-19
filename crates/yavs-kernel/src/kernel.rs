@@ -36,6 +36,10 @@ pub struct Config {
     pub resolution: Unit,
     /// A report of this severity or higher ends the simulation.
     pub stop_severity: Severity,
+    /// Leave a process with an edge trigger suspended on an event that does not make its
+    /// edge true (`Builder::edge_trigger`). Off where every activation is observable:
+    /// statement coverage, a debugger, foreign callbacks.
+    pub edge_triggers: bool,
 }
 
 impl Default for Config {
@@ -46,6 +50,7 @@ impl Default for Config {
             max_deltas: 10_000,
             resolution: Unit::Fs,
             stop_severity: Severity::Failure,
+            edge_triggers: true,
         }
     }
 }
@@ -337,6 +342,8 @@ pub(crate) struct ProcMeta {
     pub ready: bool,
     /// The pending resumption is a timeout (orders the batch, `SimControl::order`).
     pub by_timeout: bool,
+    /// Resumes for an event only on this edge (`Builder::edge_trigger`).
+    pub trigger: Option<crate::EdgeTrigger>,
 }
 
 /// A port association between a formal and an actual (K1), each one or more sub-element
@@ -1036,9 +1043,18 @@ impl SimControl {
             self.stats.events += sig.changed.len() as u64;
             let mut runs = std::mem::take(&mut sig.changed);
             runs.sort_unstable_by_key(|r| r.offset);
-            let procs = &self.procs;
+            let mut waiters = std::mem::take(&mut sig.waiters);
+            let (procs, signals) = (&self.procs, &self.signals);
             let live = |w: &Waiter| procs[w.proc as usize].generation == w.generation;
-            sig.waiters.take_woken(&runs, live, &mut woken);
+            let hold = |w: &Waiter| {
+                self.cfg.edge_triggers
+                    && procs[w.proc as usize]
+                        .trigger
+                        .is_some_and(|t| !edge(signals, t, self.cycle))
+            };
+            waiters.take_woken(&runs, live, hold, &mut woken);
+            let sig = &mut self.signals[s as usize];
+            sig.waiters = waiters;
             runs.clear();
             sig.changed = runs;
             for &(_, p) in &woken {
@@ -1663,6 +1679,20 @@ impl SimControl {
         }
         self.observers = observers;
     }
+}
+
+/// Whether edge trigger `t` holds in this cycle: an event on the element, with its value and
+/// `'last_value` through `To_X01` giving the edge ('1' or 'H' after '0' or 'L' for rising).
+fn edge(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
+    let s = &signals[t.signal.0 as usize];
+    let i = t.elem as usize;
+    let to_x01 = |c: u8| match c {
+        c if c == StdULogic::One as u8 || c == StdULogic::H as u8 => Some(true),
+        c if c == StdULogic::Zero as u8 || c == StdULogic::L as u8 => Some(false),
+        _ => None,
+    };
+    let (now, before) = (to_x01(s.cur.code(i)), to_x01(s.last_value.code(i)));
+    s.event_in(Range::new(t.elem, 1), cycle) && now == Some(t.rising) && before == Some(!t.rising)
 }
 
 /// The std_ulogic code of BIT/BOOLEAN `b` in logic storage.

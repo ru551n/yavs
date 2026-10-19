@@ -56,6 +56,20 @@ struct ProcDecl {
     flags: ProcFlags,
     process: Box<dyn Process>,
     drivers: Vec<DriverId>,
+    trigger: Option<EdgeTrigger>,
+}
+
+/// The one condition under which an event resumes a process to any effect: the process is
+/// `process (s) begin if rising_edge(s) then ... end if; end process;` (or `falling_edge`) on
+/// element `elem` of a logic signal. An event that does not make the edge true would only
+/// evaluate the `if` and suspend again, so the kernel leaves the process suspended
+/// (`Config::edge_triggers`). Edges as the IEEE 1164 functions define them: `'event`, and the
+/// value and `'last_value` through `To_X01`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EdgeTrigger {
+    pub signal: SignalId,
+    pub elem: u32,
+    pub rising: bool,
 }
 
 /// Builds a model: signals, drivers, ports, implicit signals and processes, in elaboration
@@ -313,8 +327,22 @@ impl Builder {
             flags,
             process: Box::new(process),
             drivers: drivers.to_vec(),
+            trigger: None,
         });
         pid
+    }
+
+    /// Process `p` resumes for an event only when `t` holds ([`EdgeTrigger`]); the caller
+    /// guarantees the process has that shape and waits on that element alone.
+    pub fn edge_trigger(&mut self, p: ProcId, t: EdgeTrigger) {
+        let ok = self
+            .signals
+            .get(t.signal.0 as usize)
+            .is_some_and(|s| s.ty.elem == crate::value::Elem::Logic && t.elem < s.ty.len);
+        match self.procs.get_mut(p.0 as usize) {
+            Some(d) if ok => d.trigger = Some(t),
+            _ => self.usage(format!("edge trigger {t:?} on process {}", p.0)),
+        }
     }
 
     /// An uncollapsed port association between a formal and an actual (rule 3). Driving
@@ -506,6 +534,7 @@ impl Builder {
                 generation: 0,
                 ready: false,
                 by_timeout: false,
+                trigger: p.trigger,
             });
         }
         SimControl::new(

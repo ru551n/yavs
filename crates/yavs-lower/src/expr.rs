@@ -2265,7 +2265,6 @@ impl<'a> Fx<'a, '_> {
             // A hot `ieee` subprogram runs natively unless `--no-native-ieee` (yavs-ir `ieee`).
             Body::Hir { .. }
                 if !self.cx.opts.no_native_ieee
-                    && sp.ret.is_some()
                     && yavs_ir::ieee::native_symbol(sp.mangled.as_str()).is_some() =>
             {
                 let mut sym = yavs_ir::ieee::native_symbol(sp.mangled.as_str())
@@ -2278,8 +2277,14 @@ impl<'a> Fx<'a, '_> {
                     let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
                     sym = format!("{sym}@{}", f.0);
                 }
+                // A `numeric_bit` native gets a type argument: it tells the bit arrays from
+                // the `std_ulogic` ones (yavs-interp `ieee`).
+                let ty = match (sym.starts_with("yavs.ieee.numeric_bit."), sp.params.first()) {
+                    (true, Some(p)) => Some(self.ty(db.base(p.subtype), span)?),
+                    _ => None,
+                };
                 let cells = self.cells(sp, args, span, true)?;
-                let r = self.native(&sym, None, &cells, sp.ret, span)?;
+                let r = self.native(&sym, ty, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
             }

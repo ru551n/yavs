@@ -1978,3 +1978,23 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   E;` and no other suspension point (decided after lowering: `Process::several_waits`) is
   recognised in the same way.
 
+### Round 2 (#414)
+
+- **Profile first:** a per-function instruction count of the benchmark set (`tools/bench` designs
+  and the external ones) showed that after round 1 no `math_real` helper is hot any more
+  (`ILOGB` and the series helpers were the cost of `log`/`exp`, now native); what is left of
+  `ieee` is `math_real.uniform` (1 to 3% of the instructions of the random and the verification
+  benches), `to_hstring` (3 to 6%) and the `numeric_bit` conversions and shifts of the local
+  design testbenches (8 to 13%). Those are the first natives of round 2.
+- **`numeric_bit` by the same natives:** a `bit` array is stored with the codes of `'0'` and `'1'`
+  of `std_ulogic` (bias 2), so the `numeric_std` natives run on it unchanged. The key of a
+  `numeric_bit` subprogram is the `numeric_std` one with `bit_vector` for `std_ulogic_vector`;
+  lowering gives such a native a type argument (the type of its first parameter) so the native
+  can name its warnings `NUMERIC_BIT.` instead of `NUMERIC_STD.`. There are no metavalues in
+  `bit` arrays, so the metavalue paths never run.
+- **Procedures and string results:** a native may be a procedure (`uniform`: seeds by reference,
+  `x` out, the body's two ERROR reports); `to_hstring`/`to_ostring` return a string and hand a
+  null vector back to the body (its index error is the answer). `shift_left` ... `rotate_right`
+  replace the wrapper functions around `xsll` ... too: the null array constant for a null
+  argument, else the shift.
+

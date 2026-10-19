@@ -141,8 +141,16 @@ pub enum Op {
         signed: bool,
     },
     Shift(Shift),
+    /// `shift_left`, `shift_right` (`Srl` for unsigned, `Sra` for signed), `rotate_left`,
+    /// `rotate_right` of an `unsigned` or `signed`.
+    ShiftFn(Shift),
     Math(Math),
     Syn(Syn),
+    /// `math_real.uniform (seed1, seed2, x)`: the only native procedure.
+    Uniform,
+    /// `to_hstring` (false) or `to_ostring` (true) of a `std_ulogic_vector`; a null vector is
+    /// handed back to the body.
+    Str(bool),
 }
 
 /// Reduced key to operation. Every operation listed here is implemented by `yavs-interp`.
@@ -151,8 +159,19 @@ pub fn parse(key: &str) -> Option<Op> {
     let open = rest.find('(')?;
     let close = rest.rfind(')')?;
     let name = rest[..open].trim_matches('"');
-    let params: Vec<&str> = rest[open + 1..close].split(',').collect();
-    let ret = &rest[close + 1..];
+    // `numeric_bit` has the shapes of `numeric_std` on `bit_vector`; the native gets a
+    // type argument to tell them apart (the interpreter converts the bit arrays).
+    let bit = pkg == "numeric_bit";
+    let pkg = if bit { "numeric_std" } else { pkg };
+    let unify = |t| {
+        if bit && t == "bit_vector" {
+            "std_ulogic_vector"
+        } else {
+            t
+        }
+    };
+    let params: Vec<&str> = rest[open + 1..close].split(',').map(unify).collect();
+    let ret = unify(&rest[close + 1..]);
     let gate = |n: &str| match n {
         "and" => Some(Gate::And),
         "nand" => Some(Gate::Nand),
@@ -236,6 +255,18 @@ pub fn parse(key: &str) -> Option<Op> {
             _ => Shift::Ror,
         })),
         (
+            "numeric_std",
+            n @ ("shift_left" | "shift_right" | "rotate_left" | "rotate_right"),
+            [t @ ("unsigned" | "signed"), "integer"],
+            r,
+        ) if t == &r => Some(Op::ShiftFn(match (n, r == "signed") {
+            ("shift_left", _) => Shift::Sll,
+            ("shift_right", false) => Shift::Srl,
+            ("shift_right", true) => Shift::Sra,
+            ("rotate_left", _) => Shift::Rol,
+            _ => Shift::Ror,
+        })),
+        (
             "std_logic_arith",
             n @ ("plus" | "minus" | "unsigned_plus" | "unsigned_minus"),
             [a, b],
@@ -287,6 +318,10 @@ pub fn parse(key: &str) -> Option<Op> {
                     _ => None,
                 },
             }))
+        }
+        ("math_real", "uniform", ["integer", "integer", "real"], "") => Some(Op::Uniform),
+        ("std_logic_1164", n @ ("to_hstring" | "to_ostring"), ["std_ulogic_vector"], "string") => {
+            Some(Op::Str(n == "to_ostring"))
         }
         ("math_real", n, ["real"], "real") => Some(Op::Math(match n {
             "sqrt" => Math::Sqrt,
@@ -340,7 +375,11 @@ fn key(mangled: &str) -> Option<String> {
         out.push_str(&short(t)?);
     }
     out.push(')');
-    out.push_str(&short(&rest[close + 1..])?);
+    // A procedure has no result.
+    let ret = &rest[close + 1..];
+    if !ret.is_empty() {
+        out.push_str(&short(ret)?);
+    }
     Some(out)
 }
 
@@ -360,12 +399,12 @@ pub fn array_param(key: &str, i: usize) -> bool {
     params
         .split(',')
         .nth(i)
-        .is_some_and(|t| ["unsigned", "signed", "std_ulogic_vector"].contains(&t))
+        .is_some_and(|t| ["unsigned", "signed", "std_ulogic_vector", "bit_vector"].contains(&t))
 }
 
 /// Whether the native of `op` may hand the call back to the VHDL body.
 pub fn has_fallback(op: Op) -> bool {
-    matches!(op, Op::Syn(_))
+    matches!(op, Op::Syn(_) | Op::Str(_))
 }
 
 /// The native symbol (`yavs.ieee.<key>`) that replaces the body of the subprogram with this

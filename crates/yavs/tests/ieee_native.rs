@@ -699,6 +699,204 @@ fn diff_run(tag: &str, src: &str, ent: &str, std: &str, min: usize) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Wrap generated statements into the shared header (entity `t`).
+fn tb(body: &str) -> String {
+    format!("{HEAD}{body}    wait;\n  end process;\nend architecture;\n")
+}
+
+/// `uniform` (seeds, the generator's sequence, both out-of-range reports) and the hexadecimal
+/// and octal string conversions (padding with `Z`, every metavalue, both directions).
+#[test]
+fn native_uniform_and_strings_match_bodies() {
+    let mut g = Gen {
+        rng: Rng(5),
+        out: String::new(),
+        n: 0,
+    };
+    for lit in [
+        "ZZZZZ", "Z1", "ZZZ", "LHLH", "UUUU", "1", "ZZZZ0", "0ZZZ", "-W1X",
+    ] {
+        for f in ["to_hstring", "to_ostring"] {
+            g.case(&format!("sv(\"{lit}\", 3, false)"), f);
+            g.case(&format!("sv(\"{lit}\", 3, true)"), f);
+        }
+    }
+    for _ in 0..120 {
+        let n = 1 + g.rng.below(40) as usize;
+        let (s, b) = g.vec_n(n);
+        for f in ["to_hstring", "to_ostring"] {
+            g.case(&format!("sv(\"{s}\", {b})"), f);
+            g.case(&format!("uv(\"{s}\", {b})"), f);
+            g.case(&format!("gv(\"{s}\", {b})"), f);
+        }
+    }
+    let body = g.out;
+    diff_run("strings", &tb(&body), "t", "2008", 500);
+    // Null vector: the body's index error is the answer.
+    let nul = tb("    report \"null \" & to_hstring(sv(\"\", 0, false));\n");
+    diff_run("strings_null", &nul, "t", "2008", 0);
+
+    let mut u = String::from(
+        "library ieee;\nuse ieee.math_real.all;\nentity u is end entity;\narchitecture a of u is\nbegin\n  process\n    variable s1, s2 : positive := 1;\n    variable x : real;\n  begin\n",
+    );
+    for (a, b) in [
+        (1, 1),
+        (2147483562, 2147483398),
+        (2147483563, 5),
+        (5, 2147483399),
+        (123456, 654321),
+        (53668, 52774),
+    ] {
+        let _ = writeln!(
+            u,
+            "    s1 := {a}; s2 := {b};\n    for i in 1 to 300 loop\n      uniform(s1, s2, x);\n      report real'image(x) & \" \" & integer'image(s1) & \" \" & integer'image(s2);\n    end loop;"
+        );
+    }
+    u.push_str("    wait;\n  end process;\nend architecture;\n");
+    diff_run("uniform", &u, "u", "2008", 1500);
+}
+
+const BIT_HEAD: &str = r#"library ieee;
+use ieee.numeric_bit.all;
+entity t is end entity;
+architecture a of t is
+  function img (x : bit_vector) return string is
+    variable r : string(1 to x'length);
+    variable k : integer := 0;
+  begin
+    for i in x'range loop
+      k := k + 1;
+      r(k) := bit'image(x(i))(2);
+    end loop;
+    return integer'image(x'left) & "," & integer'image(x'right) & "," &
+           boolean'image(x'ascending) & ":" & r;
+  end function;
+  function img (x : unsigned) return string is
+  begin return img(bit_vector(x)); end function;
+  function img (x : signed) return string is
+  begin return img(bit_vector(x)); end function;
+  function img (b : boolean) return string is
+  begin return boolean'image(b); end function;
+  function img (i : integer) return string is
+  begin return integer'image(i); end function;
+  function bv (s : string; l : integer; asc : boolean) return bit_vector is
+    variable d : bit_vector(l downto l - s'length + 1);
+    variable u : bit_vector(l to l + s'length - 1);
+  begin
+    if asc then
+      for i in u'range loop u(i) := bit'value("'" & s(s'left + i - l) & "'"); end loop;
+      return u;
+    else
+      for i in d'range loop d(i) := bit'value("'" & s(s'left + l - i) & "'"); end loop;
+      return d;
+    end if;
+  end function;
+  function uv (s : string; l : integer; asc : boolean) return unsigned is
+  begin return unsigned(bv(s, l, asc)); end function;
+  function gv (s : string; l : integer; asc : boolean) return signed is
+  begin return signed(bv(s, l, asc)); end function;
+begin
+  process
+  begin
+"#;
+
+/// `numeric_bit` against its bodies: the arithmetic, relational, conversion and shift natives
+/// on bit arrays, with the package's own warning texts.
+#[test]
+fn native_numeric_bit_matches_bodies() {
+    let mut g = Gen {
+        rng: Rng(21),
+        out: String::new(),
+        n: 0,
+    };
+    for _ in 0..40 {
+        for (ty, t) in [("uv", "unsigned"), ("gv", "signed")] {
+            let mk = |g: &mut Gen, n: Option<usize>| {
+                let len = n.unwrap_or_else(|| g.len());
+                let s: String = (0..len)
+                    .map(|_| b"01"[g.rng.below(2) as usize] as char)
+                    .collect();
+                let l = g.rng.below(9) as i64 - 3;
+                let asc = g.rng.below(2) == 0;
+                format!("{ty}(\"{s}\", {l}, {asc})")
+            };
+            let a = mk(&mut g, None);
+            let n = g.len();
+            let b = if g.rng.below(3) == 0 {
+                a.clone()
+            } else {
+                mk(&mut g, Some(n))
+            };
+            let b = if g.rng.below(2) == 0 {
+                mk(&mut g, None)
+            } else {
+                b
+            };
+            for op in ["+", "-", "*"] {
+                g.case(&format!("{a} {op} {b}"), "img");
+            }
+            for op in ["<", "<=", ">", ">=", "=", "/="] {
+                g.case(&format!("{a} {op} {b}"), "img");
+            }
+            let nat = t == "unsigned";
+            for op in ["+", "-"] {
+                let i = g.int(nat);
+                g.case(&format!("{a} {op} {i}"), "img");
+                let i = g.int(nat);
+                g.case(&format!("{i} {op} {a}"), "img");
+            }
+            for op in ["<", "<=", ">", ">=", "=", "/="] {
+                let i = g.int(nat);
+                g.case(&format!("{a} {op} {i}"), "img");
+                let i = g.int(nat);
+                g.case(&format!("{i} {op} {a}"), "img");
+            }
+            let s = g.size();
+            g.case(&format!("resize({a}, {s})"), "img");
+            let i = g.int(nat);
+            let s = g.size();
+            let f = if nat { "to_unsigned" } else { "to_signed" };
+            g.case(&format!("{f}({i}, {s})"), "img");
+            let c = g.rng.below(20);
+            for f in ["shift_left", "shift_right", "rotate_left", "rotate_right"] {
+                if a.contains("\"\"") && f.starts_with("rotate") {
+                    continue;
+                }
+                g.case(&format!("{f}({a}, {c})"), "img");
+            }
+            g.case(&format!("{a} sll {c}"), "img");
+            g.case(&format!("{a} sra {c}"), "img");
+            let s: String = (0..g.rng.below(31))
+                .map(|_| b"01"[g.rng.below(2) as usize] as char)
+                .collect();
+            g.case(&format!("to_integer({ty}(\"{s}\", 3, false))"), "img");
+        }
+    }
+    for (ty, v) in [
+        ("gv", "1"),
+        ("gv", "0"),
+        ("uv", "1"),
+        ("gv", ""),
+        ("uv", ""),
+    ] {
+        g.case(&format!("to_integer({ty}(\"{v}\", 0, false))"), "img");
+        g.case(
+            &format!("{ty}(\"{v}\", 0, false) < {ty}(\"01\", 1, true)"),
+            "img",
+        );
+        g.case(
+            &format!("{ty}(\"{v}\", 0, false) /= {ty}(\"01\", 1, true)"),
+            "img",
+        );
+        g.case(&format!("{ty}(\"{v}\", 0, false) + 1"), "img");
+    }
+    let src = format!(
+        "{BIT_HEAD}{}    wait;\n  end process;\nend architecture;\n",
+        g.out
+    );
+    diff_run("numeric_bit", &src, "t", "2008", 1000);
+}
+
 /// 64-bit INTEGER (2019): conversions of wide vectors, large integer operands, `floor` and
 /// `ceil` near INTEGER'HIGH and the NATURAL error text, native against body (#416).
 #[test]

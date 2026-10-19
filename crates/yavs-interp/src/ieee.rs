@@ -139,6 +139,16 @@ fn warn(m: &mut Machine, ctx: Cx<'_, '_, '_>, text: &str) -> R<()> {
     report(m, ctx, Severity::Warning, text)
 }
 
+/// A warning of `numeric_std`, or of `numeric_bit` (`bit`: the call has a type argument), whose
+/// texts differ in the package. The arrays need no conversion: `bit` elements are stored with
+/// the codes of `'0'` and `'1'` of `std_ulogic`.
+fn warnb(m: &mut Machine, ctx: Cx<'_, '_, '_>, text: &str, bit: bool) -> R<()> {
+    if bit {
+        return warn(m, ctx, &text.replacen("NUMERIC_STD", "NUMERIC_BIT", 1));
+    }
+    warn(m, ctx, text)
+}
+
 fn x_vec(n: usize) -> LogicVec {
     LogicVec::new(n, StdULogic::X)
 }
@@ -614,6 +624,87 @@ fn conv_int<const SIGNED: bool>(
     put(m, &Vh::down(LogicVec::from_bitvec(&r)))
 }
 
+/// `math_real.uniform`: the L'Ecuyer generator of the body in `i64`, every intermediate within
+/// INTEGER for the seeds the two range checks admit. The out-of-range reports are the body's.
+fn uniform(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let (pa, pb, px) = (arg(a, 0)?, arg(a, 1)?, arg(a, 2)?);
+    let (s1, s2) = (m.load(pa, Width::B8)? as i64, m.load(pb, Width::B8)? as i64);
+    for (bad, text) in [
+        (s1 > 2147483562, "SEED1 > 2147483562 in UNIFORM"),
+        (s2 > 2147483398, "SEED2 > 2147483398 in UNIFORM"),
+    ] {
+        if bad {
+            report(m, ctx, Severity::Error, text)?;
+            m.store(px, Width::B8, 0f64.to_bits())?;
+            return Ok(None);
+        }
+    }
+    let k = s1 / 53668;
+    let mut t1 = 40014 * (s1 - k * 53668) - k * 12211;
+    if t1 < 0 {
+        t1 += 2147483563;
+    }
+    let k = s2 / 52774;
+    let mut t2 = 40692 * (s2 - k * 52774) - k * 3791;
+    if t2 < 0 {
+        t2 += 2147483399;
+    }
+    let mut z = t1 - t2;
+    if z < 1 {
+        z += 2147483562;
+    }
+    m.store(pa, Width::B8, t1 as u64)?;
+    m.store(pb, Width::B8, t2 as u64)?;
+    m.store(px, Width::B8, (z as f64 * 4.656613e-10).to_bits())?;
+    Ok(None)
+}
+
+/// `to_hstring` / `to_ostring`: groups of 4 (3) elements from the left, padded on the left with
+/// `Z` when the leftmost element is `Z`, else `0`; a group of `Z` is `Z`, any other non-`0 1`
+/// element (after `L`, `H` are mapped) makes it `X`.
+fn to_str<const OCT: bool>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let w = if OCT { 3 } else { 4 };
+    let v = vh(m, a, 0)?.v;
+    let n = v.len();
+    if n == 0 {
+        return fallback(m);
+    }
+    let rl = n.div_ceil(w);
+    let pad = rl * w - n;
+    let pad_el = if v.get(n - 1) == StdULogic::Z {
+        StdULogic::Z
+    } else {
+        StdULogic::Zero
+    };
+    let out: Vec<u8> = (0..rl)
+        .map(|g| {
+            let mut val = 0u32;
+            let (mut zs, mut xs) = (0, false);
+            for k in g * w..(g + 1) * w {
+                let e = if k < pad {
+                    pad_el
+                } else {
+                    v.get(n - 1 - (k - pad))
+                };
+                match e.to_x01z() {
+                    StdULogic::Zero => val *= 2,
+                    StdULogic::One => val = val * 2 + 1,
+                    StdULogic::Z => zs += 1,
+                    _ => xs = true,
+                }
+            }
+            if zs == w {
+                b'Z'
+            } else if zs > 0 || xs {
+                b'X'
+            } else {
+                b"0123456789ABCDEF"[val as usize]
+            }
+        })
+        .collect();
+    Ok(Some(m.ret_string(&out)?))
+}
+
 // ---- numeric_std ----
 
 fn zero_ext(b: &BitVec, n: usize, signed: bool) -> BitVec {
@@ -621,7 +712,14 @@ fn zero_ext(b: &BitVec, n: usize, signed: bool) -> BitVec {
 }
 
 /// `TO_UNSIGNED (arg, size)` / `TO_SIGNED` with their warning.
-fn from_int(m: &mut Machine, ctx: Cx<'_, '_, '_>, arg: i64, size: i64, signed: bool) -> R<Vh> {
+fn from_int(
+    m: &mut Machine,
+    ctx: Cx<'_, '_, '_>,
+    arg: i64,
+    size: i64,
+    signed: bool,
+    bit: bool,
+) -> R<Vh> {
     if size < 1 {
         return Ok(Vh::null());
     }
@@ -640,7 +738,7 @@ fn from_int(m: &mut Machine, ctx: Cx<'_, '_, '_>, arg: i64, size: i64, signed: b
     };
     if !fits {
         let t = if signed { "TO_SIGNED" } else { "TO_UNSIGNED" };
-        warn(m, ctx, &format!("NUMERIC_STD.{t}: vector truncated"))?;
+        warnb(m, ctx, &format!("NUMERIC_STD.{t}: vector truncated"), bit)?;
     }
     Ok(Vh::down(LogicVec::from_bitvec(&v)))
 }
@@ -672,23 +770,24 @@ fn add_vv(l: &LogicVec, r: &LogicVec, sub: bool, signed: bool) -> Vh {
 fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
     m: &mut Machine,
     ctx: Cx<'_, '_, '_>,
-    _: Option<TyId>,
+    t: Option<TyId>,
     a: &[u64],
 ) -> Ret {
+    let bit = t.is_some();
     let out = match FORM {
         0 => add_vv(&vh(m, a, 0)?.v, &vh(m, a, 1)?.v, SUB, SIGNED),
         1 => {
             let l = vh(m, a, 0)?;
             let i = int(a, 1)?;
             let i = if SIGNED { i } else { natural(m, i)? };
-            let r = from_int(m, ctx, i, l.v.len() as i64, SIGNED)?;
+            let r = from_int(m, ctx, i, l.v.len() as i64, SIGNED, bit)?;
             add_vv(&l.v, &r.v, SUB, SIGNED)
         }
         _ => {
             let r = vh(m, a, 1)?;
             let i = int(a, 0)?;
             let i = if SIGNED { i } else { natural(m, i)? };
-            let l = from_int(m, ctx, i, r.v.len() as i64, SIGNED)?;
+            let l = from_int(m, ctx, i, r.v.len() as i64, SIGNED, bit)?;
             add_vv(&l.v, &r.v, SUB, SIGNED)
         }
     };
@@ -736,13 +835,14 @@ fn holds(c: Cmp, o: std::cmp::Ordering) -> bool {
 fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
     m: &mut Machine,
     ctx: Cx<'_, '_, '_>,
-    _: Option<TyId>,
+    t: Option<TyId>,
     a: &[u64],
 ) -> Ret {
+    let bit = t.is_some();
     let c = CMPS[C as usize];
     let dflt = c == Cmp::Ne;
     let bad = |m: &mut Machine, ctx: Cx<'_, '_, '_>, what: &str| -> Ret {
-        warn(
+        warnb(
             m,
             ctx,
             &format!(
@@ -750,6 +850,7 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
                 cmp_name(c),
                 if dflt { "TRUE" } else { "FALSE" }
             ),
+            bit,
         )?;
         Ok(Some(u64::from(dflt)))
     };
@@ -801,12 +902,18 @@ fn vec_vs_int(b: &BitVec, signed: bool, i: i64) -> std::cmp::Ordering {
 fn to_integer<const SIGNED: bool>(
     m: &mut Machine,
     ctx: Cx<'_, '_, '_>,
-    _: Option<TyId>,
+    t: Option<TyId>,
     a: &[u64],
 ) -> Ret {
+    let bit = t.is_some();
     let l = vh(m, a, 0)?.v;
     if l.is_empty() {
-        warn(m, ctx, "NUMERIC_STD.TO_INTEGER: null detected, returning 0")?;
+        warnb(
+            m,
+            ctx,
+            "NUMERIC_STD.TO_INTEGER: null detected, returning 0",
+            bit,
+        )?;
         return Ok(Some(0));
     }
     let Some(b) = l.to_bitvec() else {
@@ -819,7 +926,7 @@ fn to_integer<const SIGNED: bool>(
     };
     if SIGNED && l.len() == 1 && b.get(0) {
         // The body negates `XARG + 1`, whose `TO_SIGNED (1, 1)` truncates.
-        warn(m, ctx, "NUMERIC_STD.TO_SIGNED: vector truncated")?;
+        warnb(m, ctx, "NUMERIC_STD.TO_SIGNED: vector truncated", bit)?;
     }
     // The body accumulates the magnitude (`-(x + 1)`, that is `not x`, for a negative signed
     // value) most significant bit first with `R := R + R`, a checked INTEGER addition.
@@ -841,13 +948,14 @@ fn to_integer<const SIGNED: bool>(
 fn to_unsigned<const SIGNED: bool>(
     m: &mut Machine,
     ctx: Cx<'_, '_, '_>,
-    _: Option<TyId>,
+    t: Option<TyId>,
     a: &[u64],
 ) -> Ret {
+    let bit = t.is_some();
     let (v, size) = (int(a, 0)?, int(a, 1)?);
     let v = if SIGNED { v } else { natural(m, v)? };
     let size = natural(m, size)?;
-    let o = from_int(m, ctx, v, size, SIGNED)?;
+    let o = from_int(m, ctx, v, size, SIGNED, bit)?;
     put(m, &o)
 }
 
@@ -879,6 +987,21 @@ fn resize<const SIGNED: bool>(
 fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let l = vh(m, a, 0)?;
     let count = natural(m, int(a, 1)?)? as usize;
+    shift_of::<K>(m, l, count)
+}
+
+/// `shift_left` ... `rotate_right`: the null array constant for a null argument, else the
+/// local function (`XSLL` ...) the body calls.
+fn shift_fn<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let l = vh(m, a, 0)?;
+    let count = natural(m, int(a, 1)?)? as usize;
+    if l.v.is_empty() {
+        return put(m, &Vh::null());
+    }
+    shift_of::<K>(m, l, count)
+}
+
+fn shift_of<const K: u8>(m: &mut Machine, l: Vh, count: usize) -> Ret {
     let n = l.v.len();
     let v = match K {
         0 => l.v.shl(count),
@@ -1033,6 +1156,14 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
             }
             ms!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
         }
+        Op::Uniform => uniform,
+        Op::Str(false) => to_str::<false>,
+        Op::Str(true) => to_str::<true>,
+        Op::ShiftFn(Shift::Sll) => shift_fn::<0>,
+        Op::ShiftFn(Shift::Srl) => shift_fn::<1>,
+        Op::ShiftFn(Shift::Sra) => shift_fn::<2>,
+        Op::ShiftFn(Shift::Rol) => shift_fn::<3>,
+        Op::ShiftFn(Shift::Ror) => shift_fn::<4>,
         Op::Shift(Shift::Sll) => shift::<0>,
         Op::Shift(Shift::Srl) => shift::<1>,
         Op::Shift(Shift::Sra) => shift::<2>,

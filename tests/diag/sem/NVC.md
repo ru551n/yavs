@@ -17,7 +17,6 @@ The reference simulator (the primary reference). Every file the reference simula
 
 | File | The reference simulator | The second reference simulator | Justification |
 |---|---|---|---|
-| `expr/condition_std_logic_type_only` | accepts | rejects @11 | LRM 9.2.9 does not say where the implicit `??` is looked up; the reference simulator finds the one next to the type, the other two do not, so only a visible `??` counts (majority rule, `docs/decisions.md`). |
 | `unit/block_config_of_default_bound_instance_ok` | rejects @15 | rejects @15 | LRM 3.4.3 does not forbid a block configuration of a default-bound instance, so it is accepted (rule 15, user, 2026-10-19, `docs/decisions.md`). |
 | `unit/port_conv_inout_one_way_out` | accepts | rejects @14 | LRM 6.5.7.1 is unclear for ports; the second reference simulator rejects a formal conversion of an `inout` port without an actual conversion, as yavs does for `inout` parameters (lrm-checks L72). |
 | `ovl/call_conversions_ok` | rejects @23 to 28 | accepts | LRM 6.5.7.1 allows conversions in subprogram call associations; the reference simulator reports them as not supported yet (an actual conversion of an `in` variable as "not a name"), the second reference simulator accepts. |
@@ -81,6 +80,7 @@ The second reference simulator as second opinion: files where the second referen
 | `gen/nested_instance_signal_in_process` | accepts | Accepts at analysis and fails with an internal error at elaboration; LRM 4.9: the instance is a package declaration in the process, so 4.7 and 11.3 apply (#34) |
 | `stat/static_index_out_of_range_process` | warns | E1404: the reference simulator and the third one reject a static index outside the range, also in dead code (majority rule, user 2026-10-19; `docs/design/lrm-checks.md` L51) |
 | `stat/static_slice_out_of_range` | warns | E1404, as for the static index (majority rule, user 2026-10-19) |
+| `expr/condition_std_logic_type_only_ok` | rejects @11 | LRM 9.2.9 does not say where the implicit `??` is looked up; permissive (user, 2026-10-19, rule 15) |
 | `ext/external_type_mismatch` | accepts | The second reference simulator accepts (lenient or deferred to elaboration) |
 | `gen/generic_discrete_has_pos_ok` | rejects @5,6,7 | The second reference simulator 2019 support is partial (generic type classes, conditional expressions, `image` on records, views) |
 | `gen/type_actual_not_access` | rejects @5,6 | The second reference simulator rejects, but reports a different line (it blames the declaration or another construct) |
@@ -261,7 +261,7 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `condition_ambiguous_ops` | E1341 @19 | rejects @19 | rejects @6,9,19 |
 | `condition_not_boolean_integer` | E1340 @10 | rejects @10 | rejects @10 |
 | `condition_std_logic_ok` | none | accepts | accepts |
-| `condition_std_logic_type_only` | E1340 @11 | accepts | rejects @11 |
+| `condition_std_logic_type_only_ok` | none | accepts | rejects @11 |
 | `conversion_array_different_elements` | E1350 @7 | rejects @7 | rejects @7 |
 | `conversion_integer_to_array` | E1350 @5 | rejects @5 | rejects @5 |
 | `conversion_real_to_integer_ok` | none | accepts | accepts |

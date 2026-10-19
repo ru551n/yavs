@@ -610,22 +610,35 @@ impl Db {
             Visible::Overloads(ds) => ds,
             _ => Vec::new(),
         };
-        // 9.2.9 does not say where the `??` comes from. Only a visible one counts (user,
-        // 2026-10-19, majority rule): `use ieee.std_logic_1164.std_ulogic` alone is not enough.
-        for d in visible {
-            let Some(s) = self.decls[self.entity(d)].kind.subprogram() else {
-                continue;
-            };
-            if s.params.len() != 1 || s.ret.map(|r| self.base(r)) != boolean {
-                continue;
+        // 9.2.9 does not say where the `??` comes from. Permissive (L53, user 2026-10-19): when
+        // none is visible, take the one declared next to the condition's type, so
+        // `use ieee.std_logic_1164.std_ulogic` alone is enough.
+        let beside: Vec<DeclId> = is
+            .iter()
+            .flat_map(|i| {
+                let sc = self.decls[self.types[i.ty].decl].scope;
+                self.scopes[sc].names.get(&key).cloned().unwrap_or_default()
+            })
+            .collect();
+        for pass in [visible, beside] {
+            if !found.is_empty() {
+                break;
             }
-            let pt = self.base(s.params[0].subtype);
-            if is
-                .iter()
-                .any(|i| self.cost(i, Expected::Type(pt)).is_some())
-                && !found.iter().any(|(f, _)| self.entity(*f) == self.entity(d))
-            {
-                found.push((d, pt));
+            for d in pass {
+                let Some(s) = self.decls[self.entity(d)].kind.subprogram() else {
+                    continue;
+                };
+                if s.params.len() != 1 || s.ret.map(|r| self.base(r)) != boolean {
+                    continue;
+                }
+                let pt = self.base(s.params[0].subtype);
+                if is
+                    .iter()
+                    .any(|i| self.cost(i, Expected::Type(pt)).is_some())
+                    && !found.iter().any(|(f, _)| self.entity(*f) == self.entity(d))
+                {
+                    found.push((d, pt));
+                }
             }
         }
         match found.as_slice() {

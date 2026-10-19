@@ -132,7 +132,7 @@ An installed binary finds `lib/` next to itself (#43).
   related (`E1350`, 9.3.6), actuals of the wrong class for variable, signal and file parameters
   (`E1360`), an object actual of the wrong type for the only candidate (`E1300` at the actual),
   a universal bound against a non-integer one (`E1300` at that bound), ambiguous `??` (`E1341`),
-  a condition needs a visible `??` (L53), and conversion helps
+  `??` found next to the condition's type when none is visible (L53), and conversion helps
   (`unsigned(x)`, `to_unsigned(x, n)`) on type mismatches.
 - Object types: constants, signals, generics, ports and constant or signal parameters of an access
   or file type (or containing one) are `E1223` (#198; also in 2019, except in library `std`; protected method profiles in 2008, access parameters of protected methods in 2019 too, #212); protected ones `E1905`.

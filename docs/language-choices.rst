@@ -151,7 +151,7 @@ Condition operator from the type's region
 
 When no ``??`` is visible, the one declared in the region of the condition's type is used.
 Two different visible ``??`` for the type is an error. Some simulators reject the first form.
-Standard: 9.2.9.
+Standard: 9.2.9. Decided by the user, 2026-10-19.
 
 *Portable:* ``use ieee.std_logic_1164.all`` or write ``s = '1'``.
 
@@ -336,7 +336,7 @@ Configurations
 --------------
 
 A block configuration of a default-bound instance is accepted: the default binding supplies
-the entity (3.4.3, 7.3.3). A configuration that
+the entity (3.4.3, 7.3.3; decided by the user, 2026-10-19). A configuration that
 names an instance of another component, or binds an instance that a configuration
 specification already binds to a different entity aspect, is an error at analysis (7.3); an
 incremental binding may repeat the entity aspect of the primary binding (7.3.2.1). Some simulators

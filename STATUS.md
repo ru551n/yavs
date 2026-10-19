@@ -270,6 +270,31 @@ this benchmark. Analysis of `std`/`ieee` units a design uses is 10 to 20 ms, so 
 base was not built. Tests: `crates/yavs/tests/cache.rs`, `crates/yavs-cache`; the difftest corpus (342
 tests at 1 and 4 threads) and the external runner's `check` suite pass with the cache on.
 
+### Waveform recording cost (#410)
+
+`YAVS_BENCH_RUN_FLAGS="--wave={out}"` (and `--wave-variables`) runs any benchmark with waves; the report adds the
+peak RSS and the FST size. Median total CPU seconds of 3 runs, `--threads 1`, same host load within a column
+pair (the "before" column was measured while the host was busier, so compare the ratio to the no-wave run):
+
+| Benchmark | no waves | `--wave` | `--wave-variables` before | `--wave-variables` after | FST (signals / with variables) |
+|---|---|---|---|---|---|
+| `ff_rtl` | 0.98 | 0.94 | 1.45 (x1.00) | 1.00 (x1.02) | 20 KB / 20 KB |
+| `resolved_bus` | 0.42 | 0.44 | 0.77 (x1.31) | 0.46 (x1.10) | 151 KB / 227 KB |
+| `delta_chain` | 0.22 | 0.23 | 0.35 (x1.06) | 0.23 (x1.05) | 23 KB / 23 KB |
+| `vai_window_gen` | 3.47 | 3.51 | 6.58 (x1.19) | 3.54 (x1.02) | 132 KB / 271 KB |
+| `uvvm_axistream_vvc_tb` | 6.31 | 6.52 | over 300 s | 23.7 (x3.8) | 27 KB / 430 MB |
+
+Findings: recording signals costs 0 to 5 percent of the run (a stress design with 8000 toggling bits and
+vectors: 3 to 5 percent at `--threads 1`, 2.5 percent at `--threads 4`; the kernel dominates by far), peak RSS
+grows by 0.3 to 1 MiB on top of 13 to 82 MiB (the FST block buffer). `--wave-variables` was the cost: every variable of every process was read and decoded
+at each time step. A process's variables are now read only after it ran (`InterpProcess::execs`), a value is
+decoded only when its raw bytes changed, and logic vectors are decoded straight from the bit-planes. What is left
+on the AXI-stream testbench is its 2.07 million variable entries (large records of arrays): 3 GB peak RSS (about
+1.4 KB per entry: hierarchy, writer declarations, per-entry state), 2.8 s to declare them, and one raw compare of
+every large variable per time step. The FST is read-back identical (hierarchy and every value change) before and
+after, and identical at `--threads 1` and 4; its bytes can differ between runs of a run longer than the 5 s flush
+interval, because a block ends on the wall clock.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

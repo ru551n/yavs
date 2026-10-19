@@ -200,6 +200,19 @@ milestone users care about works.
   against the interpreter (`crates/yavs-llvm/tests/tier.rs`, the difftest `yavs-llvm`
   candidate). This replaces the frame-only entry `fn(frame, inst, rt, resume)` of ir.md 5 for
   now; the suspension invariant still allows that form later.
+- **Memory (#334, #335):** `Tier::run` gets a `TierFrame` (the top frame's registers and slots,
+  the temporary area, the instance data), taken out of the machine for the run and put back
+  around every step, and a `TierHost` (`step`, and `object`: the interpreter's own lookup of the
+  object an address points into). Compiled code loads, stores, copies, allocates temporaries,
+  resets them at `Stmt`, reads descriptors (`DopeLen`, `Pos`, `SubtypeCheck`, `Field`), writes
+  them (`MakeDope`), builds layouts whose element layout is static (`LayoutOf`) and reads and
+  writes logic elements (`LGet`, `LSet`) itself when the bytes lie in the frame, the temporary
+  area, the instance data or an object `object` returned (a small cache, emptied at every step;
+  constants stay); every other address, every bounds failure and every error steps the whole
+  instruction in the interpreter, so messages stay identical. Frame addresses the generator can
+  see within a block are checked against the slot length only.
+  Why: the interpreter keeps the one implementation of address spaces, heaps and errors; the
+  common accesses cost a compare instead of a callback. Decided by the M6 agent, 2026-10-19.
 - **Tiers:** `yavs run --tier=llvm` compiles every non-elaboration function at O2 before time 0
   (no size threshold yet: #126 is the user's); `--tier=interp` is the default. Tier-up of hot
   functions on a background thread (`auto`) is #125.

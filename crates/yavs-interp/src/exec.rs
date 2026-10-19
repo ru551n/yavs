@@ -107,13 +107,13 @@ fn sub_value(v: &Value, elem: Elem, at: u32, len: u32) -> R<Value> {
     })
 }
 
-pub(crate) const FRAME: u8 = 0;
-const INST: u8 = 1;
-const PKG: u8 = 2;
-const CONST: u8 = 3;
+pub const FRAME: u8 = 0;
+pub const INST: u8 = 1;
+pub const PKG: u8 = 2;
+pub const CONST: u8 = 3;
 const HEAP: u8 = 4;
-const TEMP: u8 = 5;
-pub(crate) const SHARED: u8 = 6;
+pub const TEMP: u8 = 5;
+pub const SHARED: u8 = 6;
 pub(crate) const SHARED_HEAP: u8 = 7;
 
 const SPACE_NAMES: [&str; 8] = [
@@ -748,7 +748,20 @@ impl Machine {
 
     pub(crate) fn rd(&self, a: u64, n: u64) -> R<&[u8]> {
         let (sp, idx, off) = split(a);
-        let mem: &[u8] = match sp {
+        let mem = self.obj(sp, idx)?;
+        let end = off.saturating_add(n);
+        mem.get(off as usize..end as usize).ok_or_else(|| {
+            ice(format!(
+                "read of {n} bytes at {off} outside a {} object of {} bytes",
+                SPACE_NAMES[sp as usize],
+                mem.len()
+            ))
+        })
+    }
+
+    /// The memory object of space `sp` and index `idx`, for reading.
+    fn obj(&self, sp: u8, idx: u32) -> R<&[u8]> {
+        Ok(match sp {
             FRAME => {
                 &self
                     .frames
@@ -781,20 +794,25 @@ impl Machine {
                 .as_ref()
                 .and_then(|h| h.data(idx))
                 .ok_or_else(|| Fault::Runtime("access to a deallocated object".into()))?,
-        };
-        let end = off.saturating_add(n);
-        mem.get(off as usize..end as usize).ok_or_else(|| {
-            ice(format!(
-                "read of {n} bytes at {off} outside a {} object of {} bytes",
-                SPACE_NAMES[sp as usize],
-                mem.len()
-            ))
         })
     }
 
     pub(crate) fn wr(&mut self, a: u64, n: u64) -> R<&mut [u8]> {
         let (sp, idx, off) = split(a);
-        let mem: &mut [u8] = match sp {
+        let mem = self.obj_mut(sp, idx)?;
+        let len = mem.len();
+        let end = off.saturating_add(n);
+        mem.get_mut(off as usize..end as usize).ok_or_else(|| {
+            ice(format!(
+                "write of {n} bytes at {off} outside a {} object of {len} bytes",
+                SPACE_NAMES[sp as usize]
+            ))
+        })
+    }
+
+    /// The memory object of space `sp` and index `idx`, for writing.
+    fn obj_mut(&mut self, sp: u8, idx: u32) -> R<&mut [u8]> {
+        Ok(match sp {
             FRAME => {
                 &mut self
                     .frames
@@ -828,14 +846,6 @@ impl Machine {
                     SPACE_NAMES[sp as usize]
                 )));
             }
-        };
-        let len = mem.len();
-        let end = off.saturating_add(n);
-        mem.get_mut(off as usize..end as usize).ok_or_else(|| {
-            ice(format!(
-                "write of {n} bytes at {off} outside a {} object of {len} bytes",
-                SPACE_NAMES[sp as usize]
-            ))
         })
     }
 
@@ -1312,42 +1322,40 @@ impl Machine {
         pc: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<usize> {
-        let func = self.top().func;
-        let mut regs = std::mem::take(&mut self.regs);
-        let mut fault = None;
-        let ran = tier.run(func, pc as u32, &mut regs, &mut |regs, at| {
-            std::mem::swap(&mut self.regs, regs);
-            self.top().pc = at;
-            let r = match f.code.get(at as usize) {
-                Some(&inst) => self.step(prog, f, inst, ctx),
-                None => Err(ice(format!(
-                    "compiled code stepped pc {at} beyond `{}`",
-                    f.name
-                ))),
-            };
-            std::mem::swap(&mut self.regs, regs);
-            match r {
-                Ok(Flow::Next) => true,
-                Ok(_) => {
-                    fault = Some(ice(format!(
-                        "compiled code stepped a control instruction at pc {at} of `{}`",
-                        f.name
-                    )));
-                    false
-                }
-                Err(e) => {
-                    fault = Some(e);
-                    false
-                }
-            }
-        });
-        self.regs = regs;
+        let top = self.frames.len() - 1;
+        let fr = &mut self.frames[top];
+        let func = fr.func;
+        let mut tf = crate::TierFrame {
+            regs: std::mem::take(&mut self.regs),
+            slots: std::mem::take(&mut fr.slots),
+            frame: top as u32,
+            temp: std::mem::take(&mut self.temp),
+            temp_base: fr.temp_base,
+            inst: &self.inst.data[..] as *const [u8],
+        };
+        let mut host = Host {
+            m: self,
+            prog,
+            f,
+            ctx,
+            fault: None,
+        };
+        let ran = tier.run(func, pc as u32, &mut tf, &mut host);
+        let fault = host.fault;
+        self.swap_tier(&mut tf);
         let pc = ran.map_or(pc, |p| p as usize);
         self.top().pc = pc as u32;
         match fault {
             Some(e) => Err(e),
             None => Ok(pc),
         }
+    }
+
+    /// Exchange the top frame's registers and slots and the temporary area with `tf`.
+    fn swap_tier(&mut self, tf: &mut crate::TierFrame) {
+        std::mem::swap(&mut self.regs, &mut tf.regs);
+        std::mem::swap(&mut self.top().slots, &mut tf.slots);
+        std::mem::swap(&mut self.temp, &mut tf.temp);
     }
 
     fn debug_tick(
@@ -2542,6 +2550,60 @@ impl Machine {
             }
         }
         Ok(Flow::Next)
+    }
+}
+
+/// The interpreter under compiled code (`Machine::run_tier`).
+struct Host<'a, 'c, 'x> {
+    m: &'a mut Machine,
+    prog: &'a Program,
+    f: &'a Func,
+    ctx: &'a mut Option<&'c mut Ctx<'x>>,
+    fault: Option<Fault>,
+}
+
+impl crate::TierHost for Host<'_, '_, '_> {
+    fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> bool {
+        let (m, f) = (&mut *self.m, self.f);
+        m.swap_tier(tf);
+        m.top().pc = at;
+        let r = match f.code.get(at as usize) {
+            Some(&inst) => m.step(self.prog, f, inst, self.ctx),
+            None => Err(ice(format!(
+                "compiled code stepped pc {at} beyond `{}`",
+                f.name
+            ))),
+        };
+        m.swap_tier(tf);
+        match r {
+            Ok(Flow::Next) => true,
+            Ok(_) => {
+                self.fault = Some(ice(format!(
+                    "compiled code stepped a control instruction at pc {at} of `{}`",
+                    f.name
+                )));
+                false
+            }
+            Err(e) => {
+                self.fault = Some(e);
+                false
+            }
+        }
+    }
+
+    fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)> {
+        let (sp, idx, _) = split(addr);
+        // The top frame's slots and the temporary area are in the `TierFrame`.
+        if sp == TEMP || sp == FRAME && idx as usize + 1 == self.m.frames.len() {
+            return None;
+        }
+        if write {
+            let o = self.m.obj_mut(sp, idx).ok()?;
+            Some((o.as_mut_ptr(), o.len()))
+        } else {
+            let o = self.m.obj(sp, idx).ok()?;
+            Some((o.as_ptr().cast_mut(), o.len()))
+        }
     }
 }
 

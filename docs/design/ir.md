@@ -619,9 +619,10 @@ What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
    interpreter.
 
 **As implemented (M6, `docs/decisions.md` "LLVM tier: side exits to the interpreter"):**
-compiled code runs on the interpreter frame's registers and returns to the interpreter at every
-call, return, wait, report and slow path; other instructions it does not lower go through a
-`yavs_rt_step` callback. `--tier=llvm` compiles everything before time 0; the tier-up counters
+compiled code runs on the interpreter frame's registers, slots and temporary area (`TierFrame`)
+and returns to the interpreter at every call, return, wait, report and slow path; memory
+instructions reach other objects through the interpreter's own lookup (`TierHost::object`);
+other instructions it does not lower go through a `yavs_rt_step` callback. `--tier=llvm` compiles everything before time 0; the tier-up counters
 and background compilation above are not built yet (#125).
 
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group

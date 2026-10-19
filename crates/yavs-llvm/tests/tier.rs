@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use yavs_diag::{FileId, Span};
-use yavs_interp::{Bindings, InstData, Runtime, Tier};
+use yavs_interp::{Bindings, InstData, Runtime, Tier, TierFrame, TierHost};
 use yavs_ir::*;
 use yavs_llvm::{LlvmTier, OptLevel};
 
@@ -17,10 +17,10 @@ impl Tier for Counting {
         &self,
         func: FuncId,
         pc: u32,
-        regs: &mut Vec<u64>,
-        step: &mut dyn FnMut(&mut Vec<u64>, u32) -> bool,
+        fr: &mut TierFrame,
+        host: &mut dyn TierHost,
     ) -> Option<u32> {
-        let r = self.0.run(func, pc, regs, step);
+        let r = self.0.run(func, pc, fr, host);
         if r.is_some() {
             self.1.fetch_add(1, Ordering::Relaxed);
         }
@@ -32,6 +32,7 @@ impl Tier for Counting {
 struct Both {
     prog: Arc<Program>,
     tier: Arc<Counting>,
+    inst: Arc<InstData>,
 }
 
 impl Both {
@@ -41,6 +42,10 @@ impl Both {
         Both {
             prog: Arc::new(prog),
             tier: Arc::new(Counting(tier, AtomicUsize::new(0))),
+            inst: Arc::new(InstData {
+                data: (1..=16).collect(),
+                ..InstData::default()
+            }),
         }
     }
 
@@ -49,7 +54,7 @@ impl Both {
         if llvm {
             assert!(rt.set_tier(self.tier.clone()));
         }
-        yavs_interp::call(rt, f, Arc::new(InstData::default()), args)
+        yavs_interp::call(rt, f, self.inst.clone(), args)
             .map(|v| v.expect("a value"))
             .map_err(|e| e.to_string())
     }
@@ -202,4 +207,390 @@ fn loop_runs_compiled() {
     assert_eq!(a, b);
     // One entry: the whole loop runs in compiled code, the interpreter only executes `Ret`.
     assert_eq!(n, 1);
+}
+
+/// `function f(a, b) return <body>` where `body` builds the result from the two argument
+/// registers, with a 32-byte frame area `local` and a 16-byte constant `c0` (1 to 16).
+fn two(body: impl FnOnce(&mut FuncBuilder<'_>, Reg, Reg, Reg) -> Reg) -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    pb.konst(ConstData::Bytes((1..=16).collect()));
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    let local = fb.slot(32, 8);
+    stmt(&mut fb);
+    let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+    let (a, b) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+    for (dst, addr) in [(a, pa), (b, pbr)] {
+        fb.emit(Inst::Load {
+            dst,
+            addr,
+            w: Width::B8,
+        });
+    }
+    let l = fb.addr(AddrSpace::Frame, local);
+    let v = body(&mut fb, a, b, l);
+    fb.emit(Inst::Ret { v: Some(v) });
+    fb.finish();
+    (pb.finish().unwrap(), f)
+}
+
+fn index(fb: &mut FuncBuilder<'_>, base: Reg, pos: Reg) -> Reg {
+    let dst = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Index {
+        dst,
+        base,
+        pos,
+        stride: 1,
+    });
+    dst
+}
+
+fn alloc(fb: &mut FuncBuilder<'_>, size: Reg) -> Reg {
+    let dst = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst, size });
+    dst
+}
+
+fn load(fb: &mut FuncBuilder<'_>, addr: Reg, w: Width) -> Reg {
+    let dst = fb.reg(if w == Width::Sig {
+        RegTy::Sig
+    } else {
+        RegTy::I64
+    });
+    fb.emit(Inst::Load { dst, addr, w });
+    dst
+}
+
+/// A descriptor `left, right, dir` in temporary memory.
+fn dope(fb: &mut FuncBuilder<'_>, l: Reg, r: Reg, dir: Reg) -> Reg {
+    let n = fb.int(24);
+    let at = alloc(fb, n);
+    let parts = fb.regs(&[l, r, dir]);
+    fb.emit(Inst::MakeDope { at, parts });
+    at
+}
+
+const EDGE: [i64; 14] = [
+    0,
+    1,
+    2,
+    7,
+    8,
+    15,
+    16,
+    24,
+    31,
+    32,
+    -1,
+    i64::MAX,
+    i64::MIN,
+    1 << 32,
+];
+
+/// Every pair of edge values gives the same result or error text both ways, compiled code
+/// runs, and none of `native` is left to the interpreter.
+fn check(prog: Program, f: FuncId, native: &[&str], args: &[i64]) {
+    let p = Both::new(prog);
+    for k in native {
+        assert!(
+            !p.tier.0.interpreted.iter().any(|(n, _)| n == k),
+            "{k} interpreted: {:?}",
+            p.tier.0.interpreted
+        );
+    }
+    for &x in args {
+        for &y in args {
+            let (a, b, n) = p.both(f, &[x as u64, y as u64]);
+            assert_eq!(a, b, "{native:?} {x} {y}");
+            assert!(n > 0, "compiled code never ran");
+        }
+    }
+}
+
+#[test]
+fn loads_and_stores_match_the_interpreter() {
+    for w in [Width::B1, Width::B4, Width::B8] {
+        // local[b] := a (width w); return local[b]
+        let (prog, f) = two(|fb, a, b, l| {
+            let at = index(fb, l, b);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: a,
+                w,
+            });
+            load(fb, at, w)
+        });
+        check(prog, f, &["Load", "Store", "AddrOf"], &EDGE);
+    }
+    // A signal reference pair (a, b) loaded from local[0] and stored at local[b]; returns
+    // the second half read back.
+    let (prog, f) = two(|fb, a, b, l| {
+        let parts = fb.regs(&[a, b]);
+        fb.emit(Inst::MakeDope { at: l, parts });
+        let s = load(fb, l, Width::Sig);
+        let at = index(fb, l, b);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: s,
+            w: Width::Sig,
+        });
+        let eight = fb.int(8);
+        let hi = index(fb, at, eight);
+        load(fb, hi, Width::B8)
+    });
+    check(prog, f, &["Load", "Store"], &EDGE);
+    // Reads of the instance data and a constant (through the object cache) at a + b.
+    for space in [AddrSpace::Inst, AddrSpace::Const(ConstId(0))] {
+        for w in [Width::B1, Width::B4, Width::B8] {
+            let (prog, f) = two(|fb, a, b, _| {
+                let base = fb.addr(space, 0);
+                let at = index(fb, base, a);
+                let at = index(fb, at, b);
+                load(fb, at, w)
+            });
+            check(prog, f, &["Load", "AddrOf"], &EDGE);
+        }
+    }
+    // A write to read-only memory is the interpreter's error.
+    let (prog, f) = two(|fb, a, b, _| {
+        let base = fb.addr(AddrSpace::Const(ConstId(0)), 0);
+        let at = index(fb, base, b);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: a,
+            w: Width::B8,
+        });
+        a
+    });
+    check(prog, f, &["Store"], &[0, 1, 9]);
+}
+
+#[test]
+fn temporaries_and_copies_match_the_interpreter() {
+    // Two allocations: the second one's address, and its contents after a store of b.
+    for addr in [false, true] {
+        let (prog, f) = two(|fb, a, b, _| {
+            let _ = alloc(fb, a);
+            let eight = fb.int(8);
+            let t = alloc(fb, eight);
+            fb.emit(Inst::Store {
+                addr: t,
+                src: b,
+                w: Width::B4,
+            });
+            if addr { t } else { load(fb, t, Width::B8) }
+        });
+        check(prog, f, &["Alloc", "Stmt"], &EDGE);
+    }
+    // A loop of statements each allocating a bytes: the area is reset at every `Stmt`.
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let _ = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    let (head, done) = (fb.block(), fb.block());
+    stmt(&mut fb);
+    let pa = fb.addr(AddrSpace::Frame, sa);
+    let a = load(&mut fb, pa, Width::B8);
+    let (i, one, n) = (fb.int(0), fb.int(1), fb.int(1000));
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    stmt(&mut fb);
+    let t = alloc(&mut fb, a);
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: i,
+        a: i,
+        b: one,
+    });
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Lt,
+        dst: c,
+        a: i,
+        b: n,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: head,
+        f: done,
+    });
+    fb.at(done);
+    fb.emit(Inst::Ret { v: Some(t) });
+    fb.finish();
+    check(
+        pb.finish().unwrap(),
+        f,
+        &["Alloc", "Stmt"],
+        &[0, 1, 13, 1 << 20, 1 << 32, -1],
+    );
+    // local[0..32] := 1, 2, ...; copy b bytes from local[a] to local[0]; return local[0].
+    let (prog, f) = two(|fb, a, b, l| {
+        let ws: Vec<Reg> = (0..4).map(|k| fb.int(0x0807_0605_0403_0201 + k)).collect();
+        let parts = fb.regs(&ws);
+        fb.emit(Inst::MakeDope { at: l, parts });
+        let src = index(fb, l, a);
+        fb.emit(Inst::Copy {
+            dst: l,
+            src,
+            bytes: b,
+        });
+        load(fb, l, Width::B8)
+    });
+    check(prog, f, &["Copy", "MakeDope"], &EDGE);
+    // A constant copied into temporary memory.
+    let (prog, f) = two(|fb, a, b, _| {
+        let t = alloc(fb, a);
+        let c = fb.addr(AddrSpace::Const(ConstId(0)), 0);
+        fb.emit(Inst::Copy {
+            dst: t,
+            src: c,
+            bytes: b,
+        });
+        load(fb, t, Width::B4)
+    });
+    check(prog, f, &["Copy"], &EDGE);
+}
+
+#[test]
+fn descriptors_match_the_interpreter() {
+    for dir in [0, 1, 2] {
+        // 'length of (a, b, dir), and the position of 5 in it.
+        let (prog, f) = two(|fb, a, b, _| {
+            let d = fb.int(dir);
+            let at = dope(fb, a, b, d);
+            let n = fb.reg(RegTy::I64);
+            fb.emit(Inst::DopeLen {
+                dst: n,
+                dope: at,
+                dim: 0,
+            });
+            n
+        });
+        check(prog, f, &["DopeLen", "MakeDope"], &EDGE);
+        for idx in [0, 5, -3] {
+            let (prog, f) = two(|fb, a, b, _| {
+                let d = fb.int(dir);
+                let at = dope(fb, a, b, d);
+                let i = fb.int(idx);
+                let what = fb.program().check_msg("v", Dir::To);
+                let dst = fb.reg(RegTy::I64);
+                fb.emit(Inst::Pos {
+                    dst,
+                    dope: at,
+                    dim: 0,
+                    idx: i,
+                    what,
+                });
+                dst
+            });
+            check(prog, f, &["Pos"], &EDGE);
+        }
+    }
+    // (a to b) against (b downto 3) and (0 to 4), two dimensions.
+    let (prog, f) = two(|fb, a, b, _| {
+        let (z, one, three, four) = (fb.int(0), fb.int(1), fb.int(3), fb.int(4));
+        let n = fb.int(48);
+        let x = alloc(fb, n);
+        let parts = fb.regs(&[a, b, z, b, three, one]);
+        fb.emit(Inst::MakeDope { at: x, parts });
+        let y = alloc(fb, n);
+        let parts = fb.regs(&[z, four, z, a, b, z]);
+        fb.emit(Inst::MakeDope { at: y, parts });
+        let what = fb.program().check_msg("v", Dir::To);
+        fb.emit(Inst::SubtypeCheck {
+            dope: x,
+            want: y,
+            dims: 2,
+            what,
+        });
+        a
+    });
+    check(prog, f, &["SubtypeCheck"], &EDGE);
+    // Field 1 of a layout [size, align, 0, a] at local[b].
+    let (prog, f) = two(|fb, a, b, l| {
+        let (z, eight) = (fb.int(0), fb.int(8));
+        let n = fb.int(32);
+        let lay = alloc(fb, n);
+        let parts = fb.regs(&[eight, eight, z, a]);
+        fb.emit(Inst::MakeDope { at: lay, parts });
+        let base = index(fb, l, b);
+        let dst = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Field {
+            dst,
+            base,
+            layout: lay,
+            n: 1,
+        });
+        dst
+    });
+    check(prog, f, &["Field"], &EDGE);
+}
+
+#[test]
+fn logic_elements_match_the_interpreter() {
+    // local is two bit-plane blocks of 4 x 64 bits: element b := code a, then read back
+    // element b and element b xor 1 (untouched neighbours stay).
+    for other in [false, true] {
+        let (prog, f) = two(|fb, a, b, l| {
+            fb.emit(Inst::LSet {
+                base: l,
+                idx: b,
+                v: a,
+            });
+            let i = if other {
+                let one = fb.int(1);
+                let i = fb.reg(RegTy::I64);
+                fb.emit(Inst::Bin {
+                    op: IntOp::Add,
+                    dst: i,
+                    a: b,
+                    b: one,
+                });
+                i
+            } else {
+                b
+            };
+            let dst = fb.reg(RegTy::I64);
+            fb.emit(Inst::LGet {
+                dst,
+                base: l,
+                idx: i,
+            });
+            dst
+        });
+        check(
+            prog,
+            f,
+            &["LGet", "LSet"],
+            &[0, 1, 3, 8, 9, 63, 64, 127, 128, -1, 1 << 40],
+        );
+    }
+    // Elements of a constant (read only) and of temporary memory.
+    let (prog, f) = two(|fb, a, b, _| {
+        let c = fb.addr(AddrSpace::Const(ConstId(0)), 0);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::LGet {
+            dst: x,
+            base: c,
+            idx: a,
+        });
+        let n = fb.int(64);
+        let t = alloc(fb, n);
+        fb.emit(Inst::LSet {
+            base: t,
+            idx: b,
+            v: x,
+        });
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::LGet {
+            dst,
+            base: t,
+            idx: b,
+        });
+        dst
+    });
+    check(prog, f, &["LGet", "LSet"], &[0, 1, 5, 63, 64, 127, 128, -1]);
 }

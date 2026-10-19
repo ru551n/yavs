@@ -11,13 +11,18 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   runtime callbacks as absolute symbols). `LlvmTier` implements `yavs_interp::Tier`; `yavs run
   --tier=llvm` sets it on the runtime. Design: `docs/decisions.md` "LLVM tier: side exits to the
   interpreter".
-- Compiled code runs on the interpreter frame's registers. Inline: `Const`, `ConstF`, `Move`,
-  `Bin`/`BinRange` (not `**`), `Un`, `FBin` (not `**`), `FUn`, `IToF`, `Cmp`, `FCmp`, `Bool`,
-  `Check`, `FCheck`, `Index`, `Br`, `CondBr`, `Case`. Exits to the interpreter: `Ret`, the
-  calls, `CallNative`, `Report`, `Suspend`, `Unreachable`, `Elab`, and every guard failure
-  (overflow, check, zero divisor, non-finite real, address over 4 GiB), which the interpreter
-  re-executes for the identical error. Everything else goes through the `yavs_rt_step` callback.
-  The open native lowerings are issues (section 6).
+- Compiled code runs on the interpreter frame's registers, slots and temporary area
+  (`yavs_interp::TierFrame`). Inline: `Const`, `ConstF`, `Move`, `Bin`/`BinRange` (not `**`),
+  `Un`, `FBin` (not `**`), `FUn`, `IToF`, `Cmp`, `FCmp`, `Bool`, `Check`, `FCheck`, `Index`,
+  `Br`, `CondBr`, `Case`, and with a slow path that steps the instruction: `AddrOf` (not `Up`),
+  `Load`, `Store`, `Copy`, `Alloc`, `Stmt`, `MakeDope`, `DopeLen`, `Pos`, `SubtypeCheck`,
+  `Field`, `LayoutOf` (types whose element layout is static), `LGet`, `LSet`. Memory is
+  reached through `Mem` (host pointers of the frame's slots, the temporary area, the instance
+  data and a small cache of objects `yavs_rt_obj` asked `TierHost::object` for). Exits to the
+  interpreter: `Ret`, the calls, `CallNative`, `Report`, `Suspend`, `Unreachable`, `Elab`, and
+  every guard failure (overflow, check, zero divisor, non-finite real, address over 4 GiB),
+  which the interpreter re-executes for the identical error. Everything else goes through the
+  `yavs_rt_step` callback. The open native lowerings are issues (section 6).
 - Not yet: tier-up of hot functions on a background thread (`--tier=auto`, #125), the size
   threshold (#126, the user's), The spike (`spike.rs`) stays as
   the JIT smoke test.
@@ -31,10 +36,10 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Feature gate, crate-root `#![allow(unsafe_code)]` with its comment, re-exports |
-| `src/lower.rs` | `compile`, `LlvmTier` (`Tier` impl, `notes` of functions left interpreted, inline/interpreted counts), `Gen` (IR to LLVM per function, entry switch, guard exits), `yavs_rt_step` trampoline (panics carried over the JIT frames) |
+| `src/lower.rs` | `compile`, `LlvmTier` (`Tier` impl, `notes` of functions left interpreted, inline/interpreted counts), `Mem` (what compiled code reads and writes, field offsets `MEM_*`), `Gen` (IR to LLVM per function, entry switch, guard exits, slow paths, `host`: an address to a host pointer, inline for frame addresses known in the block, else the internal `yavs_host_r`/`yavs_host_w`), `static_layout`, `yavs_rt_step` and `yavs_rt_obj` trampolines (panics carried over the JIT frames) |
 | `src/jit.rs` | `Jit` (LLJIT, absolute symbols, lookup), `Module` (own `LLVMContext` per module), `OptLevel`, `portable_cpu`, `Error` |
 | `src/spike.rs` | Generated test functions (checked sum, `#[repr(C)]` process state, 10k-instruction body) |
-| `tests/tier.rs` | Tier against the interpreter: every integer op and range-checked op on edge values (results and error texts), a loop that runs entirely compiled |
+| `tests/tier.rs` | Tier against the interpreter: every integer op and range-checked op, loads and stores of every width in every reachable space, temporaries, copies, descriptors, layouts and logic elements, all on edge values (results and error texts), a loop that runs entirely compiled |
 | `tests/jit.rs` | Spike tests: overflow trap into Rust, struct state, reference semantics, unresolved symbol by name, background compile and swap |
 | `examples/measure.rs` | JIT cost per function size (table in STATUS.md) |
 | `WINDOWS.md` | Where LLVM 21 comes from on Windows, llvm-sys static linking, ORC on COFF, CI recipe |
@@ -52,6 +57,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | Runtime errors call a Rust `extern "C"` callback and return a status; no unwinding through JIT frames | Win64 has no unwind info for them | same; WINDOWS.md |
 | Shared `libLLVM-21.so` on Linux; static libs from the release tarball on Windows | Link memory; llvm-sys refuses dynamic on Windows | same |
 | Side exits: compiled code works on the interpreter frame, returns to the interpreter at calls, waits, reports and every slow or error path, steps other instructions through `yavs_rt_step` | Rule 5 by construction; one implementation of frames, heap and traces | `docs/decisions.md` "LLVM tier: side exits" |
+| Memory instructions run natively only where the bytes lie in memory `Mem` reaches and no error is possible; anything else steps the whole instruction, before any side effect | Rule 5: one implementation of address spaces and errors | `docs/decisions.md` "LLVM tier: side exits" (Memory) |
 | A function whose generated LLVM does not verify, or that names a register beyond its frame, stays interpreted with a note (`--verbose`); never a guess | Fail clearly, per function | `src/lower.rs` `compile` |
 | Proposed size threshold: O2 up to 40k IR instructions per function, larger stays interpreted, big processes as several functions | Superlinear codegen time | `docs/decisions.md` "LLVM bindings"; decision issue #126 |
 | Time resolution and integer semantics identical in every tier (checked i64) | Rule 7 | `docs/plan.md` rule 7 |
@@ -93,6 +99,6 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
 - Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
   tiering and background compilation (`--tier=auto`); #126 decision: O2 threshold of 40k
   instructions; native lowering
-  still to do, by IR construct: #334 memory and addresses, #335 descriptors and layouts, #336
-  calls between compiled functions, #337 natives, foreign calls and reports, #338 logic arrays,
+  still to do, by IR construct: #336 calls between compiled functions, #337 natives, foreign calls and reports, #338 logic
+  arrays (`LGet`/`LSet` done),
   #339 signals and waits, #340 heap, #341 real conversions and powers. Epic: #144 (M6).

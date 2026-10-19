@@ -19,7 +19,7 @@ mod verify;
 pub use build::{FuncBuilder, ProgramBuilder};
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, ElabOp, FOp, FUnOp, ForceKind, Inst,
-    IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, SIG_PART_BYTES, Width,
+    IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES, Width,
 };
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,

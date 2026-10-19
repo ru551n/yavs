@@ -234,16 +234,48 @@ impl Default for Bindings {
 /// interpreter then executes. The interpreter stays the semantic reference (rule 5).
 pub trait Tier: Send + Sync {
     /// Run `func` from instruction `pc` until an instruction the interpreter must execute
-    /// and return its index; `None` when `func` is not compiled. `step(regs, pc)` executes
-    /// the instruction at `pc` on `regs` and returns `false` on a fault, after which `run`
-    /// returns `pc` at once.
+    /// and return its index; `None` when `func` is not compiled.
     fn run(
         &self,
         func: FuncId,
         pc: u32,
-        regs: &mut Vec<u64>,
-        step: &mut dyn FnMut(&mut Vec<u64>, u32) -> bool,
+        fr: &mut TierFrame,
+        host: &mut dyn TierHost,
     ) -> Option<u32>;
+}
+
+/// The interpreter's side of [`Tier::run`].
+pub trait TierHost {
+    /// Execute the instruction at `pc` on `fr`; `false` on a fault, after which `run`
+    /// returns `pc` at once.
+    fn step(&mut self, fr: &mut TierFrame, pc: u32) -> bool;
+
+    /// The memory object `addr` points into, as its start and length, writable when
+    /// `write`: `None` for the memory in the [`TierFrame`] and wherever the interpreter's
+    /// access would fail (compiled code then steps the instruction). Valid until the next
+    /// `step`.
+    fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)>;
+}
+
+/// What compiled code reads and writes itself (ir.md 5): the top frame's registers and
+/// slots and the temporary area, taken out of the machine for [`Tier::run`] and put back
+/// around every `step`. Every other address goes through `step`.
+pub struct TierFrame {
+    pub regs: Vec<u64>,
+    /// The slots of the frame, reached by addresses `[space::FRAME, frame, offset]`.
+    pub slots: Vec<u8>,
+    pub frame: u32,
+    /// The temporary area, `[space::TEMP, 0, offset]`; `Inst::Stmt` truncates it to
+    /// `temp_base`.
+    pub temp: Vec<u8>,
+    pub temp_base: usize,
+    /// The instance data (read only), `[space::INST, 0, offset]`. It outlives the run.
+    pub inst: *const [u8],
+}
+
+/// Address spaces: the top 3 bits of an address `[space: 3 | index: 29 | offset: 32]`.
+pub mod space {
+    pub use crate::exec::{CONST, FRAME, INST, PKG, SHARED, TEMP};
 }
 
 /// A program bound for execution, shared by all processes of a simulation.

@@ -447,7 +447,7 @@ instance data; #75; components and blocks with them, configuration specification
 architecture, #222), `others` in a configuration after component configurations naming
 specification-bound instances, 2019 variable ports denoting the shared variable at the end of
 their chain of actuals (architecture, block, generate or package shared variables, through
-entities, components and blocks; a top-level one is E2119; #188), non-static expression actuals of `in` ports and of parts of
+entities, components and blocks; a top-level one is E2119; #188), a TIME unit below `yavs run --resolution` anywhere in the elaborated design is E2120 (LRM 5.2.4.2, std and ieee exempt), an incremental binding repeating the entity aspect of its configuration specification (E1702 only for a different one), non-static expression actuals of `in` ports and of parts of
 them driven by their equivalent IR process one delta later (records leaf by leaf, ranges from
 the instance's generics checked, scalar parts checked against their subtypes (#263), expression actuals in a binding indication's port map),
 static expression parts in the formal's initial value, unconstrained formals bounded by a

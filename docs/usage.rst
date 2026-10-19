@@ -45,7 +45,10 @@ otherwise.
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
   ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME
-  values in ``std.reflection`` mirrors.
+  values in ``std.reflection`` mirrors. A TIME literal with a unit below the limit anywhere in
+  the elaborated design (``1 ps`` under ``--resolution=ns``), in a package it uses or in code that
+  never runs, is an error (``E2120``, LRM 5.2.4.2) that lists the locations; ``0 ps`` is allowed,
+  and so is ``0.4 ns``, because the rule is about the unit and not the value.
 * ``--wave out.fst`` records the whole design as an FST file that waveform viewers read. It is
   finished on normal end, on ``--stop-time`` and on Ctrl-C. ``--wave-include GLOB`` and
   ``--wave-exclude GLOB`` (repeatable, matching paths such as ``tb.u1.count``) choose what is

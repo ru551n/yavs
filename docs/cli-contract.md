@@ -229,7 +229,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   setting (plan rule 7). It is the value of `std.env.resolution_limit`, the unit of TIME
   values in `std.reflection` mirrors (decisions.md "Reflection: TIME values in mirrors") and the
   unit delays are truncated to (the kernel). Any other value is a usage error (exit 2). Not
-  applied to `yavs elab` (evaluation during elaboration uses `fs`).
+  applied to `yavs elab` (evaluation during elaboration uses `fs`). LRM 5.2.4.2: a non-zero
+  TIME literal (or bare unit name) with a unit below the limit anywhere in the elaborated
+  design, packages and dead code included, is error `E2120` before time 0 (exit 2; the first 10
+  locations are listed); `0 fs` and values such as `0.4 ns` under `ns` are legal. The built-in
+  std and ieee sources are exempt. A design that ran with a coarse limit before can now fail.
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).

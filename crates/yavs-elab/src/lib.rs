@@ -71,10 +71,45 @@ pub mod codes {
     pub const IMPURE_AT_RUN_TIME: &str = "W2118";
     /// A top-level variable port (2019) has no actual (LRM 6.5.6.3, #188).
     pub const VARIABLE_PORT_OPEN: &str = "E2119";
+    /// A TIME unit below the resolution limit appears in the design hierarchy (LRM 5.2.4.2).
+    pub const TIME_BELOW_RESOLUTION: &str = "E2120";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").
     pub const INTERNAL: &str = "E9999";
+}
+
+/// LRM 5.2.4.2: it is an error if a unit of TIME smaller than the resolution limit appears in
+/// the elaborated design hierarchy, unless its abstract literal is zero. `db` holds exactly the
+/// units elaboration loaded (the hierarchy and the packages it uses, std and ieee included when
+/// they contain such a literal), whether or not the code runs. The rule is about the unit, not
+/// the value (`0.4 ns` is legal under `ns`).
+pub fn check_time_resolution(db: &Db, limit: yavs_kernel::Unit) -> Option<Diagnostic> {
+    /// Locations listed in the diagnostic; the rest is counted.
+    const LISTED: usize = 10;
+    let uses = db.fine_time_units(limit.fs() as i64);
+    let first = uses.first()?;
+    let mut d = Diagnostic::error(
+        codes::TIME_BELOW_RESOLUTION,
+        format!(
+            "{} TIME literal{} with a unit below the resolution limit of {} in the design",
+            uses.len(),
+            if uses.len() == 1 { "" } else { "s" },
+            format!("{limit:?}").to_lowercase(),
+        ),
+    )
+    .with_primary(
+        first.span,
+        format!("unit `{}` is below the resolution limit", first.unit),
+    );
+    for u in &uses[1..uses.len().min(LISTED)] {
+        d = d.with_secondary(u.span, format!("unit `{}`", u.unit));
+    }
+    if uses.len() > LISTED {
+        d = d.with_note(format!("and {} more", uses.len() - LISTED));
+    }
+    Some(d.with_note("LRM 5.2.4.2: this holds for every TIME literal in the hierarchy, in packages it uses and in code that never runs; only a literal whose abstract literal is zero is exempt")
+        .with_help("select a finer limit with `--resolution`, or use a coarser unit"))
 }
 
 /// Elaboration settings.

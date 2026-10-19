@@ -103,7 +103,7 @@ python3 tools/difftest/difftest.py --candidate yavs
 
 - New behaviour: a unit test in `src/tests.rs` (inline VHDL), and a negative case for each new
   code. End-to-end cases go into `tests/corpus` with the reference simulator output (`tests/corpus/AGENTS.md`).
-- Codes owned: `E2100`-`E2199`, `W2100`-`W2199` (`yavs_elab::codes`: E2101 to E2117, E2119, W2105,
+- Codes owned: `E2100`-`E2199`, `W2100`-`W2199` (`yavs_elab::codes`: E2101 to E2117, E2119, E2120, W2105,
   W2108, W2118), plus `E9999`.
 
 ## 6. Coordination

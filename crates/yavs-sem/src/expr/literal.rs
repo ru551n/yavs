@@ -618,6 +618,8 @@ pub fn physical_value(
             .with_primary(unit.span, "no such unit"),
         ));
     };
+    let zero = lex(value.as_str()).is_ok_and(|a| a.digits.iter().all(|&d| d == 0));
+    db.note_time_unit(ty, unit.key, scale, zero, span);
     physical_literal(value.as_str(), scale)
         .map(ConstValue::Phys)
         .map_err(|e| abs_error(db, e, span))

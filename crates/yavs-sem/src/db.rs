@@ -98,6 +98,9 @@ pub struct Db {
     /// the hidden constant whose descriptor is the call's result subtype (M2 passes it after
     /// the parameters) and the subtype `r` it constrains.
     pub ret_names: HashMap<ScopeId, (DeclId, SubtypeId)>,
+    /// Every non-zero TIME physical literal or unit name below one second that was analyzed,
+    /// for the resolution limit check at elaboration (LRM 5.2.4.2, [`Db::fine_time_units`]).
+    pub time_units: Vec<TimeUnitUse>,
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
     pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
@@ -169,7 +172,50 @@ pub struct Db {
 
 // Helpers below are used by the slices being filled in (CONTRIBUTING.md).
 #[allow(dead_code)]
+/// A use of a TIME unit below one second (LRM 5.2.4.2).
+#[derive(Clone, Copy, Debug)]
+pub struct TimeUnitUse {
+    pub span: Span,
+    /// The unit as written, and its size in femtoseconds.
+    pub unit: Symbol,
+    pub fs: i64,
+}
+
 impl Db {
+    /// The recorded uses of a TIME unit smaller than `limit_fs` femtoseconds, in source order
+    /// of analysis, each location once.
+    pub fn fine_time_units(&self, limit_fs: i64) -> Vec<TimeUnitUse> {
+        let mut seen = HashSet::new();
+        self.time_units
+            .iter()
+            .filter(|u| u.fs < limit_fs && seen.insert((u.span.file, u.span.start)))
+            .copied()
+            .collect()
+    }
+
+    /// Record a TIME physical literal of unit `unit` (`fs` femtoseconds) unless its abstract
+    /// literal is zero or the unit is a second or more (it is never below a resolution limit).
+    pub(crate) fn note_time_unit(
+        &mut self,
+        ty: TypeId,
+        unit: Symbol,
+        fs: i64,
+        zero: bool,
+        span: Span,
+    ) {
+        // The built-in std and ieee sources are exempt: `std.textio`'s default `UNIT : TIME := ns`
+        // would make every design that uses `write` fail under a limit coarser than `ns`.
+        let builtin = self.stack.last().is_some_and(|cx| {
+            matches!(
+                self.libs[cx.lib].source,
+                crate::loader::LibSource::StdDir(_)
+            )
+        });
+        if !zero && !builtin && fs < 1_000_000_000_000_000 && self.well_known.time == Some(ty) {
+            self.time_units.push(TimeUnitUse { span, unit, fs });
+        }
+    }
+
     pub fn new(opts: Options) -> Db {
         let mut scopes = Arena::new();
         let root = scopes.push(Scope::new(ScopeKind::Root, None, None));
@@ -234,6 +280,7 @@ impl Db {
             attr_index: HashMap::new(),
             forwarding: HashMap::new(),
             ret_names: HashMap::new(),
+            time_units: Vec::new(),
             attr_closed: HashSet::new(),
             pending_label_attrs: Vec::new(),
             well_known: WellKnown::default(),

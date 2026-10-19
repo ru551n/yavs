@@ -401,6 +401,10 @@ pub fn run(
     if out.errors > 0 {
         return out.finish(2);
     }
+    if let Some(d) = yavs_elab::check_time_resolution(&db, cfg.resolution) {
+        out.emit(&db.sources, &d);
+        return out.finish(2);
+    }
     let (mut sim, rt) = match e.build_runtime(cfg) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.

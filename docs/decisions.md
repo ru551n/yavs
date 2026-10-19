@@ -1179,6 +1179,11 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   and majority):** a component configuration may repeat the entity aspect of the configuration
   specification that binds the instance (same entity and architecture, or same configuration, after
   resolution); only a different entity aspect is `E1702`. Two of three reference simulators accept.
+- **TIME units below the resolution limit (L78, #253; user, 2026-10-19: follow the LRM):** under
+  `yavs run --resolution=U`, a non-zero TIME literal or unit name below `U` anywhere in the elaborated
+  hierarchy (packages it uses, code that never runs) is `E2120` before time 0 (LRM 5.2.4.2); the
+  built-in std and ieee sources are exempt (`std.textio` defaults `UNIT` to `ns`). One reference
+  simulator only warns. Recorded in `docs/design/lrm-checks.md` L78.
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

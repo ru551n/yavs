@@ -119,6 +119,18 @@ literal. Standard: 9.3, 5.2.3 (the range of ``universal_integer`` is implementat
 
 *Portable:* write ``-9223372036854775807 - 1``.
 
+TIME units below the resolution limit
+-------------------------------------
+
+With ``yavs run --resolution=ns``, any TIME literal with a unit below ``ns`` (``1 ps``, or the
+bare unit ``ps``) anywhere in the elaborated design is an error before time 0, also in a package
+it uses and in code that never runs. ``0 ps`` is legal, and so is ``0.4 ns``: the rule is about
+the unit, not the value. Values that are not a multiple of the limit keep femtosecond precision.
+Some simulators only warn and round the literal. The units of the built-in ``std`` and ``ieee``
+libraries are not checked. Standard: 5.2.4.2.
+
+*Portable:* write times in units at or above the limit you run with.
+
 Constant errors in ranges and overflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

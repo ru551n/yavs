@@ -1192,6 +1192,8 @@ impl Db {
                             _ => return self.poison_expr(),
                         };
                         let st = self.types[ty].first_subtype;
+                        let unit = self.decls[self.entity(d)].name.key();
+                        self.note_time_unit(ty, unit, scale, false, span);
                         self.lit_expr(ConstValue::Phys(scale), st, span)
                     }
                     _ => self.poison_expr(),

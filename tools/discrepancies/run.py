@@ -27,23 +27,24 @@ CASES = os.path.normpath(os.path.join(HERE, "..", "..", "tests", "discrepancies"
 LOCAL = os.path.join(HERE, "sims.local.conf")
 CACHE = os.path.expanduser(os.environ.get("DISCREP_CACHE", "~/.cache/yavs-discrep"))
 
-# (analyse, elab_and_run) bash snippets; placeholders {file} {top} {std} {work}. Exit 97 is an
+# (analyse, elab_and_run) bash snippets; placeholders {file} {top} {std} {work} {res} (the resolution limit of the case, default fs). Exit 97 is an
 # analysis error, 98 an elaboration error. ponytail: the sim4 template is untested.
 TEMPLATES = {
     "yavs": ('"${YAVS_BIN:-yavs}" analyze --std={std} --work=work:{work} {file}',
              '"${YAVS_BIN:-yavs}" elab --std={std} --work=work:{work} {top} || exit 98; '
-             '"${YAVS_BIN:-yavs}" run --std={std} --work=work:{work} {top}'),
+             '"${YAVS_BIN:-yavs}" run --std={std} --work=work:{work} --resolution={res} {top}; '
+             'rc=$?; [ $rc = 2 ] && exit 98; exit $rc'),
     "nvc": ('nvc --std={std} --work={work} -a {file}',
             'nvc --std={std} --work={work} -e {top} || exit 98; nvc --std={std} --work={work} -r {top}'),
     "ghdl": ('mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file}',
              'ghdl -e --std={std2} --workdir={work} {top} || exit 98; '
              'ghdl -r --std={std2} --workdir={work} {top}'),
     "vsim": ('vlib {work} >/dev/null && SALT_LICENSE_SERVER="$LM_LICENSE_FILE" vcom -{std} -work {work} {file}',
-             'o=$(SALT_LICENSE_SERVER="$LM_LICENSE_FILE" vsim -c -lib {work} {top} -do "run -all; quit -f" 2>&1); '
+             'o=$(SALT_LICENSE_SERVER="$LM_LICENSE_FILE" vsim -c -t {res} -lib {work} {top} -do "run -all; quit -f" 2>&1); '
              'rc=$?; echo "$o"; echo "$o" | grep -q "Error loading design\\|vsim-.*Fatal" && exit 98; '
              'echo "$o" | grep -q "^# Fatal error" && exit 3; exit $rc'),
     "riviera": ('vlib {work} >/dev/null && vcom -{std} -work {work} {file}',
-                'vsim -c -lib {work} {top} -do "run -all; quit"'),
+                'vsim -c -t {res} -lib {work} {top} -do "run -all; quit"'),
 }
 MSG = [  # report/assert lines of the known output formats
     re.compile(r"^\*\* (Note|Warning|Error|Failure): (?:\d+\w*\+\d+: )?(?:\S+:\d+ )?(.*)$"),  # yavs-style
@@ -74,7 +75,7 @@ def load_sims(names):
 
 
 def parse_conf(path):
-    c = {"top": "top", "std": "2008", "mode": "run"}
+    c = {"top": "top", "std": "2008", "mode": "run", "res": "fs"}
     for line in open(path):
         if "=" in line:
             k, v = line.split("=", 1)
@@ -98,7 +99,7 @@ def run_one(sim, tpl, case, conf, std, sandbox):
     work = os.path.join(CACHE, str(os.getpid()), sim, os.path.basename(case), std)
     os.makedirs(os.path.dirname(work), exist_ok=True)
     f = os.path.join(case, "case.vhd")
-    sub = dict(file=f, top=conf["top"], std=std, std2=std[2:], work=work)
+    sub = dict(file=f, top=conf["top"], std=std, std2=std[2:], work=work, res=conf["res"])
 
     def sh(snippet):
         for k, v in sub.items():

@@ -585,7 +585,7 @@ fn run_resolution() {
         &src,
         "use std.env.all; entity t is end;\n\
          architecture a of t is begin process begin\n\
-           report integer'image(resolution_limit / 1 fs); wait; end process; end;\n",
+           report integer'image(time'pos(resolution_limit)); wait; end process; end;\n",
     )
     .expect("write");
     let lib = format!("--work=work:{}/lib", tmp.display());
@@ -613,6 +613,58 @@ fn run_resolution() {
     }
     let o = run(&["run", &lib, "t", "--resolution=xs"]);
     assert_eq!(o.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// LRM 5.2.4.2: a TIME literal whose unit is below the `--resolution` limit is an error
+/// anywhere in the hierarchy (a package, code that never runs), unless its abstract literal is
+/// zero; the rule is about the unit, not the value (E2120).
+#[test]
+fn run_resolution_rejects_finer_units() {
+    let tmp = tempdir("resolution-units");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    // `1 ps` sits in a function nothing calls.
+    for (name, lit, ns_ok) in [
+        ("fine", "1 ps", false),
+        ("zero", "0 ps", true),
+        ("frac", "0.4 ns", true),
+        ("bare", "ps", false),
+    ] {
+        let src = tmp.join(format!("{name}.vhd"));
+        std::fs::write(
+            &src,
+            format!(
+                "package p is function f return time; end package;\n\
+                 package body p is function f return time is begin return {lit}; end function; end package body;\n\
+                 use work.p.all; entity {name} is end;\n\
+                 architecture a of {name} is begin process begin wait; end process; end;\n"
+            ),
+        )
+        .expect("write");
+        let o = run(&["analyze", "--std=2008", &lib, &src.display().to_string()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let ok = run(&["run", &lib, name, "--resolution=ps"]);
+        assert!(
+            ok.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+        let o = run(&["run", &lib, name, "--resolution=ns"]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        if ns_ok {
+            assert!(o.status.success(), "{name}: {err}");
+        } else {
+            assert_eq!(o.status.code(), Some(2), "{name}: {err}");
+            assert!(err.contains("E2120"), "{name}: {err}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

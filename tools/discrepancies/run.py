@@ -28,7 +28,7 @@ LOCAL = os.path.join(HERE, "sims.local.conf")
 CACHE = os.path.expanduser(os.environ.get("DISCREP_CACHE", "~/.cache/yavs-discrep"))
 
 # (analyse, elab_and_run) bash snippets; placeholders {file} {top} {std} {work} {res} (the resolution limit of the case, default fs). Exit 97 is an
-# analysis error, 98 an elaboration error. ponytail: the sim4 template is untested.
+# analysis error, 98 an elaboration error.
 TEMPLATES = {
     "yavs": ('"${YAVS_BIN:-yavs}" analyze --std={std} --work=work:{work} {file}',
              '"${YAVS_BIN:-yavs}" elab --std={std} --work=work:{work} {top} || exit 98; '
@@ -43,13 +43,18 @@ TEMPLATES = {
              'o=$(SALT_LICENSE_SERVER="$LM_LICENSE_FILE" vsim -c -t {res} -lib {work} {top} -do "run -all; quit -f" 2>&1); '
              'rc=$?; echo "$o"; echo "$o" | grep -q "Error loading design\\|vsim-.*Fatal" && exit 98; '
              'echo "$o" | grep -q "^# Fatal error" && exit 3; exit $rc'),
-    "riviera": ('vlib {work} >/dev/null && vcom -{std} -work {work} {file}',
-                'vsim -c -t {res} -lib {work} {top} -do "run -all; quit"'),
+    "riviera": ('for d in ${PATH//:/ }; do [ -e $d/hdl.cfg ] && PATH=$d:$PATH && break; done; '
+                'mkdir -p {work} && vlib {work}/work >/dev/null && vcom -{std} -work {work}/work {file}',
+                'for d in ${PATH//:/ }; do [ -e $d/hdl.cfg ] && PATH=$d:$PATH && break; done; '
+                'o=$(vsim -c -t {res} -lib {work}/work {top} -do "run -all; quit" 2>&1); rc=$?; echo "$o"; '
+                'echo "$o" | grep -q "initialization failed\\|ELAB[0-9]*: .*ERROR" && exit 98; '
+                'echo "$o" | grep -q "EXECUTION:: FAILURE\\|RUNTIME: Fatal" && exit 3; exit $rc'),
 }
 MSG = [  # report/assert lines of the known output formats
     re.compile(r"^\*\* (Note|Warning|Error|Failure): (?:\d+\w*\+\d+: )?(?:\S+:\d+ )?(.*)$"),  # yavs-style
     re.compile(r"\((?:report|assertion) (note|warning|error|failure)\): (.*)$"),
     re.compile(r"^# \*\* (Note|Warning|Error|Failure): (.*)$"),
+    re.compile(r"^# EXECUTION:: (NOTE|WARNING|ERROR|FAILURE)\s*: (.*)$"),
 ]
 CRASH = re.compile(r"internal error|Segmentation|Caught signal|stack dump|PANIC|Assertion failed|GNAT BUG|thread .* panicked", re.I)
 

@@ -37,6 +37,6 @@ Read the root `AGENTS.md` and `tools/AGENTS.md` first. The catalogue is
 ## 5. How to work here
 
 ```sh
-YAVS_BIN=$PWD/target/debug/yavs python3 tools/discrepancies/run.py --sims sim1,sim2,sim3 --check
+YAVS_BIN=$PWD/target/debug/yavs python3 tools/discrepancies/run.py --sims sim1,sim2,sim3,sim4 --check
 python3 tools/discrepancies/run.py --filter open-port --bless-yavs
 ```

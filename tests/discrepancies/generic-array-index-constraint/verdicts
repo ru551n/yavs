@@ -3,3 +3,4 @@ sim2 2019 REJECT
 sim3 2019 REJECT
 # sim2 and sim3: the REJECT is a syntax error on any generic type with a type class, so unsupported: no vote
 # sim1: parse error at the index constraint only (the array class itself parses), one reject vote at most
+sim4 2019 OK

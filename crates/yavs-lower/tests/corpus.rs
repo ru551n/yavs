@@ -161,6 +161,8 @@ const PASS: &[&str] = &[
     "protected/method_nested",
     "protected/private_variables",
     "protected/stack",
+    "protected/variable_ports",
+    "protected/variable_ports_same_delta",
     "reflect/access_file_prot",
     "reflect/arrays",
     "reflect/arrays2",

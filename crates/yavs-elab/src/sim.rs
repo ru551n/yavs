@@ -38,6 +38,8 @@ pub struct Ir {
     pub foreign: Vec<(yavs_ir::ForeignId, yavs_ffi::ForeignFn)>,
     /// Where the unbound ones were looked for (reported when one is called).
     pub foreign_searched: String,
+    /// Thunks returning the handle of each package shared variable a variable port denotes.
+    pub var_pkgs: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
     /// The functions of `Elaborated::elab_calls`, for the replay.
     pub(crate) elab_sigs: HashMap<yavs_sem::DeclId, crate::pkgcall::Sig>,
 }
@@ -116,6 +118,17 @@ impl Elaborated {
             }
             res_regions.insert(crate::LeafId(k as u32), region);
         }
+        // The shared variable a variable port denotes lives in its region's instance data,
+        // so that region's architecture is lowered even when it owns no process (#188).
+        for v in self.var_ports.values() {
+            if let crate::VarObj::Region { region, .. } = *v
+                && let ScopeKind::Instance { arch, .. } =
+                    self.hier.scope(self.instance_of(region)).kind
+                && !archs.contains(&arch)
+            {
+                archs.push(arch);
+            }
+        }
         let packages = run_time_packages(db);
         // A declaration's constant calling a subprogram of its own package runs before the
         // body is elaborated (LRM 14.4.2): E2114, also for constants only processes read
@@ -146,6 +159,14 @@ impl Elaborated {
         for p in &self.procs {
             if let Some(a) = &p.actual {
                 l.port_actual(a.expr, a.formal);
+            }
+        }
+        let mut var_pkgs = HashMap::new();
+        for v in self.var_ports.values() {
+            if let crate::VarObj::Package(d) = *v
+                && !var_pkgs.contains_key(&d)
+            {
+                var_pkgs.insert(d, l.package_value(d)?);
             }
         }
         let mut elab_sigs = HashMap::new();
@@ -209,6 +230,7 @@ impl Elaborated {
             shared_size: lowered.shared_size,
             foreign: Vec::new(),
             foreign_searched: String::new(),
+            var_pkgs,
             elab_sigs,
         });
         Ok(())
@@ -385,21 +407,7 @@ impl Elaborated {
         // Instance data of the regions whose resolution functions read it (#164).
         let mut res_inst: HashMap<crate::LeafId, Arc<InstData>> = HashMap::new();
         for (&leaf, &region) in &ir.res_regions {
-            let d = match insts.get(&region) {
-                Some(d) => d.clone(),
-                None => {
-                    let ScopeKind::Instance { arch, .. } = self.hier.scope(region).kind else {
-                        return Err(sim_err("resolution region is not an instance".into()));
-                    };
-                    let u = ir
-                        .units
-                        .get(&arch)
-                        .ok_or_else(|| sim_err("architecture not lowered".into()))?;
-                    let d = Arc::new(self.inst_data(&rt, u, region, &shared, &mut once)?);
-                    insts.insert(region, d.clone());
-                    d
-                }
-            };
+            let d = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts)?;
             res_inst.insert(leaf, d);
         }
         let res =
@@ -436,14 +444,7 @@ impl Elaborated {
                 // One instance data per region (instance, block, generate iteration): values and
                 // signals are looked up from the process's enclosing region outwards.
                 let region = self.hier.scope(p.scope).parent.unwrap_or(i);
-                let inst = match insts.get(&region) {
-                    Some(d) => d.clone(),
-                    None => {
-                        let d = Arc::new(self.inst_data(&rt, u, region, &shared, &mut once)?);
-                        insts.insert(region, d.clone());
-                        d
-                    }
-                };
+                let inst = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts)?;
                 if let Some(a) = &p.actual {
                     return self.actual_process(&rt, u, a, p, ds, inst);
                 }
@@ -542,14 +543,95 @@ impl Elaborated {
         Ok(Box::new(proc))
     }
 
-    /// Instance data of instance `i`: constants from their thunks, the signal table.
+    /// The instance data of `region` (instance, block, generate iteration), built once.
+    fn region_data(
+        &self,
+        rt: &Arc<Runtime>,
+        ir: &Ir,
+        region: ScopeId,
+        shared: &Arc<Mutex<SharedState>>,
+        once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
+        insts: &mut HashMap<ScopeId, Arc<InstData>>,
+    ) -> Result<Arc<InstData>, SimError> {
+        if let Some(d) = insts.get(&region) {
+            return Ok(d.clone());
+        }
+        let ScopeKind::Instance { arch, .. } = self.hier.scope(self.instance_of(region)).kind
+        else {
+            return Err(sim_err("region outside an instance".into()));
+        };
+        let u = ir
+            .units
+            .get(&arch)
+            .ok_or_else(|| sim_err("architecture not lowered".into()))?;
+        let d = Arc::new(self.inst_data(rt, ir, u, region, shared, once, insts)?);
+        insts.insert(region, d.clone());
+        Ok(d)
+    }
+
+    /// The handle of protected object `obj` of a variable port: read from
+    /// the instance data of the shared variable's region (built first if needed: it is an
+    /// enclosing region), or from its package (#188).
+    fn var_handle(
+        &self,
+        rt: &Arc<Runtime>,
+        ir: &Ir,
+        obj: crate::VarObj,
+        shared: &Arc<Mutex<SharedState>>,
+        once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
+        insts: &mut HashMap<ScopeId, Arc<InstData>>,
+    ) -> Result<u64, SimError> {
+        match obj {
+            crate::VarObj::Region { region, decl } => {
+                let data = self.region_data(rt, ir, region, shared, once, insts)?;
+                let ScopeKind::Instance { arch, .. } =
+                    self.hier.scope(self.instance_of(region)).kind
+                else {
+                    return Err(sim_err("region outside an instance".into()));
+                };
+                let off = ir
+                    .units
+                    .get(&arch)
+                    .and_then(|u| u.consts.iter().find(|c| c.decl == decl))
+                    .map(|c| c.off as usize)
+                    .ok_or_else(|| {
+                        sim_err("shared variable of a variable port not lowered".into())
+                    })?;
+                let mut b = [0; 8];
+                b.copy_from_slice(&data.data[off..off + 8]);
+                Ok(u64::from_le_bytes(b))
+            }
+            crate::VarObj::Package(decl) => {
+                let f = *ir
+                    .var_pkgs
+                    .get(&decl)
+                    .ok_or_else(|| sim_err("package shared variable not lowered".into()))?;
+                match yavs_interp::call_values_shared(
+                    rt.clone(),
+                    f,
+                    Arc::new(InstData::default()),
+                    &[],
+                    None,
+                    Some(shared),
+                )? {
+                    Some(CallVal::Cell(h)) => Ok(h),
+                    _ => Err(sim_err("package shared variable has no handle".into())),
+                }
+            }
+        }
+    }
+
+    /// Instance data of region `i`: constants from their thunks, the signal table.
+    #[allow(clippy::too_many_arguments)]
     fn inst_data(
         &self,
         rt: &Arc<Runtime>,
+        ir: &Ir,
         u: &UnitIr,
         i: ScopeId,
         shared: &Arc<Mutex<SharedState>>,
         once: &mut HashMap<(ScopeId, yavs_sem::DeclId), CallVal>,
+        insts: &mut HashMap<ScopeId, Arc<InstData>>,
     ) -> Result<InstData, SimError> {
         let mut inst = InstData {
             data: vec![0; u.inst_size as usize],
@@ -630,6 +712,15 @@ impl Elaborated {
                 signal: yavs_kernel::SignalId(leaf.0),
                 ty: self.nets.leaf(leaf).ty,
             });
+        }
+        // Variable ports before the constants, whose thunks may call their methods. A port
+        // of a nested region (a block) has no object seen from here; processes of this
+        // region never name it.
+        for &(d, off) in &u.var_ports {
+            if let Some(obj) = self.var_port(i, d) {
+                let h = self.var_handle(rt, ir, obj, shared, once, insts)?;
+                inst.data[off as usize..off as usize + 8].copy_from_slice(&h.to_le_bytes());
+            }
         }
         for c in u.consts.iter().filter(|c| !known.contains(&c.decl)) {
             // An instance-level constant or shared variable is one object for all regions of

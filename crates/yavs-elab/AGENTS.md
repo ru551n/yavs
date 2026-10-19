@@ -21,7 +21,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `warnings`, `ir`; `signal`, `value`), `codes` |
+| `src/lib.rs` | `find_top` (`ENTITY`, `ENTITY.ARCH`, `CONFIGURATION`), `elaborate(db, top, overrides, cfg)`, `ElabConfig` (`max_depth` 1000), `Top`, `ProcInst` (`lsps` in kernel offsets), `Elaborated` (`hier`, `nets`, `procs`, `model_vals`, `sigs`, `var_ports`, `warnings`, `ir`; `signal`, `value`, `var_port`), `VarObj`, `codes` |
 | `src/walk.rs` | The elaborator: instances, generics, generates, blocks, binding (configuration declaration, then specification, then default binding), ports, processes, depth-first in statement order |
 | `src/eval.rs` | Elaboration-time values: `Model`, `Val`, `elem_of`; `Db::fold_with` for globally static expressions, interpreter calls of user functions (`call_values`); `-g` overrides via the yavs-std `'value` parser |
 | `src/value.rs` | Composite values: aggregates (any number of dimensions), indexing, slices, fields, concatenation, equality, BIT/BOOLEAN logical operators on `Val`; other predefined operations and `TO_STRING` through their yavs-interp natives (`implicit_call`); `encode`/`decode` between `Val` and IR memory (any composite, `Ty::layout`) |
@@ -61,6 +61,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | Implicit signals named in a process (sem: the process's scope) are registered under the region enclosing the process; those of a package body's subprograms are package signals of the package's scope, created after the packages' own signals | LRM 16.2.4, #240 | `docs/decisions.md` "Lowering" |
 | A converted association with several leaves on a side (record port, array of composites) is one `ConvPort` (kernel `port_parts`), the function's argument and result packed and unpacked by `whole::Map`; a type conversion of such a port and a composite converted in one direction only (inout) are E9999 | #74, LRM 6.5.7.1: the conversion is part of the port, in the same delta | ir.md 4.1 |
 | Package instances: a design unit instance is a run-time package (`run_time_packages`, `Db::package_regions`) whose signals live in its own package scope; objects of an instance declared in a region are elaborated with that region's (`Db::decls_with_instances`); generic packages have none | LRM 4.9, 14.4.2 (#101) | `docs/decisions.md` "Elaboration" |
+| A 2019 variable port denotes the shared variable at the end of its chain of actuals (`Elaborated::var_ports`, `VarObj`); building writes the object's handle into the formal's cell (`UnitIr::var_ports`) from the declaring region's instance data, built on demand (`region_data`), or a package thunk; a top-level one is `E2119` | #188, LRM 6.5.2, 6.5.6.3 | `docs/decisions.md` "Elaboration" |
 | Linkage ports are kernel `in` port edges; mode-view ports take each leaf's mode from `Db::port_mode_tree` (`leaf_modes`) | #75; LRM 6.5.2 | `docs/decisions.md` "Elaboration" |
 | Not-yet-supported constructs are `E9999` naming the slice; expressions elab cannot evaluate yet `E2106` | Fail early | crate docs, #77 |
 | Predefined operations elab does not evaluate structurally (shifts, array ordering, matching operators, `TO_STRING`, ...) run their yavs-interp native (`yavs_interp::call_native`, `Lowerer::implicit_native`) on the marshalled operands | One implementation of each operation, the simulation's | #220 |
@@ -95,7 +96,7 @@ python3 tools/difftest/difftest.py --candidate yavs
 
 - New behaviour: a unit test in `src/tests.rs` (inline VHDL), and a negative case for each new
   code. End-to-end cases go into `tests/corpus` with the reference simulator output (`tests/corpus/AGENTS.md`).
-- Codes owned: `E2100`-`E2199`, `W2100`-`W2199` (`yavs_elab::codes`: E2101 to E2117, W2105,
+- Codes owned: `E2100`-`E2199`, `W2100`-`W2199` (`yavs_elab::codes`: E2101 to E2117, E2119, W2105,
   W2108, W2118), plus `E9999`.
 
 ## 6. Coordination

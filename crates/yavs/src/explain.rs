@@ -227,6 +227,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "An external name names no elaborated object (LRM 8.7, 14.4.1).",
     ),
     (
+        "E2119",
+        "A top-level entity has a variable port (VHDL-2019): a variable port denotes its actual's protected object, and the top level has no actual (LRM 6.5.6.3).",
+    ),
+    (
         "W2118",
         "A constant whose initial value calls an impure function cannot be evaluated during elaboration yet; it is evaluated when the simulation starts, so its calls run after the elaboration-time calls instead of in declaration order.",
     ),

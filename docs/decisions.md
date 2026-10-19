@@ -589,6 +589,16 @@ a note and a help suggesting an access type, as the reference simulators reject 
   A process's own declarative part is not evaluated here: the process elaborates it when it
   starts (its lowered code), once, after the elaboration-time calls of every region, as the
   reference simulators do; evaluating it during elaboration as well ran its calls twice (#251).
+- **2019 variable ports** (#188, elab agent, 2026-10-19; LRM 6.5.2, 6.5.6.3, LCS-2016-047):
+  the formal denotes its actual's protected object. Elaboration resolves each formal to the
+  shared variable at the end of its chain of actuals (`Elaborated::var_ports`: a region's
+  shared variable or a package's); lowering gives the formal an 8-byte instance cell
+  (`UnitIr::var_ports`), and building writes the object's handle into it, read from the
+  declaring region's instance data (built first, so the region's architecture is lowered even
+  without processes) or from a package thunk (`Lowerer::package_value`). Calls through the
+  port are ordinary protected calls, so the processes run serially like any other user of a
+  shared object. Sem rejects an `open` or unassociated variable port (`E1311`; one
+  reference simulator crashes on the latter), elaboration a top-level one (`E2119`).
 - **Package objects at run time** (#183, elab agent with the lowering agent, 2026-10-18):
   packages outside std with signals, shared variables, files or constants sem did not fold are
   lowered (`Lowerer::package`) before the architectures and initialised once at build time

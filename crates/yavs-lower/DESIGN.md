@@ -267,6 +267,8 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   handle; its thunk creates the object in the shared heap (yavs-elab runs instance thunks with
   `call_shared`). Composite constants of an architecture elaboration did not fold are
   computed once per region by a thunk returning their fat pair (`InstConst::comp`, #73).
+  A 2019 variable port is an instance cell too (`UnitIr::var_ports`), with no thunk: yavs-elab
+  writes the handle of the shared variable its actual chain ends at (#188).
 - User resolution functions: yavs-elab lowers them (`Ir::resolvers`) and the kernel resolver
   calls `yavs_interp::resolve` (driving values as an array `0 to n - 1`); bit-plane leaves
   are not handled yet.

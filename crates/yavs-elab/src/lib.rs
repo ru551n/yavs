@@ -69,6 +69,8 @@ pub mod codes {
     /// A constant with an impure initial value elaboration cannot evaluate yet runs its
     /// initial value when the simulation starts, after the elaboration-time calls (#220).
     pub const IMPURE_AT_RUN_TIME: &str = "W2118";
+    /// A top-level variable port (2019) has no actual (LRM 6.5.6.3, #188).
+    pub const VARIABLE_PORT_OPEN: &str = "E2119";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").
@@ -130,6 +132,8 @@ pub struct Elaborated {
     pub model_vals: Vec<std::collections::HashMap<yavs_sem::DeclId, Val>>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
+    /// The protected object of each 2019 variable port, by (scope of the formal, formal).
+    pub var_ports: std::collections::BTreeMap<(ScopeId, yavs_sem::DeclId), VarObj>,
     /// Warnings of a successful elaboration.
     pub warnings: Vec<Diagnostic>,
     /// Conversion functions of port associations (`PortEdge::to_formal`/`to_actual`).
@@ -141,7 +145,32 @@ pub struct Elaborated {
     pub(crate) elab_calls: Vec<pkgcall::Call>,
 }
 
+/// The protected object a 2019 variable port denotes (LRM 6.5.2, #188): the shared
+/// variable at the end of its chain of actuals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VarObj {
+    /// Shared variable `decl` of region `region`, whose instance data holds its handle.
+    Region {
+        region: ScopeId,
+        decl: yavs_sem::DeclId,
+    },
+    /// A shared variable of a package.
+    Package(yavs_sem::DeclId),
+}
+
 impl Elaborated {
+    /// The protected object of variable port `d`, seen from `scope`.
+    pub fn var_port(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<VarObj> {
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(&v) = self.var_ports.get(&(s, d)) {
+                return Some(v);
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        None
+    }
+
     /// The signal object declaration `d` denotes, seen from `scope`.
     pub fn signal(&self, scope: ScopeId, d: yavs_sem::DeclId) -> Option<ObjId> {
         let mut cur = Some(scope);

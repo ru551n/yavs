@@ -36,6 +36,10 @@ pub struct Model {
     pub(crate) sigs: HashMap<(ScopeId, DeclId), ObjId>,
     /// Package constants.
     pub(crate) pkg: HashMap<DeclId, Val>,
+    /// Shared variables by (region, declaration), and the object of each variable port
+    /// (`Elaborated::var_ports`).
+    pub(crate) shared_vars: std::collections::HashSet<(ScopeId, DeclId)>,
+    pub(crate) var_ports: std::collections::BTreeMap<(ScopeId, DeclId), crate::VarObj>,
     /// User functions lowered for elaboration-time calls (ir.md 3.6): `None` when lowering
     /// failed (the reason is reported at the call).
     pub(crate) funcs: HashMap<DeclId, Result<Lowered1, crate::pkgcall::Fail>>,

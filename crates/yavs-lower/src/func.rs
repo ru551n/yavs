@@ -939,6 +939,7 @@ pub(crate) fn architecture(
         signals: cx.pkg_sigs.clone(),
         processes: Vec::new(),
         names: Vec::new(),
+        var_ports: Vec::new(),
     };
     cx.inst_size = 0;
     cx.names.clear();
@@ -1293,6 +1294,21 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
             Ok(())
         }
         ObjClass::SharedVariable => crate::protected::shared_var(db, pb, cx, ir, d),
+        // A 2019 variable port: a cell holding the handle of its actual's protected object,
+        // which the elaborator writes (`UnitIr::var_ports`, #188).
+        ObjClass::Variable if o.role == ObjRole::Port => {
+            let off = cx.inst_alloc(8);
+            cx.objs.insert(
+                d,
+                Obj::Scalar {
+                    space: Space::Inst,
+                    off,
+                    w: Width::B8,
+                },
+            );
+            ir.var_ports.push((d, off));
+            Ok(())
+        }
         _ => Err(cx.unsupported(
             decl.span,
             "shared variables and files in an architecture (M3)",

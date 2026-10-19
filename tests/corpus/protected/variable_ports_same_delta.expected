@@ -1,0 +1,5 @@
+exit	0
+diag	note	9500000	0	:variable_ports_same_delta:g(0):c:_p0	group 0 count before 10 ns 80
+diag	note	9500001	0	:variable_ports_same_delta:g(1):c:_p0	group 1 count before 10 ns 80
+diag	note	109500000	0	:variable_ports_same_delta:g(0):c:_p0	group 0 total 600 count 160
+diag	note	110500001	0	:variable_ports_same_delta:g(1):c:_p0	group 1 total 3000 count 160

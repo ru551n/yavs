@@ -65,6 +65,9 @@ pub struct UnitIr {
     /// `'path_name` and `'instance_name` strings the elaborator writes with
     /// [`UnitIr::write_string`] (LRM 16.2.5, lower case).
     pub names: Vec<InstName>,
+    /// 2019 variable ports (LRM 6.5.2): the 8-byte cell at the offset holds the handle of the
+    /// protected object the port's actual denotes, written by the elaborator (#188).
+    pub var_ports: Vec<(DeclId, u32)>,
 }
 
 /// A `'path_name` (`instance: false`) or `'instance_name` of named entity `decl`, as seen from

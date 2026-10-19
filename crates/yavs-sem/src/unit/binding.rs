@@ -783,6 +783,9 @@ impl Db {
                     "associate it (`{name} => ...`) or give the port a default"
                 )),
             )),
+            (ObjRole::Port, _) if o.class == ObjClass::Variable => {
+                Err(self.variable_port_open(f, at, "is not associated"))
+            }
             (ObjRole::Port, _) => Ok(Actual::Open),
             _ => Err(self.error(
                 Diagnostic::error(
@@ -794,6 +797,22 @@ impl Db {
                 .with_help(format!("add `generic map ({name} => ...)`")),
             )),
         }
+    }
+
+    /// A 2019 variable port denotes its actual's object, so it must have one (6.5.6.3).
+    fn variable_port_open(&mut self, f: DeclId, at: Span, label: &str) -> Reported {
+        let name = self.decls[f].name;
+        self.error(
+            Diagnostic::error(
+                diag::MISSING_ACTUAL,
+                format!("variable port `{name}` has no actual"),
+            )
+            .with_primary(at, label.to_string())
+            .with_secondary(self.decls[f].span, "declared here")
+            .with_help(format!(
+                "associate it with a shared variable or a variable port (`{name} => ...`)"
+            )),
+        )
     }
 
     /// The actual of a whole formal.
@@ -834,6 +853,9 @@ impl Db {
             .find(|(t, _)| *t == self.base(st))
             .map_or(st, |&(_, a)| a);
         let e = match a {
+            ast::Actual::Open(sp) if class == ObjClass::Variable && role == ObjRole::Port => {
+                return Err(self.variable_port_open(f, *sp, "left open here"));
+            }
             ast::Actual::Open(sp) => {
                 if role == ObjRole::Port && mode == Some(Mode::In) && !has_default {
                     let name = self.decls[f].name;
@@ -915,7 +937,9 @@ impl Db {
         }
         // A 2019 variable port takes a shared variable or another variable port (6.5.7.1).
         if class == ObjClass::Variable {
-            let ok = matches!(self.exprs[id].kind, ExprKind::Obj(d)
+            let ok = formal_conv.is_none()
+                && matches!(a, ast::Actual::Expr(_))
+                && matches!(self.exprs[id].kind, ExprKind::Obj(d)
                 if matches!(&self.decls[d].kind, DeclKind::Object(o)
                     if o.class == ObjClass::SharedVariable || (o.class == ObjClass::Variable && o.role == ObjRole::Port)));
             if !ok {

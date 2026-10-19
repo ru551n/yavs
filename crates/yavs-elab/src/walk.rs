@@ -21,7 +21,7 @@ use crate::hier::{
     Case, DriverDecl, ImplicitKind, Leaf, LeafId, LeafRes, ObjId, ObjKind, PortEdge, ProcIdx,
     ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
-use crate::{ElabConfig, Elaborated, ProcInst, Top, codes};
+use crate::{ElabConfig, Elaborated, ProcInst, Top, VarObj, codes};
 
 type R<T> = Result<T, Box<Diagnostic>>;
 
@@ -450,6 +450,7 @@ pub(crate) fn elaborate(
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
         sigs: e.m.sigs,
+        var_ports: e.m.var_ports,
         warnings: e.warnings,
         ir: None,
         elab_calls: std::mem::take(&mut e.m.session.log),
@@ -869,6 +870,10 @@ impl Elab<'_> {
                 continue;
             };
             match (o.class, &o.role) {
+                // The actual of a variable port finds its object here (#188).
+                (ObjClass::SharedVariable, _) => {
+                    self.m.shared_vars.insert((s, d));
+                }
                 (ObjClass::Signal, ObjRole::Plain) => {
                     let span = decl.span;
                     let init = match o.default {
@@ -963,6 +968,77 @@ impl Elab<'_> {
         Ok(())
     }
 
+    /// A 2019 variable port (LRM 6.5.2) denotes its actual's protected object: the shared
+    /// variable at the end of the chain of variable ports (#188).
+    fn var_port(
+        &mut self,
+        s: ScopeId,
+        p: DeclId,
+        a: &A,
+        ascope: Option<ScopeId>,
+        at: Span,
+    ) -> R<()> {
+        let db: &Db = self.db;
+        let decl = &db.decls[p];
+        let actual = match (a, ascope) {
+            (A::Expr(e, false), Some(sc)) => match db.exprs[*e].kind {
+                ExprKind::Obj(d) => Some((sc, d, db.exprs[*e].span)),
+                _ => None,
+            },
+            (A::Local(d), Some(sc)) => Some((sc, *d, at)),
+            (A::Open, None) => {
+                // Sem rejects an unassociated variable port of an instance; the top level
+                // has nothing to associate (6.5.6.3).
+                return Err(Box::new(
+                    Diagnostic::error(
+                        codes::VARIABLE_PORT_OPEN,
+                        format!("top-level variable port `{}` has no actual", decl.name),
+                    )
+                    .with_primary(decl.span, "a variable port denotes its actual's object")
+                    .with_help("instantiate this entity with a shared variable as the actual"),
+                ));
+            }
+            _ => None,
+        };
+        let Some((sc, d, aspan)) = actual else {
+            return Err(Box::new(ice(
+                at,
+                "variable port actual is not an object name",
+            )));
+        };
+        let mut cur = Some(sc);
+        let mut obj = None;
+        while let (Some(r), None) = (cur, obj) {
+            obj = match self.m.var_ports.get(&(r, d)) {
+                Some(&v) => Some(v),
+                None if self.m.shared_vars.contains(&(r, d)) => {
+                    Some(VarObj::Region { region: r, decl: d })
+                }
+                None => None,
+            };
+            cur = self.m.hier.scope(r).parent;
+        }
+        use yavs_sem::scope::ScopeKind as S;
+        let obj = match obj {
+            Some(v) => v,
+            None if matches!(
+                db.scopes[db.decls[d].scope].kind,
+                S::Package | S::PackageBody
+            ) =>
+            {
+                VarObj::Package(d)
+            }
+            None => {
+                return Err(Box::new(ice(
+                    aspan,
+                    "the actual's shared variable is not elaborated",
+                )));
+            }
+        };
+        self.m.var_ports.insert((s, p), obj);
+        Ok(())
+    }
+
     /// Ports (rule 3): each formal is its own signal; its association becomes port edges.
     fn port(&mut self, s: ScopeId, p: DeclId, a: &A, ascope: Option<ScopeId>, at: Span) -> R<()> {
         let db: &Db = self.db;
@@ -972,7 +1048,7 @@ impl Elab<'_> {
             return Err(Box::new(ice(span, "port is not an object")));
         };
         if o.class == ObjClass::Variable {
-            return Err(unsupported(span, "variable ports (2019)", "M3"));
+            return self.var_port(s, p, a, ascope, at);
         }
         let component = matches!(self.m.hier.scope(s).kind, ScopeKind::Component { .. });
         let Some(hmode) = o.mode else {

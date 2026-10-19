@@ -129,8 +129,9 @@ An installed binary finds `lib/` next to itself (#43).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`
   sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
-  architecture. Initializer-bound signals elaborate and run (#187; records and arrays of records with such fields, #215); elab
-  reports variable ports unsupported (#188).
+  architecture. Initializer-bound signals elaborate and run (#187; records and arrays of records with such fields, #215);
+  variable ports elaborate and run (#188): the actual is a shared variable or a variable port
+  of the same type, never `open` or unassociated (`E1311`).
 - 2019 conditional expressions (`a when c else b` in initial values, assignments, actuals,
   `return` and parentheses), the conditional `return` and `unaffected` in variable and force
   assignments analyze, lower and run (#33; difftest `process/conditional_expr_2019`,
@@ -424,7 +425,9 @@ subprograms and packages (yavs-sem `Db::instantiate_entity` clones the entity an
 once per distinct map of those actuals, with its own mangled identity; generic constants stay
 instance data; #75; components and blocks with them, configuration specifications in such an
 architecture, #222), `others` in a configuration after component configurations naming
-specification-bound instances, non-static expression actuals of `in` ports and of parts of
+specification-bound instances, 2019 variable ports denoting the shared variable at the end of
+their chain of actuals (architecture, block, generate or package shared variables, through
+entities, components and blocks; a top-level one is E2119; #188), non-static expression actuals of `in` ports and of parts of
 them driven by their equivalent IR process one delta later, static expression parts in the
 formal's initial value (#74). Not yet: type conversions of record ports, record-typed signal-name
 expression actuals (#74); `inertial` signal-name actuals are expression actuals (#233).

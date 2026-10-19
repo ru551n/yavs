@@ -1551,3 +1551,56 @@ fn external_signal_alias_binds_in_elaboration_order() {
     let o = e.signal(root, alias).expect("bound");
     assert_eq!(e.hier.scope(e.nets.obj(o).scope).name.text.as_str(), "u");
 }
+
+const VAR_PORT_PKG: &str = "
+  package pk is type prot_t is protected procedure p; end protected; end;
+  package body pk is
+    type prot_t is protected body procedure p is begin end; end protected body;
+  end;";
+
+/// A top-level variable port (2019) has no actual to denote (LRM 6.5.6.3, #188).
+#[test]
+fn top_level_variable_port_has_no_actual() {
+    let src = format!(
+        "{VAR_PORT_PKG} use work.pk.all; entity t is port (variable x : inout prot_t); end;
+         architecture a of t is begin end;"
+    );
+    let mut db = analyze_rev("varport_top", &src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let Err(errs) = crate::elaborate(&mut db, top, &[], &ElabConfig::default()) else {
+        panic!("elaboration succeeded");
+    };
+    let got: Vec<&str> = errs.iter().map(|d| d.code).collect();
+    assert_eq!(got, [codes::VARIABLE_PORT_OPEN]);
+}
+
+/// Every variable port of a chain denotes the shared variable at its end (#188).
+#[test]
+fn variable_ports_denote_the_shared_variable() {
+    let src = format!(
+        "{VAR_PORT_PKG} use work.pk.all;
+         entity leaf is port (variable x : inout prot_t); end;
+         architecture a of leaf is begin end;
+         use work.pk.all;
+         entity mid is port (variable y : inout prot_t); end;
+         architecture a of mid is begin u : entity work.leaf port map (x => y); end;
+         use work.pk.all;
+         entity t is end;
+         architecture a of t is
+           shared variable sv : prot_t;
+         begin
+           m : entity work.mid port map (y => sv);
+           l : entity work.leaf port map (x => sv);
+         end;"
+    );
+    let mut db = analyze_rev("varport_chain", &src, LangRev::Vhdl2019);
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    let e = crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elaborates");
+    let objs: Vec<_> = e.var_ports.values().collect();
+    assert_eq!(objs.len(), 3);
+    assert!(objs.iter().all(|v| matches!(
+        v,
+        crate::VarObj::Region { region, .. } if *region == crate::ScopeId(0)
+    )));
+    assert!(objs.windows(2).all(|w| w[0] == w[1]));
+}

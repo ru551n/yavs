@@ -261,7 +261,13 @@ impl Signal {
         if !self.groups.is_empty() {
             return Ok(());
         }
-        for seg in &self.segments {
+        // Segments are sorted and disjoint: start at the first one that reaches `r`, so a
+        // signal with one driver per element costs O(log n) per dirty range, not O(n).
+        let first = self.segments.partition_point(|s| s.range.end() <= r.offset);
+        for seg in &self.segments[first..] {
+            if seg.range.offset >= r.end() {
+                break;
+            }
             let Some(part) = seg.range.intersect(r) else {
                 continue;
             };

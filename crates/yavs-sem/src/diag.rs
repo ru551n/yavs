@@ -76,6 +76,7 @@ codes! {
     BAD_LITERAL = "E1332", "A literal is malformed in a way the lexer accepts: a digit outside its base, a base outside 2 to 16, a negative exponent in an integer literal, a non-digit in a decimal bit string, or a physical literal with a unit the type does not have.";
     // E1333 is retired (range choices in aggregate targets are accepted, #244); never reuse it.
     AGG_PIECE_DIRECTION = "E1334", "The range choices of array values in one aggregate (`(0 to 1 => a, 3 downto 2 => b)`) have different directions: without a constrained context the aggregate takes the direction of these choices.";
+    AGG_TARGET_TWICE = "E1335", "An aggregate target identifies one variable or signal (or a part of it) more than once: by one association with several choices, or by two elements naming the same object (LRM 10.5.2.1, 10.6.2.1).";
     NOT_BOOLEAN = "E1340", "A condition must be BOOLEAN, or of a type with a visible `??` operator.";
     AMBIGUOUS_CONDITION = "E1341", "More than one `??` operator applies to this condition.";
     BAD_CONVERSION = "E1350", "A type conversion is only legal between closely related types.";

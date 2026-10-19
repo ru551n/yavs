@@ -891,6 +891,7 @@ impl Db {
             };
             let e = self.st_target(scope, target, Expected::Type(ty))?;
             let lsps = self.check_target(e, kind)?;
+            self.check_agg_distinct(e)?;
             Ok((Target { expr: e, lsps }, rhs))
         } else {
             let e = self.st_target(scope, target, Expected::Any)?;
@@ -1129,6 +1130,98 @@ impl Db {
                 }
             }
         })
+    }
+
+    /// An aggregate target identifies each variable or signal once (LRM 10.5.2.1, 10.6.2.1;
+    /// E1335): no association has several choices (null ranges aside), and no two elements
+    /// are the same static name. Elements that only overlap (`(v(0 to 1), v(1 to 2))`,
+    /// `(v(1), v)`) are accepted: two of three reference simulators accept them.
+    fn check_agg_distinct(&mut self, e: ExprId) -> Result<(), Reported> {
+        use crate::expr::aggregate::range_value;
+        use crate::hir::{Choice, LspStep};
+        let mut leaves: Vec<(ExprId, Span)> = Vec::new();
+        let mut stack = vec![e];
+        while let Some(x) = stack.pop() {
+            let ExprKind::Aggregate { assocs, .. } = &self.exprs[x].kind else {
+                continue;
+            };
+            for a in assocs.iter() {
+                let many = !a.slice_piece
+                    && a.choices
+                        .iter()
+                        .map(|c| match c {
+                            Choice::Expr(_) => 1,
+                            Choice::Range(r) => range_value(self, r).map_or(1, |r| r.len()),
+                            _ => 1,
+                        })
+                        .sum::<u128>()
+                        > 1;
+                if many {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::AGG_TARGET_TWICE,
+                            "this aggregate target element is identified more than once",
+                        )
+                        .with_primary(self.exprs[a.value].span, "")
+                        .with_note("one association with several choices names its target once per choice (LRM 10.6.2.1)"),
+                    ));
+                }
+                if matches!(self.exprs[a.value].kind, ExprKind::Aggregate { .. }) {
+                    stack.push(a.value);
+                } else {
+                    leaves.push((a.value, self.exprs[a.value].span));
+                }
+            }
+        }
+        // `Some(key)` for a fully static name without alias rebasing.
+        let same = |db: &Db, x: ExprId, y: ExprId| -> bool {
+            let (Some((rx, px, _, cx)), Some((ry, py, _, cy))) = (db.lsp_parts(x), db.lsp_parts(y))
+            else {
+                return false;
+            };
+            if cx || cy || rx != ry || px.len() != py.len() {
+                return false;
+            }
+            px.iter().zip(&py).all(|(a, b)| match (a, b) {
+                (LspStep::Field(m), LspStep::Field(n)) => m == n,
+                (LspStep::Index(m), LspStep::Index(n)) => {
+                    m.len() == n.len()
+                        && m.iter().zip(n.iter()).all(|(i, j)| {
+                            match (
+                                db.value(*i).and_then(|v| v.as_int()),
+                                db.value(*j).and_then(|v| v.as_int()),
+                            ) {
+                                (Some(i), Some(j)) => i == j,
+                                _ => false,
+                            }
+                        })
+                }
+                (LspStep::Slice(m), LspStep::Slice(n)) => {
+                    match (range_value(db, m), range_value(db, n)) {
+                        (Some(m), Some(n)) => {
+                            !m.is_null() && m.low() == n.low() && m.high() == n.high()
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            })
+        };
+        for (i, &(x, _)) in leaves.iter().enumerate() {
+            for &(y, span) in &leaves[i + 1..] {
+                if same(self, x, y) {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::AGG_TARGET_TWICE,
+                            "this aggregate target element is identified more than once",
+                        )
+                        .with_primary(span, "named again here")
+                        .with_secondary(self.exprs[x].span, "first named here"),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Target legality (10.5, 10.6; E1360) and, for signals, the target's

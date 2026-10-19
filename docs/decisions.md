@@ -998,3 +998,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   (O(n) per array access). Slices of references are an instruction (`SigSlice`), so names below
   a formal work on both forms.
 
+
+## Sem: user decisions of 2026-10-19
+
+- **Named return values in `return` and actuals (L62, #33; user, 2026-10-19):** a call of a function
+  with a named return value stays accepted in a `return` statement and as the actual of a
+  constrained formal (permissive), although only some reference simulators accept those contexts.
+  Recorded in `docs/design/lrm-checks.md` L62.

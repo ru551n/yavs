@@ -128,7 +128,9 @@ impl Fx<'_, '_> {
         self.store(block, n, Width::B8);
         for (k, s) in found.into_iter().enumerate() {
             let Some(&id) = self.cx.refl.get(&s) else {
-                return Err(self.cx.ice(span, "reflection entry missing for a reachable subtype"));
+                return Err(self
+                    .cx
+                    .ice(span, "reflection entry missing for a reachable subtype"));
             };
             let rng = self.scalar_bounds(s, span)?;
             let id = self.int(i64::from(id.0));
@@ -189,13 +191,11 @@ impl Fx<'_, '_> {
                     .static_bounds(st)
                     .or_else(|| db.static_bounds(db.types[t].first_subtype));
                 match bounds {
-                    Some((ConstValue::Real(left), d, ConstValue::Real(right))) => {
-                        ReflKind::Float {
-                            left,
-                            right,
-                            downto: d == Direction::Downto,
-                        }
-                    }
+                    Some((ConstValue::Real(left), d, ConstValue::Real(right))) => ReflKind::Float {
+                        left,
+                        right,
+                        downto: d == Direction::Downto,
+                    },
                     _ => return Err(self.cx.ice(span, "floating bounds of the wrong kind")),
                 }
             }

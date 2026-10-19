@@ -516,11 +516,8 @@ fn value(m: &mut Machine, a: &[u64]) -> R<u64> {
 /// `(left, right, downto)` of the scalar subtype of mirror `mi`, as cells: its run-time range
 /// when it has one, else its entry's.
 fn scalar_range(mi: &Mirror, r: &Refl) -> R<(u64, u64, bool)> {
-    if let Some(e) = mi
-        .ranges
-        .chunks_exact(RANGE)
-        .find(|e| rd64(e, 0) == u64::from(mi.refl.0))
-    {
+    let (entries, _) = mi.ranges.as_chunks::<RANGE>();
+    if let Some(e) = entries.iter().find(|e| rd64(*e, 0) == u64::from(mi.refl.0)) {
         return Ok((rd64(e, 8), rd64(e, 16), rd64(e, 24) == 1));
     }
     Ok(match r.kind {
@@ -609,7 +606,14 @@ fn enum_literal_idx(m: &mut Machine, a: &[u64]) -> R<u64> {
             (hi - lo + 1).max(0)
         ));
     };
-    alloc(m, mi.refl, true, &[], &(pos as u64).to_le_bytes(), &mi.ranges)
+    alloc(
+        m,
+        mi.refl,
+        true,
+        &[],
+        &(pos as u64).to_le_bytes(),
+        &mi.ranges,
+    )
 }
 
 fn enum_literal_name(m: &mut Machine, a: &[u64]) -> R<u64> {
@@ -1365,7 +1369,10 @@ mod tests {
         let d = encode(ReflId(7), true, &[1, 2], &5u64.to_le_bytes(), &ranges).unwrap();
         let mi = parse(&d).unwrap();
         assert!(mi.value);
-        assert_eq!((mi.refl, mi.desc.as_slice(), cell(&mi)), (ReflId(7), &[1u8, 2][..], 5));
+        assert_eq!(
+            (mi.refl, mi.desc.as_slice(), cell(&mi)),
+            (ReflId(7), &[1u8, 2][..], 5)
+        );
         let r = entry(
             "RNG",
             ReflKind::Int {

@@ -569,7 +569,7 @@ impl Db {
                             return Err(self.ice(p.span, "generic package without generics"));
                         };
                         let what = format!("package `{}`", self.decls[g].name);
-                        let (actuals, ok) = self.associate(&what, &formals, assocs);
+                        let (actuals, ok) = self.associate(scope, &what, &formals, assocs);
                         let wants = self.formal_package_wants(scope, &formals, &actuals);
                         if !ok {
                             return Err(Reported);
@@ -1011,7 +1011,7 @@ impl Db {
         };
         let what = format!("package `{}`", self.decls[g].name);
         let assocs = p.generic_map.as_deref().unwrap_or(&[]);
-        let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
+        let (actuals, assoc_ok) = self.associate(scope, &what, &formals, assocs);
         let mut r = Remap::new(gscope, inst_scope);
         let mut map = GenericMap::default();
         let overflow = self.overflow.len();
@@ -1232,7 +1232,7 @@ impl Db {
         let formals = s.generics.clone().expect("a generic subprogram");
         let gscope = s.scope.expect("specs have a parameter region");
         let what = format!("subprogram `{}`", self.decls[g].name);
-        let (actuals, assoc_ok) = self.associate(&what, &formals, assocs);
+        let (actuals, assoc_ok) = self.associate(scope, &what, &formals, assocs);
         let d = self.new_decl(scope, dname, DeclKind::Error, span);
         let new_scope = self.add_scope(ScopeKind::Subprogram, Some(scope), Some(d));
         let mut r = Remap::new(gscope, new_scope);
@@ -1541,6 +1541,7 @@ impl Db {
     /// reported too).
     fn associate<'a>(
         &mut self,
+        scope: ScopeId,
         what: &str,
         formals: &[DeclId],
         assocs: &'a [ast::AssocElem],
@@ -1566,23 +1567,41 @@ impl Db {
                     pos - 1
                 }
                 Some(f) => {
+                    // 2019 `f [t return t] => actual` names one formal subprogram (LCS-2016-I03).
+                    let (f, sig) = match &f.kind {
+                        ast::NameKind::Signature { prefix, signature } => {
+                            (prefix.as_ref(), Some(signature))
+                        }
+                        _ => (f, None),
+                    };
                     let Some((key, span)) = formal_key(f) else {
                         failed = true;
                         self.unsupported(f.span, "this form of generic formal", "S4");
                         continue;
                     };
+                    let named = |db: &Db| -> Vec<usize> {
+                        (0..formals.len())
+                            .filter(|&i| db.decls[formals[i]].name.key() == key)
+                            .collect()
+                    };
+                    let fits: Vec<usize> = match sig {
+                        Some(sig) => match self.formals_with_signature(scope, formals, key, sig) {
+                            Ok(v) => v,
+                            // The formal is named: associate it anyway, so that it is not
+                            // reported missing too.
+                            Err(_) => {
+                                failed = true;
+                                named(self)
+                            }
+                        },
+                        None => named(self),
+                    };
                     // Overloaded formal subprograms: the first one not yet associated.
-                    let found = formals
+                    let found = fits
                         .iter()
-                        .enumerate()
-                        .filter(|(_, d)| self.decls[**d].name.key() == key)
-                        .map(|(i, _)| i)
+                        .copied()
                         .find(|&i| out[i].is_none())
-                        .or_else(|| {
-                            formals
-                                .iter()
-                                .position(|d| self.decls[*d].name.key() == key)
-                        });
+                        .or_else(|| fits.first().copied());
                     let Some(i) = found else {
                         failed = true;
                         let mut d = Diagnostic::error(
@@ -1620,6 +1639,63 @@ impl Db {
             out[i] = Some(a);
         }
         (out, !failed)
+    }
+
+    /// The formals named `key` whose profile is signature `sig` (2019 `f [t return t] =>`,
+    /// LCS-2016-I03), as indices into `formals`. A type mark of the signature may name a
+    /// generic type of the same list (the references agree). Empty when no formal is named
+    /// `key` (the caller reports it); `E1630` when none of them fits.
+    pub(crate) fn formals_with_signature(
+        &mut self,
+        scope: ScopeId,
+        formals: &[DeclId],
+        key: Symbol,
+        sig: &ast::Signature,
+    ) -> Result<Vec<usize>, Reported> {
+        let named: Vec<usize> = (0..formals.len())
+            .filter(|&i| self.decls[formals[i]].name.key() == key)
+            .collect();
+        if named.is_empty() {
+            return Ok(named);
+        }
+        let ty = |db: &mut Db, n: &ast::Name| -> Result<TypeId, Reported> {
+            if let ast::NameKind::Simple(i) = &n.kind
+                && let Some(t) = formals.iter().find_map(|&g| match db.decls[g].kind {
+                    DeclKind::GenericType(t) if db.decls[g].name.key() == i.key => Some(t),
+                    _ => None,
+                })
+            {
+                return Ok(t);
+            }
+            let st = db.type_mark(scope, n)?;
+            Ok(db.base(st))
+        };
+        let mut params = Vec::new();
+        for p in &sig.params {
+            params.push(ty(self, p)?);
+        }
+        let ret = match &sig.ret {
+            Some(r) => Some(ty(self, r)?),
+            None => None,
+        };
+        let sig = crate::alias::Signature {
+            params: params.into(),
+            ret,
+            span: sig.span,
+        };
+        let fits: Vec<usize> = named
+            .iter()
+            .copied()
+            .filter(|&i| self.signature_matches(formals[i], &sig))
+            .collect();
+        if fits.is_empty() {
+            let cands: Vec<DeclId> = named.iter().map(|&i| formals[i]).collect();
+            return Err(self
+                .match_signature(&cands, &sig)
+                .err()
+                .unwrap_or_else(|| self.ice(sig.span, "a signature matched no formal")));
+        }
+        Ok(fits)
     }
 
     /// Bind each formal to its actual (or default), in order, seeding `r` (5.2).

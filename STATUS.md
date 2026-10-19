@@ -145,6 +145,10 @@ An installed binary finds `lib/` next to itself (#43).
   functions, procedures and concurrent procedure calls instantiate the one generic subprogram the
   name denotes, once per call, and run: `tests/diag/sem/gen/call_generic_map_*`, difftest
   `generics/call_generic_map_2019`, `generics/call_generic_map_2019_hand`.
+- 2019 signatures on generic map formals (`f [integer return integer] => inc`, LCS-2016-I03,
+  #363, L104) pick one of overloaded formal subprograms in subprogram, package and entity
+  instances; the signature may name a generic type of the same list; one that fits no formal is
+  `E1630`: `tests/diag/sem/gen/generic_map_signature_*`, difftest `generics/generic_map_signature_2019`.
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

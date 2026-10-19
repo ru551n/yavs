@@ -681,6 +681,20 @@ impl Db {
     ) -> Result<(usize, Option<DeclId>, bool), Reported> {
         let find =
             |db: &Db, key: Symbol| formals.iter().position(|&d| db.decls[d].name.key() == key);
+        // 2019 `g [t return t] => actual` names one formal subprogram (LCS-2016-I03).
+        let f = match &f.kind {
+            ast::NameKind::Signature { prefix, signature } => {
+                if let ast::NameKind::Simple(i) = &prefix.kind
+                    && let Some(&p) = self
+                        .formals_with_signature(scope, formals, i.key, signature)?
+                        .first()
+                {
+                    return Ok((p, None, true));
+                }
+                prefix.as_ref()
+            }
+            _ => f,
+        };
         let root = root_ident(f);
         if let Some(r) = root
             && let Some(p) = find(self, r.key)

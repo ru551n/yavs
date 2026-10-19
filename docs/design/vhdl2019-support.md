@@ -26,7 +26,7 @@ with the result of the four reference simulators (`sim1` to `sim4`, labels as in
 
 ## Summary
 
-46 LCS rows: 37 supported, 2 partial, 2 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
+46 LCS rows: 38 supported, 2 partial, 1 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
 
 For comparison, over the rows that have a probe, the references run the probe (`ok` or `ok (output differs)`) for the following number of rows: sim1 37, sim2 11, sim3 22, sim4 39 (rows with several probes count only when all probes agree).
 
@@ -78,7 +78,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 086 | All interface lists can be ordered | supported | ok | reject | reject | ok | later items refer to earlier ones through `'subtype` |
 | 094a | Conditional return | supported | ok | reject | reject | ok | `return x when c` in functions and procedures |
 | 099 | Extended ranges | not tested | ok | reject | reject | ok | scope unclear; a plain range loop works everywhere |
-| I03 | Signatures in the formal part of a generic map | unsupported | ok | reject | reject | ok | `E9999` (#363) |
+| I03 | Signatures in the formal part of a generic map | supported | ok | reject | reject | ok | subprogram, package and entity instances; overloaded formals; the signature may name the list's generic types (#363, L104) |
 | I13 | Precedence of unary operators | supported | ok | ok | ok | ok | only `-k ** 2` and `not` against `=` and `and` probed; weak test |
 
 ## Gaps by use in practice
@@ -96,7 +96,7 @@ occur in those sources.
 | 2 | Generic protected type instantiation (LCS-034) | #29 |
 | 3 | Generic map on a subprogram call (LCS-049): done | #362 |
 | 4 | Arrays and records of protected types (LCS-014, 014a): done | #361 |
-| 5 | Signature in a generic map formal (LCS-I03) | #363 |
+| 5 | Signature in a generic map formal (LCS-I03): done | #363 |
 | 6 | Anonymous types (LCS-016): intended syntax unverified, no reference accepts the probe | none |
 
 ## Differences found

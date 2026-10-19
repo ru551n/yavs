@@ -31,6 +31,45 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 | string_ops | 15 | 0 | 0 | none |
 | verification_components | 579 | 0 | 0 | none (#251, #248, #252 fixed; all 52 `tb_axi_stream_protocol_checker` configurations pass) |
 
+### Verification library: its own testbenches (#277)
+
+`tools/suites/uvvm.py --private-copies`, release build of main at 9c853ae6, `-j 4`; one run per testbench
+entity, architecture and generic set the component's own regression script lists (137 in all).
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. Every run stops before time 0;
+only the first root cause of each run is counted, so deeper causes are still hidden behind #285.
+Without `--private-copies`, 7 runs (the uart testbenches) fail in analysis on #290 instead.
+
+| Component | Pass | Fail | Skip | First root cause (issues) |
+|---|---|---|---|---|
+| uvvm_util | 0 | 36 | 0 | non-protected shared variables #285 (35); `'delayed(0 ns)'last_event` actual #286 (1, then #285) |
+| uvvm_assertions | 0 | 2 | 0 | #285 |
+| uvvm_vvc_framework | 0 | 3 | 0 | #285 |
+| bitvis_irqc | 0 | 2 | 0 | #285 |
+| bitvis_uart | 0 | 3 | 0 | #285 |
+| bitvis_vip_scoreboard | 0 | 3 | 0 | #285 |
+| bitvis_vip_avalon_mm | 0 | 5 | 0 | #285 |
+| bitvis_vip_avalon_st | 0 | 6 | 0 | #285 |
+| bitvis_vip_axi | 0 | 2 | 0 | individual association of an unconstrained record port #288 |
+| bitvis_vip_axilite | 0 | 2 | 0 | #285 |
+| bitvis_vip_axistream | 0 | 22 | 0 | #285 |
+| bitvis_vip_clock_generator | 0 | 1 | 0 | #285 |
+| bitvis_vip_error_injection | 0 | 2 | 0 | #285 |
+| bitvis_vip_gmii | 0 | 2 | 0 | #285 |
+| bitvis_vip_sbi | 0 | 2 | 0 | #285 (1); `'range` of a record element of a signal #287 (1) |
+| bitvis_vip_ethernet | 0 | 3 | 1 | #285; 1 skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_gpio | 0 | 1 | 0 | aggregate actual for a generic whose subtype uses an earlier generic #289 |
+| bitvis_vip_i2c | 0 | 0 | 1 | skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_rgmii | 0 | 2 | 0 | #285 |
+| bitvis_vip_spec_cov | 0 | 1 | 0 | #285 |
+| bitvis_vip_spi | 0 | 0 | 24 | skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_uart | 0 | 3 | 0 | #285 |
+| bitvis_vip_wishbone | 0 | 2 | 0 | #285 |
+| external_vip_apb | 0 | 6 | 0 | #285 |
+| Total | 0 | 111 | 26 | |
+
+No run is over 5 minutes (none reaches simulation). The generated-VIP tests of the framework
+component (generator output compiled and simulated) are not run by the driver.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

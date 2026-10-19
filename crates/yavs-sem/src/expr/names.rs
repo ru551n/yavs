@@ -86,6 +86,15 @@ impl Db {
                 };
                 match self.classify(scope, prefix) {
                     NameRes::One(d) => {
+                        // `s.r.arr`: through a formal package found in a formal package.
+                        if matches!(prefix.kind, ast::NameKind::Selected { .. })
+                            && matches!(
+                                self.decls[self.entity(d)].kind,
+                                DeclKind::GenericPackage(_)
+                            )
+                        {
+                            self.generic.hop2 = true;
+                        }
                         let region = match self.decls[self.entity(d)].kind {
                             DeclKind::Library(l) => Region::Library(l),
                             DeclKind::Unit(_)
@@ -1545,6 +1554,20 @@ impl Db {
                         let id = self.resolve_in(scope, x, *ft);
                         stat = stat.min(self.exprs[id].stat);
                         let (class, mode, name) = &classes[k];
+                        if decls[k].is_some_and(|p| self.generic.hop2_clones.contains(&p)) {
+                            let ty = self.subtype_name(*ft);
+                            self.report(
+                                Diagnostic::error(
+                                    diag::TYPE_MISMATCH,
+                                    format!("type of actual does not match formal `{}` type `{ty}`", name.key),
+                                )
+                                .with_primary(x.span, "a different type")
+                                .with_note(
+                                    "the formal's type is reached through a formal package of a formal package: it is a distinct type from the instance's, which no actual outside the generic unit has (LRM 6.5.7.2; two of the three reference simulators reject the call)",
+                                ),
+                            );
+                            return None;
+                        }
                         if matches!(x.kind, ast::ExprKind::Name(_))
                             && self.actual_conversion(id).is_some()
                             && !self.actual_conv_allowed(*class, mode, *name, x.span)

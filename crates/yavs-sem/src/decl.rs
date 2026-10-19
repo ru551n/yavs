@@ -1555,6 +1555,7 @@ impl Db {
             None => ObjClass::Variable,
         };
         let _ = kind;
+        self.generic.hop2 = false;
         let subtype = match (&o.subtype, view_subtype) {
             (_, Some(st)) => st,
             (Some(ast::IncompleteSubtype::Subtype(si)), None) => {
@@ -1578,6 +1579,7 @@ impl Db {
             }
             _ => {}
         }
+        let hop2 = std::mem::take(&mut self.generic.hop2);
         let default = o
             .default
             .as_ref()
@@ -1605,6 +1607,9 @@ impl Db {
                 name.span,
             );
             self.declare(pscope, decl);
+            if hop2 {
+                self.generic.hop2_params.insert(decl);
+            }
             if let Some(ast::IncompleteSubtype::Subtype(si)) = &o.subtype {
                 self.written_marks.insert(decl, si.type_mark.span);
             }

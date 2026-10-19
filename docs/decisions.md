@@ -464,6 +464,13 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   instantiated with the same actuals (static values, base types, subprograms); a mismatch is
   `E1503`. The LRM is clear and the third reference simulator rejects; the reference simulator does not check. Non-static values are not
   compared. Inside the generic the formal package stays opaque.
+- **A type through a formal package of a formal package is distinct (L76, #101; user, 2026-10-19:
+  majority of the reference simulators):** a subprogram parameter of type `s.r.arr` (`s` a formal
+  package of the generic package, `r` the formal package of `s`'s generic) in an instance does not
+  accept the actual instance's type (`int_ring.arr`): `E1300` at the actual of the call, with a
+  note. Two of the three reference simulators reject the call; the third rejects the name itself.
+  One formal package deep is unchanged. The check lives in `call_args` (parameters flagged while
+  the generic unit is analyzed, cloned with the instance).
 - **W1501 (unused generic)** applies to the generics of packages and subprograms, reported once
   the unit is complete: after the package body, after the package declaration when the library
   holds no body for it, after a generic subprogram body. Entity, component and block generics are
@@ -1052,7 +1059,7 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   composites is the identity leaf by leaf (an integer leaf to a real one converted element by
   element), with no function to call; leaf lengths that differ are E2110 in elaboration. An
   `inout` port converted in one direction only is E1313 in sem, as for subprogram calls
-  (lrm-checks L72).
+  (lrm-checks L76).
 - **Signal references of several parts** (#71): an individually associated signal formal whose
   parts lie in different signals (`drive2(x(1) => s1, x(0) => s0)`, a record formal field by
   field) is a reference of several parts in the IR (`SigParts`, ir.md 1.8): still two

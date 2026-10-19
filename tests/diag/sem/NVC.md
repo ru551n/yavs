@@ -24,6 +24,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | `agg/others_with_other_choice_same_assoc` | accepts | rejects @5 | The reference simulator bug/leniency: accepts `others` combined with another choice in one association (LRM 9.3.3.3 forbids); the second reference simulator rejects. |
 | `attr/attribute_spec_overloaded_ok` | rejects @8 | accepts | LRM 7.2 is clear: an overloaded entity tag without a signature decorates every matching declaration. The reference simulators accept; the reference simulator is stricter than the LRM. |
 | `gen/formal_package_map_mismatch` | accepts | rejects @14 | LRM 6.5.7.2 is clear: the actual instance must match the formal package's generic map. The third reference simulator rejects ("Actual values for generic 'n' don't match"); the reference simulator does not check; the second reference simulator rejects as unsupported. |
+| `gen/formal_package_of_formal_package_type` | rejects @46 | rejects @29,31,39,40,43 | A type reached through a formal package of a formal package (`s.r.arr`) is not the instance's type (#101, user, 2026-10-19: majority of the reference simulators). The reference simulator and the third reference simulator reject the call at line 46; the second reference simulator rejects the expanded name `s.r.arr` itself ("an expanded name is only allowed within the construct") and crashes on some variants, so it never reaches the call. |
 | `gen/parameter_subprogram_interface` | accepts | rejects @6 | LRM 4.2.2.1 is clear: only interface constants, signals, variables and files are parameters (#227). |
 | `gen/parameter_package_interface` | accepts | rejects @10 | LRM 4.2.2.1 is clear, as for `gen/parameter_subprogram_interface` (#227). |
 | `gen/subprogram_header_map_ok` | rejects @6,7,11 | rejects | LRM 4.2.1: a header with a generic list and a generic map declares an instance; the reference simulators (the third too) treat it as uninstantiated and reject its calls (#227). |
@@ -287,13 +288,14 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `external_type_mismatch` | E1300 @8 | rejects @8 | accepts |
 | `external_variable_assign_signal_target` | E1601 @8 | rejects @8 | rejects |
 
-### gen (23)
+### gen (24)
 
 | File | Expected | The reference simulator | The second reference simulator |
 |---|---|---|---|
 | `actual_formal_twice` | E1310 @7 | rejects @7 | rejects @7 |
 | `actual_type_mismatch` | E1300 @7 | rejects @7 | rejects @5,7 |
 | `formal_package_map_mismatch` | E1503 @14 | accepts | rejects @14 |
+| `formal_package_of_formal_package_type` | E1300 @46 | rejects @46 | rejects @29,31,39,40,43 |
 | `call_uninstantiated_generic_subprogram` | E1505 @14 | rejects @14 | rejects |
 | `generic_default_type_mismatch` | E1300 @5 | rejects @5 | rejects @5 |
 | `generic_discrete_has_pos_ok` | none | accepts | rejects @5,6,7 |

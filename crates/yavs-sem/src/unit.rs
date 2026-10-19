@@ -613,6 +613,12 @@ impl Db {
     /// a package (loaded on demand) or a package instance.
     pub(crate) fn region_of(&mut self, scope: ScopeId, n: &ast::Name) -> Result<Region, Reported> {
         let d = self.expanded_name_decl(scope, n)?;
+        // `s.r.arr`: through a formal package found in a formal package.
+        if matches!(n.kind, ast::NameKind::Selected { .. })
+            && matches!(self.decls[d].kind, DeclKind::GenericPackage(_))
+        {
+            self.generic.hop2 = true;
+        }
         match self.decls[d].kind {
             DeclKind::Library(l) => Ok(Region::Library(l)),
             DeclKind::Unit(_) | DeclKind::PackageInst(_) | DeclKind::GenericPackage(_)

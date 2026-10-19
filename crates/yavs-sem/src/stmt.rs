@@ -1366,7 +1366,7 @@ impl Db {
                             // Vendored VITAL packages call `NOW` in pure functions; that
                             // is the only exemption (decisions.md).
                             && !(vital
-                                && self.decls[*callee].name.to_string() == "now"
+                                && self.decls[*callee].name.to_string().eq_ignore_ascii_case("now")
                                 && self.in_std_library(self.decls[*callee].scope))
                         {
                             found.push((

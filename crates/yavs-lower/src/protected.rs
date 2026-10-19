@@ -316,7 +316,10 @@ impl Fx<'_, '_> {
                             .ice(span, "protected state variable is not an object"));
                     };
                     let c = db.subtypes[o.subtype].constraint.clone();
-                    self.default_into(o.subtype, &c, a, fd, span)?;
+                    let saved = std::mem::replace(&mut self.prot_defaults, false);
+                    let r = self.default_into(o.subtype, &c, a, fd, span);
+                    self.prot_defaults = saved;
+                    r?;
                 }
             }
         }
@@ -380,6 +383,13 @@ impl Fx<'_, '_> {
                 Some(e) => self.expr(e)?,
                 None if matches!(db.types[ft].kind, TypeKind::Protected { .. }) => {
                     V::S(self.prot_new(ft, shared, span)?)
+                }
+                // 2019 composites of protected types (LCS-2016-014): new objects now.
+                None if db.type_contains_protected(ft) => {
+                    let (a, fd) = self.field_addr(state, base, p, n as u32, span)?;
+                    let c = db.subtypes[o.subtype].constraint.clone();
+                    self.default_into(o.subtype, &c, a, fd, span)?;
+                    continue;
                 }
                 None => continue,
             };

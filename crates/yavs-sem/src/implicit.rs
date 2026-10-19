@@ -570,6 +570,12 @@ impl Db {
 
     fn shape(&self, ty: TypeId) -> Shape {
         match &self.types[ty].kind {
+            // 2019 composites of protected types (LCS-2016-014) are not values: no `=`, `&`.
+            TypeKind::Array { .. } | TypeKind::Record { .. }
+                if self.type_contains_protected(ty) =>
+            {
+                Shape::None
+            }
             TypeKind::Enum { .. } => Shape::Enum,
             TypeKind::UniversalInteger | TypeKind::Integer => Shape::Integer,
             TypeKind::UniversalReal | TypeKind::Floating => Shape::Floating,

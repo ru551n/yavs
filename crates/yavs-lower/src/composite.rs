@@ -1024,6 +1024,9 @@ impl Fx<'_, '_> {
         let tid = self.ty(t, span)?;
         if let Some(w) = scalar_w(self.fb.program(), tid) {
             let v = match &db.types[t].kind {
+                TypeKind::Protected { .. } if self.prot_defaults => {
+                    self.prot_new(t, false, span)?
+                }
                 TypeKind::Access { .. } | TypeKind::Protected { .. } | TypeKind::File { .. } => {
                     self.int(0)
                 }

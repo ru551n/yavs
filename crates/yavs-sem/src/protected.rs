@@ -41,6 +41,32 @@ impl Db {
         }
     }
 
+    /// "protected type `t`", or for a composite "type `t`, which has protected subelements".
+    pub(crate) fn protected_desc(&self, t: TypeId) -> String {
+        if matches!(self.types[t].kind, TypeKind::Protected { .. }) {
+            format!("protected type `{}`", self.type_name(t))
+        } else {
+            format!(
+                "type `{}`, which has protected subelements",
+                self.type_name(t)
+            )
+        }
+    }
+
+    /// Is `t` a protected type, or (2019, LCS-2016-014) a composite whose scalar
+    /// subelements are all of protected types? Such a shared variable holds no
+    /// unprotected state.
+    pub(crate) fn all_protected(&self, t: TypeId) -> bool {
+        match &self.types[t].kind {
+            TypeKind::Protected { .. } => true,
+            TypeKind::Array { elem, .. } => self.all_protected(self.base(*elem)),
+            TypeKind::Record { elems } => elems
+                .iter()
+                .all(|e| self.all_protected(self.base(e.subtype))),
+            _ => false,
+        }
+    }
+
     /// `E1905` when an object of class `what` (signal, constant, port, ...)
     /// would have a protected type or subelement (5.6.1, 6.4.2).
     pub fn check_not_protected(
@@ -56,7 +82,7 @@ impl Db {
         Err(self.error(
             Diagnostic::error(
                 diag::PROTECTED_MISUSE,
-                format!("a {what} cannot be of protected type `{}`", self.type_name(t)),
+                format!("a {what} cannot be of {}", self.protected_desc(t)),
             )
             .with_primary(span, format!("{what} of a protected type"))
             .with_note("LRM 5.6.1: only variables, shared variables and variable parameters can hold a protected type"),
@@ -89,7 +115,7 @@ impl Db {
         Err(self.error(
             Diagnostic::error(
                 diag::PROTECTED_MISUSE,
-                format!("protected type `{}` cannot be assigned", self.type_name(t)),
+                format!("{} cannot be assigned", self.protected_desc(t)),
             )
             .with_primary(self.exprs[target].span, "target of a protected type")
             .with_note("LRM 5.6.1: a protected type has no predefined assignment")
@@ -97,14 +123,15 @@ impl Db {
         ))
     }
 
-    /// A shared variable must be of a protected type (6.4.2.4): `E1904`, or
+    /// A shared variable must be of a protected type (6.4.2.4), in 2019 also of a composite
+    /// whose scalar subelements are all protected (LCS-2016-014): `E1904`, or
     /// warning `W1904` under `--relaxed` (R1, sem.md 8.4).
     pub fn check_shared_variable(&mut self, st: SubtypeId, span: Span) -> Result<(), Reported> {
         let t = self.base(st);
-        if matches!(
-            self.types[t].kind,
-            TypeKind::Protected { .. } | TypeKind::Error
-        ) {
+        if matches!(self.types[t].kind, TypeKind::Error)
+            || matches!(self.types[t].kind, TypeKind::Protected { .. })
+            || (self.file_rev() >= LangRev::Vhdl2019 && self.all_protected(t))
+        {
             return Ok(());
         }
         let msg = format!(

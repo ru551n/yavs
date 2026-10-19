@@ -542,9 +542,11 @@ impl Db {
                     self.poison.subtype
                 }
             };
-            if self
-                .check_not_protected("record element", st, e.subtype.span)
-                .is_err()
+            // 2019 allows record elements of protected types (LCS-2016-014).
+            if self.file_rev() < crate::LangRev::Vhdl2019
+                && self
+                    .check_not_protected("record element", st, e.subtype.span)
+                    .is_err()
             {
                 failed = true;
             }

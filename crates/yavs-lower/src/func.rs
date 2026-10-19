@@ -170,6 +170,10 @@ pub(crate) struct Fx<'a, 'b> {
     pub cov: bool,
     /// In a protected type method: the frame depth and slot of `self`.
     pub prot_self: Option<(u8, u32)>,
+    /// `default_into` gives protected subelements new objects (2019 composites of
+    /// protected types, LCS-2016-014); off while `prot_new` lays out a state whose
+    /// variables get theirs later, in declaration order.
+    pub prot_defaults: bool,
     /// The `GUARD` signal of the enclosing guarded block (guarded assignments).
     pub guard: Option<DeclId>,
     /// Copy-out after the call being lowered: (frame slot of the temporary, actual,
@@ -205,6 +209,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             cur: None,
             cov: true,
             prot_self: None,
+            prot_defaults: true,
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
@@ -703,6 +708,22 @@ impl<'a, 'b> Fx<'a, 'b> {
         let db = self.db;
         let (elem, _) = ty::array_of(db, db.base(st)).ok_or(Failed)?;
         let data = self.alloc(size);
+        // 2019 arrays of a protected type: one new object per element (LCS-2016-014).
+        let pt = db.base(elem);
+        if matches!(
+            db.types[pt].kind,
+            yavs_sem::types::TypeKind::Protected { .. }
+        ) {
+            self.for_n(count, |fx, i| {
+                let h = fx.prot_new(pt, false, span)?;
+                let eight = fx.int(8);
+                let off = fx.bin(yavs_ir::IntOp::Mul, i, eight);
+                let a = fx.bin(yavs_ir::IntOp::Add, data, off);
+                fx.store(a, h, Width::B8);
+                Ok(())
+            })?;
+            return Ok(data);
+        }
         let left = db
             .static_bounds(elem)
             .and_then(|(l, _, _)| ty::cell(&l))

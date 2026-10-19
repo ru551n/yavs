@@ -815,8 +815,8 @@ impl Db {
                         Diagnostic::error(
                             diag::PROTECTED_MISUSE,
                             format!(
-                                "operator `{sym}` is not defined for protected type `{}`",
-                                self.type_name(t)
+                                "operator `{sym}` is not defined for {}",
+                                self.protected_desc(t)
                             ),
                         )
                         .with_primary(e.span, "operand of a protected type")

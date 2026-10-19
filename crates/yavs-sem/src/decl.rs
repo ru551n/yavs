@@ -1557,6 +1557,16 @@ impl Db {
         };
         if var_port {
             let t = self.base(subtype);
+            if mode == Mode::Inout
+                && !matches!(self.types[t].kind, crate::types::TypeKind::Protected { .. })
+                && self.all_protected(t)
+            {
+                return Err(self.unsupported(
+                    o.span,
+                    "a variable port of a composite of protected types",
+                    "S7",
+                ));
+            }
             if !matches!(
                 self.types[t].kind,
                 crate::types::TypeKind::Protected { .. } | crate::types::TypeKind::Error

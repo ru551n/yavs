@@ -1529,8 +1529,23 @@ impl Db {
             None | Some(ast::Mode::In) => Mode::In,
             Some(ast::Mode::Out) => Mode::Out,
             Some(ast::Mode::Inout) => Mode::Inout,
-            Some(ast::Mode::Buffer) => Mode::Buffer,
-            Some(ast::Mode::Linkage) => Mode::Linkage,
+            // Subprogram parameters are `in`, `out` or `inout` (4.2.2.1); a mode view may
+            // still give an element `buffer` or `linkage`.
+            Some(m @ (ast::Mode::Buffer | ast::Mode::Linkage)) => {
+                let m = if matches!(m, ast::Mode::Buffer) {
+                    "buffer"
+                } else {
+                    "linkage"
+                };
+                return Err(self.error(
+                    yavs_diag::Diagnostic::error(
+                        crate::diag::PARAM_MODE,
+                        format!("a subprogram parameter cannot have mode `{m}`"),
+                    )
+                    .with_primary(o.span, "this parameter")
+                    .with_help("use `in`, `out` or `inout`"),
+                ));
+            }
             Some(ast::Mode::View { name, array }) => {
                 let r = self.view_name(pscope, name)?;
                 let st = match &o.subtype {

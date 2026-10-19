@@ -1419,6 +1419,13 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   `s.r.arr` in a generic package whose formal package `s` has its own formal package `r` is the
   type of the actual instance, so a call in an instance accepts an actual of that type. The LRM
   does not make it a distinct type; this replaces the morning's majority-rule `E1300`.
+- **Rows kept rejected under rule 15 (user, 2026-10-19: keep reject):** `overload-by-conversion-type`
+  (`E1302`), `port-conv-inout-one-way-in` (`E1313`), `formal-conversion-unconstrained-port`
+  (`E1312`), `external-name-architecture-subprogram-unbound` (`E2117`),
+  `aggregate-piece-mixed-direction` and `aggregate-target-range-directions` (`E1334`),
+  `i64-min-literal` (`E1402`), `formal-package-per-element-box` (not parsed), `div-by-zero-in-range`
+  (`E1401`) and `generic-subprogram-of-block` (`E1506`). Listed in `docs/design/lrm-checks.md`
+  "Rule 15 rows".
 - **Static index and slice out of range (L51, sem.md 4.3; user, 2026-10-19, rule 15):** a locally
   static index or non-null slice outside the static index range of its array is warning `W1404` at
   analysis, an error only when the code runs (the run-time check). The code may be dead; this

@@ -116,7 +116,7 @@ Negated literal at the 64-bit minimum
 
 The literal ``9223372036854775808`` is too large even when a minus is applied directly to it
 (``E1402``), for integer and physical types: the range of ``universal_integer`` is implementation
-defined (9.3, 5.2.3), and yavs stops at the 64-bit maximum.
+defined (9.3, 5.2.3), and yavs stops at the 64-bit maximum (decided by the user, 2026-10-19).
 
 *Portable:* write ``-9223372036854775807 - 1``.
 
@@ -135,7 +135,8 @@ libraries are not checked. Standard: 5.2.4.2.
 Constant errors in ranges and overflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Division by zero in a constant range bound is an error at analysis. A static index or slice
+Division by zero in a constant range bound is an error at analysis (decided by the user,
+2026-10-19). A static index or slice
 outside its range, and a constant integer overflow outside a required context, are warnings
 (``W1404``, ``W1401``): the code may be dead and the run-time check stays. Some simulators make
 these errors, others defer them to elaboration. Decided by the user, 2026-10-19. Standard: 9.4.2,
@@ -187,7 +188,7 @@ Without a constrained context, such an aggregate takes the direction of its rang
 (here ``3 downto 0``), so ``a`` fills elements 3 and 2. Choices of different directions are
 rejected at analysis (``E1334``). Against the direction of a constrained target the choices are
 accepted and each range is filled in the target's order; some simulators reject that.
-Standard: 9.3.3.3.
+Decided by the user, 2026-10-19. Standard: 9.3.3.3.
 
 *Portable:* give every such choice the direction of the target, or qualify the aggregate with a
 constrained subtype.
@@ -214,7 +215,8 @@ Generic subprograms of components and blocks
 A component's generic type, subprogram and package are bound to the entity's by name. A generic
 subprogram of an enclosing entity may be passed down as the actual of a nested instance's generic
 subprogram (some simulators reject this). A generic subprogram of a *block* or a *component*
-used that way is an error (``E1506``), as in all other simulators. Standard: 6.5.7.2, 7.3.3.
+used that way is an error (``E1506``), as in all other simulators (decided by the user,
+2026-10-19). Standard: 6.5.7.2, 7.3.3.
 
 *Portable:* pass a subprogram declared in the architecture or a package.
 
@@ -268,7 +270,8 @@ Conversions on unconstrained ports
 An unconstrained port takes its index ranges from the conversion (5.3.2.2): the type mark or the
 function's result subtype in the actual part, the type mark or the function's parameter subtype
 in the formal part. A conversion that does not define them, ``i => bit_vector(u)``, is an error
-(``E1312``). Some simulators give the port the actual's bounds instead, or reject these forms.
+(``E1312``; decided by the user, 2026-10-19). Some simulators give the port the actual's bounds
+instead, or reject these forms.
 
 *Portable:* constrain the port, or convert into a signal of the wanted subtype.
 

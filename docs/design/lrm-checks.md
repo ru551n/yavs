@@ -597,6 +597,13 @@ construct it does not clearly forbid. The user re-decided the catalogue rows bel
 - **type-through-formal-package-of-formal-package** (L76, 6.5.7.2, 4.8): accept. `s.r.arr` is
   the actual instance's own type; the LRM does not make it a distinct type.
 
+The user kept these rows rejected (user, 2026-10-19: keep reject): `overload-by-conversion-type`
+(L66, `E1302`), `port-conv-inout-one-way-in` (L72, `E1313`), `formal-conversion-unconstrained-port`
+(F8, `E1312`), `external-name-architecture-subprogram-unbound` (L86, `E2117`),
+`aggregate-piece-mixed-direction` and `aggregate-target-range-directions` (L84, L68, `E1334`),
+`i64-min-literal` (L58, `E1402`), `formal-package-per-element-box` (not parsed),
+`div-by-zero-in-range` (sem.md 4.2, `E1401`) and `generic-subprogram-of-block` (L63, `E1506`).
+
 ## Changes to code paths
 
 `crates/yavs-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,

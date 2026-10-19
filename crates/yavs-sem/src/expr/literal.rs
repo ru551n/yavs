@@ -670,7 +670,7 @@ pub fn literal_value(
 }
 
 /// The value of `-lit` when the literal alone is one past `i64::MAX` (LRM 9.3, 5.2.3: the minus
-/// applies to a `universal_integer` literal, so `-9223372036854775808` is legal) and `ty` is an
+/// applies to a `universal_integer` literal; only library `std` uses it, for `TIME`) and `ty` is an
 /// integer or physical type; `None` for every other literal (the normal path handles and reports).
 // ponytail: only the i64 minimum needs the wider intermediate; any other value folds via `-` as before.
 pub fn negated_min(db: &Db, lit: &Literal, ty: TypeId) -> Option<ConstValue> {

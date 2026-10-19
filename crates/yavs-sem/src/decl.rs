@@ -1658,7 +1658,7 @@ impl Db {
     }
 
     /// Is `scope` inside a design unit of library `std`?
-    fn in_std_library(&self, mut scope: ScopeId) -> bool {
+    pub(crate) fn in_std_library(&self, mut scope: ScopeId) -> bool {
         loop {
             if let Some(o) = self.scopes[scope].owner
                 && let DeclKind::Unit(u) = self.decls[o].kind

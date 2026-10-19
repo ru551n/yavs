@@ -5,7 +5,7 @@
 -- expect: E1402 12:25 physical literal one past the minimum is too large
 -- LRM 9.3, 5.2.3
 package p is
-  type big is range -9223372036854775808 to 9223372036854775807;
+  type big is range -9223372036854775807 - 1 to 9223372036854775807;
   constant a : big := 9223372036854775808;
   constant b : big := -9223372036854775809;
   constant c : time := 9223372036854775808 fs;

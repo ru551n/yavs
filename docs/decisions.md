@@ -1200,6 +1200,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Access parameters of protected methods in 2019 (L46, #212; user, 2026-10-19, majority rule):**
   `E1223` in 2019 as in 2008, because at least two of the three reference simulators reject them.
   Access results and file parameters stay accepted in 2019 (the simulators disagree).
+- **Negated literal at the i64 minimum (L58, #214; user, 2026-10-19, majority rule):** `-9223372036854775808`,
+  for integer and physical types, is `E1402` in user code (all three reference simulators reject it;
+  the range of `universal_integer` is implementation-defined). Library `std` stays exempt: its `TIME`
+  declaration uses the literal.
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

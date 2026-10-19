@@ -355,6 +355,7 @@ impl Db {
             K::Unary { op, operand } => {
                 if *op == ast::UnaryOp::Minus
                     && let K::Literal(l) = &operand.kind
+                    && self.in_std_library(scope)
                     && let Some(v) = crate::expr::literal::negated_min(self, l, i.ty)
                 {
                     return crate::expr::literal::const_expr(self, e.span, i.ty, Some(v));

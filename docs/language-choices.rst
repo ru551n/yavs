@@ -113,9 +113,9 @@ Negated literal at the 64-bit minimum
 
    constant k : time := -9223372036854775808 fs;
 
-The minus applies to the abstract literal, so ``-9223372036854775808`` is accepted for integer and
-physical types; ``9223372036854775808`` without the minus is an error. Many simulators reject the
-literal. Standard: 9.3, 5.2.3 (the range of ``universal_integer`` is implementation defined).
+The literal ``9223372036854775808`` is too large even when a minus is applied directly to it
+(``E1402``), for integer and physical types: the range of ``universal_integer`` is implementation
+defined (9.3, 5.2.3), and yavs stops at the 64-bit maximum.
 
 *Portable:* write ``-9223372036854775807 - 1``.
 

@@ -307,12 +307,14 @@ fn real(a: &[u64], i: usize) -> R<f64> {
 
 /// `FLOOR`/`CEIL` return the argument unchanged from INTEGER'HIGH up (the body converts to
 /// INTEGER below that).
-const LARGE: f64 = 2147483647.0;
+fn large(m: &Machine) -> f64 {
+    m.rt.revision.integer_bounds().high as f64
+}
 
 /// `FLOOR`/`CEIL` as the bodies compute them: from `RD = REAL (INTEGER (X))` (round half away
 /// from zero), so a result of zero is always `+0.0`.
-fn floor_r(x: f64) -> f64 {
-    if x.abs() >= LARGE {
+fn floor_r(x: f64, large: f64) -> f64 {
+    if x.abs() >= large {
         return x;
     }
     let rd = x.round();
@@ -327,8 +329,8 @@ fn floor_r(x: f64) -> f64 {
     }
 }
 
-fn ceil_r(x: f64) -> f64 {
-    if x.abs() >= LARGE {
+fn ceil_r(x: f64, large: f64) -> f64 {
+    if x.abs() >= large {
         return x;
     }
     let rd = x.round();
@@ -373,6 +375,7 @@ fn domain(m: &mut Machine, ctx: Cx<'_, '_, '_>, text: &str, value: f64) -> Ret {
 fn math<const K: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let ret = |v: f64| Ok(Some(v.to_bits()));
     let low = f64::MIN; // REAL'LOW
+    let lg = large(m);
     match MATH[K as usize] {
         Math::Sqrt => {
             let x = real(a, 0)?;
@@ -463,14 +466,14 @@ fn math<const K: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &
                 x.powf(y)
             })
         }
-        Math::Ceil => ret(ceil_r(real(a, 0)?)),
-        Math::Floor => ret(floor_r(real(a, 0)?)),
+        Math::Ceil => ret(ceil_r(real(a, 0)?, large(m))),
+        Math::Floor => ret(floor_r(real(a, 0)?, large(m))),
         Math::Round => {
             let x = real(a, 0)?;
             ret(if x > 0.0 {
-                floor_r(x + 0.5)
+                floor_r(x + 0.5, lg)
             } else if x < 0.0 {
-                ceil_r(x - 0.5)
+                ceil_r(x - 0.5, lg)
             } else {
                 0.0
             })
@@ -478,9 +481,9 @@ fn math<const K: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &
         Math::Trunc => {
             let x = real(a, 0)?;
             ret(if x > 0.0 {
-                floor_r(x)
+                floor_r(x, lg)
             } else if x < 0.0 {
-                ceil_r(x)
+                ceil_r(x, lg)
             } else {
                 0.0
             })
@@ -593,8 +596,10 @@ fn conv_int<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let (arg, size) = (int(a, 0)?, int(a, 1)?);
+    // INTEGER'LOW: -2**31 in 2008, -(2**63 - 1) in 2019 (the bounds' low is i64::MIN).
+    let low = m.rt.revision.integer_bounds().low.max(-i64::MAX);
     // `temp - 1` of INTEGER'LOW is an overflow error in the unsigned body.
-    if size < 1 || (!SIGNED && arg == -(1i64 << 31)) {
+    if size < 1 || (!SIGNED && arg == low) {
         return fallback(m);
     }
     let n = size as usize;
@@ -603,7 +608,7 @@ fn conv_int<const SIGNED: bool>(
     for i in 0..n {
         r.set(i, t.rem_euclid(2) == 1);
         // The signed body halves INTEGER'LOW without the `- 1` of the other negative values.
-        t = if t > 0 || (SIGNED && t <= -(1i64 << 31)) {
+        t = if t > 0 || (SIGNED && t <= low) {
             t / 2
         } else {
             (t - 1) / 2
@@ -644,10 +649,11 @@ fn from_int(m: &mut Machine, ctx: Cx<'_, '_, '_>, arg: i64, size: i64, signed: b
 }
 
 /// A NATURAL operand: the subtype check the body's formal makes.
-fn natural(i: i64) -> R<i64> {
+fn natural(m: &Machine, i: i64) -> R<i64> {
     if i < 0 {
         return rt_err(format!(
-            "value {i} outside of NATURAL range 0 to 2147483647"
+            "value {i} outside of NATURAL range 0 to {}",
+            m.rt.revision.integer_bounds().high
         ));
     }
     Ok(i)
@@ -677,14 +683,14 @@ fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
         1 => {
             let l = vh(m, a, 0)?;
             let i = int(a, 1)?;
-            let i = if SIGNED { i } else { natural(i)? };
+            let i = if SIGNED { i } else { natural(m, i)? };
             let r = from_int(m, ctx, i, l.v.len() as i64, SIGNED)?;
             add_vv(&l.v, &r.v, SUB, SIGNED)
         }
         _ => {
             let r = vh(m, a, 1)?;
             let i = int(a, 0)?;
-            let i = if SIGNED { i } else { natural(i)? };
+            let i = if SIGNED { i } else { natural(m, i)? };
             let l = from_int(m, ctx, i, r.v.len() as i64, SIGNED)?;
             add_vv(&l.v, &r.v, SUB, SIGNED)
         }
@@ -768,11 +774,11 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
         zero_ext(&lb, n, SIGNED).cmp_num(&zero_ext(&rb, n, SIGNED), SIGNED)
     } else if FORM == 1 {
         let i = int(a, 1)?;
-        let i = if SIGNED { i } else { natural(i)? };
+        let i = if SIGNED { i } else { natural(m, i)? };
         vec_vs_int(&lb, SIGNED, i)
     } else {
         let i = int(a, 0)?;
-        let i = if SIGNED { i } else { natural(i)? };
+        let i = if SIGNED { i } else { natural(m, i)? };
         vec_vs_int(&lb, SIGNED, i).reverse()
     };
     Ok(Some(u64::from(holds(c, ord))))
@@ -822,9 +828,10 @@ fn to_integer<const SIGNED: bool>(
     // value) most significant bit first with `R := R + R`, a checked INTEGER addition.
     let neg = SIGNED && b.get(b.len() - 1);
     let mag = if neg { b.not() } else { b };
+    let hi = m.rt.revision.integer_bounds().high as u64;
     let mut r: u64 = 0;
     for i in (0..mag.len()).rev() {
-        if r >= 1 << 30 {
+        if r > hi / 2 {
             return rt_err(format!(
                 "result of {r} + {r} cannot be represented as INTEGER"
             ));
@@ -841,8 +848,8 @@ fn to_unsigned<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let (v, size) = (int(a, 0)?, int(a, 1)?);
-    let v = if SIGNED { v } else { natural(v)? };
-    let size = natural(size)?;
+    let v = if SIGNED { v } else { natural(m, v)? };
+    let size = natural(m, size)?;
     let o = from_int(m, ctx, v, size, SIGNED)?;
     put(m, &o)
 }
@@ -854,7 +861,7 @@ fn resize<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let l = vh(m, a, 0)?.v;
-    let new = natural(int(a, 1)?)? as usize;
+    let new = natural(m, int(a, 1)?)? as usize;
     if new < 1 {
         return put(m, &Vh::null());
     }
@@ -874,7 +881,7 @@ fn resize<const SIGNED: bool>(
 
 fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let l = vh(m, a, 0)?;
-    let count = natural(int(a, 1)?)? as usize;
+    let count = natural(m, int(a, 1)?)? as usize;
     let n = l.v.len();
     let v = match K {
         0 => l.v.shl(count),

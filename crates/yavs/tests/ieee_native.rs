@@ -662,3 +662,128 @@ fn native_synopsys_arith_matches_bodies() {
     assert_eq!(n.status.code(), v.status.code());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Analyze `src` (entity `ent`) and run it with natives on and off: same stdout, stderr and
+/// exit status, and at least `min` lines of output.
+fn diff_run(tag: &str, src: &str, ent: &str, std: &str, min: usize) {
+    let dir = std::env::temp_dir().join(format!("yavs-ieee-{tag}-{}-{std}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("t.vhd"), src).expect("write");
+    if let Some(keep) = std::env::var_os("YAVS_IEEE_KEEP") {
+        let _ = std::fs::write(Path::new(&keep).join(format!("{tag}.vhd")), src);
+    }
+    let std_arg = format!("--std={std}");
+    let a = run(
+        &dir,
+        &["analyze", &std_arg, "--work=work:lib", "t.vhd"],
+        true,
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let go = |native| run(&dir, &["run", &std_arg, "--work=work:lib", ent], native);
+    let (n, v) = (go(true), go(false));
+    let (ns, vs) = (
+        String::from_utf8_lossy(&n.stdout),
+        String::from_utf8_lossy(&v.stdout),
+    );
+    assert!(
+        ns.lines().count() >= min,
+        "too few results:\n{}",
+        String::from_utf8_lossy(&n.stderr)
+    );
+    for (i, (x, y)) in ns.lines().zip(vs.lines()).enumerate() {
+        assert_eq!(x, y, "{tag} line {i} (std {std})");
+    }
+    assert_eq!(ns.lines().count(), vs.lines().count(), "{tag}");
+    assert_eq!(n.stderr, v.stderr, "{tag}");
+    assert_eq!(n.status.code(), v.status.code(), "{tag}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 64-bit INTEGER (2019): conversions of wide vectors, large integer operands, `floor` and
+/// `ceil` near INTEGER'HIGH and the NATURAL error text, native against body (#416).
+#[test]
+fn native_integer64_matches_bodies_2019() {
+    let mut b = String::new();
+    let big = [
+        "0",
+        "1",
+        "2147483647",
+        "2147483648",
+        "4294967295",
+        "4294967296",
+        "2863311530",
+        "1099511627776",
+        "4611686018427387903",
+        "4611686018427387904",
+        "9223372036854775807",
+    ];
+    for v in big {
+        for f in ["to_unsigned", "to_signed"] {
+            let (ty, n, var) = if f == "to_signed" {
+                ("signed", 64, "g")
+            } else {
+                ("unsigned", 64, "u")
+            };
+            let _ = writeln!(
+                b,
+                "    {var} := {ty}'({f}({v}, {n})); report \"{f} {v} \" & integer'image(to_integer({var}));"
+            );
+            let _ = writeln!(
+                b,
+                "    report \"{f} {v} small \" & to_hstring(std_ulogic_vector({f}({v}, 40)));"
+            );
+        }
+        let _ = writeln!(
+            b,
+            "    report \"cmp {v} \" & boolean'image(unsigned'(to_unsigned({v}, 64)) > {v}) & boolean'image({v} < signed'(to_signed({v}, 64)));"
+        );
+        let _ = writeln!(
+            b,
+            "    report \"add {v} \" & integer'image(to_integer(unsigned'(to_unsigned({v}, 63)) + 1));"
+        );
+        let _ = writeln!(
+            b,
+            "    report \"conv {v} \" & to_hstring(std_ulogic_vector(conv_unsigned({v}, 64))) & to_hstring(std_ulogic_vector(conv_signed(-{v}, 64))) & to_hstring(conv_std_logic_vector({v}, 70));"
+        );
+    }
+    for v in [
+        "-9223372036854775807",
+        "(-9223372036854775807 - 1)",
+        "-4294967296",
+        "-2147483649",
+    ] {
+        let _ = writeln!(
+            b,
+            "    report \"neg {v} \" & to_hstring(std_ulogic_vector(to_signed({v}, 64))) & integer'image(to_integer(to_signed({v}, 64)));"
+        );
+        let _ = writeln!(
+            b,
+            "    report \"convneg {v} \" & to_hstring(std_ulogic_vector(conv_signed({v}, 64))) & to_hstring(std_ulogic_vector(conv_unsigned({v}, 64)));"
+        );
+    }
+    for x in [
+        "2147483646.5",
+        "2147483647.5",
+        "3.0e9",
+        "-3.0e9",
+        "4.0e18",
+        "9.0e18",
+        "1.0e19",
+        "-9.0e18",
+        "123.5",
+        "-0.5",
+    ] {
+        for f in ["floor", "ceil", "round", "trunc"] {
+            let _ = writeln!(b, "    report \"{f} {x} \" & real'image({f}({x}));");
+        }
+    }
+    let _ = writeln!(
+        b,
+        "    report \"nat \" & integer'image(to_integer(unsigned'(shift_left(unsigned'(to_unsigned(1, 70)), 69)(62 downto 0))));"
+    );
+    let _ = writeln!(b, "    n := -1; u := shift_left(u, n);");
+    let src = format!(
+        "library ieee;\nuse ieee.std_logic_1164.all;\nuse ieee.numeric_std.all;\nuse ieee.std_logic_arith.conv_unsigned;\nuse ieee.std_logic_arith.conv_signed;\nuse ieee.std_logic_arith.conv_std_logic_vector;\nuse ieee.math_real.all;\nentity t is end entity;\narchitecture a of t is\nbegin\n  process\n    variable u : unsigned(63 downto 0);\n    variable g : signed(63 downto 0);\n    variable n : integer;\n  begin\n{b}    wait;\n  end process;\nend architecture;\n"
+    );
+    diff_run("int64", &src, "t", "2019", 100);
+}

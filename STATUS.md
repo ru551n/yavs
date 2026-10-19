@@ -198,6 +198,7 @@ bounds too, shared protected variables, package signals and files); composite ar
 constants evaluated once per region (#73). `tests/corpus.rs` runs every corpus group plus
 `crates/yavs-lower/tests/vhdl/run` (blessed from the reference simulator) through yavs-elab and the kernel; the external test runner's
 minimal testbench runs (#110). Design and conventions: `crates/yavs-lower/DESIGN.md`.
+`'element` attributes of objects with open element bounds (unconstrained ports, aliases of external names, parameters) read the object's descriptor (#235, #243; difftest `composite/element_attr_open`).
 Composites (lower2): records (2008 unconstrained elements with runtime descriptors), arrays of
 composites, multi-dimensional aggregates, composite constants, access types (`new`, `.all`,
 `deallocate`), process-local protected objects (`CallProt`), protected state initial values

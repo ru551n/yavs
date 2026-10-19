@@ -593,6 +593,44 @@ impl Elaborated {
                 }
             }
         }
+        // Signals first: a constant's thunk may read a port's or signal's bounds from its
+        // descriptor (`p'length`, `p'element'length`).
+        for s in &u.signals {
+            let Some(o) = self.signal(i, s.decl) else {
+                // A signal of a nested region (block, generate): processes of this region never
+                // name it, so its slot holds no kernel signal (any use is a BadRef error).
+                inst.sigs.push(InstSig {
+                    signal: yavs_kernel::SignalId(u32::MAX),
+                    ty: yavs_kernel::SignalType::bytes(1, 0),
+                });
+                continue;
+            };
+            if let Some(off) = s.dope {
+                // The signal's descriptor in this instance (ports: the actual's bounds).
+                write_desc(
+                    &rt.prog,
+                    &s.name,
+                    &self.nets.obj(o).shape,
+                    off,
+                    &mut inst.data,
+                )?;
+            }
+            // The leaf the entry names (a record signal has one entry per field leaf).
+            let (a, b) = self.nets.obj(o).leaves;
+            let Some(leaf) = (a.0..b.0)
+                .map(crate::LeafId)
+                .find(|&l| self.nets.leaf(l).path == s.path)
+            else {
+                return Err(sim_err(format!(
+                    "signal `{}` has no kernel signal for field path {:?}",
+                    s.name, s.path
+                )));
+            };
+            inst.sigs.push(InstSig {
+                signal: yavs_kernel::SignalId(leaf.0),
+                ty: self.nets.leaf(leaf).ty,
+            });
+        }
         for c in u.consts.iter().filter(|c| !known.contains(&c.decl)) {
             // An instance-level constant or shared variable is one object for all regions of
             // the instance (#190): its thunk runs once per instance.
@@ -632,42 +670,6 @@ impl Elaborated {
                     UnitIr::write_composite(c.off, &data, &desc, &mut inst.data);
                 }
             }
-        }
-        for s in &u.signals {
-            let Some(o) = self.signal(i, s.decl) else {
-                // A signal of a nested region (block, generate): processes of this region never
-                // name it, so its slot holds no kernel signal (any use is a BadRef error).
-                inst.sigs.push(InstSig {
-                    signal: yavs_kernel::SignalId(u32::MAX),
-                    ty: yavs_kernel::SignalType::bytes(1, 0),
-                });
-                continue;
-            };
-            if let Some(off) = s.dope {
-                // The signal's descriptor in this instance (ports: the actual's bounds).
-                write_desc(
-                    &rt.prog,
-                    &s.name,
-                    &self.nets.obj(o).shape,
-                    off,
-                    &mut inst.data,
-                )?;
-            }
-            // The leaf the entry names (a record signal has one entry per field leaf).
-            let (a, b) = self.nets.obj(o).leaves;
-            let Some(leaf) = (a.0..b.0)
-                .map(crate::LeafId)
-                .find(|&l| self.nets.leaf(l).path == s.path)
-            else {
-                return Err(sim_err(format!(
-                    "signal `{}` has no kernel signal for field path {:?}",
-                    s.name, s.path
-                )));
-            };
-            inst.sigs.push(InstSig {
-                signal: yavs_kernel::SignalId(leaf.0),
-                ty: self.nets.leaf(leaf).ty,
-            });
         }
         Ok(inst)
     }

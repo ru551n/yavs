@@ -871,6 +871,11 @@ which tools/difftest parses.
   takes the alias subtype's descriptor (length-checked) for the steps after it, and an index or
   slice after a slice (`m(0 to 1)(0)`) counts within the slice, so sensitivity through such an
   alias and names below a slice use the same walk (#230).
+- **`x'element` of an object with open element bounds** (`FromObject` with `elem_depth` 1)
+  lowers from the element part of the object's descriptor, after the object's own dimensions
+  (`Fx::subtype_dope`); instance data now gets the signal descriptors before the constant
+  thunks run, so `constant w : natural := p'element'length` (or `p'length`) of a port sees the
+  actual's bounds (#235, #243).
 
 ## Foreign subprograms and `--load` (yavs-lower, yavs-vhpi, CLI, #95, 2026-10-18)
 

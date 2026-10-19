@@ -30,6 +30,7 @@ const PASS: &[&str] = &[
     "arith/time_arith",
     "composite/aggregate_named_pieces",
     "composite/aggregate_open_elements",
+    "composite/element_attr_open",
     "composite/aggregate_pieces",
     "composite/aggregate_target_cover",
     "composite/aggregate_target_cover_signal",

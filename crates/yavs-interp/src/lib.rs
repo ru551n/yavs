@@ -716,7 +716,7 @@ impl InterpProcess {
                 Ok(())
             }
             r => {
-                self.m.frames.clear();
+                self.m.truncate_frames(0);
                 Err(match r {
                     Err(e) => format!("its declarative part cannot run yet: {}", fault_text(e)),
                     _ => "this is a bug in yavs: a process ended in its declarative part".into(),

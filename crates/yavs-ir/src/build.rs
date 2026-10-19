@@ -14,6 +14,8 @@ use crate::{
 pub struct ProgramBuilder {
     prog: Program,
     errors: Vec<VerifyError>,
+    /// Functions below this id passed the verifier in a [`ProgramBuilder::snapshot`].
+    verified: usize,
 }
 
 impl ProgramBuilder {
@@ -146,7 +148,21 @@ impl ProgramBuilder {
 
     /// Propagate flags, number resume points and verify. Errors are internal compiler
     /// errors of the producer.
-    pub fn finish(mut self) -> Result<Program, Vec<VerifyError>> {
+    pub fn finish(self) -> Result<Program, Vec<VerifyError>> {
+        self.finish_from(0)
+    }
+
+    /// [`ProgramBuilder::finish`] on a copy, building goes on. Only the functions added since
+    /// the last snapshot are verified again: a function never changes once defined, and what
+    /// is added later cannot make an earlier one invalid.
+    pub fn snapshot(&mut self) -> Result<Program, Vec<VerifyError>> {
+        let n = self.prog.funcs.len();
+        let p = self.clone().finish_from(self.verified)?;
+        self.verified = n;
+        Ok(p)
+    }
+
+    fn finish_from(mut self, first: usize) -> Result<Program, Vec<VerifyError>> {
         let prog = &mut self.prog;
         for (id, f) in prog.funcs.iter() {
             if !f.defined {
@@ -163,7 +179,7 @@ impl ProgramBuilder {
         }
         propagate(prog);
         number_resumes(prog);
-        let errors = verify(prog);
+        let errors = verify(prog, first);
         if errors.is_empty() {
             Ok(self.prog)
         } else {

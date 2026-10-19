@@ -39,9 +39,10 @@ impl fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
-pub(crate) fn verify(prog: &Program) -> Vec<VerifyError> {
+/// Verify `prog`, its functions from id `first` on.
+pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
     let mut errs = Vec::new();
-    for (id, _) in prog.funcs.iter() {
+    for (id, _) in prog.funcs.iter().skip(first) {
         verify_func(prog, id, &mut errs);
     }
     for (id, t) in prog.cases.iter() {

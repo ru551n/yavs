@@ -41,6 +41,10 @@ otherwise.
   simulation with exit status 1. An ``error`` report below it is printed, the run continues,
   and the exit status is 1 at the end, unless ``ClearVhdlAssert`` (VHDL-2019 ``std.env``)
   cleared the assert counts since.
+* ``--time-report`` prints the wall and CPU time of each phase (``analyze``, ``elaborate``,
+  ``init``, ``simulate``) and the total to standard error when the simulation ends, for example
+  ``time-report: simulate wall=1.204 cpu=1.19``. CPU time is for the whole process, in 10 ms
+  steps, and is shown as ``n/a`` on platforms that do not report it.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
 * ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code; the output

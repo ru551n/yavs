@@ -255,6 +255,14 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
+- `--time-report`: when the simulation ends (any outcome after elaboration) print the wall and
+  CPU seconds of each phase to standard error, one line per phase and a total:
+  `time-report: PHASE wall=S cpu=S`, with PHASE one of `analyze` (library loading, parsing and
+  analysis of the design closure), `elaborate` (elaboration and lowering), `init` (package and
+  instance initialisation, plugin and waveform setup) and `simulate`, then `total`. CPU is the
+  whole process (all threads) in 10 ms steps and `n/a` where the platform does not tell (read
+  from `/proc` on Linux). Off by default and then free. Standard output and exit status do not
+  change; a run that fails before the simulation starts prints nothing.
 - `--load=LIB` (repeatable): load a shared library for VHPIDIRECT foreign
   subprograms. A bare name goes to the OS library search path, a path must exist.
   Every foreign subprogram the design calls is bound before the simulation starts:

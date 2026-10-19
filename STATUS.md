@@ -193,8 +193,11 @@ An installed binary finds `lib/` next to itself (#43).
   (`array (type is range <>) of type is private`), an index constraint, and anonymous designated or
   file element types, in packages, subprograms and entities (#30; sem suite
   `v2019/generic_array_*`, difftest `generics/generic_arrays_2019`,
-  `generics/generic_array_constrained_2019_hand`). Open: generic constants, ports and parameters of
-  an anonymous type (`E9999`), instantiating a generic protected type (parser request).
+  `generics/generic_array_constrained_2019_hand`). Generic constants, ports and
+  subprogram parameters of an anonymous type (`c : type is range <>`) in packages, subprograms, entities, components, blocks and
+  calls (#283; sem suite `v2019/anonymous_object_*`, difftest `generics/anonymous_objects_2019_hand`). Open: anonymous
+  parameter types of formal subprograms and of subprograms with a generic list (`E9999`), instantiating a generic protected
+  type (parser request).
 - 2019 mode views and private variables (S7, #32): view declarations (`E1901`, `E1902`),
   `'converse` (`E1621` on a non-view), view ports and signal parameters (`E1903`), views in
   generic units; private variables visible only in the protected body (`E1105`), method aliases

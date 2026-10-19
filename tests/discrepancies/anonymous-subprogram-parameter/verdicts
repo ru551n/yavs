@@ -1,0 +1,5 @@
+sim1 2019 REJECT
+sim2 2019 REJECT
+sim3 2019 REJECT
+# sim1 parses the declaration but binds no type to its actual (it asks for a type actual, or has no operator for the anonymous type)
+# sim2 and sim3: the REJECT is a syntax error on `type is ...` as an object type, so unsupported: no vote

@@ -507,7 +507,9 @@ after their owner (`vt'index`, `vt'element`), not declared by name, with their c
 in the generic list's region; `check_class` checks their actual parts and `seed_type` maps them
 to the actual's index, element or designated subtype (#30). A literal converts implicitly to a
 generic type of the integer or floating class. Generic constants, ports and parameters with an
-anonymous type are still `E9999` (no reference simulator accepts them).
+anonymous type (`c : type is range <>`, #283, L94) get their own anonymous generic type, bound to the type of the
+actual: package and subprogram instances through `bind_const`, entities, components and blocks through a hidden generic type
+appended to their generics (`with_hidden_args` adds its `Actual::Subtype`), subprogram calls through `implicit_instance`.
 
 ### 2.10 Implicitly declared operations (5.x, `lib/NATIVE.md` section 2)
 

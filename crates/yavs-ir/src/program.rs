@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// A whole lowered design: immutable and `Send + Sync` once built.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Program {
     pub funcs: IdVec<FuncId, Func>,
     pub types: IdVec<TyId, Ty>,

@@ -10,7 +10,7 @@ use crate::{
     RootKind, StmtId, StmtInfo, StmtKind, Ty, TyId, Width,
 };
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProgramBuilder {
     prog: Program,
     errors: Vec<VerifyError>,

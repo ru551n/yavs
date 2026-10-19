@@ -15,6 +15,8 @@ Default templates:
   yavs: yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
   nvc:  nvc --std={std} --work={lib}:{dir}/{lib} -L {dir} -a {flags} {file}
 Every call runs under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` (--no-wrap to disable).
+A source with `env = "VAR"` (vendor primitive libraries, unisim-2008) is read in place from $VAR and the
+whole manifest is skipped (exit 0) when VAR is unset. --extra-map maps a library built by an earlier run.
 Sources are looked up as <root>/<source id>, roots: --root, $YAVS_CORPUS, ~/.cache/rsim-corpus,
 ~/.cache/rsim-corpora (fetch them with tools/fetch-corpus.sh). Nothing is copied into the repo.
 Exit: 0 all as expected, 1 differences, 2 usage/environment error.
@@ -59,6 +61,7 @@ def main():
     ap.add_argument("--root", action="append", default=[])
     ap.add_argument("--out", help="library directory (default ~/.cache/yavs-corpus-out/<tool>-<name>-<pid>, unique per run)")
     ap.add_argument("--expected", help="expected-results list ('none' to skip the comparison)")
+    ap.add_argument("--extra-map", action="append", default=[], metavar="NAME:PATH", help="another library for {map} (e.g. unisim:DIR/unisim from a vendor run)")
     ap.add_argument("--keep-going", action="store_true")
     ap.add_argument("--bless", action="store_true", help="write the expected list from this (complete) run")
     ap.add_argument("--log", help="write the full output of every failed file here")
@@ -75,6 +78,12 @@ def main():
     for s in m["source"]:
         if s.get("local"):
             base[s["id"]] = REPO
+            continue
+        if s.get("env"):  # vendor tree read in place, never fetched or committed
+            if not os.environ.get(s["env"]):
+                print(f"{name}: skipped, ${s['env']} is not set")
+                sys.exit(0)
+            base[s["id"]] = Path(os.environ[s["env"]]).expanduser()
             continue
         d = next((r / s["id"] for r in roots if (r / s["id"]).is_dir()), None)
         if d is None:
@@ -107,7 +116,7 @@ def main():
         argv = []
         for t in tmpl:
             if t == "{map}":
-                argv += [f"--map={l}:{out}/{l}" for l in libs]
+                argv += [f"--map={l}:{out}/{l}" for l in libs] + [f"--map={x}" for x in a.extra_map]
             elif t == "{flags}":
                 argv += flags + (extra if a.tool == "nvc" else [])
             else:

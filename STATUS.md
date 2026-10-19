@@ -640,7 +640,7 @@ record fields and array elements of any dimension and index type as `vhpiSelecte
 `vhpiIndexedNameK` objects made on demand. `vhpi_handle` (root, tool, upper and immediate region,
 design and primary unit, prefix), `vhpi_handle_by_name` (absolute and relative, case-insensitive,
 `.field` and `(index)` selections), `vhpi_handle_by_index`, `vhpi_iterator`/`vhpi_scan`
-(`vhpiInternalRegions`, `vhpiDecls`, `vhpiSigDecls`, `vhpiPortDecls`, `vhpiGenericDecls`,
+(`vhpiInternalRegions`, `vhpiBlockStmts`, `vhpiCompInstStmts`, `vhpiStmts` (#316), `vhpiDecls`, `vhpiSigDecls`, `vhpiPortDecls`, `vhpiGenericDecls`,
 `vhpiConstDecls`, `vhpiVarDecls`, `vhpiPackInsts`, `vhpiIndexedNames`, `vhpiSelectedNames`),
 `vhpiNameP`, `vhpiCaseNameP` (original spelling), full names, kind, file, line, mode,
 `vhpiDefNameP`, `vhpiIsCompositeP`, `vhpiSizeP`; `vhpi_compare_handles` compares objects.

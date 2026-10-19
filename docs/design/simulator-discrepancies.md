@@ -218,6 +218,8 @@ majority of the references that run it.
 
 | Case | Construct | LRM | Kind | sim1 | sim2 | sim3 | sim4 | yavs | yavs's choice | Decided |
 |---|---|---|---|---|---|---|---|---|---|---|
+| `walk`: `block:`, `inst:` | `vhpi_iterator(vhpiBlockStmts / vhpiCompInstStmts)` of a region | VHPI information model | LRM ambiguity | the child blocks / instances, an empty iterator when none | unsupported | unsupported | the same, NULL without error when none (error on a process) | as the references, NULL without error when none, also on a process | list them; empty is NULL without error | agent, 2026-10-19 (#316) |
+| `walk`: `stmt:`, `gen:` | `vhpi_iterator(vhpiStmts)` and `(vhpiGenerateStmts)` of a region | VHPI information model | LRM ambiguity | `vhpiStmts`: the child instances, blocks and generates; `vhpiGenerateStmts`: error | unsupported | unsupported | `vhpiStmts`: NULL without error; `vhpiGenerateStmts`: error | `vhpiStmts`: every child region, processes too; `vhpiGenerateStmts`: error (`W0904`) | permissive for `vhpiStmts` (sim1's list plus the processes yavs models); `vhpiGenerateStmts` refused as by both | agent, 2026-10-19 (#316) |
 | `values`: `cnt`, `k` | `vhpi_get_value` with `vhpiEnumVal` on an integer object | VHPI clause, `vhpi_get_value` (formats per type, not strict) | LRM ambiguity | the integer | unsupported | unsupported | the integer | the integer | read the integer (a negative one does not fit and is `W0903`) | agent, 2026-10-19 (#318) |
 
 ## Adding a case

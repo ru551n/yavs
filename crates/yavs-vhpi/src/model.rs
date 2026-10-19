@@ -788,6 +788,17 @@ impl State {
                     .collect(),
             )
         };
+        let regions = |n: NodeId, keep: &dyn Fn(vhpiClassKindT) -> bool| {
+            list(
+                self.design
+                    .node(n)
+                    .regions
+                    .iter()
+                    .filter(|&&r| keep(self.design.node(r).kind))
+                    .map(|&r| Object::Node(r))
+                    .collect(),
+            )
+        };
         let region = match reference {
             Some(Object::Node(n)) if self.design.node(*n).layout.is_none() => Some(*n),
             _ => None,
@@ -803,14 +814,11 @@ impl State {
                     .map(|&p| Object::Node(p))
                     .collect(),
             ),
-            (vhpiInternalRegions, Some(n)) => list(
-                self.design
-                    .node(n)
-                    .regions
-                    .iter()
-                    .map(|&r| Object::Node(r))
-                    .collect(),
-            ),
+            (vhpiInternalRegions, Some(n)) => regions(n, &|_| true),
+            // Child statements (#316); a process has none, an empty iteration without error.
+            (vhpiBlockStmts, Some(n)) => regions(n, &|k| k == vhpiBlockStmtK),
+            (vhpiCompInstStmts, Some(n)) => regions(n, &|k| k == vhpiCompInstStmtK),
+            (vhpiStmts, Some(n)) => regions(n, &|_| true),
             (vhpiDecls, Some(n)) => decls(n, None),
             (vhpiSigDecls, Some(n)) => decls(n, Some(vhpiSigDeclK)),
             (vhpiPortDecls, Some(n)) => decls(n, Some(vhpiPortDeclK)),

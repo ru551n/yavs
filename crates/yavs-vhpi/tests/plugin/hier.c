@@ -84,6 +84,17 @@ static void object(vhpiHandleT h, int depth) {
     elements(h, depth + 1);
 }
 
+/* Items of a statement relation; -1 when it does not apply (#316). */
+static int count(vhpiOneToManyT rel, vhpiHandleT h) {
+  vhpiHandleT it = vhpi_iterator(rel, h);
+  if (!it)
+    return vhpi_check_error(NULL) ? -1 : 0;
+  int n = 0;
+  for (vhpiHandleT s; (s = vhpi_scan(it)) != NULL; n++)
+    vhpi_release_handle(s);
+  return n;
+}
+
 static void region(vhpiHandleT h, int depth) {
   indent(depth);
   put("%s %s name=%s full=%s %s:%d", str(vhpiKindStrP, h),
@@ -100,6 +111,8 @@ static void region(vhpiHandleT h, int depth) {
     put(" def=%s", str(vhpiDefNameP, h));
     vhpi_release_handle(du);
   }
+  put(" blocks=%d insts=%d stmts=%d", count(vhpiBlockStmts, h),
+      count(vhpiCompInstStmts, h), count(vhpiStmts, h));
   flush();
 
   static const vhpiOneToManyT decls[] = {vhpiGenericDecls, vhpiPortDecls,

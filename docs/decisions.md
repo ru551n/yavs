@@ -1005,3 +1005,5 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   with a named return value stays accepted in a `return` statement and as the actual of a
   constrained formal (permissive), although only some reference simulators accept those contexts.
   Recorded in `docs/design/lrm-checks.md` L62.
+- **Implicit operations of a generic type in positional generic maps (L69, #223; user, 2026-10-19):**
+  they take no position, with no warning; two of three reference simulators agree.

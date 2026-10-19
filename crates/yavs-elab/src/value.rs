@@ -258,6 +258,28 @@ fn get(prog: &Program, ty: TyId, data: &[u8], desc: &[u8]) -> Option<(Val, usize
             let k = Ty::logic_leaf(&prog.types, ty)?;
             let bias = if k == LogicKind::StdULogic { 0 } else { 2 };
             let n = l.count as usize;
+            // A vector of scalars (the common case): the bytes straight from the planes.
+            if let Ty::Array { dims: 1, elem, .. } = t
+                && prog.types.get(*elem).and_then(Ty::scalar_size).is_some()
+                && n > 0
+            {
+                let (bounds, _) = dims_of(t, desc)?;
+                let mut bytes = vec![0u8; n];
+                for (w, chunk) in bytes.rchunks_mut(64).enumerate() {
+                    let mut planes = [0u64; 4];
+                    for (plane, word) in planes.iter_mut().enumerate() {
+                        *word = read(data, w * 32 + plane * 8, 8)?;
+                    }
+                    for (j, b) in chunk.iter_mut().rev().enumerate() {
+                        let code =
+                            (0..4).fold(0u64, |c, plane| c | (planes[plane] >> j & 1) << plane);
+                        *b = u8::try_from(code.checked_sub(u64::from(bias))?).ok()?;
+                    }
+                }
+                let bounds: Box<[_]> = bounds.iter().map(|b| (b.left, b.dir, b.right)).collect();
+                let elems = Elems::Bytes(bytes.into());
+                return Some((Val::Array(ArrayConst { bounds, elems }), used));
+            }
             let mut codes = Vec::with_capacity(n);
             for p in 0..n {
                 let i = n - 1 - p;
@@ -343,6 +365,17 @@ fn logic_val(prog: &Program, ty: TyId, desc: &[u8], codes: &[u32]) -> Option<Val
         return None;
     };
     let (bounds, at) = dims_of(t, desc)?;
+    // A vector of scalars: its codes are the bytes (`make` would find them small).
+    if bounds.len() == 1
+        && !codes.is_empty()
+        && prog.types.get(*elem).and_then(Ty::scalar_size).is_some()
+        && codes.len() as u64 == bounds[0].len()
+        && codes.iter().all(|&c| c < 256)
+    {
+        let bounds = bounds.iter().map(|b| (b.left, b.dir, b.right)).collect();
+        let elems = Elems::Bytes(codes.iter().map(|&c| c as u8).collect());
+        return Some(Val::Array(ArrayConst { bounds, elems }));
+    }
     let ed = match elem_desc {
         Some(c) => pool(prog, *c)?,
         None => desc.get(at..)?,

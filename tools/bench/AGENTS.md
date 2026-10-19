@@ -29,7 +29,7 @@ Benchmarks (`run.py --list`):
 | `uvvm_axistream_vvc_tb` | external | The AXI-stream verification component testbench, first generic set, capped with `--stop-time=10us` (it runs far over 5 minutes in full) |
 | `uvvm_util_rand_tb` | external | The utility library's random testbench (`rand_basic`) |
 | `osvvm_axistream` | external | One AXI-stream testbench (`TbStream_AxiSendGetRandomParam2`) of the other verification library's `.pro` scripts |
-| `vai_pe_array`, `vai_window_gen` | external | Two long testbenches of the user's `vhdl-ai-test` repository, read-only, needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset |
+| `vai_pe_array`, `vai_window_gen` | external | Two long testbenches of a local, read-only testbench repository; needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset |
 
 ## 3. Design decisions that bind this module
 

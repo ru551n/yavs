@@ -18,6 +18,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | File | The reference simulator | The second reference simulator | Justification |
 |---|---|---|---|
 | `unit/block_config_of_default_bound_instance_ok` | rejects @15 | rejects @15 | LRM 3.4.3 is silent on whether a default binding counts for a block configuration; the third reference simulator accepts, so permissive (`docs/decisions.md`). |
+| `unit/port_conv_inout_one_way_out` | accepts | rejects @14 | LRM 6.5.7.1 is unclear for ports; the second reference simulator rejects a formal conversion of an `inout` port without an actual conversion, as yavs does for `inout` parameters (lrm-checks L72). |
 | `ovl/call_conversions_ok` | rejects @23 to 28 | accepts | LRM 6.5.7.1 allows conversions in subprogram call associations; the reference simulator reports them as not supported yet (an actual conversion of an `in` variable as "not a name"), the second reference simulator accepts. |
 | `unit/port_conv_inout_mismatch` | accepts | rejects @18 | LRM 6.5.7.1 is clear: the formal part's conversion gives the actual's type; the reference simulator does not check the way out of an `inout` port with both conversions (#238). |
 | `agg/others_with_other_choice_same_assoc` | accepts | rejects @5 | The reference simulator bug/leniency: accepts `others` combined with another choice in one association (LRM 9.3.3.3 forbids); the second reference simulator rejects. |

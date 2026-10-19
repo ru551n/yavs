@@ -970,6 +970,23 @@ impl Db {
             }
             _ => None,
         };
+        // An `inout` port converts both ways or not at all (6.5.7.1; both reference
+        // simulators reject one way only).
+        if mode == Some(Mode::Inout) && formal_conv.is_some() != actual_conv.is_some() {
+            let name = self.decls[f].name;
+            let (span, way) = match actual_conv {
+                Some(_) => (self.exprs[id].span, "the way in, but not the way out"),
+                None => (fspan, "the way out, but not the way in"),
+            };
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::CONV_MISUSE,
+                    format!("`inout` port `{name}` is converted {way}"),
+                )
+                .with_primary(span, "the only conversion of this association")
+                .with_help("convert both ways, `conv(formal) => conv(actual)`, or not at all"),
+            ));
+        }
         if let Some((conv, x)) = actual_conv
             && mode != Some(Mode::Out)
             && mode != Some(Mode::Buffer)

@@ -501,6 +501,14 @@ impl Cx {
     }
 }
 
+/// A [`Lowerer`] set aside without its `Db` ([`Lowerer::suspend`]).
+pub struct Suspended {
+    pb: ProgramBuilder,
+    cx: Cx,
+    units: Vec<UnitIr>,
+    packages: Vec<PackageIr>,
+}
+
 pub struct Lowerer<'a> {
     db: &'a Db,
     pb: ProgramBuilder,
@@ -708,6 +716,47 @@ impl<'a> Lowerer<'a> {
         while let Some((d, depth)) = self.cx.queue.pop() {
             // Errors are collected in `cx.diags`.
             let _ = func::subprogram(self.db, &mut self.pb, &mut self.cx, d, depth);
+        }
+    }
+
+    /// The program lowered so far, verified, as [`Lowerer::finish`] would return it; lowering
+    /// can go on. What is lowered later only adds to it: every id it has keeps its meaning.
+    pub fn snapshot(&mut self) -> Result<Lowered, Vec<Diagnostic>> {
+        self.drain();
+        if !self.cx.diags.is_empty() {
+            return Err(self.cx.take_failed());
+        }
+        match self.pb.clone().finish() {
+            Ok(program) => Ok(Lowered {
+                program,
+                units: self.units.clone(),
+                packages: self.packages.clone(),
+                shared_size: self.cx.shared_size,
+            }),
+            Err(errs) => Err(errs.iter().map(verify_ice).collect()),
+        }
+    }
+
+    /// Set the lowering aside without its `Db`, to go on with [`Lowerer::resume`] (the
+    /// elaborator adds functions while it changes the `Db` in between).
+    pub fn suspend(self) -> Suspended {
+        Suspended {
+            pb: self.pb,
+            cx: self.cx,
+            units: self.units,
+            packages: self.packages,
+        }
+    }
+
+    /// Go on with a suspended lowering. `db` must be the `Db` it started with, possibly grown
+    /// since: what is lowered already is not lowered again.
+    pub fn resume(db: &'a Db, s: Suspended) -> Self {
+        Lowerer {
+            db,
+            pb: s.pb,
+            cx: s.cx,
+            units: s.units,
+            packages: s.packages,
         }
     }
 

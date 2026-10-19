@@ -20,7 +20,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Lowerer` (`new`, `architecture`, `package`, `package_value`, `var_slots` (the value type of each non-protected shared variable and, for a package's, a thunk returning its slot's address, #309), `implicit_native`, `subprogram`, `subprograms_of`, `finish -> Lowered`), `LowerOptions` (`coverage`), `UnitIr`, `InstValue::write_value`, `InstConst`, `SignalIr`, `ProcessIr`, `Cx` (`error`, `unsupported`, `ice`, `cover`), `Obj`, `Space`, `top_architecture`, codes |
+| `src/lib.rs` | `Lowerer` (`new`, `architecture`, `package`, `package_value`, `var_slots` (the value type of each non-protected shared variable and, for a package's, a thunk returning its slot's address, #309), `implicit_native`, `subprogram`, `subprograms_of`, `finish -> Lowered`; `snapshot` (the program so far, lowering goes on) and `suspend`/`resume` (`Suspended`: the lowering without its `Db`, #383)), `LowerOptions` (`coverage`), `UnitIr`, `InstValue::write_value`, `InstConst`, `SignalIr`, `ProcessIr`, `Cx` (`error`, `unsupported`, `ice`, `cover`), `Obj`, `Space`, `top_architecture`, codes |
 | `src/func.rs` | `Fx`: frames, parameters, declarations, subprograms, processes, architectures |
 | `src/expr.rs` | Scalar expressions, calls, implicit operations, attributes, names, 1-D arrays |
 | `src/stmt.rs` | Sequential statements, waits, signal assignments, case |

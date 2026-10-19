@@ -569,7 +569,7 @@ impl Fx<'_, '_> {
                     dims,
                     what: m,
                 });
-                let (size, _) = self.layout(tid, want);
+                let size = self.size_of(tid, want);
                 let fifteen = self.int(15);
                 let r = self.bin(IntOp::Add, size, fifteen);
                 let wave = self.alloc(r);
@@ -839,7 +839,7 @@ impl Fx<'_, '_> {
                     k = self.named_piece(ps[i], pd);
                 }
                 let len = self.dope_len(pd);
-                let (size, _) = self.layout(tid, pd);
+                let size = self.size_of(tid, pd);
                 let src = if logic {
                     // Planes hold the leftmost element last.
                     let piece = self.alloc(size);
@@ -1051,7 +1051,7 @@ impl Fx<'_, '_> {
         let mut parts = Vec::with_capacity(vals.len());
         for &v in vals {
             let (data, dope) = self.arr(v, span)?;
-            let (_, count) = self.layout(tid, dope);
+            let count = self.layout_count(tid, dope);
             let lens: Vec<Reg> = (0..ndims)
                 .map(|k| {
                     let dst = self.reg(RegTy::I64);
@@ -1837,7 +1837,7 @@ impl Fx<'_, '_> {
             }
         };
         let len = self.dope_len(td);
-        let (size, _) = self.layout(vtid, td);
+        let size = self.size_of(vtid, td);
         // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
         let seven = self.int(7);
         let r = self.bin(IntOp::Add, size, seven);
@@ -2027,7 +2027,7 @@ impl Fx<'_, '_> {
         // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
         let (stride, size) = match tdope {
             Some(dope) => {
-                let (size, _) = self.layout(tid, dope);
+                let size = self.size_of(tid, dope);
                 let seven = self.int(7);
                 let r = self.bin(IntOp::Add, size, seven);
                 let eight = self.int(8);

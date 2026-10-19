@@ -341,7 +341,7 @@ impl<'a> Fx<'a, '_> {
             ),
         };
         let c = self.fb.program().konst(data);
-        let (size, _) = self.layout(tid, dope);
+        let size = self.size_of(tid, dope);
         let dst = self.alloc(size);
         self.emit(Inst::CopyConst { dst, c });
         Ok(V::A(dst, dope))
@@ -408,7 +408,7 @@ impl<'a> Fx<'a, '_> {
                 let dope = self.sig_dope(d, span)?.ok_or(Failed)?;
                 let s = self.sig_of(d, span)?;
                 let tid = self.decl_ty(d, span)?;
-                let (size, _) = self.layout(tid, dope);
+                let size = self.size_of(tid, dope);
                 let buf = self.alloc(size);
                 self.emit(Inst::SigRead { dst: buf, sig: s });
                 Ok(V::A(buf, dope))
@@ -1257,7 +1257,7 @@ impl<'a> Fx<'a, '_> {
                         fx.leaf_walk(et, a, ed, rel, k, buf, facts, into_value, span)
                     });
                 }
-                let (_, m) = self.layout(tid, desc);
+                let m = self.layout_count(tid, desc);
                 self.leaf_copy(buf, facts, addr, Some(m), k, into_value);
                 m
             }
@@ -3049,7 +3049,7 @@ impl<'a> Fx<'a, '_> {
             }
             None => ad,
         };
-        let (size, _) = self.layout(tid, ap);
+        let size = self.size_of(tid, ap);
         let dst = self.alloc(size);
         let o = match op.family {
             Family::And => LOp::And,
@@ -3184,7 +3184,7 @@ impl<'a> Fx<'a, '_> {
                 }
                 // Units per element: plane elements of a logic array, else bytes.
                 if logic {
-                    (self.layout(etid, ed).1, Width::B8)
+                    (self.layout_count(etid, ed), Width::B8)
                 } else {
                     let l = self.lay(tid, dope);
                     let sa = self.offset(l, 16);
@@ -3192,7 +3192,7 @@ impl<'a> Fx<'a, '_> {
                 }
             }
         };
-        let (size, _) = self.layout(tid, dope);
+        let size = self.size_of(tid, dope);
         let data = self.alloc(size);
         let bias = self.code_bias(tid);
         let pieces: Vec<_> = ops.iter().map(|o| (o.0, o.1)).collect();
@@ -3446,7 +3446,7 @@ impl<'a> Fx<'a, '_> {
         // Units per element: plane elements of a logic array, else bytes.
         let (m, w) = match scalar {
             Some(w) => (self.int(if logic { 1 } else { i64::from(w.bytes()) }), w),
-            None if logic => (self.layout(etid, ed).1, Width::B8),
+            None if logic => (self.layout_count(etid, ed), Width::B8),
             None => {
                 let l = self.lay(tid, dope);
                 let sa = self.offset(l, 16);
@@ -3474,7 +3474,7 @@ impl<'a> Fx<'a, '_> {
                 }
             });
         }
-        let (size, _) = self.layout(tid, dope);
+        let size = self.size_of(tid, dope);
         let data = self.alloc(size);
         let count = self.dope_len(dope);
         let bw = (self.code_bias(etid), w);
@@ -3716,7 +3716,7 @@ impl<'a> Fx<'a, '_> {
                 let st = db.exprs[e].subtype;
                 let tid = self.ty(db.base(st), span)?;
                 if let Some(dope) = self.dope_of_signal(e)? {
-                    let (size, _) = self.layout(tid, dope);
+                    let size = self.size_of(tid, dope);
                     let buf = self.alloc(size);
                     self.emit(Inst::DrivingValue {
                         dst: buf,
@@ -3766,7 +3766,7 @@ impl<'a> Fx<'a, '_> {
                     _ => {
                         let tid = self.ty(db.base(st), span)?;
                         if let Some(dope) = dope {
-                            let (size, _) = self.layout(tid, dope);
+                            let size = self.size_of(tid, dope);
                             let buf = self.alloc(size);
                             self.emit(Inst::SigLastValue { dst: buf, sig: s });
                             return Ok(V::A(buf, dope));
@@ -3969,7 +3969,7 @@ impl<'a> Fx<'a, '_> {
         let pos = self.flat_pos(dope, indices, &what)?;
         let tid = self.ty(t, span)?;
         if logic {
-            let (_, count) = self.layout(tid, dope);
+            let count = self.layout_count(tid, dope);
             let code = self.elem_at(data, pos, count, true, w);
             let bias = self.code_bias(tid);
             return Ok(V::S(self.dec(code, bias)));
@@ -4052,7 +4052,7 @@ impl<'a> Fx<'a, '_> {
             let count = self.dope_len(dope);
             let a = self.bin(IntOp::Sub, count, p);
             let src_off = self.bin(IntOp::Sub, a, n);
-            let (size, _) = self.layout(tid, nd);
+            let size = self.size_of(tid, nd);
             let dst = self.alloc(size);
             let z = self.int(0);
             self.emit(Inst::LCopy {
@@ -4166,7 +4166,7 @@ impl<'a> Fx<'a, '_> {
                 };
                 let pos = self.flat_pos(dope, indices, &what)?;
                 if self.is_logic(tid) {
-                    let (_, count) = self.layout(tid, dope);
+                    let count = self.layout_count(tid, dope);
                     let one = self.int(1);
                     let last = self.bin(IntOp::Sub, count, one);
                     let mut idx = self.bin(IntOp::Sub, last, pos);

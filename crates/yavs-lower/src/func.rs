@@ -293,6 +293,9 @@ impl<'a, 'b> Fx<'a, 'b> {
 
     /// `base + n` bytes.
     pub fn offset(&mut self, base: Reg, n: u32) -> Reg {
+        if n == 0 {
+            return base;
+        }
         let pos = self.int(i64::from(n));
         let dst = self.reg(RegTy::Ptr);
         self.emit(Inst::Index {
@@ -781,6 +784,22 @@ impl<'a, 'b> Fx<'a, 'b> {
         let c = self.offset(l, 24);
         let count = self.load(c, Width::B8, RegTy::I64);
         (size, count)
+    }
+
+    /// The element count of an array of type `tid` with descriptor `dope`: the length of a
+    /// one-dimensional array is read from the descriptor directly; the rest goes through the
+    /// layout.
+    pub fn layout_count(&mut self, tid: TyId, dope: Reg) -> Reg {
+        let types = self.fb.program().types();
+        if let Some(yavs_ir::Ty::Array { elem, dims: 1, .. }) = types.get(tid)
+            && (types.get(*elem).is_some_and(|e| e.scalar_size().is_some())
+                || yavs_ir::Ty::logic_leaf(types, tid).is_none())
+        {
+            let dst = self.reg(RegTy::I64);
+            self.emit(Inst::DopeLen { dst, dope, dim: 0 });
+            return dst;
+        }
+        self.layout(tid, dope).1
     }
 
     /// Finish the body: a function falling off its end is a runtime error.
@@ -2376,7 +2395,7 @@ impl Fx<'_, '_> {
             return Err(self.cx.ice(span, "unconstrained constant without bounds"));
         };
         self.check_desc(t, tid, vd, desc, &ty::obj_desc(db, d), span)?;
-        let (size, _) = self.layout(tid, desc);
+        let size = self.size_of(tid, desc);
         Ok((data, desc, size))
     }
 

@@ -41,6 +41,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | Objects live in frame slots; registers are per-statement temporaries; nothing live across `Suspend` | Simple verifier, re-entrant waits | DESIGN.md "Registers, slots, temporaries", ir.md 1.2 |
 | Composite temporaries are `Alloc`ed and live to the frame's next statement | Results survive return without copies | `docs/decisions.md` "IR and interpreter (M2)" |
 | Every array subtype gets a runtime descriptor (pool constant when static, `MakeDope` otherwise), one format | Rule 1 | `docs/plan.md` rule 1, DESIGN.md "Values and descriptors" |
+| The size or the element count of an array is asked for alone (`size_of`, `layout_count`): a one-dimensional array's count is a `DopeLen`, only the rest goes through `LayoutOf`; a zero offset is the base itself | Each `LayoutOf` plus loads was five instructions per element access in loops (#412) | `STATUS.md` "Interpreter dispatch, round 2" |
 | Logic arrays are bit-planes; element `i` from the left is plane element `n - 1 - i`; BIT/BOOLEAN use std_ulogic codes | Shared plane ops; one sub-element map | `docs/decisions.md` "Elaboration", "Interpreter: BIT/BOOLEAN codes" |
 | Checked arithmetic (`BinRange`, `Check{Range}`), reference-simulator-compatible check texts | Rule 7, strict difftest | `docs/plan.md` rule 7, `crates/yavs-ir/README.md` Requests |
 | Compact constants (`ConstData` runs/logic) | Rule 12 | `docs/plan.md` rule 12 |

@@ -697,7 +697,7 @@ impl Fx<'_, '_> {
         let (etid, ed) = self.elem_desc(tid, dope)?;
         let est = ty::array_of(db, t).ok_or(Failed)?.0;
         if self.logic(tid) {
-            let (_, total) = self.layout(tid, dope);
+            let total = self.layout_count(tid, dope);
             let (size, m) = self.layout(etid, ed);
             let src_off = self.row_off(total, m, pos, None);
             let dst = self.alloc(size);
@@ -760,8 +760,8 @@ impl Fx<'_, '_> {
         let (etid, ed) = self.elem_desc(tid, dope)?;
         let est = ty::array_of(db, t).ok_or(Failed)?.0;
         if self.logic(tid) {
-            let (_, total) = self.layout(tid, dope);
-            let (_, m) = self.layout(etid, ed);
+            let total = self.layout_count(tid, dope);
+            let m = self.layout_count(etid, ed);
             let o = self.row_off(total, m, pos, off);
             return self.place_at(est, data, ed, Some(o), span);
         }
@@ -799,8 +799,8 @@ impl Fx<'_, '_> {
         let d = self.slice_desc(tid, dope, nd);
         if self.logic(tid) {
             let (etid, ed) = self.elem_desc(tid, dope)?;
-            let (_, total) = self.layout(tid, dope);
-            let (_, m) = self.layout(etid, ed);
+            let total = self.layout_count(tid, dope);
+            let m = self.layout_count(etid, ed);
             let last = self.bin(IntOp::Add, p, n);
             let one = self.int(1);
             let lm1 = self.bin(IntOp::Sub, last, one);
@@ -837,8 +837,8 @@ impl Fx<'_, '_> {
         let d = self.slice_desc(tid, dope, nd);
         if self.logic(tid) {
             let (etid, ed) = self.elem_desc(tid, dope)?;
-            let (_, total) = self.layout(tid, dope);
-            let (_, m) = self.layout(etid, ed);
+            let total = self.layout_count(tid, dope);
+            let m = self.layout_count(etid, ed);
             let last = self.bin(IntOp::Add, p, n);
             let one = self.int(1);
             let lm1 = self.bin(IntOp::Sub, last, one);
@@ -955,7 +955,7 @@ impl Fx<'_, '_> {
                     ne(self, s);
                 }
                 if self.logic(tid) {
-                    let (_, n) = self.layout(tid, a.1);
+                    let n = self.layout_count(tid, a.1);
                     let s = self.reg(RegTy::I64);
                     self.emit(Inst::LEq {
                         dst: s,
@@ -969,7 +969,7 @@ impl Fx<'_, '_> {
                 let (est, _) = ty::array_of(db, t).ok_or(Failed)?;
                 let (etid, eda) = self.elem_desc(tid, a.1)?;
                 let (_, edb) = self.elem_desc(tid, b.1)?;
-                let (_, count) = self.layout(tid, a.1);
+                let count = self.layout_count(tid, a.1);
                 let ew = scalar_w(self.fb.program(), etid);
                 let real = ty::is_real(db, db.base(est));
                 self.for_n(count, |fx, i| {
@@ -1049,7 +1049,7 @@ impl Fx<'_, '_> {
                 let (est, ec) = elem_constraint(db, t, c);
                 let (etid, ed) = self.elem_desc(tid, desc)?;
                 if let Some(leaf) = Ty::logic_leaf(self.fb.program().types(), tid) {
-                    let (_, count) = self.layout(tid, desc);
+                    let count = self.layout_count(tid, desc);
                     let mut s = est;
                     while let Some((e, _)) = ty::array_of(db, db.base(s)) {
                         s = e;
@@ -1067,7 +1067,7 @@ impl Fx<'_, '_> {
                     })?;
                     return Ok(());
                 }
-                let (_, count) = self.layout(tid, desc);
+                let count = self.layout_count(tid, desc);
                 let _ = etid;
                 if !(self.prot_defaults && holds_protected(db, db.base(est))) {
                     // Every element has the same default: write the first, then double.
@@ -1160,7 +1160,7 @@ impl Fx<'_, '_> {
         let vat = self.offset(buf, ds);
         match v {
             Some(V::A(d, _)) if self.logic(tid) && scalar_w(self.fb.program(), tid).is_none() => {
-                let (_, count) = self.layout(tid, desc);
+                let count = self.layout_count(tid, desc);
                 let z = self.int(0);
                 self.emit(Inst::LCopy {
                     dst: vat,
@@ -1313,7 +1313,7 @@ impl Fx<'_, '_> {
             Some(d) => d,
             None => self.agg_desc(t, tid, assocs, bounds, dims, span)?,
         };
-        let (size, _) = self.layout(tid, desc);
+        let size = self.size_of(tid, desc);
         let data = self.alloc(size);
         self.agg_fill(t, tid, assocs, 0, dims, data, desc, None, span)?;
         Ok(V::A(data, desc))
@@ -1634,7 +1634,7 @@ impl Fx<'_, '_> {
         let db = self.db;
         let v = self.expr(e)?;
         if let Some(leaf) = Ty::logic_leaf(self.fb.program().types(), tid) {
-            let (_, total) = self.layout(tid, desc);
+            let total = self.layout_count(tid, desc);
             let (etid, ed) = self.elem_desc(tid, desc)?;
             match v {
                 V::S(r) => {
@@ -1652,7 +1652,7 @@ impl Fx<'_, '_> {
                 }
                 V::A(vd, vp) => {
                     self.check_desc(db.base(est), etid, vp, ed, "aggregate element", span)?;
-                    let (_, m) = self.layout(etid, ed);
+                    let m = self.layout_count(etid, ed);
                     let o = self.row_off(total, m, pos, None);
                     let z = self.int(0);
                     self.emit(Inst::LCopy {

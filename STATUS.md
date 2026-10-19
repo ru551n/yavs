@@ -450,6 +450,20 @@ One commit per change; each table is an interleaved A/B of the binary before and
 | `protected_scoreboard` | 0.30 | 0.28 | 0.93 |
 | `uvvm_util_rand_tb` | 16.32 | 12.37 | 0.76 |
 
+3. Lowering asks for the size or the element count of an array alone: the count of a one-dimensional array is
+   one `DopeLen` instead of a layout and four more instructions, the size is the layout and one load; a zero
+   offset emits nothing. Element access in loops over vectors (`numeric_std` bodies) is shorter.
+
+| Benchmark | before | after | ratio |
+|---|---|---|---|
+| `compute_loop` | 0.35 | 0.35 | 1.01 |
+| `ff_rtl` | 0.73 | 0.70 | 0.96 |
+| `resolved_bus` | 0.33 | 0.31 | 0.95 |
+| `delta_chain` | 0.19 | 0.17 | 0.90 |
+| `textio_heavy` | 0.34 | 0.35 | 1.02 |
+| `protected_scoreboard` | 0.27 | 0.23 | 0.84 |
+| `uvvm_util_rand_tb` | 12.39 | 11.70 | 0.94 |
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

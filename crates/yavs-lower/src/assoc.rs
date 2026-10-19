@@ -75,7 +75,7 @@ impl Fx<'_, '_> {
                     return Err(self.cx.ice(span, "composite formal without a descriptor"));
                 };
                 let tid = self.ty(db.base(p.subtype), span)?;
-                let (size, _) = self.layout(tid, dope);
+                let size = self.size_of(tid, dope);
                 let tmp = self.alloc(size);
                 // The fat pair lives in a frame slot: no register lives across the call.
                 let slot = self.fb.slot(16, 8);
@@ -165,7 +165,7 @@ impl Fx<'_, '_> {
                     return Err(self.cx.ice(span, "converted formal without a descriptor"));
                 };
                 let tid = self.ty(db.base(st), span)?;
-                let (size, _) = self.layout(tid, dope);
+                let size = self.size_of(tid, dope);
                 let tmp = self.alloc(size);
                 let slot = self.fb.slot(16, 8);
                 let a = self.addr(Space::Frame(self.depth), slot);

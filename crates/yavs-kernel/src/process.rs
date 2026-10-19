@@ -239,6 +239,23 @@ impl Ctx<'_> {
             .to_value())
     }
 
+    /// The first element of `r` of a logic signal as a `std_ulogic` code, its current value or
+    /// (`last`) its `'last_value`, without allocating; `None` for a null range.
+    pub fn first_code(&self, r: impl Into<SigRef>, last: bool) -> Result<Option<u8>, SimError> {
+        let (s, r) = self.sig(r)?;
+        if r.len == 0 {
+            return Ok(None);
+        }
+        let b = if last { &s.last_value } else { &s.cur };
+        match b {
+            Buf::Planes { .. } => Ok(Some(b.code(r.offset as usize))),
+            Buf::Bytes { .. } => Err(self.error(ErrorKind::BadRef(format!(
+                "{} holds bytes, read it with value()",
+                s.name
+            )))),
+        }
+    }
+
     fn own(&self, d: DriverId) -> Result<&DriverInfo, SimError> {
         let fail = |m: &str| self.error(ErrorKind::InvalidAssign(m.into()));
         let info = self

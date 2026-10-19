@@ -196,6 +196,9 @@ struct Waits {
 
 pub(crate) struct Machine {
     pub rt: Arc<Runtime>,
+    /// A second handle on `rt` that `exec` takes while it runs, so an activation does not
+    /// touch the shared reference count (every process of a batch has the same runtime).
+    rt_run: Option<Arc<Runtime>>,
     pub inst: Arc<InstData>,
     pub drivers: Vec<ProcDriver>,
     pub frames: Vec<Frame>,
@@ -434,6 +437,7 @@ impl Machine {
         entry: FuncId,
     ) -> Machine {
         Machine {
+            rt_run: Some(rt.clone()),
             rt,
             inst,
             drivers,
@@ -1378,7 +1382,18 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
         base: usize,
     ) -> R<Outcome> {
-        let rt = self.rt.clone();
+        let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
+        let r = self.exec_in::<DEBUG>(&rt, ctx, base);
+        self.rt_run = Some(rt);
+        r
+    }
+
+    fn exec_in<const DEBUG: bool>(
+        &mut self,
+        rt: &Runtime,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        base: usize,
+    ) -> R<Outcome> {
         let prog = &rt.prog;
         let tier = if DEBUG { None } else { rt.tier.get() };
         loop {
@@ -2446,10 +2461,10 @@ impl Machine {
                 c.read_into(sr, self.wr(self.r(dst), n)?)?;
             }
             Inst::SigReadScalar { dst, sig } => {
-                let (sr, ty) = match self.sigparts(sig)?.as_slice() {
-                    [(sr, ty, _)] => (*sr, *ty),
-                    _ => return Err(ice("scalar read of a reference of several parts")),
-                };
+                if self.is_multi(sig) {
+                    return Err(ice("scalar read of a reference of several parts"));
+                }
+                let (sr, ty) = self.sigref(sig)?;
                 let c = kc!();
                 let v = match ty.elem {
                     Elem::Bytes(es) if es <= 8 => {
@@ -2481,19 +2496,25 @@ impl Machine {
             }
             Inst::SigAttr { dst, kind, sig } => {
                 // Over several parts: any event or activity, the most recent one (LRM 16.2.4).
-                let parts = self.sigparts(sig)?;
                 let c = kc!();
                 let mut v = match kind {
                     AttrKind::Event | AttrKind::Active => 0,
                     AttrKind::LastEvent | AttrKind::LastActive => u64::MAX,
                 };
-                for (sr, _, _) in parts {
-                    v = match kind {
+                let fold = |v: u64, sr| -> R<u64> {
+                    Ok(match kind {
                         AttrKind::Event => v | u64::from(c.event(sr)?),
                         AttrKind::Active => v | u64::from(c.active(sr)?),
                         AttrKind::LastEvent => v.min(c.last_event(sr)?.as_fs()),
                         AttrKind::LastActive => v.min(c.last_active(sr)?.as_fs()),
-                    };
+                    })
+                };
+                if self.is_multi(sig) {
+                    for (sr, _, _) in self.sigparts(sig)? {
+                        v = fold(v, sr)?;
+                    }
+                } else {
+                    v = fold(v, self.sigref(sig)?.0)?;
                 }
                 self.set(dst, v);
             }
@@ -2592,7 +2613,15 @@ impl Machine {
                 }
             }
             Inst::WaitOn { sig } => {
-                for (sr, _, _) in self.sigparts(sig)? {
+                if self.is_multi(sig) {
+                    for (sr, _, _) in self.sigparts(sig)? {
+                        kc!().wait_on(sr)?;
+                        if self.dbg.is_some() {
+                            self.waits.sens.push(sr);
+                        }
+                    }
+                } else {
+                    let sr = self.sigref(sig)?.0;
                     kc!().wait_on(sr)?;
                     if self.dbg.is_some() {
                         self.waits.sens.push(sr);

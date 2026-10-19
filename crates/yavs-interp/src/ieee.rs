@@ -282,20 +282,17 @@ fn edge<const RISING: bool>(
     if !c.event(sr)? {
         return Ok(Some(0));
     }
-    let (new, old) = (c.logic(sr)?, c.last_value(sr)?);
-    let yavs_kernel::Value::Logic(old) = old else {
-        return Err(ice("std_ulogic signal without logic storage"));
-    };
-    if new.is_empty() || old.is_empty() {
+    let (Some(new), Some(old)) = (c.first_code(sr, false)?, c.first_code(sr, true)?) else {
         return Err(ice("edge of a null signal range"));
-    }
+    };
     let (want_new, want_old) = if RISING {
         (StdULogic::One, StdULogic::Zero)
     } else {
         (StdULogic::Zero, StdULogic::One)
     };
     Ok(Some(u64::from(
-        new.get(0).to_x01() == want_new && old.get(0).to_x01() == want_old,
+        StdULogic::from_code_pub(new).to_x01() == want_new
+            && StdULogic::from_code_pub(old).to_x01() == want_old,
     )))
 }
 

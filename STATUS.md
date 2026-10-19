@@ -72,17 +72,11 @@ The generated-VIP tests of the framework component (generator output compiled an
 ### Verification library: its own `.pro` regression (#276)
 
 `tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
-521 files in script order and runs each test (`yavs run`, release build of main at 6cfd1c89, 2 in parallel). Pass = exit 0 and the
+521 files in script order and runs each test (`yavs run`, release build of main at 8bbefaed, 2 in parallel). Pass = exit 0 and the
 library's own `DONE PASSED` summary line. The script settings package body is generated with the scripts' release as settings
-revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008: 308 of 314
-tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. The 6 Ethernet tests fail at
-elaboration: `'PATH_NAME` in a constant used as a generic actual (#314). 2019 not re-measured
-since ba53e23d (then equal to 2008).
-
-| Test suite | Pass | Fail | First root cause (issues) |
-|---|---|---|---|
-| Ethernet | 0 | 6 | `'PATH_NAME` in a constant used as a generic actual #314 |
-| every other suite | 308 | 0 | none (fixed: #291, #292, #294, #295, #296, #304, #311 = #313, #315 = #312) |
+revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 and 2019:
+all 314 tests pass, the same test for test; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
+Root causes fixed on the way: #291, #292, #294, #295, #296, #304, #311 (= #313), #314, #315 (= #312).
 
 ## CI and releases
 

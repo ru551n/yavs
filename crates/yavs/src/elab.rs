@@ -113,6 +113,10 @@ pub struct RunArgs {
         default_value = "statement,branch,toggle"
     )]
     cov_kind: Vec<CovKindArg>,
+    /// With `--cov`: the name of this run's test in the database (default: the enabled test
+    /// case of a `runner_cfg` generic, else the top level with its `-g` generics).
+    #[arg(long, value_name = "NAME")]
+    cov_test: Option<String>,
     /// With `--cov`: leave signals with more `bit`/`std_ulogic` scalars than this out of
     /// toggle coverage.
     #[arg(long, value_name = "N", default_value = "65536")]
@@ -763,6 +767,11 @@ pub fn run(
         if let Some(t) = &toggles {
             t.add_to(&mut cov);
         }
+        cov.attribute(
+            &a.cov_test
+                .clone()
+                .unwrap_or_else(|| test_name(&a.common.top, &a.common.generics)),
+        );
         if let Err(err) = std::fs::write(path, cov.write()) {
             out.emit(
                 &none,
@@ -810,6 +819,47 @@ impl yavs_kernel::Observer for Printer {
         let _ = o.write_all(bytes);
         let _ = o.flush();
     }
+}
+
+/// The default `--cov-test`: the enabled test cases of a `runner_cfg` generic (its
+/// `enabled_test_cases : NAME` field; `,,` is a comma), else `top(g1=v1,g2=v2)` with the
+/// `-g` generics in command-line order.
+fn test_name(top: &str, generics: &[(String, String)]) -> String {
+    let cfg = generics
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("runner_cfg"))
+        .and_then(|(_, v)| {
+            let v = v.trim_matches('"').replace(",,", "\u{0}");
+            v.split(',').find_map(|f| {
+                let (k, val) = f.split_once(':')?;
+                (k.trim() == "enabled_test_cases").then(|| val.trim().replace('\u{0}', ","))
+            })
+        })
+        .filter(|t| !t.is_empty());
+    if let Some(t) = cfg {
+        return t;
+    }
+    if generics.is_empty() {
+        return top.to_string();
+    }
+    let g: Vec<String> = generics.iter().map(|(n, v)| format!("{n}={v}")).collect();
+    format!("{top}({})", g.join(","))
+}
+
+#[test]
+fn default_test_names() {
+    let g = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+        v.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    };
+    assert_eq!(test_name("tb", &[]), "tb");
+    assert_eq!(
+        test_name("tb", &g(&[("n", "0"), ("w", "8")])),
+        "tb(n=0,w=8)"
+    );
+    let cfg = "\"enabled_test_cases : lib.tb.a,,b,output path : x,\"";
+    assert_eq!(test_name("tb", &g(&[("runner_cfg", cfg)])), "lib.tb.a,b");
 }
 
 /// `10ms`, `1.5 ns`: a TIME literal.

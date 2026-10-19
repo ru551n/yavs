@@ -1,4 +1,4 @@
-//! `yavs cov merge` and `yavs cov report` (docs/cli-contract.md section 5).
+//! `yavs cov merge`, `yavs cov report` and `yavs cov rank` (docs/cli-contract.md section 5).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -30,6 +30,21 @@ pub enum Command {
         /// Print only the items that never ran, as exclusion rows.
         #[arg(long)]
         uncovered: bool,
+        /// Print every item that ran, as an exclusion row with the tests that hit it.
+        #[arg(long, conflicts_with = "uncovered")]
+        tests: bool,
+        /// Warning control, as for `analyze`: `-Werror`, `-Wno-CODE`, ...
+        #[arg(short = 'W', value_name = "FLAG")]
+        warn: Vec<String>,
+        #[arg(required = true, value_name = "DB")]
+        inputs: Vec<PathBuf>,
+    },
+    /// Rank the tests of merged databases: a minimal set reaching the same coverage, and
+    /// what each test alone covers.
+    Rank {
+        /// Leave out the items an exclusion file lists.
+        #[arg(long, value_name = "FILE")]
+        exclude: Option<PathBuf>,
         /// Warning control, as for `analyze`: `-Werror`, `-Wno-CODE`, ...
         #[arg(short = 'W', value_name = "FLAG")]
         warn: Vec<String>,
@@ -76,38 +91,48 @@ fn write(path: &PathBuf, text: String) -> Result<(), Box<Diagnostic>> {
     })
 }
 
+/// `db` without the items the exclusion file lists, and those items.
+fn excluded(
+    out: &mut Out,
+    db: Database,
+    exclude: Option<PathBuf>,
+) -> Result<(Database, Vec<(yavs_cov::Key, yavs_cov::Entry, String)>), Box<Diagnostic>> {
+    let Some(p) = &exclude else {
+        return Ok((db, Vec::new()));
+    };
+    let fail = |m: String| {
+        Box::new(
+            Diagnostic::error(
+                EXCLUDE_ERROR,
+                format!("cannot use exclusion file `{}`", p.display()),
+            )
+            .with_note(m),
+        )
+    };
+    let rows = std::fs::read_to_string(p)
+        .map_err(|e| e.to_string())
+        .and_then(|t| yavs_cov::exclude::parse(&t))
+        .map_err(fail)?;
+    let a = yavs_cov::exclude::apply(&db, &rows, &p.display().to_string());
+    for w in &a.warnings {
+        out.emit(&SourceMap::default(), w);
+    }
+    Ok((a.kept, a.excluded))
+}
+
 fn report(
     out: &mut Out,
     db: Database,
     cobertura: Option<PathBuf>,
     exclude: Option<PathBuf>,
     uncovered: bool,
+    tests: bool,
 ) -> Result<(), Box<Diagnostic>> {
-    let mut db = db;
-    let mut excluded = Vec::new();
-    if let Some(p) = &exclude {
-        let fail = |m: String| {
-            Box::new(
-                Diagnostic::error(
-                    EXCLUDE_ERROR,
-                    format!("cannot use exclusion file `{}`", p.display()),
-                )
-                .with_note(m),
-            )
-        };
-        let rows = std::fs::read_to_string(p)
-            .map_err(|e| e.to_string())
-            .and_then(|t| yavs_cov::exclude::parse(&t))
-            .map_err(fail)?;
-        let a = yavs_cov::exclude::apply(&db, &rows, &p.display().to_string());
-        for w in &a.warnings {
-            out.emit(&SourceMap::default(), w);
-        }
-        db = a.kept;
-        excluded = a.excluded;
-    }
+    let (db, excluded) = excluded(out, db, exclude)?;
     if uncovered {
         print!("{}", db.uncovered());
+    } else if tests {
+        print!("{}", db.hits_by_test());
     } else {
         print!("{}", db.summary());
         print!("{}", yavs_cov::exclude::excluded_text(&excluded));
@@ -128,12 +153,22 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
             cobertura,
             exclude,
             uncovered,
+            tests,
             warn,
             inputs,
         } => out
             .set_warn(&warn)
             .and_then(|()| merged(&inputs))
-            .and_then(|db| report(&mut out, db, cobertura, exclude, uncovered)),
+            .and_then(|db| report(&mut out, db, cobertura, exclude, uncovered, tests)),
+        Command::Rank {
+            exclude,
+            warn,
+            inputs,
+        } => out
+            .set_warn(&warn)
+            .and_then(|()| merged(&inputs))
+            .and_then(|db| excluded(&mut out, db, exclude))
+            .map(|(db, _)| print!("{}", db.rank())),
     };
     match r {
         Ok(()) => out.finish(u8::from(out.errors > 0)),

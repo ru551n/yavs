@@ -19,11 +19,11 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|
 | `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding`; `parse` subcommand; `@file` expansion before clap |
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
-| `src/cov.rs` | `yavs cov merge` and `yavs cov report` (`--exclude`, `--uncovered`, `-W`; E0110, E0111, E0112) |
+| `src/cov.rs` | `yavs cov merge`, `yavs cov report` (`--exclude`, `--uncovered`, `--tests`, `-W`; E0110, E0111, E0112) and `yavs cov rank` |
 | `src/explain.rs` | `--explain` table (all codes but those of `yavs-sem`) and the every-code-has-a-text test |
 | `src/elab.rs` | `yavs elab` (`Common`) and `yavs run` (`RunArgs`): closure from manifests, design revision, `Db::analyze_closure`, `yavs_elab::find_top`/`elaborate`/`lower`/`build`, kernel `Config`, `Printer` observer, `--stop-time` parsing, end-of-run exit code, `bind_foreign` (`--load`, E0106/E0107), `use_llvm` (`--tier=llvm`, `--verbose`, E0120/E0121) |
 | `tests/cli.rs` | Exit code and stderr snapshots for `analyze`/`elab`/`run` (`tests/cli/`), library locking, concurrent batches |
-| `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd` and toggles of `tests/cli/cov_toggle.vhd` (`--cov-kind`, W0115), `--threads 4` identity, `cov merge`, `cov report` and Cobertura, E0111, exclusions (pragmas, report rows round trip, moved/stale/hit warnings) |
+| `tests/coverage.rs` | `run --cov` counts of `tests/cli/cov_run.vhd` and toggles of `tests/cli/cov_toggle.vhd` (`--cov-kind`, W0115), `--threads 4` identity, `cov merge`, per-test attribution (`--cov-test`, default names, `cov rank`, `--tests`), `cov report` and Cobertura, E0111, exclusions (pragmas, report rows round trip, moved/stale/hit warnings) |
 | `tests/foreign.rs` | `--load`: a C library built at test time (`cc`, target from `build.rs`), calls, copy-back, E0106/E0107 |
 | `tests/diag.rs` | Parse diagnostic snapshots (`tests/diag/*.vhd` vs `.stderr`, `-- yavs: ARGS` header) |
 | `tests/lib_parse.rs` | Every file in `lib/` parses (2008 and 2019) |

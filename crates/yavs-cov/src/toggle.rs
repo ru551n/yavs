@@ -239,6 +239,7 @@ impl Toggles {
                         line: n.line,
                         count: 0,
                         text: String::new(),
+                        tests: Vec::new(),
                     });
                 e.count = e
                     .count

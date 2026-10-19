@@ -191,6 +191,35 @@ excluded item that did run ``W0114``; ``-Werror`` makes them fail the report. Ro
 below), ``unit`` (a package) and ``file``; anything else is error ``E0112``. The database keeps
 the raw counts.
 
+Which tests cover what
+~~~~~~~~~~~~~~~~~~~~~~
+
+Each run's database names its test: ``--cov-test=NAME``, by default the enabled test case
+when a ``runner_cfg`` generic is given, else the top level with its ``-g`` generics
+(``tb(n=0)``). Runs with the same name count as one test. ``yavs cov merge`` keeps, for every
+item, the tests that hit it.
+
+``yavs cov rank DB ...`` merges its inputs and prints a small set of tests that reaches the
+same coverage, picked greedily (each pick is the test that adds the most items not yet hit),
+the tests that set does not need, and per test how many items it hit and how many no other
+test hit:
+
+.. code-block:: text
+
+    3 tests hit 26 of 39 items
+
+    minimal set (greedy):
+      lib.tb.test_full     +26  26/26
+
+    not needed: lib.tb.test_reset, lib.tb.test_short
+
+    test                    items    unique
+    lib.tb.test_full           26         5
+    ...
+
+``yavs cov report DB ... --tests`` prints every item that ran as an exclusion row followed by
+``# tests:`` and the tests that hit it. Both take ``--exclude``.
+
 HTML reports are not available yet.
 
 Calling C from VHDL

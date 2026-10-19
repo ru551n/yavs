@@ -396,3 +396,68 @@ fn toggle_coverage() {
     assert_eq!(err.matches("warning[W0114]").count(), 1, "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn per_test_attribution() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_run.vhd");
+    let tmp = tempdir("tests");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    assert!(
+        yavs(&tmp, &["analyze", &lib, src.to_str().expect("utf-8")])
+            .status
+            .success()
+    );
+    for (db, extra) in [
+        ("a.ycov", &[][..]),
+        ("b.ycov", &["-gn=0"][..]),
+        ("c.ycov", &["--cov-test=named"][..]),
+    ] {
+        let o = yavs(
+            &tmp,
+            &[&["run", &lib, "cov_run", &format!("--cov={db}")][..], extra].concat(),
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let o = yavs(
+        &tmp,
+        &["cov", "merge", "a.ycov", "b.ycov", "c.ycov", "-o", "m.ycov"],
+    );
+    assert!(o.status.success());
+    let m = read(&tmp.join("m.ycov"));
+    // Default names: the top level, with its generics; `--cov-test` overrides.
+    assert_eq!(m.tests, ["cov_run", "cov_run(n=0)", "named"]);
+    let who = |kind: Kind, line: u32| -> Vec<&str> {
+        let (_, e) = m
+            .items
+            .iter()
+            .find(|(k, e)| k.kind == kind && e.line == line && k.path == ":cov_run")
+            .expect("item");
+        e.tests
+            .iter()
+            .map(|&t| m.tests[t as usize].as_str())
+            .collect()
+    };
+    // The `for` body runs only with n = 3; the final `if` in every run.
+    assert_eq!(who(Kind::Branch(0), 51), ["cov_run", "named"]);
+    assert_eq!(
+        who(Kind::Statement, 58),
+        ["cov_run", "cov_run(n=0)", "named"]
+    );
+
+    let o = yavs(&tmp, &["cov", "rank", "m.ycov"]);
+    assert!(o.status.success());
+    let r = String::from_utf8(o.stdout).expect("utf-8");
+    assert!(r.starts_with("3 tests hit 26 of 39 items\n"), "{r}");
+    assert!(r.contains("not needed: cov_run(n=0), named"), "{r}");
+    assert!(r.contains("\ncov_run(n=0)        21         0\n"), "{r}");
+
+    let o = yavs(&tmp, &["cov", "report", "m.ycov", "--tests"]);
+    let t = String::from_utf8(o.stdout).expect("utf-8");
+    assert!(
+        t.lines().any(|l| l.starts_with("branch :cov_run ")
+            && l.contains("cov_run.vhd:51")
+            && l.ends_with("# tests: cov_run, named")),
+        "{t}"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}

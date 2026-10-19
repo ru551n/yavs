@@ -186,7 +186,10 @@ fn matches(r: &Rule, k: &Key, e: &Entry) -> bool {
 /// moved lines and excluded items that ran.
 pub fn apply(db: &Database, rows: &[Row], exfile: &str) -> Applied {
     let mut out = Applied {
-        kept: Database::default(),
+        kept: Database {
+            tests: db.tests.clone(),
+            ..Default::default()
+        },
         excluded: Vec::new(),
         warnings: Vec::new(),
     };
@@ -311,6 +314,29 @@ impl Database {
     }
 }
 
+impl Database {
+    /// The report of `--tests`: every item some test hit, as an exclusion row with the tests
+    /// that hit it, in source order.
+    pub fn hits_by_test(&self) -> String {
+        let mut v: Vec<_> = self
+            .items
+            .iter()
+            .filter(|(_, e)| !e.tests.is_empty())
+            .collect();
+        v.sort_by(|a, b| (&a.1.file, a.1.line, a.0).cmp(&(&b.1.file, b.1.line, b.0)));
+        v.iter()
+            .map(|(k, e)| {
+                let t: Vec<&str> = e
+                    .tests
+                    .iter()
+                    .map(|&t| self.tests[t as usize].as_str())
+                    .collect();
+                format!("{}   # tests: {}\n", head(k, e), t.join(", "))
+            })
+            .collect()
+    }
+}
+
 /// The text block listing excluded items and their reasons.
 pub fn excluded_text(ex: &[(Key, Entry, String)]) -> String {
     if ex.is_empty() {
@@ -365,6 +391,7 @@ mod tests {
                     line,
                     count,
                     text: "x;".into(),
+                    tests: Vec::new(),
                 },
             );
         }

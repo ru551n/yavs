@@ -60,6 +60,8 @@ pub struct Entry {
     /// First line of the statement, whitespace runs as one space, cut at 60 characters:
     /// display only (reports), never part of the identity.
     pub text: String,
+    /// The tests that hit it: indices into [`Database::tests`], sorted.
+    pub tests: Vec<u32>,
 }
 
 pub mod exclude;
@@ -73,11 +75,13 @@ pub const PRAGMA_UNOPENED: &str = "W0113";
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Database {
     pub items: BTreeMap<Key, Entry>,
+    /// The names of the tests the runs were (`yavs run --cov-test`), in the order seen.
+    pub tests: Vec<String>,
 }
 
-const MAGIC: &str = "yavs-coverage 3";
-/// Older versions [`Database::parse`] still reads (version 2 had no toggles).
-const OLD: &[&str] = &["yavs-coverage 2"];
+const MAGIC: &str = "yavs-coverage 4";
+/// Older versions [`Database::parse`] still reads.
+const OLD: &[&str] = &["yavs-coverage 2", "yavs-coverage 3"];
 
 fn fnv1a(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -310,6 +314,7 @@ pub fn collect(
             line: items[i].line,
             count: 0,
             text: items[i].text.clone(),
+            tests: Vec::new(),
         });
         e.count = e.count.saturating_add(c);
     };
@@ -348,19 +353,35 @@ pub fn collect(
 }
 
 impl Database {
-    /// The text form: a header line, then one tab-separated line per item, sorted by key.
-    /// Statements and branches: kind, path, hash, occurrence, count, line, file, text;
-    /// toggles (`t1` rise, `t0` fall): kind, path, scalar name, count, line, file.
+    /// The text form: a header line, the tests section (`test`, id, name; ids number the
+    /// names in sorted order), then one tab-separated line per item, sorted by key.
+    /// Statements and branches: kind, path, hash, occurrence, count, tests, line, file, text;
+    /// toggles (`t1` rise, `t0` fall): kind, path, scalar name, count, tests, line, file.
+    /// `tests` is the comma-separated ids of the tests that hit the item, `-` for none.
     pub fn write(&self) -> String {
         let mut s = format!("{MAGIC}\n");
+        let mut order: Vec<usize> = (0..self.tests.len()).collect();
+        order.sort_by(|&a, &b| self.tests[a].cmp(&self.tests[b]));
+        let mut id = vec![0; self.tests.len()];
+        for (new, &old) in order.iter().enumerate() {
+            id[old] = new;
+            let _ = writeln!(s, "test\t{new}\t{}", self.tests[old]);
+        }
         for (k, e) in &self.items {
+            let mut t: Vec<usize> = e.tests.iter().map(|&i| id[i as usize]).collect();
+            t.sort_unstable();
+            let t = if t.is_empty() {
+                "-".to_string()
+            } else {
+                t.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+            };
             let kind = match k.kind {
                 Kind::Statement => "s".to_string(),
                 Kind::Branch(a) => format!("b{a}"),
                 Kind::Toggle(r) => {
                     let _ = writeln!(
                         s,
-                        "t{}\t{}\t{}\t{}\t{}\t{}",
+                        "t{}\t{}\t{}\t{}\t{t}\t{}\t{}",
                         u8::from(r),
                         k.path,
                         k.sig,
@@ -373,26 +394,54 @@ impl Database {
             };
             let _ = writeln!(
                 s,
-                "{kind}\t{}\t{:016x}\t{}\t{}\t{}\t{}\t{}",
+                "{kind}\t{}\t{:016x}\t{}\t{}\t{t}\t{}\t{}\t{}",
                 k.path, k.hash, k.occ, e.count, e.line, e.file, e.text
             );
         }
         s
     }
 
-    /// Read the text form of [`Database::write`] (or of an older version).
+    /// Read the text form of [`Database::write`] (or of an older version: version 2 has no
+    /// toggles, versions 2 and 3 no tests).
     pub fn parse(text: &str) -> Result<Database, String> {
         let mut lines = text.lines();
         let head = lines.next();
-        if head != Some(MAGIC) && !head.is_some_and(|h| OLD.contains(&h)) {
+        let old = head.is_some_and(|h| OLD.contains(&h));
+        if head != Some(MAGIC) && !old {
             return Err(format!("not a yavs coverage database (no `{MAGIC}` line)"));
         }
         let mut db = Database::default();
         for (n, l) in lines.enumerate() {
             let bad = || format!("line {}: malformed item `{l}`", n + 2);
+            if let Some(t) = l.strip_prefix("test\t") {
+                let (id, name) = t.split_once('\t').ok_or_else(bad)?;
+                if id.parse::<usize>().ok() != Some(db.tests.len()) {
+                    return Err(bad());
+                }
+                db.tests.push(name.to_string());
+                continue;
+            }
+            let mut f: Vec<&str> = l.split('\t').collect();
+            // Versions before 4 have no tests field (after the count).
+            let at = if l.starts_with('t') { 4 } else { 5 };
+            if old && f.len() >= at {
+                f.insert(at, "-");
+            }
+            let tests = match f.get(at) {
+                Some(&"-") => Vec::new(),
+                Some(t) => t
+                    .split(',')
+                    .map(|i| {
+                        i.parse()
+                            .ok()
+                            .filter(|&i: &u32| (i as usize) < db.tests.len())
+                    })
+                    .collect::<Option<Vec<u32>>>()
+                    .ok_or_else(bad)?,
+                None => return Err(bad()),
+            };
             let (key, entry) = if l.starts_with('t') {
-                let f: Vec<&str> = l.splitn(6, '\t').collect();
-                let [kind, path, sig, count, line, file] = f[..] else {
+                let [kind, path, sig, count, _, line, file] = f[..] else {
                     return Err(bad());
                 };
                 let rise = match kind {
@@ -412,11 +461,11 @@ impl Database {
                     line: line.parse().map_err(|_| bad())?,
                     count: count.parse().map_err(|_| bad())?,
                     text: String::new(),
+                    tests,
                 };
                 (key, entry)
             } else {
-                let f: Vec<&str> = l.splitn(8, '\t').collect();
-                let [kind, path, hash, occ, count, line, file, text] = f[..] else {
+                let [kind, path, hash, occ, count, _, line, file, text] = f[..] else {
                     return Err(bad());
                 };
                 let kind = match kind {
@@ -439,6 +488,7 @@ impl Database {
                     line: line.parse().map_err(|_| bad())?,
                     count: count.parse().map_err(|_| bad())?,
                     text: text.to_string(),
+                    tests,
                 };
                 (key, entry)
             };
@@ -449,16 +499,105 @@ impl Database {
         Ok(db)
     }
 
-    /// Add the counts of `other`; its items not in `self` are added as they are.
+    /// Add the counts of `other` and the tests that hit each item (tests are matched by
+    /// name); its items not in `self` are added as they are.
     pub fn merge(&mut self, other: Database) {
-        for (k, e) in other.items {
-            match self.items.get_mut(&k) {
-                Some(x) => x.count = x.count.saturating_add(e.count),
+        let id: Vec<u32> = other
+            .tests
+            .iter()
+            .map(|t| match self.tests.iter().position(|x| x == t) {
+                Some(i) => i as u32,
                 None => {
+                    self.tests.push(t.clone());
+                    self.tests.len() as u32 - 1
+                }
+            })
+            .collect();
+        for (k, mut e) in other.items {
+            for t in &mut e.tests {
+                *t = id[*t as usize];
+            }
+            match self.items.get_mut(&k) {
+                Some(x) => {
+                    x.count = x.count.saturating_add(e.count);
+                    x.tests.extend(e.tests);
+                    x.tests.sort_unstable();
+                    x.tests.dedup();
+                }
+                None => {
+                    e.tests.sort_unstable();
                     self.items.insert(k, e);
                 }
             }
         }
+    }
+
+    /// Make this the database of one run of test `name`: every item that ran was hit by it.
+    pub fn attribute(&mut self, name: &str) {
+        self.tests = vec![name.to_string()];
+        for e in self.items.values_mut() {
+            e.tests = if e.count > 0 { vec![0] } else { Vec::new() };
+        }
+    }
+
+    /// `yavs cov rank`: a greedy set cover (the test hitting the most items not yet hit,
+    /// until no test adds one; ties go to the first name), then per test its items and the
+    /// items no other test hits. Items no test hit are not counted.
+    pub fn rank(&self) -> String {
+        let n = self.tests.len();
+        let mut per: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut hit = 0;
+        for (i, e) in self.items.values().enumerate() {
+            for &t in &e.tests {
+                per[t as usize].push(i);
+            }
+            hit += usize::from(!e.tests.is_empty());
+        }
+        let mut names: Vec<usize> = (0..n).collect();
+        names.sort_by(|&a, &b| self.tests[a].cmp(&self.tests[b]));
+        let mut done = vec![false; self.items.len()];
+        let mut so_far = 0;
+        let mut s = format!(
+            "{n} tests hit {hit} of {} items\n\nminimal set (greedy):\n",
+            self.items.len()
+        );
+        let w = self.tests.iter().map(String::len).max().unwrap_or(0).max(4);
+        let mut picked = vec![false; n];
+        loop {
+            let best = names
+                .iter()
+                .map(|&t| (per[t].iter().filter(|&&i| !done[i]).count(), t))
+                .filter(|&(c, t)| c > 0 && !picked[t])
+                .fold(None, |b: Option<(usize, usize)>, x| match b {
+                    Some(b) if b.0 >= x.0 => Some(b),
+                    _ => Some(x),
+                });
+            let Some((c, t)) = best else { break };
+            picked[t] = true;
+            so_far += c;
+            for &i in &per[t] {
+                done[i] = true;
+            }
+            let _ = writeln!(s, "  {:w$}  +{c}  {so_far}/{hit}", self.tests[t]);
+        }
+        let rest: Vec<&str> = names
+            .iter()
+            .filter(|&&t| !picked[t])
+            .map(|&t| self.tests[t].as_str())
+            .collect();
+        if !rest.is_empty() {
+            let _ = writeln!(s, "\nnot needed: {}", rest.join(", "));
+        }
+        let _ = writeln!(s, "\n{:w$}  {:>8}  {:>8}", "test", "items", "unique");
+        let items: Vec<&Entry> = self.items.values().collect();
+        for &t in &names {
+            let unique = per[t]
+                .iter()
+                .filter(|&&i| items[i].tests.len() == 1)
+                .count();
+            let _ = writeln!(s, "{:w$}  {:>8}  {unique:>8}", self.tests[t], per[t].len());
+        }
+        s
     }
 
     /// A plain text summary: totals, one line per path, then every item never reached.
@@ -669,6 +808,7 @@ mod tests {
                 line,
                 count,
                 text: "x := 1;".into(),
+                tests: Vec::new(),
             },
         )
     }
@@ -687,6 +827,7 @@ mod tests {
                 item(":top", Kind::Branch(0), 2, 3, 0),
             ]
             .into(),
+            ..Default::default()
         };
         let b = Database {
             items: [
@@ -694,6 +835,7 @@ mod tests {
                 item("work.p", Kind::Statement, 3, 9, 0),
             ]
             .into(),
+            ..Default::default()
         };
         assert_eq!(Database::parse(&a.write()).unwrap(), a);
         let mut m = a.clone();
@@ -727,11 +869,62 @@ mod tests {
             },
         );
         let t = d.write();
-        assert!(t.ends_with("t1\t:top:u1\tr.d(7)\t3\t4\ta&b.vhd\n"), "{t}");
+        assert!(
+            t.ends_with("t1\t:top:u1\tr.d(7)\t3\t-\t4\ta&b.vhd\n"),
+            "{t}"
+        );
         assert_eq!(Database::parse(&t).unwrap(), d);
-        // Version 2 databases (no toggles) still read.
+        // Older versions still read: 2 (no toggles), 3 (no tests).
         assert!(Database::parse("yavs-coverage 2\n").is_ok());
+        let v3 = Database::parse("yavs-coverage 3\nt1\t:top:u1\tr.d(7)\t3\t4\ta&b.vhd\n");
+        assert_eq!(v3.unwrap(), d);
         assert!(d.cobertura().contains("lines-valid=\"0\""));
         assert!(d.summary().contains("toggles    1/1 100.0%"));
+    }
+
+    #[test]
+    fn tests_merge_and_rank() {
+        // Items 1..=4; test a hits 1 2 3, b hits 3 4, c hits 4: {a, b} is the set, c is not needed.
+        let run = |name: &str, hits: &[u64]| {
+            let mut d = Database::default();
+            for h in 1..=5 {
+                let (k, e) = item(
+                    ":t",
+                    Kind::Statement,
+                    h,
+                    h as u32,
+                    u64::from(hits.contains(&h)),
+                );
+                d.items.insert(k, e);
+            }
+            d.attribute(name);
+            d
+        };
+        let mut m = run("c", &[4]);
+        m.merge(run("a", &[1, 2, 3]));
+        m.merge(run("b", &[3, 4]));
+        let back = Database::parse(&m.write()).unwrap();
+        assert_eq!(back.tests, ["a", "b", "c"]);
+        let names = |db: &Database, h: u64| -> Vec<String> {
+            let e = db.items.values().nth(h as usize - 1).unwrap();
+            e.tests
+                .iter()
+                .map(|&t| db.tests[t as usize].clone())
+                .collect()
+        };
+        assert_eq!(names(&back, 3), ["a", "b"]);
+        assert_eq!(names(&back, 4), ["b", "c"]);
+        assert!(names(&back, 5).is_empty());
+        // The same file whatever the merge order.
+        let mut m2 = run("a", &[1, 2, 3]);
+        m2.merge(run("b", &[3, 4]));
+        m2.merge(run("c", &[4]));
+        assert_eq!(m2.write(), m.write());
+        let r = m.rank();
+        assert!(r.starts_with("3 tests hit 4 of 5 items\n"), "{r}");
+        assert!(r.contains("  a     +3  3/4\n  b     +1  4/4\n"), "{r}");
+        assert!(r.contains("not needed: c"), "{r}");
+        assert!(r.contains("a            3         2\n"), "{r}");
+        assert!(r.contains("c            1         0\n"), "{r}");
     }
 }

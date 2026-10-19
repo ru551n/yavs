@@ -359,14 +359,23 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   (`run`) also leaves `translate_off`/`translate_on` regions out; unbalanced `-- coverage`
   pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle` (`run`, default all)
   chooses what is counted; `--cov-toggle-max=N` (default 65536) leaves signals with more
-  `bit`/`std_ulogic` scalars out of toggle coverage with `W0115`. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
+  `bit`/`std_ulogic` scalars out of toggle coverage with `W0115`. `--cov-test=NAME` (`run`)
+  names the run's test in the database; the default is the `enabled_test_cases` field of a
+  `-grunner_cfg=...` generic (`,,` is a comma), else `TOP` or `TOP(g1=v1,g2=v2)` with the `-g`
+  generics in command-line order. `cov merge` keeps per item the tests that hit it (matched by
+  name); `cov report --tests` prints instead one exclusion row per item that ran, with
+  `# tests: A, B`; `yavs cov rank DB... [--exclude FILE] [-W...]` prints a greedy minimal set
+  of tests reaching the same coverage (`  NAME  +NEW  SO_FAR/HIT` per pick, then `not needed:
+  ...`) and per test its items and the items no other test hit. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
   read), `E0112` (an exclusion file cannot be read or has a malformed row) or `E0110` (a file
   cannot be written), or when `-Werror` makes a warning an error; `run` exits at least 1 when the database cannot be written (`E0110`). The
-  database format (a `yavs-coverage 3` line, then one tab-separated item per line: kind `s` or
-  `bN`, path, statement text hash, occurrence, count, line, file, statement text for display;
-  toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, line, file) is yavs's own
-  and may change with its version line; version 2 databases are still read. Cobertura output
-  has no toggles.
+  database format (a `yavs-coverage 4` line, a tests section of `test`, id, name lines with
+  ids numbering the names in sorted order, then one tab-separated item per line: kind `s` or
+  `bN`, path, statement text hash, occurrence, count, tests, line, file, statement text for
+  display; toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, tests, line,
+  file; tests is the comma-separated ids of the tests that hit the item, `-` for none) is
+  yavs's own and may change with its version line; versions 2 and 3 are still read (without
+  tests). Cobertura output has no toggles.
 
 ## 6. GUI and waves
 

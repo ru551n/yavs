@@ -1667,3 +1667,22 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   toggle notion: toggles are left out of it (text report only). Exclusion row `toggle PATH
   SCALAR` (globs allowed) takes out both directions; `W0114` only when the scalar toggled both
   ways.
+
+## Per-test coverage attribution (yavs-cov, CLI, #353, user, 2026-10-19)
+
+- **Requirement (user):** a test name per run, the tests that hit each item kept through
+  `cov merge`, `yavs cov rank` (greedy set cover plus per-test unique contribution) and a
+  report of which tests hit an item; keep the text database with a versioned header and a
+  tests section.
+- **Name:** `--cov-test NAME`; default the `enabled_test_cases` field of a `runner_cfg`
+  generic, else `top` or `top(g=v,...)` from the `-g` generics in command-line order. Runs with
+  the same name are one test. Why: external test runners pass the test name in that generic;
+  without one, the generics are what tells two runs of a testbench apart.
+- **Storage:** per item the sorted ids of the tests that hit it (count above 0 in that run),
+  ids into a `test` section; `write` numbers tests in name order, so the merged file does not
+  depend on the order of the inputs. Database version 4; versions 2 and 3 read with no tests.
+  The set, not per-test counts: ranking needs only who hit what, and per-test counts would
+  multiply the file.
+- **Rank:** greedy (the test adding the most items not yet hit, ties to the first name), which
+  is within a log factor of the minimal set; an exact set cover is NP-hard. Items no test hit
+  are not counted; `--exclude` applies before ranking.

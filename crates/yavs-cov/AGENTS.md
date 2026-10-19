@@ -21,9 +21,9 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `Kind`, `Key`, `Entry`, `Database` (`write`, `parse`, `merge`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
+| `src/lib.rs` | `Kind`, `Key`, `Entry` (with `tests`), `Database` (`tests`, `write`, `parse`, `merge`, `attribute`, `rank`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
 | `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
-| `src/exclude.rs` | Exclusion file `parse`, `apply` (W0110, W0111, W0114), `Database::uncovered`; `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
+| `src/exclude.rs` | Exclusion file `parse`, `apply` (W0110, W0111, W0114), `Database::uncovered`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
 | `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd` and toggles on `tests/cli/cov_toggle.vhd`, thread identity, merge, reports |
 
 ## 3. Design decisions that bind this module
@@ -34,7 +34,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | Architecture and entity items per instance path (`:top:u1`), summed over blocks and generate iterations; other items per `library.unit`, summed over callers | Readable reports; package code is shared | `docs/decisions.md` "Code coverage" |
 | A unit owns the statements between its name and the next unit's name in its file (`Unit::span` is the name only); the same statement lowered twice (package instances) is one item | Units do not nest | this file |
 | Every item is in the database, count 0 included; counts added with `saturating_add` | Uncovered code must show | this file |
-| Text format `yavs-coverage 3`, tab-separated (the last field is the display text; toggle lines have none), sorted by key; version 2 still parsed; Cobertura with timestamp 0 and no toggles | Deterministic files at any `--threads` | `docs/cli-contract.md` 5 |
+| Text format `yavs-coverage 4`: `test` lines, then items tab-separated (count, then the ids of the tests that hit it; the last field is the display text; toggle lines have none), sorted by key; test ids in name order; versions 2 and 3 still parsed; Cobertura with timestamp 0 and no toggles | Deterministic files at any `--threads` | `docs/cli-contract.md` 5 |
 | Toggles: `Kind::Toggle(rise)` with `Key::sig` the scalar name, hash and occ 0; '0'/'L' and '1'/'H' levels, anything else breaks a toggle; the observer compares with the last level, so repeated notifications count nothing twice | Same counts at any `--threads` | `docs/decisions.md` "Toggle coverage" |
 
 | Exclusions match by instance glob + kind/arm + hash prefix + occurrence, never by line; pragma-excluded items are skipped when the key is added, after occurrences are numbered, so a pragma never renumbers its neighbours | Rows stay valid when code moves or pragmas change | `docs/decisions.md` "Coverage exclusions" |

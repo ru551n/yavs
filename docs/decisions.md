@@ -1550,9 +1550,38 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   unit declaring it). A unit owns the statements between its name and the next unit's name in
   the file. Why: offsets would break merging after any edit above the statement; per-iteration
   generate paths would make generate-heavy designs hard to read.
-- **Database:** text, `yavs-coverage 1` then one tab-separated line per item, sorted; one file
+- **Database:** text, `yavs-coverage 2` then one tab-separated line per item, sorted; one file
   per run (`--cov=FILE`, default `yavs.ycov`, overwritten), written whatever the run's outcome;
   `yavs cov merge` adds counts per key and keeps items only one input has. Cobertura output has
   timestamp 0 so equal databases give byte-identical reports.
 - **Not yet:** toggle coverage (#343) and HTML reports (#344); the LLVM tier does not lower IR
   yet, so the interpreter is the only tier today.
+
+## Coverage exclusions (yavs-cov, CLI, #351, user, 2026-10-19)
+
+- **Requirement (user):** "it should be easy to exclude by reading the report". Choices of the
+  user, in order: identify an item by its text hash, not its line ("if the line moves then it
+  is still valid"); keep the line number optional ("we can have a line number optional, but
+  warn if the placement changes"); make the line "dead simple", with `#` comments and no
+  required reason; start every row with the type of exclusion.
+- **Rows:** `statement INSTANCE|GLOB HEX12.OCC [FILE:LINE]`, `branch INSTANCE|GLOB
+  HEX12.OCC.ARM [FILE:LINE]`, `instance GLOB` (that instance and everything below it), `unit
+  LIB.PACKAGE`, `file GLOB`. HEX12 is the first 12 hex digits of the statement-text hash.
+  `yavs cov report --uncovered` prints rows of exactly this shape with the line and a trailing
+  comment (arm and statement text), so pasting a report line into the exclusion file is the
+  whole workflow. Items match by instance, kind, arm, hash and occurrence; `FILE:LINE` is
+  never used for matching.
+- **Warnings (stable codes, `-Werror`-able):** `W0110` the item is now on another line than the
+  row says (the exclusion still applies), `W0111` a row matches nothing (stale: the statement
+  text changed), `W0114` an excluded item ran. Malformed row or unknown type word: `E0112`
+  naming the line. Why warnings: a stale or surprising exclusion should be seen, not fail the
+  report.
+- **In source:** `-- coverage off[: reason]` ... `-- coverage on`, `-- coverage off-line` (the
+  statements starting on that line), alias `-- yavs coverage ...`. The items are left out of
+  the database when it is written (the counters still run); an `off` never closed is `W0112`,
+  an `on` without `off` `W0113`. `translate_off` regions only with `--cov-exclude-translate-off`.
+  ponytail: the pragma scan treats a `--` inside a string literal as a comment start.
+- **Applied when reporting:** the database keeps raw counts (so one database serves different
+  exclusion files); excluded items are out of the totals and the Cobertura report and are listed
+  with their reasons. `cov merge` does not take exclusions. `unit` names packages only:
+  entity and architecture items are excluded with `instance`.

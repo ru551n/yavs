@@ -120,6 +120,30 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0111",
         "A coverage database given to `yavs cov merge` or `yavs cov report` cannot be read, or is not a database `yavs run --cov` wrote: the note says which.",
     ),
+    (
+        "E0112",
+        "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row; the note names the line. Rows start with `statement`, `branch`, `instance`, `unit` or `file`.",
+    ),
+    (
+        "W0110",
+        "A row of the exclusion file names a line (`file:line`) that is not where the excluded statement is now. The exclusion still applies, matched by the statement's text; update the line to silence the warning.",
+    ),
+    (
+        "W0111",
+        "A row of the exclusion file matches nothing in the coverage database: the statement changed (its text hash with it), was removed, or the instance path is wrong.",
+    ),
+    (
+        "W0112",
+        "A `-- coverage off` pragma has no `-- coverage on` after it, so it excludes the rest of the file from coverage.",
+    ),
+    (
+        "W0113",
+        "A `-- coverage on` pragma has no `-- coverage off` before it.",
+    ),
+    (
+        "W0114",
+        "A row of the exclusion file excludes an item that ran in the merged runs. It is excluded anyway; check that the exclusion is still wanted.",
+    ),
     // yavs-vhpi
     (
         "E0901",

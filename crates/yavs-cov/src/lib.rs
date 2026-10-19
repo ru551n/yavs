@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
+use yavs_diag::Diagnostic;
 use yavs_elab::{Case, Elaborated, ScopeId, ScopeKind};
 use yavs_sem::Db;
 use yavs_sem::loader::UnitKind;
@@ -51,7 +52,16 @@ pub struct Entry {
     pub file: String,
     pub line: u32,
     pub count: u64,
+    /// First line of the statement, whitespace runs as one space, cut at 60 characters:
+    /// display only (reports), never part of the identity.
+    pub text: String,
 }
+
+pub mod exclude;
+
+/// An unclosed `-- coverage off` or a `-- coverage on` without one.
+pub const PRAGMA_UNCLOSED: &str = "W0112";
+pub const PRAGMA_UNOPENED: &str = "W0113";
 
 /// The coverage of one run, or of several merged.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -59,7 +69,7 @@ pub struct Database {
     pub items: BTreeMap<Key, Entry>,
 }
 
-const MAGIC: &str = "yavs-coverage 1";
+const MAGIC: &str = "yavs-coverage 2";
 
 fn fnv1a(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -82,20 +92,114 @@ struct Item {
     start: u32,
     file: String,
     line: u32,
+    text: String,
+    /// Inside a `-- coverage off` region: counted but left out of the database.
+    skip: bool,
+}
+
+/// First line of a statement's text, for display.
+fn display(text: &str) -> String {
+    let l = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let s = l.split_whitespace().collect::<Vec<_>>().join(" ");
+    match s.char_indices().nth(60) {
+        Some((i, _)) => format!("{}...", &s[..i]),
+        None => s,
+    }
+}
+
+/// The 1-based line ranges of a source text that `-- coverage off`/`on` pragmas (alias
+/// `-- yavs coverage ...`) leave out; `off-line` is its own line. With `translate_off` the
+/// synthesis `translate_off`/`translate_on` pragmas count as `off`/`on`. ponytail: a `--`
+/// inside a string literal is read as a comment start.
+fn regions(
+    path: &str,
+    text: &str,
+    translate_off: bool,
+    warns: &mut Vec<Diagnostic>,
+) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let mut open: Option<u32> = None;
+    for (i, l) in text.lines().enumerate() {
+        let n = i as u32 + 1;
+        let Some(at) = l.find("--") else { continue };
+        let c = l[at + 2..].trim().to_ascii_lowercase();
+        let c = c.strip_prefix("yavs ").unwrap_or(&c).trim_start();
+        let word = |s: &str| {
+            s.split(|ch: char| ch == ':' || ch.is_whitespace())
+                .next()
+                .unwrap_or("")
+                .to_string()
+        };
+        let (off, on) = match c.strip_prefix("coverage") {
+            Some(r) if r.starts_with(char::is_whitespace) => match word(r.trim_start()).as_str() {
+                "off-line" => {
+                    out.push((n, n));
+                    continue;
+                }
+                "off" => (true, false),
+                "on" => (false, true),
+                _ => continue,
+            },
+            _ if translate_off => {
+                let w: Vec<&str> = c.split_whitespace().collect();
+                match w[..] {
+                    [_, "translate_off", ..]
+                        if matches!(w[0], "synthesis" | "pragma" | "synopsys") =>
+                    {
+                        (true, false)
+                    }
+                    [_, "translate_on", ..]
+                        if matches!(w[0], "synthesis" | "pragma" | "synopsys") =>
+                    {
+                        (false, true)
+                    }
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        if off && open.is_none() {
+            open = Some(n);
+        } else if on {
+            match open.take() {
+                Some(o) => out.push((o, n)),
+                None => warns.push(Diagnostic::warning(
+                    PRAGMA_UNOPENED,
+                    format!("{path}:{n}: coverage `on` without a matching `off`"),
+                )),
+            }
+        }
+    }
+    if let Some(o) = open {
+        out.push((o, u32::MAX));
+        warns.push(Diagnostic::warning(
+            PRAGMA_UNCLOSED,
+            format!("{path}:{o}: coverage `off` is never closed; it excludes the rest of the file"),
+        ));
+    }
+    out
 }
 
 /// The database of a run: `counts` is `Runtime::coverage` of the design `e` built after
-/// `Elaborated::lower_with` with coverage on.
-pub fn collect(db: &Db, e: &Elaborated, counts: &[u64]) -> Database {
+/// `Elaborated::lower_with` with coverage on. Items inside `-- coverage off` regions are left
+/// out; the warnings are about unbalanced pragmas.
+pub fn collect(
+    db: &Db,
+    e: &Elaborated,
+    counts: &[u64],
+    translate_off: bool,
+) -> (Database, Vec<Diagnostic>) {
     let mut out = Database::default();
+    let mut warns = Vec::new();
     let Some(ir) = &e.ir else {
-        return out;
+        return (out, warns);
     };
     let prog = &ir.program;
     let n = prog.cov.len();
     if n == 0 {
-        return out;
+        return (out, warns);
     }
+    let mut regs: HashMap<yavs_diag::FileId, Vec<(u32, u32)>> = HashMap::new();
     // Units do not nest: a statement belongs to the unit whose name is the last one before it
     // in its file.
     let mut units: HashMap<yavs_diag::FileId, Vec<(u32, yavs_sem::UnitId)>> = HashMap::new();
@@ -122,7 +226,13 @@ pub fn collect(db: &Db, e: &Elaborated, counts: &[u64]) -> Database {
             .text
             .get(f.text_offset(span.start)..f.text_offset(span.end))
             .unwrap_or("");
+        let line = f.line_col(span.start).0 as u32;
+        let rg = regs
+            .entry(span.file)
+            .or_insert_with(|| regions(&f.path, &f.text, translate_off, &mut warns));
         items.push(Item {
+            text: display(text),
+            skip: rg.iter().any(|&(a, b)| a <= line && line <= b),
             unit,
             kind: match c.kind {
                 yavs_ir::CovKind::Statement => Kind::Statement,
@@ -131,7 +241,7 @@ pub fn collect(db: &Db, e: &Elaborated, counts: &[u64]) -> Database {
             hash: fnv1a(text),
             start: span.start,
             file: f.path.clone(),
-            line: f.line_col(span.start).0 as u32,
+            line,
         });
     }
     // Statements with the same text in one unit, numbered in source order (the same
@@ -183,10 +293,14 @@ pub fn collect(db: &Db, e: &Elaborated, counts: &[u64]) -> Database {
         occ: occ[i],
     };
     let mut add = |k: Key, i: usize, c: u64| {
+        if items[i].skip {
+            return;
+        }
         let e = out.items.entry(k).or_insert_with(|| Entry {
             file: items[i].file.clone(),
             line: items[i].line,
             count: 0,
+            text: items[i].text.clone(),
         });
         e.count = e.count.saturating_add(c);
     };
@@ -221,7 +335,7 @@ pub fn collect(db: &Db, e: &Elaborated, counts: &[u64]) -> Database {
             add(key(path, i), i, c);
         }
     }
-    out
+    (out, warns)
 }
 
 impl Database {
@@ -235,8 +349,8 @@ impl Database {
             };
             let _ = writeln!(
                 s,
-                "{kind}\t{}\t{:016x}\t{}\t{}\t{}\t{}",
-                k.path, k.hash, k.occ, e.count, e.line, e.file
+                "{kind}\t{}\t{:016x}\t{}\t{}\t{}\t{}\t{}",
+                k.path, k.hash, k.occ, e.count, e.line, e.file, e.text
             );
         }
         s
@@ -251,8 +365,8 @@ impl Database {
         let mut db = Database::default();
         for (n, l) in lines.enumerate() {
             let bad = || format!("line {}: malformed item `{l}`", n + 2);
-            let f: Vec<&str> = l.splitn(7, '\t').collect();
-            let [kind, path, hash, occ, count, line, file] = f[..] else {
+            let f: Vec<&str> = l.splitn(8, '\t').collect();
+            let [kind, path, hash, occ, count, line, file, text] = f[..] else {
                 return Err(bad());
             };
             let kind = match kind {
@@ -273,6 +387,7 @@ impl Database {
                 file: file.to_string(),
                 line: line.parse().map_err(|_| bad())?,
                 count: count.parse().map_err(|_| bad())?,
+                text: text.to_string(),
             };
             if db.items.insert(key, entry).is_some() {
                 return Err(format!("line {}: item listed twice", n + 2));
@@ -472,6 +587,7 @@ mod tests {
                 file: "a&b.vhd".into(),
                 line,
                 count,
+                text: "x := 1;".into(),
             },
         )
     }
@@ -503,7 +619,7 @@ mod tests {
         m.merge(b);
         let counts: Vec<u64> = m.items.values().map(|e| e.count).collect();
         assert_eq!(counts, [2, 5, 0]);
-        assert!(Database::parse("yavs-coverage 1\ns\tx\n").is_err());
+        assert!(Database::parse("yavs-coverage 2\ns\tx\n").is_err());
         assert!(Database::parse("other").is_err());
         let x = m.cobertura();
         assert!(x.contains("filename=\"a&amp;b.vhd\""), "{x}");

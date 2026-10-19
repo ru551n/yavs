@@ -168,3 +168,118 @@ fn run_merge_report() {
     assert!(!tmp.join("yavs.ycov").exists());
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+const EXCL: &str = "entity cov_excl is end entity;
+architecture sim of cov_excl is
+  signal s : integer := 0;
+begin
+  p : process
+  begin
+    if s = 1 then
+      s <= 2;
+    end if;
+    -- coverage off: debug only
+    s <= 4;
+    s <= 5;
+    -- coverage on
+    s <= 3; -- coverage off-line
+    wait;
+  end process;
+end architecture;
+";
+
+/// Analyze and run `src`, leaving the database in `a.ycov`; returns stderr of the run.
+fn cov_run(tmp: &Path, src: &str) -> String {
+    std::fs::write(tmp.join("excl.vhd"), src).expect("write");
+    assert!(
+        yavs(tmp, &["analyze", "--work=work:lib", "excl.vhd"])
+            .status
+            .success()
+    );
+    let o = yavs(tmp, &["run", "--work=work:lib", "cov_excl", "--cov=a.ycov"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+fn report(tmp: &Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let o = yavs(tmp, &[&["cov", "report", "a.ycov"][..], args].concat());
+    (
+        o.status.code(),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn exclusions() {
+    let tmp = tempdir("excl");
+    // Pragma regions and `off-line` leave their statements out; nothing to warn about.
+    let err = cov_run(&tmp, EXCL);
+    assert!(!err.contains("W01"), "{err}");
+    let db = read(&tmp.join("a.ycov"));
+    let texts: Vec<_> = db.items.values().map(|e| e.text.as_str()).collect();
+    assert!(
+        !texts
+            .iter()
+            .any(|t| t.contains("s <= 4") || t.contains("s <= 5") || t.contains("s <= 3")),
+        "{texts:?}"
+    );
+
+    // The report lines are the exclusion file: exactly the misses go.
+    let (_, rows, _) = report(&tmp, &["--uncovered"]);
+    assert_eq!(rows.lines().count(), 2, "{rows}");
+    assert!(
+        rows.contains("s <= 2;") && rows.contains("arm 0:"),
+        "{rows}"
+    );
+    std::fs::write(tmp.join("ex.txt"), format!("# why\n{rows}")).expect("write");
+    let (code, out, err) = report(&tmp, &["--exclude", "ex.txt"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""), "{out}");
+    assert!(out.contains("excluded (2, not in the totals)"), "{out}");
+    assert!(!out.contains("not covered"), "{out}");
+
+    // Coarse forms: `*` instance and a whole instance.
+    std::fs::write(tmp.join("ex2.txt"), rows.replace(":cov_excl", "*")).expect("write");
+    let (_, out, err) = report(&tmp, &["--exclude", "ex2.txt"]);
+    assert!(err.is_empty() && out.contains("excluded (2"), "{out}{err}");
+    std::fs::write(tmp.join("ex3.txt"), "instance :cov_excl\n").expect("write");
+    let (_, out, _) = report(&tmp, &["--exclude", "ex3.txt"]);
+    assert!(
+        out.contains("excluded (") && !out.contains("not covered"),
+        "{out}"
+    );
+
+    // The statement moves down: still excluded, with a warning naming the new line.
+    cov_run(&tmp, &format!("\n\n\n{EXCL}"));
+    let (code, out, err) = report(&tmp, &["--exclude", "ex.txt"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(err.matches("warning[W0110]").count(), 2, "{err}");
+    assert!(out.contains("excluded (2"), "{out}");
+
+    // The statement changes: the row is stale, and `-Werror` fails the report.
+    cov_run(&tmp, &EXCL.replace("s <= 2;", "s <= 22;"));
+    let (code, out, err) = report(&tmp, &["--exclude", "ex.txt"]);
+    assert_eq!(code, Some(0));
+    assert!(err.contains("warning[W0111]"), "{err}");
+    assert!(out.contains("not covered"), "{out}");
+    let (code, _, _) = report(&tmp, &["--exclude", "ex.txt", "-Werror"]);
+    assert_eq!(code, Some(1));
+
+    // Excluded but it ran, and a malformed row.
+    cov_run(&tmp, EXCL);
+    std::fs::write(tmp.join("ex4.txt"), "file excl.vhd\n").expect("write");
+    let (_, _, err) = report(&tmp, &["--exclude", "ex4.txt"]);
+    assert!(err.contains("warning[W0114]"), "{err}");
+    std::fs::write(tmp.join("ex5.txt"), "frob x\n").expect("write");
+    let (code, _, err) = report(&tmp, &["--exclude", "ex5.txt"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("error[E0112]") && err.contains("line 1"),
+        "{err}"
+    );
+
+    // An unclosed `off`.
+    let err = cov_run(&tmp, &EXCL.replace("-- coverage on", "-- nothing"));
+    assert!(err.contains("warning[W0112]"), "{err}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

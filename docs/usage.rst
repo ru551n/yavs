@@ -129,6 +129,43 @@ Cobertura XML report (one entry per source line: the hits of its most executed s
 how many of its branches ran) for CI services that show coverage. A database that cannot be read
 is error ``E0111``, a file that cannot be written ``E0110``.
 
+Excluding code from coverage
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In the source, ``-- coverage off`` (optionally ``-- coverage off: reason``) starts a region
+whose statements are left out of the database, ``-- coverage on`` ends it, and ``-- coverage
+off-line`` on a line leaves out the statements starting there (``-- yavs coverage ...`` is the
+same). A region that is never closed excludes the rest of the file (``W0112``).
+``--cov-exclude-translate-off`` also leaves ``translate_off`` regions out.
+
+Outside the source: ``yavs cov report --uncovered DB`` prints one row per item that never
+ran, with the line number and the statement as a comment:
+
+.. code-block:: text
+
+    statement :tb:dut:u_fsm  4d2f0a91c3be.0  src/fsm.vhd:61   # state <= idle;
+    branch    :tb:dut:u_fsm  c41e09a7b3d2.0.3  src/fsm.vhd:88   # arm 3: case state is
+
+Copy the rows you want to exclude into a file, add a reason after ``#`` if you like, and give it
+to the report:
+
+.. code-block:: text
+
+    # exclusions.txt
+    branch :tb:dut:u_fsm  c41e09a7b3d2.0.3  src/fsm.vhd:88   # unreachable: state is one-hot
+    instance :tb:u_debug*                                    # debug logic
+    file */generated/*.vhd
+    unit work.pkg_tools
+
+``yavs cov report DB --exclude exclusions.txt`` leaves those items out of the totals and the
+Cobertura report and lists them under "excluded" with their reasons. A row matches by instance
+(``*`` and ``?`` allowed), kind, arm and the statement's text hash, so a statement that moves
+stays excluded; the file and line are only there to read, and a line that is no longer right
+is warning ``W0110``. A row that matches nothing (the statement was edited) is ``W0111``, an
+excluded item that did run ``W0114``; ``-Werror`` makes them fail the report. Row types:
+``statement``, ``branch``, ``instance`` (that instance and everything below), ``unit`` (a
+package) and ``file``; anything else is error ``E0112``. The database keeps the raw counts.
+
 Toggle coverage and HTML reports are not available yet.
 
 Calling C from VHDL

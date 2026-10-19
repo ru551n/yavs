@@ -105,6 +105,9 @@ pub struct RunArgs {
     /// (default `yavs.ycov`).
     #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "yavs.ycov")]
     cov: Option<String>,
+    /// With `--cov`: also leave `translate_off` ... `translate_on` regions out of the coverage.
+    #[arg(long)]
+    cov_exclude_translate_off: bool,
     /// Load a shared library for foreign subprograms.
     #[arg(long, value_name = "LIB")]
     load: Vec<String>,
@@ -638,7 +641,10 @@ pub fn run(
     if let Some(path) = &a.cov {
         // A design without processes has no counters.
         let counts = rt.as_ref().map(|rt| rt.coverage()).unwrap_or_default();
-        let cov = yavs_cov::collect(&db, &e, &counts);
+        let (cov, warns) = yavs_cov::collect(&db, &e, &counts, a.cov_exclude_translate_off);
+        for w in &warns {
+            out.emit(&none, w);
+        }
         if let Err(err) = std::fs::write(path, cov.write()) {
             out.emit(
                 &none,
@@ -648,6 +654,7 @@ pub fn run(
             code = code.max(1);
         }
     }
+    let code = if out.errors > 0 { code.max(1) } else { code };
     out.finish(code)
 }
 

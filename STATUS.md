@@ -305,7 +305,7 @@ composite 6/6, force 3/3, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 t
 
 - Aggregate variable targets of a record value, `(x, y) := f;`, positional elements (#302; difftest `composite/record_aggregate_target`). Aggregate targets of matrices are still `E2001`.
 
-- Aggregate targets naming one object more than once (several choices in an association, or the same static name twice) are `E1335` (#307, L95; `tests/diag/sem/expr/agg_target_*`, discrepancies `aggregate-target-*`).
+- Aggregate targets naming one object more than once (several choices in an association, or the same static name twice) are `E1335` (#307, L96; `tests/diag/sem/expr/agg_target_*`, discrepancies `aggregate-target-*`).
 
 ## sem robustness
 

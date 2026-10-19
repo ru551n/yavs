@@ -62,8 +62,8 @@ Module-local decisions go in this section in the same commit; LRM readings go to
 - AST shape changes ripple into `yavs-sem` (all of `src/`), `yavs-lower` and `yavs-elab`. Make
   them additive where possible and coordinate via `crates/yavs-sem/CONTRIBUTING.md` Requests.
 - Any change to diagnostic text changes `tests/diag/*.stderr`: bless and review.
-- Not yet parsed: the generic map on variable declarations for
-  generic protected types (#29).
+- 2019 protected type instantiation, `type t is new g generic map (...)`, is
+  `TypeDef::ProtectedInstance` (#29).
 
 ## 5. How to work here
 

@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:generic_instance:_p0	i 9 0
+diag	note	0	0	:generic_instance:_p0	s xy 1
+diag	note	0	0	:generic_instance:_p0	generic_instance ok

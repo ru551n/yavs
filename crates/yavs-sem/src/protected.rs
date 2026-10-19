@@ -170,6 +170,9 @@ impl Db {
         let TypeKind::Protected { body: None, .. } = self.types[t].kind else {
             return Ok(());
         };
+        if self.generic.protected.contains(&t) {
+            return Ok(());
+        }
         let tdecl = self.types[t].decl;
         if self.decls[tdecl].scope != scope {
             return Ok(());
@@ -449,7 +452,8 @@ impl Db {
             .iter()
             .filter_map(|&d| match self.decls[d].kind {
                 DeclKind::Type(t)
-                    if matches!(self.types[t].kind, TypeKind::Protected { body: None, .. }) =>
+                    if matches!(self.types[t].kind, TypeKind::Protected { body: None, .. })
+                        && !self.generic.protected.contains(&t) =>
                 {
                     Some(t)
                 }

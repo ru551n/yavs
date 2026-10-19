@@ -329,6 +329,16 @@ impl Parser<'_> {
                     span: self.span_from(start),
                 });
             }
+            Tok::Kw(Kw::New) => {
+                self.bump();
+                self.require_2019(def_start, "a protected type instantiation");
+                let protected = self.type_mark()?;
+                let generic_map = self.opt_map(Kw::Generic)?;
+                TypeDef::ProtectedInstance {
+                    protected,
+                    generic_map,
+                }
+            }
             _ => return Err(self.expected("type definition")),
         };
         self.semi()?;

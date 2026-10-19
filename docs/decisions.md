@@ -650,8 +650,11 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   the unit is complete: after the package body, after the package declaration when the library
   holds no body for it, after a generic subprogram body. Entity, component and block generics are
   not checked (they are used across units).
-- **Generic protected types (2019):** analyzed with opaque generics; an object of one is `E1505`
-  until the parser accepts the generic map on variable declarations.
+- **Generic protected types (2019):** analyzed with opaque generics; an object of one is `E1505`.
+  `type t is new g generic map (...)` (5.6.2) instantiates it like a generic package: the
+  declarative region is cloned at the declaration, the body (also one in a package body) with
+  the other instance bodies at elaboration (#29). A generic map in the protected type header
+  stays not implemented (a not-implemented diagnostic).
 - **An unknown generic in a generic map does not hide a missing actual:** both `E1100` and
   `E1502` are reported, as the reference simulator does.
 - **Entities with generic types, subprograms or packages (#75):** the entity and architecture

@@ -370,6 +370,13 @@ impl Db {
             ast::TypeDef::Protected(pt) => {
                 return self.protected_decl(scope, decl, name, pt, td.span);
             }
+            ast::TypeDef::ProtectedInstance {
+                protected,
+                generic_map,
+            } => {
+                let map = generic_map.as_deref().unwrap_or(&[]);
+                return self.protected_instance(scope, decl, name, protected, map, td.span);
+            }
             ast::TypeDef::ProtectedBody(_) => unreachable!("handled above"),
         };
         if let Some(d) = incomplete {

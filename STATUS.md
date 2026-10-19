@@ -269,7 +269,8 @@ An installed binary finds `lib/` next to itself (#43).
   calls (#283; sem suite `v2019/anonymous_object_*`, difftest `generics/anonymous_objects_2019_hand`). Anonymous parameter
   types also work in formal subprograms, in subprograms with a generic list and in user operators called with operator syntax
   (#308; sem suite `v2019/anonymous_{formal_subprogram,generic_subprogram,operator}*`, difftest
-  `generics/anonymous_subprograms_2019_hand`). Open: instantiating a generic protected type (parser request).
+  `generics/anonymous_subprograms_2019_hand`). Generic protected types are instantiated with `type t is new g generic map (...)` (#29; sem suite
+  `v2019/generic_protected_instance_*`, difftest `protected/generic_instance_2019`).
 - 2019 mode views and private variables (S7, #32): view declarations (`E1901`, `E1902`),
   `'converse` (`E1621` on a non-view), view ports and signal parameters (`E1903`), views in
   generic units; private variables visible only in the protected body (`E1105`), method aliases

@@ -717,6 +717,22 @@ fn vhdl2019_protected_private() {
 }
 
 #[test]
+fn vhdl2019_protected_instance() {
+    let d = ok19("package p is type ib is new work.g.box generic map (t => integer); end;");
+    let Decl::Type(t) = &pkg_decls(&d)[0] else {
+        panic!()
+    };
+    assert!(matches!(
+        &t.def,
+        Some(TypeDef::ProtectedInstance { generic_map: Some(m), .. }) if m.len() == 1
+    ));
+    let e = errors(&pkg(
+        "type ib is new work.g.box generic map (t => integer);",
+    ));
+    assert!(e.iter().any(|m| m.contains("2019")), "{e:?}");
+}
+
+#[test]
 fn vhdl2019_relaxations() {
     // Sequential block, `end;` forms, trailing `;`, named return, empty record.
     ok19(&seq(

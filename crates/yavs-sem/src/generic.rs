@@ -130,6 +130,9 @@ pub struct GenericState {
     /// Instances of 2019 calls with a generic map (`call_instance`), per region and call
     /// span; `None` after an error.
     pub(crate) call_insts: HashMap<(ScopeId, Span), Option<DeclId>>,
+    /// Instances of generic protected types (`protected_instance`): their body is cloned
+    /// from the generic's at elaboration, not written in their region.
+    pub(crate) protected: HashSet<TypeId>,
     /// Uninstantiated subprograms of headers with a generic map (`header_instance`).
     pub(crate) header: HashSet<DeclId>,
     /// Generic constants, types and packages of packages and subprograms not yet
@@ -421,8 +424,8 @@ impl Db {
         }
     }
 
-    /// `E1505` for an object of a generic protected type: 2019 instantiates it
-    /// with a generic map on the variable declaration, which yavs does not parse yet.
+    /// `E1505` for an object of a generic protected type: 2019 instantiates the type first
+    /// (`type t is new g generic map (...)`, `protected_instance`).
     pub(crate) fn check_generic_protected(
         &mut self,
         st: SubtypeId,
@@ -447,7 +450,9 @@ impl Db {
             )
             .with_primary(span, "uninstantiated generic protected type")
             .with_secondary(self.decls[d].span, "declared here")
-            .with_note("VHDL-2019 instantiates it with a generic map on the variable declaration, which yavs does not accept yet"),
+            .with_help(format!(
+                "instantiate it first: `type t is new {name} generic map (...);`"
+            )),
         ))
     }
 
@@ -1186,6 +1191,86 @@ impl Db {
         let d = self.instantiate_subprogram(scope, g, assocs, dname, span)?;
         self.scopes[scope].order.push(d);
         Ok(d)
+    }
+
+    /// 2019 `type t is new g generic map (...);` (5.6.2): an instance of generic protected
+    /// type `g`. Its declarative region is cloned now, its body with the other instance
+    /// bodies ([`Db::instance_body`]).
+    pub(crate) fn protected_instance(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        name: ast::Ident,
+        protected: &ast::Name,
+        assocs: &[ast::AssocElem],
+        span: Span,
+    ) -> Result<(), Reported> {
+        let st = self.type_mark(scope, protected)?;
+        let gt = self.base(st);
+        let TypeKind::Protected {
+            decl_scope: gscope,
+            generics: Some(formals),
+            ..
+        } = &self.types[gt].kind
+        else {
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_GENERIC,
+                    format!("`{}` is not a generic protected type", self.type_name(gt)),
+                )
+                .with_primary(protected.span, "expected an uninstantiated protected type"),
+            ));
+        };
+        let (gscope, formals) = (*gscope, formals.to_vec());
+        let g = self.types[gt].decl;
+        let what = format!("protected type `{}`", self.decls[g].name);
+        let (actuals, assoc_ok) = self.associate(scope, &what, &formals, assocs);
+        let pscope = self.add_scope(ScopeKind::Protected, Some(scope), Some(d));
+        let ty = self.new_type(
+            d,
+            name,
+            false,
+            TypeKind::Protected {
+                decl_scope: pscope,
+                body: None,
+                generics: None,
+            },
+            Constraint::None,
+            span,
+        );
+        self.decls[d].kind = DeclKind::Type(ty);
+        self.generic.protected.insert(ty);
+        let mut r = Remap::new(gscope, pscope);
+        // The type itself (in method profiles and in its body) is the instance.
+        r.types.insert(gt, ty);
+        r.decls.insert(g, d);
+        let (gf, f) = (self.types[gt].first_subtype, self.types[ty].first_subtype);
+        r.subtypes.insert(gf, f);
+        let mut map = GenericMap::default();
+        let overflow = self.overflow.len();
+        let bound = self.bind_formals(
+            scope, pscope, span, gscope, &formals, &actuals, &mut r, &mut map,
+        );
+        if bound.is_ok() {
+            self.fill_scope(&mut r, gscope, pscope);
+        }
+        self.overflow.truncate(overflow);
+        bound?;
+        if r.failed || !assoc_ok {
+            return Err(Reported);
+        }
+        let mangled = Symbol::intern(&crate::mangle::region(self, pscope));
+        let inst = self.insts.push(Instance {
+            generic: g,
+            site: d,
+            map,
+            scope: pscope,
+            body: OnceLock::new(),
+            mangled,
+        });
+        self.generic.maps.insert(inst, r);
+        self.declare(scope, d);
+        Ok(())
     }
 
     /// A subprogram declaration with a generic list and a generic map in its header
@@ -2691,10 +2776,60 @@ impl Db {
                 }
                 Some(s)
             }
+            DeclKind::Type(gt) => {
+                let gt = *gt;
+                let body = |db: &Db| match db.types[gt].kind {
+                    TypeKind::Protected { body, .. } => body,
+                    _ => None,
+                };
+                if body(self).is_none() {
+                    self.load_enclosing_body(g, span)?;
+                }
+                let Some(bscope) = body(self) else {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::MISSING_BODY,
+                            format!(
+                                "generic protected type `{}` has no body",
+                                self.decls[g].name
+                            ),
+                        )
+                        .with_primary(span, "instantiated here")
+                        .with_secondary(self.decls[g].span, "declared here"),
+                    ));
+                };
+                r.roots.push(bscope);
+                let s = self.r_scope(r, bscope);
+                self.fix_bodies(r);
+                if let DeclKind::Type(t) = self.decls[site].kind
+                    && let TypeKind::Protected { body, .. } = &mut self.types[t].kind
+                {
+                    *body = Some(s);
+                }
+                Some(s)
+            }
             _ => None,
         };
         self.overflow.truncate(overflow);
         if r.failed { Err(Reported) } else { Ok(out) }
+    }
+
+    /// Load the body of the library package that declares `d`, if it has one.
+    fn load_enclosing_body(&mut self, d: DeclId, span: Span) -> Result<(), Reported> {
+        let mut s = Some(self.decls[d].scope);
+        while let Some(x) = s {
+            if let Some(o) = self.scopes[x].owner
+                && let DeclKind::Unit(u) = self.decls[o].kind
+            {
+                let (lib, key) = (self.units[u].lib, UnitKey::body(self.units[u].name.key));
+                if self.locate(lib, key).is_some() || self.libs[lib].units.contains_key(&key) {
+                    self.load_unit(lib, key, Some(span))?;
+                }
+                return Ok(());
+            }
+            s = self.scopes[x].parent;
+        }
+        Ok(())
     }
 
     /// After cloning a package body: give cloned specs their cloned bodies and

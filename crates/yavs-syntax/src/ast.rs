@@ -273,6 +273,11 @@ pub enum TypeDef {
     File(Name),
     Protected(ProtectedDecl),
     ProtectedBody(ProtectedBody),
+    /// 2019 `new p.box generic map (...)`: an instance of a generic protected type (5.6.2).
+    ProtectedInstance {
+        protected: Name,
+        generic_map: Option<Vec<AssocElem>>,
+    },
 }
 
 #[derive(Debug)]

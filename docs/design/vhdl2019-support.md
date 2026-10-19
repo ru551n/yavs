@@ -26,7 +26,7 @@ with the result of the four reference simulators (`sim1` to `sim4`, labels as in
 
 ## Summary
 
-46 LCS rows: 39 supported, 1 partial, 1 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
+46 LCS rows: 40 supported, 0 partial, 1 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
 
 For comparison, over the rows that have a probe, the references run the probe (`ok` or `ok (output differs)`) for the following number of rows: sim1 37, sim2 11, sim3 22, sim4 39 (rows with several probes count only when all probes agree).
 
@@ -58,7 +58,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 030 | Garbage collection | not applicable | - | - | - | - | implementation property, no source syntax; `deallocate` and heap reuse are covered by the access type tests |
 | 032 | `PATH_NAME` and `INSTANCE_NAME` with protected types | supported | ok/ok (output differs) | reject/ok | ok/ok (output differs) | ok | `pt'path_name` inside a method: yavs and two references give `:top:pt`, one gives `:top:sv:`, one `:top:sv:pt:` (catalogued as `protected-path-name`) |
 | 033 | Composition with protected types | supported | ok | ok | ok | ok | a protected variable inside a protected body |
-| 034 | Protected types with a generic clause | partial | reject | reject | reject | ok | the declaration and body analyze (opaque generics); `type t is new p.box generic map (..)` is `E0002` (#29) |
+| 034 | Protected types with a generic clause | supported | reject | reject | reject | ok | `type t is new p.box generic map (..)` instantiates the type: methods, generics in the body, several instances (#29). A generic map in the protected type header is not implemented |
 | 036a | Conditional expressions in declarations | supported | ok | reject | ok | ok |  |
 | 041 | Record introspection and type reflection | supported | ok | reject | reject | ok (output differs) | `integer'reflect.simple_name` is `INTEGER` in yavs and sim1, `integer` in sim4 (sim2 and sim3 reject the probe; catalogued as `reflect-integer-simple-name`) |
 | 043 | Attributes for PSL | not tested | - | - | - | - | PSL is out of scope of this page |
@@ -95,8 +95,8 @@ occur in those sources.
 
 | Rank | Gap | Issue |
 |---|---|---|
-| 1 | `'IMAGE` and `TO_STRING` of arrays and records (LCS-012) | #360 (fixed) |
-| 2 | Generic protected type instantiation (LCS-034) | #29 |
+| 1 | `'IMAGE` and `TO_STRING` of arrays and records (LCS-012): done | #360 |
+| 2 | Generic protected type instantiation (LCS-034): done | #29 |
 | 3 | Generic map on a subprogram call (LCS-049): done | #362 |
 | 4 | Arrays and records of protected types (LCS-014, 014a): done | #361 |
 | 5 | Signature in a generic map formal (LCS-I03): done | #363 |

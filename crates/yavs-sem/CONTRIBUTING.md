@@ -279,9 +279,9 @@ generic.rs (S4) is in. What other modules can use, and what is still open:
 - `W1501`: `Db::lookup` marks generics used; reported after the package body (or the package
   declaration when there is none) and after a generic subprogram body.
 - Generic protected types (2019): generics analyzed opaquely, visible in the body; an object of
-  one is `E1505`. Request (parser): `generic_map_aspect` on variable declarations (2019 6.4.2.4),
-  then generic.rs instantiates the type by cloning; a generic map in the protected type header is
-  `E9999` until then.
+  one is `E1505`. `type t is new g generic map (...)` is `protected_instance` (generic.rs): the
+  region is cloned at once, the body by `instance_body` (#29). A generic map in the protected
+  type header is still a not-implemented diagnostic.
 - Open: anonymous generic types (`type is private` in an interface object, S7), formal packages
   with a map stay opaque inside the generic (their generics do not take the map's values). Mode
   views are cloned with their declaration (`r_view`; the converse of a clone is materialized

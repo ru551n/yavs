@@ -64,7 +64,7 @@ and gives each library a legal identifier as its name.
 | `psl-assert-severity` | `severity` clause on a PSL `assert` | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | REJECT | OK | accepted: the severity of the failure report (permissive, as sim2) | agent (#226, decisions.md "Parser") |
 | `psl-assume` | PSL `assume always` directive | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | REJECT | OK | accepted, checked like `assert` (permissive, as sim2) | agent (#226, decisions.md "Parser") |
 | `psl-explicit-clock` | PSL directive clocked with `@rising_edge(clk)`, no default clock | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | REJECT | OK | accepted after the property (permissive, as sim2); sim1 also crashes on `(always p) @c` with a default clock | agent (#226, decisions.md "Parser") |
-| `synopsys-arith-package` | `use ieee.std_logic_arith.all` and `std_logic_unsigned` (non-standard packages) | none (not IEEE packages) | library availability | OK | REJECT | OK | OK | REJECT | shipped: the original Synopsys packages are built into `ieee`, unmodified, with no flag | user, 2026-10-19 (#117) |
+| `synopsys-arith-package` | `use ieee.std_logic_arith.all` and `std_logic_unsigned` (non-standard packages) | none (not IEEE packages) | library availability | OK | REJECT | OK | OK | OK | shipped: the original Synopsys packages are built into `ieee`, unmodified, with no flag | user, 2026-10-19 (#117) |
 
 ## Sem
 

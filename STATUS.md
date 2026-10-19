@@ -319,6 +319,14 @@ External library corpora (`tools/corpus/gen_external.py`, validated per file wit
 `vhdl-ideas` and `vunit-tests`. Several carry a `[testbenches]` section (top units, runner, pass
 condition) for the M2/M4 simulation tests. Results: `tools/corpus/RESULTS.md`.
 
+Analysis corpus failures, classified 2026-10-19 (release build of main, all 29 manifests, cascades
+followed to the first failing file): 3552 PASS, 299 FAIL. 292 stop on the missing Synopsys
+packages (#117, #171; approach is the user's decision): `std_logic_misc` 126 (fletcher 89, vhlib
+19, open-logic 18), `std_logic_unsigned` 85 and `std_logic_arith` 81 (surf); the reference
+simulators accept these files. 6 (hdl-modules 2008 and 2019) need the vendor `unisim` library
+(#61; they analyze with `--extra-map unisim:...`). 1 is intended (`vhdl-ideas/sim/frequency.vhdl`,
+E1101, L22/L89). No other root cause is left.
+
 | Run | Fuzz time | Executions | Crashes found | Fixed | Open |
 |---|---:|---:|---:|---:|---|
 | 4 workers, ~1.1 h CPU in total | ~27 min wall | ~280,000 | 3 distinct ICEs (procedure call left `ExprKind::Error`; physical-literal unit undeclared; alias of a selected object name) | 3 | none |

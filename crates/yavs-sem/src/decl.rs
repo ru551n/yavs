@@ -58,7 +58,20 @@ impl std::fmt::Display for Designator {
 
 /// Lookup key of operator symbol `op` (without quotes).
 pub fn operator_key(op: &str) -> Symbol {
-    Symbol::intern(&format!("\"{}\"", op.to_ascii_lowercase()))
+    thread_local! {
+        static KEYS: std::cell::RefCell<rustc_hash::FxHashMap<Box<str>, Symbol>> = Default::default();
+    }
+    if op.bytes().any(|b| b.is_ascii_uppercase()) {
+        return operator_key(&op.to_ascii_lowercase());
+    }
+    KEYS.with_borrow_mut(|m| {
+        if let Some(&k) = m.get(op) {
+            return k;
+        }
+        let k = Symbol::intern(&format!("\"{op}\""));
+        m.insert(op.into(), k);
+        k
+    })
 }
 
 /// Whether `text` (between the quotes) is a VHDL operator symbol (9.2).
@@ -105,7 +118,13 @@ pub fn is_operator_symbol(text: &str) -> bool {
 
 /// Lookup key of character literal `c`.
 pub fn char_key(c: char) -> Symbol {
-    Symbol::intern(&format!("'{c}'"))
+    thread_local! {
+        static LATIN1: std::cell::RefCell<[Option<Symbol>; 256]> = const { std::cell::RefCell::new([None; 256]) };
+    }
+    let Some(slot) = usize::try_from(u32::from(c)).ok().filter(|&i| i < 256) else {
+        return Symbol::intern(&format!("'{c}'"));
+    };
+    LATIN1.with_borrow_mut(|t| *t[slot].get_or_insert_with(|| Symbol::intern(&format!("'{c}'"))))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

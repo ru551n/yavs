@@ -1,0 +1,2 @@
+exit	0
+diag	note	3000000	0	:aggregate_target_nested_record:_p0	a=2 sa=5 sc=6

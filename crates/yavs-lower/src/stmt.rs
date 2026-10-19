@@ -17,6 +17,19 @@ use crate::expr::{Dr, Place};
 use crate::func::Fx;
 use crate::{Failed, Obj, R, Space, ty};
 
+/// The callback of `walk_agg`: the hit, its sub-value for each value walked, their subtype.
+type HitFn<'f, F> = &'f mut dyn FnMut(&mut F, Hit, &[crate::expr::V], yavs_sem::SubtypeId) -> R<()>;
+/// The callback of one level of a matrix walk: a scalar target element and its path.
+type LeafFn<'f, F> = &'f mut dyn FnMut(&mut F, ExprId, &[i64]) -> R<()>;
+
+/// What `walk_agg` hands to its callback (#350).
+enum Hit {
+    /// A target element that is not an aggregate.
+    Leaf(ExprId),
+    /// An aggregate target of a one-dimensional array of scalars, and its type.
+    Flat(ExprId, TypeId),
+}
+
 fn ir_kind(k: &H) -> StmtKind {
     match k {
         H::Wait { .. } => StmtKind::Wait,
@@ -763,31 +776,37 @@ impl Fx<'_, '_> {
 
     fn assign(&mut self, target: ExprId, e: ExprId, what: &str, span: Span) -> R<()> {
         let v = self.expr(e)?;
-        if let ExprKind::Aggregate { assocs, .. } = &self.db.exprs[target].kind {
-            return self.assign_aggregate(assocs, v, e, span);
+        if let ExprKind::Aggregate { .. } = &self.db.exprs[target].kind {
+            let t = self.db.base(self.db.exprs[e].subtype);
+            return self.assign_aggregate(target, v, t, span);
         }
         let p: Place = self.place(target)?;
         self.store_place(p, v, self.db.exprs[e].subtype, what, span)
     }
 
-    /// `(a, b) := v` (LRM 10.6.2.1): each element of the aggregate target gets the matching
-    /// element of the value, positionally or by index choice. Scalar elements only.
-    fn assign_aggregate(
-        &mut self,
-        assocs: &[yavs_sem::hir::AggAssoc],
-        v: crate::expr::V,
-        e: ExprId,
-        span: Span,
-    ) -> R<()> {
+    /// `(a, b) := v` (LRM 10.6.2.1): each element of the aggregate target `agg` gets the
+    /// matching element of the value `v` of type `t` (#350: records, nested aggregates and
+    /// matrices through `walk_agg`).
+    fn assign_aggregate(&mut self, agg: ExprId, v: crate::expr::V, t: TypeId, span: Span) -> R<()> {
+        self.walk_agg(agg, t, &[v], span, &mut |fx, hit, subs, st| match hit {
+            Hit::Flat(a, t) => fx.assign_flat(a, subs[0], t, span),
+            Hit::Leaf(x) => {
+                let what = fx.target_name(x);
+                let p = fx.place(x)?;
+                fx.store_place(p, subs[0], st, &what, span)
+            }
+        })
+    }
+
+    /// An aggregate target `agg` of a one-dimensional array of scalars: each element gets the
+    /// matching element of the value, positionally or by index choice, a 2008 piece a slice.
+    fn assign_flat(&mut self, agg: ExprId, v: crate::expr::V, t: TypeId, span: Span) -> R<()> {
         let db = self.db;
-        let t = db.base(db.exprs[e].subtype);
-        if matches!(db.types[t].kind, TypeKind::Record { .. }) {
-            return self.assign_record_aggregate(assocs, v, t, span);
-        }
+        let ExprKind::Aggregate { assocs, .. } = &db.exprs[agg].kind else {
+            return Err(self.cx.ice(span, "aggregate target is not an aggregate"));
+        };
         let Some((elem, 1)) = ty::array_of(db, t) else {
-            return Err(self
-                .cx
-                .unsupported(span, "aggregate targets of records and matrices"));
+            return Err(self.cx.ice(span, "flat aggregate target of a non-array"));
         };
         let (data, dope) = self.arr(v, span)?;
         let tid = self.ty(t, span)?;
@@ -795,7 +814,7 @@ impl Fx<'_, '_> {
         let bias = self.code_bias(tid);
         let (_, rt, w) = self.scalar(elem, span)?;
         let count = self.dope_len(dope);
-        let named = self.named_target_positions(assocs, t, span)?;
+        let named = self.named_target_positions(assocs, t, 0, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
         // The aggregate must cover the value exactly (LRM 10.6.2.1), checked first.
@@ -892,30 +911,269 @@ impl Fx<'_, '_> {
         Ok(())
     }
 
-    /// `(a, b) := r` for a record value (LRM 10.6.2.1): each element of the aggregate target
-    /// gets the field of the value, positionally or by field name (several names in one
-    /// association would name the target twice, which sem rejects).
-    fn assign_record_aggregate(
+    /// Walk the aggregate target `agg` against the values `vals` (one per waveform element for
+    /// a signal target) of type `t` (LRM 10.5.2.1, 10.6.2.1, #350): a record value hands each
+    /// element its field, positionally or by field name; an array of composites each element
+    /// its element; a matrix each (sub-)aggregate its row, down to the scalar elements. A
+    /// target element that is an aggregate is walked with its sub-values; the others, and the
+    /// aggregates of one-dimensional arrays of scalars, go to `cb`.
+    fn walk_agg(
         &mut self,
-        assocs: &[yavs_sem::hir::AggAssoc],
-        v: crate::expr::V,
+        agg: ExprId,
         t: TypeId,
+        vals: &[crate::expr::V],
+        span: Span,
+        cb: HitFn<Self>,
+    ) -> R<()> {
+        let db = self.db;
+        let ExprKind::Aggregate { assocs, .. } = &db.exprs[agg].kind else {
+            return Err(self.cx.ice(span, "aggregate target is not an aggregate"));
+        };
+        if matches!(db.types[t].kind, TypeKind::Record { .. }) {
+            let tid = self.ty(t, span)?;
+            for (i, a) in assocs.iter().enumerate() {
+                let n = match &a.choices[..] {
+                    [] => i as u32,
+                    [Choice::Element(n)] => *n,
+                    _ => return Err(self.cx.ice(span, "unmapped record aggregate target choice")),
+                };
+                let st = self.field_subtype(t, n)?;
+                let mut subs = Vec::with_capacity(vals.len());
+                for &v in vals {
+                    let (data, desc) = self.arr(v, span)?;
+                    let (addr, d) = self.field_addr(tid, data, desc, n, span)?;
+                    subs.push(self.value_at(st, addr, d, span)?);
+                }
+                self.walk_elem(a.value, st, &subs, span, cb)?;
+            }
+            return Ok(());
+        }
+        let Some((elem, dims)) = ty::array_of(db, t) else {
+            return Err(self.cx.unsupported(span, "aggregate targets of this type"));
+        };
+        let general = self.is_general(t, span)?;
+        if dims == 1 && !general {
+            return cb(self, Hit::Flat(agg, t), vals, elem);
+        }
+        let ttid = self.ty(t, span)?;
+        if general && self.is_logic(ttid) {
+            return Err(self
+                .cx
+                .unsupported(span, "aggregate targets of arrays of logic arrays"));
+        }
+        if dims > 1 {
+            if general {
+                return Err(self
+                    .cx
+                    .unsupported(span, "aggregate targets of matrices of composites"));
+            }
+            return self.walk_matrix(agg, t, elem, vals, span, cb);
+        }
+        // An array of composites: element `pos` of each value is the sub-value.
+        let tid = self.ty(t, span)?;
+        if assocs.iter().any(|a| a.slice_piece) {
+            return Err(self.cx.ice(span, "slice piece of an array of composites"));
+        }
+        let named = self.named_target_positions(assocs, t, 0, span)?;
+        let mut parts = Vec::with_capacity(vals.len());
+        for &v in vals {
+            parts.push(self.arr(v, span)?);
+        }
+        // The aggregate must cover every value exactly, checked first.
+        if let Some(want) = self.cover_dope(assocs, named.as_deref(), false, span)? {
+            for &(_, dope) in &parts {
+                let what = self.msg("target", Dir::To);
+                self.emit(Inst::SubtypeCheck {
+                    dope,
+                    want,
+                    dims: 1,
+                    what,
+                });
+            }
+        }
+        for (i, a) in assocs.iter().enumerate() {
+            let pos = match a.choices.first() {
+                None => self.int(i as i64),
+                Some(Choice::Expr(_)) if let Some(ps) = &named => self.int(ps[i].0),
+                Some(&Choice::Expr(c)) => {
+                    let dopes: Vec<Reg> = parts.iter().map(|p| p.1).collect();
+                    self.lone_choice(c, t, &dopes, span)?;
+                    self.int(0)
+                }
+                _ => return Err(self.cx.ice(span, "unmapped aggregate target choice")),
+            };
+            let mut subs = Vec::with_capacity(vals.len());
+            for &(data, dope) in &parts {
+                let (_, ed) = self.elem_desc(tid, dope)?;
+                let addr = self.elem_addr(tid, data, dope, pos);
+                subs.push(self.value_at(elem, addr, ed, span)?);
+            }
+            self.walk_elem(a.value, elem, &subs, span, cb)?;
+        }
+        Ok(())
+    }
+
+    /// One element of an aggregate target: walked on when it is an aggregate itself, else a
+    /// leaf for `cb`.
+    fn walk_elem(
+        &mut self,
+        x: ExprId,
+        st: yavs_sem::SubtypeId,
+        subs: &[crate::expr::V],
+        span: Span,
+        cb: HitFn<Self>,
+    ) -> R<()> {
+        if let ExprKind::Aggregate { .. } = &self.db.exprs[x].kind {
+            let t = self.db.base(st);
+            return self.walk_agg(x, t, subs, span, cb);
+        }
+        cb(self, Hit::Leaf(x), subs, st)
+    }
+
+    /// A matrix target (a multi-dimensional array of scalars): the aggregate of dimension `d`
+    /// holds the aggregates of dimension `d + 1`, the last one the scalar elements (LRM
+    /// 9.3.3.3). Positions are static (positional or constant choices).
+    fn walk_matrix(
+        &mut self,
+        agg: ExprId,
+        t: TypeId,
+        elem: yavs_sem::SubtypeId,
+        vals: &[crate::expr::V],
+        span: Span,
+        cb: HitFn<Self>,
+    ) -> R<()> {
+        let db = self.db;
+        let tid = self.ty(t, span)?;
+        let (_, rt, w) = self.scalar(elem, span)?;
+        let logic = self.is_logic(tid);
+        let bias = self.code_bias(tid);
+        let ndims = ty::array_of(db, t).map_or(0, |x| x.1);
+        let mut parts = Vec::with_capacity(vals.len());
+        for &v in vals {
+            let (data, dope) = self.arr(v, span)?;
+            let (_, count) = self.layout(tid, dope);
+            let lens: Vec<Reg> = (0..ndims)
+                .map(|k| {
+                    let dst = self.reg(RegTy::I64);
+                    self.emit(Inst::DopeLen { dst, dope, dim: k });
+                    dst
+                })
+                .collect();
+            parts.push((data, dope, count, lens));
+        }
+        // Every dimension must be covered exactly (LRM 10.6.2.1), checked first.
+        let mut sizes = Vec::new();
+        self.matrix_sizes(agg, 0, ndims, t, &mut sizes, span)?;
+        let want = self.alloc_n(24 * u32::from(ndims));
+        let z = self.int(0);
+        for (k, &n) in sizes.iter().enumerate() {
+            let at = self.offset(want, 24 * k as u32);
+            let last = self.int(n - 1);
+            let parts_ = self.fb.regs(&[z, last, z]);
+            self.emit(Inst::MakeDope { at, parts: parts_ });
+        }
+        for &(_, dope, _, _) in &parts {
+            let what = self.msg("target", Dir::To);
+            self.emit(Inst::SubtypeCheck {
+                dope,
+                want,
+                dims: ndims,
+                what,
+            });
+        }
+        let mut path = Vec::new();
+        let mut leaf = |fx: &mut Self, x: ExprId, path: &[i64]| -> R<()> {
+            let mut subs = Vec::with_capacity(parts.len());
+            for (data, _, count, lens) in &parts {
+                let mut flat = fx.int(path[0]);
+                for (k, &p) in path.iter().enumerate().skip(1) {
+                    let m = fx.bin(IntOp::Mul, flat, lens[k]);
+                    let pk = fx.int(p);
+                    flat = fx.bin(IntOp::Add, m, pk);
+                }
+                let v = if logic {
+                    let code = fx.elem_at(*data, flat, *count, true, w);
+                    fx.dec(code, bias)
+                } else {
+                    let a = fx.reg(RegTy::Ptr);
+                    fx.emit(Inst::Index {
+                        dst: a,
+                        base: *data,
+                        pos: flat,
+                        stride: w.bytes(),
+                    });
+                    fx.load(a, w, rt)
+                };
+                subs.push(crate::expr::V::S(v));
+            }
+            cb(fx, Hit::Leaf(x), &subs, elem)
+        };
+        self.matrix_level(agg, 0, ndims, t, &mut path, &mut leaf, span)
+    }
+
+    /// The number of elements the first branch of matrix target `agg` covers in each
+    /// dimension from `depth` on.
+    fn matrix_sizes(
+        &mut self,
+        agg: ExprId,
+        depth: u8,
+        ndims: u8,
+        t: TypeId,
+        out: &mut Vec<i64>,
         span: Span,
     ) -> R<()> {
-        let (data, desc) = self.arr(v, span)?;
-        let tid = self.ty(t, span)?;
+        let ExprKind::Aggregate { assocs, .. } = &self.db.exprs[agg].kind else {
+            return Err(self.cx.ice(span, "matrix target level is not an aggregate"));
+        };
+        let named = self.named_target_positions(assocs, t, usize::from(depth), span)?;
+        let n = match &named {
+            Some(ps) => ps.iter().map(|&(p, l)| p + l).max().unwrap_or(0),
+            None => assocs.len() as i64,
+        };
+        out.push(n);
+        if depth + 1 < ndims
+            && let Some(a) = assocs.first()
+        {
+            self.matrix_sizes(a.value, depth + 1, ndims, t, out, span)?;
+        }
+        Ok(())
+    }
+
+    /// The associations of one dimension of a matrix target, in order, with their positions.
+    #[allow(clippy::too_many_arguments)]
+    fn matrix_level(
+        &mut self,
+        agg: ExprId,
+        depth: u8,
+        ndims: u8,
+        t: TypeId,
+        path: &mut Vec<i64>,
+        leaf: LeafFn<Self>,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let ExprKind::Aggregate { assocs, .. } = &db.exprs[agg].kind else {
+            return Err(self.cx.ice(span, "matrix target level is not an aggregate"));
+        };
+        let named = self.named_target_positions(assocs, t, usize::from(depth), span)?;
+        if named.is_none() && assocs.iter().any(|a| !a.choices.is_empty()) {
+            return Err(self
+                .cx
+                .unsupported(span, "non-static choices in matrix aggregate targets"));
+        }
         for (i, a) in assocs.iter().enumerate() {
-            let n = match &a.choices[..] {
-                [] => i as u32,
-                [Choice::Element(n)] => *n,
-                _ => return Err(self.cx.ice(span, "unmapped record aggregate target choice")),
-            };
-            let (addr, d) = self.field_addr(tid, data, desc, n, span)?;
-            let st = self.field_subtype(t, n)?;
-            let x = self.value_at(st, addr, d, span)?;
-            let what = self.target_name(a.value);
-            let p = self.place(a.value)?;
-            self.store_place(p, x, st, &what, span)?;
+            if a.slice_piece || a.choices.len() > 1 {
+                return Err(self
+                    .cx
+                    .unsupported(span, "pieces in matrix aggregate targets"));
+            }
+            path.push(named.as_ref().map_or(i as i64, |ps| ps[i].0));
+            if depth + 1 < ndims {
+                self.matrix_level(a.value, depth + 1, ndims, t, path, leaf, span)?;
+            } else {
+                leaf(self, a.value, path)?;
+            }
+            path.pop();
         }
         Ok(())
     }
@@ -926,11 +1184,12 @@ impl Fx<'_, '_> {
     /// index subtype of its type `t` (LRM 9.3.3.3); its leftmost index takes the value's
     /// leftmost element, and a piece takes the elements of its range in the aggregate's order.
     /// `None` for a positional target and for one whose only choice is a non-static element
-    /// choice (`lone_choice`).
+    /// choice (`lone_choice`). `dim` is the dimension (of a matrix) the associations index.
     fn named_target_positions(
         &mut self,
         assocs: &[yavs_sem::hir::AggAssoc],
         t: TypeId,
+        dim: usize,
         span: Span,
     ) -> R<Option<Vec<(i64, i64)>>> {
         use yavs_sem::expr::aggregate::{StaticRange, range_value, subtype_range};
@@ -974,7 +1233,9 @@ impl Fx<'_, '_> {
         let dir = match first {
             Some(rc) => range_value(db, rc).map(|r| r.dir),
             None => match &db.types[t].kind {
-                TypeKind::Array { indexes, .. } => subtype_range(db, indexes[0], 0).map(|r| r.dir),
+                TypeKind::Array { indexes, .. } => {
+                    subtype_range(db, indexes[dim], 0).map(|r| r.dir)
+                }
                 _ => None,
             },
         };
@@ -1305,44 +1566,35 @@ impl Fx<'_, '_> {
     }
 
     /// `(a, b) <= v after t, ...` (LRM 10.5.2.1): each scalar element of the aggregate target is
-    /// driven with the matching element of every waveform value.
+    /// driven with the matching element of every waveform value (#350: through `walk_agg`, so
+    /// records, nested aggregates and matrices too).
     fn drive_aggregate(
         &mut self,
         target: &Target,
-        assocs: &[yavs_sem::hir::AggAssoc],
         delay: &Delay,
         elems: &[yavs_sem::hir::WaveElem],
         span: Span,
     ) -> R<()> {
         let db = self.db;
-        if assocs.len() != target.lsps.len() {
+        if self.agg_leaves(target.expr) != target.lsps.len() {
             return Err(self
                 .cx
                 .unsupported(span, "aggregate targets with choice lists"));
         }
         let t = db.base(db.exprs[target.expr].subtype);
-        let Some((esub, 1)) = ty::array_of(db, t) else {
-            return Err(self
-                .cx
-                .unsupported(span, "aggregate signal targets of records and matrices"));
-        };
-        let vtid = self.ty(t, span)?;
-        let vlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), vtid).is_some();
-        let vbias = self.code_bias(vtid);
-        let (_, rt, vw) = self.scalar(esub, span)?;
-        let mut vals = Vec::new();
+        let mut ats = Vec::with_capacity(elems.len());
+        let mut vals = Vec::with_capacity(elems.len());
         for el in elems {
             let Some(v) = el.value else {
                 return Err(self
                     .cx
                     .unsupported(span, "null waveform elements in aggregate targets"));
             };
-            let at = match el.after {
+            ats.push(match el.after {
                 Some(a) => self.scalar_expr(a)?,
                 None => self.int(0),
-            };
-            let x = self.expr(v)?;
-            vals.push((at, self.arr(x, span)?));
+            });
+            vals.push(self.expr(v)?);
         }
         let (mode, reject) = match delay {
             Delay::Transport => (DriveMode::Transport, None),
@@ -1355,7 +1607,113 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        let named = self.named_target_positions(assocs, t, span)?;
+        let mut next = 0;
+        let lsps = &target.lsps;
+        self.walk_agg(
+            target.expr,
+            t,
+            &vals,
+            span,
+            &mut |fx, hit, subs, st| match hit {
+                Hit::Flat(a, t) => {
+                    let n = fx.agg_leaves(a);
+                    let ls = &lsps[next..next + n];
+                    next += n;
+                    fx.drive_flat(ls, a, t, &ats, subs, mode, reject, span)
+                }
+                Hit::Leaf(x) => {
+                    let lsp = &lsps[next];
+                    next += 1;
+                    fx.drive_leaf(lsp, x, &ats, subs, st, mode, reject, span)
+                }
+            },
+        )
+    }
+
+    /// The number of target elements below aggregate target `e` that are not aggregates.
+    fn agg_leaves(&self, e: ExprId) -> usize {
+        match &self.db.exprs[e].kind {
+            ExprKind::Aggregate { assocs, .. } => {
+                assocs.iter().map(|a| self.agg_leaves(a.value)).sum()
+            }
+            _ => 1,
+        }
+    }
+
+    /// A leaf of an aggregate target signal assignment, `subs` its value for each waveform
+    /// element (at times `ats`): a scalar signal, or a signal of a non-record array type.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_leaf(
+        &mut self,
+        lsp: &Lsp,
+        x: ExprId,
+        ats: &[Reg],
+        subs: &[crate::expr::V],
+        from: yavs_sem::SubtypeId,
+        mode: DriveMode,
+        reject: Option<Reg>,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let st = db.exprs[x].subtype;
+        let t = db.base(st);
+        if matches!(db.types[t].kind, TypeKind::Record { .. }) {
+            return Err(self
+                .cx
+                .unsupported(span, "record elements of aggregate signal targets"));
+        }
+        if let Some((elem, _)) = ty::array_of(db, t) {
+            if self.is_general(t, span)? || ty::array_of(db, t).is_some_and(|x| x.1 != 1) {
+                return Err(self
+                    .cx
+                    .unsupported(span, "composite array elements of aggregate signal targets"));
+            }
+            let vtid = self.ty(t, span)?;
+            let (_, _, vw) = self.scalar(elem, span)?;
+            let mut vals = Vec::with_capacity(subs.len());
+            for (&at, &v) in ats.iter().zip(subs) {
+                vals.push((at, self.arr(v, span)?));
+            }
+            self.drive_piece(lsp, x, vtid, vw, &vals, None, mode, reject, span)?;
+            return Ok(());
+        }
+        let mut xs = Vec::with_capacity(subs.len());
+        for (&at, &v) in ats.iter().zip(subs) {
+            xs.push((at, self.scal(v, span)?));
+        }
+        self.drive_scalar(lsp, x, &xs, from, mode, reject, span)
+    }
+
+    /// `drive_aggregate` for an aggregate target `agg` of a one-dimensional array of scalars
+    /// (type `t`) whose leaves have the signals `lsps`.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_flat(
+        &mut self,
+        lsps: &[Lsp],
+        agg: ExprId,
+        t: TypeId,
+        ats: &[Reg],
+        subs: &[crate::expr::V],
+        mode: DriveMode,
+        reject: Option<Reg>,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let ExprKind::Aggregate { assocs, .. } = &db.exprs[agg].kind else {
+            return Err(self.cx.ice(span, "aggregate target is not an aggregate"));
+        };
+        let Some((esub, 1)) = ty::array_of(db, t) else {
+            return Err(self.cx.ice(span, "flat aggregate target of a non-array"));
+        };
+        let vtid = self.ty(t, span)?;
+        let vlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), vtid).is_some();
+        let vbias = self.code_bias(vtid);
+        let (_, rt, vw) = self.scalar(esub, span)?;
+        let mut vals = Vec::with_capacity(subs.len());
+        for (&at, &v) in ats.iter().zip(subs) {
+            vals.push((at, self.arr(v, span)?));
+        }
+        let named = self.named_target_positions(assocs, t, 0, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
         // The aggregate must cover every value exactly (LRM 10.5.2.1), checked first.
@@ -1371,93 +1729,22 @@ impl Fx<'_, '_> {
             }
         }
         let mut k = self.int(0);
-        for (i, (a, lsp)) in assocs.iter().zip(target.lsps.iter()).enumerate() {
+        for (i, (a, lsp)) in assocs.iter().zip(lsps.iter()).enumerate() {
             if a.slice_piece {
-                let slot = self.driver_of(lsp)?;
-                let (_, sref, tdope) = self.sig_name(a.value)?;
-                let Some(td) = tdope else {
-                    return Err(self.cx.ice(span, "slice piece of a scalar signal"));
-                };
-                if let Some(ps) = &named {
-                    k = self.named_piece(ps[i], td);
-                }
-                let len = self.dope_len(td);
-                let (size, _) = self.layout(vtid, td);
-                // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
-                let seven = self.int(7);
-                let r = self.bin(IntOp::Add, size, seven);
-                let eight = self.int(8);
-                let q = self.bin(IntOp::Div, r, eight);
-                let r8 = self.bin(IntOp::Mul, q, eight);
-                let stride = self.bin(IntOp::Add, r8, eight);
-                let nv = self.int(vals.len() as i64);
-                let total = self.bin(IntOp::Mul, stride, nv);
-                let wave = self.alloc(total);
-                for (j, &(at, (data, dope))) in vals.iter().enumerate() {
-                    let jj = self.int(j as i64);
-                    let o = self.bin(IntOp::Mul, jj, stride);
-                    let e = self.reg(RegTy::Ptr);
-                    self.emit(Inst::Index {
-                        dst: e,
-                        base: wave,
-                        pos: o,
-                        stride: 1,
-                    });
-                    self.store(e, at, Width::B8);
-                    let va = self.offset(e, 8);
-                    if vlogic {
-                        // Planes hold the leftmost element last.
-                        let count = self.dope_len(dope);
-                        let r = self.bin(IntOp::Sub, count, k);
-                        let src_off = self.bin(IntOp::Sub, r, len);
-                        let z = self.int(0);
-                        self.emit(Inst::LCopy {
-                            dst: va,
-                            dst_off: z,
-                            src: data,
-                            src_off,
-                            n: len,
-                        });
-                    } else {
-                        let p = self.reg(RegTy::Ptr);
-                        self.emit(Inst::Index {
-                            dst: p,
-                            base: data,
-                            pos: k,
-                            stride: vw.bytes(),
-                        });
-                        self.emit(Inst::Copy {
-                            dst: va,
-                            src: p,
-                            bytes: size,
-                        });
-                    }
-                }
-                self.emit(Inst::Drive {
-                    driver: slot,
-                    target: Some(sref),
-                    wave,
-                    n: nv,
+                let len = self.drive_piece(
+                    lsp,
+                    a.value,
+                    vtid,
+                    vw,
+                    &vals,
+                    Some((k, named.as_ref().map(|ps| ps[i]))),
                     mode,
                     reject,
-                });
+                    span,
+                )?;
                 k = self.bin(IntOp::Add, k, len);
                 continue;
             }
-            let slot = self.driver_of(lsp)?;
-            let (_, sref, tdope) = self.sig_name(a.value)?;
-            if tdope.is_some() {
-                return Err(self
-                    .cx
-                    .unsupported(span, "array elements of aggregate signal targets"));
-            }
-            let st = db.exprs[a.value].subtype;
-            let ttid = self.ty(db.base(st), span)?;
-            let tlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), ttid).is_some();
-            let tbias = self.code_bias(ttid);
-            let (_, _, tw) = self.scalar(st, span)?;
-            let stride = if tlogic { 8 + 32 } else { 16 };
-            let wave = self.alloc_n(stride * vals.len() as u32);
             let next = match a.choices.first() {
                 None => {
                     let one = self.int(1);
@@ -1475,7 +1762,8 @@ impl Fx<'_, '_> {
                 }
                 _ => return Err(self.cx.ice(span, "unmapped aggregate target choice")),
             };
-            for (j, &(at, (data, dope))) in vals.iter().enumerate() {
+            let mut xs = Vec::with_capacity(vals.len());
+            for &(at, (data, dope)) in &vals {
                 let x = if vlogic {
                     let count = self.dope_len(dope);
                     let one = self.int(1);
@@ -1498,36 +1786,174 @@ impl Fx<'_, '_> {
                     });
                     self.load(p, vw, rt)
                 };
-                let what = self.target_name(a.value);
-                self.check_scalar(x, Some(esub), st, &what, span)?;
-                let e = self.offset(wave, stride * j as u32);
-                self.store(e, at, Width::B8);
-                let va = self.offset(e, 8);
-                if tlogic {
-                    let z = self.int(0);
-                    let c = self.enc(x, tbias);
-                    self.emit(Inst::LSet {
-                        base: va,
-                        idx: z,
-                        v: c,
-                    });
-                } else {
-                    self.store(va, x, tw);
-                }
+                xs.push((at, x));
             }
-            let n = self.int(vals.len() as i64);
-            self.emit(Inst::Drive {
-                driver: slot,
-                target: Some(sref),
-                wave,
-                n,
-                mode,
-                reject,
-            });
+            self.drive_scalar(lsp, a.value, &xs, esub, mode, reject, span)?;
             if let Some(next) = next {
                 k = next;
             }
         }
+        Ok(())
+    }
+
+    /// Drive the array signal `x` (the signal of `lsp`) with the values `vals` (a time and an
+    /// array value each of IR type `vtid`, element width `vw`): the whole value (`pos` is
+    /// `None`), or its elements from position `k` on, at the position of the named choice
+    /// (`pos` is `Some((k, named))`). Returns the number of elements driven.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_piece(
+        &mut self,
+        lsp: &Lsp,
+        x: ExprId,
+        vtid: yavs_ir::TyId,
+        vw: Width,
+        vals: &[(Reg, (Reg, Reg))],
+        pos: Option<(Reg, Option<(i64, i64)>)>,
+        mode: DriveMode,
+        reject: Option<Reg>,
+        span: Span,
+    ) -> R<Reg> {
+        let vlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), vtid).is_some();
+        let slot = self.driver_of(lsp)?;
+        let (_, sref, tdope) = self.sig_name(x)?;
+        let Some(td) = tdope else {
+            return Err(self.cx.ice(span, "slice piece of a scalar signal"));
+        };
+        let k = match pos {
+            Some((_, Some(named))) => self.named_piece(named, td),
+            Some((k, None)) => k,
+            None => {
+                // A whole value for the whole signal: the lengths must agree.
+                for &(_, (_, dope)) in vals {
+                    let what = self.msg("target", Dir::To);
+                    self.emit(Inst::SubtypeCheck {
+                        dope,
+                        want: td,
+                        dims: 1,
+                        what,
+                    });
+                }
+                self.int(0)
+            }
+        };
+        let len = self.dope_len(td);
+        let (size, _) = self.layout(vtid, td);
+        // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
+        let seven = self.int(7);
+        let r = self.bin(IntOp::Add, size, seven);
+        let eight = self.int(8);
+        let q = self.bin(IntOp::Div, r, eight);
+        let r8 = self.bin(IntOp::Mul, q, eight);
+        let stride = self.bin(IntOp::Add, r8, eight);
+        let nv = self.int(vals.len() as i64);
+        let total = self.bin(IntOp::Mul, stride, nv);
+        let wave = self.alloc(total);
+        for (j, &(at, (data, dope))) in vals.iter().enumerate() {
+            let jj = self.int(j as i64);
+            let o = self.bin(IntOp::Mul, jj, stride);
+            let e = self.reg(RegTy::Ptr);
+            self.emit(Inst::Index {
+                dst: e,
+                base: wave,
+                pos: o,
+                stride: 1,
+            });
+            self.store(e, at, Width::B8);
+            let va = self.offset(e, 8);
+            if vlogic {
+                // Planes hold the leftmost element last.
+                let count = self.dope_len(dope);
+                let r = self.bin(IntOp::Sub, count, k);
+                let src_off = self.bin(IntOp::Sub, r, len);
+                let z = self.int(0);
+                self.emit(Inst::LCopy {
+                    dst: va,
+                    dst_off: z,
+                    src: data,
+                    src_off,
+                    n: len,
+                });
+            } else {
+                let p = self.reg(RegTy::Ptr);
+                self.emit(Inst::Index {
+                    dst: p,
+                    base: data,
+                    pos: k,
+                    stride: vw.bytes(),
+                });
+                self.emit(Inst::Copy {
+                    dst: va,
+                    src: p,
+                    bytes: size,
+                });
+            }
+        }
+        self.emit(Inst::Drive {
+            driver: slot,
+            target: Some(sref),
+            wave,
+            n: nv,
+            mode,
+            reject,
+        });
+        Ok(len)
+    }
+
+    /// Drive the scalar signal `x` (the signal of `lsp`) with the values `xs` (a time and a
+    /// value of subtype `from` each).
+    #[allow(clippy::too_many_arguments)]
+    fn drive_scalar(
+        &mut self,
+        lsp: &Lsp,
+        x: ExprId,
+        xs: &[(Reg, Reg)],
+        from: yavs_sem::SubtypeId,
+        mode: DriveMode,
+        reject: Option<Reg>,
+        span: Span,
+    ) -> R<()> {
+        let db = self.db;
+        let slot = self.driver_of(lsp)?;
+        let (_, sref, tdope) = self.sig_name(x)?;
+        if tdope.is_some() {
+            return Err(self
+                .cx
+                .unsupported(span, "array elements of aggregate signal targets"));
+        }
+        let st = db.exprs[x].subtype;
+        let ttid = self.ty(db.base(st), span)?;
+        let tlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), ttid).is_some();
+        let tbias = self.code_bias(ttid);
+        let (_, _, tw) = self.scalar(st, span)?;
+        let stride = if tlogic { 8 + 32 } else { 16 };
+        let wave = self.alloc_n(stride * xs.len() as u32);
+        let what = self.target_name(x);
+        for (j, &(at, v)) in xs.iter().enumerate() {
+            self.check_scalar(v, Some(from), st, &what, span)?;
+            let e = self.offset(wave, stride * j as u32);
+            self.store(e, at, Width::B8);
+            let va = self.offset(e, 8);
+            if tlogic {
+                let z = self.int(0);
+                let c = self.enc(v, tbias);
+                self.emit(Inst::LSet {
+                    base: va,
+                    idx: z,
+                    v: c,
+                });
+            } else {
+                self.store(va, v, tw);
+            }
+        }
+        let n = self.int(xs.len() as i64);
+        self.emit(Inst::Drive {
+            driver: slot,
+            target: Some(sref),
+            wave,
+            n,
+            mode,
+            reject,
+        });
         Ok(())
     }
 
@@ -1536,8 +1962,8 @@ impl Fx<'_, '_> {
         let Waveform::Elements(elems) = w else {
             return Ok(()); // `unaffected`
         };
-        if let ExprKind::Aggregate { assocs, .. } = &db.exprs[target.expr].kind {
-            return self.drive_aggregate(target, assocs, delay, elems, span);
+        if let ExprKind::Aggregate { .. } = &db.exprs[target.expr].kind {
+            return self.drive_aggregate(target, delay, elems, span);
         }
         let [lsp] = &target.lsps[..] else {
             return Err(self.cx.unsupported(span, "aggregate signal targets"));

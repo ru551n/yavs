@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	0	0	-	value length 3 for dimension 2 does not match target length 2

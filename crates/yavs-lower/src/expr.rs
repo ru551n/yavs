@@ -2799,7 +2799,7 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// Element `i` (0-based from the left) of a 1-D array with `n` elements.
-    fn elem_at(&mut self, data: Reg, i: Reg, n: Reg, logic: bool, w: Width) -> Reg {
+    pub(crate) fn elem_at(&mut self, data: Reg, i: Reg, n: Reg, logic: bool, w: Width) -> Reg {
         if logic {
             let one = self.int(1);
             let last = self.bin(IntOp::Sub, n, one);

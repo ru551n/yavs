@@ -1,0 +1,2 @@
+exit	0
+diag	note	4000000	0	:aggregate_target_named_record:_p0	x=10 y=11 sx=20 sy=21

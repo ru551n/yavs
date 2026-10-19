@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value as Json, json};
 use yavs_kernel::{Hook, Observer, Phase, SignalId as KernelId};
 use yavs_wave::{
-    Dir, Error, Hierarchy, Node, ObjClass, PortDir, Recorder, ScalarType, ScopeKind, SigType,
+    Dir, Error, HierItem, Hierarchy, ObjClass, PortDir, Recorder, ScalarType, ScopeKind, SigType,
     SignalId, Sink,
 };
 
@@ -273,37 +273,58 @@ fn base64(b: &[u8]) -> String {
 
 /// The subscribe response: the recorded hierarchy, as `--wave` declares it in the file.
 pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
-    fn node(n: &Node) -> Json {
-        match n {
-            Node::Scope(s) => json!({
-                "scope": s.name,
-                "kind": match s.kind {
-                    ScopeKind::Instance => "instance",
-                    ScopeKind::Block => "block",
-                    ScopeKind::Process => "process",
-                    ScopeKind::Procedure => "procedure",
-                    ScopeKind::Function => "function",
-                    ScopeKind::ForGenerate => "forGenerate",
-                    ScopeKind::IfGenerate => "ifGenerate",
-                    ScopeKind::Generate => "generate",
-                    ScopeKind::Package => "package",
-                    ScopeKind::Record => "record",
-                    ScopeKind::Array => "array",
-                },
-                "component": s.component,
-                "children": s.children.iter().map(node).collect::<Vec<_>>(),
-            }),
-            Node::Signal(s) => json!({
-                "name": s.name,
-                "id": s.id.0,
-                "type": ty(&s.ty),
-                "encoding": encoding(&s.ty),
-                "class": match s.class {
+    fn scope_kind(k: ScopeKind) -> &'static str {
+        match k {
+            ScopeKind::Instance => "instance",
+            ScopeKind::Block => "block",
+            ScopeKind::Process => "process",
+            ScopeKind::Procedure => "procedure",
+            ScopeKind::Function => "function",
+            ScopeKind::ForGenerate => "forGenerate",
+            ScopeKind::IfGenerate => "ifGenerate",
+            ScopeKind::Generate => "generate",
+            ScopeKind::Package => "package",
+            ScopeKind::Record => "record",
+            ScopeKind::Array => "array",
+        }
+    }
+    // The open scopes with their children so far, and the finished top level.
+    let mut open: Vec<(Json, Vec<Json>)> = Vec::new();
+    let mut top: Vec<Json> = Vec::new();
+    for it in h.items() {
+        let done = match it {
+            HierItem::Scope {
+                name,
+                kind,
+                component,
+            } => {
+                let head = json!({"scope": name, "kind": scope_kind(kind), "component": component});
+                open.push((head, Vec::new()));
+                continue;
+            }
+            HierItem::Up => {
+                let (mut head, children) = open.pop().expect("a scope is open");
+                head["children"] = Json::Array(children);
+                head
+            }
+            HierItem::Signal {
+                name,
+                id,
+                ty,
+                port,
+                class,
+                ..
+            } => json!({
+                "name": name,
+                "id": id.0,
+                "type": ty_json(ty),
+                "encoding": encoding(ty),
+                "class": match class {
                     ObjClass::Signal => "signal",
                     ObjClass::Variable => "variable",
                     ObjClass::Constant => "constant",
                 },
-                "direction": match s.port {
+                "direction": match port {
                     PortDir::None => "none",
                     PortDir::In => "in",
                     PortDir::Out => "out",
@@ -312,6 +333,10 @@ pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
                     PortDir::Linkage => "linkage",
                 },
             }),
+        };
+        match open.last_mut() {
+            Some((_, children)) => children.push(done),
+            None => top.push(done),
         }
     }
     /// How a value's bytes read: `layout` and the `width` it holds (elements, bits).
@@ -329,7 +354,7 @@ pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
             }),
         }
     }
-    fn ty(t: &SigType) -> Json {
+    fn ty_json(t: &SigType) -> Json {
         match t {
             SigType::Scalar(ScalarType::Enum(e)) => {
                 json!({"kind": "enum", "name": e.name, "literals": e.literals})
@@ -359,7 +384,7 @@ pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
         .map(|s| json!({"path": s.path, "elements": s.elems}))
         .collect();
     json!({
-        "scopes": h.roots.iter().map(node).collect::<Vec<_>>(),
+        "scopes": top,
         "skipped": skipped,
     })
 }

@@ -23,8 +23,8 @@ mod writer;
 pub mod interrupt;
 
 pub use model::{
-    Bounds, Dir, EnumType, Hierarchy, HierarchyBuilder, Node, ObjClass, PortDir, ScalarType, Scope,
-    ScopeKind, SigType, Signal, SignalId, Skipped,
+    Bounds, Dir, EnumType, HierItem, Hierarchy, HierarchyBuilder, ObjClass, PortDir, ScalarType,
+    ScopeKind, SigType, SignalId, Skipped,
 };
 pub use select::Selection;
 pub use sim::{Recorder, Sink, record, record_to};

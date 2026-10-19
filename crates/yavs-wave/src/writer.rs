@@ -83,15 +83,19 @@ enum Codec {
     Real,
 }
 
+/// The FST handle of a signal id (0: not declared) and its type's index in the hierarchy.
+#[derive(Clone, Copy, Default)]
 struct Slot {
     handle: u32,
-    codec: Codec,
+    ty: u32,
 }
 
 /// Records value changes into an FST file. Finishes the file on [`Self::finish`] or drop.
 pub struct WaveWriter {
     fst: Option<FstWriter<BufWriter<File>>>,
-    slots: Vec<Option<Slot>>,
+    slots: Vec<Slot>,
+    /// How each type of the hierarchy is declared and its values written.
+    plans: Vec<Option<Plan>>,
     enum_tables: HashMap<(String, Vec<String>), u32>,
     now: Option<u64>,
     scratch: String,
@@ -111,6 +115,7 @@ impl WaveWriter {
         let mut w = Self {
             fst: None,
             slots: Vec::new(),
+            plans: vec![None; h.types().len()],
             enum_tables: HashMap::new(),
             now: None,
             scratch: String::new(),
@@ -119,8 +124,26 @@ impl WaveWriter {
             since_check: 0,
             cfg,
         };
-        for n in &h.roots {
-            w.declare(&mut fst, n)?;
+        for it in h.items() {
+            match it {
+                HierItem::Scope {
+                    name,
+                    kind,
+                    component,
+                } => {
+                    let comp = (!component.is_empty()).then(|| component.to_string());
+                    fst.begin_scope(scope_type(kind), name, comp)?;
+                }
+                HierItem::Up => fst.end_scope()?,
+                HierItem::Signal {
+                    name,
+                    id,
+                    ty,
+                    ty_index,
+                    port,
+                    class,
+                } => w.declare_signal(&mut fst, name, id, (ty, ty_index), port, class)?,
+            }
         }
         let header = Header {
             version: w.cfg.version.clone(),
@@ -132,27 +155,16 @@ impl WaveWriter {
         Ok(w)
     }
 
-    fn declare(&mut self, fst: &mut FstWriter<BufWriter<File>>, n: &Node) -> Result<(), Error> {
-        match n {
-            Node::Scope(s) => {
-                let comp = (!s.component.is_empty()).then(|| s.component.clone());
-                fst.begin_scope(scope_type(s.kind), s.name.as_str(), comp)?;
-                for c in &s.children {
-                    self.declare(fst, c)?;
-                }
-                fst.end_scope()?;
-            }
-            Node::Signal(s) => self.declare_signal(fst, s)?,
-        }
-        Ok(())
-    }
-
     fn declare_signal(
         &mut self,
         fst: &mut FstWriter<BufWriter<File>>,
-        s: &Signal,
+        name: &str,
+        id: SignalId,
+        (ty, ty_index): (&SigType, usize),
+        port: PortDir,
+        class: ObjClass,
     ) -> Result<(), Error> {
-        let dir = match s.port {
+        let dir = match port {
             PortDir::None => VarDir::Implicit,
             PortDir::In => VarDir::Input,
             PortDir::Out => VarDir::Output,
@@ -160,18 +172,22 @@ impl WaveWriter {
             PortDir::Buffer => VarDir::Buffer,
             PortDir::Linkage => VarDir::Linkage,
         };
-        let idx = s.id.0 as usize;
+        let idx = id.0 as usize;
         if self.slots.len() <= idx {
-            self.slots.resize_with(idx + 1, || None);
+            self.slots.resize(idx + 1, Slot::default());
         }
-        let p = self.plan(fst, &s.ty)?;
-        let name = match &s.ty {
+        if self.plans[ty_index].is_none() {
+            self.plans[ty_index] = Some(self.plan(fst, ty)?);
+        }
+        let p = self.plans[ty_index].as_ref().expect("planned");
+        let name = match ty {
             SigType::Vector { bounds, .. } => {
-                format!("{}[{}:{}]", s.name, bounds.left, bounds.right)
+                format!("{name}[{}:{}]", bounds.left, bounds.right)
             }
-            _ => s.name.clone(),
+            _ => name.to_string(),
         };
-        if let Some(slot) = &self.slots[idx] {
+        let slot = self.slots[idx];
+        if slot.handle != 0 {
             fst.add_alias(p.var_type, dir, name, slot.handle)?;
             return Ok(());
         }
@@ -179,19 +195,19 @@ impl WaveWriter {
             fst.add_enum_table_ref(t)?;
         }
         let meta = SupplementalVariableMetadata::new(
-            p.desc,
-            match s.class {
+            p.desc.clone(),
+            match class {
                 ObjClass::Signal => SupplementalVarType::VhdlSignal,
                 ObjClass::Variable => SupplementalVarType::VhdlVariable,
                 ObjClass::Constant => SupplementalVarType::VhdlConstant,
             },
             p.data,
         );
-        let handle = fst.add_supplemental_variable(p.var_type, dir, name, p.geom, meta)?;
-        self.slots[idx] = Some(Slot {
+        let handle = fst.add_supplemental_variable(p.var_type, dir, name, p.geom.clone(), meta)?;
+        self.slots[idx] = Slot {
             handle,
-            codec: p.codec,
-        });
+            ty: ty_index as u32,
+        };
         Ok(())
     }
 
@@ -317,9 +333,13 @@ impl WaveWriter {
     /// selection (or never declared) are ignored. Emit every signal's initial value at the start
     /// time; undeclared initial values read as unknown.
     pub fn change(&mut self, time: u64, id: SignalId, value: &[u8]) -> Result<(), Error> {
-        let Some(Some(slot)) = self.slots.get(id.0 as usize) else {
+        let Some(slot) = self.slots.get(id.0 as usize).filter(|s| s.handle != 0) else {
             return Ok(());
         };
+        let codec = &self.plans[slot.ty as usize]
+            .as_ref()
+            .expect("a declared signal has a plan")
+            .codec;
         let fst = self.fst.as_mut().expect("writer finished");
         if self.now.is_some_and(|t| time > t) {
             self.since_check += 1;
@@ -335,7 +355,8 @@ impl WaveWriter {
         }
         self.now = Some(time);
         let bad = |what: &str| Error::Value(format!("signal {}: {what}", id.0));
-        let v = match &slot.codec {
+        let packed_buf;
+        let v = match codec {
             Codec::Logic {
                 chars,
                 width,
@@ -359,11 +380,13 @@ impl WaveWriter {
             }
             Codec::Enum { width } => {
                 let b: [u8; 4] = value.try_into().map_err(|_| bad("expected u32"))?;
-                packed(u32::from_le_bytes(b) as u64, *width)
+                packed_buf = packed(u32::from_le_bytes(b) as u64, *width);
+                packed_value(&packed_buf, *width)
             }
             Codec::Int { bits } => {
                 let b: [u8; 8] = value.try_into().map_err(|_| bad("expected i64"))?;
-                packed(i64::from_le_bytes(b) as u64, *bits)
+                packed_buf = packed(i64::from_le_bytes(b) as u64, *bits);
+                packed_value(&packed_buf, *bits)
             }
             Codec::Real => {
                 let b: [u8; 8] = value.try_into().map_err(|_| bad("expected f64"))?;
@@ -402,6 +425,7 @@ impl Drop for WaveWriter {
     }
 }
 
+#[derive(Clone)]
 struct Plan {
     var_type: VarType,
     geom: GeomEntry,
@@ -411,13 +435,16 @@ struct Plan {
     desc: String,
 }
 
-/// Low `bits` bits of `v`, MSB first.
-fn packed(v: u64, bits: u32) -> SignalValue<'static> {
+/// Low `bits` bits of `v`, MSB first, and the number of bytes they take.
+fn packed(v: u64, bits: u32) -> ([u8; 8], usize) {
     let shifted = if bits >= 64 { v } else { v << (64 - bits) };
-    let n = bits.div_ceil(8) as usize;
+    (shifted.to_be_bytes(), bits.div_ceil(8) as usize)
+}
+
+fn packed_value(p: &([u8; 8], usize), width: u32) -> SignalValue<'_> {
     SignalValue::PackedBits {
-        width: bits,
-        bits: Cow::Owned(shifted.to_be_bytes()[..n].to_vec()),
+        width,
+        bits: Cow::Borrowed(&p.0[..p.1]),
     }
 }
 

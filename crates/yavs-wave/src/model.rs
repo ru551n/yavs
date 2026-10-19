@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::select::Selection;
@@ -7,14 +8,14 @@ use crate::select::Selection;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SignalId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dir {
     To,
     Downto,
 }
 
 /// A VHDL range as written: `left to right` or `left downto right`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Bounds {
     pub left: i64,
     pub right: i64,
@@ -36,7 +37,7 @@ impl Bounds {
 }
 
 /// An enumeration type with literal names in original spelling, e.g. `'U'`, `IDLE`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct EnumType {
     pub name: String,
     pub literals: Vec<String>,
@@ -96,7 +97,7 @@ impl EnumType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ScalarType {
     Enum(Arc<EnumType>),
     /// `bits` is the width of the two's complement encoding (1..=64).
@@ -108,7 +109,7 @@ pub enum ScalarType {
     Time,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SigType {
     Scalar(ScalarType),
     /// One-dimensional array of a logic-like enum (bit/std_logic): a single multi-bit signal.
@@ -152,28 +153,53 @@ pub enum ScopeKind {
     Array,
 }
 
-#[derive(Clone, Debug)]
-pub struct Signal {
-    pub name: String,
-    pub id: SignalId,
-    pub ty: SigType,
-    pub port: PortDir,
-    pub class: ObjClass,
+/// A string in `Hierarchy::names`.
+#[derive(Clone, Copy, Debug)]
+struct Str {
+    at: u32,
+    len: u32,
 }
 
-#[derive(Clone, Debug)]
-pub struct Scope {
-    pub name: String,
-    pub kind: ScopeKind,
-    /// Entity/architecture/package name for instances, empty otherwise.
-    pub component: String,
-    pub children: Vec<Node>,
+/// One step of the depth-first walk of the hierarchy, as stored.
+#[derive(Clone, Copy, Debug)]
+enum Item {
+    Scope {
+        name: Str,
+        comp: Str,
+        kind: ScopeKind,
+    },
+    Signal {
+        name: Str,
+        id: SignalId,
+        /// Index into `Hierarchy::types`.
+        ty: u32,
+        port: PortDir,
+        class: ObjClass,
+    },
+    /// Closes the innermost open scope.
+    Up,
 }
 
-#[derive(Clone, Debug)]
-pub enum Node {
-    Scope(Scope),
-    Signal(Signal),
+/// One step of [`Hierarchy::items`].
+#[derive(Clone, Copy, Debug)]
+pub enum HierItem<'a> {
+    /// Opens a scope; its content follows, up to the matching [`HierItem::Up`].
+    Scope {
+        name: &'a str,
+        kind: ScopeKind,
+        /// Entity/architecture/package name for instances, empty otherwise.
+        component: &'a str,
+    },
+    Signal {
+        name: &'a str,
+        id: SignalId,
+        ty: &'a SigType,
+        /// Index of `ty` in [`Hierarchy::types`]: equal types have equal indices.
+        ty_index: usize,
+        port: PortDir,
+        class: ObjClass,
+    },
+    Up,
 }
 
 /// An array or memory that was left out because it exceeded the size cap (`elems`), or a
@@ -184,58 +210,124 @@ pub struct Skipped {
     pub elems: Option<u64>,
 }
 
+/// The declared design as a flat depth-first list (a design can have millions of signals):
+/// scopes, signals and the ends of scopes, with names in one string and the signal types
+/// shared. Build it with [`HierarchyBuilder`], walk it with [`Hierarchy::items`].
 #[derive(Clone, Debug, Default)]
 pub struct Hierarchy {
-    pub roots: Vec<Node>,
+    items: Vec<Item>,
+    names: String,
+    types: Vec<Arc<SigType>>,
     pub skipped: Vec<Skipped>,
 }
 
+impl Hierarchy {
+    fn text(&self, s: Str) -> &str {
+        &self.names[s.at as usize..(s.at + s.len) as usize]
+    }
+
+    /// Scopes and signals depth first, each scope closed by [`HierItem::Up`].
+    pub fn items(&self) -> impl Iterator<Item = HierItem<'_>> {
+        self.items.iter().map(|it| match *it {
+            Item::Scope { name, comp, kind } => HierItem::Scope {
+                name: self.text(name),
+                kind,
+                component: self.text(comp),
+            },
+            Item::Signal {
+                name,
+                id,
+                ty,
+                port,
+                class,
+            } => HierItem::Signal {
+                name: self.text(name),
+                id,
+                ty: &self.types[ty as usize],
+                ty_index: ty as usize,
+                port,
+                class,
+            },
+            Item::Up => HierItem::Up,
+        })
+    }
+
+    /// The distinct signal types, by `ty_index`.
+    pub fn types(&self) -> &[Arc<SigType>] {
+        &self.types
+    }
+}
+
 struct Frame {
-    /// `None`: this subtree is dropped (excluded or over the cap).
-    scope: Option<Scope>,
-    path: String,
+    /// `None`: this subtree is dropped (excluded or over the cap). Else the lengths of
+    /// `items` and `names` before the scope was declared, to take it back if it stays empty.
+    start: Option<(usize, usize)>,
+    /// The scope's name, for the paths of what is declared below it.
+    name: Box<str>,
 }
 
 /// Builds a [`Hierarchy`], applying the [`Selection`] as nodes are declared.
 pub struct HierarchyBuilder {
     sel: Selection,
-    roots: Vec<Node>,
+    /// The selection has patterns, so every declared path is matched.
+    globs: bool,
+    h: Hierarchy,
     stack: Vec<Frame>,
-    skipped: Vec<Skipped>,
+    /// Type indices by value, and by address for the types handed in as `Arc`s (kept alive
+    /// here, so an address is not reused for another type).
+    by_value: HashMap<Arc<SigType>, u32>,
+    by_addr: HashMap<*const SigType, (u32, Arc<SigType>)>,
 }
 
 impl HierarchyBuilder {
     pub fn new(sel: Selection) -> Self {
         Self {
+            globs: !sel.include.is_empty() || !sel.exclude.is_empty(),
             sel,
-            roots: Vec::new(),
+            h: Hierarchy::default(),
             stack: Vec::new(),
-            skipped: Vec::new(),
+            by_value: HashMap::new(),
+            by_addr: HashMap::new(),
         }
     }
 
+    /// The dotted path of `name` in the current scope.
     fn path_of(&self, name: &str) -> String {
-        match self.stack.last() {
-            Some(f) if !f.path.is_empty() => format!("{}.{name}", f.path),
-            _ => name.to_string(),
+        let mut p = String::new();
+        for f in &self.stack {
+            p.push_str(&f.name);
+            p.push('.');
         }
+        p.push_str(name);
+        p
     }
 
     fn dropped(&self) -> bool {
-        self.stack.last().is_some_and(|f| f.scope.is_none())
+        self.stack.last().is_some_and(|f| f.start.is_none())
+    }
+
+    fn put(&mut self, text: &str) -> Str {
+        let at = self.h.names.len() as u32;
+        self.h.names.push_str(text);
+        Str {
+            at,
+            len: text.len() as u32,
+        }
     }
 
     /// Open a scope. Always pair with [`Self::up`], also when the scope is dropped by the selection.
     pub fn scope(&mut self, name: &str, kind: ScopeKind, component: &str) {
-        let path = self.path_of(name);
-        let keep = !self.dropped() && !self.sel.excluded(&path);
-        let scope = keep.then(|| Scope {
-            name: name.into(),
-            kind,
-            component: component.into(),
-            children: Vec::new(),
+        let keep = !self.dropped() && !(self.globs && self.sel.excluded(&self.path_of(name)));
+        let start = keep.then(|| {
+            let start = (self.h.items.len(), self.h.names.len());
+            let (name, comp) = (self.put(name), self.put(component));
+            self.h.items.push(Item::Scope { name, comp, kind });
+            start
         });
-        self.stack.push(Frame { scope, path });
+        self.stack.push(Frame {
+            start,
+            name: name.into(),
+        });
     }
 
     /// Open an array scope of `len` elements; returns false if it is dropped (over the cap, or
@@ -243,15 +335,43 @@ impl HierarchyBuilder {
     pub fn array(&mut self, name: &str, len: u64) -> bool {
         self.scope(name, ScopeKind::Array, "");
         let f = self.stack.last_mut().expect("just pushed");
-        if f.scope.is_some() && len > self.sel.max_array_elems as u64 {
-            f.scope = None;
-            let path = f.path.clone();
-            self.skipped.push(Skipped {
+        if let Some((items, names)) = f.start
+            && len > self.sel.max_array_elems as u64
+        {
+            f.start = None;
+            self.h.items.truncate(items);
+            self.h.names.truncate(names);
+            let path = self.path_of_open();
+            self.h.skipped.push(Skipped {
                 path,
                 elems: Some(len),
             });
         }
-        self.stack.last().is_some_and(|f| f.scope.is_some())
+        !self.dropped()
+    }
+
+    /// The dotted path of the innermost open scope.
+    fn path_of_open(&self) -> String {
+        let names: Vec<&str> = self.stack.iter().map(|f| &*f.name).collect();
+        names.join(".")
+    }
+
+    /// The index of `ty` among the hierarchy's types.
+    fn intern(&mut self, ty: &Arc<SigType>) -> u32 {
+        if let Some((i, _)) = self.by_addr.get(&Arc::as_ptr(ty)) {
+            return *i;
+        }
+        let i = match self.by_value.get(ty) {
+            Some(&i) => i,
+            None => {
+                let i = self.h.types.len() as u32;
+                self.h.types.push(ty.clone());
+                self.by_value.insert(ty.clone(), i);
+                i
+            }
+        };
+        self.by_addr.insert(Arc::as_ptr(ty), (i, ty.clone()));
+        i
     }
 
     /// Declare a signal; returns false if the selection or the size cap drops it, so the caller
@@ -264,55 +384,72 @@ impl HierarchyBuilder {
         port: PortDir,
         class: ObjClass,
     ) -> bool {
+        self.signal_shared(name, id, &Arc::new(ty), port, class)
+    }
+
+    /// [`Self::signal`] for a type shared by many signals: declaring them is cheaper when
+    /// they hand in the same `Arc`.
+    pub fn signal_shared(
+        &mut self,
+        name: &str,
+        id: SignalId,
+        ty: &Arc<SigType>,
+        port: PortDir,
+        class: ObjClass,
+    ) -> bool {
         if self.dropped() {
             return false;
         }
-        let path = self.path_of(name);
-        if !self.sel.included(&path) || self.sel.excluded(&path) {
-            return false;
+        if self.globs {
+            let path = self.path_of(name);
+            if !self.sel.included(&path) || self.sel.excluded(&path) {
+                return false;
+            }
         }
-        if let SigType::Vector { bounds, .. } = &ty
+        if let SigType::Vector { bounds, .. } = &**ty
             && bounds.len() > self.sel.max_array_elems as u64
         {
-            self.skipped.push(Skipped {
+            let path = self.path_of(name);
+            self.h.skipped.push(Skipped {
                 path,
                 elems: Some(bounds.len()),
             });
             return false;
         }
-        let sig = Signal {
-            name: name.into(),
+        let ty = self.intern(ty);
+        let name = self.put(name);
+        self.h.items.push(Item::Signal {
+            name,
             id,
             ty,
             port,
             class,
-        };
-        self.push(Node::Signal(sig));
+        });
         true
     }
 
     /// A variable `name` that is left out because its bounds are not known before the
     /// simulation runs; listed in [`Hierarchy::skipped`] when the selection keeps it.
     pub fn unknown(&mut self, name: &str) {
-        let path = self.path_of(name);
-        if !self.dropped() && self.sel.included(&path) && !self.sel.excluded(&path) {
-            self.skipped.push(Skipped { path, elems: None });
+        if self.dropped() {
+            return;
         }
-    }
-
-    fn push(&mut self, node: Node) {
-        match self.stack.last_mut() {
-            Some(Frame { scope: Some(s), .. }) => s.children.push(node),
-            Some(_) => {}
-            None => self.roots.push(node),
+        let path = self.path_of(name);
+        if self.sel.included(&path) && !self.sel.excluded(&path) {
+            self.h.skipped.push(Skipped { path, elems: None });
         }
     }
 
     /// Close the innermost scope. Scopes left without any signal are removed.
     pub fn up(&mut self) {
         let f = self.stack.pop().expect("up without matching scope");
-        if let Some(s) = f.scope.filter(|s| !s.children.is_empty()) {
-            self.push(Node::Scope(s));
+        if let Some((items, names)) = f.start {
+            if self.h.items.len() == items + 1 {
+                self.h.items.truncate(items);
+                self.h.names.truncate(names);
+            } else {
+                self.h.items.push(Item::Up);
+            }
         }
     }
 
@@ -320,9 +457,77 @@ impl HierarchyBuilder {
         while !self.stack.is_empty() {
             self.up();
         }
-        Hierarchy {
-            roots: self.roots,
-            skipped: self.skipped,
-        }
+        self.h
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int() -> SigType {
+        SigType::Scalar(ScalarType::Integer {
+            name: "integer".into(),
+            bits: 32,
+        })
+    }
+
+    fn shape(h: &Hierarchy) -> Vec<String> {
+        h.items()
+            .map(|i| match i {
+                HierItem::Scope { name, .. } => format!("+{name}"),
+                HierItem::Signal { name, ty_index, .. } => format!("{name}:{ty_index}"),
+                HierItem::Up => "-".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn empty_scopes_and_capped_arrays_leave_nothing() {
+        let sel = Selection {
+            max_array_elems: 2,
+            ..Selection::default()
+        };
+        let mut b = HierarchyBuilder::new(sel);
+        let (cls, port) = (ObjClass::Signal, PortDir::None);
+        b.scope("top", ScopeKind::Instance, "e(a)");
+        b.scope("empty", ScopeKind::Block, "");
+        b.scope("inner", ScopeKind::Block, "");
+        b.up();
+        b.up();
+        assert!(!b.array("big", 3), "over the cap");
+        b.up();
+        assert!(b.array("small", 2));
+        assert!(b.signal("a", SignalId(0), int(), port, cls));
+        b.up();
+        assert!(b.signal("b", SignalId(1), int(), port, cls));
+        b.up();
+        let h = b.finish();
+        // Equal types share one index; the big array is listed as skipped.
+        assert_eq!(shape(&h), ["+top", "+small", "a:0", "-", "b:0", "-"]);
+        assert_eq!(h.types().len(), 1);
+        assert_eq!(
+            h.skipped,
+            [Skipped {
+                path: "top.big".into(),
+                elems: Some(3)
+            }]
+        );
+    }
+
+    #[test]
+    fn globs_drop_whole_scopes() {
+        let sel = Selection {
+            exclude: vec!["top.dbg".into()],
+            ..Selection::default()
+        };
+        let mut b = HierarchyBuilder::new(sel);
+        b.scope("top", ScopeKind::Instance, "");
+        b.scope("dbg", ScopeKind::Block, "");
+        assert!(!b.signal("x", SignalId(0), int(), PortDir::None, ObjClass::Signal));
+        b.up();
+        assert!(b.signal("y", SignalId(1), int(), PortDir::None, ObjClass::Signal));
+        let h = b.finish();
+        assert_eq!(shape(&h), ["+top", "y:0", "-"]);
     }
 }

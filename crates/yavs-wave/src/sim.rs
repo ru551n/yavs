@@ -185,6 +185,8 @@ pub fn record_to(
         pkg_vars: BTreeMap::new(),
         vpath: Vec::new(),
         paths: Paths::default(),
+        scalars: HashMap::new(),
+        vectors: HashMap::new(),
     };
     d.package_vars();
     for (i, s) in e.hier.scopes.iter().enumerate() {
@@ -657,7 +659,17 @@ struct Design<'a> {
     /// variable's entries so far.
     vpath: Vec<u32>,
     paths: Paths,
+    scalars: HashMap<ScalarKey, (Arc<SigType>, Conv)>,
+    vectors: HashMap<VectorKey, (Arc<SigType>, Conv)>,
 }
+
+type ScalarKey = (
+    yavs_sem::TypeId,
+    Elem,
+    bool,
+    Option<(yavs_sem::SubtypeId, Option<(i64, i64, bool)>)>,
+);
+type VectorKey = (yavs_sem::TypeId, yavs_sem::TypeId, bool, (i64, i64, bool));
 
 /// Where a node's values come from.
 #[derive(Clone, Copy)]
@@ -880,7 +892,7 @@ impl Design<'_> {
                 ..
             } => {
                 let (sty, conv) = self.scalar(*ty, *elem, res.is_some(), Some((*sub, *range)));
-                self.signal(name, sty, port, class, at, 1, conv);
+                self.signal(name, &sty, port, class, at, 1, conv);
             }
             Shape::Array {
                 ty,
@@ -902,17 +914,8 @@ impl Design<'_> {
                     if d.is_empty() {
                         return;
                     }
-                    let (SigType::Scalar(ScalarType::Enum(e)), conv) =
-                        self.scalar(*et, Elem::Logic, res.is_some() || whole.is_some(), None)
-                    else {
-                        unreachable!("logic scalars are enums")
-                    };
-                    let sty = SigType::Vector {
-                        elem: e,
-                        bounds: bounds(*d),
-                        type_name: Some(self.vector_name(*ty, res.is_some() || whole.is_some())),
-                    };
-                    self.signal(name, sty, port, class, at, d.len(), conv);
+                    let (sty, conv) = self.vector(*ty, *et, res.is_some() || whole.is_some(), *d);
+                    self.signal(name, &sty, port, class, at, d.len(), conv);
                     return;
                 }
                 let n = shape.len();
@@ -920,8 +923,13 @@ impl Design<'_> {
                     return;
                 }
                 if self.b.array(name, n) {
+                    let mut child = String::new();
                     for j in 0..n {
-                        let child = format!("{name}({})", index_image(dims, j));
+                        child.clear();
+                        child.push_str(name);
+                        child.push('(');
+                        index_image(dims, j, &mut child);
+                        child.push(')');
                         let at = self.elem(at, n, j);
                         self.node(elem, &child, at, port, class);
                         self.up_path(at);
@@ -936,7 +944,10 @@ impl Design<'_> {
                     let at = self.field(at, i as u64, skip);
                     self.node(f, fname.text.as_str(), at, port, class);
                     self.up_path(at);
-                    skip += f.leaves().len() as u32;
+                    // Only kernel signals are addressed by leaf.
+                    if matches!(at, At::Sig { .. }) {
+                        skip += f.leaves().len() as u32;
+                    }
                 }
                 self.b.up();
             }
@@ -950,7 +961,7 @@ impl Design<'_> {
     fn signal(
         &mut self,
         name: &str,
-        ty: SigType,
+        ty: &Arc<SigType>,
         port: PortDir,
         class: ObjClass,
         at: At,
@@ -958,7 +969,7 @@ impl Design<'_> {
         conv: Conv,
     ) {
         let id = SignalId(self.entries.len() as u32);
-        if !self.b.signal(name, id, ty, port, class) {
+        if !self.b.signal_shared(name, id, ty, port, class) {
             return;
         }
         let src = match at {
@@ -1053,8 +1064,54 @@ impl Design<'_> {
         }
     }
 
-    /// `decl`: the declared subtype and its bounds, which name and size integers.
+    /// [`Self::scalar_type`], made once per distinct arguments so that signals of one type
+    /// share it.
     fn scalar(
+        &mut self,
+        t: yavs_sem::TypeId,
+        elem: Elem,
+        resolved: bool,
+        decl: Option<(yavs_sem::SubtypeId, Option<yavs_elab::Bounds>)>,
+    ) -> (Arc<SigType>, Conv) {
+        let range = decl.map(|(st, r)| (st, r.map(|b| (b.left, b.right, b.dir == Direction::To))));
+        let key = (t, elem, resolved, range);
+        if let Some(c) = self.scalars.get(&key) {
+            return c.clone();
+        }
+        let (ty, conv) = self.scalar_type(t, elem, resolved, decl);
+        let c = (Arc::new(ty), conv);
+        self.scalars.insert(key, c.clone());
+        c
+    }
+
+    /// The type of a logic vector `ty` of `et` elements, made once per distinct arguments.
+    fn vector(
+        &mut self,
+        ty: yavs_sem::TypeId,
+        et: yavs_sem::TypeId,
+        resolved: bool,
+        d: yavs_elab::Bounds,
+    ) -> (Arc<SigType>, Conv) {
+        let key = (ty, et, resolved, (d.left, d.right, d.dir == Direction::To));
+        if let Some(c) = self.vectors.get(&key) {
+            return c.clone();
+        }
+        let (e, conv) = self.scalar(et, Elem::Logic, resolved, None);
+        let SigType::Scalar(ScalarType::Enum(e)) = &*e else {
+            unreachable!("logic scalars are enums")
+        };
+        let sty = SigType::Vector {
+            elem: e.clone(),
+            bounds: bounds(d),
+            type_name: Some(self.vector_name(ty, resolved)),
+        };
+        let c = (Arc::new(sty), conv);
+        self.vectors.insert(key, c.clone());
+        c
+    }
+
+    /// `decl`: the declared subtype and its bounds, which name and size integers.
+    fn scalar_type(
         &mut self,
         t: yavs_sem::TypeId,
         elem: Elem,
@@ -1165,9 +1222,18 @@ fn bounds(d: yavs_elab::Bounds) -> Bounds {
     }
 }
 
-/// `3` or `1,2`: the index values of row-major element `j` of an array with `dims`.
-fn index_image(dims: &[yavs_elab::Bounds], mut j: u64) -> String {
-    let mut ix = vec![0i64; dims.len()];
+/// `3` or `1,2`: the index values of row-major element `j` of an array with `dims`, appended
+/// to `out`.
+fn index_image(dims: &[yavs_elab::Bounds], mut j: u64, out: &mut String) {
+    use std::fmt::Write;
+    let mut ix = [0i64; 8];
+    let mut spill = Vec::new();
+    let ix: &mut [i64] = if dims.len() <= ix.len() {
+        &mut ix[..dims.len()]
+    } else {
+        spill.resize(dims.len(), 0);
+        &mut spill
+    };
     for (d, slot) in dims.iter().zip(ix.iter_mut()).rev() {
         let n = d.len();
         let p = (j % n) as i64;
@@ -1177,5 +1243,10 @@ fn index_image(dims: &[yavs_elab::Bounds], mut j: u64) -> String {
             Direction::Downto => d.left - p,
         };
     }
-    ix.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+    for (k, x) in ix.iter().enumerate() {
+        if k > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{x}");
+    }
 }

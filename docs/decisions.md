@@ -127,10 +127,13 @@ milestone users care about works.
   process's scope, non-protected shared variables in their region or package (a package
   without an elaborated scope gets `lib.pkg` scopes). Read once per time step (`NextTimeStep`,
   `EndOfSim`), when every process is suspended, through the observer accessors of #309
-  (`Hook::with_process`, `InterpProcess::var`, `yavs_interp::shared_var`) and decoded with
-  `yavs_elab::ir_decode`; nothing runs at a suspension, so a run without the option pays
-  nothing, and the file does not depend on `--threads`. A sub-element is written when it
-  differs from its last written value. Shapes are the elaborated ones
+  (`Hook::with_process`, `InterpProcess::var`, `yavs_interp::shared_var`); nothing runs at a
+  suspension, so a run without the option pays nothing, and the file does not depend on
+  `--threads`. A variable is first compared in place with its last raw value
+  (`InterpProcess::var_is`; a composite in a heap object whose write count, `Heap::stamp`, is
+  unchanged is not compared), and a changed one is read from its raw bytes at the places
+  `yavs_elab::leaf_locs` finds once per variable, only where the bytes differ from the value
+  before (#418). A sub-element is written when it differs from its last written value. Shapes are the elaborated ones
   (`Elaborated::var_shapes`, computed with the signals' `Model::shape` in the declaring
   region), so generic-dependent bounds and integer widths match signals'. A shape whose
   evaluation would call a function with side effects on package state is not computed (the

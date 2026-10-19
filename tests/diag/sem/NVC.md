@@ -62,6 +62,7 @@ The reference simulator (the primary reference). Every file the reference simula
 | `gen/nested_package_signal_in_process` | rejects @8 | rejects @9 | The reference simulator does not parse a package in a process at all (rejects at the package line); the second reference simulator rejects the signal (LRM 4.7, 11.3, #34). |
 | `gen/nested_generic_unused_generic` | accepts | accepts | yavs-only warning (W1501), as `gen/unused_generic_warning`. |
 | `gen/nested_packages_ok` | rejects @23 | accepts | The reference simulator instantiates a generic package declared in a declarative part only after the enclosing unit is analysed ("cannot be instantiated until its body has been analysed"); the LRM has no such rule (4.9), permissive, the second reference simulator accepts (#34, L81). |
+| `gen/nested_instance_body_variable_ok` | rejects @16 | accepts | As `gen/nested_packages_ok`: the reference simulator does not instantiate a generic package declared in an architecture. |
 | `grp/disconnect_ok` | rejects @17 | warns | LRM 7.4 is clear: `others` and `all` are signal list forms. The reference simulator does not parse them (#260, `disconnect-others`); the second reference simulator only warns about a hidden entity name. |
 | `grp/disconnect_all_ok` | rejects @12 | accepts | As `grp/disconnect_ok` (#260). |
 | `grp/group_ok` | crashes | rejects @16 | The reference simulator crashes on an attribute of a group (`group-attribute`). The second reference simulator rejects zero constituents for a `<>` entry (LRM silent, `group-template-box-empty`). |

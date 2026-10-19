@@ -873,8 +873,15 @@ impl Db {
         let inst = self.package_instance(scope, s, d, p)?;
         self.decls[d].kind = DeclKind::PackageInst(inst);
         self.declare(scope, d);
-        // ponytail: the visible part only; a shared variable of the body is E2001 in lowering.
-        let signal = self.decls_with_instances(s).into_iter().find(|&o| {
+        let mut objs = self.decls_with_instances(s);
+        // The body's objects too (4.9): the uncloned generic body is scanned, not the clone.
+        // ponytail: a nested generic package instantiated before its body is not checked.
+        if self.sequential_owner(scope).is_some()
+            && let Some(b) = self.generic_body_scope(inst)?
+        {
+            objs.extend(self.decls_with_instances(b));
+        }
+        let signal = objs.into_iter().find(|&o| {
             matches!(&self.decls[o].kind, DeclKind::Object(x)
                 if matches!(x.class, ObjClass::Signal | ObjClass::SharedVariable))
         });
@@ -1973,6 +1980,26 @@ impl Db {
     }
 
     // -- bodies ------------------------------------------------------------------------
+
+    /// The (uncloned) body region of the generic package `inst` instantiates, if it has one yet.
+    fn generic_body_scope(&mut self, inst: InstId) -> Result<Option<ScopeId>, Reported> {
+        let (g, span) = (
+            self.insts[inst].generic,
+            self.decls[self.insts[inst].site].span,
+        );
+        match &self.decls[g].kind {
+            DeclKind::Unit(u) => {
+                let (lib, key) = (self.units[*u].lib, UnitKey::body(self.units[*u].name.key));
+                if self.locate(lib, key).is_none() && !self.libs[lib].units.contains_key(&key) {
+                    return Ok(None);
+                }
+                let b = self.load_unit(lib, key, Some(span))?;
+                Ok(Some(self.units[b].scope))
+            }
+            DeclKind::Package { body, .. } => Ok(*body),
+            _ => Ok(None),
+        }
+    }
 
     /// The cloned body of an instance (lazy, 5.1): the package body region of a
     /// package instance (`None` when the generic package has no body), or the

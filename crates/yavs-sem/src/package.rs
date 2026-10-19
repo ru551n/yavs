@@ -112,7 +112,7 @@ impl Db {
     }
 
     /// The process or subprogram `scope` is in, if any.
-    fn sequential_owner(&self, mut scope: ScopeId) -> Option<ScopeId> {
+    pub(crate) fn sequential_owner(&self, mut scope: ScopeId) -> Option<ScopeId> {
         loop {
             if matches!(
                 self.scopes[scope].kind,

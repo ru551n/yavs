@@ -58,8 +58,15 @@ pub enum Phase {
     NextTimeStep,
     /// Every cycle (after `NextTimeStep` at a new time), before its wake-ups and update.
     NextCycle,
+    /// Every cycle, before its resumed non-postponed processes run (#317).
+    StartOfProcesses,
+    /// Every cycle, after its non-postponed processes ran: what they scheduled is not yet
+    /// applied (#317).
+    EndOfProcesses,
     /// No further delta is scheduled at this time; ops queued here create one.
     LastKnownDelta,
+    /// Resumed postponed processes are about to run (only when there are any, #317).
+    StartOfPostponed,
     /// After postponed processes; the time step is complete.
     EndOfTimeStep,
     EndOfSim,
@@ -918,13 +925,18 @@ impl SimControl {
 
         // e: run the resumed non-postponed processes.
         let ready = std::mem::take(&mut self.ready);
+        self.phase(Phase::StartOfProcesses);
         self.run_batch(ready, false, false)?;
+        self.phase(Phase::EndOfProcesses);
 
         // f/g: at the last delta of this time, postponed processes.
         if self.next_time() != Some(self.now) {
             self.phase(Phase::LastKnownDelta);
             if self.next_time() != Some(self.now) {
                 let postponed = std::mem::take(&mut self.postponed);
+                if !postponed.is_empty() {
+                    self.phase(Phase::StartOfPostponed);
+                }
                 self.run_batch(postponed, true, false)?;
                 self.phase(Phase::EndOfTimeStep);
             }
@@ -1431,6 +1443,9 @@ impl SimControl {
     }
 
     fn phase(&mut self, phase: Phase) {
+        if self.observers.is_empty() {
+            return;
+        }
         self.notify(|o, h| o.phase(h, phase));
     }
 

@@ -94,9 +94,12 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    So an uncollapsed port hierarchy of any depth settles in the same delta as its source.
 3. Publish value changes on the observer bus (signal id order, then range order), then resume
    processes whose waited range overlaps a changed range.
-4. Run resumed non-postponed processes (parallel, below).
+4. Run resumed non-postponed processes (parallel, below), between the `StartOfProcesses` and
+   `EndOfProcesses` callbacks (every cycle, #317; at `EndOfProcesses` what the processes
+   scheduled is not applied yet).
 5. If no delta follows: `LastKnownDelta` callback (it may queue deposits, which create a delta);
-   if still none, run resumed postponed processes and call `EndOfTimeStep`. A postponed process
+   if still none, run resumed postponed processes (after the `StartOfPostponed` callback, only
+   when there are any) and call `EndOfTimeStep`. A postponed process
    that schedules anything at `now` is an `ErrorKind::PostponedDelta`.
 
 The run starts with the `StartOfSim` callback, runs every process once (initialization) and

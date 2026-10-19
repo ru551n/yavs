@@ -269,8 +269,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `vhpi_control(vhpiStop | vhpiFinish)` ends the run between cycles with status 0 (prints the
   same `STOP`/`FINISH called` note as `std.env`); other commands are `W0904`. Simulation
   callbacks (#272): `vhpiCbEndOfInitialization` after every process ran once,
-  `vhpiCb[Rep]NextTimeStep`, `vhpiCb[Rep]StartOfNextCycle`, `vhpiCb[Rep]LastKnownDeltaCycle`
-  (the read-write phase), `vhpiCb[Rep]EndOfTimeStep` (the read-only phase, after postponed
+  `vhpiCb[Rep]NextTimeStep`, `vhpiCb[Rep]StartOfNextCycle`, `vhpiCb[Rep]StartOfProcesses`, `vhpiCb[Rep]EndOfProcesses` (#317), `vhpiCb[Rep]LastKnownDeltaCycle`
+  (the read-write phase), `vhpiCb[Rep]StartOfPostponed`, `vhpiCb[Rep]EndOfTimeStep` (the read-only phase, after postponed
   processes) and `vhpiCb[Rep]AfterDelay`. VHPI times (`vhpi_get_time`, callback delays, the
   `time` field passed to callbacks) count in units of `--resolution`, which is what
   `vhpi_get_phys(vhpiResolutionLimitP)` returns; `vhpi_get_time` gives the delta count as `cycles`. Plugins see

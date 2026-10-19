@@ -111,7 +111,10 @@ PLUGIN_EXPORT void order(void) {
   reg(vhpiCbNextTimeStep, 0, say, "next_time_step_once", 0);
   reg(vhpiCbRepNextTimeStep, 0, say, "next_time_step", vhpiReturnCb);
   reg(vhpiCbRepStartOfNextCycle, 0, say, "next_cycle", 0);
+  reg(vhpiCbRepStartOfProcesses, 0, say, "start_procs", 0);
+  reg(vhpiCbRepEndOfProcesses, 0, say, "end_procs", 0);
   reg(vhpiCbRepLastKnownDeltaCycle, 0, lkd, "read_write", 0);
+  reg(vhpiCbRepStartOfPostponed, 0, say, "start_postponed", 0);
   reg(vhpiCbRepEndOfTimeStep, 0, eots, "read_only", 0);
   reg(vhpiCbEndOfSimulation, 0, end_of_sim, "end", 0);
 }

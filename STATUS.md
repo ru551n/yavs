@@ -597,7 +597,8 @@ fires start/end of simulation (and start of initialization) callbacks through a 
 
 Done (#272, object-independent part; #123): simulation-phase and after-delay callbacks through
 `yavs_vhpi::VhpiObserver` and two new kernel phases (`EndOfInit`, `NextCycle`): start/end of
-initialization, next time step, start of next cycle, last known delta cycle (read-write), end
+initialization, next time step, start of next cycle, start and end of processes and start of
+postponed (kernel phases `StartOfProcesses`, `EndOfProcesses`, `StartOfPostponed`, #317), last known delta cycle (read-write), end
 of time step (read-only), after delay, each with its `Rep` form; `vhpi_remove_cb`,
 `vhpi_enable_cb`, `vhpi_disable_cb`, `vhpi_get_cb_info` (removing a matured callback is legal);
 disabled callbacks sit outside the per-phase sets and cost nothing per cycle. `vhpi_get_time`

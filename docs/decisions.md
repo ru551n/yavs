@@ -234,7 +234,10 @@ milestone users care about works.
   included). API misuse (NULL arguments, stale or wrong handles) is also reported on stderr every
   time as `W0903`; calls yavs does not implement yet as `W0904`, once per distinct message.
 - **Simulation callbacks (#272):** a kernel `Observer` in the crate (`VhpiObserver`) runs them;
-  the kernel got two phases for it, `EndOfInit` and `NextCycle`. IEEE VHPI has no read-write or
+  the kernel got two phases for it, `EndOfInit` and `NextCycle`, and three more for #317:
+  `StartOfProcesses` and `EndOfProcesses` around every cycle's processes (both references with
+  VHPI fire end of processes there; one also start of processes) and `StartOfPostponed` (read-only,
+  only when postponed processes run, as the one reference that accepts it fires it). IEEE VHPI has no read-write or
   read-only synch reason: the read-write phase is `vhpiCb[Rep]LastKnownDeltaCycle`
   (`Phase::LastKnownDelta`, puts there make one more delta) and the read-only phase
   `vhpiCb[Rep]EndOfTimeStep` (`Phase::EndOfTimeStep`, after postponed processes), which is what

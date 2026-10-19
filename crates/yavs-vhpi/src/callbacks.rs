@@ -109,12 +109,18 @@ fn split(reason: i32) -> Option<(i32, bool)> {
         | vhpiCbAfterDelay
         | vhpiCbNextTimeStep
         | vhpiCbStartOfNextCycle
+        | vhpiCbStartOfProcesses
+        | vhpiCbEndOfProcesses
         | vhpiCbLastKnownDeltaCycle
+        | vhpiCbStartOfPostponed
         | vhpiCbEndOfTimeStep => (reason, false),
         vhpiCbRepAfterDelay => (vhpiCbAfterDelay, true),
         vhpiCbRepNextTimeStep => (vhpiCbNextTimeStep, true),
         vhpiCbRepStartOfNextCycle => (vhpiCbStartOfNextCycle, true),
+        vhpiCbRepStartOfProcesses => (vhpiCbStartOfProcesses, true),
+        vhpiCbRepEndOfProcesses => (vhpiCbEndOfProcesses, true),
         vhpiCbRepLastKnownDeltaCycle => (vhpiCbLastKnownDeltaCycle, true),
+        vhpiCbRepStartOfPostponed => (vhpiCbStartOfPostponed, true),
         vhpiCbRepEndOfTimeStep => (vhpiCbEndOfTimeStep, true),
         _ => return None,
     })

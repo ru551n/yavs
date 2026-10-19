@@ -78,12 +78,18 @@ impl yavs_kernel::Observer for VhpiObserver {
             Phase::EndOfInit => &[vhpiCbEndOfInitialization],
             Phase::NextTimeStep => &[vhpiCbNextTimeStep],
             Phase::NextCycle => &[vhpiCbStartOfNextCycle],
+            Phase::StartOfProcesses => &[vhpiCbStartOfProcesses],
+            Phase::EndOfProcesses => &[vhpiCbEndOfProcesses],
             Phase::LastKnownDelta => &[vhpiCbLastKnownDeltaCycle],
+            Phase::StartOfPostponed => &[vhpiCbStartOfPostponed],
             Phase::EndOfTimeStep => &[vhpiCbEndOfTimeStep],
             Phase::EndOfSim => &[vhpiCbEndOfSimulation],
         };
         // The read-only phases: nothing may change the design any more at this time.
-        let read_only = matches!(phase, Phase::EndOfTimeStep | Phase::EndOfSim);
+        let read_only = matches!(
+            phase,
+            Phase::StartOfPostponed | Phase::EndOfTimeStep | Phase::EndOfSim
+        );
         for &r in reasons {
             Self::dispatch(hook, read_only, |s| s.cbs.due(r));
         }

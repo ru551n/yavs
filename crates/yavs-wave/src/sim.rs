@@ -279,7 +279,12 @@ impl Observer for Recorder {
                 st.flush(|r| hook.value(r));
                 st.sample_vars();
             }
-            Phase::EndOfInit | Phase::NextCycle | Phase::LastKnownDelta => {}
+            Phase::EndOfInit
+            | Phase::NextCycle
+            | Phase::StartOfProcesses
+            | Phase::EndOfProcesses
+            | Phase::LastKnownDelta
+            | Phase::StartOfPostponed => {}
         }
         if st.error.is_some() {
             hook.stop();

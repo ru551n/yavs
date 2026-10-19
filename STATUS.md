@@ -192,7 +192,7 @@ case, aggregate targets, every wait form; subprograms with signal parameters of 
 (arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal of several parts, also in different signals and field by field for records, is a reference of several parts, #71); parameters associated through conversions (copy-in through the actual part, copy-out through the formal part, #229); nested names of signals of arrays of arrays
 (`m(i)(j)`, `m(i)(7 downto 4)`, `g(i, j)`, below a slice `m(0 to 1)(0)`, through subtype
 aliases) as targets, actuals and sensitivity (#89, #230); 2008 array-valued pieces of
-positional aggregates as values and targets, and of named aggregates and arrays with open
+positional aggregates as values and targets (range choices in targets are `E1333`, #244), and of named aggregates and arrays with open
 element subtypes as values (#89, #230); `&` on arrays of arrays and of records (#234); package
 objects at run time (`Lowerer::package`: constants evaluated once, composites with run-time
 bounds too, shared protected variables, package signals and files); composite architecture

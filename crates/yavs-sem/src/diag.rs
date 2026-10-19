@@ -69,6 +69,7 @@ codes! {
     CHAR_NOT_IN_TYPE = "E1330", "A character of a string literal is not a literal of the element type.";
     BITSTRING_DIGITS = "E1331", "Adjusting the length of a bit string literal would drop significant digits (non-zero for unsigned, differing from the sign for signed), or an empty signed bit string cannot be extended.";
     BAD_LITERAL = "E1332", "A literal is malformed in a way the lexer accepts: a digit outside its base, a base outside 2 to 16, a negative exponent in an integer literal, a non-digit in a decimal bit string, or a physical literal with a unit the type does not have.";
+    AGG_RANGE_TARGET = "E1333", "A range choice in an aggregate target (`(5 downto 2 => a, 1 downto 0 => b) := v;`) is not supported: the LRM does not say how it maps the value's elements. Use element choices or positional associations, or assign to slices.";
     NOT_BOOLEAN = "E1340", "A condition must be BOOLEAN, or of a type with a visible `??` operator.";
     AMBIGUOUS_CONDITION = "E1341", "More than one `??` operator applies to this condition.";
     BAD_CONVERSION = "E1350", "A type conversion is only legal between closely related types.";

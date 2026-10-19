@@ -28,7 +28,7 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic; gentypes: concurrent statements in the clone, `seed_type` (#75); subhdr: header generic maps through `subprogram_instance` (#227, done); namedret: named return values in instances #239; pkggen: `instance_regions`, `package_regions`, `decls_with_instances` for M2 (#101) |
 | `generic/entity.rs` | design entities with generic types, subprograms or packages cloned per map (`Db::instantiate_entity`, 5.3) | S4 | owner: gentypes (#75); gencomp: components, blocks, cloned configuration specifications (#222) |
 | `mangle.rs` | mangled names (5.3), NATIVE.md symbols (2.10) | S2, S4 | owner: implicit |
-| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33; gencomp: generic blocks queued for `instantiate_blocks` (#222); namedret: `return when c;` #239 |
+| `stmt.rs` | sequential (S2) and concurrent (S5) statements | S2, S5 | owner: stmt; sem08: corpus false positives #167-#170; s7left: `unaffected` and conditional `return` #33; gencomp: generic blocks queued for `instantiate_blocks` (#222); namedret: `return when c;` #239; decisions1: range choices in aggregate targets, `reject_range_choices` (#244) |
 | `lsp.rs` | longest static prefixes, drivers, `all` (6.9) | S5 | owner: stmt; sem08: corpus false positives #167-#170 |
 | `alias.rs` | aliases, signatures (6.2, 6.4) | S2 (std aliases), S6 | owner: s6; semalias: alias negative suite #46 |
 | `external.rs` | external names (6.1) | S6 | owner: s6 |

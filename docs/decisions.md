@@ -849,8 +849,10 @@ which tools/difftest parses.
   match the range. An element subtype the type leaves open takes its constraint from a fully
   constrained context, else from the first value, and every value is checked against it.
   Pieces exist in 1-D aggregates only (LRM 9.3.3.3; sem rejects them in more dimensions, as
-  the reference simulators do). Named pieces in aggregate *targets* stay E2001: the LRM is
-  unclear there and the reference simulators disagree (one rejects range choices in targets).
+  the reference simulators do). A range choice in an aggregate *target* is `E1333` at analysis
+  (#244, user, 2026-10-19): the LRM does not say how it maps the value's elements and the
+  reference simulators disagree (one rejects it, the other takes the direction from the first
+  choice). Positional and element-choice targets stay legal (lrm-checks L68).
 - **`&` on arrays of composites** (#234, LRM 9.2.5): arrays of arrays and of records
   concatenate like arrays of scalars (bounds from the index subtype, two null operands give
   the right operand), each element copied as a row with the piece copy shared with

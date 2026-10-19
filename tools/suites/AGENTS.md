@@ -16,6 +16,7 @@ change a driver that simulates an external library's own testbenches on yavs.
 
 | File | What |
 |---|---|
+| `pro.py [--std 2008\|2019] [--out DIR] [--yavs BIN] [--jobs N] [--filter SUBSTR] [--list] [--analyze-only]` | The `osvvm-libraries` corpus (#276): the library's `.pro` build and test scripts read with a Tcl subset (an unknown command, variable or condition is an error naming file and line); `CoSim` and `CoSimPCIe` are skipped (native host). All files are analyzed first in script order (a private library directory per test suite), then the tests run (4 at most). Pass = exit 0 and a `DONE  PASSED` line. Writes `DIR/results.tsv`, `DIR/run/<n>/log.txt`, `DIR/analyze.log`; the generated test-case package goes to `DIR/gen` |
 | `uvvm.py [--out DIR] [--yavs BIN] [-j N] [--mem M] [--only COMP,...] [--list] [--private-copies] [--no-wrap]` | The `uvvm` corpus: every component's maintenance testbenches. Prints pass / fail / skip per component, writes `DIR/results.tsv` and `DIR/<component>/<n>/log.txt` |
 
 ## 3. Design decisions that bind this module
@@ -51,4 +52,4 @@ python3 -I tools/suites/uvvm.py --yavs target/release/yavs --out ~/.cache/yavs-u
 
 ## 6. Coordination
 
-- #277 (this driver), #115 (parent). Root causes found: #285 to #290 (see `STATUS.md`).
+- #277 (`uvvm.py`), #276 (`pro.py`), #115 (parent). Root causes found: #285 to #290, #291 to #297 (see `STATUS.md`).

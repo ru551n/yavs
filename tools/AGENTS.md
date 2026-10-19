@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
 `tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
-`tools/difftest/AGENTS.md` (differential simulation corpus).
+`tools/difftest/AGENTS.md` (differential simulation corpus) and `tools/suites/AGENTS.md`.
 
 ## 1. Purpose and boundaries
 

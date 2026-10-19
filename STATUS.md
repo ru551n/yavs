@@ -70,6 +70,26 @@ Without `--private-copies`, 7 runs (the uart testbenches) fail in analysis on #2
 No run is over 5 minutes (none reaches simulation). The generated-VIP tests of the framework
 component (generator output compiled and simulated) are not run by the driver.
 
+### Verification library: its own `.pro` regression (#276)
+
+`tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
+521 files in script order and runs each test (`yavs run`, release build of main at 9c853ae6, 4 in parallel). Pass = exit 0 and the
+library's own `DONE PASSED` summary line. 2008: 3 of 314 tests pass; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run. Every failure
+ends at elaboration, so nothing past it is measured yet. 2019: the same, plus `DynamicVectorGenericPkg` (#30) and `file_open` with `APPEND_MODE` (#297); 0 pass.
+
+| Test suite | Pass | Fail | First root cause (issues) |
+|---|---|---|---|
+| AddressBusTransactionPkg, AddressBusTransactionArrayPkg | 0 | 84 | `'range` of a package signal in a port subtype #294 |
+| Axi4Full | 0 | 72 | deferred constant as a component generic default #295 |
+| AxiStream | 0 | 68 | user resolution on a `std_ulogic` subtype #293 (31), no diagnostic after an alias of a port record element #292 (25), alias of a variable slice #296 (12) |
+| Axi4Lite, DpRam, Ethernet, Spi, UART, VideoBus | 0 | 48 | #293 |
+| StreamTransactionPkg, StreamTransactionArrayPkg | 0 | 28 | #293 (24), #292 (4) |
+| InterruptHandler_Gen, TbAxi4_MultipleMemory | 0 | 8 | #294 (7), #295 (1) |
+| Wishbone | 0 | 3 | #296 |
+| ModelParams, ModelParams_PT | 3 | 0 | none |
+
+Default binding of a component to an entity in the component package's library (#291) is warned about in 269 of the 314 runs.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

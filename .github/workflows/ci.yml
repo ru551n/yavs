@@ -93,11 +93,8 @@ jobs:
           }
           # llvm-sys links the system libs as `static=`; rustc then needs to find them on a -L path,
           # so copy the SDK import libs next to the LLVM libs (the cache holds only the stub above).
-          foreach ($l in 'psapi','shell32','ole32','uuid','advapi32','ws2_32','ntdll') {
-            $f = ($env:LIB -split ';' | ForEach-Object { Join-Path $_ "$l.lib" } | Where-Object { Test-Path $_ } | Select-Object -First 1)
-            if (-not $f) { throw "$l.lib not found in LIB" }
-            Copy-Item $f C:\llvm\lib
-          }
+          $um = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Lib\*\um\x64' | Sort-Object FullName | Select-Object -Last 1
+          foreach ($l in 'psapi','shell32','ole32','uuid','advapi32','ws2_32','ntdll') { Copy-Item "$($um.FullName)\$l.lib" C:\llvm\lib }
           "LLVM_SYS_211_PREFIX=C:\llvm" >> $env:GITHUB_ENV
           "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
         env:

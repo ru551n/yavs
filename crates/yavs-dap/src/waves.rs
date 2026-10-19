@@ -3,7 +3,8 @@
 //! time step as `--wave` writes; this module is its [`Sink`]. Changes of completed time steps
 //! are collected into a batch, sent as a `yavs/waves` event once `flushMs` have passed or
 //! [`BATCH_BYTES`] are pending, and always before `stopped`, `exited` and the answer to
-//! `yavs/waveUnsubscribe`. Values are text, as the Variables view shows them.
+//! `yavs/waveUnsubscribe`. Values are base64 of the recorder's value bytes (the layout the FST
+//! path gets, `yavs_wave` crate docs); the subscribe response says how to decode each id.
 //!
 //! Batches go through a bounded queue to a sender thread, so a slow client never blocks the
 //! simulation: when the queue is full, the newest batch is merged into the last one, keeping
@@ -147,17 +148,14 @@ pub(crate) fn sender(stream: Arc<Stream>, write: impl Fn()) {
     }
 }
 
-/// The recorder's sink: values as text, by the declared types of the hierarchy.
+/// The recorder's sink: values as base64 of the bytes the recorder gives.
 struct StreamSink {
     stream: Arc<Stream>,
-    types: Vec<Option<SigType>>,
 }
 
 impl Sink for StreamSink {
     fn change(&mut self, time: u64, id: SignalId, value: &[u8]) -> Result<(), Error> {
-        let ty = self.types.get(id.0 as usize).and_then(Option::as_ref);
-        let ty = ty.ok_or_else(|| Error::Value(format!("signal {}: not declared", id.0)))?;
-        let text = text(ty, value).ok_or_else(|| Error::Value(format!("signal {}", id.0)))?;
+        let text = base64(value);
         let mut p = self.stream.lock();
         p.batch.from.get_or_insert(time);
         p.bytes += text.len() + 16;
@@ -191,29 +189,14 @@ pub(crate) struct Sub {
     started: bool,
 }
 
-/// A recorder for `h`'s hierarchy streaming into `stream`, sending batches every `every`.
-pub(crate) fn sink(stream: &Arc<Stream>, h: &Hierarchy, every: Duration) -> Box<dyn Sink> {
-    fn walk(n: &Node, types: &mut Vec<Option<SigType>>) {
-        match n {
-            Node::Scope(s) => s.children.iter().for_each(|c| walk(c, types)),
-            Node::Signal(s) => {
-                let i = s.id.0 as usize;
-                if types.len() <= i {
-                    types.resize(i + 1, None);
-                }
-                types[i] = Some(s.ty.clone());
-            }
-        }
-    }
-    let mut types = Vec::new();
-    h.roots.iter().for_each(|n| walk(n, &mut types));
+/// A sink streaming into `stream`, sending batches every `every`.
+pub(crate) fn sink(stream: &Arc<Stream>, every: Duration) -> Box<dyn Sink> {
     let mut p = stream.lock();
     p.every = every;
     p.last = Instant::now();
     drop(p);
     Box::new(StreamSink {
         stream: stream.clone(),
-        types,
     })
 }
 
@@ -269,34 +252,23 @@ impl Observer for Tap {
     }
 }
 
-/// A value in the byte layout of its type (`yavs_wave` crate docs) as the Variables view
-/// writes it.
-fn text(ty: &SigType, b: &[u8]) -> Option<String> {
-    let i64_of = |b: &[u8]| b.try_into().ok().map(i64::from_le_bytes);
-    Some(match ty {
-        SigType::Scalar(ScalarType::Enum(e)) => {
-            let p = u32::from_le_bytes(b.try_into().ok()?);
-            e.literals.get(p as usize)?.clone()
-        }
-        SigType::Scalar(ScalarType::Integer { .. }) => i64_of(b)?.to_string(),
-        SigType::Scalar(ScalarType::Time) => format!("{} fs", i64_of(b)?),
-        SigType::Scalar(ScalarType::Real) => f64::from_le_bytes(b.try_into().ok()?).to_string(),
-        SigType::Vector { elem, .. } => {
-            let lits: Option<Vec<&str>> = b
-                .iter()
-                .map(|&p| elem.literals.get(p as usize).map(String::as_str))
-                .collect();
-            let lits = lits?;
-            let chars: Option<String> = lits
-                .iter()
-                .map(|l| l.strip_prefix('\'')?.strip_suffix('\''))
-                .collect();
-            match chars {
-                Some(s) => format!("\"{}\"", s.replace('"', "\"\"")),
-                None => format!("({})", lits.join(", ")),
+/// Standard base64 with padding.
+fn base64(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
             }
         }
-    })
+    }
+    out
 }
 
 /// The subscribe response: the recorded hierarchy, as `--wave` declares it in the file.
@@ -325,6 +297,7 @@ pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
                 "name": s.name,
                 "id": s.id.0,
                 "type": ty(&s.ty),
+                "encoding": encoding(&s.ty),
                 "class": match s.class {
                     ObjClass::Signal => "signal",
                     ObjClass::Variable => "variable",
@@ -338,6 +311,21 @@ pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
                     PortDir::Buffer => "buffer",
                     PortDir::Linkage => "linkage",
                 },
+            }),
+        }
+    }
+    /// How a value's bytes read: `layout` and the `width` it holds (elements, bits).
+    fn encoding(t: &SigType) -> Json {
+        match t {
+            SigType::Scalar(ScalarType::Enum(_)) => json!({"layout": "u32le", "width": 1}),
+            SigType::Scalar(ScalarType::Integer { bits, .. }) => {
+                json!({"layout": "i64le", "width": bits})
+            }
+            SigType::Scalar(ScalarType::Real) => json!({"layout": "f64le", "width": 64}),
+            SigType::Scalar(ScalarType::Time) => json!({"layout": "i64le", "width": 64}),
+            SigType::Vector { bounds, .. } => json!({
+                "layout": "u8-per-element",
+                "width": bounds.left.abs_diff(bounds.right) + 1,
             }),
         }
     }
@@ -377,23 +365,12 @@ pub(crate) fn hierarchy(h: &Hierarchy) -> Json {
 }
 
 #[test]
-fn values_as_text() {
-    use yavs_wave::{Bounds, EnumType};
-    let v = SigType::Vector {
-        elem: EnumType::std_logic(),
-        bounds: Bounds {
-            left: 3,
-            right: 0,
-            dir: Dir::Downto,
-        },
-        type_name: None,
-    };
-    assert_eq!(text(&v, &[2, 3, 0, 4]).as_deref(), Some("\"01UZ\""));
-    let e = SigType::Scalar(ScalarType::Enum(EnumType::new("s", &["IDLE", "RUN"])));
-    assert_eq!(text(&e, &1u32.to_le_bytes()).as_deref(), Some("RUN"));
-    let t = SigType::Scalar(ScalarType::Time);
-    assert_eq!(text(&t, &5i64.to_le_bytes()).as_deref(), Some("5 fs"));
-    assert_eq!(text(&t, &[0]), None);
+fn base64_pads() {
+    assert_eq!(base64(&[]), "");
+    assert_eq!(base64(b"f"), "Zg==");
+    assert_eq!(base64(b"fo"), "Zm8=");
+    assert_eq!(base64(b"foo"), "Zm9v");
+    assert_eq!(base64(&[2, 3, 0, 4]), "AgMABA==");
 }
 
 #[test]

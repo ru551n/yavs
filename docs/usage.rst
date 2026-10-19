@@ -569,7 +569,8 @@ over a port.
 (and variables) with the globs and limits of ``--wave-include``, ``--wave-exclude``,
 ``--wave-max-array`` and ``--wave-variables`` and answers with the recorded hierarchy, as the
 waveform file declares it. From then on ``yavs/waves`` events carry the final value of every
-changed signal per time step, as text like the Variables view, sent at least every
+changed signal per time step, as base64 of the value bytes (the hierarchy gives each signal's
+``encoding`` and type, so a client can decode them), sent at least every
 ``flushMs`` (default 100) milliseconds and always before a stop or the end, so the waves reach
 the stop time. A slow client never holds up the simulation: if it falls behind, batches are
 merged and only the last change of each value in them is kept. ``yavs/waveUnsubscribe`` ends

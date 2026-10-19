@@ -1451,8 +1451,8 @@ fn wave_subscribe(sh: &Shared, req: &Json) {
     let mut cur = sh.lock_wave();
     cur.take();
     sh.stream.push();
-    let r = yavs_wave::record_to(&sh.db, &sh.elab, sel, built, |h| {
-        Ok(waves::sink(&sh.stream, h, every))
+    let r = yavs_wave::record_to(&sh.db, &sh.elab, sel, built, |_| {
+        Ok(waves::sink(&sh.stream, every))
     });
     match r {
         Ok((rec, h)) => {

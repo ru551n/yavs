@@ -1647,12 +1647,16 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Live waves are a second sink of the `--wave` recorder** (#325): `yavs/waveSubscribe` builds a
   `yavs_wave::Recorder` (`record_to`, a `Sink` beside the FST `WaveWriter`) for the client's
   selection, so the stream has the hierarchy, selection rules, final value per time step and
-  entry order of the file. Values go out as text (as the Variables view and the value parser
-  write them), not the recorder's bytes. Why: one value syntax across the protocol and readable
-  transcripts; the subscribe response gives each value's type, which is all a viewer needs to
-  convert. Batches go through a bounded queue and are merged when it is full (only the last
-  change of each value kept, `merged`), so a slow client never blocks the simulation (user,
-  2026-10-19: never block the simulation); `docs/design/gui.md` 5.1 is updated to match.
+  entry order of the file. Values go out in the compact binary encoding (user, 2026-10-19,
+  "binary now"; it first went out as text): base64 of the recorder's value bytes, the layout
+  the FST path gets (`yavs_wave` crate docs: one byte per element of a bit/`std_logic` vector,
+  `u32` enumeration position, `i64`, `f64`, little endian), one string per change. The subscribe
+  response gives every signal an `encoding` (`layout`, `width`) beside its type, which is all a
+  client needs to decode. One base64 blob per batch with offsets is not smaller (the values are
+  a few bytes each), so it is not used. Batches go through a bounded queue and are merged when it
+  is full (only the last change of each value kept, `merged`), so a slow client never blocks the
+  simulation (user decision, 2026-10-19: never block the simulation, merge queued batches);
+  `docs/design/gui.md` 5.1 is updated to match.
 - **`--wave` and `--vhpi` work under `--dap`** (#325): the CLI attaches the same observers to the
   debug build and the recorder finishes before `exited`. A VHPI plugin's stdout shares the
   stdio transport, so `--vhpi` is debugged over a port (#389).

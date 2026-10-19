@@ -330,10 +330,13 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `exclude`: globs as `--wave-include`/`--wave-exclude`; `maxArrayElems` as `--wave-max-array`;
   `variables` as `--wave-variables`; `flushMs`, default 100) replaces the subscription and
   answers with the recorded hierarchy as `--wave` declares it (`scopes: [{scope, kind,
-  component, children}]`, signals `{name, id, type, class, direction}`, `skipped`);
+  component, children}]`, signals `{name, id, type, encoding: {layout, width}, class, direction}`, `skipped`);
   `yavs/waveUnsubscribe` ends it. Event `yavs/waves {from, to, times: [fs], changes: [[time
   index, id, value]]}` carries the final value per completed time step of every recorded value
-  that changed (values as text, as the Variables view shows them; times as integers in fs),
+  that changed (value = base64 of the recorder's value bytes, decoded by the signal's `encoding.layout`:
+  `u8-per-element` (a bit/`std_logic` vector, one enumeration position per element, `width`
+  elements, left to right), `u32le` (enumeration position, index into `type.literals`), `i64le`
+  (integer, TIME in fs), `f64le` (real); times as integers in fs),
   sent at the end of a time step once `flushMs` have passed or enough text is pending, and
   always before `stopped`, `exited` and the `yavs/waveUnsubscribe` response. The simulation
   never waits for the client: when too many batches are queued the newest is merged into the

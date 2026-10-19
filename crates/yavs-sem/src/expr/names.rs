@@ -727,6 +727,26 @@ impl Db {
         attr: Ident,
         args: &[ast::AssocElem],
     ) -> CandSet {
+        if attr.key.as_str() == "value"
+            && args.is_empty()
+            && let Some(r) = self.range_attr(scope, prefix)
+        {
+            // 2019 `R'value` (16.2.6): the range record of the range's type.
+            if self.file_rev() < yavs_syntax::Std::Vhdl2019 {
+                self.report(
+                    Diagnostic::error(
+                        diag::NOT_IN_REVISION,
+                        "`'value` of a range attribute is not available in VHDL-2008",
+                    )
+                    .with_primary(attr.span, "needs VHDL-2019"),
+                );
+                return self.poison_cands();
+            }
+            return match r.and_then(|(_, t)| self.range_record_of(t, attr.span)) {
+                Ok(st) => CandSet::Types(vec![Interp::new(self.base(st), Via::Other)]),
+                Err(_) => self.poison_cands(),
+            };
+        }
         // No interpretation: the top-down pass reports why (`report_attr`).
         let ps = match self.attr_prefixes(scope, prefix) {
             Ok(ps) => ps,
@@ -2074,6 +2094,22 @@ impl Db {
         let Some(a) = PredefAttr::from_key(attr.key) else {
             return self.build_user_attr(scope, prefix, attr, span);
         };
+        if a == PredefAttr::Value
+            && args.is_empty()
+            && let Some(r) = self.range_attr(scope, prefix)
+        {
+            return match r {
+                Ok((
+                    crate::hir::RangeC::Attr {
+                        prefix: p,
+                        reverse,
+                        dim,
+                    },
+                    t,
+                )) => self.range_value(p, reverse, dim, t, span),
+                _ => self.poison_expr(),
+            };
+        }
         let (aprefix, mut stat, arg_t) = match i.via {
             Via::AttrOf(t) if t == self.poison.ty => {
                 // 'simple_name, 'path_name, 'instance_name of a named entity.
@@ -2260,6 +2296,90 @@ impl Db {
             self.fold_into(id);
         }
         id
+    }
+
+    /// 2019 `R'value` (16.2.6) for `R` = `p'range(dim)` (or `'reverse_range`): the aggregate
+    /// `(left, right, direction)` of the range, built from `'left`, `'right` and `'ascending`.
+    fn range_value(
+        &mut self,
+        p: AttrPrefix,
+        reverse: bool,
+        dim: u32,
+        t: TypeId,
+        span: Span,
+    ) -> ExprId {
+        let Ok(rec) = self.range_record_of(t, span) else {
+            return self.poison_expr();
+        };
+        let TypeKind::Record { elems } = &self.types[self.base(rec)].kind else {
+            return self.poison_expr();
+        };
+        let (el, dir) = (elems[0].subtype, elems[2].subtype);
+        let stat = match p {
+            AttrPrefix::Subtype(st) => self.subtype_staticness(st),
+            _ => Staticness::None,
+        };
+        let uint =
+            self.types[self.well_known.universal_integer.unwrap_or(self.poison.ty)].first_subtype;
+        let boolean = self.types[self.well_known.boolean.unwrap_or(self.poison.ty)].first_subtype;
+        let attr = |db: &mut Self, a, st| {
+            let args: Box<[ExprId]> = if dim > 1 {
+                Box::new([db.const_expr(ConstValue::Int(dim.into()), uint, span)])
+            } else {
+                Box::new([])
+            };
+            db.add_expr(Expr {
+                kind: ExprKind::Attr {
+                    attr: a,
+                    prefix: p,
+                    args,
+                },
+                subtype: st,
+                span,
+                stat,
+                value: None,
+            })
+        };
+        let (l, r) = if reverse {
+            (PredefAttr::Right, PredefAttr::Left)
+        } else {
+            (PredefAttr::Left, PredefAttr::Right)
+        };
+        let left = attr(self, l, el);
+        let right = attr(self, r, el);
+        let asc = attr(self, PredefAttr::Ascending, boolean);
+        // ASCENDING and DESCENDING are positions 0 and 1 of RANGE_DIRECTION.
+        let (first, second) = if reverse { (1, 0) } else { (0, 1) };
+        let a = self.const_expr(ConstValue::Enum(first), dir, span);
+        let b = self.const_expr(ConstValue::Enum(second), dir, span);
+        let direction = self.add_expr(Expr {
+            kind: ExprKind::Conditional {
+                alts: Box::new([(a, Some(asc)), (b, None)]),
+            },
+            subtype: dir,
+            span,
+            stat,
+            value: None,
+        });
+        let assocs = [left, right, direction]
+            .into_iter()
+            .enumerate()
+            .map(|(i, value)| crate::hir::AggAssoc {
+                choices: Box::new([crate::hir::Choice::Element(i as u32)]),
+                value,
+                slice_piece: false,
+            })
+            .collect();
+        self.add_expr(Expr {
+            kind: ExprKind::Aggregate {
+                assocs,
+                bounds: crate::hir::AggBounds::Record,
+            },
+            subtype: rec,
+            span,
+            stat,
+            value: None,
+        })
     }
 
     /// Report why attribute name `prefix'attr` has no interpretation (E1621,

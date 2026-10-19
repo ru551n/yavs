@@ -14,7 +14,7 @@ PASS work vhdl-ideas/interfaces/ethernet/xaui.vhdl
 PASS work vhdl-ideas/interfaces/io.vhdl
 PASS work vhdl-ideas/interfaces/adi/ad9361.vhdl
 PASS work vhdl-ideas/interfaces/pcie.vhdl
-FAIL work vhdl-ideas/poc/rangetest.vhdl
+PASS work vhdl-ideas/poc/rangetest.vhdl
 FAIL work vhdl-ideas/sim/frequency.vhdl
 PASS work vhdl-ideas/util/generic_mux.vhdl
 PASS work vhdl-ideas/poc/hdmi_switch.vhdl

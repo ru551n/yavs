@@ -1497,6 +1497,16 @@ impl Db {
             ));
         };
         let (_, t) = r?;
+        self.range_record_of(t, attr.span)
+    }
+
+    /// The anonymous range record subtype of scalar base type `t` (made on first use).
+    pub(crate) fn range_record_of(&mut self, t: TypeId, span: Span) -> Result<SubtypeId, Reported> {
+        let attr = Ident {
+            text: Symbol::intern("record"),
+            key: Symbol::intern("record"),
+            span,
+        };
         if let Some(&st) = self.range_records.get(&t) {
             return Ok(st);
         }

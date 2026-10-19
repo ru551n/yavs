@@ -52,6 +52,7 @@ const PASS: &[&str] = &[
     "composite/concat_composite",
     "composite/constant_bounds",
     "composite/package_record_signals",
+    "composite/range_value",
     "composite/record_signal_attrs",
     "composite/record_signal_params",
     "composite/records",

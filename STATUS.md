@@ -202,7 +202,7 @@ An installed binary finds `lib/` next to itself (#43).
   (`hierarchy/mode_view_*`, `protected/private_variables`, `protected/method_alias_objects`), and so do signal
   parameters with a view (record, nested, `'converse` and array views, slices, several calling processes; #254), also associated element by element (#265).
   `buffer` and `linkage` subprogram parameters are `E1236`.
-- 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
+- 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, `R'VALUE` of a range attribute (#282; `composite/range_value`), signals
   and variables with bounds from the initial value, variable ports of protected types, `open`
   sub-element actuals, formal packages of design entities; entity subprograms with bodies in an
   architecture. Initializer-bound signals elaborate and run (#187; records and arrays of records with such fields, #215);

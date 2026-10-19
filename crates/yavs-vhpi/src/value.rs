@@ -234,9 +234,17 @@ impl Read {
                     ch: ch.ok_or_else(mismatch)?,
                 })
             }
-            vhpiEnumVal | vhpiLogicVal => Encoded::Scalar(vhpiValueU {
+            vhpiLogicVal => Encoded::Scalar(vhpiValueU {
                 enumv: scalar(enum_lits.is_some())? as u32,
             }),
+            // Both reference simulators also read an integer with vhpiEnumVal (#318).
+            vhpiEnumVal => {
+                let v = scalar(is_int || enum_lits.is_some())?;
+                Encoded::Scalar(vhpiValueU {
+                    enumv: u32::try_from(v)
+                        .map_err(|_| Error::Mismatch(format!("{v} does not fit format {name}")))?,
+                })
+            }
             vhpiSmallEnumVal => Encoded::Scalar(vhpiValueU {
                 smallenumv: scalar(enum_lits.is_some_and(|n| n <= 256))? as u8,
             }),
@@ -891,6 +899,17 @@ mod tests {
         assert_eq!(text(i.encode(vhpiDecStrVal, 1).unwrap()).0, "-42");
         assert_eq!(text(i.encode(vhpiHexStrVal, 1).unwrap()).0, "-2A");
         assert!(matches!(i.encode(vhpiRealVal, 1), Err(Error::Mismatch(_))));
+        // vhpiEnumVal reads a non-negative integer (#318).
+        assert!(matches!(i.encode(vhpiEnumVal, 1), Err(Error::Mismatch(_))));
+        let Encoded::Scalar(u) = Read {
+            cells: Cells::Int(vec![17]),
+            ..i.clone()
+        }
+        .encode(vhpiEnumVal, 1)
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(unsafe_free_int(u), 17); // enumv shares the int field's bytes
         assert!(matches!(
             i.encode(vhpiPtrVal, 1),
             Err(Error::Unsupported(_))

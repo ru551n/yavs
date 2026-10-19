@@ -209,6 +209,17 @@ and gives each library a legal identifier as its name.
 | `external-name-subprogram-generate` | a relative external name in a subprogram of a block in each generate iteration | 8.7 | LRM clear | OK* | OK | OK | OK | OK | each iteration's own instance (sim1 binds the first iteration's for all) | agent, 2026-10-19 (#255, L86) |
 | `external-constant-run-time-value` | an external constant whose target is computed when its region is elaborated (`'path_name`) | 8.7, 16.2.5 | LRM clear | OK | OK* | OK | OK | OK | the target's value, read from its region's data (sim2 drops the instance from the path) | agent, 2026-10-19 (#255) |
 
+## VHPI
+
+Reproducers are the C plugins of `tools/vhpi-conformance` (the case names the plugin and its trace
+lines), not `tests/discrepancies/`. Only sim1 and sim4 implement VHPI; sim2 and sim3 are
+`unsupported` (no vote). Rule (user, 2026-10-19): follow the LRM where it is clear, else the
+majority of the references that run it.
+
+| Case | Construct | LRM | Kind | sim1 | sim2 | sim3 | sim4 | yavs | yavs's choice | Decided |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `values`: `cnt`, `k` | `vhpi_get_value` with `vhpiEnumVal` on an integer object | VHPI clause, `vhpi_get_value` (formats per type, not strict) | LRM ambiguity | the integer | unsupported | unsupported | the integer | the integer | read the integer (a negative one does not fit and is `W0903`) | agent, 2026-10-19 (#318) |
+
 ## Adding a case
 
 `tests/discrepancies/<id>/case.vhd` (single file, report the observable result with `report`),

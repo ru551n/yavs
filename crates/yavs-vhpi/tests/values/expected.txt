@@ -337,7 +337,7 @@ rec.b DecStr rc=2 then rc=0 n=1 "7"
 rec.b HexStr rc=2 then rc=0 n=1 "7"
 rec.b Str rc=-1 error
 rec.b Char rc=-1 error
-rec.b Enum rc=-1 error
+rec.b Enum rc=0 7
 rec.b SmallEnum rc=-1 error
 rec.b Logic rc=-1 error
 rec.b Int rc=0 7
@@ -403,7 +403,7 @@ mem(1,2) DecStr rc=2 then rc=0 n=1 "6"
 mem(1,2) HexStr rc=2 then rc=0 n=1 "6"
 mem(1,2) Str rc=-1 error
 mem(1,2) Char rc=-1 error
-mem(1,2) Enum rc=-1 error
+mem(1,2) Enum rc=0 6
 mem(1,2) SmallEnum rc=-1 error
 mem(1,2) Logic rc=-1 error
 mem(1,2) Int rc=0 6
@@ -535,7 +535,7 @@ g DecStr rc=2 then rc=0 n=1 "5"
 g HexStr rc=2 then rc=0 n=1 "5"
 g Str rc=-1 error
 g Char rc=-1 error
-g Enum rc=-1 error
+g Enum rc=0 5
 g SmallEnum rc=-1 error
 g Logic rc=-1 error
 g Int rc=0 5
@@ -557,7 +557,7 @@ k DecStr rc=3 then rc=0 n=2 "99"
 k HexStr rc=3 then rc=0 n=2 "63"
 k Str rc=-1 error
 k Char rc=-1 error
-k Enum rc=-1 error
+k Enum rc=0 99
 k SmallEnum rc=-1 error
 k Logic rc=-1 error
 k Int rc=0 99
@@ -579,7 +579,7 @@ cnt DecStr rc=3 then rc=0 n=2 "17"
 cnt HexStr rc=3 then rc=0 n=2 "11"
 cnt Str rc=-1 error
 cnt Char rc=-1 error
-cnt Enum rc=-1 error
+cnt Enum rc=0 17
 cnt SmallEnum rc=-1 error
 cnt Logic rc=-1 error
 cnt Int rc=0 17

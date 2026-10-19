@@ -654,7 +654,7 @@ Done (#270, values): `vhpi_get_value` (`crates/yavs-vhpi/src/value.rs`) on signa
 generics and constants and their record fields and array elements (any dimension), from callbacks
 through the observer's `Hook` (signals) or the elaborated value (generics, constants), in
 `vhpiObjTypeVal`, `vhpiBinStrVal`, `vhpiOctStrVal`, `vhpiDecStrVal`, `vhpiHexStrVal`,
-`vhpiStrVal`, `vhpiCharVal`, `vhpiEnumVal`, `vhpiSmallEnumVal`, `vhpiLogicVal`, `vhpiIntVal`,
+`vhpiStrVal`, `vhpiCharVal`, `vhpiEnumVal` (also on integers, #318), `vhpiSmallEnumVal`, `vhpiLogicVal`, `vhpiIntVal`,
 `vhpiLongIntVal`, `vhpiRealVal`, `vhpiTimeVal`, `vhpiPhysVal` and the vector forms
 (`vhpiEnumVecVal`, `vhpiSmallEnumVecVal`, `vhpiLogicVecVal`, `vhpiIntVecVal`,
 `vhpiLongIntVecVal`, `vhpiRealVecVal`, `vhpiTimeVecVal`, `vhpiPhysVecVal`), with the

@@ -6,6 +6,7 @@ fn main() {
     match var("CARGO_CFG_TARGET_OS").as_str() {
         "windows" => {
             let def = var("DEP_YAVS_VHPI_DEF");
+            println!("cargo:rustc-env=YAVS_VHPI_DEF={def}");
             if var("CARGO_CFG_TARGET_ENV") == "msvc" {
                 println!("cargo:rustc-link-arg-bins=/DEF:{def}");
             } else {

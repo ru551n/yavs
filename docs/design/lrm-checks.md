@@ -555,14 +555,14 @@ the approved LCS text (read from an archived copy of the LCS pages), and black-b
   of access and protected types" (LCS-2016-002; both quoted in `VI#98` and `VI#259`). The 2019
   `std.env` declarations with constant access parameters (`DIR_CLOSE`, `TO_STRING` of call
   paths) are a confirmed defect in the package (`VI#259`), not an exemption. The LRM is clear:
-  `E1223` in 2019 too for user code, library `std` exempt as in 2008. Decision pending.
+  `E1223` in 2019 too for user code, library `std` exempt as in 2008. Implemented (user, 2026-10-19).
 - **implicit-condition-operator** (L53, 9.2.9): unclear as before ("Otherwise, the condition
   operator is implicitly applied", quoted in a reference simulator's source, does not say which
   declaration), but the majority (two of three) rejects, so the majority rule gives `REJECT`.
-  Decision pending.
+  Implemented (user, 2026-10-19).
 - **i64-min-literal** (L58): the range of `universal_integer` is implementation-defined, so the
   LRM does not decide (the catalogue's "LRM ambiguity" is right). All three reference simulators
-  reject, so the majority rule gives `REJECT`. Decision pending.
+  reject, so the majority rule gives `REJECT`. Implemented (user, 2026-10-19).
 - **method-alias-of-object**, **method-alias-of-process-variable**, **method-alias-objects-full**
   (L15, 6.6.3): the alias declaration is legal, but no text says which object a call through the
   alias acts on, so these are ambiguities; the user ruling (#237) decides them.

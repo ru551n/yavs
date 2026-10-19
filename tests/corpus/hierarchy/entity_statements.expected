@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:entity_statements:u1:_p1	arch 1
+diag	note	0	0	:entity_statements:u2:_p1	arch 2
+diag	note	1000000	1	:entity_statements:u1:_p0	leaf 1 saw x
+diag	note	1000000	1	:entity_statements:u2:_p0	leaf 2 saw x
+diag	note	5000000	0	:entity_statements:u1:watch	leaf 1 x='1'
+diag	note	10000000	0	:entity_statements:u2:watch	leaf 2 x='1'

@@ -307,6 +307,8 @@ composite 6/6, force 3/3, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 t
 
 - An alias of a constant with a static value in a subprogram has no storage; its uses lower the aliased name (#300; difftest `composite/alias_constant`).
 
+- Entity statements (passive assertions and processes in an entity, LRM 3.2.4) lower with the architecture's, entity ones first (#301; difftest `hierarchy/entity_statements`).
+
 ## sem robustness
 
 `cargo +nightly fuzz run sem` (in `fuzz/`, seeds `tests/diag/sem`, `lib/`) parses and analyzes each input

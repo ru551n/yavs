@@ -1011,12 +1011,14 @@ pub(crate) fn architecture(
     };
     let e = &db.units[*entity];
     let mut iface: Vec<DeclId> = Vec::new();
+    let mut estmts: Vec<StmtId> = Vec::new();
     if let UnitHir::Entity {
         generics,
         ports,
-        stmts: estmts,
+        stmts: es,
     } = &e.hir
     {
+        estmts = es.to_vec();
         for &g in generics.iter() {
             if !matches!(db.decls[g].kind, DeclKind::Object(_)) {
                 return Err(
@@ -1025,9 +1027,6 @@ pub(crate) fn architecture(
             }
         }
         iface.extend(generics.iter().chain(ports.iter()));
-        if !estmts.is_empty() {
-            return Err(cx.unsupported(e.span, "entity statements"));
-        }
     }
     let mut ir = UnitIr {
         unit,
@@ -1055,7 +1054,9 @@ pub(crate) fn architecture(
     for d in decls {
         ok &= inst_object(db, pb, cx, &mut ir, d).is_ok();
     }
-    ok &= region(db, pb, cx, &mut ir, stmts, None).is_ok();
+    // The entity's statements (LRM 3.2.4) come first, as in the elaborator's walk.
+    estmts.extend(stmts.iter().copied());
+    ok &= region(db, pb, cx, &mut ir, &estmts, None).is_ok();
     // Subprograms declared in the architecture use its instance data too ('path_name).
     while let Some((d, depth)) = cx.queue.pop() {
         ok &= subprogram(db, pb, cx, d, depth).is_ok();

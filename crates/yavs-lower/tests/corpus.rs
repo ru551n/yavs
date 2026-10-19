@@ -114,6 +114,7 @@ const PASS: &[&str] = &[
     "generics/subprog_instance_overload",
     "generics/subprog_instance_overload_2019",
     "generics/subprog_header_map_2019",
+    "hierarchy/entity_statements",
     "hierarchy/component_binding",
     "hierarchy/config_port_expr",
     "hierarchy/external_alias",

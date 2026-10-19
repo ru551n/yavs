@@ -35,6 +35,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 
 | Decision | Why | Source |
 |---|---|---|
+| A `Failed` that reaches a `Lowerer` entry point with no diagnostic is an ICE (`Cx::take_failed`), never an empty error list | A failed run must always say why (#292) | root `AGENTS.md` rule 1 |
 | One code per design unit; generics, signals and non-locally-static constants are instance data (`Space::Inst`), never folded into code | Shared code, rule 4 identity | ir.md 2, DESIGN.md "Shape" |
 | Objects live in frame slots; registers are per-statement temporaries; nothing live across `Suspend` | Simple verifier, re-entrant waits | DESIGN.md "Registers, slots, temporaries", ir.md 1.2 |
 | Composite temporaries are `Alloc`ed and live to the frame's next statement | Results survive return without copies | `docs/decisions.md` "IR and interpreter (M2)" |

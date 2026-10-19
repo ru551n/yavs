@@ -580,10 +580,13 @@ impl<'a> Fx<'a, '_> {
         let Some(st) = st else {
             return Ok(dope);
         };
+        // A record has no bounds to check or replace.
+        let Some((_, dims)) = ty::array_of(self.db, self.db.base(st)) else {
+            return Ok(dope);
+        };
         let Some(want) = self.subtype_dope(st, span)? else {
             return Ok(dope);
         };
-        let (_, dims) = ty::array_of(self.db, self.db.base(st)).ok_or(Failed)?;
         let what = self.msg(what, yavs_ir::Dir::To);
         self.emit(Inst::SubtypeCheck {
             dope,

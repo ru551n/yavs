@@ -416,6 +416,18 @@ impl Cx {
         Failed
     }
 
+    /// The diagnostics of a failed lowering. A `Failed` that reached here without any
+    /// diagnostic is a bug: it becomes an ICE instead of a silent exit (error motto).
+    pub fn take_failed(&mut self) -> Vec<Diagnostic> {
+        if self.diags.is_empty() {
+            self.diags.push(Diagnostic::error(
+                INTERNAL,
+                "internal error: lowering failed without a diagnostic; this is a bug in yavs",
+            ));
+        }
+        std::mem::take(&mut self.diags)
+    }
+
     pub fn unsupported(&mut self, span: Span, what: &str) -> Failed {
         self.error(
             NOT_IMPLEMENTED,
@@ -494,7 +506,7 @@ impl<'a> Lowerer<'a> {
                 self.units.push(u);
                 Ok(self.units.len() - 1)
             }
-            _ => Err(std::mem::take(&mut self.cx.diags)),
+            _ => Err(self.cx.take_failed()),
         }
     }
 
@@ -530,7 +542,7 @@ impl<'a> Lowerer<'a> {
                 self.packages.push(p);
                 Ok(self.packages.len() - 1)
             }
-            _ => Err(std::mem::take(&mut self.cx.diags)),
+            _ => Err(self.cx.take_failed()),
         }
     }
 
@@ -547,7 +559,7 @@ impl<'a> Lowerer<'a> {
         self.drain();
         match f {
             Ok(f) if self.cx.diags.is_empty() => Ok(f),
-            _ => Err(std::mem::take(&mut self.cx.diags)),
+            _ => Err(self.cx.take_failed()),
         }
     }
 
@@ -557,7 +569,7 @@ impl<'a> Lowerer<'a> {
         self.drain();
         match f {
             Ok(f) if self.cx.diags.is_empty() => Ok(f),
-            _ => Err(std::mem::take(&mut self.cx.diags)),
+            _ => Err(self.cx.take_failed()),
         }
     }
 
@@ -565,7 +577,7 @@ impl<'a> Lowerer<'a> {
     pub fn ty(&mut self, t: yavs_sem::TypeId) -> Result<yavs_ir::TyId, Vec<Diagnostic>> {
         match ty::lower(self.db, &mut self.cx, &mut self.pb, t, Span::default()) {
             Ok(id) => Ok(id),
-            Err(_) => Err(std::mem::take(&mut self.cx.diags)),
+            Err(_) => Err(self.cx.take_failed()),
         }
     }
 

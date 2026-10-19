@@ -3009,9 +3009,10 @@ impl<'a> Fx<'a, '_> {
         let mut n = self.int(0);
         for a in assocs {
             if a.slice_piece && is_others(a) {
-                return Err(self
-                    .cx
-                    .unsupported(span, "`others` with an array value in an aggregate"));
+                return Err(self.cx.ice(
+                    span,
+                    "`others` with an array value in an aggregate (sem rejects it)",
+                ));
             }
             let v = self.expr(a.value)?;
             let len = if a.slice_piece {

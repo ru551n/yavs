@@ -1614,10 +1614,7 @@ fn array_agg(
     let mut choices: Vec<Vec<Choice>> = Vec::with_capacity(assocs.len());
     let mut failed = None;
     for a in assocs {
-        let piece_ok = a
-            .choices
-            .iter()
-            .all(|c| matches!(c, ast::Choice::Range(_) | ast::Choice::Others(_)));
+        let piece_ok = a.choices.iter().all(|c| matches!(c, ast::Choice::Range(_)));
         match resolve_value(db, r, cx, dim, &a.value, piece_ok) {
             Ok(v) => vals.push(v),
             Err(e) => {
@@ -2058,7 +2055,21 @@ fn resolve_value(
         // No LRM tie-break (lrm-checks L8): the element type wins, as in NVC.
         (true, true) => elem_value(db, r, cx, value).map(Val::Elem),
         (false, false) => {
-            let piece = if ndims == 1 {
+            // `others` gives an element value, never a piece (9.3.3.3).
+            if ndims == 1 && !piece_ok && fits(db, &c, cx.ty) {
+                return Err(db.error(
+                    Diagnostic::error(
+                        diag::AGG_ELEMENT,
+                        format!(
+                            "expected an element of type {}, found a value of the aggregate type",
+                            type_name(db, elem_ty)
+                        ),
+                    )
+                    .with_primary(value.span, "an array value needs a range choice")
+                    .with_note("an association with `others` gives an element value (LRM 9.3.3.3)"),
+                ));
+            }
+            let piece = if ndims == 1 && piece_ok {
                 format!(" or {}", type_name(db, cx.ty))
             } else {
                 String::new()

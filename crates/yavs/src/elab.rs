@@ -663,19 +663,8 @@ impl yavs_kernel::Observer for Printer {
     }
 }
 
-/// `10ms`, `1.5 ns`: a TIME literal (the `time'value` parser).
+/// `10ms`, `1.5 ns`: a TIME literal.
 fn parse_time(t: &str) -> Result<yavs_kernel::Time, String> {
-    let b = t.trim().as_bytes();
-    let split = b
-        .iter()
-        .position(|c| c.is_ascii_alphabetic())
-        .unwrap_or(b.len());
-    let text = format!("{} {}", t.trim()[..split].trim(), &t.trim()[split..]);
-    let fs = yavs_std::value::physical_value(
-        text.as_bytes(),
-        &yavs_std::types::time_type(),
-        yavs_std::types::Bounds::I64,
-    )
-    .map_err(|e| e.to_string())?;
-    yavs_kernel::Time::from_vhdl(fs).map_err(|e| format!("{e:?}"))
+    let fs = yavs_std::value::time_literal(t).map_err(|e| e.to_string())?;
+    yavs_kernel::Time::from_vhdl(fs).map_err(|e| e.to_string())
 }

@@ -1,5 +1,6 @@
 // Inside VS Code: set a breakpoint in tb.vhd, start "Debug tb" from launch.json, and check
-// that the session stops there with a frame VS Code can open, then runs to the end.
+// that the session stops there with a frame VS Code can open, steps one delta with the yavs
+// command, then runs to the end.
 'use strict';
 
 const assert = require('assert');
@@ -53,11 +54,18 @@ async function run() {
   const item = vscode.debug.activeStackItem;
   assert.ok(item && item.frameId === top.id, `active stack item ${JSON.stringify(item)}`);
 
+  // The command palette's "yavs: Step to the next delta" ends the cycle stopped in.
+  const stepped = waitFor('stopped after the delta step', 60000, (r) => (onStop = r));
+  await vscode.commands.executeCommand('yavs.stepDelta');
+  const d = await stepped;
+  assert.equal(d.reason, 'step');
+  assert.match(d.description, /^step at 0 fs, delta 0$/);
+
   const ended = waitFor('end of session', 60000, (r) => vscode.debug.onDidTerminateDebugSession(r));
   vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
-  await session.customRequest('continue', { threadId: s.threadId });
+  await session.customRequest('continue', { threadId: 1 });
   await ended;
-  assert.equal(stops.length, 1);
+  assert.equal(stops.length, 2);
 }
 
 module.exports = { run };

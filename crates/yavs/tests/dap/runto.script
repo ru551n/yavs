@@ -1,0 +1,27 @@
+request initialize {"adapterID": "yavs"}
+request launch {"stopOnEntry": true}
+request configurationDone {}
+event stopped
+request yavs/stepDelta {}
+event stopped
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 21}]}
+request yavs/runFor {"time": "15 ns"}
+event stopped
+request yavs/runUntil {"time": "15ns"}
+event stopped
+request evaluate {"expression": "tb.cnt"}
+request yavs/stepDelta {}
+event stopped
+request yavs/stepDelta {}
+event stopped
+request yavs/stepTimestep {}
+event stopped
+request yavs/runUntil {"time": "10 ns"}
+request yavs/runFor {"time": "soon"}
+request yavs/runFor {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request yavs/stepTimestep {}
+event stopped
+request continue {}
+event terminated
+request disconnect {}

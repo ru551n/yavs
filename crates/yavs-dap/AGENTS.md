@@ -13,7 +13,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
   or drive the kernel other than through `SimControl` and the session (plan: nothing else drives
   simulation).
 - Depends on: `yavs-diag`, `yavs-elab`, `yavs-interp`, `yavs-ir`, `yavs-kernel`, `yavs-sem`,
-  `serde_json`. Called by: `yavs` (`src/elab.rs`, `run`).
+  `yavs-std` (TIME literals), `serde_json`. Called by: `yavs` (`src/elab.rs`, `run`).
 
 ## 2. Map
 
@@ -35,6 +35,9 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | Requests that need no stop (`initialize`, `launch`, `setBreakpoints`, `configurationDone`, `threads`, `pause`) are answered on the reader thread; the rest go to the simulation thread and are served only while stopped (`the simulation is running` otherwise) | The simulation thread is busy inside `SimControl::run_until` | this file |
 | A line breakpoint is set on the outermost statements starting on the line, or the next line with any (`Design::line_stmts`); the response gives the actual line | Editors expect breakpoints to slide to code | this file |
 | Pause sets both the session pause (a running process stops at its next statement) and the kernel `Interrupt` (between cycles); the kernel pause that follows a process stop is swallowed (`paused_in_process`), an untaken session pause cancelled (`DebugSession::cancel_pause`) | An endless loop inside a process must be pausable; one pause is one stop | this file |
+| `yavs/runFor`/`yavs/runUntil`/`yavs/stepDelta`/`yavs/stepTimestep` are `SimControl::run_until`/`step_delta`/`step_timestep` in the run loop (`Run`); from a stop inside a process they are queued (`Shared::queued`) and the kernel paused, so they start once the cycle has ended (a delta step is then that end) | Nothing but `SimControl` drives the kernel; a process stop is mid-cycle | issue #324 |
+| A stop during a run to a time does not cancel it: the run loop keeps the limit until it is reached, so `continue` resumes it | One rule for line, signal and pause stops; matches a `run` command resumed after a breakpoint | this file |
+| Custom run requests answer, then send `continued` (thread of the stop, or 1) | A client marks the session running only for the standard resume requests | VS Code |
 | From a stop between cycles, every step request is a global step (next statement of any process) | No process is current there | ir.md 3.4 |
 | Reports and `OUTPUT` text are `output` events (stdout carries DAP in `stdio` mode); runtime errors an `output` event of category `stderr` | stdout is the protocol channel | `docs/cli-contract.md` 5 |
 | Disconnect stops the run (`Interrupt::stop`), then `exited`, `terminated` and the disconnect response, in that order | Deterministic transcript | this file |
@@ -60,6 +63,5 @@ yavs run --work=lib:out/lib tb --dap=4711       # then attach an editor to 127.0
 
 ## 6. Open issues
 
-#322 signal breakpoints, #323 force/deposit/release, #324 run to a time, next delta and time step,
-#325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
+#322 signal breakpoints, #323 force/deposit/release, #325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
 variables, hierarchy browsing.

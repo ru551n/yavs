@@ -313,6 +313,14 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
   pause between simulation cycles, a step stops at the next statement of any process.
 * **Pause** stops a running simulation: inside a process if one is running, otherwise between
   cycles.
+* **Run for a time or until a time**, **step to the next delta** and **step to the next time
+  step** (VS Code commands "yavs: Run for...", "yavs: Run until...", "yavs: Step to the next
+  delta" and "yavs: Step to the next time step"; custom requests ``yavs/runFor``,
+  ``yavs/runUntil``, ``yavs/stepDelta``, ``yavs/stepTimestep`` for other clients). Times are
+  TIME literals such as ``10 ns`` or ``1us``. A breakpoint on the way still stops, and continuing
+  from it resumes the run up to its time. A delta step from a stop inside a process finishes the
+  current simulation cycle; a time step runs the next cycle and every delta after it at that
+  time.
 * **Call stack**: one frame per subprogram with its source position; a waiting process shows its
   ``wait`` statement.
 * **Variables**: the locals of each frame (process variables, parameters, subprogram variables),
@@ -328,5 +336,5 @@ simulation ends the client gets the exit status of the run; disconnecting ends t
 (exit status 1 if it had not ended).
 
 Not yet: conditions on breakpoints, signal breakpoints, forcing and depositing signal values,
-running to a time, live waveforms, composite variables (shown as ``(...)``), and ``--dap``
+live waveforms, composite variables (shown as ``(...)``), and ``--dap``
 together with ``--wave`` or ``--vhpi``.

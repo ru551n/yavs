@@ -286,7 +286,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   warning `W0109`), so stops are deterministic. The exit status is the run's (below), sent as
   the `exited` event before `terminated`; a disconnect before the end stops the run (exit 1).
   `--wave` or `--vhpi` with `--dap` is `E9999` not implemented (exit 2). A port that cannot be
-  opened is `E0701` (exit 2). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
+  opened is `E0701` (exit 2). Custom requests, served while stopped: `yavs/runFor` and
+  `yavs/runUntil` (argument `time`, a TIME literal such as `"10 ns"` or `"10ns"`, relative to the
+  current time or absolute), `yavs/stepDelta` and `yavs/stepTimestep` (no arguments); each
+  answers, sends `continued`, and the next `stopped` event's `description` gives the time and
+  delta. Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

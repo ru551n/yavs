@@ -1446,6 +1446,7 @@ dependencies = [
  "yavs-ir",
  "yavs-kernel",
  "yavs-sem",
+ "yavs-std",
 ]
 
 [[package]]

@@ -38,6 +38,48 @@
         "language": "vhdl"
       }
     ],
+    "commands": [
+      {
+        "command": "yavs.runFor",
+        "title": "Run for...",
+        "category": "yavs"
+      },
+      {
+        "command": "yavs.runUntil",
+        "title": "Run until...",
+        "category": "yavs"
+      },
+      {
+        "command": "yavs.stepDelta",
+        "title": "Step to the next delta",
+        "category": "yavs"
+      },
+      {
+        "command": "yavs.stepTimestep",
+        "title": "Step to the next time step",
+        "category": "yavs"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "yavs.runFor",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.runUntil",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.stepDelta",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.stepTimestep",
+          "when": "debugType == 'yavs'"
+        }
+      ]
+    },
     "debuggers": [
       {
         "type": "yavs",

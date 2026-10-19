@@ -192,6 +192,15 @@ fn entry_hits_and_disconnect() {
     script_case("entry", &[]);
 }
 
+/// Run for a time and until a time (from a stop inside a process and between cycles), a line
+/// breakpoint on the way, next delta and next time step, bad times. Identical at
+/// `--threads=4`.
+#[test]
+fn run_to_time_and_steps() {
+    script_case("runto", &[]);
+    script_case("runto", &["--threads=4"]);
+}
+
 /// Pause a simulation that would run forever, then read a signal and disconnect.
 #[test]
 fn pause() {

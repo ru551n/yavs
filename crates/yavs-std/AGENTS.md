@@ -21,7 +21,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|
 | `src/types.rs` | `EnumType`/`EnumLit`, physical `Unit`s, `Bounds`, `time_type()`, `to_latin1` |
 | `src/image.rs` | `'IMAGE`, `TO_STRING`, `TO_HSTRING`/`TO_OSTRING`/`TO_BSTRING` |
-| `src/value.rs` | `'VALUE` (full literal syntax), `lex_abstract`/`Abstract`, `physical_value` |
+| `src/value.rs` | `'VALUE` (full literal syntax), `lex_abstract`/`Abstract`, `physical_value`, `time_literal` (`10ms`, `1.5 ns`: `--stop-time`, the debugger) |
 | `src/printf.rs` | C99 printf for one real (`TO_STRING(real, format)`, `%.15g`, `%a`) |
 | `src/textio.rs` | READ/WRITE of every textio type on a line, justify, hread/oread |
 | `src/file.rs` | TEXT files: READLINE (CRLF), WRITELINE (LF), ENDFILE, 2019 file ops |

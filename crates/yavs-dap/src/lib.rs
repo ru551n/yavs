@@ -52,6 +52,24 @@ pub fn parse_transport(s: &str) -> Result<Transport, String> {
         .map_err(|_| format!("expected a port number or `stdio`, found `{s}`"))
 }
 
+/// A run the kernel does next (`SimControl`), requested at a stop.
+#[derive(Clone, Copy)]
+enum Run {
+    /// `run_until` this time (`yavs/runFor`, `yavs/runUntil`).
+    Until(Time),
+    /// `step_delta`; from a stop inside a process, the end of the current cycle.
+    Delta,
+    /// `step_timestep`.
+    Timestep,
+}
+
+/// How a stop ends.
+#[derive(Clone, Copy)]
+enum Next {
+    Resume(Resume),
+    Run(Run),
+}
+
 /// What the run loop hands the requests it serves while stopped.
 enum Msg {
     Request(Json),
@@ -76,6 +94,8 @@ struct Shared {
     /// A process stopped for the pause, so the kernel's pause after its cycle is not a stop.
     paused_in_process: AtomicBool,
     stop_on_entry: AtomicBool,
+    /// A run requested at a stop inside a process, taken once its cycle has ended.
+    queued: Mutex<Option<Run>>,
     /// The `disconnect` request to answer last.
     disconnect: Mutex<Option<Json>>,
     /// Breakpoint statements per absolute file path, so a request replaces one file's set.
@@ -146,6 +166,13 @@ impl At<'_, '_> {
         }
     }
 
+    fn now(&self) -> Option<Time> {
+        match self {
+            At::Process(s) => s.now,
+            At::Kernel(sim) => Some(sim.now()),
+        }
+    }
+
     /// The stopped process, if the stop is inside one.
     fn process(&self) -> Option<usize> {
         match self {
@@ -190,14 +217,22 @@ impl Debugger for Front {
             body["text"] = json!(t);
         }
         match serve_stop(sh, &At::Process(stop), body) {
-            Some(r) => r,
+            Some(Next::Resume(r)) => r,
+            // The kernel runs it once this cycle has ended.
+            Some(Next::Run(run)) => {
+                *sh.queued.lock().unwrap_or_else(|p| p.into_inner()) = Some(run);
+                if let Some(i) = sh.interrupt.get() {
+                    i.pause();
+                }
+                Resume::Continue
+            }
             None => Resume::Continue,
         }
     }
 }
 
 /// Report the stop, then answer requests until one resumes; `None` ends the session.
-fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Resume> {
+fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
     sh.stopped.store(true, Ordering::Relaxed);
     sh.event("stopped", stopped);
     let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
@@ -211,10 +246,19 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Resume> {
             }
         };
         let resume = match req["command"].as_str().unwrap_or_default() {
-            "continue" => Some(Resume::Continue),
-            "next" => Some(Resume::StepOver),
-            "stepIn" => Some(Resume::StepIn),
-            "stepOut" => Some(Resume::StepOut),
+            "continue" => Some(Next::Resume(Resume::Continue)),
+            "next" => Some(Next::Resume(Resume::StepOver)),
+            "stepIn" => Some(Next::Resume(Resume::StepIn)),
+            "stepOut" => Some(Next::Resume(Resume::StepOut)),
+            "yavs/runFor" | "yavs/runUntil" => match run_to(at, &req) {
+                Ok(t) => Some(Next::Run(Run::Until(t))),
+                Err(m) => {
+                    sh.fail(&req, &m);
+                    None
+                }
+            },
+            "yavs/stepDelta" => Some(Next::Run(Run::Delta)),
+            "yavs/stepTimestep" => Some(Next::Run(Run::Timestep)),
             "disconnect" | "terminate" => {
                 sh.stopped.store(false, Ordering::Relaxed);
                 stash_disconnect(sh, req);
@@ -241,23 +285,52 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Resume> {
                 None
             }
         };
-        if let Some(r) = resume {
+        if let Some(n) = resume {
             // Between cycles every step is a global step: the next statement of any process.
-            let r = match (at, r) {
-                (At::Kernel(_), Resume::Continue) => Resume::Continue,
-                (At::Kernel(_), _) => Resume::GlobalStep,
-                (_, r) => r,
+            let n = match (at, n) {
+                (At::Kernel(_), Next::Resume(r)) if r != Resume::Continue => {
+                    Next::Resume(Resume::GlobalStep)
+                }
+                (_, n) => n,
             };
             sh.stopped.store(false, Ordering::Relaxed);
-            let body = if r == Resume::Continue {
-                json!({"allThreadsContinued": true})
-            } else {
-                json!({})
-            };
-            sh.respond(&req, body);
-            return Some(r);
+            match n {
+                Next::Resume(Resume::Continue) => {
+                    sh.respond(&req, json!({"allThreadsContinued": true}))
+                }
+                Next::Resume(_) => sh.respond(&req, json!({})),
+                // A client knows only its own requests resume: tell it.
+                Next::Run(_) => {
+                    sh.respond(&req, json!({}));
+                    let tid = at.process().map_or(1, |p| p + 1);
+                    sh.event(
+                        "continued",
+                        json!({"threadId": tid, "allThreadsContinued": true}),
+                    );
+                }
+            }
+            return Some(n);
         }
     }
+}
+
+/// The absolute time a `yavs/runFor` (relative) or `yavs/runUntil` (absolute) runs to.
+fn run_to(at: &At<'_, '_>, req: &Json) -> Result<Time, String> {
+    let text = req["arguments"]["time"]
+        .as_str()
+        .ok_or("expected a `time` argument such as \"10 ns\"")?;
+    let t = yavs_std::value::time_literal(text)
+        .map_err(|e| e.to_string())
+        .and_then(|fs| Time::from_vhdl(fs).map_err(|e| e.to_string()))
+        .map_err(|e| format!("`{text}` is not a time: {e}"))?;
+    let now = at.now().ok_or("no simulation time at this stop")?;
+    if req["command"] == "yavs/runFor" {
+        return now.checked_add(t).map_err(|e| e.to_string());
+    }
+    if t < now {
+        return Err(format!("{t} is before the current time {now}"));
+    }
+    Ok(t)
 }
 
 fn stash_disconnect(sh: &Shared, req: Json) {
@@ -587,6 +660,7 @@ pub fn serve(
         pause_req: AtomicBool::new(false),
         paused_in_process: AtomicBool::new(false),
         stop_on_entry: AtomicBool::new(false),
+        queued: Mutex::new(None),
         disconnect: Mutex::new(None),
         bps: Mutex::new(HashMap::new()),
     });
@@ -640,26 +714,52 @@ pub fn serve(
     if sh.stop_on_entry.load(Ordering::Relaxed) {
         session.request_global_step();
     }
+    // The time the run goes to: `stop`, or earlier while a `yavs/runFor` is under way. A stop
+    // on the way does not cancel it: continuing resumes it.
+    let mut limit = stop;
+    let mut next = None;
     let r = loop {
-        let r = sim.run_until(stop);
+        let (r, step) = match next.take() {
+            None => (sim.run_until(limit), false),
+            Some(Run::Until(t)) => {
+                limit = t.min(stop);
+                (sim.run_until(limit), false)
+            }
+            Some(Run::Delta) => (sim.step_delta(), true),
+            Some(Run::Timestep) => (sim.step_timestep(), true),
+        };
         if r != Ok(RunStatus::Paused) || sh.terminating.load(Ordering::Relaxed) {
             break r;
         }
-        if sh.paused_in_process.swap(false, Ordering::Relaxed) {
-            continue;
-        }
-        if !sh.pause_req.swap(false, Ordering::Relaxed) {
-            break r; // the stop time
-        }
-        session.cancel_pause();
+        let queued = sh.queued.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let in_process = sh.paused_in_process.swap(false, Ordering::Relaxed);
+        let reason = match queued {
+            // The cycle stopped in has ended: that was the delta step.
+            Some(Run::Delta) => "step",
+            Some(run) => {
+                next = Some(run);
+                continue;
+            }
+            None if in_process => continue,
+            None if sh.pause_req.swap(false, Ordering::Relaxed) => {
+                session.cancel_pause();
+                "pause"
+            }
+            None if step || limit < stop => {
+                limit = stop;
+                "step"
+            }
+            None => break r, // the stop time
+        };
         let body = json!({
-            "reason": "pause",
+            "reason": reason,
             "allThreadsStopped": true,
-            "description": format!("pause at {}, delta {}", sim.now(), sim.delta()),
+            "description": format!("{reason} at {}, delta {}", sim.now(), sim.delta()),
         });
         match serve_stop(&sh, &At::Kernel(&sim), body) {
-            Some(Resume::GlobalStep) => session.request_global_step(),
-            Some(_) => {}
+            Some(Next::Resume(Resume::GlobalStep)) => session.request_global_step(),
+            Some(Next::Run(run)) => next = Some(run),
+            Some(Next::Resume(_)) => {}
             None => break sim.run_until(stop),
         }
     };

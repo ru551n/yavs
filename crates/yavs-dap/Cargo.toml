@@ -14,6 +14,7 @@ yavs-interp = { path = "../yavs-interp" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-sem = { path = "../yavs-sem" }
+yavs-std = { path = "../yavs-std" }
 
 [lints]
 workspace = true

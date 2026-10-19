@@ -579,6 +579,18 @@ pub fn physical_value(s: &[u8], ty: &PhysicalType, bounds: Bounds) -> R<i64> {
     Ok(v as i64)
 }
 
+/// A TIME value as typed on a command line or in a debugger, with or without a space
+/// before the unit (`10ms`, `1.5 ns`), in femtoseconds.
+pub fn time_literal(t: &str) -> R<i64> {
+    let t = t.trim();
+    let split = t
+        .bytes()
+        .position(|c| c.is_ascii_alphabetic())
+        .unwrap_or(t.len());
+    let text = format!("{} {}", t[..split].trim(), &t[split..]);
+    physical_value(text.as_bytes(), &crate::types::time_type(), Bounds::I64)
+}
+
 /// `boolean'value`.
 pub fn boolean_value(s: &[u8]) -> R<bool> {
     enum_value(s, &crate::types::boolean_type()).map(|p| p == 1)

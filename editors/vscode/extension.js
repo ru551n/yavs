@@ -39,9 +39,33 @@ class Factory {
   }
 }
 
+/** A command sending custom request `command` to the yavs session, asking for a time first
+ * when `prompt` is given. */
+function custom(command, prompt) {
+  return async () => {
+    const s = vscode.debug.activeDebugSession;
+    if (!s || s.type !== 'yavs') return;
+    const args = {};
+    if (prompt) {
+      args.time = await vscode.window.showInputBox({ prompt, placeHolder: '10 ns' });
+      if (!args.time) return;
+    }
+    try {
+      await s.customRequest(command, args);
+    } catch (e) {
+      vscode.window.showErrorMessage(`yavs: ${e.message}`);
+    }
+  };
+}
+
 function activate(context) {
+  const reg = vscode.commands.registerCommand;
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory('yavs', new Factory()));
+    vscode.debug.registerDebugAdapterDescriptorFactory('yavs', new Factory()),
+    reg('yavs.runFor', custom('yavs/runFor', 'Run for how long (from now)?')),
+    reg('yavs.runUntil', custom('yavs/runUntil', 'Run until which simulation time?')),
+    reg('yavs.stepDelta', custom('yavs/stepDelta')),
+    reg('yavs.stepTimestep', custom('yavs/stepTimestep')));
 }
 
 function deactivate() {}

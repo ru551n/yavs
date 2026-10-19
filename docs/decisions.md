@@ -1013,3 +1013,5 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   subprogram of a component or block as the actual of an entity's generic subprogram in a generic map
   is `E1506` at the actual (all three reference simulators reject it). The default binding by name
   is unaffected.
+- **Initial `'transaction` (L67, #241; user, 2026-10-19):** `S'transaction` does not toggle at
+  initialization (LRM 14.7.5.2), as the third reference simulator and unlike the other two.

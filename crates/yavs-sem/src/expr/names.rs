@@ -1817,6 +1817,28 @@ impl Db {
             if is.iter().any(|i| i.ty == poison) {
                 return Err(true);
             }
+            // Overloads told apart only by the conversion's result type are ambiguous
+            // (6.5.7.1; user, 2026-10-19, majority rule): the actual does not choose.
+            let mut types: Vec<TypeId> = Vec::new();
+            for i in &is {
+                if !types.contains(&i.ty) {
+                    types.push(i.ty);
+                }
+            }
+            if types.len() > 1 {
+                db.report(
+                    Diagnostic::error(
+                        diag::AMBIGUOUS,
+                        format!(
+                            "the formal conversion `{}` is ambiguous: its overloads differ only in their result type",
+                            db.source_text(fname.span)
+                        ),
+                    )
+                    .with_primary(fname.span, "several conversions fit the formal")
+                    .with_help("qualify the conversion or give the overloads different parameter types"),
+                );
+                return Err(true);
+            }
             let mut fit: Vec<Interp> = Vec::new();
             for i in is {
                 if i.ty == want && !fit.iter().any(|f| f.via == i.via) {

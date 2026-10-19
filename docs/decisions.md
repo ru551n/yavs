@@ -1207,6 +1207,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Implicit condition operator (L53, #48; user, 2026-10-19, majority rule):** only a `??` visible at
   the condition counts, so `use ieee.std_logic_1164.std_ulogic` alone gives `E1340`; two of the
   three reference simulators reject it (it was accepted before).
+- **Formal conversions overloaded by result type (L66, #229; user, 2026-10-19, majority rule):**
+  `set(cv(x) => r)` with two `cv(integer)` returning different types is `E1302`: the actual's type
+  does not choose the overload (two of the three reference simulators reject it). Port maps already
+  required a unique conversion.
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

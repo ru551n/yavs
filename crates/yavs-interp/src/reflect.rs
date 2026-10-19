@@ -113,7 +113,7 @@ fn alloc(
     ranges: &[u8],
 ) -> R<u64> {
     let d = encode(id, value, desc, val, ranges)?;
-    m.heap
+    m.alloc_heap(false)?
         .alloc(Obj::Mirror, d)
         .map_err(|_| Fault::Runtime("heap object limit (16M objects per heap) exceeded".into()))
 }

@@ -826,10 +826,16 @@ which tools/difftest parses.
   Composite package constants whose bounds are known only at run time are evaluated there
   too, their elements in package data appended by `PkgAlloc` (#73): every constant is
   evaluated once, so an impure initialiser's side effects happen once.
-- **Allocators of shared objects (#184):** allocators in the initialisers of a shared protected
-  object and of package objects, and allocators executed inside a method of a protected object
-  in the shared heap (or anything it calls), allocate in the shared heap, so shared state never
-  points into a private heap that dies with its process or with an elaboration call.
+- **Allocators of shared objects (#184, #246):** every allocation (allocators, textio lines,
+  mirrors) made by elaboration code run with the shared state (`call_shared`, `init_package`,
+  `call_values_shared`: the initialisers of shared protected objects and of package objects)
+  or inside a method of a protected object in the shared heap, and by anything those call at
+  any depth, lands in the shared heap, so shared state never points into a private heap that
+  dies with its process or with an elaboration call. The interpreter decides it per frame
+  (`Frame::shared_alloc`, inherited by callees, `Machine::alloc_heap`), not the lowering, so a
+  function lowered once allocates in the right heap for every caller. ponytail: the shared
+  heap is never collected, so garbage made during elaboration stays; collect it from the
+  shared variables' roots if that ever matters.
 - **Record signals** have one `SignalIr` per leaf (`SignalIr::path`, field indices), mapped by
   yavs-elab to the kernel leaf with that path. A longest static prefix covers one driver slot
   per leaf below its fields, so `ProcessIr::drivers` is the flattening of `ProcInst::lsps`.

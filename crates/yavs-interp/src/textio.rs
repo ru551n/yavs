@@ -29,7 +29,7 @@ use yavs_std::textio::{self as tio, Side};
 use yavs_std::types::{Bounds, RealBounds, time_type};
 
 use crate::exec::{Fault, Machine, R, SHARED, SHARED_HEAP, add_addr, ice, rt_err, split};
-use crate::heap::{self, Heap, HeapError, Obj};
+use crate::heap::{Heap, HeapError, Obj};
 
 /// The file cell value of `std.textio.INPUT` (STD_INPUT, read mode).
 pub const FILE_INPUT: u32 = 1;
@@ -173,12 +173,7 @@ impl Machine {
     // ---- lines ----
 
     fn heap_for(&mut self, cell: u64) -> R<&mut Heap> {
-        if matches!(split(cell).0, SHARED | SHARED_HEAP) {
-            let sh = self.shared_mut()?;
-            Ok(sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED)))
-        } else {
-            Ok(&mut self.heap)
-        }
+        self.alloc_heap(matches!(split(cell).0, SHARED | SHARED_HEAP))
     }
 
     fn alloc_in(&mut self, cell: u64, kind: Obj, data: Vec<u8>) -> R<u64> {

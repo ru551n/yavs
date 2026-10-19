@@ -7,7 +7,7 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
-| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 9 of 11 pass completely (`check` now too), `com` and `verification_components` fail on #246, #248, #251 and #252, table below (#112) |
+| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 10 of 11 pass completely (`check` and `com` now too), `verification_components` fails on #248, #251 and #252, table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
 | M3, M5, M6, M8 to M10 | not started (crate spikes below) |
 
@@ -19,7 +19,7 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
 | check | 257 | 0 | 0 | none |
-| com | 141 | 4 | 0 | access value allocated by a function called from a protected body variable initializer is stale (E3009, E9999) #246 |
+| com | 145 | 0 | 0 | none (#246 fixed; re-measured after it) |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
 | logging | 113 | 0 | 0 | none |
@@ -346,7 +346,7 @@ compact constants, natives by NATIVE.md symbol, foreign references, flag propaga
 kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
 yavs-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
 `to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined),
-serial marking, kernel-free `call` / `call_shared` for elaboration, protected objects,
+serial marking, kernel-free `call` / `call_shared` for elaboration (allocations with the shared state, at any call depth, in the shared heap, #246), protected objects,
 std.textio (read/write of every textio type, linear in the line length over many calls,
 readline/writeline/tee, hread/oread/sread, justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version
 strings, time conversions, resolution_limit, the 2019 time_record functions, call paths and

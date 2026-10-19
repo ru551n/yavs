@@ -1032,7 +1032,6 @@ impl Fx<'_, '_> {
         tid: TyId,
         desc: Reg,
         v: Option<V>,
-        shared: bool,
         span: Span,
     ) -> R<(Reg, Reg, Reg)> {
         let ds = self.desc_size(tid);
@@ -1073,7 +1072,7 @@ impl Fx<'_, '_> {
             ty: tid,
             init: buf,
             size: total,
-            shared,
+            shared: false,
         });
         let what = self.msg("object", Dir::To);
         let p = self.reg(RegTy::Ptr);
@@ -1115,7 +1114,7 @@ impl Fx<'_, '_> {
         if let Some(vd) = vd {
             self.check_desc(t, tid, vd, desc, &ty::obj_desc(db, d), span)?;
         }
-        let (h, data, p) = self.new_object(o.subtype, tid, desc, init, false, span)?;
+        let (h, data, p) = self.new_object(o.subtype, tid, desc, init, span)?;
         let slot = self.addr(Space::Frame(self.depth), off);
         self.store(slot, data, Width::B8);
         let ds = self.offset(slot, 8);

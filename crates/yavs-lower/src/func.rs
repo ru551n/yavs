@@ -168,9 +168,6 @@ pub(crate) struct Fx<'a, 'b> {
     /// temporary formal, the formal, its parts; a converted formal is one part whose
     /// formal part is the conversion).
     pub writeback_parts: Vec<(crate::Obj, DeclId, Box<[yavs_sem::hir::IndividualPart]>)>,
-    /// Allocators allocate in the shared heap: the initialisers of a shared protected
-    /// object and of package objects, whose values outlive the code creating them (#184).
-    pub alloc_shared: bool,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -199,7 +196,6 @@ impl<'a, 'b> Fx<'a, 'b> {
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
-            alloc_shared: false,
         }
     }
 
@@ -1615,7 +1611,6 @@ pub(crate) fn package(
     let name = format!("{}'init", u.name.text);
     let f = pb.declare(&name, FuncKind::Thunk, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Thunk, name);
-    fx.alloc_shared = true;
     fx.stmt_start(StmtKind::Decl, u.span);
     let mut size = 0u32;
     let mut signals = Vec::new();

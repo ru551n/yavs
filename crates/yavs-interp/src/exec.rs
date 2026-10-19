@@ -165,9 +165,9 @@ pub(crate) struct Frame {
     pub ret: Option<Reg>,
     /// Temporary-area top when the frame was entered.
     pub temp_base: usize,
-    /// Inside a method of a protected object in the shared heap (or something it calls):
-    /// allocators allocate in the shared heap too, so the object's variables never point into
-    /// a process's private heap (#184).
+    /// Allocators allocate in the shared heap (`Machine::alloc_heap`): inside a method of a
+    /// protected object in the shared heap (#184), in elaboration code run with the shared
+    /// state, whose private heap dies with the call (#246), and in everything they call.
     pub shared_alloc: bool,
 }
 
@@ -422,7 +422,13 @@ impl Machine {
             link,
             ret: None,
             temp_base: self.temp.len(),
-            shared_alloc: self.frames.last().is_some_and(|f| f.shared_alloc),
+            // A root frame entered with the shared state attached is elaboration code
+            // (`call_shared`, `init_package`, `call_values_shared`): a process enters its
+            // root frame before it first takes the shared state.
+            shared_alloc: self
+                .frames
+                .last()
+                .map_or(self.sh.is_some(), |f| f.shared_alloc),
         })
     }
 
@@ -1038,6 +1044,18 @@ impl Machine {
             Err(e) => return Err(ice(format!("deallocate: {e:?}"))),
         }
         self.store(a, Width::B8, 0)
+    }
+
+    /// The heap a new object goes into: the shared one for `shared` or in a frame marked
+    /// `shared_alloc`, else the private one. Every allocation of an access value's object
+    /// goes through here.
+    pub(crate) fn alloc_heap(&mut self, shared: bool) -> R<&mut Heap> {
+        if shared || self.frames.last().is_some_and(|f| f.shared_alloc) {
+            let sh = self.shared_mut()?;
+            Ok(sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED)))
+        } else {
+            Ok(&mut self.heap)
+        }
     }
 
     pub(crate) fn heap_of(&mut self, h: u64) -> R<(&mut Heap, u8)> {
@@ -1860,15 +1878,7 @@ impl Machine {
                 shared,
             } => {
                 let data = self.rd(self.r(init), self.r(size))?.to_vec();
-                let shared = shared || self.frames.last().is_some_and(|f| f.shared_alloc);
-                let r = if shared {
-                    let sh = self.shared_mut()?;
-                    sh.heap
-                        .get_or_insert_with(|| Heap::new(heap::SHARED))
-                        .alloc(heap::Obj::Typed(ty), data)
-                } else {
-                    self.heap.alloc(heap::Obj::Typed(ty), data)
-                };
+                let r = self.alloc_heap(shared)?.alloc(heap::Obj::Typed(ty), data);
                 let h = r.map_err(|_| {
                     Fault::Runtime("heap object limit (16M objects per heap) exceeded".into())
                 })?;

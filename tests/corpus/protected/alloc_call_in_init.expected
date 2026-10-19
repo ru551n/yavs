@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:c:_p0	sum=552
+diag	note	0	0	:c:_p0	text=hello42
+diag	note	0	0	:c:_p0	v=2

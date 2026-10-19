@@ -196,7 +196,7 @@ impl Fx<'_, '_> {
             None => {
                 let Some((depth, off)) = self.prot_self else {
                     // Only the initial value of a variable whose constraint it gives runs
-                    // before its object exists (`prot_new_inner`).
+                    // before its object exists (`prot_new`).
                     return Err(self.cx.unsupported(
                         span,
                         "a method call in the initial value of an unconstrained variable of a protected body",
@@ -241,17 +241,10 @@ impl Fx<'_, '_> {
     }
 
     /// A new protected object of type `t`: its state initialised from the variables'
-    /// declarations, in the shared heap for a shared variable.
+    /// declarations, in the shared heap for a shared variable. The initialisers' allocators
+    /// follow a shared object there because the elaborator runs them with the shared state
+    /// (yavs-interp `Frame::shared_alloc`, #246).
     pub fn prot_new(&mut self, t: TypeId, shared: bool, span: Span) -> R<Reg> {
-        // The initialisers' allocators follow the object into the shared heap (#184).
-        let outer = self.alloc_shared;
-        self.alloc_shared |= shared;
-        let r = self.prot_new_inner(t, shared, span);
-        self.alloc_shared = outer;
-        r
-    }
-
-    fn prot_new_inner(&mut self, t: TypeId, shared: bool, span: Span) -> R<Reg> {
         let db = self.db;
         let state = self.state_of(t, span)?;
         let Some(Ty::Record { fields }) = self.fb.program().types().get(state).cloned() else {
@@ -352,7 +345,7 @@ impl Fx<'_, '_> {
         Ok(h)
     }
 
-    /// The initialisers of the state variables not initialised by `prot_new_inner`, in
+    /// The initialisers of the state variables not initialised by `prot_new`, in
     /// declaration order, on the object whose handle is in frame slot `so`.
     fn prot_init_late(
         &mut self,

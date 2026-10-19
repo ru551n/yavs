@@ -152,6 +152,8 @@ const PASS: &[&str] = &[
     "process/subprograms",
     "process/unaffected_2019",
     "process/wait_forms",
+    "protected/alloc_call_in_init",
+    "protected/alloc_call_in_pkg_init",
     "protected/alloc_in_init",
     "protected/counter",
     "protected/generic_package_prot",

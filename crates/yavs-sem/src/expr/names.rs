@@ -1244,7 +1244,7 @@ impl Db {
                     self.index_image(ix, v),
                     self.range_image(ix, r)
                 );
-                self.warn_static_index(span, msg);
+                self.report_static_index(span, msg);
             }
         }
         let subtype = self.element_subtype(pst).unwrap_or(elem);
@@ -1304,7 +1304,7 @@ impl Db {
                 self.range_image(index, s),
                 self.range_image(index, r)
             );
-            self.warn_static_index(span, msg);
+            self.report_static_index(span, msg);
         }
         let elem_c = match &self.subtypes[pst].constraint {
             crate::types::Constraint::Array { elem, .. } => elem.clone(),
@@ -2343,15 +2343,13 @@ impl Db {
         })
     }
 
-    /// `W1404` (sem.md 4.3): a static index or slice outside a static index range. Only a
-    /// warning, the code may be dead; the run-time check stays.
-    fn warn_static_index(&mut self, span: Span, msg: String) {
-        self.report(
-            Diagnostic::warning(diag::W_STATIC_INDEX, msg)
+    /// `E1404` (sem.md 4.3): a static index or slice outside a static index range, an error
+    /// also in code that never runs (user, 2026-10-19, majority rule).
+    fn report_static_index(&mut self, span: Span, msg: String) {
+        let _ = self.error(
+            Diagnostic::error(diag::STATIC_INDEX, msg)
                 .with_primary(span, "outside the index range")
-                .with_note(
-                    "the code may never run, so this is checked again at run time (LRM 8.4, 8.5)",
-                ),
+                .with_note("LRM 8.4, 8.5: the index must belong to the index range of the array"),
         );
     }
 

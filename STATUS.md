@@ -92,7 +92,7 @@ An installed binary finds `lib/` next to itself (#43).
   and context prefixes of the wrong kind (`E1104` at the suffix), and a missing-use-clause help
   for undeclared names that a loaded package (with `ieee` visible: `ieee_std_context`) declares.
 - Static checks (#53): array attribute dimensions must be locally static (`E1410`) and exist
-  (`E1623`), static indices and slices outside a static index range warn (`W1404`), and an
+  (`E1623`), static indices and slices outside a static index range are `E1404`, and an
   constant without a value outside a package declaration is `E1224` (#213), and a deferred constant
   without a full declaration in the package body is `E1230`.
 - A package body is one declarative region with its package (4.8): redeclaring a package name in the body is `E1101` (#232, lrm-checks L64).

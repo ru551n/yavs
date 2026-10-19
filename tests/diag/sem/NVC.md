@@ -43,8 +43,6 @@ The reference simulator (the primary reference). Every file the reference simula
 | `stat/integer_overflow_multiplication` | rejects @5 | warns | yavs warns W1401 (non-required context, Q5, run-time check kept); the reference simulators are stricter (the reference simulator error, the second reference simulator warning). |
 | `stat/mod_by_zero_in_range` | accepts | rejects @5 | The reference simulator defers these to elaboration; yavs folds type-range bounds at analysis (sem.md 4.2 "required folding"). The second reference simulator rejects. |
 | `stat/negative_exponent_in_range` | accepts | rejects @5 | The reference simulator defers these to elaboration; yavs folds type-range bounds at analysis (sem.md 4.2 "required folding"). The second reference simulator rejects. |
-| `stat/static_index_out_of_range_process` | rejects @11 | warns | The reference simulator stricter: reports an error where yavs only warns (W1404, sem.md 4.3: code may be dead). The line agrees. The second reference simulator warns. |
-| `stat/static_slice_out_of_range` | rejects @10 | warns | The reference simulator stricter: reports an error where yavs only warns (W1404, sem.md 4.3: code may be dead). The line agrees. The second reference simulator warns. |
 | `typ/incomplete_not_completed` | accepts | accepts | The reference simulators both accept an incomplete type that is never completed (LRM 5.4.2 requires completion). Kept for E1220. |
 | `ext/alias_of_external_ok` | rejects @40 | accepts | The reference simulator bug: "protected type COUNTER has no method named INC" for a method call through an alias of an external shared variable (LRM 6.6.2: the alias denotes the variable); the second reference simulator accepts. |
 | `unit/configuration_label_wrong_component` | accepts | rejects @13 | The reference simulator accepts at analysis (checks at elaboration); the second reference simulator rejects. |
@@ -70,6 +68,8 @@ The second reference simulator as second opinion: files where the second referen
 | File | The second reference simulator | Reason |
 |---|---|---|
 | `gen/nested_instance_signal_in_process` | accepts | Accepts at analysis and fails with an internal error at elaboration; LRM 4.9: the instance is a package declaration in the process, so 4.7 and 11.3 apply (#34) |
+| `stat/static_index_out_of_range_process` | warns | E1404: the reference simulator and the third one reject a static index outside the range, also in dead code (majority rule, user 2026-10-19; `docs/design/lrm-checks.md` L51) |
+| `stat/static_slice_out_of_range` | warns | E1404, as for the static index (majority rule, user 2026-10-19) |
 | `ext/external_type_mismatch` | accepts | The second reference simulator accepts (lenient or deferred to elaboration) |
 | `gen/generic_discrete_has_pos_ok` | rejects @5,6,7 | The second reference simulator 2019 support is partial (generic type classes, conditional expressions, `image` on records, views) |
 | `gen/type_actual_not_access` | rejects @5,6 | The second reference simulator rejects, but reports a different line (it blames the declaration or another construct) |
@@ -490,9 +490,9 @@ only checks at elaboration. No test depended on U-1 to U-6 or the L8 tie.
 | `physical_unit_overflow` | E1401 @9 | rejects @9 | rejects |
 | `range_bound_not_locally_static` | E1410 @8 | rejects @8 | rejects @8 |
 | `real_outside_subtype` | E1403 @6 | rejects @6 | warns |
-| `static_index_out_of_range_process` | W1404 @11 | rejects @11 | warns |
+| `static_index_out_of_range_process` | E1404 @11 | rejects @11 | warns |
 | `static_negative_natural` | E1403 @5 | rejects @5 | warns |
-| `static_slice_out_of_range` | W1404 @10 | rejects @10 | warns |
+| `static_slice_out_of_range` | E1404 @10 | rejects @10 | warns |
 | `static_value_outside_computed` | E1403 @7 | rejects @7 | warns |
 | `static_value_outside_subtype` | E1403 @6 | rejects @6 | warns |
 

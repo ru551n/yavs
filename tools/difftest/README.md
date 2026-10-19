@@ -112,3 +112,39 @@ Thread-count invariance: if the template contains `{threads}`, `--threads 4` run
 Grouped by directory: `scalar arith process delta sigassign postponed report env resolution
 force composite access protected textio generics hierarchy reflect implicit ieee psl`. Written from scratch (no
 the reference simulators test files). A few use `std=2019`. See `git log` and the file list (`--list`).
+
+## External regression tests (`external.py`)
+
+`external.py` runs the reference simulators' own self-checking regression tests (pass or fail
+through assertions and the exit status) in place from the corpus cache (`tools/fetch-corpus.sh`,
+`YAVS_CORPUS`, default `~/.cache/rsim-corpus`); they are never copied into the repository. Suites:
+`nvc` (the test list of its regression directory: one VHDL file per test, options such as the
+standard, `fail`, `gold`, `stop=`, generics) and `ghdl` (the per-directory `testsuite.sh` scripts
+whose lines are only `analyze`, `elab_simulate`, `elab_simulate_failure`, `clean` and the standard
+flags; anything else, such as `if`, loops or tool options, is skipped). Tests of other languages,
+VHPI, coverage, waves dumps compared to files, Tcl and shell scripts are skipped. yavs runs tests
+written for an earlier standard as 2008.
+
+    tools/difftest/external.py nvc                      # yavs against the reference simulator, classified
+    tools/difftest/external.py ghdl --filter 'issue1'   # a subset
+    tools/difftest/external.py nvc --threads 4          # also 1 against 4 threads
+    tools/difftest/external.py nvc --oracle --check tools/difftest/external-nvc.pass   # CI
+
+Default mode runs each test on the reference simulator and on yavs (one simulator at a time per
+test, `--jobs` tests at once, default 2) and puts it in one class:
+
+- `pass`: the normalised output (`normalise()`, yavs analysis warnings dropped) is equal per run;
+  `order`, `fatalmsg`, `delta-path`: equal only with that much ignored (same-cycle order; the
+  wording, process path and exit status of a run-time error when both fail); `output`: other
+  differences; `outcome`: one passes a run the other fails;
+- `analysis`, `elab`, `timeout`, `threads`: yavs fails there or differs between thread counts;
+- `ref-bad`: the reference simulator does not meet the test's own expectation here (environment,
+  version), so the test is not compared; `skip`: not modelled by the harness.
+
+`--oracle` needs no reference simulator: a test passes when every run passes or fails as the
+suite expects (its exit status; the gold lines of the first suite are checked on the reference
+only, they carry its time format). A run of the
+second suite that exits 1 after `error` reports only counts as passing (the `errexit` rule).
+`external-nvc.pass` and `external-ghdl.pass` list the tests that pass both ways; CI (`corpus`
+job) runs `--oracle --check` on them, so a regression fails the build. Regenerate them with
+`--write-pass` from a differential run and keep only names that also pass `--oracle`.

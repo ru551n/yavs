@@ -67,3 +67,12 @@ jobs:
       - name: Check the discrepancy cases against expected-yavs
         run: |
           YAVS_BIN="$PWD/target/release/yavs" python3 tools/discrepancies/run.py --sims yavs --check --no-sandbox
+      - name: Run the reference simulators' own self-checking tests on their pass lists
+        run: |
+          export PATH="$PWD/target/release:$PATH"
+          failed=
+          for s in nvc ghdl; do
+            python3 tools/difftest/external.py "$s" --oracle --no-sandbox --jobs 4 \
+              --check "tools/difftest/external-$s.pass" || failed="$failed $s"
+          done
+          test -z "$failed" || { echo "external regression tests failing:$failed"; exit 1; }

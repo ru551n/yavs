@@ -80,11 +80,49 @@ revision, as the scripts do (the transcript layout the tests compare against the
 all 314 tests pass, the same test for test; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
 Root causes fixed on the way: #291, #292, #294, #295, #296, #304, #311 (= #313), #314, #315 (= #312).
 
+### Reference simulators' own regression tests, run time (#354)
+
+`tools/difftest/external.py` runs the self-checking regression tests of the two reference simulator
+suites in place from the corpus cache, on yavs (release build) and on the reference simulator
+that owns the suite, and classifies each test (`tools/difftest/README.md` "External regression
+tests"). Tests for an earlier standard run as 2008 on yavs. Counts on main at fc46f5ed (before)
+and after #365 to #368 (2026-10-19):
+
+| Suite | Runnable | Reference bad here | pass | wording only (`fatalmsg`) | order | other output | outcome | elab | analysis |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| first (`external.py nvc`), before | 1070 | 20 | 791 | 52 | 3 | 37 | 64 | 52 | 51 |
+| first, after | 1070 | 20 | 798 | 52 | 3 | 39 | 55 | 52 | 51 |
+| second (`external.py ghdl`), before | 504 | 30 | 377 | 0 | 0 | 21 | 16 | 19 | 41 |
+| second, after | 504 | 30 | 381 | 0 | 0 | 21 | 12 | 19 | 41 |
+
+Skipped by the harness: 403 and 647 (other languages, VHPI, coverage, Tcl and shell scripts,
+second-suite scripts with control flow or tool options, negative analysis tests). The passing
+tests are listed in `tools/difftest/external-{nvc,ghdl}.pass`; the CI `corpus` job checks them
+against the suites' own verdicts (exit status) without a reference simulator. Every listed test gives
+identical output at `--threads 1` and `--threads 4`.
+
+Remaining run-time causes, ranked by tests (yavs bugs have issues): reports in resolution and
+conversion functions during the run print `(init)` and bypass the report path, #372 (12);
+unsupported PSL beyond the subset, W0004 (17, plus 4 that differ only in the directive path);
+missing run-time checks, #379 (about 11); PSL-free reference quirks and LRM-unclear cases (about
+15: mirror identity in reflection, null array bounds, `'transaction` start value 2 to 2, textio
+read of bits with spaces, real image format of the second suite, environment and time stamps);
+ICE on arrays with element constraints, #380 (3); `'path_name` of block and generate labels,
+#376 (3); binary files of records and arrays of composites (3); guarded assignments with a false
+guard, #373 (2); access to protected types, #377 (2); predefined operations on arrays of
+composites (2); aggregate longer than a non-static constant subtype is an ICE, #378 (2); failed
+textio READ stops the run, #381 (1); a repeated force in one cycle, #382 (1); sensitivity of
+aggregate choices, #374 (1); files of subprograms not closed on return, #375 (1); and single
+tests (alias and partially constrained record bounds, `hread` digit count, an impure function in
+a type evaluated twice, `log2` precision, 2019 mode view parameters). Analysis and elaboration
+failures (about 160) are mostly "not lowered yet" (`E2001`) features and VHDL-93 code read as
+2008; the analysis corpora cover them.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on
 ubuntu-24.04, ubuntu-24.04-arm and windows-latest (MSVC) for every push to main and every pull
-request (#134); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63); not yet in CI: JIT tier. `.github/workflows/release.yml`
+request (#134); a `corpus` job (Linux x86_64) fetches the pinned external corpora and fails on any difference from `tools/corpus/*.expected` (#63) and on any test of `tools/difftest/external-*.pass` that no longer meets its suite's verdict (#354); not yet in CI: JIT tier. `.github/workflows/release.yml`
 builds and packages `yavs` with `lib/` for the three targets on a `v*` tag and publishes a
 pre-release with SHA256SUMS (#165); `workflow_dispatch` with `dry_run` only builds the archives. The Linux archives are built with cargo-zigbuild against glibc 2.17 and smoke-tested in centos:7.
 An installed binary finds `lib/` next to itself (#43).

@@ -24,7 +24,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | `src/lib.rs` | `Kind`, `Key`, `Entry` (with `tests`), `Database` (`tests`, `write`, `parse`, `merge`, `attribute`, `rank`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
 | `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
 | `src/exclude.rs` | Exclusion file `parse`, `apply` (W0110, W0111, W0114), `Database::uncovered`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
-| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html`: static, inline CSS, light/dark, no scripts, missed items carry their `exclude::miss_row`) |
+| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS, light/dark, no scripts, missed items carry their `exclude::miss_row`) |
 | `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd` and toggles on `tests/cli/cov_toggle.vhd`, thread identity, merge, reports |
 
 ## 3. Design decisions that bind this module

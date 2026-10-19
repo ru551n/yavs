@@ -528,8 +528,17 @@ fn html_report() {
         src.contains("class=\"it ex\"") && src.contains("excluded: dead &lt;b&gt;"),
         "{src}"
     );
+    // The missed-only page keeps the missed and excluded lines and drops the rest.
+    let miss = page(&tmp, "src-0-missed.html");
+    assert!(index.contains("href=\"src-0-missed.html\""), "{index}");
+    assert!(src.contains("href=\"src-0-missed.html\""), "{src}");
+    assert!(miss.contains("href=\"src-0.html\""), "{miss}");
+    assert!(miss.contains("<tr id=\"L56\" class=\"miss\">"), "{miss}");
+    assert!(miss.contains("class=\"it ex\""), "{miss}");
+    assert!(src.contains("<tr id=\"L1\"") && !miss.contains("<tr id=\"L1\""));
+    assert!(miss.len() < src.len());
     // No external resources, no scripts; source text is escaped.
-    for p in [&index, &src] {
+    for p in [&index, &src, &miss] {
         assert!(
             !p.contains("http") && !p.contains("<script") && !p.contains("src=\""),
             "{p}"
@@ -555,7 +564,7 @@ fn html_report() {
         o.stdout.clear();
     };
     again("h2");
-    for n in ["index.html", "src-0.html"] {
+    for n in ["index.html", "src-0.html", "src-0-missed.html"] {
         assert_eq!(
             page(&tmp, n),
             std::fs::read_to_string(tmp.join("h2").join(n)).expect("h2")

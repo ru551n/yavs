@@ -4,7 +4,8 @@
 //! order) shows a file's source with the hit count of each line and, under a line, its items
 //! (statements, branch arms, toggles) with their paths, counts and tests. A missed item shows
 //! its `--uncovered` row, ready to copy into an exclusion file; an excluded one is greyed with
-//! the reason of its row. No timestamp: equal inputs give byte-identical files.
+//! the reason of its row. `src-N-missed.html` lists only the lines with a missed or excluded
+//! item (no scripts needed to find them in a big file). No timestamp: equal inputs give byte-identical files.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -166,7 +167,7 @@ pub fn pages(
         let t = per_file.get(f).copied().unwrap_or_default();
         let _ = writeln!(
             b,
-            "<tr><td><a href=\"src-{i}.html\">{}</a></td>{}</tr>",
+            "<tr><td><a href=\"src-{i}.html\">{}</a> <a class=\"dim\" href=\"src-{i}-missed.html\">missed only</a></td>{}</tr>",
             esc(f),
             t.cells()
         );
@@ -174,7 +175,13 @@ pub fn pages(
     b.push_str("</table>\n");
     out.push(("index.html".to_string(), page("Coverage report", &b)));
     for (i, f) in names.iter().enumerate() {
-        out.push((format!("src-{i}.html"), file_page(db, ex, f, &sources[*f])));
+        for missed in [false, true] {
+            let n = if missed { "-missed" } else { "" };
+            out.push((
+                format!("src-{i}{n}.html"),
+                file_page(db, ex, f, &sources[*f], (i, missed)),
+            ));
+        }
     }
     out
 }
@@ -182,7 +189,16 @@ pub fn pages(
 /// An item of a line with the reason of the exclusion row that took it out, if any.
 type LineItem<'a> = (&'a Key, &'a Entry, Option<&'a str>);
 
-fn file_page(db: &Database, ex: &[(Key, Entry, String)], file: &str, text: &str) -> String {
+/// `view` is the file's number and whether the page lists only the lines with a missed or
+/// excluded item (`src-N-missed.html`), which keeps big designs usable without scripts.
+fn file_page(
+    db: &Database,
+    ex: &[(Key, Entry, String)],
+    file: &str,
+    text: &str,
+    view: (usize, bool),
+) -> String {
+    let (num, missed) = view;
     // Items by line: (key, entry, exclusion reason).
     let mut by: BTreeMap<u32, Vec<LineItem>> = BTreeMap::new();
     for (k, e) in db.items.iter().filter(|(_, e)| e.file == file) {
@@ -191,8 +207,13 @@ fn file_page(db: &Database, ex: &[(Key, Entry, String)], file: &str, text: &str)
     for (k, e, why) in ex.iter().filter(|x| x.1.file == file) {
         by.entry(e.line).or_default().push((k, e, Some(why)));
     }
+    let other = if missed {
+        format!("<a href=\"src-{num}.html\">all lines</a>")
+    } else {
+        format!("<a href=\"src-{num}-missed.html\">missed only</a>")
+    };
     let mut b = format!(
-        "<p><a href=\"index.html\">index</a></p>\n<h1>{}</h1>\n<table class=\"src\">\n",
+        "<p><a href=\"index.html\">index</a> {other}</p>\n<h1>{}</h1>\n<table class=\"src\">\n",
         esc(file)
     );
     let lines: Vec<&str> = text.lines().collect();
@@ -203,6 +224,9 @@ fn file_page(db: &Database, ex: &[(Key, Entry, String)], file: &str, text: &str)
             (&a.0.path, &a.0.sig, a.0.kind, a.0).cmp(&(&b.0.path, &b.0.sig, b.0.kind, b.0))
         });
         let live = || its.iter().filter(|i| i.2.is_none());
+        if missed && !its.iter().any(|i| i.2.is_some() || i.1.count == 0) {
+            continue;
+        }
         let stmts: Vec<u64> = live()
             .filter(|i| i.0.kind == Kind::Statement)
             .map(|i| i.1.count)

@@ -158,7 +158,9 @@ source with the hit count of each line, missed lines in red and lines with a mis
 or toggle in yellow; under a line, each of its items (statement, branch arm, toggle per signal
 and direction) with its instance, count and, when the database has test names, the tests that
 hit it. A missed item shows its ``--uncovered`` row, so it can be copied into an exclusion file.
-Items taken out by ``--exclude`` stay visible, greyed, with the reason of their row. The
+Each file also has ``src-N-missed.html`` (linked from the index and the file page), the same page
+reduced to the lines with a missed or excluded item, to find the gaps in a big design without
+scripts. Items taken out by ``--exclude`` stay visible, greyed, with the reason of their row. The
 sources are read at report time from the paths in the database, so run the command where they
 resolve; a source that cannot be read is error ``E0113`` and nothing is written. The same
 database always gives the same bytes.

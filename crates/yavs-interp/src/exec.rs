@@ -687,6 +687,7 @@ impl Machine {
     /// its frames, registers or temporaries. Other serial processes are suspended, so their
     /// published addresses are current for the shared heap.
     fn reclaim(&mut self) {
+        self.gc_inline();
         if self.heap.reclaim_due() {
             let pinned = self.pinned(HEAP, true);
             self.heap.recycle(&pinned);
@@ -705,6 +706,77 @@ impl Machine {
                 if let Some(h) = sh.heap.as_mut() {
                     h.recycle(&pinned);
                 }
+            }
+        }
+    }
+
+    /// Every aligned word of the frames, registers and temporaries that has the tag of an
+    /// access handle: roots for a collection inside an activation, where a handle may sit in a
+    /// register or a temporary that no root map names. A false hit only keeps an object.
+    fn handle_words(&self) -> Vec<u64> {
+        let tags = [heap::PRIVATE, heap::SHARED];
+        let words = self
+            .frames
+            .iter()
+            .flat_map(|f| f.slots.as_chunks::<8>().0)
+            .chain(self.temp.as_chunks::<8>().0)
+            .map(|w| u64::from_le_bytes(*w))
+            .chain(
+                self.frames
+                    .iter()
+                    .flat_map(|f| f.regs.iter().copied())
+                    .chain(self.regs.iter().copied()),
+            );
+        words
+            .filter(|&w| w != 0 && tags.contains(&heap::tag_of(w)))
+            .collect()
+    }
+
+    /// Collect a heap that grew past its threshold inside an activation, so a process that
+    /// never waits (a testbench main loop) does not keep every object it drops until the next
+    /// delta cycle (memory grew without bound). Call only between instructions, as
+    /// [`Machine::reclaim`]. Other serial processes are suspended, so what they published is
+    /// current. Nothing is freed when a root cannot be located.
+    fn gc_inline(&mut self) {
+        if self.sh.as_ref().is_some_and(|sh| !sh.started) {
+            return;
+        }
+        let t = self.rt.limits.gc_threshold;
+        let private = self.heap.gc_due(t);
+        let shared = self
+            .sh
+            .as_ref()
+            .and_then(|sh| sh.heap.as_ref())
+            .is_some_and(|h| h.gc_due(t));
+        if !(private || shared) {
+            return;
+        }
+        let Some(mut roots) = self.frame_roots() else {
+            return;
+        };
+        roots.extend(self.handle_words());
+        if private {
+            let pinned = self.pinned(HEAP, true);
+            self.heap.collect(&self.rt.prog, &roots, &pinned);
+        }
+        if shared {
+            let mut pinned = self.pinned(SHARED_HEAP, true);
+            let prog = self.rt.prog.clone();
+            let Some(sh) = self.sh.as_mut() else { return };
+            if !heap::slot_roots(&prog, &prog.shared_roots, &sh.vars, &mut roots) {
+                return;
+            }
+            for p in &sh.procs {
+                match &p.handles {
+                    Some(h) => roots.extend(h),
+                    None => return,
+                }
+            }
+            pinned.extend(sh.pinned());
+            pinned.sort_unstable();
+            pinned.dedup();
+            if let Some(h) = sh.heap.as_mut() {
+                h.collect(&prog, &roots, &pinned);
             }
         }
     }
@@ -2190,6 +2262,7 @@ impl Machine {
                 size,
                 shared,
             } => {
+                self.reclaim();
                 let data = self.rd(self.r(init), self.r(size))?.to_vec();
                 let r = self.alloc_heap(shared)?.alloc(heap::Obj::Typed(ty), data);
                 let h = r.map_err(|_| {

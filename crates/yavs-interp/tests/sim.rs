@@ -811,6 +811,16 @@ fn gc_keeps_objects_reached_by_address() {
 /// Garbage collected at suspensions keeps everything reachable from the root map.
 #[test]
 fn gc_keeps_roots() {
+    gc_keeps_roots_run(true);
+}
+
+/// The same loop without a wait: the heap is collected inside the activation.
+#[test]
+fn gc_inside_an_activation_keeps_roots() {
+    gc_keeps_roots_run(false);
+}
+
+fn gc_keeps_roots_run(waits: bool) {
     let mut pb = ProgramBuilder::new();
     let int = integer(&mut pb);
     let acc = pb.ty(Ty::Access { target: int });
@@ -864,7 +874,9 @@ fn gc_keeps_roots() {
         stmt(&mut fb, StmtKind::VarAssign);
         let h = new(&mut fb, 99);
         store(&mut fb, AddrSpace::Frame, junk, h, Width::B8);
-        wait_for(&mut fb, NS);
+        if waits {
+            wait_for(&mut fb, NS);
+        }
         stmt(&mut fb, StmtKind::VarAssign);
         let iv = load(&mut fb, AddrSpace::Frame, i, Width::B8);
         let one = fb.int(1);
@@ -910,7 +922,7 @@ fn gc_keeps_roots() {
         Ok(RunStatus::Ended(EndReason::Idle))
     );
     let lines = t.0.lock().unwrap().clone();
-    assert!(has(&lines, "200 ns +0 p0 Note: keep.all = 7"), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("Note: keep.all = 7")), "{lines:#?}");
 }
 
 /// The shared heap under churn (#303): a serial process replaces the object of a shared

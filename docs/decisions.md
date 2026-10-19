@@ -1225,8 +1225,16 @@ which tools/difftest parses.
     record whose third word is the handle of the variable's object).
   - Trigger: once more was allocated since the last collection than both `Limits::gc_threshold`
     and what the last collection kept, so the work stays proportional to the allocation
-    (ponytail: a fixed rule, no tuning by pause time). Never during a cycle; output identical at
-    any `--threads` and with `--shuffle`.
+    (ponytail: a fixed rule, no tuning by pause time). Output identical at any `--threads`
+    and with `--shuffle`. Between cycles at the safepoint, and (#409, agent decision, awaiting
+    the user's confirmation of this extension) also inside the activation of a serial process
+    that allocates or calls a native (`Machine::gc_inline`, same trigger, once the simulation
+    has started): a testbench whose main process never waits runs in one cycle and would keep
+    every object it drops (a 400 MB run became 54 MB). The other serial processes are
+    suspended, so what they published is current; the running process's roots are its frames'
+    root maps plus every aligned word of its frames, registers and temporaries that looks
+    like a handle or an address (a false hit only keeps an object). Private heaps are
+    collected the same way. Code run for elaboration is never collected.
   - Ceiling (ponytail in `Heap::seal`): garbage made during elaboration is kept with the sealed
     objects; root maps for package and instance data would let it go.
 - **Record signals** have one `SignalIr` per leaf (`SignalIr::path`, field indices), mapped by

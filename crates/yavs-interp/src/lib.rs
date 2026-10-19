@@ -80,6 +80,10 @@ pub struct SharedState {
     pub(crate) heap: Option<Heap>,
     /// The shared-heap roots of every serial process that ran, as of its last suspension.
     pub(crate) procs: Vec<ProcRoots>,
+    /// The simulation has started ([`SharedGc`] saw the start): until then, code run for
+    /// elaboration holds handles that no root map names, so nothing is collected inside an
+    /// activation.
+    pub(crate) started: bool,
 }
 
 /// A serial process's shared-heap roots: handles from its frames' root maps (`None`: one
@@ -96,6 +100,7 @@ impl SharedState {
             vars,
             heap: Some(Heap::new(heap::SHARED)),
             procs: Vec::new(),
+            started: false,
         }
     }
 
@@ -156,6 +161,7 @@ impl yavs_kernel::Observer for SharedGc {
         };
         match phase {
             yavs_kernel::Phase::StartOfSim => {
+                s.started = true;
                 if let Some(h) = s.heap.as_mut() {
                     h.seal();
                 }

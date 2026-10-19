@@ -297,6 +297,9 @@ pub(crate) struct Signal {
     /// The simulation runs (not initialising): reports of its resolution function are
     /// collected in `callouts` for the kernel to commit (#372).
     pub live: bool,
+    /// Ranges where a force or release of this cycle changed the effective value, whatever
+    /// the cycle's last one left: an event even when the value ends up unchanged (#382).
+    pub force_ev: Vec<Range>,
     pub callouts: Vec<(crate::process::Severity, String)>,
 }
 
@@ -331,6 +334,7 @@ impl Signal {
             applied: Vec::new(),
             eff_dirty: Vec::new(),
             live: false,
+            force_ev: Vec::new(),
             callouts: Vec::new(),
         }
     }
@@ -527,6 +531,34 @@ impl Signal {
             self.last_value
                 .select(off + c, &self.cur, off + c, k, &[m], Some(0));
             self.cur.select(off + c, src, soff + c, k, &[m], Some(0));
+        }
+        if !self.force_ev.is_empty() {
+            any |= self.force_events(r, now, cycle);
+        }
+        any
+    }
+
+    /// Events for the elements of `r` an earlier force of this cycle changed, if the cycle's
+    /// last force changed them back.
+    fn force_events(&mut self, r: Range, now: Time, cycle: u64) -> bool {
+        let mut any = false;
+        for f in std::mem::take(&mut self.force_ev) {
+            let Some(part) = f.intersect(r) else {
+                self.force_ev.push(f);
+                continue;
+            };
+            for e in part.elems() {
+                if self.event_cycle[e] == cycle {
+                    continue;
+                }
+                any = true;
+                self.event_cycle[e] = cycle;
+                self.last_event[e] = Some(now);
+                match self.changed.last_mut() {
+                    Some(run) if run.end() as usize == e => run.len += 1,
+                    _ => self.changed.push(Range::new(e as u32, 1)),
+                }
+            }
         }
         any
     }

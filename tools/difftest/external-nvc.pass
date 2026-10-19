@@ -233,6 +233,7 @@ for4
 force1
 force2
 force3
+force4
 func1
 func10
 func11
@@ -302,6 +303,7 @@ ieee6
 ieee7
 ieee8
 image1
+image2
 implicit1
 implicit10
 implicit3
@@ -364,6 +366,7 @@ issue1405
 issue1406
 issue141
 issue1420
+issue1424
 issue143
 issue1453
 issue146
@@ -379,6 +382,7 @@ issue1537
 issue1539
 issue1541
 issue1543
+issue1544
 issue1559
 issue1562
 issue1576
@@ -568,6 +572,7 @@ issue96
 issue960
 issue962
 issue963
+issue970
 issue971
 issue972
 issue979
@@ -614,6 +619,7 @@ proc7
 proc8
 proc9
 protected1
+protected10
 protected12
 protected2
 protected3

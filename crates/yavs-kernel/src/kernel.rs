@@ -1692,6 +1692,8 @@ fn lock(m: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
 
 fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) -> Result<(), ErrorKind> {
     let (off, n) = (op.range.offset as usize, op.range.len as usize);
+    let before = matches!(op.mode, OpMode::Force(_) | OpMode::Release(_))
+        .then(|| sig.effective_of(op.range));
     match (op.mode, &op.value) {
         (OpMode::Force(m), Some(v)) => {
             let slot = match m {
@@ -1716,6 +1718,15 @@ fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) -> Result<()
         }
         (OpMode::Deposit, Some(v)) => sig.driving.copy(off, v, 0, n),
         _ => unreachable!("make_op attaches a value to every force and deposit"),
+    }
+    if let Some(before) = before {
+        let after = sig.effective_of(op.range);
+        if (0..n)
+            .step_by(64)
+            .any(|c| before.diff_chunk(c, &after, c, (n - c).min(64)) != 0)
+        {
+            sig.force_ev.push(op.range);
+        }
     }
     sig.mark_active(op.range, now, cycle);
     sig.eff_dirty.push(op.range);

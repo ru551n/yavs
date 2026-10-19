@@ -116,7 +116,8 @@ pub fn range_value(db: &Db, r: &RangeC) -> Option<StaticRange> {
                 AttrPrefix::Expr(e) => db.exprs[e].subtype,
                 AttrPrefix::Entity(_) => return None,
             };
-            let r = subtype_range(db, st, *dim as usize)?;
+            // `dim` is 1-based (0 for a subtype choice of a scalar type).
+            let r = subtype_range(db, st, dim.saturating_sub(1) as usize)?;
             Some(if *reverse { r.reversed() } else { r })
         }
     }
@@ -508,7 +509,7 @@ pub fn resolve_choices(
                         Ok(Choice::Range(RangeC::Attr {
                             prefix: AttrPrefix::Subtype(st),
                             reverse: false,
-                            dim: 0,
+                            dim: 1,
                         }))
                     }
                 }
@@ -1614,7 +1615,12 @@ fn array_agg(
     let mut choices: Vec<Vec<Choice>> = Vec::with_capacity(assocs.len());
     let mut failed = None;
     for a in assocs {
-        let piece_ok = a.choices.iter().all(|c| matches!(c, ast::Choice::Range(_)));
+        // A range choice, also as a subtype name (9.3.3.3).
+        let piece_ok = a.choices.iter().all(|c| match c {
+            ast::Choice::Range(_) => true,
+            ast::Choice::Expr(e) => r.type_mark(db, e).is_some(),
+            ast::Choice::Others(_) => false,
+        });
         match resolve_value(db, r, cx, dim, &a.value, piece_ok) {
             Ok(v) => vals.push(v),
             Err(e) => {
@@ -2024,7 +2030,12 @@ fn choice_low_high(db: &mut Db, c: &Choice, index_st: SubtypeId, span: Span) -> 
             reverse: _,
             dim,
         }) => {
-            let dimc = mk_const(db, ConstValue::Int(i64::from(*dim) + 1), index_st, span);
+            let dimc = mk_const(
+                db,
+                ConstValue::Int(i64::from((*dim).max(1))),
+                index_st,
+                span,
+            );
             let attr = |db: &mut Db, a| {
                 mk_expr(
                     db,

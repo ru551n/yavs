@@ -85,6 +85,10 @@ pub struct RunArgs {
     /// Leave out arrays and vectors with more elements than this.
     #[arg(long, value_name = "N", default_value = "65536")]
     wave_max_array: usize,
+    /// Also record the scalar variables of processes (sampled at the end of each time step);
+    /// the include and exclude globs apply to `top.proc.var`.
+    #[arg(long, requires = "wave")]
+    wave_variables: bool,
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
@@ -432,7 +436,8 @@ pub fn run(
         out.emit(&db.sources, &d);
         return out.finish(2);
     }
-    let (mut sim, rt) = match e.build_runtime(cfg) {
+    let probes = a.wave_variables.then(yavs_wave::VarProbes::default);
+    let (mut sim, rt) = match e.build_probed(cfg, probes.as_ref()) {
         Ok(s) => s,
         // Package and instance initialisation runs VHDL code: report it with its VHDL stack.
         Err(err) => {
@@ -466,7 +471,14 @@ pub fn run(
                 max_array_elems: a.wave_max_array,
             };
             let cfg = yavs_wave::WaveConfig::default();
-            match yavs_wave::record(&db, &e, std::path::Path::new(path), sel, cfg) {
+            match yavs_wave::record(
+                &db,
+                &e,
+                std::path::Path::new(path),
+                sel,
+                cfg,
+                probes.as_ref(),
+            ) {
                 Ok((rec, skipped)) => {
                     for s in skipped {
                         out.emit(

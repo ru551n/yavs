@@ -256,6 +256,89 @@ fn waves_of_a_design() {
 }
 
 #[test]
+fn wave_variables() {
+    let d = design("variables");
+    let fst = d.join("a.fst");
+    let args = |f: &Path, extra: &[&str]| {
+        let mut v = vec![format!("--wave={}", f.display())];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v.push("wave_tb".to_string());
+        v
+    };
+    let go = |f: &Path, extra: &[&str]| {
+        let a = args(f, extra);
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        let out = run(&d, &a);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // Off by default.
+    go(&fst, &[]);
+    assert!(!dump(&fst).contains("main"));
+    go(&fst, &["--wave-variables"]);
+    let s = dump(&fst);
+    assert_eq!(
+        changes(&s, "wave_tb.main.cnt"),
+        "0=0001 10000000=0010 20000000=0011 30000000=0100",
+        "natural range 0 to 15: 4 bits, the value at the end of each step"
+    );
+    assert_eq!(
+        changes(&s, "wave_tb.main.vs"),
+        "0=00 40000000=01 41000000=10"
+    );
+    assert_eq!(changes(&s, "wave_tb.main.vr"), "0=0 40000000=2.5");
+    assert_eq!(changes(&s, "wave_tb.main.vl"), "0=0 40000000=x");
+    assert_eq!(
+        changes(&s, "wave_tb.main.vi"),
+        format!("0={} 40000000={:08b}", "0".repeat(8), -100i8),
+        "-100 to 100: 8 bits"
+    );
+    {
+        let w = read(&fst).expect("wellen");
+        let h = w.hierarchy();
+        let v = h.lookup_var(&["wave_tb", "main"], "cnt").expect("cnt");
+        let v = &h[v];
+        assert_eq!(
+            v.vhdl_type_name(h).map(str::to_ascii_lowercase),
+            Some("natural".into())
+        );
+        assert_eq!(
+            h[h.lookup_scope(&["wave_tb", "main"]).expect("process scope")].scope_type(),
+            ScopeType::VhdlProcess
+        );
+        let (ename, _) = h[h.lookup_var(&["wave_tb", "main"], "vs").expect("vs")]
+            .enum_type(h)
+            .expect("enum table");
+        assert_eq!(ename, "state_t");
+    }
+    // The globs apply to variables, and the file does not depend on the thread count.
+    let sel = d.join("sel.fst");
+    go(
+        &sel,
+        &["--wave-variables", "--wave-include=wave_tb.main.v*"],
+    );
+    let names: Vec<String> = dump(&sel)
+        .lines()
+        .filter_map(|l| l.split_once(':').map(|(n, _)| n.to_string()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "wave_tb.main.vs",
+            "wave_tb.main.vr",
+            "wave_tb.main.vl",
+            "wave_tb.main.vi"
+        ]
+    );
+    let t4 = d.join("t4.fst");
+    go(&t4, &["--wave-variables", "--threads=4"]);
+    assert_eq!(dump(&t4), s);
+}
+
+#[test]
 fn wave_globs() {
     let d = design("globs");
     let fst = d.join("a.fst");

@@ -102,8 +102,15 @@ begin
     u : entity work.wave_sub port map (Clk_In => gs, q => open);
   end generate;
 
-  process begin
+  main : process
+    variable cnt : natural range 0 to 15 := 0;
+    variable vs  : state_t := IDLE;
+    variable vr  : real := 0.0;
+    variable vl  : std_logic := '0';
+    variable vi  : integer range -100 to 100 := 0;
+  begin
     for n in 1 to 4 loop
+      cnt := cnt + 1;
       Clk <= '1';
       wait for 5 ns;
       Clk <= '0';
@@ -116,6 +123,10 @@ begin
     i <= -7;
     r <= 2.5;
     t <= 3 ns;
+    vs := Run_State;
+    vr := 2.5;
+    vl := 'X';
+    vi := -100;
     rec <= ('X', 42);
     mem <= MEM1;
     grid(1, 2) <= '1';
@@ -124,6 +135,7 @@ begin
     state <= IDLE;
     wait for 0 ns;
     state <= DONE;
+    vs := DONE;
     wait for 1 ns;
     std.env.finish;
   end process;

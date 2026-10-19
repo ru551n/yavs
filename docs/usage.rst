@@ -72,13 +72,19 @@ Waveforms
   negative values is signed (``-8 to 7`` is 4 bits), and a range that depends on a generic is
   sized after elaboration. Records are scopes with one entry per field, and arrays of anything
   other than ``std_logic`` or ``bit`` are scopes with one entry per element (``mem(2)``,
-  ``grid(1,2)``). Variables are not recorded.
+  ``grid(1,2)``). Variables are only recorded with ``--wave-variables``.
 * FST has no delta cycles: several deltas at one time step give one change with the final
   value. The file is the same for any ``--threads``.
 * ``--wave-include GLOB`` and ``--wave-exclude GLOB`` (repeatable) choose what is recorded by
   path, such as ``tb.u1.count``: matching ignores case, ``*`` matches within one level, ``**``
   across levels and ``?`` one character, and a pattern that matches a scope covers everything
   below it. Signals left out cost nothing while simulating.
+* ``--wave-variables`` also records the scalar variables of processes (integers, enumerations,
+  ``real``, ``time``, ``std_logic``), in a scope named after the process, such as
+  ``tb.main.count``, and the include and exclude globs apply to them. A variable is sampled at
+  the end of each time step, so the file shows its value after all the deltas of that step and
+  is the same for any ``--threads``. Without the option, variables are not recorded and cost
+  nothing. Arrays, records and shared variables are not recorded yet.
 * Arrays and vectors with more elements than ``--wave-max-array`` (default 65536) are left out
   with warning ``W0802``.
 * The file is written out periodically while simulating and finished at the end of the

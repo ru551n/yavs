@@ -108,6 +108,12 @@ milestone users care about works.
   reals are doubles; vector bounds go into the name (`data[7:0]`, `rev[0:3]`, left first, so
   direction is kept); records and arrays are scopes with one signal per sub-element; the chosen
   alternative of a generate with a label is the scope `label.alt` (#306).
+- **Variables (#305):** opt in with `--wave-variables`. Only scalar process variables; they sit
+  in the process's scope. Sampled once per time step (`NextTimeStep`, `EndOfSim`) from a snapshot
+  the process publishes when it suspends (`yavs_interp::ProcVars`, `InterpProcess::with_vars`,
+  `Elaborated::build_probed`), so nothing is published for variables the globs drop and the
+  file does not depend on `--threads`. A process that ends keeps the values of its last
+  suspension. Composite variables and shared variables are not recorded yet.
 - **Durability:** a block is flushed on the next time advance after `flush_interval` (default
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel

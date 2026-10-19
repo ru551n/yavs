@@ -1581,6 +1581,7 @@ dependencies = [
  "wavefst",
  "wellen",
  "yavs-elab",
+ "yavs-interp",
  "yavs-kernel",
  "yavs-sem",
 ]

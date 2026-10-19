@@ -6,16 +6,23 @@
 //! of anything else are array scopes with one entry per element. The recorder marks the
 //! entries a change touches and writes their final value once per time step (FST has no
 //! deltas), in entry order, so the file does not depend on `--threads`.
+//!
+//! Process variables (`--wave-variables`) are not on the bus: each is sampled once per time
+//! step from the snapshot its process published when it last suspended, and written when it
+//! differs from the last written value.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yavs_elab::{Elaborated, ObjKind, ScopeId, Shape};
+use yavs_interp::{ProcVars, VarProbes};
 use yavs_kernel::{Elem, Hook, Observer, Phase, PortMode, SigRef, SimControl, SimError, Value};
 use yavs_sem::Db;
 use yavs_sem::decl::Designator;
-use yavs_sem::hir::Direction;
+use yavs_sem::decl::{DeclKind, ObjClass as SemClass};
+use yavs_sem::hir::{Direction, StmtKind};
+use yavs_sem::stat::ConstValue;
 use yavs_sem::types::TypeKind;
 
 use crate::model::*;
@@ -31,15 +38,21 @@ enum Conv {
     Bool,
     /// A one-byte enum as a `u32` position.
     Enum8,
+    /// A one-byte position as it is (a logic variable, which is not in bit-planes).
+    Pos1,
     /// Already in the layout: 4-byte enums, integers, physicals, reals.
     Raw,
 }
 
+enum Src {
+    /// Kernel leaf, offset and element count.
+    Sig { leaf: u32, offset: u32, len: u32 },
+    /// Local `local` of a process's published variables.
+    Var { vars: Arc<ProcVars>, local: usize },
+}
+
 struct Entry {
-    leaf: u32,
-    /// Kernel offset and element count.
-    offset: u32,
-    len: u32,
+    src: Src,
     conv: Conv,
 }
 
@@ -52,6 +65,10 @@ struct State {
     pending: Vec<u32>,
     /// The time of the pending changes, fs.
     at: u64,
+    /// The entries that are variables, with the last value written.
+    vars: Vec<(u32, Vec<u8>)>,
+    /// The time step in progress, fs (variables are written at its end).
+    step: u64,
     error: Option<Error>,
 }
 
@@ -68,10 +85,12 @@ pub fn record(
     path: &Path,
     sel: Selection,
     cfg: WaveConfig,
+    vars: Option<&VarProbes>,
 ) -> Result<(Recorder, Vec<Skipped>), Error> {
     let mut d = Design {
         db,
         e,
+        probes: vars,
         b: HierarchyBuilder::new(sel),
         entries: Vec::new(),
         enums: HashMap::new(),
@@ -85,11 +104,15 @@ pub fn record(
     let h = b.finish();
     let writer = WaveWriter::create(path, &h, cfg)?;
     let mut by_leaf = vec![Vec::new(); e.nets.leaves.len()];
+    let mut var_ids = Vec::new();
     for (i, en) in entries.iter().enumerate() {
-        by_leaf[en.leaf as usize].push(i as u32);
+        match &en.src {
+            Src::Sig { leaf, .. } => by_leaf[*leaf as usize].push(i as u32),
+            Src::Var { .. } => var_ids.push((i as u32, Vec::new())),
+        }
     }
     for v in &mut by_leaf {
-        v.sort_by_key(|&i| entries[i as usize].offset);
+        v.sort_by_key(|&i| entries[i as usize].span().0);
     }
     let n = entries.len();
     let st = State {
@@ -99,6 +122,8 @@ pub fn record(
         dirty: vec![false; n],
         pending: Vec::new(),
         at: 0,
+        vars: var_ids,
+        step: 0,
         error: None,
     };
     Ok((Recorder(Arc::new(Mutex::new(st))), h.skipped))
@@ -125,7 +150,47 @@ impl Recorder {
     }
 }
 
+impl Entry {
+    /// Kernel offset and length of a signal entry.
+    fn span(&self) -> (u32, u32) {
+        match self.src {
+            Src::Sig { offset, len, .. } => (offset, len),
+            Src::Var { .. } => (0, 0),
+        }
+    }
+}
+
 impl State {
+    /// Write the variables that changed since the last sample, at the time of the step that
+    /// just ended.
+    fn sample_vars(&mut self) {
+        let mut bytes = Vec::new();
+        for k in 0..self.vars.len() {
+            if self.error.is_some() {
+                return;
+            }
+            let i = self.vars[k].0;
+            let en = &self.entries[i as usize];
+            let Src::Var { vars, local } = &en.src else {
+                continue;
+            };
+            // Not yet published: the process has not run.
+            let Some(raw) = vars.value(*local) else {
+                continue;
+            };
+            bytes.clear();
+            convert(en, &Value::Bytes(raw), &mut bytes);
+            if self.vars[k].1 == bytes {
+                continue;
+            }
+            self.vars[k].1.clone_from(&bytes);
+            let w = self.writer.as_mut().expect("writer open while recording");
+            if let Err(e) = w.change(self.step, SignalId(i), &bytes) {
+                self.error = Some(e);
+            }
+        }
+    }
+
     fn mark(&mut self, i: u32) {
         if !self.dirty[i as usize] {
             self.dirty[i as usize] = true;
@@ -146,7 +211,10 @@ impl State {
                 continue;
             }
             let en = &self.entries[i as usize];
-            let r = yavs_kernel::SignalId(en.leaf).slice(en.offset, en.len);
+            let Src::Sig { leaf, offset, len } = en.src else {
+                continue;
+            };
+            let r = yavs_kernel::SignalId(leaf).slice(offset, len);
             let v = match read(r) {
                 Ok(v) => v,
                 Err(e) => {
@@ -177,6 +245,7 @@ fn convert(en: &Entry, v: &Value, out: &mut Vec<u8>) {
         (Conv::Bool, Value::Logic(l)) => {
             out.extend_from_slice(&u32::from(l.get(0) as u8).wrapping_sub(2).to_le_bytes())
         }
+        (Conv::Pos1, Value::Bytes(b)) => out.push(b[0]),
         (Conv::Enum8, Value::Bytes(b)) => {
             out.extend_from_slice(&u32::from(b[0]).to_le_bytes());
         }
@@ -192,12 +261,23 @@ impl Observer for Recorder {
         match phase {
             Phase::StartOfSim => {
                 st.at = hook.now().as_fs();
+                st.step = st.at;
                 for i in 0..st.entries.len() as u32 {
-                    st.mark(i);
+                    if matches!(st.entries[i as usize].src, Src::Sig { .. }) {
+                        st.mark(i);
+                    }
                 }
             }
-            Phase::NextTimeStep | Phase::EndOfTimeStep | Phase::EndOfSim => {
-                st.flush(|r| hook.value(r))
+            Phase::NextTimeStep => {
+                // The step in progress is complete: its signals, then its variables.
+                st.flush(|r| hook.value(r));
+                st.sample_vars();
+                st.step = hook.now().as_fs();
+            }
+            Phase::EndOfTimeStep => st.flush(|r| hook.value(r)),
+            Phase::EndOfSim => {
+                st.flush(|r| hook.value(r));
+                st.sample_vars();
             }
             Phase::EndOfInit | Phase::NextCycle | Phase::LastKnownDelta => {}
         }
@@ -220,12 +300,12 @@ impl Observer for Recorder {
         let (lo, hi) = (range.offset, range.offset + range.len);
         let first = ids.partition_point(|&i| {
             let en = &st.entries[i as usize];
-            en.offset + en.len <= lo
+            en.span().0 + en.span().1 <= lo
         });
         let hit: Vec<u32> = ids[first..]
             .iter()
             .copied()
-            .take_while(|&i| st.entries[i as usize].offset < hi)
+            .take_while(|&i| st.entries[i as usize].span().0 < hi)
             .collect();
         for i in hit {
             st.mark(i);
@@ -240,6 +320,7 @@ struct Design<'a> {
     b: HierarchyBuilder,
     entries: Vec<Entry>,
     enums: HashMap<yavs_sem::TypeId, Arc<EnumType>>,
+    probes: Option<&'a VarProbes>,
 }
 
 impl Design<'_> {
@@ -279,6 +360,9 @@ impl Design<'_> {
             self.b.scope(&name, kind, &comp);
             for &o in &sc.objs {
                 self.object(o);
+            }
+            if let yavs_elab::ScopeKind::Process { stmt } = &sc.kind {
+                self.variables(id, *stmt);
             }
         }
         for &c in &sc.children {
@@ -402,11 +486,86 @@ impl Design<'_> {
             _ => first,
         };
         self.entries.push(Entry {
-            leaf,
-            offset: offset as u32,
-            len: len as u32,
+            src: Src::Sig {
+                leaf,
+                offset: offset as u32,
+                len: len as u32,
+            },
             conv,
         });
+    }
+
+    /// The scalar variables of process `scope` (statement `stmt`) the selection keeps.
+    fn variables(&mut self, scope: ScopeId, stmt: yavs_sem::StmtId) {
+        let db = self.db;
+        let Some(probes) = self.probes else { return };
+        let StmtKind::Process { scope: region, .. } = &db.stmts[stmt].kind else {
+            return;
+        };
+        let Some(vars) = probes.get(scope.0) else {
+            return;
+        };
+        for &d in &db.scopes[*region].order {
+            let decl = &db.decls[d];
+            let DeclKind::Object(o) = &decl.kind else {
+                continue;
+            };
+            if o.class != SemClass::Variable {
+                continue;
+            }
+            let name = decl.name.to_string();
+            // Composite variables are not among the probed locals.
+            let Some(local) = vars
+                .locals
+                .iter()
+                .position(|l| l.name.eq_ignore_ascii_case(&name))
+            else {
+                continue;
+            };
+            let t = db.base(o.subtype);
+            let range = db
+                .static_bounds(o.subtype)
+                .and_then(|(l, dir, r)| match (l, r) {
+                    (
+                        ConstValue::Int(l) | ConstValue::Phys(l),
+                        ConstValue::Int(r) | ConstValue::Phys(r),
+                    ) => Some(yavs_elab::Bounds {
+                        left: l,
+                        dir,
+                        right: r,
+                    }),
+                    _ => None,
+                });
+            let resolved = db.subtypes[o.subtype].resolution.is_some();
+            let (sty, conv) = self.scalar(
+                t,
+                yavs_elab::elem_of(db, t),
+                resolved,
+                Some((o.subtype, range)),
+            );
+            // The slot holds the scalar as laid out in memory: enumerations are positions
+            // (logic ones in one byte, not in bit-planes), the rest is in the byte layout.
+            let conv = match conv {
+                Conv::Logic { .. } => Conv::Pos1,
+                Conv::Bool => Conv::Enum8,
+                c => c,
+            };
+            let id = SignalId(self.entries.len() as u32);
+            if !self
+                .b
+                .signal(&name, id, sty, PortDir::None, ObjClass::Variable)
+            {
+                continue;
+            }
+            vars.watch(local);
+            self.entries.push(Entry {
+                src: Src::Var {
+                    vars: vars.clone(),
+                    local,
+                },
+                conv,
+            });
+        }
     }
 
     /// `decl`: the declared subtype and its bounds, which name and size integers.
@@ -462,7 +621,7 @@ impl Design<'_> {
             TypeKind::Floating | TypeKind::UniversalReal => ScalarType::Real,
             TypeKind::Physical { .. } if Some(t) == db.well_known.time => ScalarType::Time,
             // The declared subtype's name and the width its range needs; 64 bits and the base
-            // type name when there is neither.
+            // type name when there is neither (an anonymous subtype keeps the base name).
             _ => ScalarType::Integer {
                 name: decl
                     .and_then(|(st, _)| subtype_name(db, st))

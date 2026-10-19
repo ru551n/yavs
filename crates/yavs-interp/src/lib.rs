@@ -20,6 +20,7 @@ mod foreign;
 mod heap;
 mod implicit;
 mod native;
+mod probe;
 mod reflect;
 mod textio;
 
@@ -40,6 +41,7 @@ pub use debug::{
     SignalBreak, Stop, StopReason, format_scalar,
 };
 pub use heap::Heap;
+pub use probe::{ProbeLocal, ProcVars, VarProbes};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 
 use exec::{Fault, Machine, Outcome};
@@ -316,6 +318,7 @@ pub struct InterpProcess {
     shared: Option<Arc<Mutex<SharedState>>>,
     /// This process's entry in `SharedState::procs`.
     roots_slot: Option<usize>,
+    vars: Option<Arc<ProcVars>>,
 }
 
 impl InterpProcess {
@@ -355,6 +358,7 @@ impl InterpProcess {
             done: false,
             shared,
             roots_slot: None,
+            vars: None,
         })
     }
 
@@ -362,6 +366,12 @@ impl InterpProcess {
     pub fn with_debug(mut self, session: Arc<DebugSession>, name: &str) -> InterpProcess {
         let i = session.register(name);
         self.m.attach(session, i);
+        self
+    }
+
+    /// Publish the watched variables of this process at each suspension (see [`ProcVars`]).
+    pub fn with_vars(mut self, vars: Arc<ProcVars>) -> InterpProcess {
+        self.vars = Some(vars);
         self
     }
 
@@ -410,10 +420,16 @@ impl Process for InterpProcess {
         }
         match r {
             Ok(Outcome::Suspended) => {
+                // Frame 0 is the process's own: its slots hold the process variables.
+                if let (Some(v), Some(f)) = (&self.vars, self.m.frames.first()) {
+                    v.publish(&f.slots);
+                }
                 self.m.after_suspend();
                 Ok(())
             }
             Ok(Outcome::Returned(_)) => {
+                // ponytail: the frame is gone, so a process that ends keeps the variable
+                // values of its last suspension in the waveform.
                 self.done = true;
                 self.m.terminated();
                 Ok(())

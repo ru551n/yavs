@@ -380,6 +380,16 @@ impl Elaborated {
         &self,
         cfg: Config,
     ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
+        self.build_probed(cfg, None)
+    }
+
+    /// [`Elaborated::build_runtime`] that registers the scalar variables of every process in
+    /// `probes` (by the index of the process scope), for the waveform's variables.
+    pub fn build_probed(
+        &self,
+        cfg: Config,
+        probes: Option<&yavs_interp::VarProbes>,
+    ) -> Result<(SimControl, Option<Arc<Runtime>>), SimError> {
         let Some(ir) = &self.ir else {
             if self.procs.is_empty() {
                 return self
@@ -580,13 +590,18 @@ impl Elaborated {
                     });
                 }
                 let serial = ir.program.is_serial(pir.func);
-                let proc = InterpProcess::new(
+                let mut proc = InterpProcess::new(
                     rt.clone(),
                     pir.func,
                     inst,
                     drivers,
                     serial.then(|| shared.clone()),
                 )?;
+                if let Some(probes) = probes {
+                    let v = yavs_interp::ProcVars::of(&rt.prog, pir.func);
+                    probes.insert(p.scope.0, v.clone());
+                    proc = proc.with_vars(v);
+                }
                 Ok(Box::new(proc))
             },
             res,

@@ -226,7 +226,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   enum table, integers, reals and time as numbers (an integer with its subtype's name and
   the width its range needs; a generate alternative with a label is scope `label.alt`). Several deltas at one time step
   give one value change (the final value). The file is the same at any
-  `--threads`. Signals and ports are recorded, variables are not (#305). Flushed periodically, on normal end, on stop, and on SIGINT: the
+  `--threads`. Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
   `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).
@@ -236,6 +236,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   with more elements are left out with warning `W0802`. Signals left out by either
   are not read while simulating. The test runner does not
   pass these; use `yavs.sim_flags`.
+- `--wave-variables` (needs `--wave`, default off): also record the scalar variables of
+  processes (scope = the process label, path `top.proc.var`, matched by the globs), sampled at
+  the end of each time step; same file at any `--threads`. Composite variables and shared
+  variables are not recorded.
 - `--resolution=fs|ps|ns|us|ms|sec` (`run`, default `fs`): the time resolution limit, a run-time
   setting (plan rule 7). It is the value of `std.env.resolution_limit`, the unit of TIME
   values in `std.reflection` mirrors (decisions.md "Reflection: TIME values in mirrors") and the

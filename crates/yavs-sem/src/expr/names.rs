@@ -1389,31 +1389,35 @@ impl Db {
         id
     }
 
-    /// The object a call of `d` on `obj` (`None`: the implicit object) runs on: through
-    /// each method alias that forwards to a private variable (5.6.2), that variable of
-    /// the object.
+    /// The object a call of `d` on `obj` (`None`: the implicit object) runs on, through
+    /// each method alias `alias m is v.m` (5.6.2, 6.6.3): for a private variable `v` of the
+    /// protected type declaring the alias, that variable of the object; otherwise `v`.
     pub(crate) fn forwarded_object(
         &mut self,
         mut d: DeclId,
         mut obj: Option<ExprId>,
     ) -> Option<ExprId> {
         loop {
-            if let Some(&pv) = self.forwarding.get(&d) {
-                let DeclKind::Object(o) = &self.decls[pv].kind else {
-                    unreachable!("decl.rs records forwarding only to private variables");
-                };
-                let (subtype, span) = (o.subtype, self.decls[pv].span);
-                let kind = match obj {
-                    Some(object) => ExprKind::PrivateVar { object, var: pv },
-                    None => ExprKind::Obj(pv),
-                };
-                obj = Some(self.add_expr(Expr {
-                    kind,
-                    subtype,
-                    span,
-                    stat: Staticness::None,
-                    value: None,
-                }));
+            if let Some(&v) = self.forwarding.get(&d) {
+                let span = self.decls[v].span;
+                let private =
+                    self.is_private_variable(v) && self.decls[v].scope == self.decls[d].scope;
+                obj = Some(match obj {
+                    Some(object) if private => {
+                        let DeclKind::Object(o) = &self.decls[v].kind else {
+                            unreachable!("is_private_variable checked an object");
+                        };
+                        let subtype = o.subtype;
+                        self.add_expr(Expr {
+                            kind: ExprKind::PrivateVar { object, var: v },
+                            subtype,
+                            span,
+                            stat: Staticness::None,
+                            value: None,
+                        })
+                    }
+                    _ => self.object_ref(v, span),
+                });
             }
             match &self.decls[d].kind {
                 DeclKind::Alias(Alias::NonObject { target }) => d = *target,

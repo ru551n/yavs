@@ -1065,8 +1065,10 @@ and result) is unique among homographs, so there is no code for it.
 - A call through such an alias runs on the private variable: `Db::forwarding` maps the alias to
   the variable, and the call's `method_of` is `PrivateVar { object, var }` (from outside, `object`
   the protected object) or `Obj(var)` (the implicit object inside the body), nested once per
-  forwarding alias of a chain. An alias of a method of any other object (a shared variable
-  outside a protected type) reports `E9999` (S7, #237): the call would need that object at each use.
+  forwarding alias of a chain. An alias of a method of any other object (`alias push is
+  sv.push [integer];`, a shared variable or a variable, by simple or expanded name) forwards the
+  same way: the call's `method_of` is a fresh object reference to it, replacing the object the
+  call had (#237, [L15]). Other prefixes (`f(x).m`, `p.all.m`) report `E9999` (S7).
 - Body: bodies for every declared method (`E1230` for missing), plus any declarations.
 - Methods get an implicit first parameter `self` in the HIR (matches NATIVE.md's native calling
   convention); calls are `Call{callee, method_of: Some(obj)}`.

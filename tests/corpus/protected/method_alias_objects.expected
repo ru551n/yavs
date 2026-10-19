@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:method_alias_objects:p1	sv=3 lv=6
+diag	note	1000000	0	:method_alias_objects:p1	total=10
+diag	note	3000000	0	:method_alias_objects:p2	sv=7 total=15

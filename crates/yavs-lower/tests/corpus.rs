@@ -143,6 +143,7 @@ const PASS: &[&str] = &[
     "protected/counter",
     "protected/generic_package_prot",
     "protected/method_in_init",
+    "protected/method_alias_objects",
     "protected/method_nested",
     "protected/private_variables",
     "protected/stack",

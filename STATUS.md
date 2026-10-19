@@ -121,9 +121,10 @@ An installed binary finds `lib/` next to itself (#43).
 - 2019 mode views and private variables (S7, #32): view declarations (`E1901`, `E1902`),
   `'converse` (`E1621` on a non-view), view ports and signal parameters (`E1903`), views in
   generic units; private variables visible only in the protected body (`E1105`), method aliases
-  that forward to a private variable (`E1906` for an alias of anything else; forwarding through
-  other objects is `E9999`). View ports, nested and array views, and calls through method aliases
-  simulate (`hierarchy/mode_view_*`, `protected/private_variables`); signal parameters with a
+  that forward to a private variable (`E1906` for an alias of anything else), and aliases of
+  methods of shared variables and variables (#237; prefixes other than an object name are
+  `E9999`). View ports, nested and array views, and calls through method aliases simulate
+  (`hierarchy/mode_view_*`, `protected/private_variables`, `protected/method_alias_objects`); signal parameters with a
   view wait for record signal parameters in yavs-lower (#215).
 - 2019 front end (corpus fixes #173 to #180): `A'INDEX(n)` and `R'RECORD` type marks, signals
   and variables with bounds from the initial value, variable ports of protected types, `open`

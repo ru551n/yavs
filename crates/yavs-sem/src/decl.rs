@@ -660,8 +660,8 @@ impl Db {
             // objects (8.7).
             _ => NameRes::Value,
         };
-        // `alias m is pv.m [sig];` (2019 5.6.2): a method of a protected object, typically
-        // of a private variable.
+        // `alias m is obj.m [sig];` (2019 5.6.2, 6.6.3): a method of a protected object, such
+        // as a private variable or a shared variable; calls through the alias run on `obj`.
         let mut via = None;
         let res = match (&res, &name.kind) {
             (
@@ -684,15 +684,11 @@ impl Db {
                     res
                 } else {
                     match self.classify(scope, obj) {
-                        NameRes::One(pv)
-                            if self.is_private_variable(pv) && self.decls[pv].scope == scope =>
-                        {
-                            via = Some(pv);
-                        }
+                        NameRes::One(v) if self.object_type(v).is_some() => via = Some(v),
                         _ => {
                             return Err(self.unsupported(
                                 name.span,
-                                "aliases of methods of objects other than a private variable of the protected type",
+                                "aliases of methods of objects not denoted by a simple or expanded name",
                                 "S7",
                             ));
                         }

@@ -91,8 +91,8 @@ pub struct Db {
     pub attr_values: Arena<AttrValueId, AttrValue>,
     /// User attribute values by (entity, attribute name key) (attr.rs).
     pub attr_index: HashMap<(DeclId, Symbol), AttrValueId>,
-    /// 2019 method aliases `alias m is pv.m;` in a protected type declaration: the alias
-    /// to the private variable `pv` whose method it forwards (5.6.2).
+    /// 2019 method aliases `alias m is v.m;`: the alias to the object `v` (a private
+    /// variable, a shared variable, a variable) whose method it forwards (5.6.2, 6.6.3).
     pub(crate) forwarding: HashMap<DeclId, DeclId>,
     /// 2019 named return values (`return r of t`, 4.2.1), by the function's parameter region:
     /// the hidden constant whose descriptor is the call's result subtype (M2 passes it after

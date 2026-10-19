@@ -2760,36 +2760,45 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// `&` of 1-D arrays and elements (LRM 2008 9.2.5): bounds from the index subtype.
+    /// Composite elements (arrays of arrays, of records) are copied as rows; an element
+    /// subtype the type leaves open takes its constraint from the left operand, and every
+    /// operand is checked against it.
     fn cat(&mut self, op: &ImplicitOp, ex: &[ExprId], span: Span) -> R<V> {
         let db = self.db;
         let t = op.ty;
-        let (tid, logic, w) = self.elem_facts(t, span)?;
-        let TypeKind::Array { indexes, .. } = &db.types[t].kind else {
+        let TypeKind::Array { indexes, elem } = &db.types[t].kind else {
             return Err(self.cx.ice(span, "concatenation of a non-array type"));
         };
-        let index = indexes[0];
+        let (index, elem) = (indexes[0], *elem);
+        let tid = self.ty(t, span)?;
+        let etid = self.ty(db.base(elem), span)?;
+        let scalar = crate::composite::scalar_w(self.fb.program(), etid);
+        let logic = self.is_logic(tid);
         let (left_scalar, right_scalar) = match op.form {
             Form::ArrayScalar => (false, true),
             Form::ScalarArray => (true, false),
             Form::ScalarScalar => (true, true),
             _ => (false, false),
         };
+        let one = self.int(1);
+        // Per operand: (data or scalar, element count of an array, descriptor of an array
+        // operand or of a composite element).
         let mut ops = Vec::new();
-        let mut right_dope = None;
         for (k, &e) in ex.iter().enumerate() {
             let sc = if k == 0 { left_scalar } else { right_scalar };
             let v = self.expr(e)?;
-            ops.push(if sc {
-                (self.scal(v, span)?, None)
-            } else {
-                let (d, p) = self.arr(v, span)?;
-                if k == 1 {
-                    right_dope = Some(p);
+            ops.push(match (sc, scalar) {
+                (true, Some(_)) => (self.scal(v, span)?, None, None),
+                (true, None) => {
+                    let (d, p) = self.arr(v, span)?;
+                    (d, Some(one), Some((p, true)))
                 }
-                (d, Some(self.dope_len(p)))
+                (false, _) => {
+                    let (d, p) = self.arr(v, span)?;
+                    (d, Some(self.dope_len(p)), Some((p, false)))
+                }
             });
         }
-        let one = self.int(1);
         let la = ops[0].1.unwrap_or(one);
         let lb = ops[1].1.unwrap_or(one);
         let n = self.bin(IntOp::Add, la, lb);
@@ -2801,7 +2810,7 @@ impl<'a> Fx<'a, '_> {
             Dr::Dyn(_) => return Err(self.cx.ice(span, "index subtype with a runtime direction")),
         };
         let dir = self.dir_reg(s.dir);
-        let dope = self.one_dope(s.left, right, dir);
+        let mut dope = self.one_dope(s.left, right, dir);
         let z = self.int(0);
         let null = self.cmp(CmpOp::Eq, n, z);
         let ok = self.not(null);
@@ -2818,13 +2827,67 @@ impl<'a> Fx<'a, '_> {
             hi,
             what,
         });
+        let (m, w) = match scalar {
+            Some(w) => (self.int(if logic { 1 } else { i64::from(w.bytes()) }), w),
+            None => {
+                // An open element subtype: the element part of the left operand.
+                let ds = self.desc_size(tid);
+                if ds > 24 {
+                    let Some((p, elem_op)) = ops[0].2 else {
+                        return Err(self.cx.ice(span, "composite operand without a descriptor"));
+                    };
+                    let src = if elem_op {
+                        p
+                    } else {
+                        self.elem_desc(tid, p)?.1
+                    };
+                    let d = self.alloc_n(ds);
+                    let n24 = self.int(24);
+                    self.emit(Inst::Copy {
+                        dst: d,
+                        src: dope,
+                        bytes: n24,
+                    });
+                    let at = self.offset(d, 24);
+                    let rest = self.int(i64::from(ds - 24));
+                    self.emit(Inst::Copy {
+                        dst: at,
+                        src,
+                        bytes: rest,
+                    });
+                    dope = d;
+                }
+                let (_, ed) = self.elem_desc(tid, dope)?;
+                for &(_, _, p) in &ops {
+                    let what = "concatenation operand";
+                    match p {
+                        Some((p, true)) => {
+                            self.check_desc(db.base(elem), etid, p, ed, what, span)?
+                        }
+                        Some((p, false)) if ds > 24 => {
+                            let (_, pe) = self.elem_desc(tid, p)?;
+                            self.check_desc(db.base(elem), etid, pe, ed, what, span)?;
+                        }
+                        _ => {}
+                    }
+                }
+                // Units per element: plane elements of a logic array, else bytes.
+                if logic {
+                    (self.layout(etid, ed).1, Width::B8)
+                } else {
+                    let l = self.lay(tid, dope);
+                    let sa = self.offset(l, 16);
+                    (self.load(sa, Width::B8, RegTy::I64), Width::B8)
+                }
+            }
+        };
         let (size, _) = self.layout(tid, dope);
         let data = self.alloc(size);
-        let m = self.int(if logic { 1 } else { i64::from(w.bytes()) });
         let bias = self.code_bias(tid);
-        self.put_pieces(data, n, logic, (bias, w), m, &ops);
+        let pieces: Vec<_> = ops.iter().map(|o| (o.0, o.1)).collect();
+        self.put_pieces(data, n, logic, (bias, w), m, &pieces);
         // Two null operands: the result is the right operand (LRM 9.2.5 a).
-        if let (Some(_), Some(rd)) = (ops[0].1, right_dope) {
+        if let (Some((_, false)), Some((rd, false))) = (ops[0].2, ops[1].2) {
             let data = self.select(null, ops[1].0, data, RegTy::Ptr);
             let dope = self.select(null, rd, dope, RegTy::Ptr);
             return Ok(V::A(data, dope));

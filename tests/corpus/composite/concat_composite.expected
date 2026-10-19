@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:concat_composite:u:_p0	generic 0001,0110,1010, 0 to 2 9:false,1:true,2:false,3:true,
+diag	note	0	0	:concat_composite:_p0	pkg 0001,0110,0101, 1000,0001,0110, 0001,0110,0001,0110,0101, 1111,0000, 4 1:true,2:false,3:true,
+diag	note	0	0	:concat_composite:_p0	arch 1:2,3:4, 1:2,3:4,1:2,3:4,5:6, 5
+diag	note	0	0	:concat_composite:_p0	var 0011,1100,0001,0110,1001, 0011,1100, 0011,1100,
+diag	note	0	0	:concat_composite:_p0	7:8,9:10,11:12, 0:1,7:8,9:10,
+diag	note	0	0	:concat_composite:_p0	4:false,5:true,4:false,5:true, 4:false,5:true,6:true, 6:true,7:false,
+diag	note	0	0	:concat_composite:_p0	9 downto 7 0111 9 downto 7 0010 9 downto 8 0011
+diag	note	0	0	:concat_composite:_p0	0111,1110,
+diag	note	0	0	:concat_composite:_p0	open 0001,0010,0011, 1010,1011,1100, 1101,1010,1011, 1110,1111, 1010,1011,
+diag	note	0	0	:concat_composite:_p0	1011,1100,0000,
+diag	note	1000000	0	:concat_composite:_p0	sig 0011,1100,0001,0110, 1:1,7:8,9:10, 4:false,5:true,8:true,
+diag	note	2000000	0	:concat_composite:_p0	sig 0001,0110,0011,1100,

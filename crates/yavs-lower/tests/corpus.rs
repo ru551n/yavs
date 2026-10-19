@@ -38,6 +38,7 @@ const PASS: &[&str] = &[
     "composite/nested_alias_slices",
     "composite/nested_selections",
     "composite/arrays_aggregates",
+    "composite/concat_composite",
     "composite/constant_bounds",
     "composite/package_record_signals",
     "composite/record_signal_attrs",

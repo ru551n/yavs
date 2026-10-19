@@ -277,6 +277,9 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   (`put_at`); an element subtype the type leaves open takes its constraint from the context
   or the first value (#230). Named bounds come from sem's result subtype (direction of a
   constrained context).
+- `&` on arrays of composites (#234): every operand is a piece of `put_pieces`, an element
+  operand one row; an element subtype the type leaves open takes the left operand's (its
+  element part, or the element itself), every operand checked against it.
 - Not yet: force of composite signals, named pieces in aggregate targets, methods of
   protected types in generic package instances (generic instantiation, #71), user
   resolution of logic leaves.

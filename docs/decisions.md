@@ -840,6 +840,12 @@ which tools/difftest parses.
   Pieces exist in 1-D aggregates only (LRM 9.3.3.3; sem rejects them in more dimensions, as
   the reference simulators do). Named pieces in aggregate *targets* stay E2001: the LRM is
   unclear there and the reference simulators disagree (one rejects range choices in targets).
+- **`&` on arrays of composites** (#234, LRM 9.2.5): arrays of arrays and of records
+  concatenate like arrays of scalars (bounds from the index subtype, two null operands give
+  the right operand), each element copied as a row with the piece copy shared with
+  aggregates. An element subtype the type leaves open takes the left operand's constraint
+  (its element part, or the left element itself), and every operand is checked against it,
+  as the reference simulators do (they reject a mismatch at analysis where it is static).
 - **Named aggregate bounds take the direction of a constrained context** (#230, LRM
   9.3.3.3: assignment to a constrained target, constrained initial value, qualified
   expression, ...): lowering uses sem's result subtype for `AggBounds::Named`, not the

@@ -7,18 +7,18 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | `yavs-ir` and `yavs-interp` done against hand-written IR (below); elaboration without processes done (below); lowering in progress |
-| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 10 of 11 pass completely (`check` and `com` now too), `verification_components` fails on #248, #251 and #252, table below (#112) |
+| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 10 of 11 pass completely, `check` has one failure (#281, process order in a delta), table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; read back with wellen in `crates/yavs/tests/wave.rs` |
 | M3, M5, M6, M8 to M10 | not started (crate spikes below) |
 
 ### External test runner: its own VHDL suites (#112)
 
-`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at 07911a8; pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. Skipped as reported by the runner (none this time).
+`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at 5acb38be; pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. Skipped as reported by the runner (13, all after the one failure in `check`).
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 257 | 0 | 0 | none |
+| check | 243 | 1 | 13 | in-delta process order puts the testbench before concurrent-call checker loops #281 (1 failure, the other 13 tests of `tb_check_stable` are skipped after it) |
 | com | 145 | 0 | 0 | none (#246 fixed; re-measured after it) |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
@@ -28,7 +28,7 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 | record_dict (2019) | 6 | 0 | 0 | none |
 | run | 5 | 0 | 0 | none |
 | string_ops | 15 | 0 | 0 | none |
-| verification_components | 455 | 124 | 0 | process constant whose initializer calls an impure function is evaluated twice #251 (114, all `tb_axi_stream`); order of processes within a delta, instance before parent #252 (7); `'length` of an unconstrained port in an architecture constant is 1 #248 (3) |
+| verification_components | 579 | 0 | 0 | none (#251, #248, #252 fixed; all 52 `tb_axi_stream_protocol_checker` configurations pass) |
 
 ## CI and releases
 

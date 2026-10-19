@@ -246,7 +246,10 @@ elaborate 9.98 to 8.42, init 3.76 to 0.25, total 26.27 to 21.84 CPU seconds. Eve
 external-runner `check` and verification component test passes; the difftest corpus output is
 byte-identical at 1 and 4 threads. Left in elaborate: analysis of package bodies (now cached,
 #407), the one initialisation of the run-time packages, and the interpreted elaboration-time calls
-themselves (logger and checker factories).
+themselves (logger and checker factories). Whole suites at `-p 4` on the same host, wall seconds,
+main before this work (7445284d) against main with it and the work that landed alongside (analysis
+cache #407, array fills #405, native ieee operators #395, b9dcddb6): verification components 700 to
+106, `check` 34 to 12; all tests pass with both.
 
 ### Compilation cache (#407)
 

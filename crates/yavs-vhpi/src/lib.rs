@@ -45,6 +45,11 @@ pub fn set_design(db: &yavs_sem::Db, e: &yavs_elab::Elaborated) {
     abi::with_state(|s| s.design = d);
 }
 
+/// Sets the tool's arguments that plugins read (`vhpiArgcP`, `vhpiArgvs`).
+pub fn set_argv(argv: Vec<String>) {
+    abi::with_state(|s| s.argv = argv);
+}
+
 /// Sets a design of only a root instance called `name` (a host without an elaborated design).
 pub fn set_design_root(name: &str) {
     abi::with_state(|s| s.design = design::Design::named(name));

@@ -185,6 +185,16 @@ return the size it needs. Enumeration values are positions: a ``std_ulogic`` giv
 ``W0903`` warning and returns -1, never a converted value. Writing values and value-change
 callbacks are not implemented yet.
 
+Plusargs
+--------
+
+Arguments of the form ``+NAME`` or ``+NAME=VALUE`` after the top level are accepted by ``yavs
+run`` and kept as the tool's arguments, in order: ``yavs run --work=lib:out/lib --vhpi=./plugin.so
+tb +seed=7 +verbose``. A plugin reads them with ``vhpi_get(vhpiArgcP, tool)`` and the
+``vhpiArgvs`` iterator (``vhpi_get_str(vhpiStrValP, arg)``); the first argument is the program
+name ``yavs``. VHDL code cannot see them. Any other argument after the top level, apart from
+``-gNAME=VALUE``, is a usage error (exit 2).
+
 Not implemented yet
 -------------------
 

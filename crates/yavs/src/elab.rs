@@ -103,6 +103,17 @@ pub struct RunArgs {
     /// Serve the Debug Adapter Protocol on this port.
     #[arg(long, value_name = "PORT")]
     dap: Option<u16>,
+    /// Plusargs `+NAME[=VALUE]` after the top level, seen by VHPI plugins as tool arguments.
+    #[arg(value_name = "+NAME[=VALUE]", value_parser = plusarg)]
+    plusargs: Vec<String>,
+}
+
+fn plusarg(s: &str) -> Result<String, String> {
+    if s.starts_with('+') && s.len() > 1 {
+        Ok(s.to_string())
+    } else {
+        Err(format!("expected +NAME or +NAME=VALUE, found `{s}`"))
+    }
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -367,6 +378,9 @@ pub fn run(
     if !a.vhpi.is_empty() {
         yavs_vhpi::set_resolution(resolution);
         yavs_vhpi::set_design(&db, &e);
+        let mut argv = vec!["yavs".to_string()];
+        argv.extend(a.plusargs.iter().cloned());
+        yavs_vhpi::set_argv(argv);
         for spec in &a.vhpi {
             let p: yavs_vhpi::PluginSpec = spec.parse().unwrap_or_else(|e| match e {});
             let loaded = yavs_vhpi::load(&p).map_err(|err| err.to_diagnostic());

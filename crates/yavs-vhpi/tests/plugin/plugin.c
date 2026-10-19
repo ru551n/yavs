@@ -86,6 +86,15 @@ static void start_of_sim(const vhpiCbDataT *cb) {
 
   vhpiHandleT tool = vhpi_handle(vhpiTool, NULL);
   vhpi_printf("plugin: tool=%s\n", vhpi_get_str(vhpiNameP, tool));
+  {
+    vhpiHandleT it = vhpi_iterator(vhpiArgvs, tool);
+    vhpiHandleT a;
+    vhpi_printf("plugin: argc=%d\n", (int)vhpi_get(vhpiArgcP, tool));
+    while (it && (a = vhpi_scan(it)) != NULL) {
+      vhpi_printf("plugin: argv %s\n", vhpi_get_str(vhpiStrValP, a));
+      vhpi_release_handle(a);
+    }
+  }
   vhpi_iterator(vhpiStmts, root); /* not implemented yet */
   report_error("iterator");
   report_error("check twice");

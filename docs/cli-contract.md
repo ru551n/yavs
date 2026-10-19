@@ -178,7 +178,7 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
 yavs run  [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
           [--ieee-warnings=off] [yavs.global_flags] [yavs.elab_flags]
           [yavs.sim_flags] --exit-severity=LEVEL [--wave=FILE.fst]
-          TOP [-gNAME=VALUE ...]
+          TOP [-gNAME=VALUE ...] [+NAME[=VALUE] ...]
 yavs elab [--std=STD] --work=NAME:PATH [--map=NAME:PATH ...] [--color=always]
           [yavs.global_flags] [yavs.elab_flags] TOP [-gNAME=VALUE ...]
 ```
@@ -200,6 +200,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   cases) and contains spaces, `:`, `,`, `/`, `\` and `.`: yavs must not split or
   unescape it. A `-g` for a generic the top level does not have is a warning,
   not an error. Also accept `-gNAME=VALUE` after `TOP` (the test runner puts them there).
+- Plusargs: `run` accepts arguments `+NAME` and `+NAME=VALUE` after `TOP` (anywhere among the
+  `-g` options), one argv element each, taken verbatim. They are the tool's arguments for VHPI
+  plugins: `vhpi_get(vhpiArgcP, tool)` is `1 +` their number and the `vhpiArgvs` iterator of the
+  tool object yields the program name `yavs` first, then the plusargs in order
+  (`vhpi_get_str(vhpiStrValP, arg)`). Nothing else uses them. Any other extra argument is a usage
+  error (exit 2). Python testbench frameworks append their plusargs this way.
 - `--exit-severity=LEVEL` (`note|warning|error|failure`): an assertion or
   report at or above LEVEL stops the simulation at the end of the current delta
   and gives exit 1. Default `failure` (user decision 2026-10-18, as the other major

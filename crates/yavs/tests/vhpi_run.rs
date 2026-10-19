@@ -169,6 +169,21 @@ fn plugin_callbacks_and_finish() {
 }
 
 #[test]
+fn plusargs_reach_the_plugin() {
+    let (lib, so) = setup();
+    let spec = format!("--vhpi={}", so.display());
+    let (code, err, out) = yavs(&["run", &lib, &spec, "top", "+foo=bar", "+test1", "-gN=1"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("plugin: argc=3\n"), "{out}");
+    assert!(out.contains("plugin: argv yavs\n"), "{out}");
+    assert!(out.contains("plugin: argv +foo=bar\n"), "{out}");
+    assert!(out.contains("plugin: argv +test1\n"), "{out}");
+    // Anything after the top level that is not `+NAME` or `-gNAME=VALUE` is a usage error.
+    let (code, err, _) = yavs(&["run", &lib, "top", "stray"]);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
 fn plugin_load_errors_fail_early() {
     let (lib, so) = setup();
     let (code, err, out) = yavs(&["run", &lib, "--vhpi=/no/such/plugin.so", "top"]);

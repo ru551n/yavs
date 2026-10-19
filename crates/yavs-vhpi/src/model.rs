@@ -21,6 +21,8 @@ use crate::value::{Read, Scalar};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Object {
     Tool,
+    /// Argument `State::argv[i]` (`vhpiArgvK`).
+    Argv(usize),
     /// Id in `State::cbs`.
     Callback(u64),
     /// A region, declaration or design unit.
@@ -207,6 +209,8 @@ pub(crate) struct State {
     pub(crate) cbs: Callbacks,
     pub(crate) clock: Clock,
     pub(crate) design: Design,
+    /// The tool's arguments (`vhpiArgcP`, `vhpiArgvs`): the program name, then the plusargs.
+    pub(crate) argv: Vec<String>,
     pub(crate) control: Option<Control>,
     pub(crate) error: Option<Error>,
     /// Strings handed out by `vhpi_get_str`. They are never freed, so the
@@ -397,6 +401,7 @@ impl State {
     pub(crate) fn kind(&self, obj: &Object) -> vhpiClassKindT {
         match obj {
             Object::Tool => vhpiToolK,
+            Object::Argv(_) => vhpiArgvK,
             Object::Callback(_) => vhpiCallbackK,
             Object::Iter(_) => vhpiIteratorK,
             Object::Node(n) => self.design.node(*n).kind,
@@ -428,6 +433,7 @@ impl State {
         let node = Self::base(obj).map(|n| self.design.node(n));
         Some(match (obj, prop) {
             (Object::Tool, vhpiNameP) => "yavs".into(),
+            (Object::Argv(i), vhpiStrValP) => self.argv[*i].clone(),
             (Object::Tool, vhpiToolVersionP) => env!("CARGO_PKG_VERSION").into(),
             (_, vhpiKindStrP) => {
                 let k = i64::from(self.kind(obj));
@@ -453,7 +459,7 @@ impl State {
             (_, vhpiKindP) => self.kind(obj),
             (Object::Callback(i), vhpiStateP) => self.cbs.get(*i)?.state,
             (Object::Callback(i), vhpiReasonP) => self.cbs.get(*i)?.data.reason,
-            (Object::Tool, vhpiArgcP) => 0,
+            (Object::Tool, vhpiArgcP) => vhpiIntT::try_from(self.argv.len()).ok()?,
             (_, vhpiLineNoP) => node?.line?,
             (_, vhpiModeP) => node?.mode?,
             (_, vhpiIsCompositeP) => match self.layout(obj)? {
@@ -532,6 +538,9 @@ impl State {
             _ => None,
         };
         match (rel, region) {
+            (vhpiArgvs, None) if reference == Some(&Object::Tool) => {
+                list((0..self.argv.len()).map(Object::Argv).collect())
+            }
             (vhpiPackInsts, _) if reference.is_none() || region == Some(ROOT) => list(
                 self.design
                     .packages

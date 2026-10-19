@@ -55,8 +55,12 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   next delta (counted against the delta limit). With no observer there are no wake-ups and
   nothing changes.
 - **Waiters**: per signal, `(proc, range, generation)`. A process's generation increases on every
-  resumption, invalidating its other waiters and its timeout in O(1). Lists are compacted when
-  they reach twice their live size.
+  resumption, invalidating its other waiters and its timeout in O(1). Each signal buckets its
+  waiters by chunk of 64 elements (a waiter over at most 4 chunks sits in each of them, a wider
+  or null one in a wide list), so an event looks only at the waiters of the chunks it touches
+  and the wide list: one process per element of a wide vector costs O(1) per event, not
+  O(processes). Waiters carry their registration number and wake in that order, each once.
+  Lists are compacted when they reach twice their live size.
 
 ## The cycle
 

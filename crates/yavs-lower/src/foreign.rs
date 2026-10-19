@@ -4,12 +4,14 @@
 use yavs_diag::Span;
 use yavs_ffi::CType;
 use yavs_ffi::vhdl::{self, VhdlType};
-use yavs_ir::{ForeignArg, ForeignMode, ForeignRef, Inst, RegTy, Ty, VhpiModel, VhpiParam};
+use yavs_ir::{
+    ForeignArg, ForeignMode, ForeignRef, Inst, RegTy, Ty, VhpiIndex, VhpiModel, VhpiParam,
+};
 use yavs_sem::decl::ObjClass;
 use yavs_sem::decl::Subprogram;
 use yavs_sem::hir::{Arg, Mode};
 use yavs_sem::stat::{ConstValue, Elems};
-use yavs_sem::types::{Constraint, TypeKind};
+use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
 use yavs_sem::{DeclId, ExprId, SubtypeId};
 
 use crate::expr::V;
@@ -84,13 +86,22 @@ impl Fx<'_, '_> {
             self.copy_out(span)?;
             return Ok(None);
         };
-        let dst = self.reg(self.rt_of(self.db.base(ret)));
+        // A VHPI model's array result: the address of a fat pair, sized by the model.
+        let arr = self.is_comp(self.db.base(ret));
+        let dst = self.reg(if arr {
+            RegTy::Ptr
+        } else {
+            self.rt_of(self.db.base(ret))
+        });
         self.emit(Inst::CallForeign {
             foreign: id,
             args: regs,
             dst: Some(dst),
         });
         self.copy_out(span)?;
+        if arr {
+            return Ok(Some(self.fat_value(dst)));
+        }
         let what = format!(
             "result of {}",
             self.db.decls[callee].name.to_string().to_ascii_uppercase()
@@ -202,10 +213,15 @@ impl Fx<'_, '_> {
                 }
             });
         }
+        let mut ret_index = None;
         let ret = match sp.ret {
             None => None,
             Some(r) => match self.ctype(r, span)? {
                 Some(ct) => Some(ct),
+                None if vhpi.is_some() => {
+                    ret_index = Some(self.ret_index(r, &name, span)?);
+                    Some(CType::Ptr)
+                }
                 None => {
                     return Err(self.cx.error(
                         NOT_IMPLEMENTED,
@@ -225,6 +241,7 @@ impl Fx<'_, '_> {
                     Some(r) => Some(self.ty(db.base(r), span)?),
                     None => None,
                 },
+                ret_index,
             }),
         };
         Ok(ForeignRef {
@@ -234,6 +251,66 @@ impl Fx<'_, '_> {
             ret,
             model,
         })
+    }
+
+    /// The index range of a VHPI model's array result `st`: its own when constrained, else
+    /// ascending from 1 (from the index subtype's left bound when 1 is not in it), as the
+    /// reference simulators index it, with the length left to the model.
+    fn ret_index(&mut self, st: SubtypeId, name: &str, span: Span) -> R<VhpiIndex> {
+        let db = self.db;
+        let unsupported = |fx: &mut Self, what: &str| {
+            fx.cx.error(
+                NOT_IMPLEMENTED,
+                span,
+                format!("foreign function `{name}`: {what} results are not supported"),
+            )
+        };
+        let TypeKind::Array { indexes, elem } = &db.types[db.base(st)].kind else {
+            return Err(unsupported(self, "record and access"));
+        };
+        if indexes.len() != 1 || self.ctype(*elem, span)?.is_none() {
+            return Err(unsupported(
+                self,
+                "multi-dimensional array and array-of-composite",
+            ));
+        }
+        let int = |v: &yavs_sem::stat::ConstValue| v.as_int();
+        if let Constraint::Array { dims: Some(d), .. } = &db.subtypes[st].constraint {
+            let RangeC::Explicit { left, dir, right } = &d[0] else {
+                return Err(unsupported(self, "non-static array"));
+            };
+            let (Some(l), Some(r)) = (
+                db.value(*left).and_then(int),
+                db.value(*right).and_then(int),
+            ) else {
+                return Err(unsupported(self, "non-static array"));
+            };
+            let downto = *dir == Direction::Downto;
+            let Some(len) = yavs_ir::dim_len(l, r, downto) else {
+                return Err(unsupported(self, "over-long array"));
+            };
+            return Ok(VhpiIndex {
+                left: l,
+                downto,
+                len: Some(len),
+            });
+        }
+        let ix = indexes[0];
+        let b = db
+            .static_bounds(ix)
+            .or_else(|| db.static_bounds(db.types[db.base(ix)].first_subtype));
+        match b.as_ref().and_then(|(l, _, r)| Some((int(l)?, int(r)?))) {
+            Some((l, r)) => Ok(VhpiIndex {
+                left: if (l.min(r)..=l.max(r)).contains(&1) {
+                    1
+                } else {
+                    l
+                },
+                downto: false,
+                len: None,
+            }),
+            None => Err(unsupported(self, "non-static index")),
+        }
     }
 
     /// The C type of scalar subtype `st` in the usual VHPIDIRECT mapping (an integer subtype by its own

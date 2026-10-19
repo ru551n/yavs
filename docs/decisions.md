@@ -1354,6 +1354,14 @@ which tools/difftest parses.
   early, fail at call" (`W0108`, `E0107`). Parameters and results are scalars or arrays of
   scalars; the interpreter hands the plugin layer neutral cells (`yavs_interp::ForeignModel`),
   so `yavs-interp` knows nothing of VHPI. Details: `crates/yavs-vhpi/AGENTS.md`.
+- **VHPI model array results (#330, 2026-10-19):** a function may return a one-dimensional
+  array of scalars. The IR carries the result's index (`VhpiModel::ret_index`: left bound,
+  direction, length when the result subtype is constrained); the interpreter builds the fat
+  result in statement temporaries from the cells the model put. An unconstrained result is
+  sized with `vhpiSizeConstraint` before its value (a put without it fails, as in both
+  reference simulators that run array results) and indexed `1 to n` (both references); one
+  reference refuses composite results at analysis. Rule 15 majority, recorded in the
+  discrepancy catalogue (`fresult`).
 
 ## Binary files (yavs-interp `binfile.rs`, #79, 2026-10-18)
 

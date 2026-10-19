@@ -9,7 +9,13 @@ elab: plug is_big kind=2
 elab: plug divmod kind=3
 elab: plug invert kind=3
 elab: plug bump kind=3
+elab: plug rev kind=2
+elab: plug iota kind=2
+elab: plug word kind=2
+elab: plug nibble kind=2
 add: call kind=1052 name=ADD
 add: param A mode=1001 kind=1029
 add: param B mode=1001 kind=1029
 divmod: in parameter: vhpi_put_value: parameter a has mode in
+size: before=-1 composite=1 constraint rc=0 after=4
+nibble: size=4 resize: vhpi_put_value: the result has 4 elements; vhpiSizeConstraint gives 5

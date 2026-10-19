@@ -2,7 +2,8 @@
 
 use yavs_ffi::{Arg, CType, Ret};
 use yavs_ir::{
-    ForeignArg, ForeignId, ForeignMode, Func, LogicKind, Program, Regs, Ty, TyId, VhpiModel, Width,
+    ForeignArg, ForeignId, ForeignMode, Func, LogicKind, Program, Regs, Ty, TyId, VhpiIndex,
+    VhpiModel, Width,
 };
 
 use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
@@ -34,6 +35,9 @@ pub struct ModelArg {
     pub kind: ScalarKind,
     pub array: bool,
     pub cells: Vec<u64>,
+    /// The number of elements the value has; `None` for an unconstrained array result
+    /// before the model sizes it (`vhpiSizeConstraint`).
+    pub len: Option<usize>,
     /// False for a function result the model has not set yet.
     pub set: bool,
 }
@@ -465,6 +469,7 @@ impl Machine {
                 mode: p.mode,
                 kind,
                 array,
+                len: Some(cells.len()),
                 cells,
                 set: true,
             });
@@ -475,8 +480,12 @@ impl Machine {
                 name: String::new(),
                 mode: ForeignMode::Out,
                 kind,
-                array: false,
+                array: m.ret_index.is_some(),
                 cells: Vec::new(),
+                len: match m.ret_index {
+                    Some(ix) => ix.len.map(|n| n as usize),
+                    None => Some(1),
+                },
                 set: false,
             });
         }
@@ -520,14 +529,55 @@ impl Machine {
                 _ => return Err(ice("VHPI model argument shape")),
             }
         }
-        match call.ret {
-            None => Ok(0),
-            Some(r) if r.set && r.cells.len() == 1 => Ok(r.cells[0]),
-            Some(_) => rt_err(format!(
+        match (call.ret, m.ret_index, m.ret) {
+            (None, ..) => Ok(0),
+            (Some(r), Some(ix), Some(ty)) if r.set => self.model_array(ty, ix, &r.cells, name),
+            (Some(r), None, _) if r.set && r.cells.len() == 1 => Ok(r.cells[0]),
+            _ => rt_err(format!(
                 "foreign function `{name}` (VHPI {} {}) did not set its result",
                 m.library, m.model
             )),
         }
+    }
+
+    /// A model's array result of type `ty` as a fat pair in temporary memory, indexed from
+    /// `ix.left` in its direction.
+    fn model_array(&mut self, ty: TyId, ix: VhpiIndex, cells: &[u64], name: &str) -> R<u64> {
+        let n = cells.len() as u64;
+        let (et, ct, logic, _) = self.array_elem(ty, name)?;
+        let size = match logic {
+            Some(_) => n.div_ceil(64) * 32,
+            None => n * et.scalar_size().ok_or_else(|| ice("array element size"))?,
+        };
+        let data = self.temp_alloc(size)?;
+        let cs = csize(ct);
+        let mut buf = vec![0u8; cells.len() * cs];
+        for (i, &c) in cells.iter().enumerate() {
+            put_c(&mut buf, i * cs, ct, c, name, 0)?;
+        }
+        self.unmarshal_array(ty, &buf, data, n, name, 0)?;
+        let span = i64::try_from(n).ok().and_then(|n| {
+            if ix.downto {
+                ix.left.checked_sub(n - 1)
+            } else {
+                ix.left.checked_add(n - 1)
+            }
+        });
+        let Some(right) = span else {
+            return rt_err(format!(
+                "foreign function `{name}`: a result of {n} elements does not fit its index"
+            ));
+        };
+        let dope = self.temp_alloc(24)?;
+        let d: Vec<u8> = [ix.left, right, i64::from(ix.downto)]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        self.put(dope, &d)?;
+        let fat = self.temp_alloc(16)?;
+        self.store(fat, Width::B8, data)?;
+        self.store(add_addr(fat, 8)?, Width::B8, dope)?;
+        Ok(fat)
     }
 
     pub(crate) fn foreign(

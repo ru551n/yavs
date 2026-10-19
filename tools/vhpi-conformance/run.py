@@ -42,9 +42,12 @@ RUNS = {
     "vecedge": [("vecedge", "vecedge")],
     "tport": [("tport", "tport")],
     "vars": [("vars", "vars")],
+    "fresult": [("fresult", f"fr_{c}") for c in ("rev", "iota", "word", "nosize", "fixed")],
 }
 # Designs with shared variables of non-protected types: analysed with the relaxed option.
 RELAXED = {"vars"}
+# Plugins that register foreign models; their designs name the plugin's file in the library word.
+FOREIGN = {"fresult"}
 SANDBOX = ["timeout", "120", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 
 
@@ -90,12 +93,16 @@ def run_sim4(so, design, top, work):
     bindir = os.environ["SIM4_BIN"]
     f = str(HERE / "designs" / f"{design}.vhd")
     work.mkdir(exist_ok=True)  # the run directory; the library is its `work`
+    # A foreign model's library word names a shared library this simulator loads from here.
+    # It loads it from there, running its startup routines, so it is not loaded a second time.
+    (work / Path(so).name).write_bytes(Path(so).read_bytes())
+    load = [] if Path(so).stem in FOREIGN else ["-loadvhpi", f"{so}:conf_boot"]
     (work / "run.do").write_text("run -all\nquit\n")
     for step in ([f"{bindir}/vlib", "work"], [f"{bindir}/vcom", "-2008", f]):
         rc, o, e = sh(step, work)
         if rc or re.search(r"[1-9]\d* Errors", o):
             return None, f"{step[0].split('/')[-1]} failed: {o.strip().splitlines()[-1:]}"
-    rc, o, e = sh([f"{bindir}/vsim", "-c", "-loadvhpi", f"{so}:conf_boot", top, "-do", "run.do"], work)
+    rc, o, e = sh([f"{bindir}/vsim", "-c"] + load + [top, "-do", "run.do"], work)
     return trace(o, e, rc), o + e
 
 
@@ -146,7 +153,7 @@ def main():
         if cc.returncode:
             sys.exit(f"{name}: plugin build failed\n{cc.stderr}")
         for design, top in RUNS[name]:
-            tag = f"{name}.{design}"
+            tag = f"{name}.{design}" if top == design else f"{name}.{top}"
             res = {}
             sims = [("sim1", run_ref), ("yavs", run_yavs)] + ([("sim4", run_sim4)] if "SIM4_BIN" in os.environ else []) \
                 + ([("sim3", run_sim3)] if "SIM3_BIN" in os.environ else [])

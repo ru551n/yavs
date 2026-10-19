@@ -27,6 +27,7 @@ extend the VHPI conformance run (#273).
 | `plugins/vecedge.c`, `designs/vecedge.vhd` | Value-change callbacks on a vector with several changed runs per cycle: a repeating one, one re-armed from inside itself, one registered mid-cycle on another signal |
 | `plugins/tport.c`, `designs/tport.vhd` | Read-write and read-only callbacks at time 0 of a design with no delta there, a put from the read-write one, value changes through a transport delay on an integer port |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
+| `plugins/fresult.c`, `designs/fresult.vhd` | Foreign functions with array results (#330), one entity per case: sized with `vhpiSizeConstraint` or not, a string, a constrained result; the size before and after, the bounds |
 | `plugins/vars.c`, `designs/vars.vhd` | Variables read and deposited before their process ran, and a shared variable no process uses (#342) |
 | `designs/hier.vhd`, `designs/drive.vhd` | The designs |
 
@@ -43,6 +44,9 @@ extend the VHPI conformance run (#273).
 | A third reference (`SIM3_BIN`, its bin directory, licence in `LM_LICENSE_FILE`) is run too: `vopt -access=rw+/.` for the design, the plugin loaded by its startup table (no function name), trace lines are prefixed `# `; its match count with yavs is printed, no table | Puts need full design access; sim3 refuses most callback reasons and some puts, so it is a vote, not a template |
 | A second reference (`SIM4_BIN`, the directory with its `vlib`, `vcom`, `vsim`; its licence variable must be set) gives a three-way table: each yavs line is `both` (matches the two references), `sim1`, `sim4` or `neither`, after case folding | A line only yavs has is a candidate gap; where the references differ from each other it is a reference quirk |
 | The plugins load the second reference through the exported `conf_boot` function (`PLUGIN_INIT` defines it) and look signals up in the first region below the root when the root is a wrapper | That reference has a dummy root above the design and loads by function name |
+
+| A design with several cases names one top per case in `RUNS` (`(design, top)` pairs); the trace files are then named after the top | A case that crashes a reference must not hide the others |
+| Plugins that register foreign models are listed in `FOREIGN`: their designs name the plugin's file in the `'FOREIGN` library word, and the second reference loads the plugin from the run directory through that word (running its startup routines), not with its load option | That reference loads a foreign model's library itself; loading the plugin twice registers everything twice |
 
 ## 4. Pitfalls
 

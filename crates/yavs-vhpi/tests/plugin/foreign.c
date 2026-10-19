@@ -131,6 +131,97 @@ static void bump_exec(const vhpiCbDataT *cb) { put_int(param(cb, 0), get_int(cb,
 
 static void forgetful_exec(const vhpiCbDataT *cb) { (void)cb; }
 
+/* The size of an array result, set to n with vhpiSizeConstraint (before, the call result
+ * and after, once). */
+static void size(const vhpiCbDataT *cb, int n) {
+  static int shown;
+  vhpiValueT v;
+  vhpiErrorInfoT e;
+  int before = vhpi_get(vhpiSizeP, cb->obj), rc;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiObjTypeVal;
+  v.numElems = n;
+  rc = vhpi_put_value(cb->obj, &v, vhpiSizeConstraint);
+  if (!shown++)
+    vhpi_printf("size: before=%d composite=%d constraint rc=%d after=%d\n", before,
+                vhpi_get(vhpiIsCompositeP, cb->obj), rc, vhpi_get(vhpiSizeP, cb->obj));
+  vhpi_check_error(&e);
+}
+
+static void rev_exec(const vhpiCbDataT *cb) {
+  vhpiEnumT in[64], out[64];
+  vhpiValueT v;
+  int i, n;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiLogicVecVal;
+  v.bufSize = sizeof in;
+  v.value.enumvs = in;
+  vhpi_get_value(param(cb, 0), &v);
+  n = v.numElems;
+  size(cb, n);
+  for (i = 0; i < n; i++) out[i] = in[n - 1 - i];
+  v.value.enumvs = out;
+  if (vhpi_put_value(cb->obj, &v, vhpiDepositPropagate)) vhpi_printf("rev: put failed\n");
+}
+
+static void iota_exec(const vhpiCbDataT *cb) {
+  vhpiIntT out[64];
+  vhpiValueT v;
+  int i, n = get_int(cb, 0);
+  size(cb, n);
+  memset(&v, 0, sizeof v);
+  for (i = 0; i < n; i++) out[i] = 10 * i;
+  v.format = vhpiIntVecVal;
+  v.numElems = n;
+  v.bufSize = n * sizeof(vhpiIntT);
+  v.value.intgs = out;
+  if (vhpi_put_value(cb->obj, &v, vhpiDepositPropagate)) vhpi_printf("iota: put failed\n");
+}
+
+static void word_exec(const vhpiCbDataT *cb) {
+  char out[] = "abc";
+  vhpiValueT v;
+  size(cb, get_int(cb, 0));
+  memset(&v, 0, sizeof v);
+  v.format = vhpiStrVal;
+  v.bufSize = sizeof out;
+  v.value.str = (vhpiCharT *)out;
+  if (vhpi_put_value(cb->obj, &v, vhpiDepositPropagate)) vhpi_printf("word: put failed\n");
+}
+
+/* A constrained result has its size; another size is misuse. */
+static void nibble_exec(const vhpiCbDataT *cb) {
+  static int shown;
+  vhpiEnumT out[4];
+  vhpiValueT v;
+  vhpiErrorInfoT e;
+  int i, x = get_int(cb, 0), n = vhpi_get(vhpiSizeP, cb->obj);
+  memset(&v, 0, sizeof v);
+  v.format = vhpiLogicVecVal;
+  v.numElems = 5;
+  if (!vhpi_put_value(cb->obj, &v, vhpiSizeConstraint)) vhpi_printf("nibble: resized\n");
+  if (vhpi_check_error(&e) && !shown++) vhpi_printf("nibble: size=%d resize: %s\n", n, e.message);
+  for (i = 0; i < 4; i++) out[i] = (x >> (3 - i)) & 1 ? vhpi1 : vhpi0;
+  v.numElems = 4;
+  v.bufSize = sizeof out;
+  v.value.enumvs = out;
+  if (vhpi_put_value(cb->obj, &v, vhpiDepositPropagate)) vhpi_printf("nibble: put failed\n");
+}
+
+/* An unconstrained result put without vhpiSizeConstraint is misuse. */
+static void unsized_exec(const vhpiCbDataT *cb) {
+  vhpiIntT out[1] = {1};
+  vhpiValueT v;
+  vhpiErrorInfoT e;
+  memset(&v, 0, sizeof v);
+  v.format = vhpiIntVecVal;
+  v.numElems = 1;
+  v.bufSize = sizeof out;
+  v.value.intgs = out;
+  if (!vhpi_put_value(cb->obj, &v, vhpiDepositPropagate)) vhpi_printf("unsized: put accepted\n");
+  if (vhpi_check_error(&e)) vhpi_printf("unsized: %s\n", e.message);
+}
+
 static void elab(const vhpiCbDataT *cb) {
   vhpiForeignDataT d;
   if (vhpi_get_foreignf_info(cb->obj, &d))
@@ -162,6 +253,11 @@ PLUGIN_EXPORT void foreign_models(void) {
   reg(vhpiProcF, "invert", invert_exec);
   reg(vhpiProcF, "bump", bump_exec);
   reg(vhpiFuncF, "forgetful", forgetful_exec);
+  reg(vhpiFuncF, "rev", rev_exec);
+  reg(vhpiFuncF, "iota", iota_exec);
+  reg(vhpiFuncF, "word", word_exec);
+  reg(vhpiFuncF, "nibble", nibble_exec);
+  reg(vhpiFuncF, "unsized", unsized_exec);
 }
 
 /* yavs only: registration queries and misuse (other simulators crash or accept it). */

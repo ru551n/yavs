@@ -657,7 +657,11 @@ only. `crates/yavs/tests/vhpi_run.rs` `vhpi_foreign_subprograms` (functions of i
 logic vector, boolean; procedures with `out`, `inout` and array `inout`; identical at `--threads 4`,
 `tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing: foreign
 architectures (`vhpiArchF`, `vhpiLibF` and `vhpiAppF` registrations are stored and queryable only),
-record/access/signal parameters, array results (`vhpiSizeConstraint`), `vhpi_get_data`/`vhpi_put_data`.
+record/access/signal parameters, `vhpi_get_data`/`vhpi_put_data`.
+Done (#330, array results): a foreign function may return a one-dimensional array of scalars, sized
+with `vhpiSizeConstraint` (unconstrained, indexed `1 to n`) or by its constrained result subtype;
+tests in `vhpi_foreign_subprograms` (`rev`, `iota`, `word`, `nibble`) and
+`vhpi_foreign_missing_model_and_result` (`nosize`); conformance plugin `tools/vhpi-conformance/plugins/fresult.c`.
 
 Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
 the elaborated design made before plugins load: root and component instances, blocks, `for`

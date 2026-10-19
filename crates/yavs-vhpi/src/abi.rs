@@ -773,7 +773,7 @@ pub unsafe extern "C" fn vhpi_put_value(
             value::Read::decode(ty.clone(), n, format, given, res)
         };
         let put = if matches!(o, Object::Call(_) | Object::Param { .. }) {
-            s.foreign_put(&o, mode, decode)
+            s.foreign_put(&o, mode, v.map(|v| v.numElems), decode)
         } else {
             s.put(&o, mode, decode)
         };

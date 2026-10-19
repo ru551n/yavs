@@ -160,9 +160,11 @@ impl State {
             (Object::Param { .. } | Object::Call(_), vhpiIsCompositeP) => {
                 Some(vhpiIntT::from(self.arg(obj)?.array))
             }
-            (Object::Param { .. } | Object::Call(_), vhpiSizeP) => {
-                vhpiIntT::try_from(self.arg(obj).map_or(0, |a| a.cells.len().max(1))).ok()
-            }
+            // An unconstrained array result has no size until the model sets one.
+            (Object::Param { .. } | Object::Call(_), vhpiSizeP) => match self.arg(obj) {
+                None => Some(0),
+                Some(a) => vhpiIntT::try_from(a.len?).ok(),
+            },
             _ => None,
         }
     }
@@ -194,17 +196,22 @@ impl State {
     }
 
     /// `vhpi_put_value` on an `out` or `inout` parameter, or on the function result.
+    /// `size` is the value's `numElems` (`vhpiSizeConstraint`).
     pub(crate) fn foreign_put(
         &mut self,
         obj: &Object,
         mode: vhpiPutValueModeT,
+        size: Option<i32>,
         decode: impl FnOnce(&Scalar, Option<usize>) -> Result<Read, crate::value::Error>,
     ) -> Result<(), (Fault, String)> {
         let misuse = |m: String| (Fault::Misuse, format!("vhpi_put_value: {m}"));
-        if !matches!(mode, vhpiDeposit | vhpiDepositPropagate) {
+        if !matches!(
+            mode,
+            vhpiDeposit | vhpiDepositPropagate | vhpiSizeConstraint
+        ) {
             return Err(misuse(format!(
-                "mode {mode} does not apply to a foreign call (only vhpiDeposit and \
-                 vhpiDepositPropagate)"
+                "mode {mode} does not apply to a foreign call (only vhpiDeposit, \
+                 vhpiDepositPropagate and vhpiSizeConstraint)"
             )));
         }
         let (call, idx) = match obj {
@@ -227,9 +234,39 @@ impl State {
         if a.mode == ForeignMode::In {
             return Err(misuse(format!("parameter {} has mode in", a.name)));
         }
+        if mode == vhpiSizeConstraint {
+            // The element count of an array result, before its value (`numElems`).
+            let n = size
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| misuse("vhpiSizeConstraint needs a value with numElems".into()))?;
+            if idx.is_some() || !a.array {
+                return Err(misuse(
+                    "vhpiSizeConstraint applies only to an array function result".into(),
+                ));
+            }
+            if let Some(l) = a.len
+                && l != n
+            {
+                return Err(misuse(format!(
+                    "the result has {l} elements; vhpiSizeConstraint gives {n}"
+                )));
+            }
+            a.len = Some(n);
+            return Ok(());
+        }
         let ty = scalar_of(&a.kind);
-        // A function result is a scalar. A parameter keeps its length.
-        let n = a.array.then_some(a.cells.len());
+        // A parameter keeps its length, an array result has the size the model set.
+        let n = match (a.array, a.len) {
+            (false, _) => None,
+            (true, Some(n)) => Some(n),
+            (true, None) => {
+                return Err(misuse(
+                    "the size of an unconstrained array result is not set: put \
+                     vhpiSizeConstraint first"
+                        .into(),
+                ));
+            }
+        };
         let r = decode(&ty, n).map_err(|e| match e {
             crate::value::Error::Unsupported(m) => (Fault::Unsupported, m),
             crate::value::Error::Mismatch(m) => misuse(m),

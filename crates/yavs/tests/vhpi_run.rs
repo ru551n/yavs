@@ -541,8 +541,9 @@ fn foreign(top: &str, extra: &[&str]) -> (i32, String, String) {
 }
 
 /// Foreign functions and procedures registered with `vhpi_register_foreignf` and called from
-/// VHDL (#274): scalar and array parameters, results through `vhpi_put_value`, `out` and
-/// `inout` parameters, registration queries and registration misuse. The plugin's output is
+/// VHDL (#274): scalar and array parameters, results through `vhpi_put_value` (array results
+/// sized with `vhpiSizeConstraint`, #330), `out` and `inout` parameters, registration queries
+/// and registration misuse. The plugin's output is
 /// `yavs-vhpi/tests/foreign/expected.txt` (`YAVS_BLESS=1` rewrites it).
 #[test]
 fn vhpi_foreign_subprograms() {
@@ -584,6 +585,11 @@ fn vhpi_foreign_missing_model_and_result() {
     assert!(err.contains("error[E0107]"), "{err}");
     let (code, err, _) = foreign("nores", &[]);
     assert_ne!(code, 0);
+    assert!(err.contains("did not set its result"), "{err}");
+    // An unconstrained array result needs its size first (#330).
+    let (code, err, out) = foreign("nosize", &[]);
+    assert_ne!(code, 0);
+    assert!(out.contains("vhpiSizeConstraint first"), "{out}");
     assert!(err.contains("did not set its result"), "{err}");
 }
 

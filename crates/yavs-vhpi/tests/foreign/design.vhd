@@ -23,6 +23,18 @@ package models is
   attribute foreign of forgetful : function is "VHPI plug forgetful";
   function missing(x : integer) return integer;
   attribute foreign of missing : function is "VHPI plug missing";
+  -- Array results (#330): sized by the model, or by a constrained result subtype.
+  function rev(v : std_logic_vector) return std_logic_vector;
+  attribute foreign of rev : function is "VHPI plug rev";
+  function iota(n : integer) return integer_vector;
+  attribute foreign of iota : function is "VHPI plug iota";
+  function word(n : integer) return string;
+  attribute foreign of word : function is "VHPI plug word";
+  subtype nib is std_logic_vector(3 downto 0);
+  function nibble(x : integer) return nib;
+  attribute foreign of nibble : function is "VHPI plug nibble";
+  function unsized(x : integer) return integer_vector;
+  attribute foreign of unsized : function is "VHPI plug unsized";
 end package;
 
 package body models is
@@ -37,6 +49,11 @@ package body models is
   procedure bump(x : inout integer) is begin end;
   function forgetful(x : integer) return integer is begin return 0; end;
   function missing(x : integer) return integer is begin return 0; end;
+  function rev(v : std_logic_vector) return std_logic_vector is begin return v; end;
+  function iota(n : integer) return integer_vector is begin return (1 to 0 => 0); end;
+  function word(n : integer) return string is begin return ""; end;
+  function nibble(x : integer) return nib is begin return "UUUU"; end;
+  function unsized(x : integer) return integer_vector is begin return (1 to 0 => 0); end;
 end package body;
 
 library ieee;
@@ -63,6 +80,12 @@ architecture a of top is begin
     n := 6;
     bump(n);
     assert n = 7 report "bump" severity failure;
+    assert rev("1101") = "1011" report "rev" severity failure;
+    assert rev("1101")'left = 1 and rev("1101")'ascending report "rev range" severity failure;
+    assert iota(3) = (0, 10, 20) report "iota" severity failure;
+    assert iota(0)'length = 0 report "iota null" severity failure;
+    assert word(3) = "abc" report "word" severity failure;
+    assert nibble(5) = "0101" and nibble(5)'left = 3 report "nibble" severity failure;
     report "foreign ok";
     wait;
   end process;
@@ -72,6 +95,12 @@ use work.models.all;
 entity nores is end;
 architecture a of nores is begin
   process begin report integer'image(forgetful(1)); wait; end process;
+end architecture;
+
+use work.models.all;
+entity nosize is end;
+architecture a of nosize is begin
+  process begin report integer'image(unsized(1)'length); wait; end process;
 end architecture;
 
 use work.models.all;

@@ -297,7 +297,20 @@ pub struct VhpiModel {
     pub library: String,
     pub model: String,
     pub params: Vec<VhpiParam>,
+    /// The result type: a scalar base type, or a one-dimensional array of scalars
+    /// (`ret_index` then says how it is indexed).
     pub ret: Option<TyId>,
+    pub ret_index: Option<VhpiIndex>,
+}
+
+/// The index range of a VHPI function's array result: the left bound and direction, and the
+/// length when the result subtype is constrained (else the model sets it with
+/// `vhpiSizeConstraint`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VhpiIndex {
+    pub left: i64,
+    pub downto: bool,
+    pub len: Option<u64>,
 }
 
 impl ForeignRef {

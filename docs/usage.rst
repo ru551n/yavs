@@ -311,7 +311,10 @@ at every call, with ``obj`` the call: ``vhpi_iterator(vhpiParamDecls, obj)`` or
 ``vhpiModeP``), ``vhpi_get_value`` reads them in every format, and ``vhpi_put_value`` with
 ``vhpiDeposit`` or ``vhpiDepositPropagate`` writes the ``out`` and ``inout`` parameters and, on
 ``obj`` itself, the function result. Parameters and results are scalars or arrays of scalars;
-records, access values, signal and file parameters are not supported. A function that sets no
+records, access values, signal and file parameters are not supported. A function whose result
+is an unconstrained array first sets its length with ``vhpi_put_value`` in
+``vhpiSizeConstraint`` mode (``numElems``), then puts the value; the result is indexed ``1 to
+n``. A constrained result subtype has its own length and bounds. A function that sets no
 result, or a value that does not fit its VHDL type, is a run-time error. A model nobody
 registered is warning ``W0108`` before the simulation and error ``E0107`` only when the
 subprogram is called. ``vhpi_get_foreignf_info`` returns a registration. Foreign architectures

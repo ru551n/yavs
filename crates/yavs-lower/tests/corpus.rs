@@ -161,6 +161,8 @@ const PASS: &[&str] = &[
     "hierarchy/port_expr_unconstrained",
     "hierarchy/port_individual_unconstrained",
     "hierarchy/port_modes_conversion",
+    "hierarchy/record_port_parts_nested",
+    "hierarchy/record_port_parts_open",
     "ieee/fixed_pkg_ops",
     "ieee/fixed_pkg_ops_2019",
     "ieee/float_pkg_ops",

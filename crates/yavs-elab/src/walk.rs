@@ -1383,7 +1383,10 @@ impl Elab<'_> {
             (A::Parts(parts), Some(sc)) => {
                 let shape = match own {
                     Some(sh) => sh,
-                    None => self.m.parts_shape(self.db, s, subtype, parts, sc, span)?,
+                    None => {
+                        let ps: Vec<_> = parts.iter().map(|(p, e, _, _)| (&p[..], *e)).collect();
+                        self.m.parts_shape(self.db, s, subtype, &ps, sc, decl)?
+                    }
                 };
                 let fo = self
                     .m
@@ -3184,28 +3187,81 @@ impl Model {
         Ok((o, sels))
     }
 
-    /// The shape of an unconstrained array port associated individually: per dimension, the
-    /// lowest to the highest index named, in the direction of the index subtype (as NVC does).
+    /// The shape of an unconstrained port (or subelement of one) of subtype `st` associated
+    /// individually; `parts` are the paths of the formal parts below it, with their actuals
+    /// (LRM 6.5.7.1): a subelement associated as a whole takes its actual's bounds, a record
+    /// shapes each element from the parts naming it, and an array runs per dimension from the
+    /// lowest to the highest index named, in the direction of the index subtype (as the
+    /// reference simulators do).
+    #[allow(clippy::too_many_arguments)]
     fn parts_shape(
         &mut self,
         db: &Db,
         s: ScopeId,
         st: yavs_sem::SubtypeId,
-        parts: &[yavs_sem::hir::IndividualPart],
+        parts: &[(&[LspStep], ExprId)],
         sc: ScopeId,
-        span: Span,
+        decl: &yavs_sem::decl::Decl,
     ) -> R<Shape> {
+        let span = decl.span;
+        if let Some(sh) = self.shape(db, st, Some(s), span)? {
+            return Ok(sh);
+        }
+        if let [([], e)] = parts {
+            return self.actual_shape(db, s, st, *e, sc, decl);
+        }
         let ty = db.base(st);
-        let yavs_sem::types::TypeKind::Array { indexes, elem } = &db.types[ty].kind else {
-            return Err(unsupported(
-                span,
-                "individual association of this unconstrained port",
-                "M3",
-            ));
+        let res = match db.subtypes[st].resolution {
+            Some(yavs_sem::types::Resolution::Function(f)) => Some(f),
+            _ => None,
+        };
+        let (indexes, elem) = match &db.types[ty].kind {
+            yavs_sem::types::TypeKind::Array { indexes, elem } => (indexes, *elem),
+            yavs_sem::types::TypeKind::Record { elems }
+                if matches!(
+                    db.subtypes[st].constraint,
+                    yavs_sem::types::Constraint::None
+                ) =>
+            {
+                let mut fields = Vec::with_capacity(elems.len());
+                for (i, f) in elems.iter().enumerate() {
+                    let sub: Vec<_> = parts
+                        .iter()
+                        .filter_map(|&(steps, e)| match steps.first() {
+                            Some(LspStep::Field(k)) if *k as usize == i => Some((&steps[1..], e)),
+                            _ => None,
+                        })
+                        .collect();
+                    if sub.is_empty() && self.shape(db, f.subtype, Some(s), span)?.is_none() {
+                        // ponytail: sem does not yet reject a subelement left out of an
+                        // individual association (LRM 6.5.7.1); only unconstrained ones fail here.
+                        return Err(Box::new(
+                            Diagnostic::error(
+                                codes::PORT_UNCONSTRAINED,
+                                format!(
+                                    "element `{}` of port `{}` is unconstrained and not associated",
+                                    f.name.text, decl.name
+                                ),
+                            )
+                            .with_primary(span, "port declared here")
+                            .with_note("LRM 6.5.7.1: an individual association names every subelement of the formal"),
+                        ));
+                    }
+                    fields.push((f.name, self.parts_shape(db, s, f.subtype, &sub, sc, decl)?));
+                }
+                return Ok(Shape::Record { ty, fields, res });
+            }
+            _ => {
+                return Err(unsupported(
+                    span,
+                    "individual association of this unconstrained port",
+                    "M3",
+                ));
+            }
         };
         let mut lh: Vec<Option<(i64, i64)>> = vec![None; indexes.len()];
-        for (steps, e, _, _) in parts {
-            let espan = db.exprs[*e].span;
+        for &(steps, e) in parts {
+            let espan = db.exprs[e].span;
             let Some(first) = self
                 .steps(db, None, &steps[..1.min(steps.len())], sc, espan)?
                 .pop()
@@ -3246,7 +3302,7 @@ impl Model {
                 },
             });
         }
-        let Some(es) = self.shape(db, *elem, Some(s), span)? else {
+        let Some(es) = self.shape(db, elem, Some(s), span)? else {
             return Err(unsupported(
                 span,
                 "individual association of a port with unconstrained elements",
@@ -3257,11 +3313,36 @@ impl Model {
             ty,
             dims,
             elem: Box::new(es),
-            res: match db.subtypes[st].resolution {
-                Some(yavs_sem::types::Resolution::Function(f)) => Some(f),
-                _ => None,
-            },
+            res,
         })
+    }
+
+    /// The shape of actual `e` (in region `sc`) of an unconstrained subelement of subtype `st`
+    /// of port `decl` of instance `s`: a signal name's, else the expression's subtype's, else its static value's.
+    fn actual_shape(
+        &mut self,
+        db: &Db,
+        s: ScopeId,
+        st: yavs_sem::SubtypeId,
+        e: ExprId,
+        sc: ScopeId,
+        decl: &yavs_sem::decl::Decl,
+    ) -> R<Shape> {
+        let espan = db.exprs[e].span;
+        if let Some((ao, asels)) = self.name_ref(db, e, sc)? {
+            return Ok(self.select(ao, &asels, espan)?.1);
+        }
+        if let Some(sh) = self.shape(db, db.exprs[e].subtype, Some(sc), espan)? {
+            return Ok(sh);
+        }
+        let v = match self.eval(db, e, Some(sc)) {
+            Err(d) if d.code == codes::NOT_EVALUATED => {
+                return Err(not_static_subtype(espan, decl.span, decl));
+            }
+            r => r?,
+        };
+        self.shape_init(db, st, Some(&v), Some(s), espan)?
+            .ok_or_else(|| not_static_subtype(espan, decl.span, decl))
     }
 
     /// The selectors of path `path` of object `o` (`None` for a formal's path, which never

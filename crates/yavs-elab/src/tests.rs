@@ -1796,3 +1796,45 @@ fn shared_variable_holding_access_values_is_not_lowered() {
     let at = d.primary.as_ref().expect("span").span;
     assert_eq!(&src[at.start as usize..at.end as usize], "v");
 }
+
+/// A record port with an unconstrained element associated individually takes the element's
+/// bounds from its actual (LRM 6.5.7.1, #288); left out, the element has none.
+#[test]
+fn record_port_parts_shape_unconstrained_elements() {
+    let src = "
+package p is
+  type r is record a : bit; d : bit_vector; end record;
+end;
+use work.p.all;
+entity sub is port (pin : in r); end;
+architecture a of sub is begin end;
+entity t is end;
+architecture a of t is
+  signal sa : bit;
+  signal sd : bit_vector(7 downto 0);
+begin
+  u : entity work.sub port map (pin.a => sa, pin.d => sd);
+  w : entity work.sub port map (pin.a => sa, pin.d => \"1010\");
+end;
+";
+    let (_, e) = elab("record_parts_open", src, "t", &[]);
+    let lens: Vec<_> = e
+        .nets
+        .objs
+        .iter()
+        .filter(|o| o.name.text.as_str() == "pin")
+        .map(|o| match &o.shape {
+            crate::hier::Shape::Record { fields, .. } => fields[1].1.len(),
+            s => panic!("{s:?}"),
+        })
+        .collect();
+    assert_eq!(lens, [8, 4]);
+    let src = src.replace(", pin.d => \"1010\"", "");
+    let (_, r) = try_elab("record_parts_missing", &src, "t", &[]);
+    let Err(v) = r else {
+        panic!("elaboration succeeded")
+    };
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].0, codes::PORT_UNCONSTRAINED);
+    assert!(v[0].1.contains("element `d` of port `pin`"), "{v:?}");
+}

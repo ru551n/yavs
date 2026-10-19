@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:record_port_parts_nested:i:_p0	d 7 0 n 0 1 k 4 9 q 3
+diag	note	1000000	0	:record_port_parts_nested:i:_p0	a='1' d=10100101 n0=7 k=000011
+diag	note	2000000	0	:record_port_parts_nested:_p0	sq=111 sv='1'

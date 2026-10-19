@@ -51,7 +51,7 @@ testbenches) fail in analysis on #290 instead.
 | bitvis_vip_scoreboard | 0 | 3 | 0 | #299 (2); #301 (1) |
 | bitvis_vip_avalon_mm | 0 | 5 | 0 | #299 |
 | bitvis_vip_avalon_st | 0 | 6 | 0 | #299 |
-| bitvis_vip_axi | 0 | 2 | 0 | individual association of an unconstrained record port #288 |
+| bitvis_vip_axi | 0 | 2 | 0 | `'length` of a record element of a port in a constant, like #287 |
 | bitvis_vip_axilite | 0 | 2 | 0 | #299 |
 | bitvis_vip_axistream | 0 | 22 | 0 | #299 |
 | bitvis_vip_clock_generator | 0 | 1 | 0 | #299 |
@@ -500,7 +500,7 @@ loaded before elaboration, a package needing a body without one (E2116), convers
 and type conversions in port maps (kernel converters; conversion functions of record ports and
 arrays of records convert all leaves in one call in the same delta, #74; both conversions of
 `inout` ports, #238; a formal-side-only conversion of an `inout` port, scalar and composite, #74), individual
-association of unconstrained array ports, implicit signals (`'stable`,
+association of unconstrained array ports and of record ports with unconstrained elements (#288), implicit signals (`'stable`,
 `'quiet`, `'delayed`, `'transaction`, kernel-maintained, also named in process bodies and
 subprograms, #240), package signals (`:lib:pkg:s`, every
 signal of a loaded package, visible from every region), package data initialised once in

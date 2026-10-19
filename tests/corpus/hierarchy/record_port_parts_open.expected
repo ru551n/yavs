@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:record_port_parts_open:i:_p0	d 7 0 k 4 9 q 2 4
+diag	note	1000000	0	:record_port_parts_open:i:_p0	a='1' d=10100101 k=000011
+diag	note	2000000	0	:record_port_parts_open:_p0	sq=111 sv='1'

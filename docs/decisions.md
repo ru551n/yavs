@@ -913,6 +913,12 @@ which tools/difftest parses.
   form, the other agrees on the values). An unconstrained
   formal's bounds run from the lowest to the highest index named, in the index subtype's
   direction, as yavs-elab does for ports.
+- **Individually associated record ports with unconstrained elements** (#288, LRM 6.5.7.1):
+  the formal is shaped element by element from its parts; an element associated as a whole
+  takes its actual's bounds (a signal name's, else the expression's subtype's or static value's,
+  else E2111 as for a whole port), an element named index by index the lowest to the highest
+  index named, as for array ports. An unconstrained element left out is E2111. Two reference
+  simulators agree on nested records; the third fails their elaboration.
 - **Conversions in call associations** (#229, LRM 6.5.7.1, lrm-checks L66): sem gives
   `Actual::Converted` with the actual part (`copy_in`, `inout` only) and the formal part naming
   the formal (`copy_out`) as expressions, so lowering needs no conversion logic of its own: the

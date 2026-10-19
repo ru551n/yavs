@@ -714,9 +714,8 @@ on `out`/`inout` parameters and on the call for the function result; `elabf` run
 subprogram; an unregistered model is `W0108` then `E0107` at the call. Scalars and arrays of scalars
 only. `crates/yavs/tests/vhpi_run.rs` `vhpi_foreign_subprograms` (functions of integer, real, time,
 logic vector, boolean; procedures with `out`, `inout` and array `inout`; identical at `--threads 4`,
-`tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing: foreign
-architectures (`vhpiArchF`, `vhpiLibF` and `vhpiAppF` registrations are stored and queryable only),
-record/access/signal parameters, `vhpi_get_data`/`vhpi_put_data`.
+`tests/foreign/expected.txt`) and `vhpi_foreign_missing_model_and_result`. Missing: `vhpiLibF`
+and `vhpiAppF` models (stored and queryable only, #357), `vhpi_get_data`/`vhpi_put_data`.
 Done (#330, array results): a foreign function may return a one-dimensional array of scalars, sized
 with `vhpiSizeConstraint` (unconstrained, indexed `1 to n`) or by its constrained result subtype;
 tests in `vhpi_foreign_subprograms` (`rev`, `iota`, `word`, `nibble`) and
@@ -726,6 +725,12 @@ Done (#330, parameters): record parameters (fields through `vhpiSelectedNames`, 
 `out`/`inout` a deposit and transactions on the caller's driver from `vhpiDrivers` with
 `vhpi_schedule_transaction`); tests in `vhpi_foreign_subprograms` (`norm`, `flip`, `peek`,
 `drive`), conformance plugin `tools/vhpi-conformance/plugins/fparam.c`.
+Done (#330, foreign architectures): `"VHPI library model"` architectures elaborate as their ports
+(`Elaborated::foreign_archs`); the models' `elabf` and `execf` run before the build, create
+processes and drivers with `vhpi_create` (`Elaborated::ext_procs`) and drive them with
+`vhpi_schedule_transaction` (kernel `Hook::assign`); an unregistered model is `E0905`. Test
+`vhpi_foreign_architecture` (`tests/plugin/farch.c`, `tests/farch/expected.txt`, identical at
+`--threads 4`); conformance plugin `tools/vhpi-conformance/plugins/farch.c`.
 
 Done (#269): the design hierarchy object model (`crates/yavs-vhpi/src/design.rs`), a snapshot of
 the elaborated design made before plugins load: root and component instances, blocks, `for`

@@ -55,6 +55,7 @@ impl VhpiObserver {
 /// The kernel requests plugins left: puts (unless `hold_puts`), after-delay wake-ups,
 /// cancels, the end of the run.
 fn requests(s: &mut State, hook: &mut Hook<'_>, hold_puts: bool) {
+    crate::foreign::pending(s, hook);
     let puts = if hold_puts {
         Vec::new()
     } else {

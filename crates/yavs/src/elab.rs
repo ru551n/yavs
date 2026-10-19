@@ -542,6 +542,17 @@ pub fn run(
             }
         }
     }
+    // The models of VHPI foreign architectures run now, before the build (#330).
+    let mut e = e;
+    if !e.foreign_archs.is_empty() {
+        match yavs_vhpi::elaborate_foreign(&e) {
+            Ok(procs) => e.ext_procs = procs,
+            Err(d) => {
+                out.emit(&none, &d);
+                return out.finish(2);
+            }
+        }
+    }
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),
         shuffle: a.shuffle,

@@ -14,7 +14,9 @@ use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
     check_ref, make_op,
 };
-use crate::signal::{ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn};
+use crate::signal::{
+    DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Waiter, apply_txn,
+};
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
@@ -131,10 +133,16 @@ struct Wakes {
 }
 
 /// What an observer may do from a callback: read signals, queue forces and deposits
-/// (applied in the next cycle), schedule wake-ups and end the simulation.
+/// (applied in the next cycle), schedule transactions on drivers, schedule wake-ups and end
+/// the simulation.
 pub struct Hook<'a> {
     now: Time,
     delta: u32,
+    cycle: u64,
+    cfg: &'a Config,
+    drivers: &'a [DriverInfo],
+    names: &'a [String],
+    queue: &'a mut BinaryHeap<Reverse<(Time, Entry)>>,
     signals: &'a [Signal],
     ops: &'a mut Vec<SignalOp>,
     end: &'a mut Option<EndReason>,
@@ -198,6 +206,45 @@ impl Hook<'_> {
 
     pub fn stop(&mut self) {
         self.end.get_or_insert(EndReason::Requested);
+    }
+
+    /// A signal assignment through driver `d`, as its process would make it now
+    /// ([`Ctx::assign`]): VHPI `vhpi_schedule_transaction` on a driver of a foreign
+    /// architecture's process, which runs no code of its own.
+    pub fn assign<'v, V: Into<ValueRef<'v>> + Copy>(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        waveform: &[(Time, V)],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
+        let owner = self
+            .drivers
+            .get(d.0 as usize)
+            .ok_or_else(|| self.err(ErrorKind::InvalidAssign("no such driver".into())))?
+            .owner;
+        let sh = Shared {
+            now: self.now,
+            delta: self.delta,
+            cycle: self.cycle,
+            resolution: self.cfg.resolution,
+            stop_severity: self.cfg.stop_severity,
+            signals: self.signals,
+            drivers: self.drivers,
+            names: self.names,
+        };
+        // Observers run between phases: no process holds its slot.
+        let mut slot = lock(&self.slots[owner.0 as usize]);
+        let mut ctx = Ctx {
+            sh: &sh,
+            pid: owner,
+            st: &mut slot.st,
+        };
+        ctx.assign(d, target, waveform, mode)?;
+        for (t, d) in slot.st.scheduled.drain(..) {
+            self.queue.push(Reverse((t, Entry::Driver(d.0))));
+        }
+        Ok(())
     }
 
     /// Schedule a cycle at absolute time `t` (`>= now`; at `now` it is the next delta) whose
@@ -1481,6 +1528,11 @@ impl SimControl {
         let mut hook = Hook {
             now: self.now,
             delta: self.delta,
+            cycle: self.cycle,
+            cfg: &self.cfg,
+            drivers: &self.drivers,
+            names: &self.names,
+            queue: &mut self.queue,
             signals: &self.signals,
             ops: &mut self.ops,
             end: &mut self.end,

@@ -170,6 +170,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A VHPI call was misused (a bad handle, property or argument); the call failed.",
     ),
     ("W0904", "A VHPI call that yavs does not support yet."),
+    (
+        "E0905",
+        "An architecture's `foreign` attribute names a VHPI model (`\"VHPI library model\"`) that no plugin given with `--vhpi` registered with `vhpi_register_foreignf` (`vhpiArchF`); the architecture would have no behaviour.",
+    ),
     // yavs-lib
     (
         "L0000",

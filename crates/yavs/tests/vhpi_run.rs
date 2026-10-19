@@ -595,6 +595,48 @@ fn vhpi_foreign_missing_model_and_result() {
     assert!(err.contains("did not set its result"), "{err}");
 }
 
+/// Runs entity `top` of `yavs-vhpi/tests/farch/design.vhd` with the `farch` plugin.
+fn farch(top: &str, extra: &[&str]) -> (i32, String, String) {
+    let vhdl = std::fs::read_to_string(vhpi_dir().join("tests/farch/design.vhd")).expect("design");
+    let (lib, so) = setup_with("farch", &vhdl);
+    let spec = format!("--vhpi={}", so.display());
+    let mut args = vec!["run", &lib, &spec];
+    args.extend_from_slice(extra);
+    args.push(top);
+    yavs(&args)
+}
+
+/// A foreign architecture (#330): `elabf` and `execf` run before the simulation, the model
+/// creates a process and drivers (`vhpi_create`) and drives its ports with
+/// `vhpi_schedule_transaction` (inertial pulse rejection, transport) from value-change
+/// callbacks; two instances get one process each. The plugin's output is
+/// `yavs-vhpi/tests/farch/expected.txt` (`YAVS_BLESS=1` rewrites it), the same at 4 threads.
+/// A model no plugin registered is `E0905`.
+#[test]
+fn vhpi_foreign_architecture() {
+    let (code, err, out) = farch("top", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("farch ok"), "{out}{err}");
+    let expected = vhpi_dir().join("tests/farch/expected.txt");
+    if std::env::var_os("YAVS_BLESS").is_some() {
+        std::fs::write(&expected, &out).expect("bless");
+    }
+    let want = std::fs::read_to_string(&expected)
+        .expect("expected trace")
+        .replace("\r\n", "\n");
+    assert_eq!(out, want);
+    let (code, _, again) = farch("top", &["--threads=4"]);
+    assert_eq!(code, 0);
+    assert_eq!(again, out);
+    let (code, err, out) = farch("two", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("two ok"), "{out}{err}");
+    let (code, err, _) = farch("lost", &[]);
+    assert_eq!(code, 2);
+    assert!(err.contains("error[E0905]"), "{err}");
+    assert!(err.contains("`plug lost`"), "{err}");
+}
+
 /// Process and shared variables (#309): read at the end of initialization and in callbacks,
 /// deposited (scalars, a logic vector and one of its elements, record fields, a string, a
 /// variable of a process suspended in a procedure, an architecture's and a package's shared

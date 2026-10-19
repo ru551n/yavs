@@ -183,6 +183,13 @@ impl Elaborated {
                 Boxed(proc),
             );
         }
+        // The processes of foreign architectures' models: drivers only (#330).
+        for p in &self.ext_procs {
+            let ds: Vec<DriverId> = p.drivers.iter().map(|&d| b.driver(d)).collect();
+            (p.built)(&ds);
+            let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
+            b.process(&p.name, ProcFlags::default(), &ds, idle);
+        }
         b.build(cfg)
     }
 }

@@ -272,6 +272,15 @@ impl Default for Design {
 }
 
 impl Design {
+    /// The region node of elaborated scope `s`.
+    pub(crate) fn scope_node(&self, s: ScopeId) -> Option<NodeId> {
+        let i = self
+            .nodes
+            .iter()
+            .position(|n| matches!(n.origin, Origin::Scope(x) if x == s))?;
+        Some(NodeId(i as u32))
+    }
+
     pub(crate) fn node(&self, n: NodeId) -> &Node {
         &self.nodes[n.0 as usize]
     }

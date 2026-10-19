@@ -1372,6 +1372,19 @@ which tools/difftest parses.
   kernel and runs are the same at any thread count. Writes to record fields are accepted (one
   reference refuses, one accepts: permissive); signal parameter behaviour follows the one
   reference that runs it (the other rejects the class). Catalogue: `fparam`.
+- **VHPI foreign architectures (#330, 2026-10-19):** the elaborator elaborates a `"VHPI
+  library model"` architecture (also `"VHPI library;model"`, the form one reference needs) as
+  its ports and its entity's declarations and statements only (`Elaborated::foreign_archs`).
+  After the plugins load, `yavs_vhpi::elaborate_foreign` runs every `elabf`, then every
+  `execf`; the processes and drivers the models create (`vhpi_create`) become
+  `Elaborated::ext_procs`, built as processes that own the drivers and run no code. A model
+  drives them with `vhpi_schedule_transaction`, which goes through the new kernel
+  `Hook::assign` (a signal assignment through a driver, from an observer): the transaction is
+  scheduled at the callback's time like a process's, deterministically at any thread count. A
+  model no plugin registered is `E0905` before the simulation (fail early: the architecture has
+  no behaviour otherwise). The one reference that runs foreign architectures preempts a vector
+  transaction as a whole; yavs preempts per element as for every signal assignment (LRM
+  10.5.2.2), recorded in the catalogue (`farch`).
 
 ## Binary files (yavs-interp `binfile.rs`, #79, 2026-10-18)
 

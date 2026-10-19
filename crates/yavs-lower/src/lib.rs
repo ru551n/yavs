@@ -16,6 +16,7 @@ mod expr;
 mod file;
 mod force;
 mod foreign;
+pub use foreign::vhpi_model;
 mod func;
 mod protected;
 mod reflect;

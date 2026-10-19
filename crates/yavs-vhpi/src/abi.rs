@@ -946,14 +946,38 @@ pub extern "C" fn vhpi_get_next_time(_time: *mut vhpiTimeT) -> c_int {
     1
 }
 
+/// Creates a process (`vhpiProcessStmtK`) or a driver (`vhpiDriverK`) of a foreign
+/// architecture's model while it is elaborated (see `foreign.rs`); NULL on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn vhpi_create(
-    _kind: vhpiClassKindT,
-    _h1: vhpiHandleT,
-    _h2: vhpiHandleT,
+    kind: vhpiClassKindT,
+    h1: vhpiHandleT,
+    h2: vhpiHandleT,
 ) -> vhpiHandleT {
-    not_implemented("vhpi_create");
-    std::ptr::null_mut()
+    let func = "vhpi_create";
+    with_state(|s| {
+        let mut obj = |h: vhpiHandleT| {
+            if h.is_null() {
+                return Ok(None);
+            }
+            get_obj(s, h, func).map(Some).ok_or(())
+        };
+        let (Ok(a), Ok(b)) = (obj(h1), obj(h2)) else {
+            return std::ptr::null_mut();
+        };
+        match s.create(kind, a, b) {
+            Ok(o) => s.handles.alloc(o),
+            Err((fault, m)) => {
+                let m = if fault == Fault::Unsupported {
+                    format!("{m}: {NOT_IMPLEMENTED}")
+                } else {
+                    m
+                };
+                s.fail(fault, m);
+                std::ptr::null_mut()
+            }
+        }
+    })
 }
 
 /// Registers a foreign model (`vhpiFuncF`, `vhpiProcF`, `vhpiArchF`, `vhpiLibF`, `vhpiAppF`)
@@ -991,19 +1015,24 @@ pub unsafe extern "C" fn vhpi_get_foreignf_info(
         with_state(|s| s.fail(Fault::Misuse, "vhpi_get_foreignf_info: NULL data"));
         return 1;
     };
-    with_state(|s| match get_obj(s, h, "vhpi_get_foreignf_info") {
-        Some(Object::Foreign(i)) => match s.foreign_info(i, out) {
+    with_state(|s| {
+        // A registration, or an instance of a foreign architecture (its model's registration).
+        let i = match get_obj(s, h, "vhpi_get_foreignf_info") {
+            Some(Object::Foreign(i)) => Some(i),
+            Some(Object::Node(n)) => s.foreign_arch(n),
+            Some(_) => None,
+            None => return 1,
+        };
+        match i.and_then(|i| s.foreign_info(i, out)) {
             Some(()) => 0,
-            None => 1,
-        },
-        Some(_) => {
-            s.fail(
-                Fault::Misuse,
-                "vhpi_get_foreignf_info: not a foreign registration handle",
-            );
-            1
+            None => {
+                s.fail(
+                    Fault::Misuse,
+                    "vhpi_get_foreignf_info: not a foreign registration or foreign architecture",
+                );
+                1
+            }
         }
-        None => 1,
     })
 }
 

@@ -167,11 +167,35 @@ pub struct PortActual {
     pub bounds: Option<[u64; 3]>,
 }
 
+/// An instance of a `'FOREIGN "VHPI library model"` architecture.
+pub struct ForeignArch {
+    pub scope: ScopeId,
+    pub library: String,
+    pub model: String,
+}
+
+/// A process of a foreign architecture's model: its name, the elements it drives, and what
+/// learns the driver ids at every build (`Hook::assign` schedules on them).
+pub struct ExtProc {
+    pub name: String,
+    pub drivers: Vec<yavs_kernel::SigRef>,
+    pub built: DriversBuilt,
+}
+
+/// Called with the driver ids of an [`ExtProc`] when the simulation is built.
+pub type DriversBuilt = std::sync::Arc<dyn Fn(&[yavs_kernel::DriverId]) + Send + Sync>;
+
 pub struct Elaborated {
     pub top: Top,
     pub hier: Hierarchy,
     pub nets: NetGraph,
     pub procs: Vec<ProcInst>,
+    /// Instances of VHPI foreign architectures, in elaboration order (#330): only their
+    /// ports and the entity's declarations and statements are elaborated.
+    pub foreign_archs: Vec<ForeignArch>,
+    /// Processes a VHPI plugin created for foreign architectures (`vhpi_create`), set by the
+    /// caller before building: each owns drivers and runs no code.
+    pub ext_procs: Vec<ExtProc>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<std::collections::HashMap<yavs_sem::DeclId, Val>>,
     /// Signal objects by (scope, declaration).

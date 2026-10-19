@@ -132,6 +132,7 @@ pub(crate) struct Elab<'d> {
     db: &'d mut Db,
     m: Model,
     procs: Vec<ProcInst>,
+    foreign_archs: Vec<crate::ForeignArch>,
     errors: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
     cfg: ElabConfig,
@@ -452,6 +453,7 @@ pub(crate) fn elaborate(
         db,
         m: Model::default(),
         procs: Vec::new(),
+        foreign_archs: Vec::new(),
         errors: Vec::new(),
         warnings: Vec::new(),
         cfg: cfg.clone(),
@@ -569,6 +571,8 @@ pub(crate) fn elaborate(
         hier: e.m.hier,
         nets: e.m.nets,
         procs: e.procs,
+        foreign_archs: e.foreign_archs,
+        ext_procs: Vec::new(),
         convs: std::mem::take(&mut e.m.convs),
         model_vals: e.m.vals,
         sigs: e.m.sigs,
@@ -720,13 +724,31 @@ impl Elab<'_> {
                 return Err(self.ctx(s, d));
             }
         }
+        // A VHPI foreign architecture (#330): the plugin's model stands in for its
+        // declarations and statements, which are not elaborated.
+        let foreign = self.vhpi_arch(arch);
         // 4. Declarations of the entity, then of the architecture.
         let escope = self.db.units[entity].scope;
         let ascope = self.db.units[arch].scope;
-        for region in [escope, ascope] {
+        let regions: &[_] = if foreign.is_some() {
+            &[escope]
+        } else {
+            &[escope, ascope]
+        };
+        for &region in regions {
             if let Err(d) = self.decls(s, region) {
                 return Err(self.ctx(s, d));
             }
+        }
+        if let Some((library, model)) = foreign {
+            self.foreign_archs.push(crate::ForeignArch {
+                scope: s,
+                library,
+                model,
+            });
+            let mut counter = 0;
+            self.stmts(s, &estmts, None, &mut counter, depth)?;
+            return Ok(s);
         }
         let UnitHir::Architecture { stmts, .. } = &self.db.units[arch].hir else {
             return Err(Box::new(ice(at, "architecture without HIR")));
@@ -736,6 +758,23 @@ impl Elab<'_> {
         self.stmts(s, &estmts, None, &mut counter, depth)?;
         self.stmts(s, &astmts, cfg.as_ref(), &mut counter, depth)?;
         Ok(s)
+    }
+
+    /// The library and model of architecture `arch` when its `'FOREIGN` value is a VHPI
+    /// model (`"VHPI library model"` or `"VHPI library;model"`).
+    fn vhpi_arch(&self, arch: UnitId) -> Option<(String, String)> {
+        let key = Symbol::intern("foreign");
+        let v = self.db.attr_index.get(&(self.db.units[arch].decl, key))?;
+        match self.db.value(self.db.attr_values[*v].value)? {
+            yavs_sem::stat::ConstValue::Array(a) => match &a.elems {
+                yavs_sem::stat::Elems::Bytes(b) => {
+                    let text: String = b.iter().map(|&c| char::from(c)).collect();
+                    yavs_lower::vhpi_model(&text)
+                }
+                yavs_sem::stat::Elems::Runs(_) => None,
+            },
+            _ => None,
+        }
     }
 
     /// The clone of `entity`/`arch` for the generic type, subprogram and package actuals in

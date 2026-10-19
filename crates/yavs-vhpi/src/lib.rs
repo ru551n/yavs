@@ -49,6 +49,21 @@ pub fn set_design(db: &yavs_sem::Db, e: &yavs_elab::Elaborated) {
 
 /// Sets the interpreter side of the simulation about to run (`Elaborated::build_full`):
 /// plugins read and write shared variables through it (#309).
+/// Runs the models of the design's VHPI foreign architectures (#330) after the plugins
+/// loaded: their `elabf`, then their `execf`. The processes and drivers they created go into
+/// `Elaborated::ext_procs` before the build. An instance whose model no plugin registered
+/// is `E0905`.
+pub fn elaborate_foreign(
+    e: &yavs_elab::Elaborated,
+) -> Result<Vec<yavs_elab::ExtProc>, Box<yavs_diag::Diagnostic>> {
+    foreign::elaborate(e).map_err(|m| {
+        Box::new(yavs_diag::Diagnostic::error("E0905", m).with_note(
+            "register it with `vhpi_register_foreignf` (`vhpiArchF`) in a plugin given as \
+             `--vhpi=LIB`",
+        ))
+    })
+}
+
 pub fn set_runtime(b: yavs_elab::Built) {
     abi::with_state(|s| s.built = Some(b));
 }

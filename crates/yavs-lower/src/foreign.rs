@@ -30,12 +30,20 @@ pub fn vhpidirect_symbol(attr: &str, name: &str) -> Option<String> {
     Some(w.last().unwrap_or(name).to_string())
 }
 
-/// The library and model of a `'FOREIGN "VHPI library model"` attribute value (exactly three
-/// words, keyword case-insensitive); `None` for any other form.
+/// The library and model of a `'FOREIGN "VHPI library model"` attribute value (the keyword,
+/// case-insensitive, then the two names, separated by blanks or a `;` as another simulator
+/// writes them, `"VHPI library;model"`); `None` for any other form.
 pub fn vhpi_model(attr: &str) -> Option<(String, String)> {
-    let w: Vec<&str> = attr.split_whitespace().collect();
-    match w[..] {
-        [k, lib, model] if k.eq_ignore_ascii_case("vhpi") => Some((lib.into(), model.into())),
+    let mut w = attr.split_whitespace();
+    if !w.next()?.eq_ignore_ascii_case("vhpi") {
+        return None;
+    }
+    let names: Vec<&str> = w
+        .flat_map(|x| x.split(';'))
+        .filter(|x| !x.is_empty())
+        .collect();
+    match names[..] {
+        [lib, model] => Some((lib.into(), model.into())),
         _ => None,
     }
 }
@@ -410,6 +418,12 @@ mod tests {
             Some(("lib".into(), "mod".into()))
         );
         assert_eq!(vhpi_model("VHPI lib"), None);
+        assert_eq!(
+            vhpi_model("VHPI lib;mod"),
+            Some(("lib".into(), "mod".into()))
+        );
+        assert_eq!(vhpi_model("vhpi lib ; mod"), vhpi_model("VHPI lib;mod"));
+        assert_eq!(vhpi_model("VHPI lib;mod;x"), None);
         assert_eq!(vhpi_model("VHPIDIRECT lib mod"), None);
     }
 

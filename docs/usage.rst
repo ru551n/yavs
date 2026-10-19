@@ -370,9 +370,20 @@ is an unconstrained array first sets its length with ``vhpi_put_value`` in
 n``. A constrained result subtype has its own length and bounds. A function that sets no
 result, or a value that does not fit its VHDL type, is a run-time error. A model nobody
 registered is warning ``W0108`` before the simulation and error ``E0107`` only when the
-subprogram is called. ``vhpi_get_foreignf_info`` returns a registration. Foreign architectures
-(``vhpiArchF``) can be registered and queried but are not run yet. Calls are serialized, so a
-plugin needs no locking, whatever ``--threads`` says.
+subprogram is called. ``vhpi_get_foreignf_info`` returns a registration. Calls are serialized,
+so a plugin needs no locking, whatever ``--threads`` says.
+
+A plugin can implement an architecture too. An architecture whose ``foreign`` attribute is
+``"VHPI library model"`` (or ``"VHPI library;model"``) has only its ports elaborated, plus its
+entity's declarations and statements; the model a plugin registered with ``vhpiArchF`` stands
+in for the rest. Before the simulation starts, the registration's ``elabf`` runs for every
+instance, then its ``execf``, each with ``obj`` the instance (``vhpi_get_foreignf_info`` on it
+returns the registration). While they run, the model creates a process with
+``vhpi_create(vhpiProcessStmtK, instance, NULL)`` (the instance or its design unit) and drivers
+for its ``out`` and ``inout`` ports with ``vhpi_create(vhpiDriverK, port, process)``. It drives
+them with ``vhpi_schedule_transaction(driver, value, 1, delay, vhpiInertial or vhpiTransport,
+pulse_rejection)``, from ``execf`` or from callbacks such as ``vhpiCbValueChange`` on its
+``in`` ports. An instance whose model no plugin registered is error ``E0905``.
 
 Plusargs
 --------

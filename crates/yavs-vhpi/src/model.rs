@@ -21,10 +21,10 @@ use crate::types::{TyId, TypeObj};
 use crate::value::{self, Read, Scalar};
 
 /// Where a declaration or sub-element lives (`State::at`).
-struct At<'a> {
-    node: &'a Node,
+pub(crate) struct At<'a> {
+    pub(crate) node: &'a Node,
     /// The layout of the sub-element.
-    l: &'a Layout,
+    pub(crate) l: &'a Layout,
     /// Signals: the first kernel leaf of the sub-element, the row-major instance of it among
     /// that leaf's repetitions and the number of repetitions.
     leaf: u32,
@@ -36,7 +36,7 @@ struct At<'a> {
 
 impl At<'_> {
     /// The kernel elements of a scalar or an array of `len` scalars of type `ty`.
-    fn signal_ref(&self, ty: &Scalar, len: u64) -> SigRef {
+    pub(crate) fn signal_ref(&self, ty: &Scalar, len: u64) -> SigRef {
         // A logic leaf stores its rightmost element at offset 0 (yavs-elab `hier`).
         let first = self.k * len;
         let offset = if ty.on_planes() {
@@ -72,6 +72,10 @@ pub(crate) enum Object {
     /// The call of a foreign subprogram that a model's `execf` is running (key in
     /// `Foreign::calls`); a function call is also the function's result.
     Call(u64),
+    /// Process `i` a foreign architecture's model created (`vhpi_create`, `foreign.rs`).
+    Process(usize),
+    /// Driver `i` a foreign architecture's model created.
+    Driver(usize),
     /// Parameter `idx` of foreign call `call`, or a part of it.
     Param {
         call: u64,
@@ -386,7 +390,7 @@ impl State {
 
     /// Where `obj` (a declaration or sub-element) lives; `func` names the VHPI call for
     /// errors.
-    fn at(&self, obj: &Object, func: &str) -> Result<At<'_>, (Fault, String)> {
+    pub(crate) fn at(&self, obj: &Object, func: &str) -> Result<At<'_>, (Fault, String)> {
         let misuse = || (Fault::Misuse, format!("{func}: the object has no value"));
         let (base, path): (NodeId, &[u64]) = match obj {
             Object::Node(n) => (*n, &[]),
@@ -434,7 +438,10 @@ impl State {
     }
 
     /// The element type, element count and arrayness of a scalar or an array of scalars.
-    fn scalars<'l>(l: &'l Layout, func: &str) -> Result<(&'l Scalar, u64, bool), (Fault, String)> {
+    pub(crate) fn scalars<'l>(
+        l: &'l Layout,
+        func: &str,
+    ) -> Result<(&'l Scalar, u64, bool), (Fault, String)> {
         match l {
             Layout::Scalar(t) => Ok((t, 1, false)),
             Layout::Array { elem, .. } => match &**elem {
@@ -706,6 +713,8 @@ impl State {
             Object::Iter(_) => vhpiIteratorK,
             Object::Type(o) => self.design.types.kind(*o),
             Object::Foreign(_) | Object::Call(_) | Object::Param { .. } => self.foreign_kind(obj),
+            Object::Process(_) => vhpiProcessStmtK,
+            Object::Driver(_) => vhpiDriverK,
             Object::Node(n) => self.design.node(*n).kind,
             Object::Elem { base, path } => {
                 self.design

@@ -95,7 +95,6 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1401 | static overflow where required | 8.1 |
 | E1402 | literal out of range | 8.1 |
 | E1403 | static value outside subtype | 8.1 |
-| E1404 | static index or slice outside the array's static index range, also in dead code | 8.4, 8.5 |
 | E1405 | static length mismatch | 8.1 |
 | E1410 | not locally static where required | 8.1 |
 | E1501 | not a generic unit | 8.1 |
@@ -132,4 +131,5 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1904 | shared / private variable not protected | 8.1 |
 | E1905 | illegal use of a protected type | 8.1 |
 | W1008 | construct means something different under the design revision | 0.1, 8.1 |
+| W1404 | static index out of range in possibly dead code | 8.1 |
 | W1501 | unused generic | 8.1 |

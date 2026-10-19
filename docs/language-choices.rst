@@ -135,10 +135,11 @@ libraries are not checked. Standard: 5.2.4.2.
 Constant errors in ranges and overflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Division by zero in a constant range bound is an error at analysis, and so is a static index or
-slice outside the range of its array (``E1404``), also in code that never runs. A constant
-integer overflow outside a required context is a warning (``W1401``): the code may be dead and the
-run-time check stays. Standard: 9.4.2, 8.4, 8.5.
+Division by zero in a constant range bound is an error at analysis. A static index or slice
+outside its range, and a constant integer overflow outside a required context, are warnings
+(``W1404``, ``W1401``): the code may be dead and the run-time check stays. Some simulators make
+these errors, others defer them to elaboration. Decided by the user, 2026-10-19. Standard: 9.4.2,
+8.4, 8.5.
 
 Condition operator from the type's region
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

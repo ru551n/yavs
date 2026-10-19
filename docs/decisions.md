@@ -1426,14 +1426,14 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   condition's type first; when none is visible, the `??` declared beside the type, so
   `use ieee.std_logic_1164.std_ulogic` alone is enough. 9.2.9 does not say where the operator is
   looked up, so the permissive reading wins; it replaces the morning's majority-rule `E1340`.
+- **Static index and slice out of range (L51, sem.md 4.3; user, 2026-10-19, rule 15):** a locally
+  static index or non-null slice outside the static index range of its array is warning `W1404` at
+  analysis, an error only when the code runs (the run-time check). The code may be dead; this
+  replaces the morning's majority-rule error `E1404`, which is retired.
 - **Formal conversions overloaded by result type (L66, #229; user, 2026-10-19, majority rule):**
   `set(cv(x) => r)` with two `cv(integer)` returning different types is `E1302`: the actual's type
   does not choose the overload (two of the three reference simulators reject it). Port maps already
   required a unique conversion.
-- **Static index and slice out of range (L51, sem.md 4.3; user, 2026-10-19, majority rule):** a
-  locally static index or non-null slice outside the static index range of its array is the new
-  error `E1404`, also in code that never runs, because two of the three reference simulators reject
-  it. Warning `W1404` is retired; the run-time check stays for everything not static.
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

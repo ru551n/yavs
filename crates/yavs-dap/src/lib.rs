@@ -205,10 +205,11 @@ enum OpKind {
     Release(ForceMode),
 }
 
-/// A force, deposit or release of a whole signal: its leaves and their new values.
+/// A force, deposit or release of a signal or a part of one: its kernel elements and their new
+/// values.
 struct Op {
     kind: OpKind,
-    leaves: Vec<(SignalId, Option<Value>)>,
+    leaves: Vec<(SigRef, Option<Value>)>,
 }
 
 impl Shared {
@@ -949,37 +950,33 @@ fn signal_op(sh: &Shared, at: &At<'_, '_>, req: &Json) {
             Some(f) => f >> 16,
             None => at.process().map_or(0, |p| p as i64 + 1),
         };
-        let k = sh
-            .design
-            .find(thread_proc(sh, tid), name)
+        let (k, suffix) = split_part(sh, thread_proc(sh, tid), name)
             .ok_or_else(|| format!("no signal `{name}` here"))?;
         let s = &sh.design.sigs[k];
+        let (paths, ty) = select(&s.lit, suffix)?;
+        let target = format!("{}{}", s.path, suffix.to_ascii_lowercase());
         let mode = match a["mode"].as_str() {
             None | Some("in") => ForceMode::Effective,
             Some("out") => ForceMode::Driving,
             Some(m) => return Err(format!("force mode `{m}`: expected `in` or `out`")),
         };
         if cmd == "yavs/release" {
-            let leaves = s.leaves().map(|l| (l, None)).collect();
-            queue(
-                sh,
-                at,
-                Op {
-                    kind: OpKind::Release(mode),
-                    leaves,
-                },
-            );
-            return Ok(json!({"signal": s.path}));
+            put(sh, at, k, &paths, None, OpKind::Release(mode))?;
+            return Ok(json!({"signal": target}));
         }
         let text = a["value"].as_str().ok_or("expected a `value` argument")?;
-        let v = s.parse(text)?;
+        let v = literal(text.as_bytes(), &ty).map_err(|e| e.to_string())?;
         let kind = if cmd == "yavs/force" {
             OpKind::Force(mode)
         } else {
             OpKind::Deposit
         };
-        let shown = put(sh, at, k, &v, kind)?;
-        Ok(json!({"signal": s.path, "value": shown}))
+        let mut whole = s
+            .value(&|r| at.read(r))
+            .ok_or("the signal is not readable here")?;
+        set_part(&mut whole, &paths, &v)?;
+        put(sh, at, k, &paths, Some(&whole), kind)?;
+        Ok(json!({"signal": target, "value": literal_image(&v, &ty)}))
     })();
     match r {
         Ok(b) => sh.respond(req, b),
@@ -987,21 +984,143 @@ fn signal_op(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     }
 }
 
-/// Queue a force or deposit of value `v` to signal `k`; the value as text.
-fn put(sh: &Shared, at: &At<'_, '_>, k: usize, v: &Lit, kind: OpKind) -> Result<String, String> {
+/// `name` as a signal and the part of it after its name (`.a`, `(3)`, `(7 downto 4)`): the
+/// longest prefix that names a signal.
+fn split_part<'n>(
+    sh: &Shared,
+    p: Option<&design::Proc>,
+    name: &'n str,
+) -> Option<(usize, &'n str)> {
+    let name = name.trim();
+    let ends = name
+        .char_indices()
+        .filter(|&(_, c)| c == '.' || c == '(')
+        .map(|(i, _)| i)
+        .chain([name.len()]);
+    let ends: Vec<usize> = ends.collect();
+    ends.into_iter()
+        .rev()
+        .find_map(|i| Some((sh.design.find(p, &name[..i])?, &name[i..])))
+}
+
+/// The positions of the sub-elements `suffix` selects in a value of type `t` (one path per
+/// element of a slice) and the type of the part.
+fn select(t: &LitType, suffix: &str) -> Result<(Vec<Vec<usize>>, LitType), String> {
+    let bad = || format!("`{suffix}` is not a field, element or slice of this signal");
+    let mut path = Vec::new();
+    let mut t = t.clone();
+    let mut rest = suffix.trim();
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix('.') {
+            let end = r.find(['.', '(']).unwrap_or(r.len());
+            let LitType::Record(fs) = t else {
+                return Err(bad());
+            };
+            let f = r[..end].trim();
+            let k = fs
+                .iter()
+                .position(|(n, _)| n.eq_ignore_ascii_case(f))
+                .ok_or_else(|| format!("no field `{f}`"))?;
+            path.push(k);
+            t = fs[k].1.clone();
+            rest = r[end..].trim_start();
+            continue;
+        }
+        let r = rest.strip_prefix('(').ok_or_else(bad)?;
+        let end = r.find(')').ok_or_else(bad)?;
+        let (inner, after) = (r[..end].trim(), r[end + 1..].trim_start());
+        let LitType::Array {
+            elem,
+            len,
+            ascending,
+            ..
+        } = &t
+        else {
+            return Err(bad());
+        };
+        let pos = |x: &str| -> Result<u64, String> {
+            let i: i64 = x
+                .trim()
+                .parse()
+                .map_err(|_| format!("index `{}`: expected an integer", x.trim()))?;
+            (0..*len)
+                .find(|&k| t.index(k) == Some(i))
+                .ok_or_else(|| format!("index {i} is out of range"))
+        };
+        let lower = inner.to_ascii_lowercase();
+        let slice = lower
+            .split_once(" downto ")
+            .map(|(a, b)| (a, b, false))
+            .or_else(|| lower.split_once(" to ").map(|(a, b)| (a, b, true)));
+        if let Some((l, r, asc)) = slice {
+            if !after.is_empty() {
+                return Err(format!("`{after}`: a slice must be last"));
+            }
+            if asc != *ascending {
+                return Err(format!(
+                    "`{inner}`: the direction differs from the signal's"
+                ));
+            }
+            let (a, b) = (pos(l)?, pos(r)?);
+            if b < a {
+                return Err(format!("`{inner}` is a null slice"));
+            }
+            let paths = (a..=b)
+                .map(|k| path.iter().copied().chain([k as usize]).collect())
+                .collect();
+            let ty = LitType::Array {
+                left: l.trim().parse().map_err(|_| bad())?,
+                ascending: asc,
+                len: b - a + 1,
+                elem: elem.clone(),
+            };
+            return Ok((paths, ty));
+        }
+        path.push(pos(inner)? as usize);
+        t = (**elem).clone();
+        rest = after;
+    }
+    Ok((vec![path], t))
+}
+
+/// Write `v` (one value, or an array of one per path) into `whole` at `paths`.
+fn set_part(whole: &mut Lit, paths: &[Vec<usize>], v: &Lit) -> Result<(), String> {
+    let parts: Vec<&Lit> = match (paths.len(), v) {
+        (1, _) => vec![v],
+        (_, Lit::Array(xs)) if xs.len() == paths.len() => xs.iter().collect(),
+        _ => return Err("this is a bug in yavs: a slice value of another length".into()),
+    };
+    for (p, x) in paths.iter().zip(parts) {
+        let mut cur = &mut *whole;
+        for &k in p {
+            cur = match cur {
+                Lit::Record(xs) | Lit::Array(xs) => xs
+                    .get_mut(k)
+                    .ok_or("this is a bug in yavs: a part out of the value")?,
+                _ => return Err("this is a bug in yavs: a path into a scalar".into()),
+            };
+        }
+        *cur = x.clone();
+    }
+    Ok(())
+}
+
+/// Queue a force, deposit (with `whole`, the signal's new value) or release of the parts of
+/// signal `k` at `paths`.
+fn put(
+    sh: &Shared,
+    at: &At<'_, '_>,
+    k: usize,
+    paths: &[Vec<usize>],
+    whole: Option<&Lit>,
+    kind: OpKind,
+) -> Result<(), String> {
     let s = &sh.design.sigs[k];
     let leaves = s
-        .encode(v)
+        .part(paths, whole)
         .ok_or_else(|| format!("this is a bug in yavs: a value of `{}` not encoded", s.path))?;
-    queue(
-        sh,
-        at,
-        Op {
-            kind,
-            leaves: leaves.into_iter().map(|(l, v)| (l, Some(v))).collect(),
-        },
-    );
-    Ok(literal_image(v, &s.lit))
+    queue(sh, at, Op { kind, leaves });
+    Ok(())
 }
 
 /// Hand `op` to the run loop. From a stop inside a process, pause the kernel after the cycle
@@ -1141,8 +1260,15 @@ fn write_node(sh: &Shared, at: &At<'_, '_>, n: &Node, text: &str) -> Result<Stri
             let s = stop_of(at, *tid).ok_or_else(|| format!("no local `{name}` here"))?;
             write_local(sh, s, *frame, name, &root)?;
         }
-        Node::Signal { sig, .. } => {
-            put(sh, at, *sig, &root, OpKind::Deposit)?;
+        Node::Signal { sig, path } => {
+            put(
+                sh,
+                at,
+                *sig,
+                std::slice::from_ref(path),
+                Some(&root),
+                OpKind::Deposit,
+            )?;
         }
         Node::Region(_) => return Err("a region has no value".into()),
     }
@@ -1325,8 +1451,8 @@ fn wave_subscribe(sh: &Shared, req: &Json) {
     let mut cur = sh.lock_wave();
     cur.take();
     sh.stream.push();
-    let r = yavs_wave::record_to(&sh.db, &sh.elab, sel, built, |h| {
-        Ok(waves::sink(&sh.stream, h, every))
+    let r = yavs_wave::record_to(&sh.db, &sh.elab, sel, built, |_| {
+        Ok(waves::sink(&sh.stream, every))
     });
     match r {
         Ok((rec, h)) => {

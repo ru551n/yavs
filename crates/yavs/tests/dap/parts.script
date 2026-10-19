@@ -1,0 +1,30 @@
+top vals
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 76}]}
+request configurationDone {}
+event stopped
+request yavs/force {"signal": "q(7 downto 4)", "value": "\"1010\""}
+request yavs/force {"signal": "q(0)", "value": "'1'", "mode": "out"}
+request yavs/deposit {"signal": "r.a", "value": "9"}
+request yavs/deposit {"signal": ":vals:r.b(1)", "value": "'Z'"}
+request yavs/deposit {"signal": "d(2 downto 1)", "value": "\"11\""}
+request yavs/deposit {"signal": "d(3 to 4)", "value": "\"11\""}
+request yavs/deposit {"signal": "d(9)", "value": "'1'"}
+request yavs/deposit {"signal": "r.c", "value": "1"}
+request yavs/deposit {"signal": "r.a(1)", "value": "1"}
+request yavs/deposit {"signal": "d(x)", "value": "'1'"}
+request yavs/deposit {"signal": "d(4 downto 3).x", "value": "\"11\""}
+request yavs/deposit {"signal": "d(3)", "value": "\"11\""}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request yavs/runUntil {"time": "11 ns"}
+event stopped
+request evaluate {"expression": ":vals:q"}
+request evaluate {"expression": ":vals:d"}
+request evaluate {"expression": ":vals:r"}
+request yavs/release {"signal": ":vals:q(7 downto 6)"}
+request yavs/release {"signal": ":vals:q(0)", "mode": "out"}
+request yavs/deposit {"signal": ":vals:d(7)", "value": "'0'"}
+request continue {}
+event terminated
+request disconnect {}

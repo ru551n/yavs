@@ -255,6 +255,14 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
+- `--time-report`: when the simulation ends (any outcome after elaboration) print the wall and
+  CPU seconds of each phase to standard error, one line per phase and a total:
+  `time-report: PHASE wall=S cpu=S`, with PHASE one of `analyze` (library loading, parsing and
+  analysis of the design closure), `elaborate` (elaboration and lowering), `init` (package and
+  instance initialisation, plugin and waveform setup) and `simulate`, then `total`. CPU is the
+  whole process (all threads) in 10 ms steps and `n/a` where the platform does not tell (read
+  from `/proc` on Linux). Off by default and then free. Standard output and exit status do not
+  change; a run that fails before the simulation starts prints nothing.
 - `--load=LIB` (repeatable): load a shared library for VHPIDIRECT foreign
   subprograms. A bare name goes to the OS library search path, a path must exist.
   Every foreign subprogram the design calls is bound before the simulation starts:
@@ -300,9 +308,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   own set): a stop after the cycle in which the signal changed (to `value`), reason `data
   breakpoint`, `text` `PATH = VALUE`. `yavs/force` (`signal`, `value`, `mode` `in` or `out`,
   default `in`), `yavs/deposit` (`signal`, `value`) and `yavs/release` (`signal`, `mode`) act on
-  a whole signal (`signal` a name seen from `frameId` or the stopped process, or a path) in the
-  next cycle; they answer with the signal's path and the value as text. `setVariable`
-  (`supportsSetVariable`) deposits a signal and writes a local at once; generics are refused.
+  a signal or a part of one (`signal` a name seen from `frameId` or the stopped process, or a
+  path, optionally followed by fields, integer indices and a final slice in the signal's
+  direction: `r.a`, `v(3)`, `:top:m(2).f`, `d(7 downto 4)`; the value is of the part's type) in
+  the next cycle, and only on those elements; they answer with the target and the value as
+  text. `setVariable`
+  (`supportsSetVariable`) deposits a signal (a field or element only that part) and writes a local at once; generics are refused.
   Values are VHDL literals of the target's type: scalars as `T'VALUE` reads them (physical values
   in any unit), string and bit string literals, aggregates with positional and named elements,
   ranges and `others`; a value that does not parse is a failed response naming the problem.
@@ -319,10 +330,13 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `exclude`: globs as `--wave-include`/`--wave-exclude`; `maxArrayElems` as `--wave-max-array`;
   `variables` as `--wave-variables`; `flushMs`, default 100) replaces the subscription and
   answers with the recorded hierarchy as `--wave` declares it (`scopes: [{scope, kind,
-  component, children}]`, signals `{name, id, type, class, direction}`, `skipped`);
+  component, children}]`, signals `{name, id, type, encoding: {layout, width}, class, direction}`, `skipped`);
   `yavs/waveUnsubscribe` ends it. Event `yavs/waves {from, to, times: [fs], changes: [[time
   index, id, value]]}` carries the final value per completed time step of every recorded value
-  that changed (values as text, as the Variables view shows them; times as integers in fs),
+  that changed (value = base64 of the recorder's value bytes, decoded by the signal's `encoding.layout`:
+  `u8-per-element` (a bit/`std_logic` vector, one enumeration position per element, `width`
+  elements, left to right), `u32le` (enumeration position, index into `type.literals`), `i64le`
+  (integer, TIME in fs), `f64le` (real); times as integers in fs),
   sent at the end of a time step once `flushMs` have passed or enough text is pending, and
   always before `stopped`, `exited` and the `yavs/waveUnsubscribe` response. The simulation
   never waits for the client: when too many batches are queued the newest is merged into the

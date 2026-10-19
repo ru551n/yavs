@@ -130,6 +130,8 @@ async function main() {
   assert.equal(sigs[1].__vscodeVariableMenuContext, 'signal');
   const forced = await dc.customRequest('yavs/force', { signal: 'v', value: '"1010"', mode: 'in' });
   assert.equal(forced.body.signal, ':tb:v');
+  const part = await dc.customRequest('yavs/deposit', { signal: 'v(0)', value: "'1'" });
+  assert.deepEqual([part.body.signal, part.body.value], [':tb:v(0)', "'1'"]);
 
   // Step into the function, over its first statement, back out.
   await Promise.all([dc.stepInRequest({ threadId: 1 }), dc.waitForEvent('stopped')]);
@@ -203,10 +205,22 @@ async function main() {
   await Promise.all([dc.continueRequest({ threadId: 1 }), dc.waitForEvent('terminated')]);
   assert.match((await out).body.output, /done/);
   assert.equal((await exited).body.exitCode, 0);
-  const cnt = waves.flatMap((b) => b.changes.map((c) => c[2]));
-  assert.deepEqual(cnt.filter((v, i) => v !== cnt[i - 1]).slice(-3), ['2', '4', '6'], cnt);
+  const cnt = waves.flatMap((b) => b.changes.map((c) => decodeWave(sub.body.scopes[0].children[c[1]], c[2])));
+  assert.deepEqual(cnt.filter((v, i) => v !== cnt[i - 1]).slice(-3), [2, 4, 6], cnt);
   assert.equal(waves[waves.length - 1].to, 30000000);
   await dc.disconnectRequest({ restart: false });
+}
+
+// A `yavs/waves` value: base64 of the bytes, read by the signal's `encoding` in the hierarchy.
+function decodeWave(sig, b64) {
+  const b = Buffer.from(b64, 'base64');
+  switch (sig.encoding.layout) {
+    case 'i64le': return Number(b.readBigInt64LE(0));
+    case 'f64le': return b.readDoubleLE(0);
+    case 'u32le': return sig.type.literals[b.readUInt32LE(0)];
+    case 'u8-per-element': return Array.from(b, (p) => sig.type.element.literals[p]).join('');
+    default: throw new Error(`unknown layout ${sig.encoding.layout}`);
+  }
 }
 
 // Exit 1 unless the session passed (an unsettled promise must not end as success).

@@ -199,6 +199,9 @@ pub(crate) struct Machine {
     pub inst: Arc<InstData>,
     pub drivers: Vec<ProcDriver>,
     pub frames: Vec<Frame>,
+    /// Registers of the top frame, kept out of it for direct access (`push_frame`,
+    /// `pop_frame`); the top frame's own `regs` is empty meanwhile.
+    regs: Vec<u64>,
     pub heap: Heap,
     pub temp: Vec<u8>,
     pub sh: Option<SharedState>,
@@ -412,6 +415,7 @@ impl Machine {
             inst,
             drivers,
             frames: Vec::new(),
+            regs: Vec::new(),
             heap: Heap::new(heap::PRIVATE),
             temp: Vec::new(),
             sh: None,
@@ -452,8 +456,38 @@ impl Machine {
             store_cells(&mut fr.slots, p.slot, p.width, cells)?;
             k += n;
         }
-        self.frames.push(fr);
+        self.push_frame(fr);
         Ok(())
+    }
+
+    /// Push `fr` as the new top frame, moving its registers to `Machine::regs`.
+    pub(crate) fn push_frame(&mut self, mut fr: Frame) {
+        let regs = std::mem::take(&mut fr.regs);
+        if let Some(top) = self.frames.last_mut() {
+            top.regs = std::mem::replace(&mut self.regs, regs);
+        } else {
+            self.regs = regs;
+        }
+        self.frames.push(fr);
+    }
+
+    /// Pop the top frame with its registers; the caller's registers become current.
+    pub(crate) fn pop_frame(&mut self) -> Option<Frame> {
+        let mut fr = self.frames.pop()?;
+        let below = self
+            .frames
+            .last_mut()
+            .map(|top| std::mem::take(&mut top.regs))
+            .unwrap_or_default();
+        fr.regs = std::mem::replace(&mut self.regs, below);
+        Some(fr)
+    }
+
+    /// Pop frames down to `n`.
+    pub(crate) fn truncate_frames(&mut self, n: usize) {
+        while self.frames.len() > n {
+            self.pop_frame();
+        }
     }
 
     fn frame_for(&mut self, f: &Func, func: FuncId, link: Option<u32>) -> R<Frame> {
@@ -595,7 +629,8 @@ impl Machine {
                 self.frames
                     .iter()
                     .filter(|_| regs)
-                    .flat_map(|f| f.regs.iter().copied()),
+                    .flat_map(|f| f.regs.iter().copied())
+                    .chain(self.regs.iter().copied().filter(|_| regs)),
             );
         let mut v: Vec<u32> = words
             .map(split)
@@ -675,7 +710,7 @@ impl Machine {
 
     #[inline]
     pub(crate) fn r(&self, r: Reg) -> u64 {
-        self.frames[self.frames.len() - 1].regs[r.0 as usize]
+        self.regs[r.0 as usize]
     }
 
     #[inline]
@@ -690,7 +725,7 @@ impl Machine {
 
     #[inline]
     fn set(&mut self, r: Reg, v: u64) {
-        self.top().regs[r.0 as usize] = v;
+        self.regs[r.0 as usize] = v;
     }
 
     // ---- memory ----
@@ -1238,18 +1273,16 @@ impl Machine {
                     Flow::Call => break,
                     Flow::Ret(v) => {
                         let done = self
-                            .frames
-                            .pop()
+                            .pop_frame()
                             .ok_or_else(|| ice("return without frame"))?;
                         if self.frames.len() <= base {
                             return Ok(Outcome::Returned(v));
                         }
-                        let c = self.top();
                         if let Some(d) = done.ret {
-                            c.regs[d.0 as usize] =
+                            self.regs[d.0 as usize] =
                                 v.ok_or_else(|| ice("function returned no value"))?;
                         }
-                        c.pc += 1;
+                        self.top().pc += 1;
                         if self.spare.len() < SPARE_FRAMES {
                             self.spare.push((done.slots, done.regs));
                         }
@@ -1276,10 +1309,10 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<usize> {
         let func = self.top().func;
-        let mut regs = std::mem::take(&mut self.top().regs);
+        let mut regs = std::mem::take(&mut self.regs);
         let mut fault = None;
         let ran = tier.run(func, pc as u32, &mut regs, &mut |regs, at| {
-            std::mem::swap(&mut self.top().regs, regs);
+            std::mem::swap(&mut self.regs, regs);
             self.top().pc = at;
             let r = match f.code.get(at as usize) {
                 Some(&inst) => self.step(prog, f, inst, ctx),
@@ -1288,7 +1321,7 @@ impl Machine {
                     f.name
                 ))),
             };
-            std::mem::swap(&mut self.top().regs, regs);
+            std::mem::swap(&mut self.regs, regs);
             match r {
                 Ok(Flow::Next) => true,
                 Ok(_) => {
@@ -1304,10 +1337,9 @@ impl Machine {
                 }
             }
         });
-        let top = self.top();
-        top.regs = regs;
+        self.regs = regs;
         let pc = ran.map_or(pc, |p| p as usize);
-        top.pc = pc as u32;
+        self.top().pc = pc as u32;
         match fault {
             Some(e) => Err(e),
             None => Ok(pc),
@@ -1401,9 +1433,9 @@ impl Machine {
         let link = self.static_link(f, None)?;
         let fr = self.frame_for(f, c, link)?;
         let base = self.frames.len();
-        self.frames.push(fr);
+        self.push_frame(fr);
         let r = self.exec::<false>(ctx, base);
-        self.frames.truncate(base);
+        self.truncate_frames(base);
         match r? {
             Outcome::Returned(Some(v)) => Ok(v),
             _ => Err(ice("breakpoint condition did not return a value")),
@@ -1448,7 +1480,7 @@ impl Machine {
             store_cells(&mut fr.slots, p.slot, p.width, c)?;
             k += n;
         }
-        self.frames.push(fr);
+        self.push_frame(fr);
         Ok(Flow::Call)
     }
 
@@ -2229,11 +2261,8 @@ impl Machine {
             Inst::SigRead { dst, sig } => {
                 let (sr, ty) = self.sigref(sig)?;
                 let c = kc!();
-                let v = match ty.elem {
-                    Elem::Bytes(_) => Value::Bytes(c.value(sr)?.to_vec()),
-                    Elem::Logic => Value::Logic(c.logic(sr)?),
-                };
-                self.put_value(self.r(dst), &v)?;
+                let n = value_size(ty.elem, sr.range.map_or(0, |r| r.len));
+                c.read_into(sr, self.wr(self.r(dst), n)?)?;
             }
             Inst::SigReadScalar { dst, sig } => {
                 let (sr, ty) = match self.sigparts(sig)?.as_slice() {
@@ -2250,11 +2279,13 @@ impl Machine {
                         u64::from_le_bytes(a)
                     }
                     Elem::Logic => {
-                        let l = c.logic(sr)?;
-                        if l.is_empty() {
+                        let Some(r) = sr.range.filter(|r| r.len > 0) else {
                             return Err(ice("scalar read of a null signal range"));
-                        }
-                        l.get(0) as u64
+                        };
+                        // The first element in one block: its code is bit 0 of each plane.
+                        let mut b = [0u8; 32];
+                        c.read_into(sr.signal.slice(r.offset, 1), &mut b)?;
+                        (0..4).fold(0, |v, p| v | u64::from(b[p * 8] & 1) << p)
                     }
                     Elem::Bytes(es) => {
                         return Err(ice(format!("scalar read of a {es}-byte element")));
@@ -2459,6 +2490,9 @@ impl Machine {
                     // elaboration as it stops a run.
                     None => {
                         use std::io::Write;
+                        if self.rt.replay.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Ok(Flow::Next);
+                        }
                         if !self.rt.asserts.report_elab(s) {
                             return Ok(Flow::Next);
                         }

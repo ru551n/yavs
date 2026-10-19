@@ -7,22 +7,22 @@
 | M0: workspace, lexer and parser | done: `yavs parse`, corpora below |
 | M1: semantic analysis | in progress: slices S1 to S3 mostly in, `docs/design/sem.md` |
 | M2: IR, interpreter, elaboration, kernel | done: the differential corpus passes at 1 thread, 4 threads and 4 shuffled threads (`tests/corpus/RESULTS.md`); see the lower, ir and interp, elab and kernel sections. Not done: binary file read/write of records and arrays of composites (ir and interp section) |
-| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: 10 of 11 pass completely, `check` has one failure (#281, process order in a delta), table below (#112) |
+| M4: external test runner end to end | first external test runner testbench runs (#110): `VUNIT_SIMULATOR=yavs python run.py` on a pass/fail `test_runner` and the runner's `examples/vhdl/user_guide` give the right pass/fail per test with the runner's `rsim-integration` branch; the runner's own suites: all 11 pass completely (1357 tests), table below (#112) |
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads`, finished on Ctrl-C; signals left out by globs or the cap cost nothing at run time; instances in generates, 2-D arrays; read back with wellen in `crates/yavs/tests/wave.rs`. integers carry the subtype name and the width of their range, generate alternatives keep their label (#306). `--wave-variables` records process and non-protected shared variables, records and arrays as scopes, integers with the width of their elaborated range, sampled at the end of each time step through the observer accessors (#305, #348, #321). Open: protected-type shared variables |
 | M3: full types and libraries | done per `docs/plan.md`: arrays, records, access and protected types, resolution (composite, access, protected and resolution groups in `tests/corpus/RESULTS.md`); `numeric_std`, fixed and float from source (#94); textio, `env`, package generics, external names; `--load` foreign subprograms (#95); bit-plane layout (user, 2026-10-18). Not done: binary file read/write of records and arrays of composites (ir and interp section) |
-| M8: DAP server | first slice (#130): `yavs run --dap=PORT\|stdio` serves the Debug Adapter Protocol over the interpreter's debug session (`crates/yavs-dap`): threads per process, line breakpoints with hit counts, continue, pause (in a process or between cycles), run for or until a time, next delta and next time step (custom requests and VS Code commands, #324), signal breakpoints on a change or a value (DAP data breakpoints and `yavs/setSignalBreakpoints`, #322), force, deposit and release of whole signals and `setVariable` on signals and locals with values parsed as VHDL literals of the target type (`yavs_std::value::literal`, #323), conditions on line and data breakpoints (VHDL expressions evaluated by the server), composite variables expanded by field and index (paged), a Hierarchy scope and `yavs/hierarchy` (#326), step over/in/out, stack frames with source positions, locals, region signals and generics, evaluate for locals and signals by name or path, output events, exit status; one thread under `--dap`, so sessions are deterministic. Scripted sessions in `crates/yavs/tests/dap.rs`. VS Code extension `editors/vscode` (debugger type `yavs`, analyzes and launches over stdio): verified with the DAP test client (`test/client.js`) and in a real headless VS Code (`test/vscode`, breakpoint hit, frame, `setVariable`, force and release commands, a conditional breakpoint, scopes and an expanded array, continue to the end); not in CI. Live waves (#325): `yavs/waveSubscribe` records the client's selection (globs, array cap, variables) with the `--wave` recorder into a second sink and streams `yavs/waves` batches of completed time steps (values as text, bounded queue, never blocks the simulation); `--wave` and `--vhpi` work under `--dap` (the FST equals a plain run's). Open: VHPI plugin stdout under `--dap=stdio` #389 |
+| M8: DAP server | first slice (#130): `yavs run --dap=PORT\|stdio` serves the Debug Adapter Protocol over the interpreter's debug session (`crates/yavs-dap`): threads per process, line breakpoints with hit counts, continue, pause (in a process or between cycles), run for or until a time, next delta and next time step (custom requests and VS Code commands, #324), signal breakpoints on a change or a value (DAP data breakpoints and `yavs/setSignalBreakpoints`, #322), force, deposit and release of signals and their fields, elements and slices (#364) and `setVariable` on signals and locals with values parsed as VHDL literals of the target type (`yavs_std::value::literal`, #323), conditions on line and data breakpoints (VHDL expressions evaluated by the server), composite variables expanded by field and index (paged), a Hierarchy scope and `yavs/hierarchy` (#326), step over/in/out, stack frames with source positions, locals, region signals and generics, evaluate for locals and signals by name or path, output events, exit status; one thread under `--dap`, so sessions are deterministic. Scripted sessions in `crates/yavs/tests/dap.rs`. VS Code extension `editors/vscode` (debugger type `yavs`, analyzes and launches over stdio): verified with the DAP test client (`test/client.js`) and in a real headless VS Code (`test/vscode`, breakpoint hit, frame, `setVariable`, force and release commands, a conditional breakpoint, scopes and an expanded array, continue to the end); not in CI. Live waves (#325): `yavs/waveSubscribe` records the client's selection (globs, array cap, variables) with the `--wave` recorder into a second sink and streams `yavs/waves` batches of completed time steps (values base64 of the recorder's bytes with `encoding` in the hierarchy, bounded queue, never blocks the simulation); `--wave` and `--vhpi` work under `--dap` (the FST equals a plain run's). Open: VHPI plugin stdout under `--dap=stdio` #389 |
 | M9: coverage | statement and branch coverage (#131): `yavs run --cov[=FILE]` writes a per-run database keyed by instance path and statement text hash, `yavs cov merge`, `yavs cov report` (text summary, Cobertura XML); no counters without `--cov`; counts identical at any `--threads`; pinned in `crates/yavs/tests/coverage.rs`. Exclusions (#351): `-- coverage off/on` pragmas, `cov report --uncovered` rows and `--exclude FILE`. Toggle coverage (#343): 0->1 and 1->0 per `bit`/`std_logic` scalar of signals and ports from the value-change bus, `--cov-kind`, `--cov-toggle-max` (W0115), `toggle` exclusion rows. Per-test attribution (#353): `--cov-test`, tests per item kept through `cov merge`, `yavs cov rank` (greedy minimal set, unique items per test), `cov report --tests`; database version 4. HTML report (#344): `cov report --html DIR`, static pages with line counts, a missed-only page per file, missed items as exclusion rows, tests per item (E0113 for an unreadable source). |
 | M6: JIT tier | in progress: `yavs run --tier=llvm` (feature `llvm`) compiles every function with LLVM 21 and passes the whole difftest corpus (300/300 at 1 thread, identical to the interpreter, rule 5; 289/289 at 4 shuffled threads before the corpus grew); 61% of the compiled programs' instructions run as native code, the rest through the interpreter (side exits, `docs/decisions.md`); open: native lowering of the rest (#334 to #341), tier-up on a background thread (#125), threshold (#126); CI builds and tests the feature on Linux x86_64, aarch64 and Windows; llvm section |
-| M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; G2 to G6 and the server slices S1 to S4 not started) |
+| M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; slice G2 (#399): source view with breakpoint gutter (conditions, hit counts), call stack per process, locals and watch with lazy and paged expansion and edit, hover, step buttons, time and delta in the status bar, tested against a scripted DAP server and, ignored, the real `yavs`; G3 to G6 and the server slices S1 (#396), S2 (#397), S4 (#398) not started) |
 
 ### External test runner: its own VHDL suites (#112)
 
-`VUNIT_SIMULATOR=yavs`, `-p 4`, release build of main at 5acb38be; pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. Skipped as reported by the runner (13, all after the one failure in `check`).
+`VUNIT_SIMULATOR=yavs`, `-p 2`, release build of main at 92dfc349; pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. All 11 suites pass: 1357 tests, no failure, no skip (the one failure of the previous measurement, #281, is fixed).
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
-| check | 243 | 1 | 13 | in-delta process order puts the testbench before concurrent-call checker loops #281 (1 failure, the other 13 tests of `tb_check_stable` are skipped after it) |
+| check | 257 | 0 | 0 | none (#281 fixed; the 13 skipped tests of `tb_check_stable` now run) |
 | com | 145 | 0 | 0 | none (#246 fixed; re-measured after it) |
 | data_types | 210 | 0 | 0 | none |
 | dictionary | 8 | 0 | 0 | none |
@@ -36,47 +36,47 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 
 ### Verification library: its own testbenches (#277)
 
-`tools/suites/uvvm.py` (without `--private-copies`, #290 is fixed), release build of main at ba53e23d (#285 to #302 and #304 in), `-j 2`; one run per testbench
+`tools/suites/uvvm.py` (without `--private-copies`), release build of main at 92dfc349 (#328, #329, #303 and the force of composite signals in), `-j 2`; one run per testbench
 entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 45 runs pass. Only the first root cause of each run is counted.
-The runs now reach simulation; 57 of the 63 failures end at elaboration on one cause (#328).
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 73 runs pass (45 at ba53e23d). Only the first root cause of each run is counted.
+No run fails at elaboration on the record-resolution or composite-force cause any more; the remaining failures have four causes (#391 to #394).
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 31 | 2 | 3 | none that are yavs results (both `rand_basic` testbenches pass since #329, the descriptor of a folded constant of arrays of unconstrained arrays kept only two levels); not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); 3 skipped: over 5 minutes (two `rand_gaussian`, `rand_cyclic_performance`) |
+| uvvm_util | 31 | 2 | 3 | not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); 3 skipped: over 5 minutes (two `rand_tb`, `rand_multi_method_tb`) |
 | uvvm_assertions | 2 | 0 | 0 | none |
-| uvvm_vvc_framework | 1 | 2 | 0 | record resolved as a whole with a `std_logic` element #328 |
+| uvvm_vvc_framework | 2 | 1 | 0 | resolution function that accesses a shared variable #392 |
 | bitvis_irqc | 2 | 0 | 0 | none |
-| bitvis_uart | 1 | 2 | 0 | #328 |
+| bitvis_uart | 3 | 0 | 0 | none |
 | bitvis_vip_scoreboard | 3 | 0 | 0 | none |
-| bitvis_vip_avalon_mm | 0 | 5 | 0 | #328 (3); 2 not yavs results: the testbench's FIFO is a third-party design file absent from the pinned checkout, so the component stays unbound |
-| bitvis_vip_avalon_st | 0 | 6 | 0 | #328 |
-| bitvis_vip_axi | 1 | 1 | 0 | #328 |
-| bitvis_vip_axilite | 0 | 2 | 0 | #328 |
-| bitvis_vip_axistream | 0 | 22 | 0 | #328 |
-| bitvis_vip_clock_generator | 0 | 1 | 0 | #328 |
+| bitvis_vip_avalon_mm | 0 | 5 | 0 | not yavs results: the testbenches' FIFO and SPI designs are third-party files absent from the pinned checkout, so the component stays unbound |
+| bitvis_vip_avalon_st | 6 | 0 | 0 | none |
+| bitvis_vip_axi | 2 | 0 | 0 | none |
+| bitvis_vip_axilite | 1 | 1 | 0 | force through an external name of a child's output port has no effect #391 |
+| bitvis_vip_axistream | 7 | 0 | 15 | 15 skipped: over 5 minutes, 14 us simulated in 300 s #394 |
+| bitvis_vip_clock_generator | 1 | 0 | 0 | none |
 | bitvis_vip_error_injection | 2 | 0 | 0 | none |
-| bitvis_vip_gmii | 0 | 2 | 0 | #328 |
-| bitvis_vip_sbi | 0 | 2 | 0 | #328 |
-| bitvis_vip_ethernet | 0 | 3 | 1 | #328; 1 skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_gpio | 0 | 1 | 0 | #328 |
+| bitvis_vip_gmii | 2 | 0 | 0 | none |
+| bitvis_vip_sbi | 2 | 0 | 0 | none |
+| bitvis_vip_ethernet | 0 | 3 | 1 | #392; 1 skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_gpio | 1 | 0 | 0 | none |
 | bitvis_vip_i2c | 0 | 0 | 1 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_rgmii | 0 | 2 | 0 | #328 |
-| bitvis_vip_spec_cov | 0 | 1 | 0 | shared variable whose type holds access values #303 |
+| bitvis_vip_rgmii | 2 | 0 | 0 | none |
+| bitvis_vip_spec_cov | 0 | 1 | 0 | file object declared in a protected type body #393 |
 | bitvis_vip_spi | 0 | 0 | 24 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_uart | 0 | 3 | 0 | #328 |
-| bitvis_vip_wishbone | 0 | 2 | 0 | #328 |
-| external_vip_apb | 3 | 3 | 0 | #328 |
-| Total | 45 | 63 | 29 | |
+| bitvis_vip_uart | 1 | 2 | 0 | #392 (1); the unwanted-activity checks of `uart_vvc_tb` see 6 of 7 alerts, probably #391, not reduced separately (1) |
+| bitvis_vip_wishbone | 0 | 2 | 0 | #391 |
+| external_vip_apb | 3 | 3 | 0 | #391 |
+| Total | 73 | 20 | 44 | |
 
 The generated-VIP tests of the framework component (generator output compiled and simulated) are not run by the driver.
 
 ### Verification library: its own `.pro` regression (#276)
 
 `tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
-521 files in script order and runs each test (`yavs run`, release build of main at 8bbefaed, 2 in parallel). Pass = exit 0 and the
+521 files in script order and runs each test (`yavs run`, release build of main, 2 in parallel). Pass = exit 0 and the
 library's own `DONE PASSED` summary line. The script settings package body is generated with the scripts' release as settings
-revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 and 2019:
+revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 (re-measured at 92dfc349) and 2019 (at 8bbefaed):
 all 314 tests pass, the same test for test; the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
 Root causes fixed on the way: #291, #292, #294, #295, #296, #304, #311 (= #313), #314, #315 (= #312).
 
@@ -117,6 +117,37 @@ tests (alias and partially constrained record bounds, `hread` digit count, an im
 a type evaluated twice, `log2` precision, 2019 mode view parameters). Analysis and elaboration
 failures (about 160) are mostly "not lowered yet" (`E2001`) features and VHDL-93 code read as
 2008; the analysis corpora cover them.
+
+## performance (`tools/bench`, #387)
+
+The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`.
+
+Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
+host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
+
+| Benchmark | analyze | elaborate | init | simulate | total CPU |
+|---|---|---|---|---|---|
+| `compute_loop` | 0.00 | 0.00 | 0.00 | 0.96 | 0.97 |
+| `ff_rtl` | 0.00 | 0.03 | 0.00 | 1.51 | 1.56 |
+| `resolved_bus` | 0.00 | 0.01 | 0.00 | 0.59 | 0.61 |
+| `delta_chain` | 0.00 | 0.00 | 0.00 | 0.52 | 0.53 |
+| `textio_heavy` | 0.00 | 0.00 | 0.00 | 0.59 | 0.60 |
+| `protected_scoreboard` | 0.00 | 0.00 | 0.00 | 0.44 | 0.45 |
+| `elab_heavy` | 0.00 | 0.19 | 0.58 | 0.60 | 1.60 |
+| `vunit_vc30` | 8.61 | 10.32 | 4.37 | 3.04 | 27.03 |
+| `uvvm_axistream_vvc_tb` | 1.56 | 0.22 | 0.09 | 6.99 | 8.89 |
+| `uvvm_util_rand_tb` | 1.48 | 0.08 | 0.01 | 30.85 | 32.53 |
+| `vai_pe_array` | 0.29 | 0.25 | 0.10 | 8.78 | 9.49 |
+| `vai_window_gen` | 0.30 | 0.30 | 0.11 | 5.03 | 5.77 |
+| `osvvm_axistream` | 0.44 | 0.12 | 0.00 | 3.41 | 3.99 |
+
+Reading it: `vunit_vc30` is 30 `yavs run` calls, so its analyze and elaborate columns are the per-process
+start-up cost times 30 (analysis of the design closure is a third of it); `uvvm_axistream_vvc_tb` is capped at
+10 us of simulated time (the full run takes minutes); `elab_heavy` is the elaboration and initialisation stress
+(20000 instances). Findings while building it: a numeric_std-style flip-flop lane costs about 150 us CPU per
+process activation (`ff_rtl`, 512 lanes x 400 cycles takes 29 s); for the 30 short test cases of `vunit_vc30`
+86 percent of the CPU time is spent before the first delta (analyze 32, elaborate 38, init 16 percent).
 
 ## CI and releases
 
@@ -393,7 +424,8 @@ regression tests in `tests/diag/sem/fuzz/`. The last 3 chunks (~190,000 executio
 
 Scheduled fuzzing: `.github/workflows/fuzz.yml` runs `parse` and `sem` nightly (and on demand) for 20
 minutes each on nightly Rust with a cached corpus; a finding fails the job, uploads the minimised input
-and files one `fuzz` issue per crash signature (`fuzz/AGENTS.md`).
+and files one `fuzz` issue per crash signature (`fuzz/AGENTS.md`). First runs found binary inputs
+(`.gz` seeds, 58 to 243 KB) that take over 10 s in parse/sem (#406, #408).
 
 ## logic (`crates/yavs-logic`)
 
@@ -536,6 +568,11 @@ Findings.
 - Not measured: the long accelerator testbenches (above), a third reference simulator, executed
   instruction shares, and design 2 at 1e6 clock cycles (yavs needs 17 s to 20 s for 5000 to 20000).
 
+A study of how the reference simulators reach their speed, with ranked recommendations per crate
+(native ieee fast paths with fallback, interpreter constant factors, kernel assignment and wake
+fast paths, hot-only tier-up, start-up breakdown), is in `docs/design/performance.md`. No
+recommendation is implemented yet.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`
@@ -643,7 +680,7 @@ is not static (generic or parameter bounds) get their range at the `'reflect`, a
 index or designated subtypes. The CLI has no resolution option yet, so TIME mirrors are
 exercised end to end in femtoseconds only (other resolutions: a unit test).
 
-- A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`).
+- A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`). Calls replayed on fresh package state (a session rebuild, building the simulation) print and count their reports no more (#390; `report/elab_report_replay`).
 
 ### Shared heap collector: overhead measurement (#303, 2026-10-19)
 

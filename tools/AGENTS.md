@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
 `tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
-`tools/difftest/AGENTS.md` (differential simulation corpus) and `tools/suites/AGENTS.md`.
+`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/suites/AGENTS.md` and `tools/bench/AGENTS.md`.
 
 ## 1. Purpose and boundaries
 
@@ -27,6 +27,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
 | `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |
+| `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
 | `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |
 
 ## 3. Design decisions that bind this module

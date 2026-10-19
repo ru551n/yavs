@@ -539,6 +539,14 @@ fn elab_and_run() {
     assert!(!out.contains("unreachable"), "{out}");
     let (code, _, _) = yavs(&["run", &lib, "fin", "--stop-time=2ns"]);
     assert_eq!(code, 0);
+    // `--time-report` adds one stderr line per phase and a total, and changes nothing else.
+    let (code, err, out) = yavs(&["run", &lib, "busy", "--time-report"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(out.contains("** Note: 0fs+0: hi"), "{out}");
+    for p in ["analyze", "elaborate", "init", "simulate", "total"] {
+        assert!(err.contains(&format!("time-report: {p} wall=")), "{err}");
+    }
+    assert!(!yavs(&["run", &lib, "busy"]).1.contains("time-report"));
     // `--tier=llvm` gives the same output as the interpreter, or E0120 without the feature.
     let tier = yavs(&["run", &lib, "busy", "--tier=llvm"]);
     if cfg!(feature = "llvm") {

@@ -41,6 +41,10 @@ otherwise.
   simulation with exit status 1. An ``error`` report below it is printed, the run continues,
   and the exit status is 1 at the end, unless ``ClearVhdlAssert`` (VHDL-2019 ``std.env``)
   cleared the assert counts since.
+* ``--time-report`` prints the wall and CPU time of each phase (``analyze``, ``elaborate``,
+  ``init``, ``simulate``) and the total to standard error when the simulation ends, for example
+  ``time-report: simulate wall=1.204 cpu=1.19``. CPU time is for the whole process, in 10 ms
+  steps, and is shown as ``n/a`` on platforms that do not report it.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
 * ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code; the output
@@ -514,7 +518,8 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
   when the signal takes a value, a VHDL literal of its type (see values below); other clients
   send the custom request ``yavs/setSignalBreakpoints``. The stop gives the signal's path and new
   value.
-* **Force, deposit and release** a signal: "Force a signal...", "Deposit a signal value..." and
+* **Force, deposit and release** a signal or a part of one (a field, an element or a slice:
+  ``r.a``, ``v(3)``, ``d(7 downto 4)``; only that part changes): "Force a signal...", "Deposit a signal value..." and
   "Release a forced signal..." in the context menu of a signal in the Variables view or as
   "yavs:" commands (custom requests ``yavs/force``, ``yavs/deposit`` and ``yavs/release`` for
   other clients). A force holds the effective value (mode ``in``, what readers see) or the
@@ -564,11 +569,12 @@ over a port.
 (and variables) with the globs and limits of ``--wave-include``, ``--wave-exclude``,
 ``--wave-max-array`` and ``--wave-variables`` and answers with the recorded hierarchy, as the
 waveform file declares it. From then on ``yavs/waves`` events carry the final value of every
-changed signal per time step, as text like the Variables view, sent at least every
+changed signal per time step, as base64 of the value bytes (the hierarchy gives each signal's
+``encoding`` and type, so a client can decode them), sent at least every
 ``flushMs`` (default 100) milliseconds and always before a stop or the end, so the waves reach
 the stop time. A slow client never holds up the simulation: if it falls behind, batches are
 merged and only the last change of each value in them is kept. ``yavs/waveUnsubscribe`` ends
 the stream.
 
-Not yet: function calls and attributes in breakpoint conditions, forcing a part of a signal,
-and ``--dap`` together with ``--cov``.
+Not yet: function calls and attributes in breakpoint conditions, indices of enumeration-indexed
+arrays in a forced part, and ``--dap`` together with ``--cov``.

@@ -39,12 +39,14 @@ cargo +nightly fuzz tmin sem artifacts/sem/crash-...                        # mi
   `cargo clean` in `fuzz/` afterwards (its own `target/`).
 - Scheduled CI (`.github/workflows/fuzz.yml`, #87, #44): nightly cron plus `workflow_dispatch`
   (input `minutes`, default 20). One job per target (`parse`, `sem`), nightly Rust, `-rss_limit_mb=2048
-  -timeout=10`, seeds: every `.vhd`/`.vhdl` under `tests` and `lib` (copied flat; the dirs also hold `.gz`/expected files, binary seeds that time out the parser); the corpus (`fuzz/corpus/<target>`) is cached
-  with `actions/cache` (key `fuzz-corpus-<target>-<run id>`, restored from the newest earlier key).
-  On a finding the job minimises it (`cargo fuzz tmin`), uploads `fuzz/artifacts/<target>` and the log as
-  a run artifact, files one issue labelled `fuzz` per crash signature (title carries a hash of the
-  panic location and message; a repeat only comments) using the default `GITHUB_TOKEN` (`issues: write`),
-  and fails. `cargo-fuzz` is built for the glibc target (`--target x86_64-unknown-linux-gnu`): the
-  prebuilt installer's default host is musl, which sanitizers reject. The corpus job (#87's
-  parse-corpus part) is separate: `ci.yml` `corpus`.
-- Open issues: none for the fuzz schedule; a `fuzz` issue is a crash to fix and regression-test.
+  -timeout=10`, seeds: every `.vhd`/`.vhdl` under `tests` and `lib` (copied flat; the dirs also hold
+  `.gz`/expected files, binary seeds that time out the parser, see #406, #408); the corpus
+  (`fuzz/corpus/<target>`) is cached with `actions/cache` (key `fuzz-corpus-<target>-<run id>`, restored
+  from the newest earlier key). On a finding the job minimises it (`cargo fuzz tmin`), uploads
+  `fuzz/artifacts/<target>` and the log as a run artifact, files one issue labelled `fuzz` per crash
+  signature (title carries a hash of the panic location and message; a repeat only comments) using the
+  default `GITHUB_TOKEN` (`issues: write`), and fails. `cargo-fuzz` is built for the glibc target
+  (`--target x86_64-unknown-linux-gnu`): the prebuilt installer's default host is musl, which
+  sanitizers reject.
+- Open issues: a `fuzz` issue is a crash to fix and regression-test (#406, #408: seconds-long parse of
+  large binary input).

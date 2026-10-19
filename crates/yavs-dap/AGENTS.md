@@ -38,6 +38,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | From a stop between cycles, every step request is a global step (next statement of any process) | No process is current there | ir.md 3.4 |
 | Reports and `OUTPUT` text are `output` events (stdout carries DAP in `stdio` mode); runtime errors an `output` event of category `stderr` | stdout is the protocol channel | `docs/cli-contract.md` 5 |
 | Disconnect stops the run (`Interrupt::stop`), then `exited`, `terminated` and the disconnect response, in that order | Deterministic transcript | this file |
+| Over TCP the server shuts down its write side after the last message and waits up to 2 s for the client to close before exiting | Exiting with the socket open resets the connection on Windows and the client loses the last messages | CI, Windows |
 | Paths in frames and breakpoints are `std::path::absolute` of the source path (lower-cased as a key on Windows) | No `\\?\` prefixes; clients differ in drive letter case | this file |
 
 ## 4. Invariants and pitfalls

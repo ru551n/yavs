@@ -557,6 +557,8 @@ pub fn serve(
     let io_err = |what: &str, err: std::io::Error| {
         Box::new(Diagnostic::error(IO_ERROR, format!("DAP: {what}")).with_note(err.to_string()))
     };
+    // The socket, to close it gracefully at the end.
+    let mut closer = None;
     let (reader, writer): (Box<dyn Read + Send>, Box<dyn Write + Send>) = match transport {
         Transport::Stdio => (Box::new(std::io::stdin()), Box::new(std::io::stdout())),
         Transport::Tcp(port) => {
@@ -568,6 +570,7 @@ pub fn serve(
             eprintln!("yavs: DAP listening on 127.0.0.1:{}", addr.port());
             let (s, _) = l.accept().map_err(|err| io_err("accept failed", err))?;
             let r = s.try_clone().map_err(|err| io_err("accept failed", err))?;
+            closer = s.try_clone().ok();
             (Box::new(r), Box::new(s))
         }
     };
@@ -702,6 +705,7 @@ pub fn serve(
         .unwrap_or_else(|p| p.into_inner())
         .take();
     let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
+    let mut eof = false;
     while pending.is_none() {
         match rx.recv() {
             Ok(Msg::Request(r))
@@ -711,11 +715,25 @@ pub fn serve(
             }
             Ok(Msg::Request(r)) => sh.fail(&r, "the simulation has ended"),
             Ok(Msg::Start) => {}
-            Ok(Msg::Eof) | Err(_) => break,
+            Ok(Msg::Eof) | Err(_) => {
+                eof = true;
+                break;
+            }
         }
     }
     if let Some(d) = pending {
         sh.respond(&d, json!({}));
+    }
+    // Exiting with the socket open resets the connection on some systems, and the client can
+    // lose the last messages: send FIN, then give the client a moment to close its side.
+    if let Some(s) = closer {
+        let _ = s.shutdown(std::net::Shutdown::Write);
+        while !eof {
+            match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(Msg::Eof) | Err(_) => eof = true,
+                Ok(_) => {}
+            }
+        }
     }
     Ok(code)
 }

@@ -259,6 +259,9 @@ fn tcp() {
     let exit = c.event("exited");
     assert_eq!(exit["body"]["exitCode"], 0);
     c.request("disconnect", json!({}));
+    // The server closes its side; reading on sees the end, not a reset.
+    assert!(read(&mut c.r).is_none());
+    drop(c);
     assert_eq!(child.wait().expect("wait").code(), Some(0));
     let _ = std::fs::remove_dir_all(&dir);
 }

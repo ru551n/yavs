@@ -147,6 +147,7 @@ and gives each library a legal identifier as its name.
 | `use-clause-constant-vs-literal` | use-clause clash between a constant and an enumeration literal | 12.4 | LRM clear | OK | REJECT | REJECT | REJECT | REJECT | E1102 (both invisible) | agent (NVC.md) |
 | `variable-port` | 2019 port of class variable with a protected type | 6.5.2, 6.5.7.1 (2019), LCS-2016-047 | LRM clear | OK | REJECT | REJECT | OK | OK | accepted in 2019 files | agent (lrm-checks L21) |
 | `view-individual-driven-elements` | element-wise association of a mode-view subprogram formal whose `in` element's actual has another source | 6.5.2, 14.7.2 | LRM clear | OK* | unsupported | OK* | OK | OK | only the view's `out`, `inout` and `buffer` elements are driven (#265, L85); sim1 and sim3 also drive the `in` element, so its value is the unresolved result; sim2 has no assignment to mode view elements | agent (#265) |
+| `force-resolved-composite-member` | `s.n <= force 40;` where `s` is a record signal resolved as a whole | 10.5.2.1 | LRM clear | OK | FATAL | REJECT | REJECT | REJECT | `E1362`: a member of a composite signal resolved as a whole is not a force or release target (sim3 and sim4 reject it, sim4 citing 10.5.2); the whole composite can be forced | agent, 2026-10-19 (#68, L97) |
 
 ## Elaboration
 
@@ -212,6 +213,10 @@ and gives each library a legal identifier as its name.
 | `external-name-subprogram-generate` | a relative external name in a subprogram of a block in each generate iteration | 8.7 | LRM clear | OK* | OK | OK | OK | OK | each iteration's own instance (sim1 binds the first iteration's for all) | agent, 2026-10-19 (#255, L86) |
 | `external-constant-run-time-value` | an external constant whose target is computed when its region is elaborated (`'path_name`) | 8.7, 16.2.5 | LRM clear | OK | OK* | OK | OK | OK | the target's value, read from its region's data (sim2 drops the instance from the path) | agent, 2026-10-19 (#255) |
 | `pure-function-returns-access` | a pure function whose result type is an access type or a record or array with access subelements | 4.2.1 | LRM clear | OK | REJECT | OK | REJECT | REJECT | E1830 (W1830 with `--relaxed`); vendored `ieee.vital_*` units exempt | agent, 2026-10-19 (#118, L95) |
+| `force-in-port-actual` | `force in` on a formal port of mode `in` (vector and scalar): is the actual's value changed? | 10.5.2.1, 14.7.3.3 | LRM clear | OK* | OK* | OK | OK | OK | the actual keeps its value: only the formal's effective value is forced (sim1 and sim2 change the actual as well, a port collapsed into its actual) | agent, 2026-10-19 (#68, L97) |
+| `force-resolved-composite-whole` | `force in`, `force out` and `release out` of a whole record signal resolved as a whole with two drivers | 14.7.3.2, 14.7.3.3 | LRM clear | OK | REJECT | OK* | OK* | OK | the forced value is the effective (`in`) or driving (`out`) value of every element; the resolution function sees only the drivers; `release out` recomputes the driving value at once. Per message the majority of the references that run it: sim4 adds the drivers to a forced field (`5 42`, `7 11`), sim3 keeps the `force out` value after `release out` until the next transaction | agent, 2026-10-19 (#68, L97) |
+| `release-after-part-release` | `r.n <= release;` then `r <= release;` after `r <= force (...)` while `r.n` is assigned | 10.5.2.1 | LRM clear | OK | OK | OK* | OK | OK | every scalar subelement is released (sim3 keeps the vector field forced) | agent, 2026-10-19 (#68, L97) |
+| `release-array-of-records` | `rs <= release;` for a signal of an array of records | 10.5.2.1 | LRM clear | FATAL | OK | OK | OK | OK | every scalar subelement is released (sim1 stops with an internal error) | agent, 2026-10-19 (#68, L97) |
 
 ## VHPI
 

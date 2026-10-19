@@ -287,14 +287,16 @@ composites, multi-dimensional aggregates, composite constants, access types (`ne
 `deallocate`), process-local protected objects (`CallProt`), protected state initial values
 that call the body's methods (#204), subprograms nested in protected methods calling the
 body's methods and naming its variables (#221), file objects and textio,
-`force`/`release` of scalar signals, signals of arrays of records and of records with
+`force`/`release` of scalar and composite signals and their parts (every scalar subelement,
+simple, conditional and selected forms, default mode from the target's port, a member of a
+composite resolved as a whole is `E1362`, #68), signals of arrays of records and of records with
 array-of-record fields (struct of arrays; whole, element, field, bit and slice targets,
 element sensitivity, resolution as a whole, #200; field and element bounds from the initial
 value, a partially constrained subtype or a port's actual, signal parameters of such types,
 package signals of record types, attributes and implicit signals of parts over several
 fields, #215), shared protected variables (created through `call_shared`),
 user resolution functions (yavs-elab resolver over `yavs_interp::resolve`, once per element, on byte and logic leaves, #293). Difftest: access 3/3,
-composite 6/6, force 3/3, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads.
+composite 6/6, force 8/8, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 threads.
 
 - An alias of a constant with a static value in a subprogram has no storage; its uses lower the aliased name (#300; difftest `composite/alias_constant`).
 

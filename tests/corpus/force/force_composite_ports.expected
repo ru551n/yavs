@@ -1,0 +1,5 @@
+exit	0
+diag	note	500000	0	:force_composite_ports:_p1	so=0001 si=0101
+diag	note	1500000	0	:force_composite_ports:_p1	forced so=0010 si=0101
+diag	note	2000000	0	:force_composite_ports:u:_p1	inside i=0101 o=0010
+diag	note	2500000	0	:force_composite_ports:_p1	released so=0001

@@ -1,0 +1,4 @@
+exit	0
+diag	note	1000000	0	:force_selected:_p0	x=0010 r.n=2 i=20
+diag	note	2000000	0	:force_selected:_p0	r.b=1000
+diag	note	3000000	0	:force_selected:_p0	released x=0000 r.n=0 i=0

@@ -181,7 +181,7 @@ impl Fx<'_, '_> {
     /// Branch on `expr` to one new block per choice set (LRM 10.9); the current block is
     /// closed. A value no choice covers is a runtime error (sem checks coverage, so only an
     /// out-of-subtype value can get there).
-    fn case_blocks(
+    pub(crate) fn case_blocks(
         &mut self,
         expr: ExprId,
         matching: bool,
@@ -1095,7 +1095,7 @@ impl Fx<'_, '_> {
         Ok(self.one_dope(z, last, z))
     }
 
-    fn target_name(&self, e: ExprId) -> String {
+    pub(crate) fn target_name(&self, e: ExprId) -> String {
         let mut e = e;
         loop {
             match &self.db.exprs[e].kind {

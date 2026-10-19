@@ -1,0 +1,7 @@
+exit	0
+diag	note	2000000	0	:force_composite:_p0	x=F0 r.a='1' r.b=A5 r.n=7 v(2)=8
+diag	note	4000000	0	:force_composite:_p0	x=F3 r.n=100
+diag	note	5000000	0	:force_composite:_p0	x=33 r.b=11 v(1)=50
+diag	note	6000000	0	:force_composite:_p0	x=A3 r.b=1C rs(1).b=77 rs(0).b=EE
+diag	note	8000000	0	:force_composite:_p0	x=02 r.b=20
+diag	note	9000000	0	:force_composite:_p0	done

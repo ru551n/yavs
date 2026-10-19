@@ -270,8 +270,13 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
   `E9999` not implemented.
 - Files: a 4-byte cell (`Obj::Scalar`, `B4`); natives take its address. textio's `INPUT` and
   `OUTPUT` are the pre-opened cells 1 and 2 (constant cells).
-- `force`/`release`: whole scalar signals; default mode `out` for ports of mode out, inout and
-  buffer, `in` otherwise (LRM 10.5.2.1).
+- `force`/`release` (#68): every scalar subelement of the target (LRM 10.5.2.1); a target that
+  is one kernel range (scalar, array, slice, a part with one record leaf) gets one `Force`
+  with the value's elements (an array checked against the target's bounds), a part with
+  records one `Force`/`Release` per leaf with that leaf's elements (`leaf_of_value`); simple,
+  conditional and selected forms; default mode `out` for (a part of) a port of mode out,
+  inout and buffer, `in` otherwise. sem rejects a member of a composite resolved as a whole
+  (`E1362`, lrm-checks L97).
 - Shared variables of a protected type in an architecture: an instance cell with the object's
   handle; its thunk creates the object in the shared heap (yavs-elab runs instance thunks with
   `call_shared`). One of a non-protected type (`--relaxed`, #285): an instance cell with the
@@ -294,7 +299,7 @@ type gets `Check{Range, lo, hi}` with a `CheckMsgId` naming the object; arrays g
 - `&` on arrays of composites (#234): every operand is a piece of `put_pieces`, an element
   operand one row; an element subtype the type leaves open takes the left operand's (its
   element part, or the element itself), every operand checked against it.
-- Not yet: force of composite signals, named pieces in aggregate targets, methods of
+- Not yet: named pieces in aggregate targets, methods of
   protected types in generic package instances (generic instantiation, #71), user
   resolution of logic leaves.
 

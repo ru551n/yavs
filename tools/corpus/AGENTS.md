@@ -24,6 +24,7 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 | `run.py MANIFEST [--tool yavs|nvc] [--cmd T] [--keep-going] [--bless] [--expected none] [--log F]` | Analyze one file per call in manifest order and compare with the expected list; exit 0 as expected, 1 differences, 2 usage |
 | `gen_manifests.py [--root DIR] [NAME...]`, `--validate NAME...` | Generate manifests from each project's own build description (its compile-order scripts and project files, and `lib/ORDER.md`) |
 | `gen_external.py` | Specs for the external library corpora and their validation with the reference simulator plus the second reference simulator (2008) or the third reference simulator (2019) |
+| `unisim-2008.toml`, `gen_vendor.py` | Vendor primitive libraries (`unisim`, `unimacro`) read in place from `$YAVS_VENDOR_UNISIM` (the directory holding `unisims/` and `unimacro/`); `run.py` skips the manifest (exit 0) when unset, so CI skips it. No expected list: results depend on the installed version. `gen_vendor.py` regenerates it from the vendor's analyze-order lists. Files are never copied or committed (rule 7). `run.py --extra-map unisim:DIR/unisim` maps the built library into another run (the 6 hdl-modules files that need it) |
 | `report.sh [YAVS_BINARY]` | Run every manifest (4 in parallel, no comparison) and regenerate `RESULTS.md`, grouping failures by first diagnostic |
 | `RESULTS.md` | Generated; do not edit by hand |
 

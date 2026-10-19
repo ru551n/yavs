@@ -163,6 +163,8 @@ VHDL-2008 and VHDL-2019 into an owned AST (`yavs parse [--std 2008|2019] files..
 go through `yavs-diag` (human, short and JSON formats; snapshots in `tests/diag/`). PSL is skipped
 with one `W0004` warning per design unit (#138); the PSL does not run.
 
+Vendor libraries (#119, #61): `tools/corpus/unisim-2008.toml` reads `unisim`/`unimacro` in place from `$YAVS_VENDOR_UNISIM` (skipped when unset): only the `vcomponents` package analyzes today (47 of 1073 files); the primitive models wait on VITAL (#118) and the Synopsys arithmetic packages (#117). The 6 hdl-modules files that need `unisim` analyze against it.
+
 Parse corpus: `tools/fetch-corpus.sh` fetches the corpora (default `~/.cache/rsim-corpus`), then
 `YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus` compares them with the
 expected lists in `tests/parse-corpus/` and fails if `YAVS_CORPUS` is unset (`YAVS_BLESS=1`

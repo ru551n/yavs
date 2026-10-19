@@ -75,7 +75,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1304 | named return value (2019) without a constrained context subtype (#33) | 4.2.1 (2019) |
 | E1310 | formal associated twice | 8.1 |
 | E1311 | missing actual | 8.1 |
-| E1312 | conversion on an unconstrained formal (rule 1 review F8) | 6.5.7.1 |
+| E1312 | conversion on an unconstrained formal that defines no bounds (rule 1 review F8; a conversion to a fully constrained type mark or subtype, or function subtype, is accepted, #262) | 5.3.2.2, 6.5.7.1 |
 | E1313 | conversion the formal's class or mode does not allow (formal conversion of an `in` parameter, actual conversion of an `out` one, `inout` with one conversion, any conversion of a signal parameter) | 6.5.7.1, 4.2.2.3 |
 | E1320 | aggregate type not determined | 8.1 |
 | E1321 | record aggregate: element missing | 3.4 |

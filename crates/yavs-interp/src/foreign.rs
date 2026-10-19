@@ -510,13 +510,13 @@ impl Machine {
     ) -> R<u64> {
         let rt = self.rt.clone();
         let Some(h) = rt.models.get(id.0 as usize).and_then(|h| h.as_ref()) else {
-            return Err(Fault::Unbound(
+            return Err(Fault::Unbound(Box::new((
                 format!(
                     "VHPI model `{} {}` of foreign subprogram `{name}` is not registered",
                     m.library, m.model
                 ),
                 "the plugins loaded with `--vhpi`".into(),
-            ));
+            ))));
         };
         let mut call = ModelCall {
             subprogram: name.to_string(),
@@ -797,13 +797,13 @@ impl Machine {
             return self.model_call(ctx, x.name.as_str(), id, m, &x.args, &regs);
         }
         let Some(fun) = rt.foreign.get(id.0 as usize).and_then(|f| f.as_ref()) else {
-            return Err(Fault::Unbound(
+            return Err(Fault::Unbound(Box::new((
                 format!(
                     "symbol `{}` of foreign subprogram `{}` is not defined",
                     x.symbol, x.name
                 ),
                 rt.searched.clone(),
-            ));
+            ))));
         };
         let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();
         let name = &x.name;

@@ -30,7 +30,7 @@ use crate::{InstData, ProcDriver, ProcRoots, Runtime, SharedState};
 pub(crate) enum Fault {
     Runtime(String),
     /// A call of an unbound foreign subprogram: message and places searched.
-    Unbound(String, String),
+    Unbound(Box<(String, String)>),
     Internal(String),
     Kernel(SimError),
 }
@@ -174,7 +174,8 @@ pub(crate) struct Frame {
 enum Flow {
     Next,
     Jump(yavs_ir::BlockId),
-    Call(Frame),
+    /// The callee's frame was pushed.
+    Call,
     Ret(Option<u64>),
     Suspend,
 }
@@ -211,7 +212,14 @@ pub(crate) struct Machine {
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
+    /// Slot and register vectors of returned frames, reused by the next calls.
+    spare: Vec<(Vec<u8>, Vec<u64>)>,
+    /// Argument cells of the call being made (`call_with`).
+    cells: Vec<u64>,
 }
+
+/// Returned frames whose vectors `Machine::spare` keeps.
+const SPARE_FRAMES: usize = 16;
 
 struct LayoutMemo {
     dsz: u64,
@@ -413,6 +421,8 @@ impl Machine {
             waits: Waits::default(),
             pause: None,
             layouts: Vec::new(),
+            spare: Vec::new(),
+            cells: Vec::new(),
         }
     }
 
@@ -446,18 +456,23 @@ impl Machine {
         Ok(())
     }
 
-    fn frame_for(&self, f: &Func, func: FuncId, link: Option<u32>) -> R<Frame> {
+    fn frame_for(&mut self, f: &Func, func: FuncId, link: Option<u32>) -> R<Frame> {
         if self.frames.len() >= self.rt.limits.max_depth as usize {
             return rt_err(format!(
                 "call depth limit {} exceeded calling `{}` (unbounded recursion?)",
                 self.rt.limits.max_depth, f.name
             ));
         }
+        let (mut slots, mut regs) = self.spare.pop().unwrap_or_default();
+        slots.clear();
+        slots.resize(f.frame as usize, 0);
+        regs.clear();
+        regs.resize(f.reg_ty.len(), 0);
         Ok(Frame {
             func,
             pc: 0,
-            slots: vec![0; f.frame as usize],
-            regs: vec![0; f.reg_ty.len()],
+            slots,
+            regs,
             link,
             ret: None,
             temp_base: self.temp.len(),
@@ -491,7 +506,10 @@ impl Machine {
         };
         let mut e = match f {
             Fault::Runtime(m) => mk(ErrorKind::Runtime(m)),
-            Fault::Unbound(message, searched) => mk(ErrorKind::Foreign { message, searched }),
+            Fault::Unbound(b) => {
+                let (message, searched) = *b;
+                mk(ErrorKind::Foreign { message, searched })
+            }
             Fault::Internal(m) => mk(ErrorKind::Internal(format!("interpreter: {m}"))),
             Fault::Kernel(e) => e,
         };
@@ -649,23 +667,28 @@ impl Machine {
         }
     }
 
+    #[inline]
     fn top(&mut self) -> &mut Frame {
         let n = self.frames.len();
         &mut self.frames[n - 1]
     }
 
+    #[inline]
     pub(crate) fn r(&self, r: Reg) -> u64 {
         self.frames[self.frames.len() - 1].regs[r.0 as usize]
     }
 
+    #[inline]
     fn ri(&self, r: Reg) -> i64 {
         self.r(r) as i64
     }
 
+    #[inline]
     fn rf(&self, r: Reg) -> f64 {
         f64::from_bits(self.r(r))
     }
 
+    #[inline]
     fn set(&mut self, r: Reg, v: u64) {
         self.top().regs[r.0 as usize] = v;
     }
@@ -782,16 +805,40 @@ impl Machine {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn load(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
+        // Fast path: a cell of a frame (registers spill to frame slots all the time).
+        let (sp, idx, off) = split(a);
+        if sp == FRAME
+            && let Some(b) = self
+                .frames
+                .get(idx as usize)
+                .and_then(|f| f.slots.get(off as usize..(off + n) as usize))
+        {
+            let mut x = [0u8; 8];
+            x[..n as usize].copy_from_slice(b);
+            return Ok(u64::from_le_bytes(x));
+        }
         let b = self.rd(a, n)?;
         let mut x = [0u8; 8];
         x[..n as usize].copy_from_slice(b);
         Ok(u64::from_le_bytes(x))
     }
 
+    #[inline]
     pub(crate) fn store(&mut self, a: u64, w: Width, v: u64) -> R<()> {
         let n = w.bytes().min(8) as usize;
+        let (sp, idx, off) = split(a);
+        if sp == FRAME
+            && let Some(b) = self
+                .frames
+                .get_mut(idx as usize)
+                .and_then(|f| f.slots.get_mut(off as usize..off as usize + n))
+        {
+            b.copy_from_slice(&v.to_le_bytes()[..n]);
+            return Ok(());
+        }
         self.put(a, &v.to_le_bytes()[..n])
     }
 
@@ -1149,7 +1196,9 @@ impl Machine {
     ) -> R<Outcome> {
         let rt = self.rt.clone();
         let prog = &rt.prog;
+        let tier = if DEBUG { None } else { rt.tier.get() };
         loop {
+            // The top frame changes only at calls and returns: look its function up once.
             let fr = self
                 .frames
                 .last()
@@ -1158,48 +1207,58 @@ impl Machine {
                 .func(fr.func)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
             let mut pc = fr.pc as usize;
-            if !DEBUG && let Some(tier) = rt.tier.get() {
-                pc = self.run_tier(&**tier, prog, f, pc, ctx)?;
-            }
-            let inst = *f
-                .code
-                .get(pc)
-                .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
-            if DEBUG {
-                self.debug_tick(prog, f, pc, &inst, ctx)?;
-            }
-            match self.step(prog, f, inst, ctx)? {
-                Flow::Next => self.top().pc += 1,
-                Flow::Jump(b) => {
-                    let blk = f
-                        .blocks
-                        .get(b)
-                        .ok_or_else(|| ice(format!("no block {b}")))?;
-                    self.top().pc = blk.start;
-                    if self.pause == Some(b) && self.frames.len() == 1 {
-                        self.pause = None;
+            loop {
+                if let Some(tier) = tier {
+                    pc = self.run_tier(&**tier, prog, f, pc, ctx)?;
+                }
+                let inst = *f
+                    .code
+                    .get(pc)
+                    .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
+                if DEBUG {
+                    self.debug_tick(prog, f, pc, &inst, ctx)?;
+                }
+                match self.step(prog, f, inst, ctx)? {
+                    Flow::Next => {
+                        pc += 1;
+                        self.top().pc = pc as u32;
+                    }
+                    Flow::Jump(b) => {
+                        let blk = f
+                            .blocks
+                            .get(b)
+                            .ok_or_else(|| ice(format!("no block {b}")))?;
+                        pc = blk.start as usize;
+                        self.top().pc = blk.start;
+                        if self.pause == Some(b) && self.frames.len() == 1 {
+                            self.pause = None;
+                            return Ok(Outcome::Suspended);
+                        }
+                    }
+                    Flow::Call => break,
+                    Flow::Ret(v) => {
+                        let done = self
+                            .frames
+                            .pop()
+                            .ok_or_else(|| ice("return without frame"))?;
+                        if self.frames.len() <= base {
+                            return Ok(Outcome::Returned(v));
+                        }
+                        let c = self.top();
+                        if let Some(d) = done.ret {
+                            c.regs[d.0 as usize] =
+                                v.ok_or_else(|| ice("function returned no value"))?;
+                        }
+                        c.pc += 1;
+                        if self.spare.len() < SPARE_FRAMES {
+                            self.spare.push((done.slots, done.regs));
+                        }
+                        break;
+                    }
+                    Flow::Suspend => {
+                        self.top().pc += 1;
                         return Ok(Outcome::Suspended);
                     }
-                }
-                Flow::Call(fr) => self.frames.push(fr),
-                Flow::Ret(v) => {
-                    let done = self
-                        .frames
-                        .pop()
-                        .ok_or_else(|| ice("return without frame"))?;
-                    if self.frames.len() <= base {
-                        return Ok(Outcome::Returned(v));
-                    }
-                    let c = self.top();
-                    if let Some(d) = done.ret {
-                        c.regs[d.0 as usize] =
-                            v.ok_or_else(|| ice("function returned no value"))?;
-                    }
-                    c.pc += 1;
-                }
-                Flow::Suspend => {
-                    self.top().pc += 1;
-                    return Ok(Outcome::Suspended);
                 }
             }
         }
@@ -1389,7 +1448,8 @@ impl Machine {
             store_cells(&mut fr.slots, p.slot, p.width, c)?;
             k += n;
         }
-        Ok(Flow::Call(fr))
+        self.frames.push(fr);
+        Ok(Flow::Call)
     }
 
     /// Argument cells: two for a register that holds a signal reference.
@@ -1400,10 +1460,43 @@ impl Machine {
         callee: Option<&Func>,
         skip: usize,
     ) -> R<Vec<u64>> {
+        let mut out = Vec::new();
+        self.push_args(&mut out, f, args, callee, skip)?;
+        Ok(out)
+    }
+
+    /// Call `func` with the argument cells of `args` after `first` (a protected object).
+    /// The cells go through `Machine::cells`, so a call allocates no argument vector.
+    fn call_with(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        first: Option<u64>,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+    ) -> R<Flow> {
+        let mut cells = std::mem::take(&mut self.cells);
+        cells.clear();
+        cells.extend(first);
+        let r = self
+            .push_args(&mut cells, f, args, prog.func(func), first.map_or(0, |_| 1))
+            .and_then(|()| self.call(prog, func, &cells, dst));
+        self.cells = cells;
+        r
+    }
+
+    fn push_args(
+        &self,
+        out: &mut Vec<u64>,
+        f: &Func,
+        args: yavs_ir::Regs,
+        callee: Option<&Func>,
+        skip: usize,
+    ) -> R<()> {
         let regs = f
             .regs(args)
             .ok_or_else(|| ice("operand list out of range"))?;
-        let mut out = Vec::with_capacity(regs.len() + 2);
         for (i, &r) in regs.iter().enumerate() {
             out.push(self.r(r));
             // Natives have no parameter list: a signal argument is a `Sig` register.
@@ -1418,9 +1511,10 @@ impl Machine {
                 out.push(self.r(Reg(r.0 + 1)));
             }
         }
-        Ok(out)
+        Ok(())
     }
 
+    #[inline(always)]
     fn step(
         &mut self,
         prog: &Program,
@@ -1874,10 +1968,11 @@ impl Machine {
                 };
                 let d = self.rd(self.r(desc), dsz)?;
                 if memo.as_ref().is_none_or(|m| m.desc != d) {
-                    let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
-                        LayoutError::TooLarge => Fault::Runtime(e.to_string()),
-                        LayoutError::Malformed(_) => ice(e.to_string()),
-                    })?;
+                    let (l, _) =
+                        Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
+                            LayoutError::TooLarge => Fault::Runtime(e.to_string()),
+                            LayoutError::Malformed(_) => ice(e.to_string()),
+                        })?;
                     let mut words = vec![l.size, l.align];
                     if l.offsets.is_empty() {
                         words.extend([l.stride, l.count]);
@@ -1948,8 +2043,7 @@ impl Machine {
                 return rt_err(w);
             }
             Inst::Call { func, args, dst } => {
-                let cells = self.arg_cells(f, args, prog.func(func), 0)?;
-                return self.call(prog, func, &cells, dst);
+                return self.call_with(prog, f, func, None, args, dst);
             }
             Inst::CallIndirect { func, args, dst } => {
                 let id = FuncId(self.r(func) as u32);
@@ -1959,8 +2053,7 @@ impl Machine {
                 if c.kind == FuncKind::Process || c.kind == FuncKind::Elab {
                     return Err(ice(format!("indirect call of {:?} {id}", c.kind)));
                 }
-                let cells = self.arg_cells(f, args, Some(c), 0)?;
-                return self.call(prog, id, &cells, dst);
+                return self.call_with(prog, f, id, None, args, dst);
             }
             Inst::CallProt {
                 func,
@@ -1970,12 +2063,9 @@ impl Machine {
             } => {
                 self.shared()?;
                 let h = self.r(obj);
-                let mut cells = vec![h];
-                cells.extend(self.arg_cells(f, args, prog.func(func), 1)?);
-                let flow = self.call(prog, func, &cells, dst)?;
-                if let Flow::Call(mut fr) = flow {
-                    fr.shared_alloc |= heap::tag_of(h) == heap::SHARED;
-                    return Ok(Flow::Call(fr));
+                let flow = self.call_with(prog, f, func, Some(h), args, dst)?;
+                if let Flow::Call = flow {
+                    self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
                 }
                 return Ok(flow);
             }
@@ -2415,18 +2505,16 @@ fn force_mode(k: ForceKind) -> ForceMode {
 }
 
 fn store_cells(slots: &mut [u8], slot: u32, w: Width, cells: &[u64]) -> R<()> {
-    let mut bytes = Vec::with_capacity(16);
-    for c in cells {
-        bytes.extend_from_slice(&c.to_le_bytes());
-    }
     let n = w.bytes() as usize;
+    if n > cells.len() * 8 {
+        return Err(ice("too few argument cells"));
+    }
     let dst = slots
         .get_mut(slot as usize..slot as usize + n)
         .ok_or_else(|| ice(format!("parameter slot {slot} outside the frame")))?;
-    let src = bytes
-        .get(..n)
-        .ok_or_else(|| ice("too few argument cells"))?;
-    dst.copy_from_slice(src);
+    for (d, c) in dst.chunks_mut(8).zip(cells) {
+        d.copy_from_slice(&c.to_le_bytes()[..d.len()]);
+    }
     Ok(())
 }
 

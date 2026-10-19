@@ -968,6 +968,8 @@ pub enum SeqStmtKind {
         when: Option<Expr>,
     },
     Return(Option<Expr>),
+    /// VHDL-2019 `return when c;` (10.14): the condition.
+    ReturnWhen(Expr),
     Null,
     /// VHDL-2019 sequential block.
     Block {

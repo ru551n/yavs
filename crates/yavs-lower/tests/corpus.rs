@@ -135,6 +135,7 @@ const PASS: &[&str] = &[
     "process/local_procedure_drivers",
     "process/loops_exit_next",
     "process/named_return_2019",
+    "process/return_when_2019",
     "process/sensitivity",
     "process/subprograms",
     "process/unaffected_2019",

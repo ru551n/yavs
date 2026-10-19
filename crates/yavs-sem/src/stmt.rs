@@ -519,6 +519,18 @@ impl Db {
                 })?
             }
             K::Return(v) => StmtKind::Return(self.return_value(cx, v.as_ref(), s.span)?),
+            // 2019 `return when c;` (10.14): a procedure return under a condition.
+            K::ReturnWhen(c) => {
+                let v = self.return_value(cx, None, s.span);
+                let c = self.st_expr(cx.scope, c, Expected::Condition);
+                let (v, c) = (v?, c?);
+                let ret = self.new_stmt(None, s.span);
+                self.stmts[ret].kind = StmtKind::Return(v);
+                StmtKind::If {
+                    branches: Box::from([(c, Box::from([ret]))]),
+                    else_: None,
+                }
+            }
             K::Null => StmtKind::Null,
             K::Block { decls, stmts, .. } => {
                 let bscope =

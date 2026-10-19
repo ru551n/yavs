@@ -773,6 +773,7 @@ fn vhdl2019_conditional_expression_positions() {
             .to_string(),
         "package body p is function f return integer is begin return 1 when g; return 2; end; end;"
             .to_string(),
+        "package body p is procedure q is begin return when g; end; end;".to_string(),
     ] {
         ok19(&src);
     }
@@ -788,6 +789,8 @@ fn vhdl2019_conditional_expression_positions() {
     ] {
         errors_std(&src, Std::Vhdl2019);
     }
+    let e = errors("package body p is procedure q is begin return when g; end; end;");
+    assert!(e.iter().any(|m| m.ends_with("requires VHDL-2019")), "{e:?}");
     let e = errors(&seq("v := (1 when g else 2);"));
     assert!(e.iter().any(|m| m.ends_with("requires VHDL-2019")), "{e:?}");
 }

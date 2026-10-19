@@ -169,13 +169,22 @@ impl Parser<'_> {
             }
             Tok::Kw(Kw::Return) => {
                 self.bump();
-                let e = if self.at(Tok::Semi) {
-                    None
+                if self.at_kw(Kw::When) {
+                    let when = self.span();
+                    self.bump();
+                    self.require_2019(when, "a conditional return");
+                    let c = self.expr()?;
+                    self.semi()?;
+                    SeqStmtKind::ReturnWhen(c)
                 } else {
-                    Some(self.return_value()?)
-                };
-                self.semi()?;
-                SeqStmtKind::Return(e)
+                    let e = if self.at(Tok::Semi) {
+                        None
+                    } else {
+                        Some(self.return_value()?)
+                    };
+                    self.semi()?;
+                    SeqStmtKind::Return(e)
+                }
             }
             Tok::Kw(Kw::Null) => {
                 self.bump();

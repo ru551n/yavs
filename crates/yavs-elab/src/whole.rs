@@ -323,12 +323,14 @@ impl Map {
 
 /// The kernel resolver of a signal of shape `shape` resolved as a whole by `func`, whose
 /// parameter has IR type `param` (an unconstrained array of the composite) and whose result
-/// has IR type `ty`; `inst` is the data of the region declaring `func` (#164).
+/// has IR type `ty`; `inst` is the data of the region declaring `func` (#164); the array of
+/// driving values starts at `left` and runs down when `down`.
 pub(crate) fn resolver(
     rt: Arc<Runtime>,
     func: FuncId,
     inst: Arc<InstData>,
     (param, ty): (TyId, TyId),
+    (left, down): (i64, bool),
     shape: &Shape,
 ) -> Result<yavs_kernel::Resolver, String> {
     let map = Map::new(&rt.prog, ty, shape)?;
@@ -356,10 +358,9 @@ pub(crate) fn resolver(
             };
             map.put(v, &mut data, sb, bs).ok_or_else(short)?;
         }
-        let mut desc: Vec<u8> = [0, n as i64 - 1, 0]
-            .iter()
-            .flat_map(|x: &i64| x.to_le_bytes())
-            .collect();
+        let mut desc: Vec<u8> = yavs_interp::res_dope(left, down, n)
+            .ok_or("too many drivers for the resolution function's index subtype")?
+            .to_vec();
         if tail {
             desc.extend(&map.desc);
         }

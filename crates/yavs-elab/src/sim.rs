@@ -24,6 +24,10 @@ pub struct Ir {
     /// IR types of the parameter and the result of each user resolution function (#193,
     /// #293).
     pub res_types: HashMap<yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId)>,
+    /// Left bound and direction (`true` for `downto`) of the index subtype of each user
+    /// resolution function's parameter: the driving values arrive as an array from that left
+    /// bound in that direction (lrm-checks L101).
+    pub res_index: HashMap<yavs_sem::DeclId, (i64, bool)>,
     /// Leaves resolved by a function declared in an entity or architecture: the instance
     /// whose data the function reads (its constants and generics, #164).
     pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
@@ -222,6 +226,7 @@ impl Elaborated {
         let var_slots = l.var_slots()?;
         let mut resolvers = HashMap::new();
         let mut res_types = HashMap::new();
+        let mut res_index = HashMap::new();
         for leaf in &self.nets.leaves {
             if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
                 && !resolvers.contains_key(&d)
@@ -235,6 +240,7 @@ impl Elaborated {
             {
                 let tys = (l.ty(db.base(p.subtype))?, l.ty(db.base(r))?);
                 res_types.insert(d, tys);
+                res_index.insert(d, res_index_of(db, p.subtype));
             }
         }
         let lowered = l.finish()?;
@@ -280,6 +286,7 @@ impl Elaborated {
             units,
             resolvers,
             res_types,
+            res_index,
             res_regions,
             names,
             packages: lowered.packages,
@@ -565,6 +572,10 @@ impl Elaborated {
                     .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
                 let rt = rt.clone();
                 let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
+                let index = *ir
+                    .res_index
+                    .get(&d)
+                    .ok_or_else(|| sim_err("resolution index not lowered".into()))?;
                 if let Some(LeafRes::Whole(_)) = self.nets.leaf(leaf).resolution {
                     let tys = *ir.res_types.get(&d).ok_or_else(|| {
                         sim_err("types of a composite resolution function not lowered".into())
@@ -572,7 +583,8 @@ impl Elaborated {
                     let w = self.nets.whole_of(leaf).ok_or_else(|| {
                         sim_err("a leaf resolved as a whole outside any composite".into())
                     })?;
-                    return crate::whole::resolver(rt, f, inst, tys, &w.shape).map_err(sim_err);
+                    let r = crate::whole::resolver(rt, f, inst, tys, index, &w.shape);
+                    return r.map_err(sim_err);
                 }
                 // Element-wise: one call per element of the leaf (#293).
                 let (w, logic) = match self.nets.leaf(leaf).ty.elem {
@@ -593,7 +605,7 @@ impl Elaborated {
                             .iter()
                             .map(|v| v.get(k * w..(k + 1) * w).unwrap_or(&[]))
                             .collect();
-                        yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic)
+                        yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic, index)
                             .map_err(|e| e.to_string())?;
                     }
                     Ok(())
@@ -1301,4 +1313,24 @@ fn write_cell(
         CallVal::Composite { data: e, desc } => UnitIr::write_composite(iv.off, &e, &desc, data),
     }
     Ok(())
+}
+
+/// Left bound and direction of the index subtype of a resolution function's parameter type
+/// `param` (an unconstrained one-dimensional array).
+fn res_index_of(db: &Db, param: yavs_sem::SubtypeId) -> (i64, bool) {
+    use yavs_sem::stat::ConstValue;
+    let yavs_sem::types::TypeKind::Array { indexes, .. } = &db.types[db.base(param)].kind else {
+        return (0, false);
+    };
+    match indexes.first().and_then(|&ix| db.static_bounds(ix)) {
+        Some((ConstValue::Int(l) | ConstValue::Phys(l), dir, _)) => {
+            (l, dir == yavs_sem::types::Direction::Downto)
+        }
+        Some((ConstValue::Enum(l), dir, _)) => {
+            (l.into(), dir == yavs_sem::types::Direction::Downto)
+        }
+        // ponytail: a non-static index subtype (a generic-dependent range) keeps 0 upwards;
+        // evaluate it per instance if a design needs its bounds.
+        _ => (0, false),
+    }
 }

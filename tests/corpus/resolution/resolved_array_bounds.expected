@@ -1,0 +1,2 @@
+exit	0
+diag	note	2000000	0	:resolved_array_bounds:_p4	sp = 3, si = 30

@@ -721,6 +721,13 @@ a note and a help suggesting an access type, as the reference simulators reject 
   decided it for an unconstrained formal-part type mark). The reference simulators split
   (one gives the formal the actual's bounds, one does so for formal-part type conversions,
   one crashes on several forms), so the clear LRM text decides.
+- **Range check of expression actuals of parts** (#263, portleft agent, 2026-10-19; LRM
+  6.5.6.3, 14.7.3.1, `docs/design/lrm-checks.md` L88): the equivalent process of a non-static
+  expression actual of a scalar part (`r.f => x + 1`, `v(0) => x - 3`) checks the value
+  against the part's subtype, as for a whole formal. The subtype comes from the elaborated
+  port's own subtype along the part's path (`scalar_part`), not from sem's formal part: that
+  one was resolved against the uninstantiated entity, so a formal package's generic would
+  have no value. The message names no port, as the reference simulator's.
 
 - **Aliases of external signal names** (#19, LRM 6.6.2, 8.7, 14.4.1): `alias s is
   <<signal .tb.dut.x : t>>;` in an architecture, block, generate or process binds when the

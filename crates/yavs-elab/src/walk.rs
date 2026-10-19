@@ -34,8 +34,8 @@ enum A {
     Local(DeclId),
     Open,
     Default,
-    /// Sub-element associations: path, actual and whether it was written `inertial`.
-    Parts(Vec<(Vec<LspStep>, ExprId, bool)>),
+    /// Sub-element associations: path, actual, formal part, written `inertial`.
+    Parts(Vec<yavs_sem::hir::IndividualPart>),
     /// The actual of a generic type, subprogram or package.
     Generic(GenericActual),
     Conv {
@@ -68,9 +68,7 @@ fn assocs(args: &[Arg], n: usize) -> Vec<A> {
             Actual::Expr(e) => A::Expr(*e, a.inertial),
             Actual::Default => A::Default,
             Actual::Open => A::Open,
-            Actual::Individual(p) => {
-                A::Parts(p.iter().map(|(s, e, _, i)| (s.to_vec(), *e, *i)).collect())
-            }
+            Actual::Individual(p) => A::Parts(p.to_vec()),
             Actual::Subtype(st) => A::Generic(GenericActual::Subtype(*st)),
             Actual::Subprogram(d) => A::Generic(GenericActual::Subprogram(*d)),
             Actual::Package(i) => A::Generic(GenericActual::Package(*i)),
@@ -1372,7 +1370,7 @@ impl Elab<'_> {
                 let fo = self
                     .m
                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
-                for (steps, e, inertial) in parts {
+                for (steps, e, _, inertial) in parts {
                     let espan = self.db.exprs[*e].span;
                     let fsels = self.m.steps(self.db, None, steps, sc, espan)?;
                     let (fl, fshape) = self.m.select(fo, &fsels, espan)?;
@@ -1390,7 +1388,10 @@ impl Elab<'_> {
                         match self.m.eval(self.db, *e, Some(sc)) {
                             Ok(v) => self.m.part_init(self.db, &fl, &fshape, &v, espan)?,
                             Err(d) if d.code == codes::NOT_EVALUATED => {
-                                self.actual_process(s, sc, fo, fsels, *e, None)?
+                                // A scalar part's subtype, for its range check: from the
+                                // elaborated port, whose subtype a cloned instance has bound.
+                                let part = scalar_part(self.db, subtype, steps);
+                                self.actual_process(s, sc, fo, fsels, *e, part)?
                             }
                             Err(d) => return Err(d),
                         }
@@ -1441,7 +1442,8 @@ impl Elab<'_> {
     /// The equivalent process `formal <= e` of an expression actual (LRM 6.5.6.3) in the
     /// instantiating region `region`: it drives part `fsels` of formal `fo` of instance (or
     /// block) `s`, one delta after the expression changes. Lowered by yavs-lower
-    /// (`Lowerer::port_actual`, `formal` for the range check of a whole formal).
+    /// (`Lowerer::port_actual`; `formal`, the subtype of the formal or of the part, for the
+    /// range check of a scalar).
     fn actual_process(
         &mut self,
         s: ScopeId,
@@ -3170,7 +3172,7 @@ impl Model {
         db: &Db,
         s: ScopeId,
         st: yavs_sem::SubtypeId,
-        parts: &[(Vec<LspStep>, ExprId, bool)],
+        parts: &[yavs_sem::hir::IndividualPart],
         sc: ScopeId,
         span: Span,
     ) -> R<Shape> {
@@ -3183,7 +3185,7 @@ impl Model {
             ));
         };
         let mut lh: Vec<Option<(i64, i64)>> = vec![None; indexes.len()];
-        for (steps, e, _) in parts {
+        for (steps, e, _, _) in parts {
             let espan = db.exprs[*e].span;
             let Some(first) = self
                 .steps(db, None, &steps[..1.min(steps.len())], sc, espan)?
@@ -3401,6 +3403,24 @@ fn unconstrained_signal(span: Span) -> Box<Diagnostic> {
 
 /// The kernel mode of a simple port mode. A linkage port takes the actual's value like an
 /// `in` port: VHDL code cannot read or update it (LRM 6.5.2), so it never drives the actual.
+/// The subtype of the scalar part `steps` of an object of subtype `st`; `None` for a
+/// composite part.
+fn scalar_part(
+    db: &Db,
+    mut st: yavs_sem::SubtypeId,
+    steps: &[LspStep],
+) -> Option<yavs_sem::SubtypeId> {
+    use yavs_sem::types::TypeKind;
+    for step in steps {
+        st = match (step, &db.types[db.base(st)].kind) {
+            (LspStep::Field(i), TypeKind::Record { elems }) => elems.get(*i as usize)?.subtype,
+            (LspStep::Index(_), TypeKind::Array { elem, .. }) => *elem,
+            _ => return None,
+        };
+    }
+    db.types[db.base(st)].kind.is_scalar().then_some(st)
+}
+
 fn port_mode(m: Mode) -> PortMode {
     match m {
         Mode::In | Mode::Linkage | Mode::View { .. } => PortMode::In,

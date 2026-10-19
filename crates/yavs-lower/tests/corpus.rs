@@ -143,6 +143,8 @@ const PASS: &[&str] = &[
     "hierarchy/port_conv_type_unconstrained",
     "hierarchy/port_expr_actual",
     "hierarchy/port_expr_generic_range",
+    "hierarchy/port_expr_part_range",
+    "hierarchy/port_expr_part_range_elem",
     "hierarchy/port_expr_parts",
     "hierarchy/port_expr_record",
     "hierarchy/port_expr_record_array",

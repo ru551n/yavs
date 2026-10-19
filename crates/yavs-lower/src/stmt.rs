@@ -526,11 +526,17 @@ impl Fx<'_, '_> {
             return self.drive_actual_leaves(e, dope, span);
         }
         let tid = self.ty(db.base(st), span)?;
-        let what = if formal.is_some() {
+        // A whole formal is named in the check messages, as the reference simulator does; a
+        // part of one (individual association) is not.
+        let whole = matches!(&db.decls[port].kind,
+            yavs_sem::decl::DeclKind::Object(o) if formal == Some(o.subtype));
+        let what = if whole {
             format!(
                 "port {}",
                 db.decls[port].name.to_string().to_ascii_uppercase()
             )
+        } else if formal.is_some() && dope.is_none() {
+            String::new()
         } else {
             "port actual".to_string()
         };

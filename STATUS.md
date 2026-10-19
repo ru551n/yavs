@@ -449,7 +449,7 @@ specification-bound instances, 2019 variable ports denoting the shared variable 
 their chain of actuals (architecture, block, generate or package shared variables, through
 entities, components and blocks; a top-level one is E2119; #188), non-static expression actuals of `in` ports and of parts of
 them driven by their equivalent IR process one delta later (records leaf by leaf, ranges from
-the instance's generics checked, expression actuals in a binding indication's port map),
+the instance's generics checked, scalar parts checked against their subtypes (#263), expression actuals in a binding indication's port map),
 static expression parts in the formal's initial value, unconstrained formals bounded by a
 static value or a conversion function's result subtype, type conversions of record ports and
 arrays of composites (#74), conversions on unconstrained ports bounded by the conversion's type

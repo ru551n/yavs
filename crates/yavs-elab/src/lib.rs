@@ -115,15 +115,15 @@ pub struct ProcInst {
 }
 
 /// The equivalent process `formal <= expr` of a port's expression actual: its one driver is
-/// the formal, or the formal's part of shape `shape`; `formal` is the formal's subtype when
-/// the whole formal is associated.
+/// the formal, or the formal's part of shape `shape`; `formal` is the subtype of the formal,
+/// or of the part when the expression is a part's in an individual association.
 pub struct PortActual {
     pub expr: yavs_sem::ExprId,
     pub formal: Option<yavs_sem::SubtypeId>,
     /// The port.
     pub port: yavs_sem::DeclId,
     pub shape: Shape,
-    /// The range of a scalar formal whose bounds come from the instance's generics, as
+    /// The range of a scalar formal (or part) whose bounds come from the instance's generics, as
     /// `yavs_lower::PortActual::bounds` takes it.
     pub bounds: Option<[u64; 3]>,
 }

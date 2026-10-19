@@ -716,7 +716,8 @@ a note and a help suggesting an access type, as the reference simulators reject 
   package data to the simulation program, whose type, function and constant-pool ids differ.
   `NOW` is 0 fs during elaboration (yavs-interp). ponytail: a new function relowers the
   session and replays the log (O(functions x calls)); a constant with an impure initial value
-  elaboration cannot evaluate at all (E2106: `'PATH_NAME`, a null multi-dimensional aggregate)
+  elaboration cannot evaluate at all (E2106: a null multi-dimensional aggregate, `'PATH_NAME` of
+  a named entity other than a design unit)
   is left to its run-time thunk with warning W2118 (#220), the calls made for it are undone,
   and the thunk runs after all replays, so it sees the elaboration-time calls of later
   declarations and regions first.
@@ -1045,7 +1046,9 @@ which tools/difftest parses.
   '-' matches anything, metavalues match nothing, L/H match 0/1 (LRM 9.2.3).
 - **`'path_name`/`'instance_name`** are strings in instance data (`UnitIr::names`), written by
   yavs-elab per region: a design unit names its instance, a signal or constant the region that
-  declares it, a process label its process. Objects declared in a process or subprogram add
+  declares it, a process label its process. During elaboration `'path_name` and
+  `'instance_name` of a design unit evaluate to the same text (`Model::eval`), so a constant
+  built from them can be a generic actual or a bound (#314). Objects declared in a process or subprogram add
   the path elements between the region and the object (#207, LRM 16.2.5): the process label
   (an unlabeled process gives an empty element: `:t::v`, `:t:b::v`, as the reference
   simulators print it) and each enclosing subprogram as `name[type,type return type]` in

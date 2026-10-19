@@ -100,14 +100,8 @@ impl Elaborated {
     }
 
     /// The instance scope a scope belongs to.
-    pub fn instance_of(&self, mut s: ScopeId) -> ScopeId {
-        loop {
-            let sc = self.hier.scope(s);
-            match (&sc.kind, sc.parent) {
-                (ScopeKind::Instance { .. }, _) | (_, None) => return s,
-                (_, Some(p)) => s = p,
-            }
-        }
+    pub fn instance_of(&self, s: ScopeId) -> ScopeId {
+        self.hier.instance_of(s)
     }
 
     /// Lower the architectures that own processes, and the package bodies they may call.

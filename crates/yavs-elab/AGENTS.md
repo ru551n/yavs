@@ -77,7 +77,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | Linkage ports are kernel `in` port edges; mode-view ports take each leaf's mode from `Db::port_mode_tree` (`leaf_modes`) | #75; LRM 6.5.2 | `docs/decisions.md` "Elaboration" |
 | Not-yet-supported constructs are `E9999` naming the slice; expressions elab cannot evaluate yet `E2106` | Fail early | crate docs, #77 |
 | Predefined operations elab does not evaluate structurally (shifts, array ordering, matching operators, `TO_STRING`, ...) run their yavs-interp native (`yavs_interp::call_native`, `Lowerer::implicit_native`) on the marshalled operands | One implementation of each operation, the simulation's | #220 |
-| A constant with an impure initial value elab cannot evaluate yet keeps its run-time thunk with `W2118`; its calls run after the elaboration-time calls | Only for what elab cannot evaluate at all (`'PATH_NAME`, say); everything marshallable runs in declaration order | #220, `docs/decisions.md` "Elaboration" |
+| A constant with an impure initial value elab cannot evaluate yet keeps its run-time thunk with `W2118`; its calls run after the elaboration-time calls | Only for what elab cannot evaluate at all (`'PATH_NAME` of an object, say; a design unit's is evaluated, #314); everything marshallable runs in declaration order | #220, `docs/decisions.md` "Elaboration" |
 | Composite elaboration-time values: structural operations on `Val` here, function calls in yavs-interp through `call_values` | One evaluator for subprogram bodies, no expression thunks needing instance data | `docs/decisions.md` "Elaboration", #77 |
 | Functions using package objects run in a session against the initialised packages; impure constants are evaluated in declaration order; package constants with impure initial values are read from package data; `build` replays the logged calls (`Elaborated::elab_calls`) before any instance data | LRM 14.4: side effects once and in order; rule 4 restart | `docs/decisions.md` "Elaboration", #77 |
 | A process's declarative part is not evaluated by elab (`Elab::decls` of a process scope registers only its implicit signals and aliases): the lowered process elaborates it at start | LRM 14.5: elaborated exactly once; #251 | `docs/decisions.md` "Elaboration" |
@@ -120,5 +120,5 @@ python3 tools/difftest/difftest.py --candidate yavs
   `GenSelect::Index` evaluated without the generate's scope; #64 wire into `yavs run`; #68
   guarded assignments, force/release, implicit signal attributes; #74 conversion functions and
   non-static actuals in port maps; #76 package signals, external names, user resolution; #220
-  the rest of E2106 (null multi-dimensional aggregates, `'PATH_NAME` in impure constants); #164 resolution functions in blocks; #93 external names. Older
+  the rest of E2106 (null multi-dimensional aggregates, `'PATH_NAME` of named entities other than design units); #164 resolution functions in blocks; #93 external names. Older
   unlabeled: #6 remaining elaboration features.

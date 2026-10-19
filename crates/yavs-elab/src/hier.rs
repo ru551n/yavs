@@ -146,6 +146,17 @@ impl Hierarchy {
         n
     }
 
+    /// The instance scope a scope belongs to.
+    pub fn instance_of(&self, mut s: ScopeId) -> ScopeId {
+        loop {
+            let sc = self.scope(s);
+            match (&sc.kind, sc.parent) {
+                (ScopeKind::Instance { .. }, _) | (_, None) => return s,
+                (_, Some(p)) => s = p,
+            }
+        }
+    }
+
     /// `'path_name` of a scope (LRM 16.2.5), ending in `:`: `:top:u1:g(0):`.
     pub fn path_name(&self, s: ScopeId, case: Case) -> String {
         let mut out = String::from(":");

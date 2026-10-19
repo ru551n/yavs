@@ -132,6 +132,7 @@ const PASS: &[&str] = &[
     "hierarchy/inertial_port_actual",
     "hierarchy/inertial_port_parts",
     "hierarchy/instance_path_names",
+    "hierarchy/path_name_generic_actual",
     "hierarchy/instance_process_order",
     "hierarchy/process_local_names",
     "hierarchy/mode_view_generic",

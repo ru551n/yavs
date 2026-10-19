@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:path_name_generic_actual:m1:l1:_p0	:path_name_generic_actual:m1:.Rx
+diag	note	0	0	:path_name_generic_actual:m1:l2:_p0	:path_name_generic_actual:m1:.Tx
+diag	note	0	0	:path_name_generic_actual:m1:l3:_p0	:path_name_generic_actual(t):m1@path_name_generic_actual_m(a):
+diag	note	0	0	:path_name_generic_actual:g(0):m:l1:_p0	:path_name_generic_actual:g(0):m:.Rx
+diag	note	0	0	:path_name_generic_actual:g(0):m:l2:_p0	:path_name_generic_actual:g(0):m:.Tx
+diag	note	0	0	:path_name_generic_actual:g(0):m:l3:_p0	:path_name_generic_actual(t):g(0):m@path_name_generic_actual_m(a):
+diag	note	0	0	:path_name_generic_actual:g(1):m:l1:_p0	:path_name_generic_actual:g(1):m:.Rx
+diag	note	0	0	:path_name_generic_actual:g(1):m:l2:_p0	:path_name_generic_actual:g(1):m:.Tx
+diag	note	0	0	:path_name_generic_actual:g(1):m:l3:_p0	:path_name_generic_actual(t):g(1):m@path_name_generic_actual_m(a):

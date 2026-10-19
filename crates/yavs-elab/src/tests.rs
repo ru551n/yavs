@@ -681,7 +681,7 @@ fn impure_record_with_array_in_declaration_order() {
     );
 }
 
-/// An impure initial value elaboration cannot evaluate yet (`'PATH_NAME`)
+/// An impure initial value elaboration cannot evaluate yet (`'PATH_NAME` of an object)
 /// is left to its run-time thunk with W2118: the call made while trying is undone, so it runs
 /// once, after the elaboration-time calls.
 #[test]
@@ -707,7 +707,7 @@ fn impure_constant_at_run_time_warns() {
       entity t is end; architecture a of t is
         signal x : bit := '1';
         constant first : natural := next_id;
-        constant late : natural := next_id + t'path_name'length;
+        constant late : natural := next_id + x'path_name'length;
         constant third : natural := next_id;
       begin
         process begin
@@ -724,7 +724,7 @@ fn impure_constant_at_run_time_warns() {
     let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     sim.subscribe(Box::new(Collect(got.clone())));
     sim.run_until(yavs_kernel::Time::MAX).expect("run");
-    assert_eq!(*got.lock().expect("lock"), ["0 0 first=1 late=6 third=2"]);
+    assert_eq!(*got.lock().expect("lock"), ["0 0 first=1 late=7 third=2"]);
 }
 
 /// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).

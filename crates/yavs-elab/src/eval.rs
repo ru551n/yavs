@@ -524,6 +524,27 @@ impl Model {
             ExprKind::Const(c) => return Ok(db.consts[*c].clone()),
             ExprKind::Obj(d) => return self.value_of(db, *d, scope, ex.span),
             ExprKind::External(x) => return self.external_value(db, *x, scope),
+            // `'path_name`/`'instance_name` of a design unit names the instance being
+            // elaborated (LRM 16.2.5), so a constant or generic actual built from it has its
+            // value now (#314), the same text as the run-time one (`Elaborated::name_of`).
+            // ponytail: other named entities stay E2106 here (their declaring region is not
+            // known before every object is registered); handle them when a design needs it.
+            ExprKind::Attr {
+                attr: attr @ (PredefAttr::PathName | PredefAttr::InstanceName),
+                prefix: AttrPrefix::Entity(d),
+                ..
+            } if let (Some(s), DeclKind::Unit(_)) = (scope, &db.decls[*d].kind) => {
+                let i = self.hier.instance_of(s);
+                let text = if *attr == PredefAttr::InstanceName {
+                    self.hier.instance_name(i, db, crate::Case::Lrm)
+                } else {
+                    self.hier.path_name(i, crate::Case::Lrm)
+                };
+                return Ok(Val::Array(ArrayConst {
+                    bounds: [(1, Direction::To, text.len() as i64)].into(),
+                    elems: Elems::Bytes(text.into_bytes().into()),
+                }));
+            }
             ExprKind::Attr { attr, prefix, args }
                 if matches!(
                     attr,

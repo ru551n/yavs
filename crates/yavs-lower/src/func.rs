@@ -1602,7 +1602,7 @@ fn actuals(
         }
     }
     for (e, formal, port) in asked {
-        ok &= actual_process(db, pb, cx, ir, s, e, formal, port).is_ok();
+        ok &= actual_process(db, pb, cx, ir, s, e, (formal, port)).is_ok();
     }
     if ok { Ok(()) } else { Err(Failed) }
 }
@@ -1614,8 +1614,7 @@ fn actual_process(
     ir: &mut UnitIr,
     s: StmtId,
     e: yavs_sem::ExprId,
-    formal: Option<SubtypeId>,
-    port: DeclId,
+    (formal, port): (Option<SubtypeId>, DeclId),
 ) -> R<()> {
     let span = db.exprs[e].span;
     let base = db.base(db.exprs[e].subtype);

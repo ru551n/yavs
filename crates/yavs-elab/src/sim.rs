@@ -544,8 +544,8 @@ impl Elaborated {
                     path()
                 )));
             };
-            for (w, x) in d.chunks_exact_mut(8).zip(b) {
-                w.copy_from_slice(&x.to_le_bytes());
+            for (w, x) in d.as_chunks_mut::<8>().0.iter_mut().zip(b) {
+                *w = x.to_le_bytes();
             }
         }
         // Slot `k` drives the formal's leaf `k` (one for a scalar or an array of scalars).

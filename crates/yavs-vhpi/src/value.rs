@@ -512,6 +512,31 @@ impl Read {
                 (Member::Phys(p), _) if is_phys && !is_time => Cells::Int(vec![p]),
                 _ => return Err(mismatch()),
             },
+            // An integer into a logic array: its two's complement, the rightmost element the
+            // least significant bit (#319).
+            (vhpiIntVal | vhpiLongIntVal, Given::Scalar(Member::Int(i)))
+                if matches!(ty, Scalar::Enum { logic: true, .. }) && n.is_some() =>
+            {
+                let bits = n.expect("guarded");
+                if bits < 64 && !(-(1i64 << bits.saturating_sub(1))..1i64 << bits).contains(&i) {
+                    return Err(bad(format!("{i} does not fit {bits} bits")));
+                }
+                Cells::Int(
+                    (0..bits)
+                        .rev()
+                        .map(|k| {
+                            let c = if (i >> k.min(63)) & 1 == 1 {
+                                b'1'
+                            } else {
+                                b'0'
+                            };
+                            by_char(c)
+                                .map(|p| p as i64)
+                                .ok_or_else(|| bad(format!("no literal '{}'", c as char)))
+                        })
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             (_, Given::Vector(b)) if n.is_some() => {
                 let size = vector_elem_size(format).ok_or_else(mismatch)?;
                 let words = b.chunks_exact(size);
@@ -811,6 +836,39 @@ mod tests {
         let put = |ty: Scalar, n: Option<usize>, f, g: Given<'_>| {
             Read::decode(ty, n, f, g, 1_000_000).map(|r| r.to_kernel())
         };
+        // An integer into a logic vector: two's complement, rightmost bit least significant.
+        let three = put(
+            std_logic(),
+            Some(4),
+            vhpiIntVal,
+            Given::Scalar(Member::Int(3)),
+        );
+        assert_eq!(three, Ok(Value::Logic("0011".parse().unwrap())));
+        let neg = put(
+            std_logic(),
+            Some(4),
+            vhpiIntVal,
+            Given::Scalar(Member::Int(-2)),
+        );
+        assert_eq!(neg, Ok(Value::Logic("1110".parse().unwrap())));
+        assert!(
+            put(
+                std_logic(),
+                Some(4),
+                vhpiIntVal,
+                Given::Scalar(Member::Int(16))
+            )
+            .is_err()
+        );
+        assert!(
+            put(
+                std_logic(),
+                Some(4),
+                vhpiIntVal,
+                Given::Scalar(Member::Int(-9))
+            )
+            .is_err()
+        );
         let want = Value::Logic("01XZ".parse().unwrap());
         let bin = put(std_logic(), Some(4), vhpiBinStrVal, Given::Text(b"01xZ"));
         assert_eq!(bin, Ok(want));

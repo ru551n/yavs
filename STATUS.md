@@ -608,8 +608,9 @@ a removed repeating one, read-write before postponed before read-only, enable/di
 100000 disabled callbacks, misuse; output identical at `--threads 1` and `4`.
 
 Done (#271, #272 value changes): `vhpi_put_value` on signals, ports and their record fields and
-array elements, in every format `vhpi_get_value` produces (`Read::decode`), queued in the state
-and handed to the kernel as `Hook::deposit`/`force`/`release` when the callback returns:
+array elements, in every format `vhpi_get_value` produces (`Read::decode`) and integers into
+logic vectors (#319), queued in the state and handed to the kernel as
+`Hook::deposit`/`force`/`release` when the callback returns, always in a new delta (#319):
 `vhpiDeposit[Propagate]` deposits, `vhpiForce[Propagate]` forces (force mode `out` for ports of
 mode out/inout/buffer, `in` otherwise), `vhpiRelease` releases (back to the drivers' value, also after a deposit, #310); refused in the read-only phases;
 constants, generics, records as a whole, bad values and `vhpiSizeConstraint` are `W0903`.

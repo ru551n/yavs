@@ -247,9 +247,13 @@ milestone users care about works.
   callbacks are kept out of the per-phase sets, so they cost nothing per cycle (#123, plan rule 9).
   Full rules: `crates/yavs-vhpi/AGENTS.md` section 3.
 - **Puts and value changes (#271, #272):** `vhpi_put_value` goes through the kernel's observer
-  forces and deposits, queued until the callback returns, so it follows the kernel's rules (in
-  the current cycle before the update, else the next delta) and is identical at any thread
-  count. The non-propagating modes `vhpiDeposit` and `vhpiForce` act like their propagating
+  forces and deposits, queued until the callback returns, and lands in the next delta: puts from callbacks before
+  the update (after delay, next time step, start of cycle) are handed to the kernel at the
+  start-of-processes phase of the same cycle, so they make a new delta as both references with
+  VHPI do (#319). Identical at any thread count. An integer (`vhpiIntVal`) put into a logic
+  vector is its two's complement with the rightmost element least significant (the references
+  both accept it and disagree on the bits; the VHPI text gives no rule, this is the numeric
+  reading, agent, 2026-10-19). The non-propagating modes `vhpiDeposit` and `vhpiForce` act like their propagating
   forms: the kernel has no value change without a cycle, and the reference simulator with VHPI
   refuses them. A deposit sets the driving value until a source next updates those elements;
   a release recomputes the driving value from the sources, so a force and release after a

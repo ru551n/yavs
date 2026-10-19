@@ -22,28 +22,41 @@ pub struct VhpiObserver;
 impl VhpiObserver {
     /// Runs the callbacks `due` picks at the hook's time, then makes the kernel requests
     /// they left. One lock when nothing is due. In a `read_only` phase `vhpi_put_value` is
-    /// refused.
-    fn dispatch(hook: &mut Hook<'_>, read_only: bool, due: impl FnOnce(&mut State) -> Vec<u64>) {
+    /// refused. Before the update (`early`: after-delay, next time step, start of cycle) puts
+    /// wait for the next call after it, so they make a new delta as in the references with
+    /// VHPI (#319).
+    fn dispatch(
+        hook: &mut Hook<'_>,
+        read_only: bool,
+        early: bool,
+        due: impl FnOnce(&mut State) -> Vec<u64>,
+    ) {
         let ids = with_state(|s| {
             s.clock.now = hook.now();
             s.clock.delta = hook.delta();
             s.read_only = read_only;
             let ids = due(s);
             if ids.is_empty() {
-                requests(s, hook);
+                requests(s, hook, early);
             }
             ids
         });
         if !ids.is_empty() {
             hooked(hook, || fire(&ids));
-            with_state(|s| requests(s, hook));
+            with_state(|s| requests(s, hook, early));
         }
     }
 }
 
-/// The kernel requests plugins left: puts, after-delay wake-ups, cancels, the end of the run.
-fn requests(s: &mut State, hook: &mut Hook<'_>) {
-    for p in std::mem::take(&mut s.puts) {
+/// The kernel requests plugins left: puts (unless `hold_puts`), after-delay wake-ups,
+/// cancels, the end of the run.
+fn requests(s: &mut State, hook: &mut Hook<'_>, hold_puts: bool) {
+    let puts = if hold_puts {
+        Vec::new()
+    } else {
+        std::mem::take(&mut s.puts)
+    };
+    for p in puts {
         let done = match &p.op {
             PutOp::Deposit(v) => hook.deposit(p.at, v),
             PutOp::Force(m, v) => hook.force(p.at, *m, v),
@@ -90,13 +103,15 @@ impl yavs_kernel::Observer for VhpiObserver {
             phase,
             Phase::StartOfPostponed | Phase::EndOfTimeStep | Phase::EndOfSim
         );
+        // Puts from before the update are handed over at `StartOfProcesses` (#319).
+        let early = matches!(phase, Phase::NextTimeStep | Phase::NextCycle);
         for &r in reasons {
-            Self::dispatch(hook, read_only, |s| s.cbs.due(r));
+            Self::dispatch(hook, read_only, early, |s| s.cbs.due(r));
         }
     }
 
     fn wake(&mut self, hook: &mut Hook<'_>, id: WakeId) {
-        Self::dispatch(hook, false, |s| s.cbs.woken(id).into_iter().collect());
+        Self::dispatch(hook, false, true, |s| s.cbs.woken(id).into_iter().collect());
     }
 
     fn value_change(&mut self, hook: &mut Hook<'_>, signal: SignalId, range: Range) {
@@ -104,7 +119,7 @@ impl yavs_kernel::Observer for VhpiObserver {
         if !WATCHING.load(Ordering::Relaxed) {
             return;
         }
-        Self::dispatch(hook, false, |s| {
+        Self::dispatch(hook, false, false, |s| {
             let (now, delta) = (s.clock.now, s.clock.delta);
             s.cbs.changed(signal, range, now, delta)
         });

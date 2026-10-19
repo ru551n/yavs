@@ -250,6 +250,8 @@ impl HierarchyBuilder {
         self.stack.last().is_some_and(|f| f.scope.is_some())
     }
 
+    /// Declare a signal; returns false if the selection or the size cap drops it, so the caller
+    /// need not record its values.
     pub fn signal(
         &mut self,
         name: &str,
@@ -257,13 +259,13 @@ impl HierarchyBuilder {
         ty: SigType,
         port: PortDir,
         class: ObjClass,
-    ) {
+    ) -> bool {
         if self.dropped() {
-            return;
+            return false;
         }
         let path = self.path_of(name);
         if !self.sel.included(&path) || self.sel.excluded(&path) {
-            return;
+            return false;
         }
         if let SigType::Vector { bounds, .. } = &ty
             && bounds.len() > self.sel.max_array_elems as u64
@@ -272,7 +274,7 @@ impl HierarchyBuilder {
                 path,
                 elems: bounds.len(),
             });
-            return;
+            return false;
         }
         let sig = Signal {
             name: name.into(),
@@ -282,6 +284,7 @@ impl HierarchyBuilder {
             class,
         };
         self.push(Node::Signal(sig));
+        true
     }
 
     fn push(&mut self, node: Node) {

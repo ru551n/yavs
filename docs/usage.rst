@@ -49,11 +49,38 @@ otherwise.
   the elaborated design (``1 ps`` under ``--resolution=ns``), in a package it uses or in code that
   never runs, is an error (``E2120``, LRM 5.2.4.2) that lists the locations; ``0 ps`` is allowed,
   and so is ``0.4 ns``, because the rule is about the unit and not the value.
-* ``--wave out.fst`` records the whole design as an FST file that waveform viewers read. It is
-  finished on normal end, on ``--stop-time`` and on Ctrl-C. ``--wave-include GLOB`` and
-  ``--wave-exclude GLOB`` (repeatable, matching paths such as ``tb.u1.count``) choose what is
-  recorded, and arrays larger than ``--wave-max-array`` (default 65536) are left out with a
-  warning. Several delta cycles at one time step give one change with the final value.
+* ``--wave out.fst`` records waveforms, see `Waveforms`_.
+
+Waveforms
+---------
+
+.. code-block:: bash
+
+    yavs run --work=lib:out/lib --wave=tb.fst --wave-exclude='tb.u_ddr.**' tb
+
+``--wave FILE.fst`` records the whole design as an FST file that waveform viewers read:
+
+* The hierarchy follows the elaborated design: instances (shown with their ``entity(arch)``),
+  blocks, generate scopes (``g(3)`` for each for-generate index) and package
+  signals (``work.pkg.sig``). Names keep the spelling of the source.
+* Every signal and port is recorded, ports with their direction. ``std_logic`` and ``bit``
+  values and their vectors show as characters (``U``, ``X``, ``Z``...) with the vector bounds
+  and direction kept; other enumerations show their literal names; integers, ``time`` and
+  ``real`` show as numbers. Records are scopes with one entry per field, and arrays of anything
+  other than ``std_logic`` or ``bit`` are scopes with one entry per element (``mem(2)``,
+  ``grid(1,2)``). Variables are not recorded.
+* FST has no delta cycles: several deltas at one time step give one change with the final
+  value. The file is the same for any ``--threads``.
+* ``--wave-include GLOB`` and ``--wave-exclude GLOB`` (repeatable) choose what is recorded by
+  path, such as ``tb.u1.count``: matching ignores case, ``*`` matches within one level, ``**``
+  across levels and ``?`` one character, and a pattern that matches a scope covers everything
+  below it. Signals left out cost nothing while simulating.
+* Arrays and vectors with more elements than ``--wave-max-array`` (default 65536) are left out
+  with warning ``W0802``.
+* The file is written out periodically while simulating and finished at the end of the
+  simulation, at ``--stop-time`` and on Ctrl-C: the first Ctrl-C ends the run after the current
+  cycle and exits with status 1, a second one exits at once (the file is then readable up to
+  its last periodic write). A path that cannot be written is error ``E0801``.
 
 Calling C from VHDL
 -------------------

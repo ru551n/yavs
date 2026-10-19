@@ -128,6 +128,11 @@ fn waves_of_a_design() {
             ScopeType::VhdlRecord
         );
         assert_eq!(scope(&["wave_tb", "mem"]).scope_type(), ScopeType::SvArray);
+        assert_eq!(
+            scope(&["wave_tb", "g(1)", "u"]).component(h),
+            Some("wave_sub(rtl)"),
+            "an instance in a generate"
+        );
         let recs = ["wave_tb", "u2", "recs", "recs(1)"];
         assert_eq!(scope(&recs).scope_type(), ScopeType::VhdlRecord);
         let var = |p: &[&str], n: &str| &h[h.lookup_var(p, n).unwrap_or_else(|| panic!("{n}"))];
@@ -169,9 +174,13 @@ fn waves_of_a_design() {
     );
     assert_eq!(changes(&s, "wave_tb.g(1).gs"), clk);
     assert_eq!(changes(&s, "wave_tb.g(0).gs"), "0=0");
+    assert_eq!(changes(&s, "wave_tb.g(0).u.Clk_In"), "0=0");
+    assert_eq!(changes(&s, "wave_tb.g(1).u.Clk_In"), clk);
     let count = "0=0001 10000000=0010 20000000=0011 30000000=0100";
     assert_eq!(changes(&s, "wave_tb.count"), count, "downto, left first");
     assert_eq!(changes(&s, "wave_tb.u1.q"), count);
+    assert_eq!(changes(&s, "wave_tb.g(1).u.cnt"), count);
+    assert_eq!(changes(&s, "wave_tb.g(0).u.cnt"), "0=0000");
     assert_eq!(
         changes(&s, "wave_tb.state"),
         "0=00 40000000=01 41000000=10",
@@ -204,6 +213,8 @@ fn waves_of_a_design() {
         "0=00000000 40000000=10100101"
     );
     assert_eq!(changes(&s, "wave_tb.mem.(3)"), "0=00000000");
+    assert_eq!(changes(&s, "wave_tb.grid.(1,1)"), "0=0");
+    assert_eq!(changes(&s, "wave_tb.grid.(1,2)"), "0=0 40000000=1");
     assert_eq!(changes(&s, "wave_tb.u2.recs.recs(0).a"), "0=0");
     assert_eq!(changes(&s, "wave_tb.u2.recs.recs(1).a"), "0=1");
     assert_eq!(

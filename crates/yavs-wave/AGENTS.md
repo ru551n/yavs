@@ -48,6 +48,8 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
   the enumeration position). The kernel stores logic as bit-planes and BIT/BOOLEAN array elements
   as std_ulogic codes 2/3: the subscriber must transpose and translate at the boundary
   (`docs/decisions.md` "Interpreter: BIT/BOOLEAN codes").
+- `HierarchyBuilder::signal` returns false for a signal the selection or the cap drops; the
+  recorder creates a kernel entry only for kept signals, so left-out signals cost nothing.
 - Never write FST bytes by hand; keep all `wavefst` use inside `writer.rs` so it can be swapped.
 - Tests write into `tempfile` dirs; keep large outputs out of `/tmp` (root rule 20).
 

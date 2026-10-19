@@ -66,6 +66,8 @@ architecture sim of wave_tb is
   signal rec   : pair_t := ('U', 0);
   signal mem   : mem_t := (others => (others => '0'));
   signal big   : std_logic_vector(99 downto 0) := (others => 'Z');
+  type grid_t is array (0 to 1, 0 to 2) of std_logic;
+  signal grid  : grid_t := (others => (others => '0'));
 begin
   u1 : entity work.wave_sub port map (Clk_In => Clk, q => count);
   u2 : entity work.wave_recs;
@@ -74,6 +76,7 @@ begin
     signal gs : std_logic := '0';
   begin
     gs <= Clk when k = 1 else '0';
+    u : entity work.wave_sub port map (Clk_In => gs, q => open);
   end generate;
 
   process begin
@@ -92,6 +95,7 @@ begin
     t <= 3 ns;
     rec <= ('X', 42);
     mem <= MEM1;
+    grid(1, 2) <= '1';
     wait for 1 ns;
     -- several deltas at one time: the file holds the final value
     state <= IDLE;

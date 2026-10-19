@@ -216,14 +216,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   std_logic family and bit are written as characters, other enumerations with an
   enum table, integers, reals and time as numbers. Several deltas at one time step
   give one value change (the final value). The file is the same at any
-  `--threads`. Flushed periodically, on normal end, on stop, and on SIGINT: the
+  `--threads`. Signals and ports are recorded, variables are not (#305). Flushed periodically, on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
   `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).
 - `--wave-include=GLOB`, `--wave-exclude=GLOB` (repeatable): record only paths
   (`top.u1.sig`, case-insensitive, `*` one level, `**` across, `?`) that match /
   skip those that match. `--wave-max-array=N` (default 65536): arrays and vectors
-  with more elements are left out with warning `W0802`. The test runner does not
+  with more elements are left out with warning `W0802`. Signals left out by either
+  are not read while simulating. The test runner does not
   pass these; use `yavs.sim_flags`.
 - `--resolution=fs|ps|ns|us|ms|sec` (`run`, default `fs`): the time resolution limit, a run-time
   setting (plan rule 7). It is the value of `std.env.resolution_limit`, the unit of TIME

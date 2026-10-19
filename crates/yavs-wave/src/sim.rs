@@ -308,9 +308,7 @@ impl Design<'_> {
         match shape {
             Shape::Scalar { ty, elem, res, .. } => {
                 let (sty, conv) = self.scalar(*ty, *elem, res.is_some());
-                let len = 1;
-                let id = self.entry(leaf, k, len, conv);
-                self.b.signal(name, id, sty, port, ObjClass::Signal);
+                self.signal(name, sty, port, leaf, k, 1, conv);
             }
             Shape::Array {
                 ty,
@@ -337,13 +335,12 @@ impl Design<'_> {
                     else {
                         unreachable!("logic scalars are enums")
                     };
-                    let id = self.entry(leaf, k, d.len(), conv);
                     let sty = SigType::Vector {
                         elem: e,
                         bounds: bounds(*d),
                         type_name: Some(self.vector_name(*ty, res.is_some() || whole.is_some())),
                     };
-                    self.b.signal(name, id, sty, port, ObjClass::Signal);
+                    self.signal(name, sty, port, leaf, k, d.len(), conv);
                     return;
                 }
                 let n = shape.len();
@@ -370,22 +367,35 @@ impl Design<'_> {
         }
     }
 
-    /// Row-major elements `k*len .. (k+1)*len` of `leaf`.
-    fn entry(&mut self, leaf: u32, k: u64, len: u64, conv: Conv) -> SignalId {
+    /// Declare signal `name` over row-major elements `k*len .. (k+1)*len` of `leaf`; it gets an
+    /// entry only if the selection keeps it, so unrecorded signals cost nothing at run time.
+    #[allow(clippy::too_many_arguments)]
+    fn signal(
+        &mut self,
+        name: &str,
+        ty: SigType,
+        port: PortDir,
+        leaf: u32,
+        k: u64,
+        len: u64,
+        conv: Conv,
+    ) {
+        let id = SignalId(self.entries.len() as u32);
+        if !self.b.signal(name, id, ty, port, ObjClass::Signal) {
+            return;
+        }
         let n = self.e.nets.leaves[leaf as usize].ty.len as u64;
         let first = k * len;
         let offset = match conv {
             Conv::Logic { .. } | Conv::Bool => n - first - len,
             _ => first,
         };
-        let id = SignalId(self.entries.len() as u32);
         self.entries.push(Entry {
             leaf,
             offset: offset as u32,
             len: len as u32,
             conv,
         });
-        id
     }
 
     fn scalar(&mut self, t: yavs_sem::TypeId, elem: Elem, resolved: bool) -> (SigType, Conv) {

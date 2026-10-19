@@ -2100,7 +2100,18 @@ impl Db {
             s.names.entry(k).or_default().extend(v);
         }
         s.uses.extend(uses);
-        s.private_from = private_from;
+        s.private_from = private_from; // A named return value (2019): the clone's hidden constant and result subtype.
+        // Of a generic type: composite in the instance too (4.2.1).
+        if let Some(&(hidden, st)) = self.ret_names.get(&from) {
+            let n = (self.r_decl(r, hidden), self.r_subtype(r, st));
+            self.ret_names.insert(to, n);
+            if self
+                .check_named_return_type(self.decls[hidden].span, n.1)
+                .is_err()
+            {
+                r.failed = true;
+            }
+        }
     }
 
     fn r_use(&mut self, r: &mut Remap, u: UseItem) -> UseItem {
@@ -3293,11 +3304,16 @@ impl Db {
         let list = s.generics.clone().unwrap_or_default();
         let pscope = s.scope.expect("specs have a parameter region");
         let params: HashSet<DeclId> = s.params.iter().filter_map(|p| p.decl).collect();
+        // The body declares its own named return value (`named_return`).
+        let ret_name = self.ret_names.get(&pscope).map(|&(_, st)| st);
         let decls: Vec<DeclId> = self.scopes[pscope]
             .order
             .iter()
             .copied()
-            .filter(|d| !params.contains(d))
+            .filter(|d| {
+                !params.contains(d)
+                    && !matches!(self.decls[*d].kind, DeclKind::Subtype(st) if Some(st) == ret_name)
+            })
             .collect();
         for d in decls {
             let k = self.decls[d].name.key();

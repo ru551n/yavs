@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:named_return_generic_2019:_p0	k 14 15
+diag	note	0	0	:named_return_generic_2019:_p0	fill3 5 6
+diag	note	0	0	:named_return_generic_2019:_p0	zbv 0000 5
+diag	note	0	0	:named_return_generic_2019:_p0	gbv 1010 5
+diag	note	0	0	:named_return_generic_2019:_p0	zrec 3 0
+diag	note	0	0	:named_return_generic_2019:_p0	sv 55
+diag	note	0	0	:named_return_generic_2019:_p0	st 79 3

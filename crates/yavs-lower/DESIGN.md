@@ -93,8 +93,10 @@ a call into your module in a small commit.
   A function with a 2019 named return value (`return r of t`, `Db::ret_names`) takes one
   more parameter after the others, an array parameter whose descriptor is the call's result
   subtype (`Expr::subtype` of the call; the data cell repeats the descriptor and is never read);
-  the hidden constant it binds gives `r` its bounds (`Constraint::FromObject`, #33). The
-  elaborator passes an array of that subtype in the same place.
+  the hidden constant it binds gives `r` its bounds (`Constraint::FromObject`, #33). A
+  record result passes its record descriptor the same way, and protected methods take it
+  after their arguments too (`named_return_cells`, #239). The elaborator passes a value of
+  that subtype in the same place.
 - Natives: NATIVE.md symbols; implicit families via `yavs_sem::mangle::implicit_native` with the
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image`, `'value` `yavs.attr.value`
   (taking the string as a fat pair address). Array arguments to natives are fat pair addresses.

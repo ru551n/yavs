@@ -993,30 +993,53 @@ impl Db {
         Ok(())
     }
 
+    /// The type mark of a named return value denotes a composite type (lrm-checks L71), or a
+    /// generic type that may be one.
+    pub(crate) fn check_named_return_type(
+        &mut self,
+        span: Span,
+        ret: crate::ids::SubtypeId,
+    ) -> Result<(), crate::Reported> {
+        use crate::generic::GenericClass as G;
+        use crate::types::TypeKind as K;
+        let base = self.base(ret);
+        // A generic type is checked again in each instance (`fill_scope`).
+        if matches!(
+            self.types[base].kind,
+            K::Array { .. }
+                | K::Record { .. }
+                | K::Error
+                | K::Generic {
+                    class: G::Private | G::Array { .. },
+                    ..
+                }
+        ) {
+            return Ok(());
+        }
+        Err(self.error(
+            yavs_diag::Diagnostic::error(
+                crate::diag::NAMED_RETURN_TYPE,
+                format!(
+                    "a named return value needs an array or record type, not `{}`",
+                    self.type_name(base)
+                ),
+            )
+            .with_primary(span, "named here")
+            .with_help("drop the return identifier: `return t`"),
+        ))
+    }
+
     /// `return r of t` (2019, 4.2.1, LCS-2016-072b): `r` denotes the result subtype, which
     /// the call takes from its context (the target's subtype). `r` is a subtype whose bounds
     /// come at run time from a hidden constant of type `t` that M2 passes with each call.
     fn named_return(
         &mut self,
-        scope: ScopeId,
         pscope: ScopeId,
         r: Ident,
         ret: crate::ids::SubtypeId,
-        generic: bool,
     ) -> Result<(), crate::Reported> {
         let base = self.base(ret);
-        // ponytail: arrays only; records, generic subprograms and protected methods need
-        // the hidden descriptor in record lowering, instance cloning and method calls.
-        if !matches!(self.types[base].kind, crate::types::TypeKind::Array { .. }) {
-            return Err(self.unsupported(r.span, "named return values of a non-array type", "S7"));
-        }
-        if generic || self.scopes[scope].kind == crate::scope::ScopeKind::Protected {
-            return Err(self.unsupported(
-                r.span,
-                "named return values of generic subprograms and protected methods",
-                "S7",
-            ));
-        }
+        self.check_named_return_type(r.span, ret)?;
         let hidden = self.new_decl(
             pscope,
             Designator::Ident(r),
@@ -1141,7 +1164,7 @@ impl Db {
             self.check_not_access_or_file("protected method result", r, n.span)?;
         }
         if let (Some(r), Some(ret)) = (s.return_ident, ret) {
-            self.named_return(scope, pscope, r, ret, generics.is_some())?;
+            self.named_return(pscope, r, ret)?;
         }
         let mangled = yavs_syntax::Symbol::intern(&crate::mangle::subprogram(
             self,

@@ -17,4 +17,4 @@ FAIL work vhdl-ideas/poc/rangetest.vhdl
 FAIL work vhdl-ideas/sim/frequency.vhdl
 FAIL work vhdl-ideas/util/generic_mux.vhdl
 FAIL work vhdl-ideas/poc/hdmi_switch.vhdl
-FAIL work vhdl-ideas/util/memory.vhdl
+PASS work vhdl-ideas/util/memory.vhdl

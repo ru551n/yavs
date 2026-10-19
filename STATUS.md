@@ -136,9 +136,11 @@ An installed binary finds `lib/` next to itself (#43).
   `return` and parentheses), the conditional `return` and `unaffected` in variable and force
   assignments analyze, lower and run (#33; difftest `process/conditional_expr_2019`,
   `process/unaffected_2019`). Named return values (`return r of t`) of array type take the
-  result subtype from the call's context and run (`process/named_return_2019`). Open: named
-  return values of record and scalar types, in generic subprograms and protected methods
-  (#239). `return when c;` in procedures runs (#239, `process/return_when_2019`).
+  result subtype from the call's context and run (`process/named_return_2019`), so do record
+  types and named return values in generic subprograms, generic packages and protected
+  methods (#239, `process/named_return_record_2019`, `process/named_return_generic_2019`);
+  scalar types are `E1233`. `return when c;` in procedures runs (#239,
+  `process/return_when_2019`).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
   range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
 

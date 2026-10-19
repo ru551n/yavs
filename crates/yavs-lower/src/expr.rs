@@ -2005,7 +2005,7 @@ impl<'a> Fx<'a, '_> {
             return self.native_method(sp, sym.as_str(), o, args, span);
         }
         if method.is_some() || crate::protected::method_type(db, callee).is_some() {
-            return self.method_call(callee, args, method, span);
+            return self.method_call(callee, args, method, res, span);
         }
         match &sp.body {
             Body::Implicit(op) => self.implicit(op, sp, args, span),
@@ -2018,22 +2018,7 @@ impl<'a> Fx<'a, '_> {
             Body::Hir { scope, .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
                 let mut cells = self.cells(sp, args, span, false)?;
-                // A named return value (2019, 4.2.1): the result subtype's descriptor follows
-                // the arguments, as an array parameter (the data cell is unused).
-                if db.ret_names.contains_key(scope) {
-                    let st = res.or(sp.ret).unwrap_or(db.poison.subtype);
-                    let Some(dope) = self.subtype_dope(st, span)? else {
-                        return Err(self.cx.unsupported(
-                            span,
-                            &format!(
-                                "a call of `{}` (a named return value) whose context gives no \
-                                 constrained result subtype",
-                                decl.name
-                            ),
-                        ));
-                    };
-                    cells.extend([dope, dope]);
-                }
+                self.named_return_cells(callee, *scope, res, span, &mut cells)?;
                 let args = self.fb.regs(&cells);
                 let Some(ret) = sp.ret else {
                     self.emit(Inst::Call {
@@ -2069,6 +2054,39 @@ impl<'a> Fx<'a, '_> {
                 .cx
                 .unsupported(span, "generic and instantiated subprograms (M3)")),
         }
+    }
+
+    /// A named return value (2019, 4.2.1): the result subtype `res`'s descriptor follows the
+    /// arguments of a call of `callee` (parameter region `scope`), as an array parameter (the
+    /// data cell is unused).
+    pub(crate) fn named_return_cells(
+        &mut self,
+        callee: DeclId,
+        scope: yavs_sem::ScopeId,
+        res: Option<SubtypeId>,
+        span: Span,
+        cells: &mut Vec<Reg>,
+    ) -> R<()> {
+        let db = self.db;
+        if !db.ret_names.contains_key(&scope) {
+            return Ok(());
+        }
+        let decl = &db.decls[callee];
+        let st = res
+            .or(decl.kind.subprogram().and_then(|s| s.ret))
+            .unwrap_or(db.poison.subtype);
+        let Some(dope) = self.subtype_dope(st, span)? else {
+            return Err(self.cx.unsupported(
+                span,
+                &format!(
+                    "a call of `{}` (a named return value) whose context gives no \
+                     constrained result subtype",
+                    decl.name
+                ),
+            ));
+        };
+        cells.extend([dope, dope]);
+        Ok(())
     }
 
     /// `[data, dope]` at `fat`.

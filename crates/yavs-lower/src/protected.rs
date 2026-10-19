@@ -8,7 +8,7 @@ use yavs_ir::{Dir, Inst, Mode, ParamClass, Reg, RegTy, RootKind, Ty, TyId, Width
 use yavs_sem::decl::{Body, DeclKind, ObjClass, ObjRole};
 use yavs_sem::hir::Arg;
 use yavs_sem::types::TypeKind;
-use yavs_sem::{Db, DeclId, ExprId, ScopeId, TypeId};
+use yavs_sem::{Db, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 
 use crate::composite::scalar_w;
 use crate::expr::V;
@@ -181,15 +181,16 @@ impl Fx<'_, '_> {
         callee: DeclId,
         args: &[Arg],
         obj: Option<ExprId>,
+        res: Option<SubtypeId>,
         span: Span,
     ) -> R<Option<V>> {
         let db = self.db;
         let Some(sp) = db.decls[callee].kind.subprogram() else {
             return Err(self.cx.ice(span, "method is not a subprogram"));
         };
-        if !matches!(sp.body, Body::Hir { .. }) {
+        let Body::Hir { scope, .. } = sp.body else {
             return Err(self.cx.unsupported(span, "methods without a VHDL body"));
-        }
+        };
         let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
         let h = match obj {
             Some(e) => self.scalar_expr(e)?,
@@ -206,7 +207,8 @@ impl Fx<'_, '_> {
                 self.load(a, Width::B8, RegTy::I64)
             }
         };
-        let cells = self.cells(sp, args, span, false)?;
+        let mut cells = self.cells(sp, args, span, false)?;
+        self.named_return_cells(callee, scope, res, span, &mut cells)?;
         let args = self.fb.regs(&cells);
         let Some(ret) = sp.ret else {
             self.emit(Inst::CallProt {

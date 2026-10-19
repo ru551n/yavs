@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:tb_deferred_constant:u:_p0	period 10000000 fs n 6
+diag	note	0	1	:tb_deferred_constant:u:g(0):_p0	branch 0
+diag	note	1000000	0	:tb_deferred_constant:u:g(1):_p0	branch 1
+diag	note	2000000	0	:tb_deferred_constant:u:g(2):_p0	branch 2
+diag	note	3000000	0	:tb_deferred_constant:u:g(3):_p0	branch 3
+diag	note	4000000	0	:tb_deferred_constant:u:g(4):_p0	branch 4
+diag	note	5000000	0	:tb_deferred_constant:u:g(5):_p0	branch 5

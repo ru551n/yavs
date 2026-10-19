@@ -759,14 +759,21 @@ impl Model {
                     Ok(v)
                 }
             }
-            (ObjClass::Constant, ObjRole::Deferred, _) => Err(Box::new(
-                Diagnostic::error(
-                    codes::NOT_IMPLEMENTED,
-                    format!("the value of deferred constant `{}`", decl.name),
-                )
-                .with_primary(span, "used here during elaboration")
-                .with_note("deferred constants at elaboration time are planned for M3"),
-            )),
+            // A deferred constant (LRM 4.8): the value of the full declaration in the package
+            // body, which is elaborated before the design that uses it (LRM 14.4.2).
+            (ObjClass::Constant, ObjRole::Deferred, _) => {
+                let Some(full) = yavs_lower::deferred_completion(db, d) else {
+                    return Err(err(
+                        codes::NOT_EVALUATED,
+                        span,
+                        format!("deferred constant `{}` has no full declaration", decl.name),
+                        "used here during elaboration",
+                    ));
+                };
+                let v = self.value_of(db, full, None, span)?;
+                self.pkg.insert(d, v.clone());
+                Ok(v)
+            }
             (ObjClass::Constant, ObjRole::Generic | ObjRole::GenerateParam, _) => Err(Box::new(
                 Diagnostic::error(
                     codes::INTERNAL,

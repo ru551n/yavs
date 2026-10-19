@@ -13,7 +13,7 @@ use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Arg, AttrPrefix, Choice, ExprKi
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
 use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
-use yavs_sem::{DeclId, ExprId, SubtypeId, TypeId};
+use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
 
 use crate::func::{Fx, Shape, func_of, shape};
 use crate::{Failed, Obj, R, Space, ty};
@@ -487,27 +487,7 @@ impl<'a> Fx<'a, '_> {
 
     /// The full declaration in the package body of deferred constant `d`.
     pub fn deferred_completion(&self, d: DeclId) -> Option<DeclId> {
-        let db = self.db;
-        let decl = &db.decls[d];
-        let key = decl.name.key();
-        db.units.iter().find_map(|(_, u)| {
-            let UnitHir::PackageBody { package } = u.hir else {
-                return None;
-            };
-            if db.units[package].scope != decl.scope {
-                return None;
-            }
-            db.scopes[u.scope]
-                .names
-                .get(&key)?
-                .iter()
-                .copied()
-                .find(|&c| {
-                    c != d
-                        && matches!(&db.decls[c].kind, DeclKind::Object(o)
-                        if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some())
-                })
-        })
+        deferred_completion(self.db, d)
     }
 
     fn obj_rt(&self, d: DeclId) -> RegTy {
@@ -4365,4 +4345,28 @@ fn cmp_op(f: Family) -> CmpOp {
         Family::Gt => CmpOp::Gt,
         _ => CmpOp::Ge,
     }
+}
+
+/// The full declaration in the package body of deferred constant `d`.
+pub fn deferred_completion(db: &Db, d: DeclId) -> Option<DeclId> {
+    let decl = &db.decls[d];
+    let key = decl.name.key();
+    db.units.iter().find_map(|(_, u)| {
+        let UnitHir::PackageBody { package } = u.hir else {
+            return None;
+        };
+        if db.units[package].scope != decl.scope {
+            return None;
+        }
+        db.scopes[u.scope]
+            .names
+            .get(&key)?
+            .iter()
+            .copied()
+            .find(|&c| {
+                c != d
+                    && matches!(&db.decls[c].kind, DeclKind::Object(o)
+                    if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some())
+            })
+    })
 }

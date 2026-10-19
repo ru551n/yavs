@@ -831,6 +831,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
 - **Open unconstrained `in` port with a default** (#218, elab agent, 2026-10-18; LRM 6.5.6.3,
   14.3.5, `docs/design/lrm-checks.md` L59): accepted in 2008 and 2019; the port takes the
   bounds of its default value (`Model::shape_init`). Without a default it stays `E1311`.
+- **Deferred constants at elaboration (#295):** the value of a deferred constant read during elaboration (generic default, range, generate bound) is that of the full declaration in the package body (LRM 4.8), evaluated like any package constant; the body is elaborated before the design that uses the package (LRM 14.4.2). A deferred constant without a full declaration is `E2106`.
 
 ## Runtime: default exit severity (user, 2026-10-18)
 

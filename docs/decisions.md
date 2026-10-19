@@ -717,8 +717,10 @@ a note and a help suggesting an access type, as the reference simulators reject 
   from its conversion, the actual part's result subtype or type mark for modes `in` and
   `inout`, the formal part's parameter subtype or type mark for `out` and `buffer`. sem keeps
   the type mark's own declaration for a type conversion actual (a subtype, not the base type)
-  and rejects a conversion that does not define the bounds (E1312 on both sides; #111 had
-  decided it for an unconstrained formal-part type mark). The reference simulators split
+  and rejects a conversion that does not define the bounds (E1312 on both sides). User, 2026-10-19:
+  this narrows #111's 2026-10-18 ruling (reject every type conversion on an unconstrained formal):
+  a type conversion on an unconstrained formal is accepted when it defines the bounds (a constrained
+  type mark or result subtype, LRM 5.3.2.2); only a conversion that gives no bounds is E1312. The reference simulators split
   (one gives the formal the actual's bounds, one does so for formal-part type conversions,
   one crashes on several forms), so the clear LRM text decides.
 - **Range check of expression actuals of parts** (#263, portleft agent, 2026-10-19; LRM
@@ -1190,7 +1192,7 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **TIME units below the resolution limit (L78, #253; user, 2026-10-19: follow the LRM):** under
   `yavs run --resolution=U`, a non-zero TIME literal or unit name below `U` anywhere in the elaborated
   hierarchy (packages it uses, code that never runs) is `E2120` before time 0 (LRM 5.2.4.2); the
-  built-in std and ieee sources are exempt (`std.textio` defaults `UNIT` to `ns`). One reference
+  built-in std and ieee sources are exempt (`std.textio` defaults `UNIT` to `ns`; user, 2026-10-19). One reference
   simulator only warns. Recorded in `docs/design/lrm-checks.md` L78.
 - **Constant parameters of access type in 2019 (L46, #198; user, 2026-10-19, majority rule):** `E1223`
   in 2019 user code as in 2008, because all three reference simulators reject them. Only library

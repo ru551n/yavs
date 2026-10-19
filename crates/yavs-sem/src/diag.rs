@@ -82,6 +82,7 @@ codes! {
     BAD_CONVERSION = "E1350", "A type conversion is only legal between closely related types.";
     CLASS_MISUSE = "E1360", "The object's class or mode does not allow this use (assigning an `in` port, reading a `linkage` port, a variable assignment to a signal, ...).";
     NOT_AN_OBJECT = "E1361", "The name does not denote an object or value here.";
+    FORCE_RESOLVED_MEMBER = "E1362", "The target of a force or release assignment is a member (an element, slice or field) of a signal whose composite subtype is resolved as a whole (LRM 10.5.2.1); force or release the whole composite signal.";
     // E14xx static evaluation
     OVERFLOW = "E1401", "Static integer or physical arithmetic overflows 64 bits.";
     LITERAL_RANGE = "E1402", "A literal is too large to represent.";

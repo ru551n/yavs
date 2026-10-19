@@ -32,7 +32,7 @@ use crate::hir::{
 use crate::ids::{DeclId, ExprId, ScopeId, StmtId, SubtypeId, TypeId};
 use crate::lsp::NameRoot;
 use crate::scope::ScopeKind;
-use crate::types::{BoundsFrom, RangeC};
+use crate::types::{BoundsFrom, RangeC, Resolution};
 
 /// What contains the sequential statements being analyzed.
 #[derive(Clone, Copy, Debug)]
@@ -715,6 +715,7 @@ impl Db {
                         &mut |db, e, ty| db.value_expr(cx.scope, e, ty),
                     )?;
                     db.check_force_mode(&target, *mode)?;
+                    db.check_force_member(&target)?;
                     Ok(StmtKind::Force {
                         target,
                         mode: *mode,
@@ -731,6 +732,7 @@ impl Db {
                     &mut |db, e, ty| db.value_expr(scope, e, ty),
                 )?;
                 self.check_force_mode(&target, *mode)?;
+                self.check_force_member(&target)?;
                 StmtKind::Force {
                     target,
                     mode: *mode,
@@ -742,6 +744,7 @@ impl Db {
                 let lsps = self.check_target(e, TargetKind::Release)?;
                 let target = Target { expr: e, lsps };
                 self.check_force_mode(&target, *mode)?;
+                self.check_force_member(&target)?;
                 StmtKind::Release {
                     target,
                     mode: *mode,
@@ -773,6 +776,39 @@ impl Db {
             }
         }
         Ok(())
+    }
+
+    /// 10.5.2.1: the target of a force or release is not a member of a signal of a composite
+    /// subtype resolved as a whole (E1362); the whole composite may be forced.
+    fn check_force_member(&mut self, t: &Target) -> Result<(), Reported> {
+        let mut e = t.expr;
+        loop {
+            let p = match &self.exprs[e].kind {
+                ExprKind::Field { prefix, .. }
+                | ExprKind::Index { prefix, .. }
+                | ExprKind::Slice { prefix, .. } => *prefix,
+                _ => return Ok(()),
+            };
+            let mut st = Some(self.exprs[p].subtype);
+            while let Some(s) = st {
+                match &self.subtypes[s].resolution {
+                    Some(Resolution::Function(_)) => {
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::FORCE_RESOLVED_MEMBER,
+                                "the target of a force or release is a member of a composite signal resolved as a whole",
+                            )
+                            .with_primary(self.exprs[t.expr].span, "")
+                            .with_secondary(self.exprs[p].span, "resolved as a whole")
+                            .with_help("force or release the whole composite signal"),
+                        ));
+                    }
+                    Some(_) => break,
+                    None => st = self.subtypes[s].parent,
+                }
+            }
+            e = p;
+        }
     }
 
     /// 4.? / 11.3: a subprogram not inside a process may only drive its

@@ -92,6 +92,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1341 | `??` ambiguous | 3.6 |
 | E1350 | illegal conversion | 3.7 |
 | E1360 | class/mode misuse | 8.1 |
+| E1362 | force or release of a member of a composite signal resolved as a whole (L97) | 8.1 |
 | E1401 | static overflow where required | 8.1 |
 | E1402 | literal out of range | 8.1 |
 | E1403 | static value outside subtype | 8.1 |

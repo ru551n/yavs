@@ -34,7 +34,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | HIR shapes consumed by M2 (`Expr`/`ExprKind`, `Stmt`/`StmtKind`, `Call`, `Lsp`, `UnitHir`, `Binding`, `GenSelect`) | `src/hir.rs` |
 | HIR invariants (sem.md 7.3) | `src/validate.rs` |
 | Static folding, `ConstValue`, `Db::fold_with` (used by elab) | `src/stat.rs` |
-| Generics, instances by HIR cloning, `Db::instance_body` | `src/generic.rs` |
+| Generics, instances by HIR cloning, `Db::instance_body`; for M2 `Db::package_regions` and `Db::decls_with_instances` (an instance's objects belong to the region declaring it, #101) | `src/generic.rs` |
 | Units, configurations, `Db::default_binding` | `src/unit.rs`, `src/unit/binding.rs` |
 | Codes and `--explain` texts (`codes!` macro, `EXPLAIN`) | `src/diag.rs` |
 | Names, overloads, literals, aggregates | `src/expr/{names,cands,resolve,literal,aggregate}.rs` |

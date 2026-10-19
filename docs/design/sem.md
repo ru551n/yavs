@@ -938,7 +938,11 @@ are stable text built from declaration paths:
 | implicit op | `<region of type>.<op>(<types>)`, native link `yavs.implicit.<family>.<type>` |
 
 Per elaborated instance storage (one local package instance in an architecture instantiated 8
-times) is elab's concern; the code identity is the site's mangled name.
+times) is elab's concern; the code identity is the site's mangled name. For M2, `Db::package_regions` gives a package
+unit's regions (none for an uninstantiated generic package; a design unit instance's cloned
+visible part and body) and `Db::decls_with_instances` a region's declarations with each package
+instance's declarations in place, so an instance's objects are stored with the region declaring
+it (#101).
 
 A design entity with generic types, subprograms or packages is cloned with its architecture by
 `Db::instantiate_entity` (`generic/entity.rs`, #75), which elab calls per instance: one clone per

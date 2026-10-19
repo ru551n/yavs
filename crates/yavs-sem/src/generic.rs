@@ -233,6 +233,53 @@ fn actual_span(a: &ast::Actual) -> Span {
 impl Db {
     // -- regions ------------------------------------------------------------------
 
+    /// The regions of package instance `i`: its visible part and, once cloned, its body.
+    pub fn instance_regions(&self, i: InstId) -> impl Iterator<Item = ScopeId> + '_ {
+        std::iter::once(self.insts[i].scope).chain(self.insts[i].body.get().copied())
+    }
+
+    /// The regions of design unit `u` when it is a package with objects of its own: a
+    /// package's declaration and analyzed body, or a package instance's regions. `None` for
+    /// an uninstantiated generic package (only its instances have objects) and other units.
+    pub fn package_regions(&self, u: UnitId) -> Option<Vec<ScopeId>> {
+        match self.units[u].hir {
+            UnitHir::Package { generics: None } => {
+                let body = self.units.iter().find_map(|(_, b)| match b.hir {
+                    UnitHir::PackageBody { package } if package == u => Some(b.scope),
+                    _ => None,
+                });
+                Some(std::iter::once(self.units[u].scope).chain(body).collect())
+            }
+            UnitHir::PackageInst(i) => Some(self.instance_regions(i).collect()),
+            _ => None,
+        }
+    }
+
+    /// The declarations of `scope` in order, each package instance declared there (LRM 4.9)
+    /// followed by the declarations of its regions, recursively: the objects an instance adds
+    /// to the region that declares it (#101). The generic constants of an instance are left
+    /// out: references to them were replaced by the actuals.
+    pub fn decls_with_instances(&self, scope: ScopeId) -> Vec<DeclId> {
+        let mut out = Vec::new();
+        self.push_decls(scope, false, &mut out);
+        out
+    }
+
+    fn push_decls(&self, scope: ScopeId, inner: bool, out: &mut Vec<DeclId>) {
+        for &d in &self.scopes[scope].order {
+            match &self.decls[d].kind {
+                DeclKind::Object(o) if inner && o.role == ObjRole::Generic => {}
+                DeclKind::PackageInst(i) => {
+                    out.push(d);
+                    for s in self.instance_regions(*i) {
+                        self.push_decls(s, true, out);
+                    }
+                }
+                _ => out.push(d),
+            }
+        }
+    }
+
     /// The region a package, package instance or formal package name denotes.
     pub(crate) fn package_region(&self, d: DeclId) -> PkgRegion {
         match self.decls[self.entity(d)].kind {

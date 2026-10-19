@@ -351,11 +351,9 @@ pub fn run(
         Diagnostic::error("E9999", format!("{what} is not implemented yet in yavs"))
             .with_note("this is a limitation of yavs, not an error in the design")
     };
-    for (given, what) in [(a.dap.is_some(), "`--dap` (M8)")] {
-        if given {
-            out.emit(&none, &unsupported(what));
-            return out.finish(2);
-        }
+    if a.dap.is_some() {
+        out.emit(&none, &unsupported("`--dap` (M8)"));
+        return out.finish(2);
     }
     // Plugins load after elaboration and before initialisation; a load failure is fatal.
     if !a.vhpi.is_empty() {

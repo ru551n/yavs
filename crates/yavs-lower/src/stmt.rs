@@ -774,6 +774,9 @@ impl Fx<'_, '_> {
     ) -> R<()> {
         let db = self.db;
         let t = db.base(db.exprs[e].subtype);
+        if matches!(db.types[t].kind, TypeKind::Record { .. }) {
+            return self.assign_record_aggregate(assocs, v, t, span);
+        }
         let Some((elem, 1)) = ty::array_of(db, t) else {
             return Err(self
                 .cx
@@ -878,6 +881,34 @@ impl Fx<'_, '_> {
             let what = self.target_name(a.value);
             let p = self.place(a.value)?;
             self.store_place(p, crate::expr::V::S(x), elem, &what, span)?;
+        }
+        Ok(())
+    }
+
+    /// `(a, b) := r` for a record value (LRM 10.6.2.1): each element of the aggregate target
+    /// gets the field of the value, positionally or by field name (several names in one
+    /// association would name the target twice, which sem rejects).
+    fn assign_record_aggregate(
+        &mut self,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        v: crate::expr::V,
+        t: TypeId,
+        span: Span,
+    ) -> R<()> {
+        let (data, desc) = self.arr(v, span)?;
+        let tid = self.ty(t, span)?;
+        for (i, a) in assocs.iter().enumerate() {
+            let n = match &a.choices[..] {
+                [] => i as u32,
+                [Choice::Element(n)] => *n,
+                _ => return Err(self.cx.ice(span, "unmapped record aggregate target choice")),
+            };
+            let (addr, d) = self.field_addr(tid, data, desc, n, span)?;
+            let st = self.field_subtype(t, n)?;
+            let x = self.value_at(st, addr, d, span)?;
+            let what = self.target_name(a.value);
+            let p = self.place(a.value)?;
+            self.store_place(p, x, st, &what, span)?;
         }
         Ok(())
     }

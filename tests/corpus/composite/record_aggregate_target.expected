@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:record_aggregate_target:_p0	z = 0011 x = 9 y = true

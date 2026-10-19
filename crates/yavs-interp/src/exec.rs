@@ -212,6 +212,9 @@ pub(crate) struct Machine {
     waits: Waits,
     /// Stop when the entry frame jumps to this block (a process's body, #342).
     pub pause: Option<yavs_ir::BlockId>,
+    /// A native `ieee` subprogram made a report at the stop severity: the process ends after
+    /// the call, as after `Inst::Report`.
+    pub ieee_stop: bool,
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
@@ -424,6 +427,7 @@ impl Machine {
             dbg: None,
             waits: Waits::default(),
             pause: None,
+            ieee_stop: false,
             layouts: Vec::new(),
             spare: Vec::new(),
             cells: Vec::new(),
@@ -2123,6 +2127,9 @@ impl Machine {
                 // `std.env.stop`/`finish` end the calling process at once (LRM 16.5): the
                 // simulation ends after this cycle, so execute no further, as for a report
                 // at the stop severity.
+                if std::mem::take(&mut self.ieee_stop) {
+                    return Ok(Flow::Suspend);
+                }
                 if n.symbol.starts_with("yavs.env.stop.")
                     || n.symbol.starts_with("yavs.env.finish.")
                 {

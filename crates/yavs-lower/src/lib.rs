@@ -42,10 +42,23 @@ pub const NOT_IMPLEMENTED: &str = "E2001";
 /// Internal compiler error.
 pub const INTERNAL: &str = "E9999";
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct LowerOptions {
     /// Emit statement and branch coverage counters (`Cover`, rule 10).
     pub coverage: bool,
+    /// Run the subprograms of `yavs_ir::ieee` from their VHDL bodies (the environment variable `YAVS_NO_NATIVE_IEEE`).
+    pub no_native_ieee: bool,
+}
+
+impl Default for LowerOptions {
+    /// The environment variable `YAVS_NO_NATIVE_IEEE` (any value) turns the native `ieee`
+    /// subprograms off everywhere, elaboration-time evaluation included.
+    fn default() -> Self {
+        Self {
+            coverage: false,
+            no_native_ieee: std::env::var_os("YAVS_NO_NATIVE_IEEE").is_some(),
+        }
+    }
 }
 
 /// The lowered form of an architecture: what the elaborator needs to build its instances.

@@ -10,6 +10,7 @@
 
 mod build;
 mod dump;
+pub mod ieee;
 mod inst;
 mod program;
 mod ty;

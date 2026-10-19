@@ -2259,6 +2259,19 @@ impl<'a> Fx<'a, '_> {
                 self.copy_out(span)?;
                 Ok(r)
             }
+            // A hot `ieee` subprogram runs natively unless `--no-native-ieee` (yavs-ir `ieee`).
+            Body::Hir { .. }
+                if !self.cx.opts.no_native_ieee
+                    && sp.ret.is_some()
+                    && yavs_ir::ieee::native_symbol(sp.mangled.as_str()).is_some() =>
+            {
+                let sym = yavs_ir::ieee::native_symbol(sp.mangled.as_str())
+                    .ok_or_else(|| self.cx.ice(span, "ieee native symbol"))?;
+                let cells = self.cells(sp, args, span, true)?;
+                let r = self.native(&sym, None, &cells, sp.ret, span)?;
+                self.copy_out(span)?;
+                Ok(r)
+            }
             Body::Hir { scope, .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
                 let mut cells = self.cells(sp, args, span, false)?;

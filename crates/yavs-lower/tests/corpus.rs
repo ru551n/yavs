@@ -636,7 +636,13 @@ fn package_subprograms() {
         .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
         .map(|(id, _)| id)
         .unwrap();
-    let mut l = Lowerer::new(&db, LowerOptions { coverage: true });
+    let mut l = Lowerer::new(
+        &db,
+        LowerOptions {
+            coverage: true,
+            ..LowerOptions::default()
+        },
+    );
     let funcs = l.subprograms_of(body).unwrap();
     assert_eq!(funcs.len(), 5);
     let p = l.finish().unwrap().program;

@@ -633,8 +633,14 @@ fn elaboration_calls_with_package_state_restart() {
     assert_eq!(first, run(&e));
     assert!(e.ir.as_ref().is_some_and(|ir| ir.start.is_some()));
     let (mut db, mut e) = elab("pkgcalls_cov", src, "t", &[]);
-    e.lower_with(&mut db, yavs_lower::LowerOptions { coverage: true })
-        .expect("lower");
+    e.lower_with(
+        &mut db,
+        yavs_lower::LowerOptions {
+            coverage: true,
+            ..yavs_lower::LowerOptions::default()
+        },
+    )
+    .expect("lower");
     assert!(e.ir.as_ref().is_some_and(|ir| ir.start.is_none()));
     assert_eq!(first, run(&e));
     assert_eq!(first, run(&e));

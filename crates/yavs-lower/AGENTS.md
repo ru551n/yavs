@@ -22,7 +22,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 |---|---|
 | `src/lib.rs` | `Lowerer` (`new`, `architecture`, `package`, `package_value`, `var_slots` (the value type of each non-protected shared variable and, for a package's, a thunk returning its slot's address, #309), `implicit_native`, `subprogram`, `subprograms_of`, `finish -> Lowered`; `snapshot` (the program so far, lowering goes on) and `suspend`/`resume` (`Suspended`: the lowering without its `Db`, #383), `externals_early` (a subprogram with external names lowered before `externals_bound`)), `LowerOptions` (`coverage`), `UnitIr`, `InstValue::write_value`, `InstConst`, `SignalIr`, `ProcessIr`, `Cx` (`error`, `unsupported`, `ice`, `cover`), `Obj`, `Space`, `top_architecture`, codes |
 | `src/func.rs` | `Fx`: frames, parameters, declarations, subprograms, processes, architectures |
-| `src/expr.rs` | Scalar expressions, calls, implicit operations, attributes, names, 1-D arrays |
+| `src/expr.rs` | Scalar expressions, calls (a call of an `ieee` subprogram listed in `yavs_ir::ieee` becomes a native call unless `LowerOptions::no_native_ieee`, i.e. `YAVS_NO_NATIVE_IEEE`), implicit operations, attributes, names, 1-D arrays |
 | `src/stmt.rs` | Sequential statements, waits, signal assignments, case |
 | `src/assoc.rs` | Individual association and conversions of subprogram parameters: temporary formal, copy-in, copy-out (`writeback_parts`), formal bounds from the parts |
 | `src/ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` |

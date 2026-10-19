@@ -198,6 +198,28 @@ a read-lock interner and a fast hasher for the scope, memo and cache tables, cac
 Still open: parse is about 8% and subprogram bodies of units that are never called about half of the remaining
 analysis; analyzing bodies on demand needs a scope snapshot per body (visibility is positional) and is not done.
 
+### Native ieee operators (#395, #404)
+
+`std_logic_1164` gates, `not`, conversions and `rising_edge`, and `numeric_std` `+ - *`, relational
+operators, `to_integer`, `to_unsigned`, `to_signed`, `resize` and the shift helpers, and `math_real` (`sqrt`, `exp`, `log*`, `sin`, `cos`, `**`, rounding functions), run natively
+(`crates/yavs-interp/src/ieee.rs`); `numeric_bit`, division and `?=` still run from VHDL.
+`crates/yavs/tests/ieee_native.rs` compares natives with the bodies (3 + 1 generated seeds, 2008 and
+2019, errors, edges). Per operation on 16-bit vectors, process loop of 20000, median CPU of 5, release build,
+host load about 16 (loop overhead about 2 us per iteration included):
+
+| Operation | VHDL body (s) | native (s) |
+|---|---|---|
+| `unsigned +` | 1.82 | 0.05 |
+| `unsigned xor` | 0.46 | 0.07 |
+| `std_logic_vector xor` | 0.42 | 0.05 |
+| `unsigned <` | 0.79 | 0.05 |
+| `to_unsigned` | 0.24 | 0.05 |
+| `resize` | 0.15 | 0.05 |
+| `to_integer` | 0.45 | 0.04 |
+| `shift_left` | 0.14 | 0.06 |
+
+`tools/bench`: `ff_rtl` simulate 1.27 s to 0.05 s CPU (total 1.31 to 0.10), `compute_loop` 0.72 to 0.66.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

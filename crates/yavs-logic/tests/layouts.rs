@@ -343,3 +343,17 @@ fn vector_match_is_and_of_elements() {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(500))]
+    /// `BitVec::mul_trunc` is the product modulo 2^len, for widths past one word.
+    #[test]
+    fn mul_trunc_matches_u128(a in any::<u128>(), b in any::<u128>(), len in 1usize..=128) {
+        use yavs_logic::BitVec;
+        let mk = |v: u128| BitVec::from_words(128, vec![v as u64, (v >> 64) as u64]);
+        let p = mk(a).mul_trunc(&mk(b), len);
+        let want = a.wrapping_mul(b) & (u128::MAX >> (128 - len));
+        let got = (0..len).fold(0u128, |r, i| r | u128::from(p.get(i)) << i);
+        prop_assert_eq!(got, want);
+    }
+}

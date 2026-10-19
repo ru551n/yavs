@@ -19,6 +19,7 @@ mod exec;
 mod foreign;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
 mod heap;
+mod ieee;
 mod implicit;
 mod native;
 mod reflect;

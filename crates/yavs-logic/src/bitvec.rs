@@ -100,6 +100,28 @@ impl BitVec {
             .collect();
         Self::from_words(self.len, w)
     }
+    /// `self * o` modulo 2^`len` (operands taken as unsigned words, zero-extended); a signed
+    /// product is the same after sign-extending both operands to `len` first.
+    pub fn mul_trunc(&self, o: &Self, len: usize) -> Self {
+        let n = len.div_ceil(64);
+        let mut w = vec![0u64; n];
+        for (i, &a) in self.w.iter().enumerate().take(n) {
+            let mut carry = 0u128;
+            for (j, &b) in o.w.iter().enumerate().take(n - i) {
+                let t = u128::from(a) * u128::from(b) + u128::from(w[i + j]) + carry;
+                w[i + j] = t as u64;
+                carry = t >> 64;
+            }
+            let mut k = i + o.w.len().min(n - i);
+            while carry > 0 && k < n {
+                let t = u128::from(w[k]) + carry;
+                w[k] = t as u64;
+                carry = t >> 64;
+                k += 1;
+            }
+        }
+        Self::from_words(len, w)
+    }
     /// Wrapping `self - o`; equal lengths.
     pub fn sub(&self, o: &Self) -> Self {
         self.add(&o.not(), true)

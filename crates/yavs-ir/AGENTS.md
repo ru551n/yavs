@@ -25,6 +25,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | `src/inst.rs` | `Inst` (all instructions incl. `BinRange`, `FToIRange`, `FCheck`, `CallProt`, `Elab*`), `Reg`, `RegTy`, `AddrSpace`, op enums |
 | `src/ty.rs` | `Ty`, `Layout`/`LayoutError`, `LogicKind`, `Field`, descriptor format (`DOPE_DIM_BYTES` = 24: `[left, right, dir]` i64 per dimension), `dim_len`, `Refl`/`ReflKind` |
 | `src/build.rs` | `ProgramBuilder` (types, constants, natives, `check_msg_for`, `reflect`), `FuncBuilder`; `finish()` propagates flags, numbers resume points, runs the verifier |
+| `src/ieee.rs` | `ieee::parse`/`native_symbol`: which mangled `ieee` subprograms have a native (`yavs.ieee.<key>`); `yavs-lower` emits the call, `yavs-interp` `ieee.rs` implements it |
 | `src/verify.rs` | One linear walk; `VerifyError` (an ICE of the producer) |
 | `src/dump.rs` | Text dump (`Program`'s `Display`, `dump_func`) |
 | `tests/verify.rs` | Verifier and layout tests |

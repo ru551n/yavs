@@ -284,7 +284,10 @@ fn elaborate(
             for d in &e.warnings {
                 out.emit(&db.sources, d);
             }
-            let opts = yavs_elab::LowerOptions { coverage };
+            let opts = yavs_elab::LowerOptions {
+                coverage,
+                ..yavs_elab::LowerOptions::default()
+            };
             if let Err(ds) = e.lower_with(&mut db, opts) {
                 for d in &ds {
                     out.emit(&db.sources, d);

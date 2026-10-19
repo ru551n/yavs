@@ -65,6 +65,11 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
     if let Some(f) = crate::reflect::lookup(symbol) {
         return Ok(Some(f));
     }
+    if symbol.starts_with("yavs.ieee.") {
+        return crate::ieee::lookup(symbol)
+            .map(Some)
+            .ok_or_else(|| format!("`{symbol}` is not a native ieee subprogram"));
+    }
     let k = known();
     let family = symbol
         .strip_prefix("yavs.implicit.")

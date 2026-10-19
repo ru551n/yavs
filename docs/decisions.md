@@ -1861,3 +1861,35 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - **Not stored in the library but per user:** nothing yet. A precomputed std/ieee base shared by all
   designs is part of a later slice of #407.
 
+
+## Native ieee operators (#395)
+
+- **Replace by identity, not by name (user, 2026-10-19):** lowering turns a call of an `ieee`
+  subprogram into a native call (`yavs.ieee.<key>`) when its mangled name (library, package,
+  designator, parameter and result base types) reduces to a key `yavs_ir::ieee::parse` knows;
+  the VHDL body stays in the library and is the reference. Implemented in `yavs-interp`
+  `src/ieee.rs` on bit-plane vectors: `std_logic_1164` gates, `not`, `to_x01`/`to_x01z`/`to_ux01`,
+  `to_01`, `??`, `rising_edge`/`falling_edge` of `std_ulogic`; `numeric_std` `+ - *`, the six
+  relational operators (vector/vector, vector/integer, integer/vector), `to_integer`,
+  `to_unsigned`, `to_signed`, `resize` and the local `xsll`..`xror` the shift and rotate
+  functions call. Everything else (division, `?=`, string conversions, `numeric_bit`,
+  Synopsys packages) still runs from VHDL.
+- **Same results by construction of the test, not by fallback:** each native ports its body,
+  including metavalue handling (a metavalue anywhere gives an all-`X` result), result bounds
+  (`(n-1 downto 0)`, `(1 to n)`, the null constants `(0 downto 1)`) and warning texts, severities
+  and conditions. `crates/yavs/tests/ieee_native.rs` runs generated testbenches with natives on
+  and off (`YAVS_NO_NATIVE_IEEE`, any value, also for elaboration-time calls) and compares
+  stdout, stderr and exit status. Reports of a native stop the process at the stop severity
+  like `Inst::Report` (`Machine::ieee_stop`).
+- **Known difference:** a run-time error inside a replaced body (only `to_integer` of a value
+  beyond INTEGER) has the same message and exit status but no frames for the body in its
+  `called from` trace. `--ieee-warnings` is still ignored, so natives always warn like the bodies.
+- **math_real on `f64` (orchestrator, 2026-10-19):** `SQRT`, `EXP`, `LOG` (also with a base),
+  `LOG2`, `LOG10`, `SIN`, `COS`, both `**`, `CEIL`, `FLOOR`, `ROUND`, `TRUNC` and `SIGN` use the
+  platform's `f64` functions, as the reference simulators do. The bodies are series and Newton
+  iterations, so a transcendental result can differ in its last digits; `CEIL`/`FLOOR`/`ROUND`/
+  `TRUNC`/`SIGN` are exact ports, and every out-of-domain argument gives the body's report text,
+  severity and returned value (`REAL'LOW`, `0.0`). `YAVS_NO_NATIVE_IEEE` restores the bodies.
+- **Why not the existing `LNum`/`LogicOp` instructions:** they cover neither the bounds and
+  warnings of the library functions nor `std_ulogic` tables per operand shape; the native call
+  keeps one place that mirrors the library.

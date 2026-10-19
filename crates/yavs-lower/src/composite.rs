@@ -1776,20 +1776,29 @@ impl Fx<'_, '_> {
             |fx: &mut Self, c: &ConstValue, out: &mut Vec<u8>, ed: &mut Vec<u8>| -> Option<()> {
                 match c {
                     ConstValue::Array(a) => {
+                        let (est, _) = ty::array_of(fx.db, t)?;
+                        let (inner, elem_desc) = match fx.fb.program().types().get(tid)? {
+                            Ty::Array {
+                                elem, elem_desc, ..
+                            } => (*elem, *elem_desc),
+                            _ => return None,
+                        };
+                        let mut sub = Vec::new();
+                        fx.codes(fx.db.base(est), inner, &a.elems, leaf, out, &mut sub)?;
+                        // The element descriptor is this level's bounds, then the descriptor
+                        // of the elements' own unconstrained elements (#329).
                         if ed.is_empty() {
                             for &(l, d, r) in a.bounds.iter() {
                                 for x in [l, r, dir_cell(d)] {
                                     ed.extend_from_slice(&x.to_le_bytes());
                                 }
                             }
+                            if elem_desc.is_none() && Ty::needs_desc(fx.fb.program().types(), inner)
+                            {
+                                ed.extend(sub);
+                            }
                         }
-                        let (est, _) = ty::array_of(fx.db, t)?;
-                        let inner = match fx.fb.program().types().get(tid)? {
-                            Ty::Array { elem, .. } => *elem,
-                            _ => return None,
-                        };
-                        let mut sub = Vec::new();
-                        fx.codes(fx.db.base(est), inner, &a.elems, leaf, out, &mut sub)
+                        Some(())
                     }
                     c => {
                         out.push(u8::try_from(ty::cell(c)?).ok()? + bias);

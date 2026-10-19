@@ -90,6 +90,7 @@ rule 24).
 - Kernel offsets of non-static indices must use the same rule as `yavs_elab::NetGraph::select`.
 - `tests/corpus.rs` writes its library to a fixed `temp_dir()/yavs-lower-work`, which collides
   between worktrees and parallel runs (#160); until fixed, do not run two of them at once.
+- A folded logic-array constant of arrays of unconstrained arrays (`Fx::encode`/`codes`) must carry the descriptor of every level, not only the first element level (#329).
 - A shared `CARGO_TARGET_DIR` can link another worktree's crates into the test binary (#7).
 
 ## 5. How to work here

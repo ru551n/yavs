@@ -43,7 +43,7 @@ The runs now reach simulation; 57 of the 63 failures end at elaboration on one c
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 30 | 3 | 3 | element of an array of arrays of unconstrained unsigned #329 (1); not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); 3 skipped: over 5 minutes (two `rand_gaussian`, `rand_cyclic_performance`) |
+| uvvm_util | 31 | 2 | 3 | none that are yavs results (both `rand_basic` testbenches pass since #329, the descriptor of a folded constant of arrays of unconstrained arrays kept only two levels); not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); 3 skipped: over 5 minutes (two `rand_gaussian`, `rand_cyclic_performance`) |
 | uvvm_assertions | 2 | 0 | 0 | none |
 | uvvm_vvc_framework | 1 | 2 | 0 | record resolved as a whole with a `std_logic` element #328 |
 | bitvis_irqc | 2 | 0 | 0 | none |

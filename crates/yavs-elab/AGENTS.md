@@ -67,6 +67,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | A constant with an impure initial value elab cannot evaluate yet keeps its run-time thunk with `W2118`; its calls run after the elaboration-time calls | Only for what elab cannot evaluate at all (`'PATH_NAME`, say); everything marshallable runs in declaration order | #220, `docs/decisions.md` "Elaboration" |
 | Composite elaboration-time values: structural operations on `Val` here, function calls in yavs-interp through `call_values` | One evaluator for subprogram bodies, no expression thunks needing instance data | `docs/decisions.md` "Elaboration", #77 |
 | Functions using package objects run in a session against the initialised packages; impure constants are evaluated in declaration order; package constants with impure initial values are read from package data; `build` replays the logged calls (`Elaborated::elab_calls`) before any instance data | LRM 14.4: side effects once and in order; rule 4 restart | `docs/decisions.md` "Elaboration", #77 |
+| A process's declarative part is not evaluated by elab (`Elab::decls` of a process scope registers only its implicit signals and aliases): the lowered process elaborates it at start | LRM 14.5: elaborated exactly once; #251 | `docs/decisions.md` "Elaboration" |
 
 Module-local decisions go in this section and ir.md section 4 or `docs/decisions.md`
 "Elaboration" in the same commit (root `AGENTS.md` rule 24).

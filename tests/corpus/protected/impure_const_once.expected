@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:impure_const_once:_p0	k=1 ca=2 cp=3 s1=4 s2=5 next=6

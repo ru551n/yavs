@@ -586,6 +586,9 @@ a note and a help suggesting an access type, as the reference simulators reject 
   is left to its run-time thunk with warning W2118 (#220), the calls made for it are undone,
   and the thunk runs after all replays, so it sees the elaboration-time calls of later
   declarations and regions first.
+  A process's own declarative part is not evaluated here: the process elaborates it when it
+  starts (its lowered code), once, after the elaboration-time calls of every region, as the
+  reference simulators do; evaluating it during elaboration as well ran its calls twice (#251).
 - **Package objects at run time** (#183, elab agent with the lowering agent, 2026-10-18):
   packages outside std with signals, shared variables, files or constants sem did not fold are
   lowered (`Lowerer::package`) before the architectures and initialised once at build time

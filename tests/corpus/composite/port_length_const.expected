@@ -1,0 +1,2 @@
+exit	0
+diag	note	0	0	:port_length_const:dut:_p0	n=32 m=8192 len=32

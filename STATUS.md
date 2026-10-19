@@ -398,7 +398,7 @@ package objects (impure registries in shared variables) runs against the elabora
 elaboration order, constants with impure initial values are evaluated in declaration order,
 package constants with impure initial values are read from the package data, and building the
 simulation replays these calls (#77); an impure constant elaboration cannot evaluate at all
-(`'PATH_NAME`) runs at simulation start with W2118 (#220). Also done: package bodies and generic instance bodies
+(`'PATH_NAME`) runs at simulation start with W2118 (#220). A process's impure constants run once, when the process starts (#251; difftest `protected/impure_const_once`). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
 and type conversions in port maps (kernel converters; conversion functions of record ports and
 arrays of records convert all leaves in one call in the same delta, #74; both conversions of

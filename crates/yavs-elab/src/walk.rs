@@ -919,8 +919,11 @@ impl Elab<'_> {
                 // A constant whose initial value calls an impure user function is evaluated
                 // here, in declaration order, so its side effects on package state happen once
                 // and in order (LRM 14.4.2); other constants are evaluated when first needed.
+                // A process's declarative part is elaborated by the process itself when it
+                // starts (its lowered code): evaluating it here too ran the calls twice (#251).
                 (ObjClass::Constant, ObjRole::Plain)
-                    if o.default.is_some_and(|e| crate::eval::calls_impure(db, e)) =>
+                    if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
+                        && o.default.is_some_and(|e| crate::eval::calls_impure(db, e)) =>
                 {
                     let mark = self.m.session.mark();
                     match self.m.value_of(db, d, Some(s), decl.span) {

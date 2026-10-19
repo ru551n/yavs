@@ -514,7 +514,8 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
   when the signal takes a value, a VHDL literal of its type (see values below); other clients
   send the custom request ``yavs/setSignalBreakpoints``. The stop gives the signal's path and new
   value.
-* **Force, deposit and release** a signal: "Force a signal...", "Deposit a signal value..." and
+* **Force, deposit and release** a signal or a part of one (a field, an element or a slice:
+  ``r.a``, ``v(3)``, ``d(7 downto 4)``; only that part changes): "Force a signal...", "Deposit a signal value..." and
   "Release a forced signal..." in the context menu of a signal in the Variables view or as
   "yavs:" commands (custom requests ``yavs/force``, ``yavs/deposit`` and ``yavs/release`` for
   other clients). A force holds the effective value (mode ``in``, what readers see) or the
@@ -570,5 +571,5 @@ the stop time. A slow client never holds up the simulation: if it falls behind, 
 merged and only the last change of each value in them is kept. ``yavs/waveUnsubscribe`` ends
 the stream.
 
-Not yet: function calls and attributes in breakpoint conditions, forcing a part of a signal,
-and ``--dap`` together with ``--cov``.
+Not yet: function calls and attributes in breakpoint conditions, indices of enumeration-indexed
+arrays in a forced part, and ``--dap`` together with ``--cov``.

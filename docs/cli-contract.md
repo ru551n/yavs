@@ -300,9 +300,12 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   own set): a stop after the cycle in which the signal changed (to `value`), reason `data
   breakpoint`, `text` `PATH = VALUE`. `yavs/force` (`signal`, `value`, `mode` `in` or `out`,
   default `in`), `yavs/deposit` (`signal`, `value`) and `yavs/release` (`signal`, `mode`) act on
-  a whole signal (`signal` a name seen from `frameId` or the stopped process, or a path) in the
-  next cycle; they answer with the signal's path and the value as text. `setVariable`
-  (`supportsSetVariable`) deposits a signal and writes a local at once; generics are refused.
+  a signal or a part of one (`signal` a name seen from `frameId` or the stopped process, or a
+  path, optionally followed by fields, integer indices and a final slice in the signal's
+  direction: `r.a`, `v(3)`, `:top:m(2).f`, `d(7 downto 4)`; the value is of the part's type) in
+  the next cycle, and only on those elements; they answer with the target and the value as
+  text. `setVariable`
+  (`supportsSetVariable`) deposits a signal (a field or element only that part) and writes a local at once; generics are refused.
   Values are VHDL literals of the target's type: scalars as `T'VALUE` reads them (physical values
   in any unit), string and bit string literals, aggregates with positional and named elements,
   ranges and `others`; a value that does not parse is a failed response naming the problem.

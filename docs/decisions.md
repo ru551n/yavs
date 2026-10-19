@@ -1633,7 +1633,9 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   elements, ranges and `others`), and the Variables view writes values the same way. Why: one
   syntax a VHDL user already knows; text comparison could not match `x"A5"` with `"10100101"`.
 - **Force, deposit and release from the debugger go through `SimControl`** and take effect in
-  the next cycle, from a stop between cycles or inside a process alike (#323). Why: the plan
+  the next cycle, from a stop between cycles or inside a process alike (#323). A field, element
+  or slice acts on its kernel elements only (#364), so a force of `d(7 downto 4)` leaves the
+  other elements to their drivers. Why: the plan
   lets nothing else drive the kernel, and a stop inside a process is mid-cycle.
 - **Breakpoint conditions are evaluated by the DAP server, not lowered to IR** (#326): the
   condition is parsed as a VHDL expression and evaluated over the locals and signals the

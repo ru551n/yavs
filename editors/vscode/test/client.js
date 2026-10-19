@@ -130,6 +130,8 @@ async function main() {
   assert.equal(sigs[1].__vscodeVariableMenuContext, 'signal');
   const forced = await dc.customRequest('yavs/force', { signal: 'v', value: '"1010"', mode: 'in' });
   assert.equal(forced.body.signal, ':tb:v');
+  const part = await dc.customRequest('yavs/deposit', { signal: 'v(0)', value: "'1'" });
+  assert.deepEqual([part.body.signal, part.body.value], [':tb:v(0)', "'1'"]);
 
   // Step into the function, over its first statement, back out.
   await Promise.all([dc.stepInRequest({ threadId: 1 }), dc.waitForEvent('stopped')]);

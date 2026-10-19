@@ -93,6 +93,35 @@ impl Fmt {
         })
     }
 
+    /// The (leaf, element) pairs of sub-element `path` (field and element positions) of
+    /// element `k`, the leaves counted from `leaf`.
+    fn part(&self, path: &[usize], k: u64, leaf: usize, out: &mut Vec<(usize, u64)>) -> Option<()> {
+        match (self, path.split_first()) {
+            (Fmt::Logic(_) | Fmt::Bytes(_), None) => out.push((leaf, k)),
+            (Fmt::Array(n, e), None) => {
+                for j in 0..*n {
+                    e.part(&[], k * n + j, leaf, out)?;
+                }
+            }
+            (Fmt::Array(n, e), Some((&j, rest))) if (j as u64) < *n => {
+                e.part(rest, k * n + j as u64, leaf, out)?
+            }
+            (Fmt::Record(fs), None) => {
+                let mut l = leaf;
+                for f in fs {
+                    f.part(&[], k, l, out)?;
+                    l += f.leaves();
+                }
+            }
+            (Fmt::Record(fs), Some((&i, rest))) => {
+                let l = leaf + fs.get(..i)?.iter().map(Fmt::leaves).sum::<usize>();
+                fs.get(i)?.part(rest, k, l, out)?
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
     /// Fresh leaf values for `reps` repetitions of this format.
     fn alloc(&self, reps: u64, out: &mut Vec<Value>) {
         match self {
@@ -185,12 +214,60 @@ impl Sig {
         literal(text.as_bytes(), &self.lit).map_err(|e| e.to_string())
     }
 
-    /// `v` as the values of the signal's kernel leaves.
-    pub fn encode(&self, v: &Lit) -> Option<Vec<(SignalId, Value)>> {
+    /// The kernel elements of the sub-elements at `paths` (field and element positions; an
+    /// empty path is the whole signal), one per element, with their values in `whole` (the
+    /// signal's value, none for a release).
+    pub fn part(
+        &self,
+        paths: &[Vec<usize>],
+        whole: Option<&Lit>,
+    ) -> Option<Vec<(SigRef, Option<Value>)>> {
         let mut vals = Vec::new();
         self.fmt.alloc(1, &mut vals);
-        self.fmt.encode(v, &mut vals, 0)?;
-        Some(self.leaves().zip(vals).collect())
+        if let Some(v) = whole {
+            self.fmt.encode(v, &mut vals, 0)?;
+        }
+        let mut elems = Vec::new();
+        for p in paths {
+            self.fmt.part(p, 0, 0, &mut elems)?;
+        }
+        // ponytail: one kernel call per element; ranges if large parts are forced often.
+        elems
+            .into_iter()
+            .map(|(l, k)| {
+                let id = SignalId(self.leaf + l as u32);
+                Some(match vals.get(l)? {
+                    // Kernel offset 0 is the rightmost element.
+                    Value::Logic(lv) => {
+                        let i = (lv.len() as u64).checked_sub(k + 1)? as usize;
+                        let v = Value::Logic(LogicVec::new(1, lv.get(i)));
+                        (id.slice(i as u32, 1), whole.map(|_| v))
+                    }
+                    Value::Bytes(b) => {
+                        let size = b.len() as u64 / self.reps(l)?;
+                        let at = (k * size) as usize;
+                        let v = Value::Bytes(b.get(at..at + size as usize)?.to_vec());
+                        (id.slice(k as u32, 1), whole.map(|_| v))
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// The elements of leaf `l` (row major over the arrays around it).
+    fn reps(&self, l: usize) -> Option<u64> {
+        fn walk(f: &Fmt, reps: u64, l: &mut usize) -> Option<u64> {
+            match f {
+                Fmt::Logic(_) | Fmt::Bytes(_) if *l == 0 => Some(reps),
+                Fmt::Logic(_) | Fmt::Bytes(_) => {
+                    *l -= 1;
+                    None
+                }
+                Fmt::Array(n, e) => walk(e, reps * n, l),
+                Fmt::Record(fs) => fs.iter().find_map(|f| walk(f, reps, l)),
+            }
+        }
+        walk(&self.fmt, 1, &mut { l })
     }
 }
 

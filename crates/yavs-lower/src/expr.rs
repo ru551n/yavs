@@ -1073,14 +1073,17 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
-    /// The part of composite signal `d` that `steps` select, with a reference to the selected
-    /// elements of each leaf below it. Offsets follow the one sub-element map (rule 2, the
-    /// rule of `yavs_elab::NetGraph::select`): a leaf holds its field of every element in row
-    /// major order, mirrored for logic leaves.
-    pub fn comp_select(&mut self, d: DeclId, steps: &[Step<'_>], span: Span) -> R<SigPart> {
+    /// The descriptor of composite signal `d` (the one the elaborator wrote, with the bounds
+    /// of the initial value or the actual, or the actual's of a signal parameter) and the walk
+    /// of `steps` from it. Reads no signal value, so it also works during elaboration.
+    fn comp_walk(
+        &mut self,
+        d: DeclId,
+        steps: &[Step<'_>],
+        span: Span,
+    ) -> R<(Option<crate::RecParam>, Reg, Walk)> {
         let db = self.db;
         let st = ty::obj_subtype(db, d).ok_or(Failed)?;
-        let root_t = db.base(st);
         let param = match self.cx.objs.get(&d).copied() {
             Some(Obj::RecSignal(p)) => p,
             _ => {
@@ -1089,8 +1092,6 @@ impl<'a> Fx<'a, '_> {
                     .ice(span, "composite selection of a non-composite signal"));
             }
         };
-        // The descriptor the elaborator wrote (bounds from the initial value or the actual),
-        // or the actual's of a signal parameter.
         let root = match (self.cx.sig_dopes.get(&d).copied(), param) {
             (_, Some(p)) if p.desc => {
                 let a = self.addr(p.space, p.desc_off());
@@ -1103,7 +1104,18 @@ impl<'a> Fx<'a, '_> {
             },
         };
         let what = db.decls[d].name.to_string();
-        let w = self.walk_steps(root_t, root, steps, &what, span)?;
+        let w = self.walk_steps(db.base(st), root, steps, &what, span)?;
+        Ok((param, root, w))
+    }
+
+    /// The part of composite signal `d` that `steps` select, with a reference to the selected
+    /// elements of each leaf below it. Offsets follow the one sub-element map (rule 2, the
+    /// rule of `yavs_elab::NetGraph::select`): a leaf holds its field of every element in row
+    /// major order, mirrored for logic leaves.
+    pub fn comp_select(&mut self, d: DeclId, steps: &[Step<'_>], span: Span) -> R<SigPart> {
+        let db = self.db;
+        let root_t = db.base(ty::obj_subtype(db, d).ok_or(Failed)?);
+        let (param, root, w) = self.comp_walk(d, steps, span)?;
         let (t, desc, path, offset, count) = (w.t, w.desc, w.path, w.offset, w.count);
         let (it, idesc) = w.inst.unwrap_or((t, desc));
         let mut leaves = Vec::new();
@@ -1494,6 +1506,11 @@ impl<'a> Fx<'a, '_> {
     /// The descriptor of an array expression, without reading its elements when it names an
     /// object.
     pub(crate) fn dope_of(&mut self, e: ExprId) -> R<Reg> {
+        // A part of a composite signal (`p.data`, `b.resp.user`): its bounds come from the
+        // signal's descriptor, so a constant initialiser needs no signal value (#304).
+        if let Some((d, steps)) = self.comp_steps(e) {
+            return Ok(self.comp_walk(d, &steps, self.db.exprs[e].span)?.2.desc);
+        }
         if let ExprKind::Obj(d) = self.db.exprs[e].kind {
             match self.cx.objs.get(&d).copied() {
                 Some(Obj::Array { space, off }) => {

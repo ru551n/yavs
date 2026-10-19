@@ -1138,6 +1138,11 @@ which tools/difftest parses.
   (`Fx::subtype_dope`); instance data now gets the signal descriptors before the constant
   thunks run, so `constant w : natural := p'element'length` (or `p'length`) of a port sees the
   actual's bounds (#235, #243).
+- **Bounds of a record element of a signal** (`p.data'length`, `b.resp.user'range`, also below
+  an index into an array of records) come from the signal's descriptor in lowering
+  (`Fx::dope_of` through `Fx::comp_walk`) and from its elaborated shape in yavs-elab
+  (`Model::sig_shape`), never from its value: constants, signal subtypes and generate ranges
+  of an instance use the bounds the actual gives a record port (#304).
 - **A folded constant read as a whole** (`Fx::expr`, `e.value` of an `Obj`) takes the descriptor
   of its own subtype when that has one, so the element bounds of an array constant are the
   declared ones, not those of the literals that fold into its value (#247).

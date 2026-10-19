@@ -1838,3 +1838,31 @@ end;
     assert_eq!(v[0].0, codes::PORT_UNCONSTRAINED);
     assert!(v[0].1.contains("element `d` of port `pin`"), "{v:?}");
 }
+
+#[test]
+fn record_port_element_bounds_check_the_index() {
+    // #304: the bounds of `a(i).d` come from the port's actual, the index is still checked.
+    let src = "package p is
+        type r_t is record d : bit_vector; end record;
+        type ra_t is array (natural range <>) of r_t;
+      end;
+      use work.p.all;
+      entity c is port (a : in ra_t); end;
+      architecture x of c is
+        signal ok : bit_vector(a(1).d'range);
+        signal bad : bit_vector(a(2).d'range);
+      begin end;
+      use work.p.all;
+      entity t is end; architecture x of t is
+        signal s : ra_t(0 to 1)(d(3 downto 0));
+      begin u : entity work.c port map (a => s); end;";
+    let (_, r) = try_elab("recidx", src, "t", &[]);
+    let v = r.err().expect("error");
+    assert_eq!(
+        v,
+        [(
+            codes::EVAL_FAILED,
+            "index 2 is out of the bounds of the prefix".to_string()
+        )]
+    );
+}

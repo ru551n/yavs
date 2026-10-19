@@ -34,6 +34,7 @@ const PASS: &[&str] = &[
     "composite/element_attr_open",
     "composite/element_depth",
     "composite/element_open_formal",
+    "composite/record_port_bounds",
     "composite/element_open_formal_mismatch",
     "composite/port_length_const",
     "composite/aggregate_pieces",

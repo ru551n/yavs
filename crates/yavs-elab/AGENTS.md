@@ -36,7 +36,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 
 | Decision | Why | Source |
 |---|---|---|
-| `'range`/`'length`/... of a package signal take the bounds of its constrained subtype (`expr_shape`); the signal has no value during elaboration | The bounds are static, so the prefix need not be evaluated (#294) | LRM 16.2 |
+| `'range`/`'length`/... of a signal or of a record element of one (`p.data`, `b.resp.user`, `a(0).data`) take its bounds without a value (`Model::sig_shape`): a port's from its actual, a package signal's from its constrained subtype; an index into an array of records is still range-checked (E2107) | The bounds are known, the signal has no value during elaboration (#294, #304) | LRM 16.2 |
 | Elaboration is a pure, re-entrant function of (design, generics, configuration); no global state; `build_with` repeatable | In-process restart, rule 4 | `docs/plan.md` rule 4 |
 | Generic overrides of any type parsed with the normal value parser (`-g`, yavs-std `'value`) | A recurring bug class in other simulators | rule 4 |
 | External names bound at elaboration | A recurring bug class in other simulators | rule 4 |

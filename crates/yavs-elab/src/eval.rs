@@ -879,38 +879,70 @@ impl Model {
         }
     }
 
-    /// The shape of a signal or of a record element of one (`sig.rdata'range`): its bounds are
-    /// known from the signal's constraint although its value is not (LRM 6.4.2.3).
-    fn signal_shape(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> Option<Shape> {
-        match (&db.exprs[e].kind, scope) {
-            (ExprKind::Obj(d), Some(s)) => Some(self.nets.obj(self.signal(s, *d)?).shape.clone()),
-            (ExprKind::Field { prefix, elem }, _) => match self.signal_shape(db, *prefix, scope)? {
-                Shape::Record { fields, .. } => fields.into_iter().nth(*elem as usize).map(|f| f.1),
+    /// The shape of a signal or of a record element of one (`p.data`, `b.resp.user`): a
+    /// signal has no value during elaboration, but its bounds are known (a port's from its
+    /// actual, a package signal's from its constrained subtype). `None` when `e` names no
+    /// signal.
+    fn sig_shape(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> R<Option<Shape>> {
+        match &db.exprs[e].kind {
+            ExprKind::Obj(d) => {
+                if let Some(s) = scope
+                    && let Some(o) = self.signal(s, *d)
+                {
+                    return Ok(Some(self.nets.obj(o).shape.clone()));
+                }
+                if let DeclKind::Object(o) = &db.decls[*d].kind
+                    && o.class == ObjClass::Signal
+                    && matches!(
+                        db.scopes[db.decls[*d].scope].kind,
+                        SemScope::Package | SemScope::PackageBody
+                    )
+                {
+                    return self.shape(db, o.subtype, None, db.exprs[e].span);
+                }
+                Ok(None)
+            }
+            ExprKind::Field { prefix, elem } => Ok(match self.sig_shape(db, *prefix, scope)? {
+                Some(Shape::Record { mut fields, .. }) if (*elem as usize) < fields.len() => {
+                    Some(fields.swap_remove(*elem as usize).1)
+                }
                 _ => None,
-            },
-            _ => None,
+            }),
+            // An element of an array of records (`a(0).data`): every element has the same
+            // shape, but the index must still be in range.
+            ExprKind::Index { prefix, indices } => {
+                let Some(Shape::Array { dims, elem, .. }) = self.sig_shape(db, *prefix, scope)?
+                else {
+                    return Ok(None);
+                };
+                if dims.len() != indices.len() {
+                    return Ok(None);
+                }
+                for (&i, b) in indices.iter().zip(&dims) {
+                    let span = db.exprs[i].span;
+                    let v = int(&self.eval(db, i, scope)?, span)?;
+                    if b.pos(v).is_none() {
+                        return Err(err(
+                            codes::EVAL_FAILED,
+                            span,
+                            format!("index {v} is out of the bounds of the prefix"),
+                            "out of range",
+                        ));
+                    }
+                }
+                Ok(Some(*elem))
+            }
+            _ => Ok(None),
         }
     }
 
-    /// The shape of an object expression: a signal, or a constant's value.
+    /// The shape of an object expression: a signal (or a record element of one), or a
+    /// constant's value.
     fn expr_shape(&mut self, db: &Db, e: ExprId, scope: Option<ScopeId>) -> R<Option<Shape>> {
-        if let Some(sh) = self.signal_shape(db, e, scope) {
+        if let Some(sh) = self.sig_shape(db, e, scope)? {
             return Ok(Some(sh));
         }
         let span = db.exprs[e].span;
-        // A signal of a package has no value during elaboration, but a constrained subtype
-        // has bounds (`gIntReq'range` in a port subtype).
-        if let ExprKind::Obj(d) = &db.exprs[e].kind
-            && let DeclKind::Object(o) = &db.decls[*d].kind
-            && o.class == ObjClass::Signal
-            && matches!(
-                db.scopes[db.decls[*d].scope].kind,
-                SemScope::Package | SemScope::PackageBody
-            )
-            && let Some(sh) = self.shape(db, o.subtype, None, span)?
-        {
-            return Ok(Some(sh));
-        }
         match self.eval(db, e, scope)? {
             Val::Array(ArrayConst { bounds, .. }) => Ok(Some(Shape::Array {
                 ty: db.base(db.exprs[e].subtype),

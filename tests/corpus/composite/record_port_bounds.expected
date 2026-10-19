@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:record_port_bounds:c:g(1):_p0	g 1
+diag	note	0	0	:record_port_bounds:c:g(2):_p0	g 2
+diag	note	0	0	:record_port_bounds:c:g(3):_p0	g 3
+diag	note	0	0	:record_port_bounds:c:g(4):_p0	g 4
+diag	note	0	0	:record_port_bounds:c:g(5):_p0	g 5
+diag	note	0	0	:record_port_bounds:c:blk:_p0	blk 10
+diag	note	0	0	:record_port_bounds:c:_p0	dw 8 uw 4 id 1 5 aw 2
+diag	note	0	0	:record_port_bounds:c:_p0	u 4 d 10 3 v 9 2
+diag	note	0	0	:record_port_bounds:c:_p0	run 8 7

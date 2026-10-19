@@ -19,12 +19,16 @@ test "$(git -C "$tmp/up" rev-parse HEAD)" = "$PIN"
 python3 -I "$here/tools/derive_libs.py" "$tmp/up" "$tmp/out"
 # 3. compare or write
 if [ "$mode" = --write ]; then
+  # The VITAL packages (ieee/*/vital_*) come from another source (lib/SOURCES.md): keep them.
+  mkdir "$tmp/vital"
+  for r in 2008 2019; do mkdir "$tmp/vital/$r"; cp "$here"/lib/ieee/$r/vital_* "$tmp/vital/$r/"; done
   rm -rf "$here/lib/std" "$here/lib/ieee"
   cp -r "$tmp/out/std" "$tmp/out/ieee" "$here/lib/"
+  for r in 2008 2019; do cp "$tmp/vital/$r"/* "$here/lib/ieee/$r/"; done
   (cd "$here/lib" && find std ieee -type f | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
 else
   diff -r "$tmp/out/std" "$here/lib/std"
-  diff -r "$tmp/out/ieee" "$here/lib/ieee"
+  diff -r -x 'vital_*' "$tmp/out/ieee" "$here/lib/ieee"
 fi
 (cd "$here/lib" && sha256sum -c --quiet SHA256SUMS)
 echo "ok: lib/std and lib/ieee match $PIN"

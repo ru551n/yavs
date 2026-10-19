@@ -174,6 +174,8 @@ const PASS: &[&str] = &[
     "ieee/math_complex_ops_2019",
     "ieee/math_real_ops",
     "ieee/math_real_ops_2019",
+    "ieee/vital_model",
+    "ieee/vital_model_2019",
     "ieee/numeric_bit_ops",
     "ieee/numeric_bit_ops_2019",
     "ieee/numeric_std_ops",

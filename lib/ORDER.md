@@ -35,6 +35,12 @@ ieee ieee/2008/fixed_pkg.vhdl
 ieee ieee/2008/float_generic_pkg.vhdl
 ieee ieee/2008/float_generic_pkg-body.vhdl
 ieee ieee/2008/float_pkg.vhdl
+ieee ieee/2008/vital_timing.vhdl
+ieee ieee/2008/vital_timing-body.vhdl
+ieee ieee/2008/vital_primitives.vhdl
+ieee ieee/2008/vital_primitives-body.vhdl
+ieee ieee/2008/vital_memory.vhdl
+ieee ieee/2008/vital_memory-body.vhdl
 ieee ieee/2008/ieee_std_context.vhdl
 ieee ieee/2008/ieee_bit_context.vhdl
 ```
@@ -68,6 +74,12 @@ ieee ieee/2019/fixed_pkg.vhdl
 ieee ieee/2019/float_generic_pkg.vhdl
 ieee ieee/2019/float_generic_pkg-body.vhdl
 ieee ieee/2019/float_pkg.vhdl
+ieee ieee/2019/vital_timing.vhdl
+ieee ieee/2019/vital_timing-body.vhdl
+ieee ieee/2019/vital_primitives.vhdl
+ieee ieee/2019/vital_primitives-body.vhdl
+ieee ieee/2019/vital_memory.vhdl
+ieee ieee/2019/vital_memory-body.vhdl
 ieee ieee/2019/ieee_std_context.vhdl
 ieee ieee/2019/ieee_bit_context.vhdl
 ```

@@ -23,6 +23,9 @@ const UNITS: &[(&str, &str)] = &[
     ("ieee", "fixed_pkg"),
     ("ieee", "float_generic_pkg"),
     ("ieee", "float_pkg"),
+    ("ieee", "vital_timing"),
+    ("ieee", "vital_primitives"),
+    ("ieee", "vital_memory"),
 ];
 
 /// Packages whose bodies analyze clean too.
@@ -36,6 +39,9 @@ const BODIES: &[&str] = &[
     "std_logic_1164",
     "fixed_generic_pkg",
     "float_generic_pkg",
+    "vital_timing",
+    "vital_primitives",
+    "vital_memory",
 ];
 
 fn analyze(rev: LangRev, lib: &str, unit: &str) -> Db {

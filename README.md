@@ -41,4 +41,6 @@ See the [documentation](https://yavs.readthedocs.io) for the command line and th
 
 yavs is licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your
 option. The IEEE `std` and `ieee` sources in `lib/` are Apache-2.0 (`lib/LICENSE`,
-`lib/SOURCES.md`).
+`lib/SOURCES.md`). The built-in IEEE 1076.4 VITAL packages (`ieee.vital_timing`,
+`ieee.vital_primitives`, `ieee.vital_memory`) are IEEE-copyrighted and carry no explicit licence
+grant; they are redistributed unmodified, as GHDL and NVC do (`lib/LICENSE-IEEE-VITAL`).

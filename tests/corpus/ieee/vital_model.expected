@@ -1,0 +1,9 @@
+exit	0
+diag	note	8000000	0	:vital_model:_p4	i 0 n '1' m '0' d '1' q '1'
+diag	note	16000000	0	:vital_model:_p4	i 1 n '1' m '0' d '1' q '1'
+diag	note	24000000	0	:vital_model:_p4	i 2 n '1' m '1' d '0' q '1'
+diag	note	32000000	0	:vital_model:_p4	i 3 n '0' m '1' d '1' q '1'
+diag	note	40000000	0	:vital_model:_p4	i 4 n '1' m '0' d '1' q '1'
+diag	note	48000000	0	:vital_model:_p4	i 5 n '1' m '1' d '0' q '0'
+diag	note	56000000	0	:vital_model:_p4	i 6 n '1' m '0' d '1' q '1'
+diag	note	64000000	0	:vital_model:_p4	i 7 n '0' m '1' d '1' q '1'

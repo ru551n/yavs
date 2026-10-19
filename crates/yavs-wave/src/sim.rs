@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yavs_elab::{Built, Elaborated, ObjKind, ScopeId, Shape, Val};
-use yavs_interp::InterpProcess;
+use yavs_interp::{CallVal, InterpProcess};
 use yavs_kernel::{
     Elem, Hook, Observer, Phase, PortMode, ProcId, SigRef, SimControl, SimError, Value,
 };
@@ -69,6 +69,10 @@ struct Var {
     at: VarAt,
     entries: std::ops::Range<u32>,
     last: Vec<Vec<u8>>,
+    /// The process's `execs` at the last read (`u64::MAX`: never read): same means unchanged.
+    execs: u64,
+    /// The raw value at the last read: an equal one needs no decoding.
+    raw: Option<CallVal>,
 }
 
 struct Entry {
@@ -296,35 +300,56 @@ impl State {
         }
     }
 
-    /// The value of variable `k`; `None` while its process has no frame.
-    fn read_var(&self, hook: &mut Hook<'_>, k: usize) -> Result<Option<Val>, String> {
+    /// The value of variable `k` if it may differ from the last read; `None` while its process
+    /// has no frame, has not run since, or the raw value is unchanged.
+    fn read_var(&mut self, hook: &mut Hook<'_>, k: usize) -> Result<Option<Val>, String> {
         let bug =
             |what: &str| format!("this is a bug in yavs: reading a recorded variable: {what}");
-        match &self.vars[k].at {
-            VarAt::Proc { proc, name } => hook
-                .with_process(*proc, |p| {
-                    let p = p
-                        .as_any()
-                        .and_then(|a| a.downcast_mut::<InterpProcess>())
-                        .ok_or_else(|| bug("not an interpreter process"))?;
-                    if !p.has_vars() {
-                        return Ok(None);
-                    }
-                    let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
-                    yavs_elab::ir_decode(p.program(), ty, &cv)
-                        .map(Some)
-                        .ok_or_else(|| bug("value not decoded"))
-                })
-                .unwrap_or_else(|| Err(bug("no process"))),
+        let var = &mut self.vars[k];
+        let (execs, raw) = (&mut var.execs, &mut var.raw);
+        let fresh = |cv: CallVal, raw: &mut Option<CallVal>| {
+            if raw.as_ref() == Some(&cv) {
+                return None;
+            }
+            Some(cv)
+        };
+        let (ty, prog, cv) = match &var.at {
+            VarAt::Proc { proc, name } => {
+                let r = hook
+                    .with_process(*proc, |p| {
+                        let p = p
+                            .as_any()
+                            .and_then(|a| a.downcast_mut::<InterpProcess>())
+                            .ok_or_else(|| bug("not an interpreter process"))?;
+                        if !p.has_vars() || p.execs() == *execs {
+                            return Ok(None);
+                        }
+                        let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
+                        *execs = p.execs();
+                        let Some(cv) = fresh(cv, raw) else {
+                            return Ok(None);
+                        };
+                        let v = yavs_elab::ir_decode(p.program(), ty, &cv)
+                            .ok_or_else(|| bug("value not decoded"))?;
+                        *raw = Some(cv);
+                        Ok(Some(v))
+                    })
+                    .unwrap_or_else(|| Err(bug("no process")));
+                return r;
+            }
             VarAt::Shared { slot, ty } => {
                 let b = self.built.as_ref().ok_or_else(|| bug("no shared state"))?;
                 let cv =
                     yavs_interp::shared_var(&b.rt, &b.shared, *slot, *ty).map_err(|m| bug(&m))?;
-                yavs_elab::ir_decode(&b.rt.prog, *ty, &cv)
-                    .map(Some)
-                    .ok_or_else(|| bug("value not decoded"))
+                (*ty, &b.rt.prog, cv)
             }
-        }
+        };
+        let Some(cv) = fresh(cv, raw) else {
+            return Ok(None);
+        };
+        let v = yavs_elab::ir_decode(prog, ty, &cv).ok_or_else(|| bug("value not decoded"))?;
+        *raw = Some(cv);
+        Ok(Some(v))
     }
 
     fn mark(&mut self, i: u32) {
@@ -871,6 +896,8 @@ impl Design<'_> {
                 at,
                 entries: first..last,
                 last: vec![Vec::new(); (last - first) as usize],
+                execs: u64::MAX,
+                raw: None,
             });
         }
     }

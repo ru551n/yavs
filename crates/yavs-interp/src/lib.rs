@@ -463,6 +463,9 @@ pub struct InterpProcess {
     shared: Option<Arc<Mutex<SharedState>>>,
     /// This process's entry in `SharedState::procs`.
     roots_slot: Option<usize>,
+    /// Bumped whenever the machine runs or a variable is written: unchanged means every
+    /// variable of the process has its last value (the waveform recorder skips it).
+    execs: u64,
 }
 
 impl InterpProcess {
@@ -502,6 +505,7 @@ impl InterpProcess {
             done: false,
             shared,
             roots_slot: None,
+            execs: 0,
         })
     }
 
@@ -536,6 +540,7 @@ impl InterpProcess {
     /// Writes `v` into variable `name` (see [`InterpProcess::var`]); a composite keeps its
     /// bounds, so `v`'s data must have the size of the current value's.
     pub fn set_var(&mut self, name: &str, v: &CallVal) -> Result<(), String> {
+        self.execs += 1;
         let (ty, a) = self.var_slot(name)?;
         self.with_sh(|m| write_slot(m, ty, a, v))
     }
@@ -559,6 +564,11 @@ impl InterpProcess {
 
     /// Whether the process has its variables: it has started (or [`InterpProcess::prestart`]
     /// ran) and not ended.
+    /// A counter that changes whenever the process has run or had a variable written.
+    pub fn execs(&self) -> u64 {
+        self.execs
+    }
+
     pub fn has_vars(&self) -> bool {
         let m = &self.m;
         m.frames.first().is_some_and(|f| f.func == m.entry)
@@ -744,6 +754,7 @@ impl Process for InterpProcess {
 impl InterpProcess {
     /// Runs the machine with the shared state locked, until it suspends or returns.
     fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
+        self.execs += 1;
         let shared = self.shared.clone();
         let mut guard = match &shared {
             Some(s) => Some(

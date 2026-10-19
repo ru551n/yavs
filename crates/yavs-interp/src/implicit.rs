@@ -236,10 +236,12 @@ fn logic_of(sc: Sc) -> Option<LogicKind> {
     }
 }
 
+/// Bytes of one element (`Ty::elem_size`).
 fn elem_size(sc: Sc) -> u64 {
     match sc {
         Sc::Enum(n, _) if n <= 256 => 1,
         Sc::Enum(n, _) if n != u64::MAX => 4,
+        Sc::Int(lo, hi) if Ty::Int { lo, hi }.elem_size() == Some(4) => 4,
         _ => 8,
     }
 }
@@ -279,14 +281,7 @@ fn read_arr(m: &Machine, t: TyId, fat: u64) -> R<Arr> {
         None => {
             let w = elem_size(sc);
             let bytes = m.rd(data, n * w)?;
-            bytes
-                .chunks(w as usize)
-                .map(|c| {
-                    let mut x = [0u8; 8];
-                    x[..c.len()].copy_from_slice(c);
-                    u64::from_le_bytes(x)
-                })
-                .collect()
+            bytes.chunks(w as usize).map(crate::exec::cell).collect()
         }
     };
     Ok(Arr { dims, el })

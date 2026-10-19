@@ -455,7 +455,8 @@ fn records_and_sub_element_map() {
         .iter()
         .map(|l| (l.ty.len, l.ty.elem))
         .collect();
-    assert_eq!(lens, [(3, Elem::Bytes(8)), (6, Elem::Logic)]);
+    // `integer` is 4 bytes in the kernel (`Ty::elem_size`).
+    assert_eq!(lens, [(3, Elem::Bytes(4)), (6, Elem::Logic)]);
     let o = crate::ObjId(0);
     let (r, _) = e.nets.select(o, &[Sel::Index(vec![1])]).expect("r(1)");
     assert_eq!(
@@ -1169,7 +1170,7 @@ fn port_conversions() {
     };
     assert_eq!(
         v(&sim, ":t:u:i"),
-        yavs_kernel::Value::Bytes(10i64.to_le_bytes().to_vec())
+        yavs_kernel::Value::Bytes(10i32.to_le_bytes().to_vec())
     );
     assert_eq!(
         v(&sim, ":t:u:r"),

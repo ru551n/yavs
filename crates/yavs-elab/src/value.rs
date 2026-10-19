@@ -101,7 +101,13 @@ fn scalar_val(t: &Ty, c: u64) -> Option<Val> {
     })
 }
 
+/// The cell of `n` bytes at `at`; a 4-byte cell (a narrow integer array element,
+/// `Ty::elem_size`) is sign-extended.
 fn read(b: &[u8], at: usize, n: usize) -> Option<u64> {
+    if n == 4 {
+        let w: [u8; 4] = b.get(at..at + 4)?.try_into().ok()?;
+        return Some(i64::from(i32::from_le_bytes(w)) as u64);
+    }
     let mut w = [0u8; 8];
     w[..n].copy_from_slice(b.get(at..at + n)?);
     Some(u64::from_le_bytes(w))
@@ -175,8 +181,14 @@ fn put(prog: &Program, ty: TyId, v: &Val) -> Option<(Vec<u8>, Vec<u8>)> {
             }
             let xs = elems(a);
             let mut parts = Vec::with_capacity(xs.len());
+            // A scalar element may be narrower than the scalar (`Ty::elem_size`).
+            let es = prog.types.get(*elem)?.elem_size();
             for x in &xs {
-                parts.push(put(prog, *elem, x)?);
+                let (mut d, ed) = put(prog, *elem, x)?;
+                if let Some(n) = es {
+                    d.truncate(n as usize);
+                }
+                parts.push((d, ed));
             }
             let mut desc = dope(&a.bounds);
             if elem_desc.is_none() && Ty::needs_desc(&prog.types, *elem) {
@@ -304,8 +316,13 @@ fn get(prog: &Program, ty: TyId, data: &[u8], desc: &[u8]) -> Option<(Val, usize
                 None => desc.get(at..)?,
             };
             let mut xs = Vec::with_capacity(l.count as usize);
+            let et = prog.types.get(*elem)?;
             for k in 0..l.count as usize {
-                xs.push(get(prog, *elem, data.get(k * l.stride as usize..)?, ed)?.0);
+                let at = k * l.stride as usize;
+                xs.push(match et.elem_size() {
+                    Some(n) => scalar_val(et, read(data, at, n as usize)?)?,
+                    None => get(prog, *elem, data.get(at..)?, ed)?.0,
+                });
             }
             Some((make(&bounds, xs), used))
         }
@@ -514,7 +531,7 @@ pub fn leaf_locs(prog: &Program, ty: TyId, desc: &[u8], paths: &[&[u32]]) -> Opt
         out: vec![None; paths.len()],
     };
     let ents: Vec<(usize, &[u32])> = paths.iter().copied().enumerate().collect();
-    l.go(ty, desc, 0, &ents)?;
+    l.go(ty, desc, 0, &ents, false)?;
     l.out.into_iter().collect()
 }
 
@@ -553,10 +570,14 @@ impl Locator<'_> {
         Some(gs)
     }
 
-    fn go(&mut self, ty: TyId, desc: &[u8], at: usize, ents: &Ents<'_>) -> Option<()> {
+    /// `elem`: the value is an array element, so a narrow integer takes its element size.
+    fn go(&mut self, ty: TyId, desc: &[u8], at: usize, ents: &Ents<'_>, elem: bool) -> Option<()> {
         let prog = self.prog;
         let t = prog.types.get(ty)?;
-        if let Some(n) = t.scalar_size() {
+        if let Some(n) = t
+            .scalar_size()
+            .map(|n| if elem { t.elem_size().unwrap_or(n) } else { n })
+        {
             let kind = match t {
                 Ty::Enum { .. } => CellKind::Enum,
                 Ty::Int { .. } | Ty::Physical { .. } => CellKind::Int,
@@ -593,7 +614,7 @@ impl Locator<'_> {
                     if u64::from(k) >= l.count {
                         return None;
                     }
-                    self.go(*elem, ed, at + k as usize * l.stride as usize, &g)?;
+                    self.go(*elem, ed, at + k as usize * l.stride as usize, &g, true)?;
                 }
                 Some(())
             }
@@ -613,7 +634,7 @@ impl Locator<'_> {
                 for (k, g) in Self::groups(ents)? {
                     let k = k as usize;
                     let f = fields.get(k)?;
-                    self.go(f.ty, fds[k], at + *l.offsets.get(k)? as usize, &g)?;
+                    self.go(f.ty, fds[k], at + *l.offsets.get(k)? as usize, &g, false)?;
                 }
                 Some(())
             }

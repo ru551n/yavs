@@ -109,16 +109,17 @@ fn unconstrained_integer_array_with_copy_back() {
     let (x, fun) = setup(&mut pb, "sum_double", vec![arg], Some(CType::I64));
     let mut fb = pb.define(fun);
     stmt(&mut fb, StmtKind::Return);
-    let data = alloc(&mut fb, 24);
+    // `integer` elements are 4 bytes (`Ty::elem_size`).
+    let data = alloc(&mut fb, 12);
     for k in 0..3 {
-        let a = at(&mut fb, data, 8 * k);
+        let a = at(&mut fb, data, 4 * k);
         let v = fb.int(k + 1);
-        st(&mut fb, a, v, Width::B8);
+        st(&mut fb, a, v, Width::B4);
     }
     let fp = fat(&mut fb, data, 1, 3, false);
     let s = foreign(&mut fb, x, &[fp]);
-    let a = at(&mut fb, data, 16);
-    let last = ld(&mut fb, a, Width::B8);
+    let a = at(&mut fb, data, 8);
+    let last = ld(&mut fb, a, Width::B4);
     let k = fb.int(1000);
     let s = bin(&mut fb, IntOp::Mul, s, k);
     let r = bin(&mut fb, IntOp::Add, s, last);

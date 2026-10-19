@@ -46,6 +46,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | Foreign calls without libffi through `yavs-ffi`; arrays as C-layout copies, records as aligned structs | ir.md 1.7 | `docs/decisions.md` "IR and interpreter" (Foreign arrays) |
 | Verifier checks register liveness across suspension within a block only | Cross-block needs dataflow (JIT tier) | `docs/decisions.md` "IR and interpreter" |
 | The optimiser never removes a store, a `Stmt` or a `Cover`, never lets a register live across a suspension, forgets memory facts at every `Stmt` (a debugger may write a named local) and drops a check only when it provably passes | Stepping, coverage, DAP, identical runtime errors | #427, ir.md 9 |
+| Array elements of an integer type within 32 bits are 4 bytes (`Ty::elem_size`), scalars 8; `Width::B4` loads sign-extend | Memory and cache of integer arrays (R12, #415) | `docs/decisions.md` "Narrow integer storage" |
 | Time resolution is a runtime setting (`Bindings::resolution`), never baked into IR | Rule 7 | `docs/plan.md` rule 7 |
 | Coverage items identified by hierarchical path plus span hash (`CovInfo`: statement, `CovKind::Statement` or `Branch(arm)`; path and hash are made by yavs-cov); instrumentation is ordinary IR | Rule 10 | `docs/plan.md` rule 10 |
 

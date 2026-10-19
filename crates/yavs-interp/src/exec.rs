@@ -1082,9 +1082,9 @@ impl Machine {
             _ => None,
         };
         if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
-            return Ok(le_bytes(b));
+            return Ok(cell_w(b, w));
         }
-        Ok(le_bytes(self.rd(a, n)?))
+        Ok(cell_w(self.rd(a, n)?, w))
     }
 
     /// Bounds and direction word of dimension `dim` of the descriptor at `base`.
@@ -2813,13 +2813,7 @@ impl Machine {
                 };
                 let c = kc!();
                 let v = match ty.elem {
-                    Elem::Bytes(es) if es <= 8 => {
-                        let b = c.value(sr)?;
-                        let mut a = [0u8; 8];
-                        let n = b.len().min(8);
-                        a[..n].copy_from_slice(&b[..n]);
-                        u64::from_le_bytes(a)
-                    }
+                    Elem::Bytes(es) if es <= 8 => cell(c.value(sr)?),
                     Elem::Logic => {
                         let Some(r) = sr.range.filter(|r| r.len > 0) else {
                             return Err(ice("scalar read of a null signal range"));
@@ -3151,6 +3145,32 @@ fn force_mode(k: ForceKind) -> ForceMode {
     match k {
         ForceKind::In => ForceMode::Effective,
         ForceKind::Out => ForceMode::Driving,
+    }
+}
+
+/// A little-endian memory cell of up to 8 bytes as a register value: a 4-byte cell is
+/// sign-extended (narrow integer array elements, `Width::B4`), others zero-extended.
+#[inline]
+pub(crate) fn cell(b: &[u8]) -> u64 {
+    if let Ok(x) = <[u8; 4]>::try_from(b) {
+        return i64::from(i32::from_le_bytes(x)) as u64;
+    }
+    let mut x = [0u8; 8];
+    let n = b.len().min(8);
+    x[..n].copy_from_slice(&b[..n]);
+    u64::from_le_bytes(x)
+}
+
+/// [`cell`] of `w.bytes()` bytes, `w` known: `B4` sign-extends.
+#[inline(always)]
+fn cell_w(b: &[u8], w: Width) -> u64 {
+    let mut x = [0u8; 8];
+    x[..b.len()].copy_from_slice(b);
+    let v = u64::from_le_bytes(x);
+    if w == Width::B4 {
+        v as u32 as i32 as i64 as u64
+    } else {
+        v
     }
 }
 

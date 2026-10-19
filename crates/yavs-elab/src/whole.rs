@@ -17,8 +17,9 @@ use crate::hier::Shape;
 /// Where one kernel element lives in the IR value, in bytes from the value's start.
 #[derive(Clone, Copy, Debug)]
 enum Place {
-    /// A byte scalar: `w` bytes at `off`, as the kernel stores them.
-    Bytes { off: u64, w: u64 },
+    /// A byte scalar: `mem` bytes at `off`, `w` bytes in the kernel (a narrow integer is 4
+    /// bytes in the kernel and 8 as a record field, `Ty::elem_size`).
+    Bytes { off: u64, w: u64, mem: u64 },
     /// A logic scalar (`std_ulogic`, `bit`, `boolean`): its position at `off`, which is its
     /// kernel code minus `bias` (2 for BIT and BOOLEAN, docs/decisions.md).
     Pos { off: u64, bias: u8 },
@@ -73,7 +74,9 @@ fn desc_of(prog: &Program, ty: TyId, shape: &Shape) -> Result<Vec<u8>, String> {
 }
 
 /// The places of the scalars of a value of shape `shape` (IR type `ty`, descriptor `desc`)
-/// at byte `base`, per leaf (record field path), each in row-major order.
+/// at byte `base`, per leaf (record field path), each in row-major order; `in_array`: the
+/// value is an array element.
+#[allow(clippy::too_many_arguments)]
 fn places(
     prog: &Program,
     ty: TyId,
@@ -82,9 +85,16 @@ fn places(
     base: u64,
     path: &mut Vec<u32>,
     out: &mut BTreeMap<Vec<u32>, Vec<Place>>,
+    in_array: bool,
 ) -> Result<(), String> {
     let t = prog.types.get(ty).ok_or_else(mismatch)?;
     if let Some(w) = t.scalar_size() {
+        // An array element is `elem_size` bytes in memory, a record field `scalar_size`.
+        let mem = if in_array {
+            t.elem_size().unwrap_or(w)
+        } else {
+            w
+        };
         let p = match (shape, t) {
             (
                 Shape::Scalar {
@@ -101,7 +111,11 @@ fn places(
                     ..
                 },
                 _,
-            ) if u64::from(*n) == w => Place::Bytes { off: base, w },
+            ) if Some(u64::from(*n)) == t.elem_size() => Place::Bytes {
+                off: base,
+                w: u64::from(*n),
+                mem,
+            },
             _ => return Err(mismatch()),
         };
         out.entry(path.clone()).or_default().push(p);
@@ -140,7 +154,7 @@ fn places(
                     .unwrap_or(&[]),
             };
             for k in 0..l.count {
-                places(prog, *elem, es, edesc, base + k * l.stride, path, out)?;
+                places(prog, *elem, es, edesc, base + k * l.stride, path, out, true)?;
             }
             Ok(())
         }
@@ -158,7 +172,7 @@ fn places(
                     }
                 };
                 path.push(i as u32);
-                places(prog, f.ty, s, fd, base + off, path, out)?;
+                places(prog, f.ty, s, fd, base + off, path, out, false)?;
                 path.pop();
             }
             Ok(())
@@ -189,7 +203,7 @@ impl Map {
     pub(crate) fn new(prog: &Program, ty: TyId, shape: &Shape) -> Result<Map, String> {
         let desc = desc_of(prog, ty, shape)?;
         let mut per = BTreeMap::new();
-        places(prog, ty, shape, &desc, 0, &mut Vec::new(), &mut per)?;
+        places(prog, ty, shape, &desc, 0, &mut Vec::new(), &mut per, false)?;
         let mut flat = Vec::new();
         for (path, leaf, n) in shape.leaves() {
             let mut v = per.remove(&path).ok_or_else(mismatch)?;
@@ -261,10 +275,17 @@ impl Map {
         let mut at = 0;
         for p in &self.flat {
             match *p {
-                Place::Bytes { off, w } => {
-                    let (o, w) = ((sb + off) as usize, w as usize);
-                    data.get_mut(o..o + w)?
-                        .copy_from_slice(src.get(at..at + w)?);
+                Place::Bytes { off, w, mem } => {
+                    let (o, w, mem) = ((sb + off) as usize, w as usize, mem as usize);
+                    let k = src.get(at..at + w)?;
+                    let d = data.get_mut(o..o + mem)?;
+                    match <[u8; 4]>::try_from(k) {
+                        // A narrow integer widened: sign-extended.
+                        Ok(x) if mem == 8 => {
+                            d.copy_from_slice(&i64::from(i32::from_le_bytes(x)).to_le_bytes())
+                        }
+                        _ => d.copy_from_slice(k),
+                    }
                     at += w;
                 }
                 Place::Pos { off, bias } => {
@@ -296,8 +317,9 @@ impl Map {
         let mut at = 0;
         for p in &self.flat {
             match *p {
-                Place::Bytes { off, w } => {
+                Place::Bytes { off, w, .. } => {
                     let (o, w) = (off as usize, w as usize);
+                    // Little-endian: a narrow integer's kernel bytes are its first bytes.
                     out.get_mut(at..at + w)?
                         .copy_from_slice(data.get(o..o + w)?);
                     at += w;

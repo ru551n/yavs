@@ -110,7 +110,7 @@ is a constant in the pool. There is no second, static-only path.
 
 ```rust
 pub enum Ty {
-    Int  { lo: i64, hi: i64 },            // integer & physical: always i64 in memory (rule 7)
+    Int  { lo: i64, hi: i64 },            // integer & physical: i64 in registers; 4 bytes as an array element within 32 bits (rule 7)
     Enum { lits: u32, logic: Option<LogicKind> },   // u8 if <= 256 literals else u32
     Real,                                 // f64
     Array   { elem: TyId, dims: u8, elem_resolved: bool },
@@ -124,7 +124,7 @@ pub enum LogicKind { StdULogic, Bit, Boolean }       // gets the yavs-logic fast
 
 | Value | In memory | Notes |
 |---|---|---|
-| integer, physical | `i64` | ranges checked by `Check` (1.5); 2008 INTEGER is 32-bit by its range only |
+| integer, physical | `i64` | ranges checked by `Check` (1.5); 2008 INTEGER is 32-bit by its range only. An array element of an integer type whose range fits in 32 bits is an `i32` (`Ty::elem_size`, `Width::B4` loads sign-extend), and so is a kernel signal element of it |
 | enum | `u8` / `u32` | a scalar std_ulogic is the bare yavs-logic code (`StdULogic as u8`, decisions.md) |
 | logic array | bit-planes (below) | arrays whose scalar leaf is a `LogicKind` enum |
 | real | `f64` | |

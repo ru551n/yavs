@@ -332,7 +332,7 @@ impl Machine {
                 }
             }
             None => {
-                let es = et.scalar_size().ok_or_else(|| ice("array element size"))?;
+                let es = et.elem_size().ok_or_else(|| ice("array element size"))?;
                 let w = width_of(es)?;
                 for i in 0..n {
                     let v = self.load(add_addr(data, i * es)?, w)?;
@@ -414,7 +414,7 @@ impl Machine {
                 self.put_planes(data, &v)
             }
             None => {
-                let es = et.scalar_size().ok_or_else(|| ice("array element size"))?;
+                let es = et.elem_size().ok_or_else(|| ice("array element size"))?;
                 let w = width_of(es)?;
                 for i in 0..n {
                     let v = get_c(buf, i as usize * cs, ct);
@@ -746,7 +746,7 @@ impl Machine {
         let (et, ct, logic, _) = self.array_elem(ty, name)?;
         let size = match logic {
             Some(_) => n.div_ceil(64) * 32,
-            None => n * et.scalar_size().ok_or_else(|| ice("array element size"))?,
+            None => n * et.elem_size().ok_or_else(|| ice("array element size"))?,
         };
         let data = self.temp_alloc(size)?;
         let cs = csize(ct);

@@ -210,7 +210,7 @@ impl Dim {
 fn range_kind(sc: &Scalar) -> vhpiClassKindT {
     match sc {
         Scalar::Enum { .. } => vhpiEnumRangeK,
-        Scalar::Int => vhpiIntRangeK,
+        Scalar::Int { .. } => vhpiIntRangeK,
         Scalar::Real => vhpiFloatRangeK,
         Scalar::Phys { .. } => vhpiPhysRangeK,
     }
@@ -797,7 +797,10 @@ impl Builder<'_> {
                 TypeKind::Physical { .. } => Scalar::Phys {
                     time: Some(t) == wk.time,
                 },
-                _ => Scalar::Int,
+                // The kernel holds an integer type within 32 bits in 4 bytes (`Ty::elem_size`).
+                _ => Scalar::Int {
+                    narrow: yavs_elab::elem_of(db, t) == yavs_kernel::Elem::Bytes(4),
+                },
             })
             .clone()
     }
@@ -1143,7 +1146,7 @@ mod tests {
         let l = Layout::Array {
             dims: vec![dim(1, 0), dim(3, 2)],
             elem: Box::new(Layout::Record(vec![
-                ("a".into(), Layout::Scalar(Scalar::Int)),
+                ("a".into(), Layout::Scalar(Scalar::Int { narrow: false })),
                 ("B".into(), Layout::Open),
             ])),
         };

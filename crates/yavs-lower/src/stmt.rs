@@ -812,7 +812,7 @@ impl Fx<'_, '_> {
         let tid = self.ty(t, span)?;
         let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_some();
         let bias = self.code_bias(tid);
-        let (_, rt, w) = self.scalar(elem, span)?;
+        let (_, rt, w) = self.elem_scalar(elem, span)?;
         let count = self.dope_len(dope);
         let named = self.named_target_positions(assocs, t, 0, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
@@ -1006,7 +1006,7 @@ impl Fx<'_, '_> {
             for &(data, dope) in &parts {
                 let (_, ed) = self.elem_desc(tid, dope)?;
                 let addr = self.elem_addr(tid, data, dope, pos);
-                subs.push(self.value_at(elem, addr, ed, span)?);
+                subs.push(self.elem_value_at(elem, addr, ed, span)?);
             }
             self.walk_elem(a.value, elem, &subs, span, cb)?;
         }
@@ -1044,7 +1044,7 @@ impl Fx<'_, '_> {
     ) -> R<()> {
         let db = self.db;
         let tid = self.ty(t, span)?;
-        let (_, rt, w) = self.scalar(elem, span)?;
+        let (_, rt, w) = self.elem_scalar(elem, span)?;
         let logic = self.is_logic(tid);
         let bias = self.code_bias(tid);
         let ndims = ty::array_of(db, t).map_or(0, |x| x.1);
@@ -1669,7 +1669,7 @@ impl Fx<'_, '_> {
                     .unsupported(span, "composite array elements of aggregate signal targets"));
             }
             let vtid = self.ty(t, span)?;
-            let (_, _, vw) = self.scalar(elem, span)?;
+            let (_, _, vw) = self.elem_scalar(elem, span)?;
             let mut vals = Vec::with_capacity(subs.len());
             for (&at, &v) in ats.iter().zip(subs) {
                 vals.push((at, self.arr(v, span)?));
@@ -1708,7 +1708,7 @@ impl Fx<'_, '_> {
         let vtid = self.ty(t, span)?;
         let vlogic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), vtid).is_some();
         let vbias = self.code_bias(vtid);
-        let (_, rt, vw) = self.scalar(esub, span)?;
+        let (_, rt, vw) = self.elem_scalar(esub, span)?;
         let mut vals = Vec::with_capacity(subs.len());
         for (&at, &v) in ats.iter().zip(subs) {
             vals.push((at, self.arr(v, span)?));

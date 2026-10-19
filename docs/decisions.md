@@ -2103,3 +2103,28 @@ user's performance priority:
   its already boxed process.
 - **The shared heap in `SharedState` is boxed** (yavs-interp): each process carries the
   shared-state fields it fills in only while it runs; 120 bytes less per process.
+
+
+## Narrow integer storage (R12; yavs-ir, yavs-lower, yavs-interp, yavs-elab, VHPI, waves, DAP, LLVM; #415, user approval 2026-10-19)
+
+- **What:** an integer type whose range fits in 32 bits (2008 `INTEGER`, `NATURAL`,
+  `POSITIVE`, user integer types) is stored in 4 bytes as an array element (`Ty::elem_size`,
+  so `Ty::layout` strides) and as a kernel signal element, scalar signals included
+  (`yavs_elab::elem_of`, `yavs_lower::narrow_elem`). Scalar variables, constants, parameters,
+  generics and record fields stay 8 bytes. Physical types, reals and 2019 `INTEGER` (64-bit)
+  are unchanged. Registers stay `i64` and arithmetic stays checked `i64` (rule 7, reworded).
+- **Why:** integer arrays (memories, scoreboards, `integer_vector`) took twice the memory and
+  cache they need (`docs/design/performance.md` R12).
+- **How values stay the same:** every store into a narrow cell comes after the range check of
+  its subtype, which is inside 32 bits; `Width::B4` loads sign-extend, as does every reader of
+  a 4-byte integer cell (natives, VHPI, waves, DAP, reflection, binary files, elaboration
+  values). A 4-byte load reads either form of a narrow integer (little-endian, the value fits),
+  which kernel attribute reads use. A narrow element passed to a scalar `out`/`inout` formal or
+  native goes through an 8-byte temporary (copy-in/copy-out). Conversions between closely
+  related arrays with different element types were already element-wise.
+- **Unchanged outside the process:** the binary file format (an integer is still written in the
+  fewest whole bytes its range needs), C layouts of foreign arrays and records, and the VHPI
+  value formats.
+- **Not done (step 2):** 1- and 2-byte elements from narrower subtype ranges need the element
+  subtype in lowering (elements are lowered from the base type today) and would clash with
+  1-byte enumerations in the kernel; only if step 1 measures worthwhile.

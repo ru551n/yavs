@@ -50,6 +50,10 @@ textual dump.
   store-to-load forwarding, dead pure definitions. The declarative part of a process (blocks
   before `Func::body`) runs once and is left alone. `YAVS_NO_IROPT=1` disables it. `Inst::visit_mut` is the
   writable form of `Inst::visit`.
+- Narrow integer elements (#415): `Ty::elem_size` is the size of an array element; an integer
+  type whose range fits in 32 bits takes 4 bytes there (`Ty::layout` strides follow it), every
+  other scalar its `scalar_size`. `Width::B4` loads sign-extend. Producers load and store
+  array elements with the element width, scalars with the scalar width.
 - `Inst::SigParts` and `Inst::SigSlice` (#71): signal references of several parts, possibly in
   different signals, in the same two registers (ir.md 1.8); `SIG_PART_BYTES` is the size of a
   `SigParts` entry. Producers slice references with `SigSlice`, never with arithmetic on the

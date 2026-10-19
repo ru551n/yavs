@@ -75,11 +75,9 @@ pub(crate) fn rd64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(a)
 }
 
+/// A cell of up to 8 bytes (4-byte cells sign-extended: [`crate::exec::cell`]).
 pub(crate) fn le(b: &[u8]) -> u64 {
-    let mut a = [0u8; 8];
-    let n = b.len().min(8);
-    a[..n].copy_from_slice(&b[..n]);
-    u64::from_le_bytes(a)
+    crate::exec::cell(b)
 }
 
 fn refl(prog: &Program, id: ReflId) -> R<&Refl> {
@@ -296,7 +294,13 @@ fn array_elem(
         return Ok((edesc, out));
     }
     let at = (k * lay.stride) as usize;
-    if let Some(w) = scalar {
+    // A scalar element may be narrower than the scalar (`Ty::elem_size`).
+    if let Some(w) = scalar.map(|w| {
+        types
+            .get(*et)
+            .and_then(Ty::elem_size)
+            .map_or(w, |n| n as usize)
+    }) {
         let b = val
             .get(at..at + w)
             .ok_or_else(|| ice("array element out of its value"))?;

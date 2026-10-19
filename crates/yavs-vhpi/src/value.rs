@@ -40,7 +40,11 @@ pub(crate) enum Scalar {
         /// BIT or BOOLEAN: kernel logic codes 2 and 3 for positions 0 and 1.
         bit01: bool,
     },
-    Int,
+    /// `narrow`: the kernel holds it in 4 bytes, not 8 (an integer type within 32 bits,
+    /// `Ty::elem_size`).
+    Int {
+        narrow: bool,
+    },
     Real,
     Phys {
         time: bool,
@@ -135,7 +139,14 @@ impl Read {
                     .map(|c| f64::from_le_bytes(*c))
                     .collect(),
             ),
-            (Scalar::Int | Scalar::Phys { .. }, Value::Bytes(b)) => Cells::Int(
+            (Scalar::Int { narrow: true }, Value::Bytes(b)) => Cells::Int(
+                b.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from(i32::from_le_bytes(*c)))
+                    .collect(),
+            ),
+            (Scalar::Int { .. } | Scalar::Phys { .. }, Value::Bytes(b)) => Cells::Int(
                 b.as_chunks::<8>()
                     .0
                     .iter()
@@ -234,7 +245,7 @@ impl Read {
         let int32 = |v: i64| {
             i32::try_from(v).map_err(|_| Error::Mismatch(format!("{v} does not fit format {name}")))
         };
-        let is_int = matches!(self.ty, Scalar::Int);
+        let is_int = matches!(self.ty, Scalar::Int { .. });
         let is_phys = matches!(self.ty, Scalar::Phys { .. });
         let is_time = matches!(self.ty, Scalar::Phys { time: true });
         let ticks = |fs: i64| fs / res_fs as i64;
@@ -337,7 +348,7 @@ impl Read {
                 character: true, ..
             } => "a character",
             Scalar::Enum { .. } => "an enumeration",
-            Scalar::Int => "an integer",
+            Scalar::Int { .. } => "an integer",
             Scalar::Real => "a real",
             Scalar::Phys { time: true } => "a time",
             Scalar::Phys { time: false } => "a physical",
@@ -499,7 +510,7 @@ impl Read {
         let what = match (&ty, n) {
             (Scalar::Enum { logic: true, .. }, _) => "a logic",
             (Scalar::Enum { .. }, _) => "an enumeration",
-            (Scalar::Int, _) => "an integer",
+            (Scalar::Int { .. }, _) => "an integer",
             (Scalar::Real, _) => "a real",
             (Scalar::Phys { .. }, _) => "a physical",
         };
@@ -527,7 +538,7 @@ impl Read {
         let cells: Cells = match (format, given) {
             (_, Given::Scalar(v)) if n.is_none() => match (v, &ty) {
                 (Member::Real(r), Scalar::Real) => Cells::Real(vec![r]),
-                (Member::Int(i), Scalar::Int | Scalar::Enum { .. }) => Cells::Int(vec![i]),
+                (Member::Int(i), Scalar::Int { .. } | Scalar::Enum { .. }) => Cells::Int(vec![i]),
                 (Member::Char(c), Scalar::Enum { .. }) => Cells::Int(vec![
                     by_char(c).ok_or_else(|| bad(format!("no literal '{}'", c as char)))? as i64,
                 ]),
@@ -577,12 +588,12 @@ impl Read {
                     (vhpiSmallEnumVecVal, Scalar::Enum { .. }) => {
                         Cells::Int(words.map(|w| i64::from(w[0])).collect())
                     }
-                    (vhpiIntVecVal, Scalar::Int) => Cells::Int(
+                    (vhpiIntVecVal, Scalar::Int { .. }) => Cells::Int(
                         words
                             .map(|w| i64::from(i32::from_ne_bytes(w.try_into().expect("4 bytes"))))
                             .collect(),
                     ),
-                    (vhpiLongIntVecVal, Scalar::Int) => Cells::Int(
+                    (vhpiLongIntVecVal, Scalar::Int { .. }) => Cells::Int(
                         words
                             .map(|w| i64::from_ne_bytes(w.try_into().expect("8 bytes")))
                             .collect(),
@@ -664,7 +675,7 @@ impl Read {
                                 .collect::<Result<_, _>>()?,
                         )
                     }
-                    (None, Scalar::Int | Scalar::Enum { .. }) => {
+                    (None, Scalar::Int { .. } | Scalar::Enum { .. }) => {
                         let (neg, digits) = match text.strip_prefix('-') {
                             Some(d) => (true, d),
                             None => (false, text),
@@ -721,6 +732,9 @@ impl Read {
             }
             (Scalar::Enum { .. }, Cells::Int(v)) => {
                 Value::Bytes(v.iter().flat_map(|&p| (p as u32).to_le_bytes()).collect())
+            }
+            (Scalar::Int { narrow: true }, Cells::Int(v)) => {
+                Value::Bytes(v.iter().flat_map(|&p| (p as i32).to_le_bytes()).collect())
             }
             (_, Cells::Int(v)) => Value::Bytes(v.iter().flat_map(|p| p.to_le_bytes()).collect()),
             (_, Cells::Real(v)) => Value::Bytes(v.iter().flat_map(|r| r.to_le_bytes()).collect()),
@@ -801,7 +815,7 @@ pub(crate) fn natural_format(ty: &Scalar, array: bool) -> vhpiFormatT {
         Scalar::Enum { .. } => (vhpiEnumVal, vhpiEnumVecVal),
         // ponytail: 32-bit integer formats; report vhpiLongIntVal for types wider than
         // 32 bits when 64-bit integer types need it.
-        Scalar::Int => (vhpiIntVal, vhpiIntVecVal),
+        Scalar::Int { .. } => (vhpiIntVal, vhpiIntVecVal),
         Scalar::Real => (vhpiRealVal, vhpiRealVecVal),
         Scalar::Phys { time: true } => (vhpiTimeVal, vhpiTimeVecVal),
         Scalar::Phys { time: false } => (vhpiPhysVal, vhpiPhysVecVal),
@@ -927,7 +941,12 @@ mod tests {
         let one = put(bit(), None, vhpiLogicVal, Given::Scalar(Member::Int(1)));
         assert_eq!(one, Ok(Value::Logic("1".parse().unwrap())));
         assert!(put(bit(), None, vhpiLogicVal, Given::Scalar(Member::Int(2))).is_err());
-        let int = put(Scalar::Int, None, vhpiDecStrVal, Given::Text(b"-9"));
+        let int = put(
+            Scalar::Int { narrow: false },
+            None,
+            vhpiDecStrVal,
+            Given::Text(b"-9"),
+        );
         assert_eq!(int, Ok(Value::Bytes((-9i64).to_le_bytes().to_vec())));
         // TIME counts in the resolution limit (here ns).
         let t = put(
@@ -938,7 +957,7 @@ mod tests {
         );
         assert_eq!(t, Ok(Value::Bytes(3_000_000i64.to_le_bytes().to_vec())));
         let r = put(
-            Scalar::Int,
+            Scalar::Int { narrow: false },
             None,
             vhpiRealVal,
             Given::Scalar(Member::Real(1.0)),
@@ -987,7 +1006,7 @@ mod tests {
     #[test]
     fn scalars() {
         let i = Read {
-            ty: Scalar::Int,
+            ty: Scalar::Int { narrow: false },
             array: false,
             cells: Cells::Int(vec![-42]),
         };
@@ -1082,7 +1101,7 @@ mod tests {
                 (1, ConstValue::Int(-20)),
             ])),
         });
-        let iv = Read::from_const(Scalar::Int, &arr).unwrap();
+        let iv = Read::from_const(Scalar::Int { narrow: false }, &arr).unwrap();
         assert_eq!(iv.natural(), vhpiIntVecVal);
         let Encoded::Buffer { bytes, n: 3 } = iv.encode(vhpiIntVecVal, 1).unwrap() else {
             panic!()

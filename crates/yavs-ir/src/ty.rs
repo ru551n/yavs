@@ -13,7 +13,9 @@
 //! - scalars, access, file, protected: empty.
 //!
 //! Value layout: integers, physical, reals, access handles and protected handles are 8 bytes;
-//! enums are 1 byte (up to 256 literals) or 4; files are 4. Logic arrays (whose scalar leaf is
+//! enums are 1 byte (up to 256 literals) or 4; files are 4. An array element of an integer type
+//! whose range fits in 32 bits is 4 bytes ([`Ty::elem_size`], docs/decisions.md "Narrow integer
+//! array elements"); 4-byte cells are sign-extended on load. Logic arrays (whose scalar leaf is
 //! a [`LogicKind`] enum) are yavs-logic bit-planes: `ceil(n / 64) * 32` bytes for `n` leaf
 //! elements, nested logic arrays being one plane vector over all elements. Other arrays are
 //! row major with naturally aligned elements. Record fields are naturally aligned; a
@@ -44,7 +46,8 @@ pub struct Field {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
-    /// Integer type: always `i64` in memory (rule 7).
+    /// Integer type: `i64` in registers and as a scalar in memory; 4 bytes as an array
+    /// element when the range fits in 32 bits ([`Ty::elem_size`]).
     Int {
         lo: i64,
         hi: i64,
@@ -204,6 +207,18 @@ impl Ty {
         })
     }
 
+    /// Size of one array element of this scalar type: [`Ty::scalar_size`], except an integer
+    /// type whose range fits in 32 bits takes 4 bytes (sign-extended on load); `None` for
+    /// arrays and records.
+    pub fn elem_size(&self) -> Option<u64> {
+        match self {
+            Ty::Int { lo, hi } if *lo >= i64::from(i32::MIN) && *hi <= i64::from(i32::MAX) => {
+                Some(4)
+            }
+            t => t.scalar_size(),
+        }
+    }
+
     /// Layout of `ty` constrained by `desc`, plus the number of descriptor bytes consumed.
     pub fn layout(
         types: &Types,
@@ -344,6 +359,14 @@ fn layout(
             if elem_desc.is_none() {
                 used += eused;
             }
+            let el = match types.get(*elem).and_then(Ty::elem_size) {
+                Some(n) => Layout {
+                    size: n,
+                    align: n,
+                    ..el
+                },
+                None => el,
+            };
             if Ty::logic_leaf(types, ty).is_some() {
                 let n = count.checked_mul(el.count).ok_or(LayoutError::TooLarge)?;
                 let size = n
@@ -470,7 +493,7 @@ mod tests {
         let (l, _) = Ty::layout(&types, &consts, slv, &dope(&[(0, -1, 0)])).unwrap();
         assert_eq!((l.size, l.count), (0, 0));
         let (l, _) = Ty::layout(&types, &consts, ints, &dope(&[(1, 10, 0)])).unwrap();
-        assert_eq!((l.size, l.stride), (80, 8));
+        assert_eq!((l.size, l.stride), (40, 4));
         // 1024 rows of 8 bits: one plane vector over 8192 elements.
         let (l, _) = Ty::layout(&types, &consts, mem, &dope(&[(0, 1023, 0)])).unwrap();
         assert_eq!((l.size, l.count), (8192 / 64 * 32, 8192));

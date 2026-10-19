@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use yavs_interp::{ForeignModel, ModelArg, ModelCall, ModelTxn, ScalarKind};
 use yavs_ir::{ForeignMode, LogicKind};
 
-use yavs_kernel::{DriverId, Hook, SigRef};
+use yavs_kernel::{DriverId, Hook, SigRef, Value};
 
 use crate::abi::{with_hook, with_state};
 use crate::design::{NodeId, Origin};
@@ -554,7 +554,15 @@ fn scalar_of(a: &ModelArg) -> Result<Scalar, (Fault, String)> {
                 "an access parameter has only a vhpiPtrVal value".into(),
             ));
         }
-        ScalarKind::Int => Scalar::Int,
+        // A signal holds a narrow integer array element in 4 bytes (`Ty::elem_size`).
+        ScalarKind::Int => Scalar::Int {
+            narrow: match (&a.signal, a.len) {
+                (Some(s), Some(n)) => {
+                    matches!(&s.value, Value::Bytes(b) if n > 0 && b.len() == 4 * n)
+                }
+                _ => false,
+            },
+        },
         ScalarKind::Real => Scalar::Real,
         ScalarKind::Phys { time } => Scalar::Phys { time: *time },
         ScalarKind::Enum { lits, logic } => {

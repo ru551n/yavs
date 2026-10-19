@@ -43,6 +43,8 @@ enum Conv {
     Enum8,
     /// Already in the layout: 4-byte enums, integers, physicals, reals.
     Raw,
+    /// A narrow integer array element (4 bytes in the kernel, `Ty::elem_size`) as an `i64`.
+    Int32,
 }
 
 enum Src {
@@ -521,6 +523,11 @@ fn convert(en: &Entry, v: &Value, out: &mut Vec<u8>) {
             out.extend_from_slice(&u32::from(b[0]).to_le_bytes());
         }
         (Conv::Raw, Value::Bytes(b)) => out.extend_from_slice(b),
+        (Conv::Int32, Value::Bytes(b)) => {
+            for c in b.as_chunks::<4>().0 {
+                out.extend_from_slice(&i64::from(i32::from_le_bytes(*c)).to_le_bytes());
+            }
+        }
         // A mismatch reaches the writer as a wrong length, which it reports.
         _ => {}
     }
@@ -1171,7 +1178,11 @@ impl Design<'_> {
                 bits: decl.and_then(|(_, r)| r).map_or(64, int_bits),
             },
         };
-        (SigType::Scalar(sc), Conv::Raw)
+        let conv = match (&sc, elem) {
+            (ScalarType::Integer { .. }, Elem::Bytes(4)) => Conv::Int32,
+            _ => Conv::Raw,
+        };
+        (SigType::Scalar(sc), conv)
     }
 
     /// The type name of a logic vector as users write it: `std_logic_vector`, `unsigned`.

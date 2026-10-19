@@ -109,8 +109,29 @@ pub(crate) fn width(ty: &Ty) -> Width {
     }
 }
 
+/// Whether elements of sem type `t` in an array are narrow integers (4 bytes in memory and in
+/// the kernel, `Ty::elem_size`): the same rule as the IR type [`lower`] gives `t`.
+pub fn narrow_elem(db: &Db, t: TypeId) -> bool {
+    matches!(
+        db.types[t].kind,
+        TypeKind::Integer | TypeKind::UniversalInteger
+    ) && int_bounds(db, db.types[t].base_subtype)
+        .is_some_and(|(lo, hi)| Ty::Int { lo, hi }.elem_size() == Some(4))
+}
+
+/// Memory width of an array element of IR type `ty` ([`Ty::elem_size`]: integers within 32
+/// bits are 4 bytes there, sign-extended on load).
+pub(crate) fn elem_width(ty: &Ty) -> Width {
+    match ty.elem_size() {
+        Some(1) => Width::B1,
+        Some(4) => Width::B4,
+        _ => Width::B8,
+    }
+}
+
 /// The kernel element representation of a signal of IR type `ty`: logic leaves (BIT, BOOLEAN,
-/// STD_ULOGIC, scalar or array) are bit-planes, everything else its scalar bytes. The
+/// STD_ULOGIC, scalar or array) are bit-planes, everything else its bytes as an array element
+/// (`Ty::elem_size`: a narrow integer is 4 bytes in the kernel, scalar signals included). The
 /// elaborator uses this to create kernel signals the IR's `Drive` and `SigRead` agree with.
 pub fn signal_elem(prog: &Program, ty: TyId) -> Option<Elem> {
     if Ty::logic_leaf(&prog.types, ty).is_some() {
@@ -120,7 +141,7 @@ pub fn signal_elem(prog: &Program, ty: TyId) -> Option<Elem> {
     while let Ty::Array { elem, .. } = t {
         t = prog.types.get(*elem)?;
     }
-    Some(Elem::Bytes(t.scalar_size()? as u32))
+    Some(Elem::Bytes(t.elem_size()? as u32))
 }
 
 /// A folded scalar as one register cell.
@@ -222,7 +243,7 @@ pub fn encode_array(prog: &Program, ty: TyId, v: &ConstValue) -> Option<(Vec<u8>
                 .collect()
         }
         None => {
-            let w = prog.types.get(*elem)?.scalar_size()? as usize;
+            let w = prog.types.get(*elem)?.elem_size()? as usize;
             cells
                 .iter()
                 .flat_map(|c| c.to_le_bytes()[..w].to_vec())

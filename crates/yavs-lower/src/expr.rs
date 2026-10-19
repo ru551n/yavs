@@ -39,6 +39,9 @@ pub(crate) struct Rng {
     pub dir: Dr,
 }
 
+/// [`Fx::leaf_facts`]: logic flag, plane code bias, scalar width and element (kernel) width.
+type LeafFacts = (bool, i64, Width, Width);
+
 /// An assignment target.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Place {
@@ -281,7 +284,7 @@ impl<'a> Fx<'a, '_> {
             .program()
             .types()
             .get(etid)
-            .map_or(8, |t| t.scalar_size().unwrap_or(8));
+            .map_or(8, |t| t.elem_size().unwrap_or(8));
         let mut dope = Vec::new();
         for &(l, d, r) in a.bounds.iter() {
             for x in [l, r, dir_cell(d)] {
@@ -1202,19 +1205,26 @@ impl<'a> Fx<'a, '_> {
         })
     }
 
-    /// Plane code bias, logic flag and scalar width of the elements of leaf `l`.
-    fn leaf_facts(&mut self, l: &crate::RecLeaf, span: Span) -> R<(bool, i64, Width)> {
+    /// Logic flag, plane code bias and the widths of the elements of leaf `l`: as a scalar
+    /// (a record field or a scalar leaf in memory) and as an array element, which is also
+    /// the kernel's width (`Ty::elem_size`: narrow integers are 4 bytes there).
+    fn leaf_facts(&mut self, l: &crate::RecLeaf, span: Span) -> R<LeafFacts> {
         let mut t = self.db.base(l.st);
         while let Some((e, _)) = ty::array_of(self.db, t) {
             t = self.db.base(e);
         }
         let tid = self.ty(t, span)?;
-        let w = crate::composite::scalar_w(self.fb.program(), tid).ok_or_else(|| {
-            self.cx
-                .ice(span, "leaf of a composite signal is not scalar")
-        })?;
+        let p = self.fb.program();
+        let (Some(sw), Some(ew)) = (
+            crate::composite::scalar_w(p, tid),
+            crate::composite::elem_w(p, tid),
+        ) else {
+            return Err(self
+                .cx
+                .ice(span, "leaf of a composite signal is not scalar"));
+        };
         let logic = self.is_logic(tid);
-        Ok((logic, self.code_bias(tid), w))
+        Ok((logic, self.code_bias(tid), sw, ew))
     }
 
     /// Copy the leaf at field path `rel` of the value of type `t` at `(addr, desc)` between
@@ -1230,7 +1240,7 @@ impl<'a> Fx<'a, '_> {
         rel: &[u32],
         k: Reg,
         buf: (Reg, Reg),
-        facts: (bool, i64, Width),
+        facts: LeafFacts,
         into_value: bool,
         span: Span,
     ) -> R<()> {
@@ -1278,7 +1288,7 @@ impl<'a> Fx<'a, '_> {
     fn leaf_copy(
         &mut self,
         (buf, len): (Reg, Reg),
-        (logic, bias, w): (bool, i64, Width),
+        (logic, bias, sw, w): LeafFacts,
         addr: Reg,
         block: Option<Reg>,
         k: Reg,
@@ -1320,6 +1330,23 @@ impl<'a> Fx<'a, '_> {
                     src_off,
                     n: m,
                 });
+            }
+            (false, None) if sw != w => {
+                // A narrow integer scalar: 8 bytes in the value, 4 in the kernel.
+                let at = self.reg(RegTy::Ptr);
+                self.emit(Inst::Index {
+                    dst: at,
+                    base: buf,
+                    pos: k,
+                    stride: w.bytes(),
+                });
+                if into_value {
+                    let x = self.load(at, w, RegTy::I64);
+                    self.store(addr, x, sw);
+                } else {
+                    let x = self.load(addr, sw, RegTy::I64);
+                    self.store(at, x, w);
+                }
             }
             (false, m) => {
                 let at = self.reg(RegTy::Ptr);
@@ -1428,7 +1455,7 @@ impl<'a> Fx<'a, '_> {
 
     /// Bytes of a buffer of `len` elements of leaf `l`: planes for logic, else `len * w`.
     pub fn leaf_size(&mut self, l: &crate::RecLeaf, len: Reg, span: Span) -> R<Reg> {
-        let (logic, _, w) = self.leaf_facts(l, span)?;
+        let (logic, _, _, w) = self.leaf_facts(l, span)?;
         Ok(if logic {
             let k = self.int(63);
             let a = self.bin(IntOp::Add, len, k);
@@ -2435,6 +2462,17 @@ impl<'a> Fx<'a, '_> {
                     cells.push(v);
                 }
                 Shape::Ref => match self.place(e)? {
+                    Place::Scalar { addr, w, .. } if w != self.scalar(p.subtype, es)?.2 => {
+                        // A narrow array element (4 bytes): copy-in/copy-out through a frame
+                        // temporary of the formal's width, as for a logic element below.
+                        let (_, rt, fw) = self.scalar(p.subtype, es)?;
+                        let off = self.fb.slot(8, 8);
+                        let t = self.addr(Space::Frame(self.depth), off);
+                        let v = self.load(addr, w, rt);
+                        self.store(t, v, fw);
+                        cells.push(t);
+                        self.writeback.push((off, Some(e), p.subtype));
+                    }
                     Place::Scalar { addr, .. } => cells.push(addr),
                     Place::Logic { data, idx, st } => {
                         // Copy-in/copy-out through a frame temporary (LRM 6.5.6.2 allows it
@@ -2968,7 +3006,7 @@ impl<'a> Fx<'a, '_> {
         let Some((elem, _)) = ty::array_of(self.db, t) else {
             return Err(self.cx.ice(span, "not an array type"));
         };
-        let (_, _, w) = self.scalar(elem, span)?;
+        let (_, _, w) = self.elem_scalar(elem, span)?;
         Ok((tid, logic, w))
     }
 
@@ -3088,7 +3126,7 @@ impl<'a> Fx<'a, '_> {
         let (index, elem) = (indexes[0], *elem);
         let tid = self.ty(t, span)?;
         let etid = self.ty(db.base(elem), span)?;
-        let scalar = crate::composite::scalar_w(self.fb.program(), etid);
+        let scalar = crate::composite::elem_w(self.fb.program(), etid);
         let logic = self.is_logic(tid);
         let (left_scalar, right_scalar) = match op.form {
             Form::ArrayScalar => (false, true),
@@ -3317,7 +3355,7 @@ impl<'a> Fx<'a, '_> {
         let (index, elem) = (indexes[0], *elem);
         let tid = self.ty(t, span)?;
         let etid = self.ty(db.base(elem), span)?;
-        let scalar = crate::composite::scalar_w(self.fb.program(), etid);
+        let scalar = crate::composite::elem_w(self.fb.program(), etid);
         let logic = self.is_logic(tid);
         let is_others = |a: &AggAssoc| a.choices.iter().any(|c| matches!(c, Choice::Others));
         let mut vals = Vec::new();
@@ -3729,7 +3767,7 @@ impl<'a> Fx<'a, '_> {
                     });
                     return Ok(V::A(buf, dope));
                 }
-                let (_, rt, w) = self.scalar(st, span)?;
+                let (_, rt, w) = self.sig_scalar(st, span)?;
                 let logic = self.is_logic(tid);
                 let buf = self.alloc_n(if logic { 32 } else { 8 });
                 self.emit(Inst::DrivingValue {
@@ -3776,7 +3814,7 @@ impl<'a> Fx<'a, '_> {
                             self.emit(Inst::SigLastValue { dst: buf, sig: s });
                             return Ok(V::A(buf, dope));
                         }
-                        let (_, rt, w) = self.scalar(st, span)?;
+                        let (_, rt, w) = self.sig_scalar(st, span)?;
                         let logic = self.is_logic(tid);
                         // A logic leaf arrives as one block of planes.
                         let buf = self.alloc_n(if logic { 32 } else { 8 });
@@ -4184,7 +4222,7 @@ impl<'a> Fx<'a, '_> {
                         st: elem,
                     });
                 }
-                let (_, _, w) = self.scalar(elem, span)?;
+                let (_, _, w) = self.elem_scalar(elem, span)?;
                 let addr = self.reg(RegTy::Ptr);
                 self.emit(Inst::Index {
                     dst: addr,

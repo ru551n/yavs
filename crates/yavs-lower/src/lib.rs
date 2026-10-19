@@ -35,7 +35,7 @@ use yavs_sem::hir::UnitHir;
 use yavs_sem::{Db, DeclId, ExprId, ScopeId, StmtId, SubtypeId, TypeId, UnitId};
 
 pub use expr::deferred_completion;
-pub use ty::{encode_array, signal_elem};
+pub use ty::{encode_array, narrow_elem, signal_elem};
 
 /// A construct the lowering does not handle yet (yavs-diag registry: `E2000`-`E2099`).
 pub const NOT_IMPLEMENTED: &str = "E2001";

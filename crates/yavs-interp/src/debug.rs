@@ -352,10 +352,7 @@ impl<'a> FrameView<'a> {
 
 /// `'image`-style text of a scalar value; `None` for composites.
 pub fn format_scalar(prog: &Program, ty: TyId, bytes: &[u8]) -> Option<String> {
-    let mut a = [0u8; 8];
-    let n = bytes.len().min(8);
-    a[..n].copy_from_slice(&bytes[..n]);
-    let v = u64::from_le_bytes(a);
+    let v = crate::exec::cell(bytes);
     let text = match prog.types.get(ty)? {
         Ty::Int { .. } => (v as i64).to_string(),
         Ty::Physical { units, .. } => format!("{} {}", v as i64, units.first()?.0),

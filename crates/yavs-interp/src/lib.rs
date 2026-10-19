@@ -1172,7 +1172,10 @@ pub fn res_dope(left: i64, down: bool, n: u64) -> Option<[u8; 24]> {
 /// `out`. A byte element is passed in the kernel's byte representation, which is its memory
 /// layout. A logic element (`logic`: the kind of the element type) is one kernel code per
 /// value, passed as a logic array of bit-planes (ir.md 1.3) and returned as a position, which
-/// is the code minus 2 for BIT and BOOLEAN. The array passed is [`res_dope`]`(left, down, n)`.
+/// is the code minus 2 for BIT and BOOLEAN. The array passed is [`res_dope`]`(left, down, n)`;
+/// a byte element takes `elem` bytes in it (`Ty::elem_size` of the parameter's element: a
+/// narrow integer is 4 bytes there even when the signal holds it in 8).
+#[allow(clippy::too_many_arguments)]
 pub fn resolve(
     rt: Arc<Runtime>,
     func: FuncId,
@@ -1181,6 +1184,7 @@ pub fn resolve(
     out: &mut [u8],
     logic: Option<yavs_ir::LogicKind>,
     (left, down): (i64, bool),
+    elem: u64,
 ) -> Result<(), SimError> {
     let mut m = Machine::new(rt, inst, Vec::new(), func);
     let stride = out.len() as u64;
@@ -1208,9 +1212,13 @@ pub fn resolve(
             m.put(at, &planes)?;
             at
         } else {
-            let at = m.temp_alloc(stride * n)?;
+            let es = elem.min(8);
+            let at = m.temp_alloc(es * n)?;
             for (k, v) in vals.iter().enumerate() {
-                m.put(at + k as u64 * stride, v)?;
+                m.put(
+                    at + k as u64 * es,
+                    &exec::cell(v).to_le_bytes()[..es as usize],
+                )?;
             }
             at
         };

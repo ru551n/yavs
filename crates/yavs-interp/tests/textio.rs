@@ -593,7 +593,8 @@ fn long_line(n: i64) -> std::time::Duration {
     t.elapsed()
 }
 
-fn ints(vals: &[i64]) -> ConstData {
+/// `integer` array elements: 4 bytes each (`Ty::elem_size`).
+fn ints(vals: &[i32]) -> ConstData {
     ConstData::Bytes(vals.iter().flat_map(|v| v.to_le_bytes()).collect())
 }
 
@@ -678,8 +679,8 @@ fn binary_array_round_trip() {
             // The 3-element array is cut to 2; the 2-element array fits.
             for r in [
                 load(&mut fb, AddrSpace::Frame, len, Width::B8),
-                load(&mut fb, AddrSpace::Frame, buf, Width::B8),
-                load(&mut fb, AddrSpace::Frame, buf + 8, Width::B8),
+                load(&mut fb, AddrSpace::Frame, buf, Width::B4),
+                load(&mut fb, AddrSpace::Frame, buf + 4, Width::B4),
             ] {
                 let ten = fb.int(10);
                 let s = bin(&mut fb, IntOp::Mul, acc, ten);

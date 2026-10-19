@@ -300,7 +300,7 @@ mod tests {
             name: "integer".into(),
             anonymous: false,
             base: None,
-            def: Def::Scalar(Scalar::Int, Vec::new()),
+            def: Def::Scalar(Scalar::Int { narrow: false }, Vec::new()),
             ranges: Some(vec![Range {
                 kind: vhpiIntRangeK,
                 left: Bound::Int(-5),

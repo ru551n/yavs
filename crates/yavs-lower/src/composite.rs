@@ -273,6 +273,14 @@ pub(crate) fn scalar_w(pb: &ProgramBuilder, tid: TyId) -> Option<Width> {
         .map(ty::width)
 }
 
+/// The width of an array element of IR type `tid` ([`ty::elem_width`]), `None` for composites.
+pub(crate) fn elem_w(pb: &ProgramBuilder, tid: TyId) -> Option<Width> {
+    pb.types()
+        .get(tid)
+        .filter(|t| t.scalar_size().is_some())
+        .map(ty::elem_width)
+}
+
 impl Fx<'_, '_> {
     // ---- type facts ----
 
@@ -557,6 +565,29 @@ impl Fx<'_, '_> {
         }
     }
 
+    /// [`Fx::value_at`] for an array element: a scalar has the element width.
+    pub fn elem_value_at(&mut self, st: SubtypeId, addr: Reg, desc: Reg, span: Span) -> R<V> {
+        let tid = self.ty(self.db.base(st), span)?;
+        match elem_w(self.fb.program(), tid) {
+            Some(w) => {
+                let (_, rt, _) = self.scalar(st, span)?;
+                Ok(V::S(self.load(addr, w, rt)))
+            }
+            None => self.value_at(st, addr, desc, span),
+        }
+    }
+
+    /// [`Fx::store_at`] for an array element: a scalar has the element width.
+    pub fn store_elem(&mut self, tid: TyId, addr: Reg, v: V, span: Span) -> R<()> {
+        match (elem_w(self.fb.program(), tid), v) {
+            (Some(w), V::S(r)) => {
+                self.store(addr, r, w);
+                Ok(())
+            }
+            _ => self.store_at(tid, addr, v, span),
+        }
+    }
+
     /// Store value `v` of type `tid` at `addr` (composites copied whole).
     pub fn store_at(&mut self, tid: TyId, addr: Reg, v: V, span: Span) -> R<()> {
         match (scalar_w(self.fb.program(), tid), v) {
@@ -712,7 +743,7 @@ impl Fx<'_, '_> {
             return Ok(V::A(dst, ed));
         }
         let a = self.elem_addr(tid, data, dope, pos);
-        self.value_at(est, a, ed, span)
+        self.elem_value_at(est, a, ed, span)
     }
 
     /// Plane offset of row `pos` (from the left) of `m` elements in `total`.
@@ -970,7 +1001,7 @@ impl Fx<'_, '_> {
                 let (etid, eda) = self.elem_desc(tid, a.1)?;
                 let (_, edb) = self.elem_desc(tid, b.1)?;
                 let count = self.layout_count(tid, a.1);
-                let ew = scalar_w(self.fb.program(), etid);
+                let ew = elem_w(self.fb.program(), etid);
                 let real = ty::is_real(db, db.base(est));
                 self.for_n(count, |fx, i| {
                     let xa = fx.elem_addr(tid, a.0, a.1, i);
@@ -1009,6 +1040,26 @@ impl Fx<'_, '_> {
     }
 
     // ---- default values ----
+
+    /// [`Fx::default_into`] for an array element: a narrow integer element (`Ty::elem_size`)
+    /// is written with its 4 bytes.
+    fn default_elem(
+        &mut self,
+        est: SubtypeId,
+        c: &Constraint,
+        addr: Reg,
+        desc: Reg,
+        span: Span,
+    ) -> R<()> {
+        let tid = self.ty(self.db.base(est), span)?;
+        let ew = elem_w(self.fb.program(), tid);
+        if let Some(w) = ew.filter(|&w| Some(w) != scalar_w(self.fb.program(), tid)) {
+            let v = self.scalar_left(est, span)?;
+            self.store(addr, v, w);
+            return Ok(());
+        }
+        self.default_into(est, c, addr, desc, span)
+    }
 
     /// Write the default value (LRM 6.4.2.3: `'left` of each scalar) of `st` at `addr`.
     pub fn default_into(
@@ -1077,7 +1128,7 @@ impl Fx<'_, '_> {
                     self.branch(any, first, done);
                     self.at(first);
                     let a0 = self.elem_addr(tid, addr, desc, zero);
-                    self.default_into(est, &ec, a0, ed, span)?;
+                    self.default_elem(est, &ec, a0, ed, span)?;
                     let l = self.lay(tid, desc);
                     let sa = self.offset(l, 16);
                     let stride = self.load(sa, Width::B8, RegTy::I64);
@@ -1122,7 +1173,7 @@ impl Fx<'_, '_> {
                 }
                 self.for_n(count, |fx, i| {
                     let a = fx.elem_addr(tid, addr, desc, i);
-                    fx.default_into(est, &ec, a, ed, span)
+                    fx.default_elem(est, &ec, a, ed, span)
                 })?;
             }
             _ => return Err(self.cx.ice(span, "default of an unknown type")),
@@ -1593,7 +1644,7 @@ impl Fx<'_, '_> {
             return None;
         }
         match p.types().get(tid) {
-            Some(Ty::Array { elem, .. }) => scalar_w(p, *elem),
+            Some(Ty::Array { elem, .. }) => elem_w(p, *elem),
             _ => None,
         }
     }
@@ -1676,7 +1727,7 @@ impl Fx<'_, '_> {
                 self.check_desc(db.base(est), etid, vp, ed, "aggregate element", span)?;
             }
         }
-        self.store_at(etid, a, v, span)
+        self.store_elem(etid, a, v, span)
     }
 
     fn record_agg(
@@ -1855,7 +1906,12 @@ impl Fx<'_, '_> {
                         }
                         let (l, _) = fx.fb.program().layout(elem, ed).ok()?;
                         let mut b = b;
-                        b.resize(l.size.next_multiple_of(l.align.max(1)) as usize, 0);
+                        // A scalar element has the element size (`Ty::elem_size`).
+                        let es = fx.fb.program().types().get(elem).and_then(Ty::elem_size);
+                        b.resize(
+                            es.unwrap_or(l.size.next_multiple_of(l.align.max(1))) as usize,
+                            0,
+                        );
                         for _ in 0..n {
                             out.extend_from_slice(&b);
                         }

@@ -64,10 +64,17 @@ impl Fmt {
                 };
                 let at = k as usize * *size as usize;
                 let e = b.get(at..at + *size as usize)?;
-                let mut a = [0u8; 8];
-                let n = e.len().min(8);
-                a[..n].copy_from_slice(&e[..n]);
-                let v = u64::from_le_bytes(a);
+                // A 4-byte cell is a narrow integer array element (sign-extended) or a
+                // non-negative enumeration position.
+                let v = match <[u8; 4]>::try_from(e) {
+                    Ok(x) => i64::from(i32::from_le_bytes(x)) as u64,
+                    Err(_) => {
+                        let mut a = [0u8; 8];
+                        let n = e.len().min(8);
+                        a[..n].copy_from_slice(&e[..n]);
+                        u64::from_le_bytes(a)
+                    }
+                };
                 match ty {
                     LitType::Enum(_) => Lit::Enum(v as usize),
                     LitType::Real(_) => Lit::Real(f64::from_bits(v)),

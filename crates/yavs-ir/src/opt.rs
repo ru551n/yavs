@@ -1323,7 +1323,13 @@ impl<'a> Opt<'a> {
                 if let Some(b) = self.const_bytes(a, n) {
                     let mut x = [0u8; 8];
                     x[..n].copy_from_slice(b);
-                    return self.make_const(pc, dst, u64::from_le_bytes(x) as i64);
+                    // A 4-byte load sign-extends (narrow integer elements, #415).
+                    let v = if n == 4 {
+                        i64::from(i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+                    } else {
+                        u64::from_le_bytes(x) as i64
+                    };
+                    return self.make_const(pc, dst, v);
                 }
                 if let Some(a) = self.kopn(addr) {
                     self.cse(pc, Some(dst), Key::Load(a, w));

@@ -188,11 +188,18 @@ impl ConvFn {
                 .zip(a.iter().zip(b))
                 .map(|(v, ((ea, _), (eb, _)))| match v {
                     _ if ea.elem == eb.elem && ea.class == eb.class => Ok(v.clone()),
-                    Value::Bytes(d) if ea.elem == Elem::Bytes(8) && eb.elem == Elem::Bytes(8) => {
-                        let mut out = Vec::with_capacity(d.len());
-                        for c in d.as_chunks::<8>().0 {
-                            let x = conv_cell(ea.class, eb.class, u64::from_le_bytes(*c))?;
-                            out.extend_from_slice(&x.to_le_bytes());
+                    // Integers and reals, 8 bytes or 4 for a narrow integer element.
+                    Value::Bytes(d)
+                        if let (Elem::Bytes(wa @ (4 | 8)), Elem::Bytes(wb @ (4 | 8))) =
+                            (ea.elem, eb.elem) =>
+                    {
+                        let mut out = Vec::with_capacity(d.len() / wa as usize * wb as usize);
+                        for c in d.chunks(wa as usize) {
+                            let x = conv_cell(ea.class, eb.class, cell(c))?;
+                            if wb == 4 && i32::try_from(x as i64).is_err() {
+                                return Err(format!("{} is outside the integer range", x as i64));
+                            }
+                            out.extend_from_slice(&x.to_le_bytes()[..wb as usize]);
                         }
                         Ok(Value::Bytes(out))
                     }
@@ -321,6 +328,18 @@ impl ConvFn {
     }
 }
 
+/// A little-endian cell of up to 8 bytes; a 4-byte cell (a narrow integer element) is
+/// sign-extended.
+fn cell(b: &[u8]) -> u64 {
+    if let Ok(x) = <[u8; 4]>::try_from(b) {
+        return i64::from(i32::from_le_bytes(x)) as u64;
+    }
+    let mut w = [0u8; 8];
+    let n = b.len().min(8);
+    w[..n].copy_from_slice(&b[..n]);
+    u64::from_le_bytes(w)
+}
+
 /// A scalar cell of class `a` as one of class `b` (a type conversion, LRM 9.3.6).
 fn conv_cell(a: Class, b: Class, c: u64) -> Result<u64, String> {
     Ok(match (a, b) {
@@ -371,11 +390,7 @@ fn decode(e: &Enc, v: &Value) -> Result<u64, String> {
                 code
             })
         }
-        (Elem::Bytes(n), Value::Bytes(b)) if b.len() == n as usize => {
-            let mut w = [0u8; 8];
-            w[..b.len()].copy_from_slice(b);
-            Ok(u64::from_le_bytes(w))
-        }
+        (Elem::Bytes(n), Value::Bytes(b)) if b.len() == n as usize => Ok(cell(b)),
         _ => Err("a port conversion got a value of the wrong shape".into()),
     }
 }
@@ -1389,12 +1404,14 @@ pub(crate) fn int(v: &Val, span: Span) -> R<i64> {
 }
 
 /// The kernel element of a scalar type: bit-plane logic for the `LogicKind` enums
-/// (std_ulogic, bit, boolean; ir.md 1.3), else bytes as laid out in memory.
+/// (std_ulogic, bit, boolean; ir.md 1.3), else bytes as laid out in an array
+/// (`Ty::elem_size`: an integer type within 32 bits is 4 bytes, scalar signals included).
 pub fn elem_of(db: &Db, t: TypeId) -> Elem {
     match &db.types[t].kind {
         TypeKind::Enum { .. } if is_logic(db, t) => Elem::Logic,
         TypeKind::Enum { lits } if lits.len() <= 256 => Elem::Bytes(1),
         TypeKind::Enum { .. } => Elem::Bytes(4),
+        _ if yavs_lower::narrow_elem(db, t) => Elem::Bytes(4),
         _ => Elem::Bytes(8),
     }
 }

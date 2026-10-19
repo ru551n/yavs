@@ -116,8 +116,13 @@ impl Machine {
             return Ok(Elem::Scalar(s));
         }
         if let Ty::Array { elem: e, dims, .. } = t
-            && let Some(s) = Sc::of(&self.ty(e)?)
+            && let Some(mut s) = Sc::of(&self.ty(e)?)
         {
+            // Elements may be narrower in memory than scalars (`Ty::elem_size`); the disk
+            // format is the same.
+            if self.ty(e)?.elem_size() == Some(4) {
+                s.mem = Width::B4;
+            }
             let logic = Ty::logic_leaf(&self.rt.prog.types, elem)
                 .map(|k| k != yavs_ir::LogicKind::StdULogic);
             return Ok(Elem::Array(dims, s, logic));

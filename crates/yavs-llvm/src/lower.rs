@@ -433,6 +433,15 @@ fn static_layout(prog: &Program, ty: yavs_ir::TyId) -> Option<StaticLayout> {
         None if Ty::desc_size(types, *elem)? == 0 => Ty::layout(types, consts, *elem, &[]).ok()?.0,
         None => return None,
     };
+    // A scalar element has its element size (`Ty::elem_size`), as in `Ty::layout`.
+    let el = match types.get(*elem).and_then(Ty::elem_size) {
+        Some(n) => yavs_ir::Layout {
+            size: n,
+            align: n,
+            ..el
+        },
+        None => el,
+    };
     Some(StaticLayout::Array {
         dims: *dims,
         elem: el,
@@ -1087,10 +1096,10 @@ impl Gen {
                             _ => {
                                 let ty = self.width_ty(w);
                                 let v = self.load(ty, p);
-                                let v = if w == Width::B8 {
-                                    v
-                                } else {
-                                    LLVMBuildZExt(self.b, v, self.i64, c"".as_ptr())
+                                let v = match w {
+                                    Width::B8 => v,
+                                    Width::B4 => LLVMBuildSExt(self.b, v, self.i64, c"".as_ptr()),
+                                    _ => LLVMBuildZExt(self.b, v, self.i64, c"".as_ptr()),
                                 };
                                 self.st(&c, dst, v);
                             }

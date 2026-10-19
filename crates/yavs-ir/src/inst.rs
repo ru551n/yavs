@@ -48,7 +48,8 @@ pub enum RegTy {
     Sig,
 }
 
-/// Memory access width. Narrow loads zero-extend.
+/// Memory access width. `B1` loads zero-extend, `B4` loads sign-extend (a 4-byte cell holds a
+/// narrow integer array element or a non-negative enum position or file handle).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Width {
     B1,

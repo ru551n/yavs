@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:narrow_int_storage:_p0	file -2147483648,-1,2147483647 3
+diag	note	0	0	:narrow_int_storage:_p0	v -2147483648,-5,-42,2147483647 min -2147483648 max 2147483647
+diag	note	0	0	:narrow_int_storage:_p0	b -2147483649 2147483647
+diag	note	0	0	:narrow_int_storage:_p0	m -3 -6 eq true
+diag	note	0	0	:narrow_int_storage:_p0	cat -42,2147483647,-9,-10 lt false
+diag	note	0	0	:narrow_int_storage:_p0	rv -99 -2 -1
+diag	note	0	0	:narrow_int_storage:_p0	sv -2147483648,-1,0,2147483647 sr -7 -8 srv -5
+diag	note	0	1	:narrow_int_storage:_p0	sv -2147483648,-1000,0,2147483647 last -1 sr -70 -80 last -8 srv -40 s0 last -11
+diag	note	2000000	0	:narrow_int_storage:_p0	outs 100,-200
+diag	note	4000000	0	:narrow_int_storage:_p0	outs -2147483647,2147483647
+diag	note	4000000	0	:narrow_int_storage:_p0	ck -5 -2147483648

@@ -342,6 +342,28 @@ impl<'a, 'b> Fx<'a, 'b> {
         Ok((id, rt, w))
     }
 
+    /// [`Fx::scalar`] for an array element of subtype `st`: its width is the element width
+    /// ([`ty::elem_width`]).
+    pub fn elem_scalar(&mut self, st: SubtypeId, span: Span) -> R<(TyId, RegTy, Width)> {
+        let (id, rt, _) = self.scalar(st, span)?;
+        let w = self
+            .fb
+            .program()
+            .types()
+            .get(id)
+            .map_or(Width::B8, ty::elem_width);
+        Ok((id, rt, w))
+    }
+
+    /// [`Fx::scalar`] for reading a scalar signal value the kernel wrote into memory: the
+    /// kernel holds a narrow integer as 4 bytes when it is an array element and as 8 when it
+    /// is a scalar, and a 4-byte load reads either (the value fits in 32 bits).
+    pub fn sig_scalar(&mut self, st: SubtypeId, span: Span) -> R<(TyId, RegTy, Width)> {
+        let (id, rt, w) = self.scalar(st, span)?;
+        let ew = self.fb.program().types().get(id).map_or(w, ty::elem_width);
+        Ok((id, rt, if ew == Width::B4 { ew } else { w }))
+    }
+
     pub fn stmt_start(&mut self, kind: StmtKind, span: Span) -> yavs_ir::StmtId {
         if !self.live {
             let b = self.fb.block();
@@ -750,7 +772,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             })?;
             return Ok(data);
         }
-        let (_, _, w) = self.scalar(elem, span)?;
+        let (_, _, w) = self.elem_scalar(elem, span)?;
         let v = self.scalar_left(elem, span)?;
         let e = self.alloc_n(8);
         self.store(e, v, w);

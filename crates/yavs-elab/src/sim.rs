@@ -681,6 +681,16 @@ impl Elaborated {
                     return r.map_err(sim_err);
                 }
                 // Element-wise: one call per element of the leaf (#293).
+                let (param, _) = *ir
+                    .res_types
+                    .get(&d)
+                    .ok_or_else(|| sim_err("types of a resolution function not lowered".into()))?;
+                let pes = match rt.prog.types.get(param) {
+                    Some(yavs_ir::Ty::Array { elem, .. }) => {
+                        rt.prog.types.get(*elem).and_then(yavs_ir::Ty::elem_size)
+                    }
+                    _ => None,
+                };
                 let (w, logic) = match self.nets.leaf(leaf).ty.elem {
                     yavs_kernel::Elem::Bytes(es) => (es as usize, None),
                     yavs_kernel::Elem::Logic => {
@@ -710,7 +720,8 @@ impl Elaborated {
                             continue;
                         }
                         let reports = yavs_kernel::callout::captured();
-                        yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic, index)
+                        let es = pes.unwrap_or(w as u64);
+                        yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic, index, es)
                             .map_err(|e| e.to_string())?;
                         if reports.is_some()
                             && yavs_kernel::callout::captured() == reports

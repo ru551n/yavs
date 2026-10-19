@@ -426,10 +426,16 @@ fn composite_text(
                     return Ok(b);
                 }
                 let at = (k * lay.stride) as usize;
-                Ok(val
-                    .get(at..at + el.size as usize)
-                    .ok_or_else(|| ice("array element out of its value"))?
-                    .to_vec())
+                // A scalar element may be narrower than the scalar (`Ty::elem_size`).
+                let n = et.elem_size().unwrap_or(el.size) as usize;
+                let b = val
+                    .get(at..at + n)
+                    .ok_or_else(|| ice("array element out of its value"))?;
+                Ok(if scalar {
+                    crate::exec::cell(b).to_le_bytes().to_vec()
+                } else {
+                    b.to_vec()
+                })
             };
             let chars = match et {
                 Ty::Enum { lits, .. } if string_like(lits) => Some(lits),

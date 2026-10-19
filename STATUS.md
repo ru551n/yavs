@@ -170,7 +170,7 @@ An installed binary finds `lib/` next to itself (#43).
 - Generics (S4, `generic.rs`): generic packages, subprograms and (2019) protected types; 2008
   `type T` and the 2019 classes; formal subprograms (`is <>`, `is name`) and formal packages
   (`(<>)`, `(default)`, generic map, checked against the actual instance; a parameter type through a
-  formal package of a formal package, `s.r.arr`, matches no actual outside the generic, `E1300`, L76); package and subprogram
+  formal package of a formal package, `s.r.arr`, is the actual instance's type, L76); package and subprogram
   instances, also inside generic units, by HIR cloning (visible part eager, bodies lazy via
   `Db::instance_body`); `W1501`, `W1506`; design entities with generic types, subprograms or
   packages cloned with their architecture per distinct map for elab (`generic/entity.rs`,

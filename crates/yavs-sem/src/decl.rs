@@ -1734,7 +1734,6 @@ impl Db {
             None => ObjClass::Variable,
         };
         let _ = kind;
-        self.generic.hop2 = false;
         // `x : in type is (<>)`: one anonymous interface type per name, bound by each call
         // to the type of its actual (2019 6.5.2, 6.5.3; `Db::implicit_instance`).
         let mut anon = Vec::new();
@@ -1771,7 +1770,6 @@ impl Db {
             }
             _ => {}
         }
-        let hop2 = std::mem::take(&mut self.generic.hop2);
         let shared = o
             .default
             .as_ref()
@@ -1805,9 +1803,6 @@ impl Db {
                 name.span,
             );
             self.declare(pscope, decl);
-            if hop2 {
-                self.generic.hop2_params.insert(decl);
-            }
             if let Some(ast::IncompleteSubtype::Subtype(si)) = &o.subtype {
                 self.written_marks.insert(decl, si.type_mark.span);
             }

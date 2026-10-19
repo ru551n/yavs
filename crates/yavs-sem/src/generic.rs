@@ -146,13 +146,6 @@ pub struct GenericState {
     /// Blocks with generic types, subprograms or packages of the architectures being
     /// analyzed, innermost first (`instantiate_blocks`).
     pub(crate) blocks: Vec<(UnitId, StmtId)>,
-    /// Set by `classify` when a name goes through a formal package of a formal package
-    /// (`s.r.arr`); `interface_object` reads and clears it.
-    pub(crate) hop2: bool,
-    /// Parameters whose type is reached that way, in the generic unit and in its clones
-    /// (the clones are what a call is checked against: `call_args`).
-    pub(crate) hop2_params: HashSet<DeclId>,
-    pub(crate) hop2_clones: HashSet<DeclId>,
 }
 
 /// One association of a formal package's generic map (6.5.6.3).
@@ -3042,16 +3035,7 @@ impl Db {
                 mode: self.r_mode(r, p.mode),
                 subtype: self.r_subtype(r, p.subtype),
                 default: p.default.map(|e| self.r_expr(r, e)),
-                decl: p.decl.map(|d| {
-                    let n = self.r_decl(r, d);
-                    if n != d
-                        && (self.generic.hop2_params.contains(&d)
-                            || self.generic.hop2_clones.contains(&d))
-                    {
-                        self.generic.hop2_clones.insert(n);
-                    }
-                    n
-                }),
+                decl: p.decl.map(|d| self.r_decl(r, d)),
             })
             .collect();
         let ret = s.ret.map(|t| self.r_subtype(r, t));

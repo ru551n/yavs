@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
--- expect: E1300 46:50 type of actual does not match formal `x` type `arr`
--- LRM 6.5.7.2, 4.8
+-- expect: none
+-- LRM 6.5.7.2, 4.8: s.r.arr is the instance's own type (user 2026-10-19, rule 15)
 package ring_g is
   generic (type elem);
   type arr is array (natural range <>) of elem;

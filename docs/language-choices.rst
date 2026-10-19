@@ -230,8 +230,10 @@ objects. Some simulators reject them there.
 Types reached through a formal package of a formal package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A type written through two levels of formal packages (``s.r.arr``) is rejected, as most
-simulators do. *Portable:* pass the inner package as a generic of its own.
+A type written through two levels of formal packages (``s.r.arr``) is the type of the actual
+instance, so a call in an instance accepts an actual of that type (6.5.7.2, 4.8; decided by the
+user, 2026-10-19). Most other simulators reject it. *Portable:* pass the inner package as a
+generic of its own.
 
 Subprogram header with a generic map
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

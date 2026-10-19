@@ -575,15 +575,6 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   instantiated with the same actuals (static values, base types, subprograms); a mismatch is
   `E1503`. The LRM is clear and the third reference simulator rejects; the reference simulator does not check. Non-static values are not
   compared. Inside the generic the formal package stays opaque.
-- **A type through a formal package of a formal package is distinct (L76, #101; user, 2026-10-19:
-  majority of the reference simulators):** a subprogram parameter of type `s.r.arr` (`s` a formal
-  package of the generic package, `r` the formal package of `s`'s generic) in an instance does not
-  accept the actual instance's type (`int_ring.arr`): `E1300` at the actual of the call, with a
-  note. Two of the three reference simulators reject the call; the third rejects the name itself.
-  One formal package deep is unchanged. The check lives in `call_args` (parameters flagged while
-  the generic unit is analyzed, cloned with the instance); it applies only when the formal's type
-  belongs to a concrete instance, so a call inside a generic unit with the unit's own `s.r.arr` is
-  accepted.
 - **W1501 (unused generic)** applies to the generics of packages and subprograms, reported once
   the unit is complete: after the package body, after the package declaration when the library
   holds no body for it, after a generic subprogram body. Entity, component and block generics are
@@ -1424,6 +1415,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   condition's type first; when none is visible, the `??` declared beside the type, so
   `use ieee.std_logic_1164.std_ulogic` alone is enough. 9.2.9 does not say where the operator is
   looked up, so the permissive reading wins; it replaces the morning's majority-rule `E1340`.
+- **A type through a formal package of a formal package (L76, #101; user, 2026-10-19, rule 15):**
+  `s.r.arr` in a generic package whose formal package `s` has its own formal package `r` is the
+  type of the actual instance, so a call in an instance accepts an actual of that type. The LRM
+  does not make it a distinct type; this replaces the morning's majority-rule `E1300`.
 - **Static index and slice out of range (L51, sem.md 4.3; user, 2026-10-19, rule 15):** a locally
   static index or non-null slice outside the static index range of its array is warning `W1404` at
   analysis, an error only when the code runs (the run-time check). The code may be dead; this

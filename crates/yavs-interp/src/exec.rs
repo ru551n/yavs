@@ -1670,8 +1670,9 @@ impl Machine {
                 );
                 let i = self.ri(idx);
                 let pos = match dir {
-                    0 if l <= i && i <= rr => i - l,
-                    1 if rr <= i && i <= l => l - i,
+                    // The distance fits a u64 even when it does not fit an i64.
+                    0 if l <= i && i <= rr => i.wrapping_sub(l),
+                    1 if rr <= i && i <= l => l.wrapping_sub(i),
                     0 | 1 => {
                         let b = if dir == 0 {
                             format!("{l} to {rr}")

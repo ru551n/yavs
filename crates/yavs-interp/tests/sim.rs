@@ -922,7 +922,10 @@ fn gc_keeps_roots_run(waits: bool) {
         Ok(RunStatus::Ended(EndReason::Idle))
     );
     let lines = t.0.lock().unwrap().clone();
-    assert!(lines.iter().any(|l| l.contains("Note: keep.all = 7")), "{lines:#?}");
+    assert!(
+        lines.iter().any(|l| l.contains("Note: keep.all = 7")),
+        "{lines:#?}"
+    );
 }
 
 /// The shared heap under churn (#303): a serial process replaces the object of a shared

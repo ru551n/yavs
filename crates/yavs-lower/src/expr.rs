@@ -197,7 +197,10 @@ impl<'a> Fx<'a, '_> {
                 Some(v) => Ok(v),
                 None => Err(self.cx.ice(span, "procedure call in an expression")),
             },
-            ExprKind::Index { prefix, indices } => self.index(*prefix, indices, span),
+            ExprKind::Index { prefix, indices } => match self.sig_elem(id, *prefix, span)? {
+                Some(v) => Ok(v),
+                None => self.index(*prefix, indices, span),
+            },
             ExprKind::Slice { prefix, range } => self.slice(*prefix, range, span),
             ExprKind::Attr { attr, prefix, args } => {
                 self.attr(*attr, *prefix, args, e.subtype, span)
@@ -3922,6 +3925,35 @@ impl<'a> Fx<'a, '_> {
             ExprKind::Obj(d) => self.db.decls[d].name.to_string(),
             _ => "array".into(),
         }
+    }
+
+    /// `s(i)` of an array signal `s` of this unit with scalar elements: read that element
+    /// alone (as a scalar signal is read), not the whole signal and then index it. Index
+    /// checks and their messages are those of `index`.
+    fn sig_elem(&mut self, e: ExprId, prefix: ExprId, span: Span) -> R<Option<V>> {
+        let db = self.db;
+        let ExprKind::Obj(d) = db.exprs[prefix].kind else {
+            return Ok(None);
+        };
+        let et = db.base(db.exprs[e].subtype);
+        if !matches!(self.cx.objs.get(&d), Some(Obj::Signal { .. }))
+            || !db.types[et].kind.is_scalar()
+            || self.is_general(db.base(db.exprs[prefix].subtype), span)?
+        {
+            return Ok(None);
+        }
+        let (_, s, _) = self.sig_name(e)?;
+        let raw = self.reg(RegTy::I64);
+        self.emit(Inst::SigReadScalar { dst: raw, sig: s });
+        let tid = self.ty(et, span)?;
+        let bias = self.code_bias(tid);
+        let dst = self.dec(raw, bias);
+        if self.rt_of(et) == RegTy::F64 {
+            let f = self.reg(RegTy::F64);
+            self.emit(Inst::Move { dst: f, src: dst });
+            return Ok(Some(V::S(f)));
+        }
+        Ok(Some(V::S(dst)))
     }
 
     fn index(&mut self, prefix: ExprId, indices: &[ExprId], span: Span) -> R<V> {

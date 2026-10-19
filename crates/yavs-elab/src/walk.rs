@@ -789,7 +789,12 @@ impl Elab<'_> {
                         .with_note(m),
                     )
                 })?,
-            (_, A::Expr(e, _)) => self.m.eval(db, *e, gscope)?,
+            (_, A::Expr(e, _)) => {
+                self.m.actual_of = Some(s);
+                let v = self.m.eval(db, *e, gscope);
+                self.m.actual_of = None;
+                v?
+            }
             (_, A::Local(l)) => self.m.value_of(db, *l, gscope, at)?,
             (_, A::Default | A::Open) => match o.default {
                 Some(d) => self.m.eval(db, d, Some(s))?,

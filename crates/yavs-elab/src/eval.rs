@@ -63,6 +63,10 @@ pub struct Model {
     /// package's scope, or why not (the subprogram fails when it is called).
     pub(crate) pkg_ext: HashMap<DeclId, ScopeId>,
     pub(crate) ext_unbound: HashMap<DeclId, String>,
+    /// While a generic actual is evaluated in the parent: the instance whose generics are
+    /// being bound. The actual's context subtype (`(others => ..)` for a generic of subtype
+    /// `bit_vector(W - 1 downto 0)`) names the instance's earlier generics (LRM 6.5.6.2).
+    pub(crate) actual_of: Option<ScopeId>,
 }
 
 /// How a scalar crosses the kernel: its element and its class.
@@ -498,12 +502,14 @@ impl Model {
     }
 
     fn get(&self, scope: Option<ScopeId>, d: DeclId) -> Option<&Val> {
-        let mut cur = scope;
-        while let Some(s) = cur {
-            if let Some(v) = self.vals.get(s.index()).and_then(|m| m.get(&d)) {
-                return Some(v);
+        for start in [scope, self.actual_of] {
+            let mut cur = start;
+            while let Some(s) = cur {
+                if let Some(v) = self.vals.get(s.index()).and_then(|m| m.get(&d)) {
+                    return Some(v);
+                }
+                cur = self.hier.scope(s).parent;
             }
-            cur = self.hier.scope(s).parent;
         }
         self.pkg.get(&d)
     }

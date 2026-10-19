@@ -489,6 +489,55 @@ exercised end to end in femtoseconds only (other resolutions: a unit test).
 
 - A `report` in a function run without a kernel (elaboration time) prints `** Note: (init): msg` on stderr and goes on; severity failure stops (#299; difftest `report/elab_report`); it is counted in the VHDL assert counts, so an error exits 1 at the end (#349; `report/elab_report_error`, catalogue `elab-time-report-error`).
 
+### Shared heap collector: overhead measurement (#303, 2026-10-19)
+
+Release builds, `origin/main` (84bd5988) against the commit before the collector (0a89b92f),
+busy 24-core host (load about 30), 5 alternating repetitions per case, median CPU seconds
+(user+sys) and [min-max]. Collector counters from a temporary instrumented build (not
+committed); no profiler was available (`perf_event_paranoid` 4).
+
+| Case | Before | After | Delta | Collections | GC time | Peak RSS before / after |
+|---|---|---|---|---|---|---|
+| a. no access types (counter, shift register, 5000 clocks) | 5.34 [4.7-6.0] | 5.59 [5.0-5.7] | +4.7% (noise) | 0 shared, 5 private | 0 | 18 / 18 MB |
+| b1. 2M textio lines, one activation, file output | 3.72 [3.6-4.0] | 3.73 [3.4-4.1] | +0.3% | 0 | 0 | 551 / 543 MB |
+| b2. same, serial process (touches a protected object) | 4.74 [4.5-6.0] | 4.52 [4.4-4.8] | -4.6% | 0 | 0 | 551 / 543 MB |
+| c1. 100k scoreboard push/check | 21.8 [18.0-23.8] | 21.5 [20.1-22.8] | -1.5% | 15 | 0.65 ms | 36 / 37 MB |
+| c1b. scoreboard with a 50k-item backlog plus churn | 19.9 [17.0-23.5] | 20.1 [17.3-23.0] | +0.6% | 1 | 11.8 ms | 48 / 50 MB |
+| c2. sparse memory model, 10k words x 3 passes (33 MB live) | 17.7 [12.3-19.8] | 17.3 [13.8-19.2] | -2.6% | 2 | 91 ms (0.6%) | 294 / 313 MB |
+| c3. coverage model, 256 bins, 30k samples | 17.5 [16.1-19.6] | 18.6 [15.9-20.7] | +6.7% (noise) | 0 | 0 | 38 / 38 MB |
+| d. library testbench with queues (scoreboard) | 31.6 [30.0-36.6] | 31.8 [30.8-34.1] | +0.6% | 2 | 16.7 ms (0.05%) | 314 / 266 MB |
+
+Findings:
+
+- The overhead is not measurable: every delta is inside the run-to-run spread (10-30%) on the
+  shared host. The counters bound it: collection time is at most 0.6% of a run (c2), typically
+  below 0.05%; `publish_shared` (run at every process suspension) costs 70 to 130 ns per call,
+  below 0.1% even for the non-serial design (a, 30k calls, 2 ms). It builds the frame roots
+  before it checks for the shared state, so non-serial processes pay it too; harmless.
+- Per collection: mark is proportional to the live set (about 1.1 ms per MB of live data
+  when one large object holds handles: c2 marks 33 MB in 38 ms; c1b marks 150k objects, 8 MB,
+  in 11 ms; small scoreboards 35 us). Sweep and recycle are proportional to the slot count,
+  not the live set (d: 14.5 ms for 527k slots). Large long-lived structures are re-marked on
+  every collection, but the trigger (more allocated than both the threshold and what survived)
+  makes the cost amortised: a collection happens only after allocating as much as it marks.
+- Leak check, serial process dropping a 1 KB `new` string per iteration with a wait (400k
+  iterations): before 10.2 MB, after 10.2 MB, after with collection disabled 434 MB (1.1 KB per
+  iteration). Same process not serial: 10 MB in all three. Textio lines and scoreboard items
+  are deallocated by their libraries, so they do not grow even without collection (200k
+  lines with waits, 200k scoreboard items: flat at 9 and 37 MB in all three). The collector
+  restores the boundedness serial processes had when they allocated in their private heap.
+- Gaps: objects of elaboration are sealed and never collected (sealed set 9 KB for the
+  scoreboard designs, 147 KB for the library testbench). No collection runs inside one
+  activation of a serial process (b1: 2M lines in one loop without a wait never reach a
+  safepoint, 550 MB of quarantined slots, about 270 bytes per deallocated line); this is the
+  same before the collector.
+- Ranking by measured benefit: (1) a safepoint or slot reclaim inside long activations
+  (memory only; 550 MB in b1, equal before and after); (2) dirty flags on protected-object
+  writes, only worthwhile for live sets of hundreds of MB (worst pause measured 38 ms, 0.6%
+  of a run); (3) allocation-volume triggers already exist; (4) per-process heaps collected in
+  parallel: no measured benefit, the shared heap work is below 1% of every run.
+  Recommendation: the current overhead is acceptable; no redesign needed.
+
 ## elab (`crates/yavs-elab`, M2)
 
 Done (without processes, which need yavs-lower and yavs-interp): `find_top` (`ENTITY`,

@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:port_conv_inout:u:_p0	sub init b 0 w 0 false
+diag	note	0	1	:port_conv_inout:u:_p1	sub b event 5
+diag	note	0	2	:port_conv_inout:_p1	t 0101 p 0010 7
+diag	note	1000000	0	:port_conv_inout:u:_p0	sub b 5 w 39 true
+diag	note	1000000	1	:port_conv_inout:u:_p1	sub b event 9
+diag	note	1000000	2	:port_conv_inout:_p1	t 1001 p 0011 8
+diag	note	1500000	0	:port_conv_inout:u:_p1	sub b event 0
+diag	note	2000000	0	:port_conv_inout:_p1	t 10X1
+diag	note	2500000	0	:port_conv_inout:u:_p1	sub b event 9
+diag	note	3000000	0	:port_conv_inout:u:_p0	sub b 9 w 56 true
+diag	note	3500000	0	:port_conv_inout:_p1	t 1001

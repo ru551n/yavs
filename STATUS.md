@@ -401,7 +401,8 @@ simulation replays these calls (#77); an impure constant elaboration cannot eval
 (`'PATH_NAME`) runs at simulation start with W2118 (#220). Also done: package bodies and generic instance bodies
 loaded before elaboration, a package needing a body without one (E2116), conversion functions
 and type conversions in port maps (kernel converters; conversion functions of record ports and
-arrays of records convert all leaves in one call in the same delta, #74), individual
+arrays of records convert all leaves in one call in the same delta, #74; both conversions of
+`inout` ports, #238), individual
 association of unconstrained array ports, implicit signals (`'stable`,
 `'quiet`, `'delayed`, `'transaction`, kernel-maintained, also named in process bodies and
 subprograms, #240), package signals (`:lib:pkg:s`, every

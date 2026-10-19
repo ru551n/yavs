@@ -885,8 +885,20 @@ impl Db {
                 .with_help("associate the formal directly and convert on the actual side, or constrain the port"),
             ));
         }
-        // With a formal conversion the actual has the conversion's result type.
-        let target = match formal_conv {
+        // With a formal conversion the actual has the conversion's result type, unless the
+        // actual is itself a conversion (`conv(f) => conv(a)`, inout): that one maps the
+        // actual to the formal's type (6.5.7.1).
+        let actual_converts = formal_conv.is_some()
+            && mode != Some(Mode::Out)
+            && mode != Some(Mode::Buffer)
+            && matches!(&e.kind, ast::ExprKind::Name(n)
+                if matches!(n.kind, ast::NameKind::Apply { .. }))
+            && {
+                let c = self.cands(scope, e);
+                self.best_cost(&c, crate::expr::Expected::Type(self.base(st)))
+                    .is_some()
+            };
+        let back = match formal_conv {
             Some(c) => match &self.decls[c].kind {
                 DeclKind::Type(t) => self.types[*t].first_subtype,
                 DeclKind::Subtype(s) => *s,
@@ -894,7 +906,7 @@ impl Db {
             },
             None => st,
         };
-        let id = self.expr_in_subtype(scope, e, target);
+        let id = self.expr_in_subtype(scope, e, if actual_converts { st } else { back });
         if self.is_poison_expr(id) {
             return Err(Reported);
         }
@@ -938,6 +950,19 @@ impl Db {
             && mode != Some(Mode::Out)
             && mode != Some(Mode::Buffer)
         {
+            // The way out: the formal part gives the actual's type.
+            let want = self.base(self.exprs[x].subtype);
+            if formal_conv.is_some() && self.base(back) != want {
+                let (name, tn) = (self.decls[f].name, self.type_name(want));
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::NO_OVERLOAD,
+                        format!("no conversion of formal `{name}` gives the actual's type `{tn}`"),
+                    )
+                    .with_primary(fspan, format!("expected a conversion to `{tn}`"))
+                    .with_help("use a function of one parameter of the formal's type, or a type conversion"),
+                ));
+            }
             return Ok(Actual::Converted {
                 formal_conv,
                 actual_conv: conv,

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:port_expr_unconstrained:i1:_p0	v=0000 left=3 right=0 @0 fs
+diag	note	0	0	:port_expr_unconstrained:i2:_p0	v=0101 left=0 right=3 @0 fs
+diag	note	0	0	:port_expr_unconstrained:i3:_p0	v=1100 left=3 right=0 @0 fs
+diag	note	0	1	:port_expr_unconstrained:i1:_p0	v=1100 left=3 right=0 @0 fs
+diag	note	1000000	1	:port_expr_unconstrained:i3:_p0	v=0011 left=3 right=0 @1000000 fs
+diag	note	1000000	2	:port_expr_unconstrained:i1:_p0	v=0011 left=3 right=0 @1000000 fs

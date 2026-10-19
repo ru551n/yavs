@@ -226,6 +226,10 @@ pub struct PortActual {
     /// For an array: instance data where the elaborator writes the formal's descriptor
     /// (`Ty::desc_size` bytes), against which the value is checked.
     pub dope: Option<u32>,
+    /// For a scalar formal whose range is not static: instance data where the elaborator
+    /// writes the range as three 8-byte words, left and right (f64 bits for a real) and the
+    /// direction (0 for `to`), against which the value is checked.
+    pub bounds: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -333,9 +337,9 @@ pub(crate) struct Cx {
     pub shared_size: u32,
     /// The leaves of record signals, in leaf order.
     pub rec_leaves: HashMap<DeclId, Vec<RecLeaf>>,
-    /// Port actuals that get an equivalent process ([`Lowerer::port_actual`]), with the
-    /// formal's subtype for the scalar range check.
-    pub actuals: HashMap<ExprId, Option<SubtypeId>>,
+    /// Port actuals that get an equivalent process ([`Lowerer::port_actual`]): the instance
+    /// statement, the formal's subtype for the scalar range check and the port.
+    pub actuals: HashMap<ExprId, (StmtId, Option<SubtypeId>, DeclId)>,
     /// External signal names aliased in the unit being lowered: the alias that holds the
     /// signal (`func::external_alias`).
     pub ext_sigs: HashMap<yavs_sem::ExternalId, DeclId>,
@@ -480,11 +484,18 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Give the port actual `expr`, found in a port map of an architecture lowered after this
-    /// call, an equivalent process ([`PortActual`]); `formal` is the formal's subtype when the
-    /// whole formal is associated (its range is checked).
-    pub fn port_actual(&mut self, expr: ExprId, formal: Option<SubtypeId>) {
-        self.cx.actuals.insert(expr, formal);
+    /// Give the actual `expr` of port `port` in instance statement `stmt` (its port map or
+    /// the port map of its binding indication) an equivalent process ([`PortActual`]), lowered
+    /// with the architecture of `stmt` after this call; `formal` is the formal's subtype when
+    /// the whole formal is associated (its range is checked).
+    pub fn port_actual(
+        &mut self,
+        stmt: StmtId,
+        expr: ExprId,
+        formal: Option<SubtypeId>,
+        port: DeclId,
+    ) {
+        self.cx.actuals.insert(expr, (stmt, formal, port));
     }
 
     /// Lower the run-time objects of package `unit` (and of its body, when analyzed): call it

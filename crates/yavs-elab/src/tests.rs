@@ -1659,3 +1659,47 @@ fn external_names_in_processes_bind_late() {
         [codes::EXTERNAL_NOT_FOUND]
     );
 }
+
+/// An expression actual of an unconstrained port needs a globally static subtype (LRM
+/// 6.5.6.3, #74); a type conversion of a composite port keeps every leaf's length.
+#[test]
+fn port_actual_shape_errors() {
+    let src = "
+entity sub is port (v : in bit_vector); end;
+architecture a of sub is begin end;
+entity t is end;
+architecture a of t is
+  signal b : bit_vector(3 downto 0);
+begin
+  u : entity work.sub port map (v => not b);
+end;
+";
+    let (_, r) = try_elab("unconstrained_expr", src, "t", &[]);
+    let Err(v) = r else {
+        panic!("elaboration succeeded")
+    };
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].0, codes::PORT_UNCONSTRAINED);
+    assert!(v[0].1.contains("globally static subtype"), "{v:?}");
+    let src = "
+package p is
+  type pair is record a : integer; b : bit; end record;
+  type pairs is array (natural range <>) of pair;
+  type pairs2 is array (natural range <>) of pair;
+end;
+use work.p.all;
+entity sub is port (v : in pairs(0 to 1)); end;
+architecture a of sub is begin end;
+use work.p.all;
+entity t is end;
+architecture a of t is
+  signal s : pairs2(0 to 2);
+begin
+  u : entity work.sub port map (v => pairs(s));
+end;
+";
+    assert_eq!(
+        err_codes("conv_length", src, "t", &[]),
+        [codes::PORT_MISMATCH]
+    );
+}

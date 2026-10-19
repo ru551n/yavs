@@ -120,7 +120,12 @@ pub struct ProcInst {
 pub struct PortActual {
     pub expr: yavs_sem::ExprId,
     pub formal: Option<yavs_sem::SubtypeId>,
+    /// The port.
+    pub port: yavs_sem::DeclId,
     pub shape: Shape,
+    /// The range of a scalar formal whose bounds come from the instance's generics, as
+    /// `yavs_lower::PortActual::bounds` takes it.
+    pub bounds: Option<[u64; 3]>,
 }
 
 pub struct Elaborated {

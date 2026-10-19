@@ -104,6 +104,8 @@ pub enum Side {
         map: std::sync::Arc<crate::whole::Map>,
         parts: Vec<(Elem, u64)>,
     },
+    /// The leaves of a composite in a type conversion: each leaf's scalar and length.
+    Leaves(Vec<(Enc, u64)>),
 }
 
 impl ConvFn {
@@ -113,7 +115,30 @@ impl ConvFn {
             [v] => Ok(v),
             _ => Err(format!("a port conversion got {} values for one", vs.len())),
         };
+        // A type conversion of composites: leaf by leaf, element by element (LRM 9.3.6).
+        if let (Side::Leaves(a), Side::Leaves(b)) = (&self.from, &self.to) {
+            if vs.len() != a.len() {
+                return Err("a port conversion got the wrong number of parts".into());
+            }
+            return vs
+                .iter()
+                .zip(a.iter().zip(b))
+                .map(|(v, ((ea, _), (eb, _)))| match v {
+                    _ if ea.elem == eb.elem && ea.class == eb.class => Ok(v.clone()),
+                    Value::Bytes(d) if ea.elem == Elem::Bytes(8) && eb.elem == Elem::Bytes(8) => {
+                        let mut out = Vec::with_capacity(d.len());
+                        for c in d.as_chunks::<8>().0 {
+                            let x = conv_cell(ea.class, eb.class, u64::from_le_bytes(*c))?;
+                            out.extend_from_slice(&x.to_le_bytes());
+                        }
+                        Ok(Value::Bytes(out))
+                    }
+                    _ => Err("this type conversion of a port is not implemented yet".into()),
+                })
+                .collect();
+        }
         let arg = match &self.from {
+            Side::Leaves(_) => return Err("a type conversion of composites to a scalar".into()),
             Side::Scalar(e) => yavs_interp::CallVal::Cell(decode(e, one()?)?),
             Side::Array { desc, .. } => yavs_interp::CallVal::Composite {
                 data: value_bytes(one()?),
@@ -139,7 +164,7 @@ impl ConvFn {
         let r = match &self.func {
             Some((rt, f, ret)) => {
                 let ret = match self.to {
-                    Side::Array { .. } | Side::Composite { .. } => *ret,
+                    Side::Array { .. } | Side::Composite { .. } | Side::Leaves(_) => *ret,
                     Side::Scalar(_) => None,
                 };
                 yavs_interp::call_values(rt.clone(), *f, Default::default(), &[arg], ret)
@@ -148,21 +173,7 @@ impl ConvFn {
             }
             None => match (&self.from, &self.to, arg) {
                 (Side::Scalar(a), Side::Scalar(b), yavs_interp::CallVal::Cell(c)) => {
-                    yavs_interp::CallVal::Cell(match (a.class, b.class) {
-                        (Class::Int, Class::Real) => (c as i64 as f64).to_bits(),
-                        (Class::Real, Class::Int) => {
-                            let r = f64::from_bits(c).round();
-                            if !(-9.2e18..9.2e18).contains(&r) {
-                                return Err(format!("{r} is outside the integer range"));
-                            }
-                            r as i64 as u64
-                        }
-                        _ => c,
-                    })
-                }
-                // Closely related arrays of the same element: the elements unchanged.
-                (Side::Array { elem: a, .. }, Side::Array { elem: b, .. }, _) if a == b => {
-                    return Ok(vec![one()?.clone()]);
+                    yavs_interp::CallVal::Cell(conv_cell(a.class, b.class, c)?)
                 }
                 _ => return Err("this type conversion of a port is not implemented yet".into()),
             },
@@ -245,6 +256,33 @@ impl ConvFn {
             _ => Err("the conversion result does not fit the port".into()),
         }
     }
+}
+
+/// A scalar cell of class `a` as one of class `b` (a type conversion, LRM 9.3.6).
+fn conv_cell(a: Class, b: Class, c: u64) -> Result<u64, String> {
+    Ok(match (a, b) {
+        (Class::Int, Class::Real) => (c as i64 as f64).to_bits(),
+        (Class::Real, Class::Int) => {
+            let r = f64::from_bits(c).round();
+            if !(-9.2e18..9.2e18).contains(&r) {
+                return Err(format!("{r} is outside the integer range"));
+            }
+            r as i64 as u64
+        }
+        _ => c,
+    })
+}
+
+/// The type conversion end of a composite of shape `s`: each leaf's scalar and length.
+fn leaves_of(db: &Db, s: &Shape) -> Option<Side> {
+    s.leaves()
+        .into_iter()
+        .map(|(_, l, n)| match l {
+            Shape::Scalar { ty, .. } => enc_of(db, *ty).map(|e| (e, n)),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(Side::Leaves)
 }
 
 /// A kernel value as IR memory: the bytes, or the bit-plane blocks of a logic value.
@@ -338,13 +376,37 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
     let (fe, te) = (side_of(db, from), side_of(db, to));
     let is_fn = matches!(db.decls[f].kind, DeclKind::Subprogram(_));
     let mut pty = None;
-    if (fe.is_none() || te.is_none()) && !is_fn {
-        return Err(err(
-            codes::NOT_IMPLEMENTED,
-            at,
-            "type conversions of record ports and arrays of composites are not implemented yet",
-            "conversion",
-        ));
+    if !is_fn && !matches!((&fe, &te), (Some(Side::Scalar(_)), Some(Side::Scalar(_)))) {
+        // Closely related composites (LRM 9.3.6): the same leaves, element by element.
+        let (Some(Side::Leaves(a)), Some(Side::Leaves(b))) =
+            (leaves_of(db, from), leaves_of(db, to))
+        else {
+            return Err(err(
+                codes::INTERNAL,
+                at,
+                "a type conversion of a scalar and a composite",
+                "here",
+            ));
+        };
+        let na: Vec<u64> = a.iter().map(|x| x.1).collect();
+        let nb: Vec<u64> = b.iter().map(|x| x.1).collect();
+        if na != nb {
+            return Err(err(
+                codes::PORT_MISMATCH,
+                at,
+                format!(
+                    "the type conversion gives {} elements, the target has {}",
+                    na.iter().sum::<u64>(),
+                    nb.iter().sum::<u64>()
+                ),
+                "conversion",
+            ));
+        }
+        return Ok(ConvFn {
+            func: None,
+            from: Side::Leaves(a),
+            to: Side::Leaves(b),
+        });
     }
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {

@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:config_port_expr:u1:_p0	k=1 n=-2147483648 m=10 @0 fs
+diag	note	0	0	:config_port_expr:u2:_p0	k=2 n=-2147483648 m=0 @0 fs
+diag	note	0	1	:config_port_expr:u1:_p0	k=1 n=3 m=10 @0 fs
+diag	note	0	1	:config_port_expr:u2:_p0	k=2 n=-2147483647 m=2 @0 fs
+diag	note	0	2	:config_port_expr:u2:_p0	k=2 n=3 m=2 @0 fs
+diag	note	1000000	2	:config_port_expr:u1:_p0	k=1 n=12 m=10 @1000000 fs
+diag	note	1000000	2	:config_port_expr:u2:_p0	k=2 n=6 m=8 @1000000 fs
+diag	note	1000000	3	:config_port_expr:u2:_p0	k=2 n=9 m=8 @1000000 fs

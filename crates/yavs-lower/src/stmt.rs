@@ -510,18 +510,30 @@ impl Fx<'_, '_> {
 
     /// `formal <= e` through driver slot 0, which covers the formal (or its sub-element):
     /// an array value is checked against the formal's descriptor at `dope` in instance data,
-    /// a scalar against `formal`'s range when that is static.
+    /// a scalar against the range of `formal` (the subtype of `port`), read from `bounds` in
+    /// instance data when the range is not static.
     pub fn drive_actual(
         &mut self,
         e: ExprId,
-        formal: Option<yavs_sem::SubtypeId>,
+        (formal, port): (Option<yavs_sem::SubtypeId>, yavs_sem::DeclId),
         dope: Option<u32>,
+        bounds: Option<u32>,
         span: Span,
     ) -> R<()> {
         let db = self.db;
         let st = db.exprs[e].subtype;
+        if ty::has_record(db, db.base(st)) {
+            return self.drive_actual_leaves(e, dope, span);
+        }
         let tid = self.ty(db.base(st), span)?;
-        let what = "port actual".to_string();
+        let what = if formal.is_some() {
+            format!(
+                "port {}",
+                db.decls[port].name.to_string().to_ascii_uppercase()
+            )
+        } else {
+            "port actual".to_string()
+        };
         let wave = match dope {
             Some(off) => {
                 let want = self.addr(Space::Inst, off);
@@ -553,10 +565,30 @@ impl Fx<'_, '_> {
                 let logic = yavs_ir::Ty::logic_leaf(self.fb.program().types(), tid).is_some();
                 let (_, _, vw) = self.scalar(st, span)?;
                 let r = self.scalar_expr(e)?;
-                // ponytail: a formal subtype with bounds from the instance's generics is not
-                // checked here (they are not in this region's data).
-                if let Some(f) = formal.filter(|&f| db.static_bounds(f).is_some()) {
-                    self.check_scalar(r, Some(st), f, &what, span)?;
+                match (formal, bounds) {
+                    // Bounds from the instance's generics: `[left, right, dir]` in instance
+                    // data, written by the elaborator.
+                    (Some(f), Some(off)) => {
+                        let rt = if ty::is_real(db, db.base(f)) {
+                            RegTy::F64
+                        } else {
+                            RegTy::I64
+                        };
+                        let a = self.addr(Space::Inst, off);
+                        let left = self.load(a, Width::B8, rt);
+                        let a = self.offset(a, 8);
+                        let right = self.load(a, Width::B8, rt);
+                        let a = self.offset(a, 8);
+                        let dir = self.load(a, Width::B8, RegTy::I64);
+                        let rng = crate::expr::Rng {
+                            left,
+                            right,
+                            dir: crate::expr::Dr::Dyn(dir),
+                        };
+                        self.check_in(r, rng, f, &what);
+                    }
+                    (Some(f), None) => self.check_scalar(r, Some(st), f, &what, span)?,
+                    (None, _) => {}
                 }
                 let wave = self.alloc_n(8 + 32);
                 let z = self.int(0);
@@ -585,6 +617,52 @@ impl Fx<'_, '_> {
             mode: DriveMode::Inertial,
             reject: None,
         });
+        Ok(())
+    }
+
+    /// `formal <= e` for a formal (or part) with records in its type: leaf `k` of the value
+    /// (in leaf order, as the elaborator's `NetGraph::select`) through driver slot `k`.
+    fn drive_actual_leaves(&mut self, e: ExprId, dope: Option<u32>, span: Span) -> R<()> {
+        let db = self.db;
+        let st = db.exprs[e].subtype;
+        let t = db.base(st);
+        let x = self.expr(e)?;
+        let (data, vd) = self.arr(x, span)?;
+        if let (Some(off), Some((_, dims))) = (dope, ty::array_of(db, t)) {
+            let want = self.addr(Space::Inst, off);
+            let what = self.msg("port actual", Dir::To);
+            self.emit(Inst::SubtypeCheck {
+                dope: vd,
+                want,
+                dims,
+                what,
+            });
+        }
+        for (k, (path, lst)) in ty::leaves(db, st).into_iter().enumerate() {
+            let leaf = crate::RecLeaf {
+                path,
+                st: lst,
+                sig: k as u32,
+            };
+            let len = self.leaf_count(t, vd, &leaf.path, span)?;
+            let size = self.leaf_size(&leaf, len, span)?;
+            let fifteen = self.int(15);
+            let r = self.bin(IntOp::Add, size, fifteen);
+            let wave = self.alloc(r);
+            let z = self.int(0);
+            self.store(wave, z, Width::B8);
+            let va = self.offset(wave, 8);
+            self.leaf_of_value(&leaf, &leaf.path, t, (data, vd), (va, len), span)?;
+            let n = self.int(1);
+            self.emit(Inst::Drive {
+                driver: k as u32,
+                target: None,
+                wave,
+                n,
+                mode: DriveMode::Inertial,
+                reject: None,
+            });
+        }
         Ok(())
     }
 

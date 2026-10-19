@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:port_expr_generic_range:m:_p0	n=0 @0 fs
+diag	note	0	1	:port_expr_generic_range:m:_p0	n=2 @0 fs
+diag	fatal	1000000	1	-	value 4 outside of INTEGER range 0 to 3 for port N

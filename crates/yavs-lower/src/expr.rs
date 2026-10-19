@@ -1902,6 +1902,14 @@ impl<'a> Fx<'a, '_> {
             }
         }
         let r = self.scalar_bounds(to, span)?;
+        self.check_in(v, r, to, what);
+        Ok(())
+    }
+
+    /// Check scalar `v` against range `r` of subtype `to` (named in the message).
+    pub(crate) fn check_in(&mut self, v: Reg, r: Rng, to: SubtypeId, what: &str) {
+        let db = self.db;
+        let t = db.base(to);
         let dir = ir_dir(r.dir);
         let real = ty::is_real(db, t);
         let (lo, hi) = if real {
@@ -1922,7 +1930,6 @@ impl<'a> Fx<'a, '_> {
                 what,
             });
         }
-        Ok(())
     }
 
     /// `(low, high)` of a real range (registers are F64).

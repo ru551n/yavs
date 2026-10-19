@@ -671,12 +671,20 @@ a note and a help suggesting an access type, as the reference simulators reject 
   its own initial value until delta 1, as the reference simulators do. The process
   runs with its region's instance data plus the formal as one more signal and, for an array,
   the formal's descriptor, against which the value is checked. A conversion function is only
-  the syntax `name(signal)`: an operator such as `not s` is an expression actual (sem). Not
-  yet (E9999 or E2001): `inertial` actuals that are signal names (the HIR does not keep the
-  reserved word, they stay port edges), record-typed expression actuals, a non-static actual
-  of an unconstrained subtype for an unconstrained formal, expression actuals in a
-  configuration's port map, and the range check of a scalar formal whose subtype bounds
-  depend on the instance's generics.
+  the syntax `name(signal)`: an operator such as `not s` is an expression actual (sem).
+- **The rest of the expression actuals** (#74, portrest agent, 2026-10-19; LRM 6.5.6.3,
+  7.3.2): a formal with records in its type is driven leaf by leaf, driver slot `k` for leaf
+  `k` in `NetGraph::select` order. An expression actual in the port map of a binding
+  indication (configuration specification or declaration) is the equivalent process of the
+  component's region: it reads the component's ports and generics, which yavs-lower makes
+  objects of the instantiating architecture's unit and yavs-elab binds in that region
+  (`Lowerer::port_actual` names the instance statement). A scalar formal whose range comes
+  from the instance's generics is checked against bounds yavs-elab evaluates in the instance
+  and writes into the process's instance data (`PortActual::bounds`); the message names the
+  port, as the reference simulator. An unconstrained formal takes the bounds of a static
+  value, and those of a conversion function's constrained result subtype; a non-static
+  expression without a globally static subtype is E2111 (LRM 6.5.6.3 is clear, both
+  reference simulators reject). Still open: `inertial` signal-name actuals (#233).
 
 - **Aliases of external signal names** (#19, LRM 6.6.2, 8.7, 14.4.1): `alias s is
   <<signal .tb.dut.x : t>>;` in an architecture, block, generate or process binds when the
@@ -1038,6 +1046,12 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   process per conversion (one delta late, unlike the reference simulators). Ordering: the edge
   converts at the part that the level-ordered update worklist reaches last, so the result does
   not depend on which part changed or on the thread count (docs/design/ir.md 4.1).
+- **Type conversions of composite ports** (#74, 2026-10-19; LRM 9.3.6): closely related
+  composites have the same leaves, so a type conversion of a record port or an array of
+  composites is the identity leaf by leaf (an integer leaf to a real one converted element by
+  element), with no function to call; leaf lengths that differ are E2110 in elaboration. An
+  `inout` port converted in one direction only is E1313 in sem, as for subprogram calls
+  (lrm-checks L72).
 - **Signal references of several parts** (#71): an individually associated signal formal whose
   parts lie in different signals (`drive2(x(1) => s1, x(0) => s0)`, a record formal field by
   field) is a reference of several parts in the IR (`SigParts`, ir.md 1.8): still two

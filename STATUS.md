@@ -432,9 +432,12 @@ architecture, #222), `others` in a configuration after component configurations 
 specification-bound instances, 2019 variable ports denoting the shared variable at the end of
 their chain of actuals (architecture, block, generate or package shared variables, through
 entities, components and blocks; a top-level one is E2119; #188), non-static expression actuals of `in` ports and of parts of
-them driven by their equivalent IR process one delta later, static expression parts in the
-formal's initial value (#74). Not yet: type conversions of record ports, record-typed signal-name
-expression actuals (#74); `inertial` signal-name actuals are expression actuals (#233).
+them driven by their equivalent IR process one delta later (records leaf by leaf, ranges from
+the instance's generics checked, expression actuals in a binding indication's port map),
+static expression parts in the formal's initial value, unconstrained formals bounded by a
+static value or a conversion function's result subtype, type conversions of record ports and
+arrays of composites (#74). Not yet: `inertial` signal-name actuals are expression actuals
+(#233).
 
 Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-lower) and
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data

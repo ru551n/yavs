@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:port_conv_type_composite:u:_p0	pi0=1,01 pi1=2,10 p=3,11 ri=40,50 @0 fs
+diag	note	0	0	:port_conv_type_composite:_p0	t0=-2147483648,00 t1=-2147483648,00 @0 fs
+diag	note	0	1	:port_conv_type_composite:_p0	t0=2,10 t1=1,01 @0 fs
+diag	note	1000000	1	:port_conv_type_composite:u:_p0	pi0=1,01 pi1=7,00 p=8,11 ri=40,50 @1000000 fs
+diag	note	1000000	2	:port_conv_type_composite:_p0	t0=7,00 t1=1,01 @1000000 fs
+diag	note	2000000	1	:port_conv_type_composite:u:_p0	pi0=1,01 pi1=7,00 p=8,11 ri=-60,50 @2000000 fs

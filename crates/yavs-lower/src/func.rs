@@ -989,8 +989,10 @@ fn region(
     for &s in stmts {
         let st = &db.stmts[s];
         match &st.kind {
-            HStmt::Instance { port_map, .. } => {
-                ok &= actuals(db, pb, cx, ir, s, port_map).is_ok();
+            HStmt::Instance {
+                port_map, target, ..
+            } => {
+                ok &= actuals(db, pb, cx, ir, s, port_map, Some(target)).is_ok();
             }
             HStmt::Block {
                 scope,
@@ -1001,7 +1003,7 @@ fn region(
                 body,
                 ..
             } => {
-                ok &= actuals(db, pb, cx, ir, s, port_map).is_ok();
+                ok &= actuals(db, pb, cx, ir, s, port_map, None).is_ok();
                 // Block generics and ports are values and signals of the block's region.
                 for &d in generics.iter().chain(ports.iter()) {
                     ok &= inst_object(db, pb, cx, ir, d).is_ok();
@@ -1557,8 +1559,11 @@ fn process(
     Ok(())
 }
 
-/// The equivalent processes `formal <= expr` of the expression actuals of port map `map` of
-/// statement `s` that the elaborator asked for (`Cx::actuals`, LRM 6.5.6.3).
+/// The equivalent processes `formal <= expr` of the expression actuals of instance (or
+/// block) statement `s` that the elaborator asked for (`Cx::actuals`, LRM 6.5.6.3), from its
+/// port map `map` or from the binding indication of component instance `target`. An actual
+/// of a binding indication reads the component's ports and generics: they become objects of
+/// this unit, which the elaborator binds in the component's region.
 fn actuals(
     db: &Db,
     pb: &mut ProgramBuilder,
@@ -1566,20 +1571,38 @@ fn actuals(
     ir: &mut UnitIr,
     s: StmtId,
     map: &[hir::Arg],
+    target: Option<&hir::InstTarget>,
 ) -> R<()> {
-    let mut exprs = Vec::new();
-    for a in map {
-        match &a.actual {
-            hir::Actual::Expr(e) => exprs.push(*e),
-            hir::Actual::Individual(parts) => exprs.extend(parts.iter().map(|(_, e, _)| *e)),
-            _ => {}
+    let mut asked: Vec<_> = cx
+        .actuals
+        .iter()
+        .filter(|(_, a)| a.0 == s)
+        .map(|(&e, &(_, formal, port))| (e, formal, port))
+        .collect();
+    asked.sort_by_key(|a| a.0);
+    let own = |e: yavs_sem::ExprId| {
+        map.iter().any(|a| match &a.actual {
+            hir::Actual::Expr(x) => *x == e,
+            hir::Actual::Individual(parts) => parts.iter().any(|(_, x, _)| *x == e),
+            _ => false,
+        })
+    };
+    let mut ok = true;
+    if let Some(hir::InstTarget::Component(c)) = target
+        && asked.iter().any(|a| !own(a.0))
+        && let DeclKind::Component(comp) = &db.decls[*c].kind
+    {
+        for &d in comp.generics.iter().chain(comp.ports.iter()) {
+            let known = ir.signals.iter().any(|x| x.decl == d)
+                || ir.values.iter().any(|x| x.decl == d)
+                || ir.consts.iter().any(|x| x.decl == d);
+            if !known {
+                ok &= inst_object(db, pb, cx, ir, d).is_ok();
+            }
         }
     }
-    let mut ok = true;
-    for e in exprs {
-        if let Some(&formal) = cx.actuals.get(&e) {
-            ok &= actual_process(db, pb, cx, ir, s, e, formal).is_ok();
-        }
+    for (e, formal, port) in asked {
+        ok &= actual_process(db, pb, cx, ir, s, e, formal, port).is_ok();
     }
     if ok { Ok(()) } else { Err(Failed) }
 }
@@ -1592,14 +1615,15 @@ fn actual_process(
     s: StmtId,
     e: yavs_sem::ExprId,
     formal: Option<SubtypeId>,
+    port: DeclId,
 ) -> R<()> {
     let span = db.exprs[e].span;
     let base = db.base(db.exprs[e].subtype);
-    if ty::has_record(db, base) {
-        return Err(cx.unsupported(span, "record expressions as port actuals"));
-    }
     let t = ty::lower(db, cx, pb, base, span)?;
-    let dope = if ty::is_array(db, base) {
+    // Arrays and composites with records that need one get the formal's descriptor.
+    let dope = if ty::is_array(db, base)
+        || (ty::has_record(db, base) && yavs_ir::Ty::needs_desc(pb.types(), t))
+    {
         let Some(size) = yavs_ir::Ty::desc_size(pb.types(), t) else {
             return Err(cx.ice(span, "array type without a descriptor size"));
         };
@@ -1611,6 +1635,14 @@ fn actual_process(
         let x = db.implicit_external(h).ok_or(Failed)?;
         external_alias(db, pb, cx, ir, h, x)?;
     }
+    // A scalar formal whose range is not static (the instance's generics): the elaborator
+    // writes `[left, right, dir]` here.
+    let bounds = match formal {
+        Some(f) if db.static_bounds(f).is_none() && db.types[db.base(f)].kind.is_scalar() => {
+            Some(cx.inst_alloc(24))
+        }
+        _ => None,
+    };
     let name = "_actual".to_string();
     let f = pb.declare(&name, FuncKind::Process, None);
     let mut fx = Fx::new(db, cx, pb.define(f), 0, FuncKind::Process, name);
@@ -1620,7 +1652,7 @@ fn actual_process(
     fx.jump(top);
     fx.at(top);
     fx.stmt_start(StmtKind::SigAssign, span);
-    let r = fx.drive_actual(e, formal, dope, span);
+    let r = fx.drive_actual(e, (formal, port), dope, bounds, span);
     fx.stmt_start(StmtKind::Implicit, span);
     let mut sens = Vec::new();
     fx.signals_in(e, &mut sens);
@@ -1640,6 +1672,7 @@ fn actual_process(
             expr: e,
             ty: t,
             dope,
+            bounds,
         }),
     });
     Ok(())

@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:port_expr_record_array:m:_p0	m p=-1,00 ps0=-2,11 ps1=-2,11 @0 fs
+diag	note	0	1	:port_expr_record_array:m:_p0	m p=-1,00 ps0=6,10 ps1=4,01 @0 fs
+diag	note	1000000	2	:port_expr_record_array:m:_p0	m p=-1,00 ps0=8,10 ps1=2,01 @1000000 fs
+diag	note	2000000	2	:port_expr_record_array:m:_p0	m p=-1,00 ps0=10,00 ps1=4,11 @2000000 fs

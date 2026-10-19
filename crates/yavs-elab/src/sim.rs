@@ -166,7 +166,7 @@ impl Elaborated {
         }
         for p in &self.procs {
             if let Some(a) = &p.actual {
-                l.port_actual(a.expr, a.formal);
+                l.port_actual(p.stmt, a.expr, a.formal, a.port);
             }
         }
         let mut var_pkgs = HashMap::new();
@@ -530,27 +530,41 @@ impl Elaborated {
                     .map(|a| (x, a))
             })
             .ok_or_else(|| sim_err(format!("{}: port actual not lowered", path())))?;
-        let lsps = p.lsps.concat();
-        let ([(_, leaf, range)], [id]) = (lsps.as_slice(), ds) else {
-            return Err(sim_err(format!(
-                "{}: port actual drives more than one signal",
-                path()
-            )));
-        };
         let mut inst = (*inst).clone();
         if let Some(off) = a.dope {
             write_desc(&rt.prog, &path(), &pa.shape, (off, a.ty), &mut inst.data)?;
         }
-        let sig = inst.sigs.len() as u32;
-        inst.sigs.push(InstSig {
-            signal: yavs_kernel::SignalId(leaf.0),
-            ty: self.nets.leaf(*leaf).ty,
-        });
-        let drivers = vec![ProcDriver {
-            id: *id,
-            sig,
-            range: *range,
-        }];
+        if let Some(off) = a.bounds {
+            let (Some(b), Some(d)) = (
+                pa.bounds,
+                inst.data.get_mut(off as usize..off as usize + 24),
+            ) else {
+                return Err(sim_err(format!(
+                    "{}: port actual range not elaborated",
+                    path()
+                )));
+            };
+            for (w, x) in d.chunks_exact_mut(8).zip(b) {
+                w.copy_from_slice(&x.to_le_bytes());
+            }
+        }
+        // Slot `k` drives the formal's leaf `k` (one for a scalar or an array of scalars).
+        let mut drivers = Vec::new();
+        for (d, leaf, range) in p.lsps.concat() {
+            let pos = p.drivers.iter().position(|&x| x == d);
+            let Some(&id) = pos.and_then(|k| ds.get(k)) else {
+                return Err(sim_err(format!("{}: port actual driver not owned", path())));
+            };
+            drivers.push(ProcDriver {
+                id,
+                sig: inst.sigs.len() as u32,
+                range,
+            });
+            inst.sigs.push(InstSig {
+                signal: yavs_kernel::SignalId(leaf.0),
+                ty: self.nets.leaf(leaf).ty,
+            });
+        }
         let proc = InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)?;
         Ok(Box::new(proc))
     }

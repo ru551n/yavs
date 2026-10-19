@@ -258,6 +258,24 @@ fn ice(span: Span, what: &str) -> Diagnostic {
         .with_help("please report it with the source that triggers it")
 }
 
+/// An expression actual of an unconstrained port whose subtype gives no bounds (LRM 6.5.6.3:
+/// it must have a globally static subtype).
+fn not_static_subtype(at: Span, port: Span, decl: &yavs_sem::decl::Decl) -> Box<Diagnostic> {
+    Box::new(
+        Diagnostic::error(
+            codes::PORT_UNCONSTRAINED,
+            format!(
+                "the expression associated with unconstrained port `{}` has no globally static subtype",
+                decl.name
+            ),
+        )
+        .with_primary(at, "the bounds of this expression are not known before simulation")
+        .with_secondary(port, "port declared here")
+        .with_note("LRM 6.5.6.3: an expression actual of an unconstrained port needs a globally static subtype")
+        .with_help("qualify the expression with a constrained subtype, such as `t(7 downto 0)'(expr)`"),
+    )
+}
+
 fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
     Box::new(
         Diagnostic::error(
@@ -1128,14 +1146,7 @@ impl Elab<'_> {
                                 None => self
                                     .m
                                     .shape(db, db.exprs[*e].subtype, Some(sc), espan)?
-                                    .ok_or_else(|| {
-                                        unsupported(
-                                            espan,
-                                            "a non-static expression actual of an unconstrained \
-                                             subtype for an unconstrained port",
-                                            "M3",
-                                        )
-                                    })?,
+                                    .ok_or_else(|| not_static_subtype(espan, span, decl))?,
                             };
                             let fo =
                                 self.m
@@ -1144,15 +1155,17 @@ impl Elab<'_> {
                         }
                         Err(d) => return Err(d),
                     };
-                    let Some(shape) = own else {
-                        return Err(unsupported(
-                            db.exprs[*e].span,
-                            "an expression actual for an unconstrained port",
-                            "M3",
-                        ));
+                    // An unconstrained formal takes the bounds of the static value.
+                    let espan = db.exprs[*e].span;
+                    let shape = match own {
+                        Some(sh) => sh,
+                        None => self
+                            .m
+                            .shape_init(db, subtype, Some(&v), Some(s), espan)?
+                            .ok_or_else(|| not_static_subtype(espan, span, decl))?,
                     };
                     self.m
-                        .add_obj(self.db, s, p, kind, shape, Some(&v), db.exprs[*e].span)?;
+                        .add_obj(self.db, s, p, kind, shape, Some(&v), espan)?;
                     return Ok(());
                 }
             },
@@ -1177,6 +1190,17 @@ impl Elab<'_> {
                     ));
                 };
                 let (al, ashape) = self.m.select(ao, &asels, aspan)?;
+                // An unconstrained formal takes the bounds of the conversion function's result
+                // subtype, when that is constrained.
+                let ret = actual_conv
+                    .and_then(|c| db.decls[c].kind.subprogram())
+                    .and_then(|sp| sp.ret);
+                let own = match (own, ret) {
+                    (None, Some(r)) if mode == PortMode::In => {
+                        self.m.shape(db, r, Some(sc), aspan)?
+                    }
+                    (o, _) => o,
+                };
                 let Some(shape) = own else {
                     return Err(unsupported(
                         span,
@@ -1217,11 +1241,11 @@ impl Elab<'_> {
                         PortMode::Inout => to_formal.is_none() || to_actual.is_none(),
                     };
                     if one_way {
-                        return Err(unsupported(
+                        // Sem rejects an `inout` port converted one way only (E1313).
+                        return Err(Box::new(ice(
                             aspan,
                             "a composite port converted in one direction only",
-                            "M3",
-                        ));
+                        )));
                     }
                     self.m.nets.conv_ports.push(crate::hier::ConvPort {
                         formal: fl,
@@ -1325,13 +1349,6 @@ impl Elab<'_> {
     ) -> R<()> {
         let span = self.db.exprs[e].span;
         let shape = self.m.select(fo, &fsels, span)?.1;
-        if matches!(self.m.hier.scope(region).kind, ScopeKind::Component { .. }) {
-            return Err(unsupported(
-                span,
-                "non-static expression actuals in a binding indication",
-                "M3",
-            ));
-        }
         let Some(st) = self.stmt else {
             return Err(Box::new(ice(span, "port map outside a statement")));
         };
@@ -1345,6 +1362,15 @@ impl Elab<'_> {
             key: n,
             span,
         };
+        // A scalar formal whose range comes from the instance's generics: its bounds,
+        // evaluated in the instance, for the process's range check.
+        let db: &Db = self.db;
+        let bounds = match formal {
+            Some(f) if db.static_bounds(f).is_none() && db.types[db.base(f)].kind.is_scalar() => {
+                Some(self.formal_bounds(f, s, span)?)
+            }
+            _ => None,
+        };
         self.process_refs(region, st, name, false, vec![(fo, fsels, span)])?;
         // External names in the expression bind once the hierarchy is complete (#93).
         if let Some(r) = self.m.regions.get(&region).and_then(|v| v.last().copied()) {
@@ -1354,9 +1380,46 @@ impl Elab<'_> {
         self.procs.last_mut().expect("just added").actual = Some(crate::PortActual {
             expr: e,
             formal,
+            port: self.m.nets.obj(fo).decl,
             shape,
+            bounds,
         });
         Ok(())
+    }
+
+    /// The range of scalar subtype `f` evaluated in scope `s`: left, right (f64 bits for a
+    /// real) and the direction (0 for `to`), as `yavs_lower::PortActual::bounds` reads them.
+    fn formal_bounds(&mut self, f: yavs_sem::SubtypeId, s: ScopeId, span: Span) -> R<[u64; 3]> {
+        use yavs_sem::hir::{Direction, RangeC};
+        let db: &Db = self.db;
+        let dir = |d: Direction| u64::from(d == Direction::Downto);
+        if !matches!(
+            db.types[db.base(f)].kind,
+            yavs_sem::types::TypeKind::Floating | yavs_sem::types::TypeKind::UniversalReal
+        ) {
+            let b = self.m.scalar_bounds(db, f, Some(s), span)?;
+            return Ok([b.left as u64, b.right as u64, dir(b.dir)]);
+        }
+        let Some(RangeC::Explicit {
+            left,
+            dir: d,
+            right,
+        }) = db.scalar_range(f)
+        else {
+            return Err(unsupported(
+                span,
+                "a real port range given by an attribute",
+                "M3",
+            ));
+        };
+        let mut real = |e: ExprId| match self.m.eval(db, e, Some(s))? {
+            Val::Real(x) => Ok(x.to_bits()),
+            _ => Err(Box::new(ice(
+                db.exprs[e].span,
+                "real bound of another type",
+            ))),
+        };
+        Ok([real(left)?, real(right)?, dir(d)])
     }
 
     // -- statements ---------------------------------------------------------------------

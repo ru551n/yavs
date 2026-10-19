@@ -337,11 +337,14 @@ leaves; docs/decisions.md "Elaboration"). The `generics/` and `hierarchy/` difft
    signals are guarded in the kernel by elab (`Builder::guard`, disconnection time 0 until
    disconnection specifications reach the HIR).
 7. **Expression actuals of ports** (#74, LRM 6.5.6.3; answered 2026-10-18: elab calls
-   `Lowerer::port_actual(expr, formal subtype)` before lowering the instantiating
+   `Lowerer::port_actual(stmt, expr, formal subtype, port)` before lowering the instantiating
    architecture, which then lists one `ProcessIr` with `actual: Some(PortActual)` per such
-   actual of its instance and block port maps: no driver slots of its own, it drives slot 0
-   with `target: None`, and an array value is checked against the descriptor elab writes at
-   `PortActual::dope`. The original request follows.) An
+   actual of instance or block statement `stmt` (its port map, or its binding indication's,
+   whose component ports and generics become objects of the unit): no driver slots of its
+   own, it drives slot 0 with `target: None` (a type with records: slot `k` for leaf `k`),
+   an array value is checked against the descriptor elab writes at `PortActual::dope` and a
+   scalar with a non-static range against the bounds at `PortActual::bounds`. The original
+   request follows.) An
    association `f => expr` (or `f => inertial expr`) whose actual is not a static signal name
    is a port driven by an equivalent process `f <= expr` in the instantiating region. An
    external name actual without `inertial` is a signal name actual, a plain port edge (#186).

@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:port_expr_record:m1:_p0	m1 p=-1,00 ps0=-2,11 ps1=-2,11 @0 fs
+diag	note	0	0	:port_expr_record:m2:_p0	m2 p=5,10 ps0=-2,11 ps1=5,10 @0 fs
+diag	note	0	1	:port_expr_record:m1:_p0	m1 p=1,01 ps0=-2,11 ps1=-2,11 @0 fs
+diag	note	0	1	:port_expr_record:m2:_p0	m2 p=5,10 ps0=2,10 ps1=5,10 @0 fs
+diag	note	1000000	2	:port_expr_record:m1:_p0	m1 p=3,01 ps0=-2,11 ps1=-2,11 @1000000 fs
+diag	note	1000000	2	:port_expr_record:m2:_p0	m2 p=5,10 ps0=6,10 ps1=5,10 @1000000 fs
+diag	note	2000000	1	:port_expr_record:m2:_p0	m2 p=7,00 ps0=6,10 ps1=7,00 @2000000 fs
+diag	note	2000000	2	:port_expr_record:m1:_p0	m1 p=3,11 ps0=-2,11 ps1=-2,11 @2000000 fs
+diag	note	2000000	2	:port_expr_record:m2:_p0	m2 p=7,00 ps0=6,00 ps1=7,00 @2000000 fs

@@ -93,7 +93,17 @@ impl Db {
         if let Some(g) = generics {
             self.report_unused_generics(&g);
         }
-        Ok(())
+        // Instances in a process or subprogram made before this body existed (4.9).
+        let (mine, keep) = std::mem::take(&mut self.pending_inst_checks)
+            .into_iter()
+            .partition(|&(i, ..)| self.insts[i].generic == d);
+        self.pending_inst_checks = keep;
+        let mut failed = false;
+        for (_, sc, sp) in mine {
+            let objs = self.decls_with_instances(s);
+            failed |= self.check_instance_objects(objs, sc, sp).is_err();
+        }
+        if failed { Err(Reported) } else { Ok(()) }
     }
 
     /// The package region of package body region `body`: its parent for a nested body, else

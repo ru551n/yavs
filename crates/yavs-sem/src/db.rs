@@ -108,6 +108,11 @@ pub struct Db {
     pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
     pub(crate) pending_label_attrs: Vec<crate::attr::PendingLabel>,
+    /// Package instances in a process or subprogram whose generic's body is not declared yet
+    /// (instance, region, span): `E1237` is checked when the body arrives.
+    pub(crate) pending_inst_checks: Vec<(crate::ids::InstId, ScopeId, yavs_diag::Span)>,
+    /// Groups with a label constituent not declared yet.
+    pub(crate) pending_groups: Vec<crate::group::PendingGroup>,
     pub well_known: WellKnown,
     pub poison: Poison,
     pub(crate) root: ScopeId,
@@ -287,6 +292,8 @@ impl Db {
             time_units: Vec::new(),
             attr_closed: HashSet::new(),
             pending_label_attrs: Vec::new(),
+            pending_inst_checks: Vec::new(),
+            pending_groups: Vec::new(),
             well_known: WellKnown::default(),
             poison: Poison {
                 decl,

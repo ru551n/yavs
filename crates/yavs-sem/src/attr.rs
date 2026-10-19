@@ -1361,7 +1361,7 @@ fn arch_entity(db: &Db, scope: ScopeId) -> Option<ScopeId> {
 /// and ends with [`unresolved_labels`].
 // ponytail: labels of sequential statements (a process decorating its loop)
 // are still E1100; defer them too once a design needs it.
-fn has_conc_stmts(db: &Db, scope: ScopeId) -> bool {
+pub(crate) fn has_conc_stmts(db: &Db, scope: ScopeId) -> bool {
     matches!(
         db.scopes[scope].kind,
         ScopeKind::Entity | ScopeKind::Architecture | ScopeKind::Block | ScopeKind::Generate
@@ -1370,6 +1370,7 @@ fn has_conc_stmts(db: &Db, scope: ScopeId) -> bool {
 
 /// Label `d` was declared in `scope`: apply the specifications waiting for it.
 pub(crate) fn label_declared(db: &mut Db, scope: ScopeId, d: DeclId) -> Result<(), Reported> {
+    db.label_for_groups(scope, d);
     let key = db.decls[d].name.key();
     let mut failed = None;
     let mut i = 0;
@@ -1390,11 +1391,12 @@ pub(crate) fn label_declared(db: &mut Db, scope: ScopeId, d: DeclId) -> Result<(
 /// The end of `scope`'s statement part: a label specification still waiting
 /// names no label of it (E1100).
 pub(crate) fn unresolved_labels(db: &mut Db, scope: ScopeId) -> Result<(), Reported> {
+    let groups = db.unresolved_group_labels(scope);
     let (left, keep) = std::mem::take(&mut db.pending_label_attrs)
         .into_iter()
         .partition(|p| p.scope == scope);
     db.pending_label_attrs = keep;
-    let mut failed = None;
+    let mut failed = groups.err();
     for p in left.iter() {
         failed = Some(db.error(
             Diagnostic::error(diag::NOT_DECLARED, format!("`{}` is not declared", p.name))

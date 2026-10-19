@@ -929,19 +929,31 @@ impl Db {
         self.decls[d].kind = DeclKind::PackageInst(inst);
         self.declare(scope, d);
         let mut objs = self.decls_with_instances(s);
-        // The body's objects too (4.9): the uncloned generic body is scanned, not the clone.
-        // ponytail: a nested generic package instantiated before its body is not checked.
-        if self.sequential_owner(scope).is_some()
-            && let Some(b) = self.generic_body_scope(inst)?
-        {
-            objs.extend(self.decls_with_instances(b));
+        // The body's objects too (4.9): the uncloned generic body is scanned, not the clone. A
+        // nested generic package whose body comes later is checked when the body is declared.
+        if self.sequential_owner(scope).is_some() {
+            match self.generic_body_scope(inst)? {
+                Some(b) => objs.extend(self.decls_with_instances(b)),
+                None => self.pending_inst_checks.push((inst, scope, p.name.span)),
+            }
         }
+        self.check_instance_objects(objs, scope, p.name.span)
+    }
+
+    /// `E1237` for the first signal or shared variable among `objs`, the objects of an
+    /// instance (and its generic's body) declared in `scope`.
+    pub(crate) fn check_instance_objects(
+        &mut self,
+        objs: Vec<DeclId>,
+        scope: ScopeId,
+        span: Span,
+    ) -> Result<(), Reported> {
         let signal = objs.into_iter().find(|&o| {
             matches!(&self.decls[o].kind, DeclKind::Object(x)
                 if matches!(x.class, ObjClass::Signal | ObjClass::SharedVariable))
         });
         if let Some(o) = signal {
-            self.check_not_sequential(scope, p.name.span, Some(o))?;
+            self.check_not_sequential(scope, span, Some(o))?;
         }
         Ok(())
     }

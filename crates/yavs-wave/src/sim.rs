@@ -87,6 +87,8 @@ struct Var {
     execs: u64,
     /// The raw value at the last read: an equal one needs no decoding.
     raw: Option<CallVal>,
+    /// The raw value before it, until the changes since are written.
+    old: Option<CallVal>,
     /// The stamp of the data when `raw` was read.
     stamp: Option<Stamp>,
 }
@@ -352,9 +354,23 @@ impl State {
                     "this is a bug in yavs: a recorded variable's value: {what}"
                 ))
             };
+            // Entries whose bytes are unchanged since the value before need no look: count
+            // the changed 64-byte chunks up to each chunk.
+            let old = var.old.take();
+            let dirty = match (&old, var.primed) {
+                (Some(o), true) => chunk_counts(o, &var.raw),
+                _ => None,
+            };
             let mut at = 0;
             for (leaf, i) in var.plan.iter().zip(var.entries.clone()) {
                 let logic = matches!(entries[i as usize].conv, Conv::Logic { .. });
+                if let Some(cnt) = &dirty {
+                    let (lo, hi) = leaf.span();
+                    if cnt[(hi - 1) / CHUNK + 1] == cnt[lo / CHUNK] {
+                        at += leaf.width(logic);
+                        continue;
+                    }
+                }
                 bytes.clear();
                 if leaf.bytes(data, logic, &mut bytes).is_none() {
                     self.error = Some(bug("it does not hold an entry"));
@@ -397,6 +413,7 @@ impl State {
         let Var {
             execs,
             raw,
+            old,
             stamp,
             paths,
             plan,
@@ -423,7 +440,7 @@ impl State {
                     let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
                     *execs = p.execs();
                     make_plan(paths, plan, plan_desc, p.program(), ty, &cv)?;
-                    *raw = Some(cv);
+                    *old = raw.replace(cv);
                     Ok(true)
                 })
                 .unwrap_or_else(|| Err(bug("no process"))),
@@ -438,7 +455,7 @@ impl State {
                 let cv =
                     yavs_interp::shared_var(&b.rt, &b.shared, *slot, *ty).map_err(|m| bug(&m))?;
                 make_plan(paths, plan, plan_desc, &b.rt.prog, *ty, &cv)?;
-                *raw = Some(cv);
+                *old = raw.replace(cv);
                 Ok(true)
             }
         }
@@ -505,6 +522,27 @@ fn convert(en: &Entry, v: &Value, out: &mut Vec<u8>) {
         // A mismatch reaches the writer as a wrong length, which it reports.
         _ => {}
     }
+}
+
+const CHUNK: usize = 64;
+
+/// For the raw values `old` and `new` of equal size: the number of chunks of `CHUNK` bytes
+/// that differ before each chunk, and in all as the last element. `None` if they differ in
+/// shape.
+fn chunk_counts(old: &CallVal, new: &Option<CallVal>) -> Option<Vec<u32>> {
+    let (a, b): (&[u8], &[u8]) = match (old, new.as_ref()?) {
+        (CallVal::Composite { data: a, .. }, CallVal::Composite { data: b, .. }) => (a, b),
+        _ => return None,
+    };
+    if a.len() != b.len() {
+        return None;
+    }
+    let mut cnt = Vec::with_capacity(a.len() / CHUNK + 2);
+    cnt.push(0u32);
+    for (x, y) in a.chunks(CHUNK).zip(b.chunks(CHUNK)) {
+        cnt.push(cnt[cnt.len() - 1] + u32::from(x != y));
+    }
+    Some(cnt)
 }
 
 /// Make the plan of a variable at its first read: where each entry's value is in a raw
@@ -1009,6 +1047,7 @@ impl Design<'_> {
                 primed: false,
                 execs: u64::MAX,
                 raw: None,
+                old: None,
                 stamp: None,
             });
         }

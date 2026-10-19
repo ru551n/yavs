@@ -429,6 +429,37 @@ pub enum DataLeaf {
 }
 
 impl DataLeaf {
+    /// The bytes of the data the leaf is read from, `lo .. hi`.
+    pub fn span(&self) -> (usize, usize) {
+        match *self {
+            DataLeaf::Cell { at, n, .. } => (at as usize, at as usize + n as usize),
+            DataLeaf::Planes {
+                at,
+                total,
+                from,
+                len,
+                ..
+            } => {
+                // Element `p` is plane bit `total - 1 - p`; 64 bits are 32 bytes.
+                let (lo, hi) = ((total - from - len) as usize, (total - 1 - from) as usize);
+                (at as usize + lo / 64 * 32, at as usize + (hi / 64 + 1) * 32)
+            }
+        }
+    }
+
+    /// The number of bytes [`DataLeaf::bytes`] appends.
+    pub fn width(&self, logic: bool) -> usize {
+        match *self {
+            DataLeaf::Cell { kind, .. } => match kind {
+                CellKind::Enum if logic => 1,
+                CellKind::Enum => 4,
+                CellKind::Int | CellKind::Real => 8,
+            },
+            DataLeaf::Planes { len, .. } if logic => len as usize,
+            DataLeaf::Planes { len, .. } => 4 * len as usize,
+        }
+    }
+
     /// The leaf's value of `data` as the waveform layouts have it, appended to `out`: with
     /// `logic`, one byte per enumeration position (the codes of a vector), else an
     /// enumeration as a `u32`, integers and physicals as `i64`, reals as `f64`, little

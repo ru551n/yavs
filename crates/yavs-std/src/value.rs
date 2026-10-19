@@ -8,7 +8,7 @@
 //! extended identifiers and character literals. Out-of-range values are
 //! errors; nothing is clamped.
 
-use crate::error::{ConvError, ErrorKind, What};
+use crate::error::{ConvError, ErrorKind, What, latin1};
 use crate::types::{Bounds, EnumLit, EnumType, PhysicalType, RealBounds, is_letter, lower};
 
 /// Whitespace accepted around a value: space, non-breaking space and the
@@ -601,6 +601,511 @@ pub fn character_value(s: &[u8]) -> R<u8> {
     enum_value(s, &crate::types::character_type()).map(|p| p as u8)
 }
 
+// ---------------------------------------------------------------------------
+// Values of any type as typed in a debugger (deposit, force, value breakpoints).
+
+/// The type of a value [`literal`] reads and [`literal_image`] writes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LitType {
+    Enum(EnumType),
+    Int(Bounds),
+    Real(RealBounds),
+    Phys(PhysicalType, Bounds),
+    /// One dimension: the left index (a position for enumeration indices), its direction and
+    /// the length; more dimensions nest.
+    Array {
+        left: i64,
+        ascending: bool,
+        len: u64,
+        elem: Box<LitType>,
+    },
+    Record(Vec<(String, LitType)>),
+}
+
+/// A value of a [`LitType`]: enumeration positions, physical values in primary units.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lit {
+    Enum(usize),
+    Int(i64),
+    Real(f64),
+    Phys(i64),
+    Array(Vec<Lit>),
+    Record(Vec<Lit>),
+}
+
+impl LitType {
+    /// The index of element `k` of an array, as written in an aggregate choice.
+    pub fn index(&self, k: u64) -> Option<i64> {
+        match self {
+            LitType::Array {
+                left, ascending, ..
+            } => {
+                let k = i64::try_from(k).ok()?;
+                if *ascending {
+                    left.checked_add(k)
+                } else {
+                    left.checked_sub(k)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn what(&self) -> What {
+        match self {
+            LitType::Enum(_) => What::Enumeration,
+            LitType::Int(_) => What::Integer,
+            LitType::Real(_) => What::Real,
+            LitType::Phys(..) => What::Physical,
+            LitType::Array { .. } | LitType::Record(_) => What::Aggregate,
+        }
+    }
+}
+
+/// A value of type `ty` as a VHDL literal: a scalar as `T'VALUE` reads it (any unit of a
+/// physical type), a string or bit string literal (`"01ZX"`, `x"F0"`, `8ux"F"`) for an array
+/// of characters, or an aggregate with positional and named elements, index ranges and
+/// `others` (`(a => 1, others => '0')`, `(7 downto 4 => '1', others => '0')`).
+pub fn literal(s: &[u8], ty: &LitType) -> R<Lit> {
+    let b = start(s, ty.what())?;
+    let (v, j) = lit_at(s, b, ty)?;
+    finish(s, j, ty.what())?;
+    Ok(v)
+}
+
+/// `v` of type `ty` as text: scalars as [`literal`] reads them (physical values in the
+/// primary unit), arrays of characters as strings, other composites as aggregates; arrays
+/// longer than 256 elements end in `...`.
+pub fn literal_image(v: &Lit, ty: &LitType) -> String {
+    const MAX: usize = 256;
+    match (v, ty) {
+        // Identifiers as the type spells them.
+        (Lit::Enum(p), LitType::Enum(t)) => match t.lits.get(*p) {
+            Some(EnumLit::Ident(n)) => latin1(n),
+            Some(EnumLit::Char(c)) => format!("'{}'", *c as char),
+            None => p.to_string(),
+        },
+        (Lit::Int(x), _) => x.to_string(),
+        (Lit::Real(x), _) => x.to_string(),
+        (Lit::Phys(x), LitType::Phys(t, _)) => {
+            format!("{x} {}", latin1(&t.primary().name))
+        }
+        (Lit::Array(xs), LitType::Array { elem, .. }) => {
+            if let LitType::Enum(t) = &**elem {
+                let chars: Option<String> = xs
+                    .iter()
+                    .map(|x| match x {
+                        Lit::Enum(p) => match t.lits.get(*p) {
+                            Some(EnumLit::Char(c)) => Some(*c as char),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                let has_chars = t.lits.iter().any(|l| matches!(l, EnumLit::Char(_)));
+                if let Some(s) = chars.filter(|_| has_chars && xs.len() <= MAX) {
+                    return format!("\"{}\"", s.replace('"', "\"\""));
+                }
+            }
+            let items: Vec<String> = xs
+                .iter()
+                .take(MAX)
+                .map(|x| literal_image(x, elem))
+                .collect();
+            let more = if xs.len() > MAX { ", ..." } else { "" };
+            format!("({}{more})", items.join(", "))
+        }
+        (Lit::Record(xs), LitType::Record(fs)) => {
+            let items: Vec<String> = xs
+                .iter()
+                .zip(fs)
+                .map(|(x, (n, t))| format!("{n} => {}", literal_image(x, t)))
+                .collect();
+            format!("({})", items.join(", "))
+        }
+        _ => "?".to_string(),
+    }
+}
+
+fn agg_err(s: &[u8], at: std::ops::Range<usize>, expected: &'static str) -> ConvError {
+    ConvError::new(What::Aggregate, ErrorKind::Syntax { expected }, s, at)
+}
+
+/// The end of the element starting at `i`: the `,` or `)` closing it at depth 0, and the
+/// `=>` in it, if any.
+fn element_end(s: &[u8], mut i: usize) -> (usize, Option<usize>) {
+    let mut depth = 0usize;
+    let mut arrow = None;
+    while let Some(&c) = s.get(i) {
+        match c {
+            b'\'' if s.get(i + 2) == Some(&b'\'') => i += 2,
+            b'"' => {
+                i += 1;
+                while i < s.len() && !(s[i] == b'"' && s.get(i + 1) != Some(&b'"')) {
+                    i += if s[i] == b'"' { 2 } else { 1 };
+                }
+            }
+            b'(' => depth += 1,
+            b')' if depth == 0 => break,
+            b')' => depth -= 1,
+            b',' if depth == 0 => break,
+            b'=' if depth == 0 && arrow.is_none() && s.get(i + 1) == Some(&b'>') => arrow = Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    (i, arrow)
+}
+
+/// The value of type `ty` at `i` (not blank) and where it ends.
+fn lit_at(s: &[u8], i: usize, ty: &LitType) -> R<(Lit, usize)> {
+    match ty {
+        LitType::Array { len, elem, .. } => match s.get(i) {
+            Some(b'(') => aggregate(s, i, ty),
+            Some(_) => {
+                let (chars, j) = string_at(s, i)?;
+                if chars.len() as u64 != *len {
+                    let what = What::String;
+                    let found = chars.len() as u64;
+                    return Err(ConvError::new(
+                        what,
+                        ErrorKind::Length {
+                            expected: *len,
+                            found,
+                        },
+                        s,
+                        i..j,
+                    ));
+                }
+                let LitType::Enum(t) = &**elem else {
+                    return Err(agg_err(s, i..j, "an aggregate"));
+                };
+                let xs = chars
+                    .iter()
+                    .map(|&c| {
+                        t.lits
+                            .iter()
+                            .position(|l| *l == EnumLit::Char(c))
+                            .map(Lit::Enum)
+                            .ok_or_else(|| {
+                                ConvError::new(
+                                    What::String,
+                                    ErrorKind::UnknownLiteral,
+                                    &[b'\'', c, b'\''],
+                                    0..3,
+                                )
+                            })
+                    })
+                    .collect::<R<Vec<_>>>()?;
+                Ok((Lit::Array(xs), j))
+            }
+            None => Err(agg_err(s, i..i, "an aggregate or a string")),
+        },
+        LitType::Record(_) if s.get(i) == Some(&b'(') => aggregate(s, i, ty),
+        LitType::Record(_) => Err(agg_err(s, i..i + 1, "a record aggregate such as (a => 1)")),
+        _ => {
+            let (end, _) = element_end(s, i);
+            let end = end - s[i..end].iter().rev().take_while(|&&c| is_ws(c)).count();
+            let t = &s[i..end];
+            let v = match ty {
+                LitType::Enum(e) => Lit::Enum(enum_value(t, e)?),
+                LitType::Int(b) => Lit::Int(integer_value(t, *b)?),
+                LitType::Real(b) => Lit::Real(real_value(t, *b)?),
+                LitType::Phys(p, b) => Lit::Phys(physical_value(t, p, *b)?),
+                LitType::Array { .. } | LitType::Record(_) => unreachable!("matched above"),
+            };
+            Ok((v, end))
+        }
+    }
+}
+
+/// A string literal or a bit string literal (LRM 15.7, 15.8) at `i`: its characters and its
+/// end.
+fn string_at(s: &[u8], i: usize) -> R<(Vec<u8>, usize)> {
+    let what = What::BitVector;
+    let quoted = |at: usize| -> R<(Vec<u8>, usize)> {
+        let mut out = Vec::new();
+        let mut j = at + 1;
+        loop {
+            match s.get(j) {
+                Some(b'"') if s.get(j + 1) == Some(&b'"') => {
+                    out.push(b'"');
+                    j += 2;
+                }
+                Some(b'"') => return Ok((out, j + 1)),
+                Some(&c) => {
+                    out.push(c);
+                    j += 1;
+                }
+                None => return Err(syntax(What::String, s, j, "'\"' closing the string")),
+            }
+        }
+    };
+    if s.get(i) == Some(&b'"') {
+        return quoted(i);
+    }
+    // [length] [U|S] B|O|X|D "..."
+    let mut j = i;
+    while s.get(j).is_some_and(u8::is_ascii_digit) {
+        j += 1;
+    }
+    let width = if j > i {
+        Some(integer_value(&s[i..j], Bounds::I64)? as usize)
+    } else {
+        None
+    };
+    let signed = match s.get(j).map(|c| c.to_ascii_lowercase()) {
+        Some(b'u') if s.get(j + 1).is_some_and(|c| b"bBoOxX".contains(c)) => {
+            j += 1;
+            Some(false)
+        }
+        Some(b's') if s.get(j + 1).is_some_and(|c| b"bBoOxX".contains(c)) => {
+            j += 1;
+            Some(true)
+        }
+        _ => None,
+    };
+    let base = match s.get(j).map(|c| c.to_ascii_lowercase()) {
+        Some(b'b') => 1,
+        Some(b'o') => 3,
+        Some(b'x') => 4,
+        Some(b'd') if signed.is_none() => 0,
+        _ => {
+            return Err(syntax(
+                what,
+                s,
+                i,
+                "a string, a bit string such as x\"F0\" or an aggregate",
+            ));
+        }
+    };
+    if s.get(j + 1) != Some(&b'"') {
+        return Err(syntax(what, s, j + 1, "'\"' after the base specifier"));
+    }
+    let (text, end) = quoted(j + 1)?;
+    let digits: Vec<u8> = text.into_iter().filter(|&c| c != b'_').collect();
+    let mut bits = Vec::new();
+    if base == 0 {
+        let mut v: u128 = 0;
+        for &c in &digits {
+            let d = (c as char)
+                .to_digit(10)
+                .ok_or_else(|| syntax(what, s, j + 2, "decimal digits"))?;
+            v = v
+                .checked_mul(10)
+                .and_then(|v| v.checked_add(u128::from(d)))
+                .ok_or_else(|| ConvError::new(what, ErrorKind::Overflow, s, i..end))?;
+        }
+        let n = (128 - v.leading_zeros()).max(1);
+        bits.extend(
+            (0..n)
+                .rev()
+                .map(|b| if v >> b & 1 == 1 { b'1' } else { b'0' }),
+        );
+    } else {
+        for &c in &digits {
+            match (c as char).to_digit(16).filter(|&d| d < 1 << base) {
+                Some(d) => bits.extend(
+                    (0..base)
+                        .rev()
+                        .map(|b| if d >> b & 1 == 1 { b'1' } else { b'0' }),
+                ),
+                None if c.is_ascii_hexdigit() => {
+                    return Err(syntax(what, s, j + 2, "digits of the base"));
+                }
+                // Other characters stand for themselves, once per bit (LRM 15.8).
+                None => bits.extend(std::iter::repeat_n(c, base as usize)),
+            }
+        }
+    }
+    if let Some(w) = width {
+        let fill = if signed == Some(true) {
+            bits.first().copied().unwrap_or(b'0')
+        } else {
+            b'0'
+        };
+        if bits.len() < w {
+            let mut out = vec![fill; w - bits.len()];
+            out.extend(bits);
+            bits = out;
+        } else {
+            let cut = bits.len() - w;
+            if bits[..cut].iter().any(|&c| c != fill) || (signed == Some(true) && w == 0) {
+                return Err(ConvError::new(what, ErrorKind::DoesNotFit, s, i..end));
+            }
+            bits.drain(..cut);
+        }
+    }
+    Ok((bits, end))
+}
+
+/// An aggregate of array or record type `ty` at `i` (`(`).
+fn aggregate(s: &[u8], i: usize, ty: &LitType) -> R<(Lit, usize)> {
+    let (n, names): (u64, Vec<&str>) = match ty {
+        LitType::Array { len, .. } => (*len, Vec::new()),
+        LitType::Record(fs) => (
+            fs.len() as u64,
+            fs.iter().map(|(n, _)| n.as_str()).collect(),
+        ),
+        _ => unreachable!("aggregate of a scalar"),
+    };
+    let elem_ty = |k: usize| match ty {
+        LitType::Array { elem, .. } => &**elem,
+        LitType::Record(fs) => &fs[k].1,
+        _ => unreachable!("aggregate of a scalar"),
+    };
+    let name_of = |k: usize| match ty {
+        LitType::Record(fs) => format!("field {}", fs[k].0),
+        _ => format!("index {}", ty.index(k as u64).unwrap_or(0)),
+    };
+    let mut slots: Vec<Option<Lit>> = vec![None; n as usize];
+    let mut pos = 0usize;
+    let mut named = false;
+    let mut others = None;
+    let mut j = skip_ws(s, i + 1);
+    loop {
+        let (end, arrow) = element_end(s, j);
+        if others.is_some() {
+            return Err(agg_err(s, j..end, "`others` as the last element"));
+        }
+        let set = |k: usize, at: usize, slots: &mut Vec<Option<Lit>>| -> R<usize> {
+            let (v, e) = lit_at(s, skip_ws(s, at), elem_ty(k))?;
+            if slots[k].replace(v).is_some() {
+                return Err(ConvError::new(
+                    What::Aggregate,
+                    ErrorKind::Element {
+                        what: format!("two values for {}", name_of(k)),
+                    },
+                    s,
+                    j..end,
+                ));
+            }
+            Ok(e)
+        };
+        let e = match arrow {
+            None if named => {
+                return Err(agg_err(s, j..end, "named elements after positional ones"));
+            }
+            None => {
+                if pos as u64 >= n {
+                    let found = 1 + s[j..].iter().filter(|&&c| c == b',').count() as u64;
+                    return Err(ConvError::new(
+                        What::Aggregate,
+                        ErrorKind::Length {
+                            expected: n,
+                            found: pos as u64 + found,
+                        },
+                        s,
+                        i..s.len(),
+                    ));
+                }
+                pos += 1;
+                set(pos - 1, j, &mut slots)?
+            }
+            Some(a) => {
+                named = true;
+                let mut e = a + 2;
+                for c in s[j..a].split(|&c| c == b'|') {
+                    let c = latin1(c);
+                    let c = c.trim();
+                    if c.eq_ignore_ascii_case("others") {
+                        others = Some(a + 2);
+                        e = element_end(s, a + 2).0;
+                        continue;
+                    }
+                    for k in choice(s, j..a, c, ty, &names)? {
+                        e = set(k, a + 2, &mut slots)?;
+                    }
+                }
+                e
+            }
+        };
+        let e = skip_ws(s, e);
+        match s.get(e) {
+            Some(b',') => j = skip_ws(s, e + 1),
+            Some(b')') => {
+                for (k, slot) in slots.iter_mut().enumerate() {
+                    if slot.is_some() {
+                        continue;
+                    }
+                    match others {
+                        Some(at) => {
+                            *slot = Some(lit_at(s, skip_ws(s, at), elem_ty(k))?.0);
+                        }
+                        None if !named => {
+                            return Err(ConvError::new(
+                                What::Aggregate,
+                                ErrorKind::Length {
+                                    expected: n,
+                                    found: pos as u64,
+                                },
+                                s,
+                                i..e + 1,
+                            ));
+                        }
+                        None => {
+                            return Err(ConvError::new(
+                                What::Aggregate,
+                                ErrorKind::Element {
+                                    what: format!("no value for {}", name_of(k)),
+                                },
+                                s,
+                                i..e + 1,
+                            ));
+                        }
+                    }
+                }
+                let xs = slots.into_iter().flatten().collect();
+                let v = match ty {
+                    LitType::Record(_) => Lit::Record(xs),
+                    _ => Lit::Array(xs),
+                };
+                return Ok((v, e + 1));
+            }
+            _ => return Err(agg_err(s, e..e + 1, "',' or ')'")),
+        }
+    }
+}
+
+/// The element positions a choice `c` (in `s[at]`) names: a field, an index or an index
+/// range (`3 downto 0`).
+fn choice(
+    s: &[u8],
+    at: std::ops::Range<usize>,
+    c: &str,
+    ty: &LitType,
+    names: &[&str],
+) -> R<Vec<usize>> {
+    if let LitType::Record(_) = ty {
+        return names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(c))
+            .map(|k| vec![k])
+            .ok_or_else(|| agg_err(s, at, "a field name or others"));
+    }
+    let LitType::Array { len, .. } = ty else {
+        unreachable!("aggregate of a scalar")
+    };
+    let int = |t: &str| integer_value(t.as_bytes(), Bounds::I64);
+    let lower = c.to_ascii_lowercase();
+    let (a, b) = if let Some((a, b)) = lower.split_once(" downto ") {
+        (int(a)?, int(b)?)
+    } else if let Some((a, b)) = lower.split_once(" to ") {
+        (int(a)?, int(b)?)
+    } else {
+        let x = int(c)?;
+        (x, x)
+    };
+    let pos = |x: i64| {
+        (0..*len)
+            .find(|&k| ty.index(k) == Some(x))
+            .map(|k| k as usize)
+            .ok_or_else(|| agg_err(s, at.clone(), "an index of the array"))
+    };
+    let (p, q) = (pos(a)?, pos(b)?);
+    Ok((p.min(q)..=p.max(q)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,5 +1210,98 @@ mod tests {
         assert!(v("10000000 hr").is_err());
         assert!(v("5 xs").is_err());
         assert!(v("5").is_err());
+    }
+
+    /// Debugger values (#323): scalars, string and bit string literals, aggregates, and
+    /// their images.
+    #[test]
+    fn literals() {
+        let logic = LitType::Enum(EnumType {
+            lits: b"UX01ZWLH-".iter().map(|&c| EnumLit::Char(c)).collect(),
+        });
+        let slv = |len, left| LitType::Array {
+            left,
+            ascending: false,
+            len,
+            elem: Box::new(logic.clone()),
+        };
+        let v8 = slv(8, 7);
+        let p = |s: &str, t: &LitType| literal(s.as_bytes(), t);
+        let img = |s: &str, t: &LitType| literal_image(&p(s, t).unwrap(), t);
+        assert_eq!(img("x\"A5\"", &v8), "\"10100101\"");
+        assert_eq!(img("8ux\"F\"", &v8), "\"00001111\"");
+        assert_eq!(img("8sx\"F\"", &v8), "\"11111111\"");
+        assert_eq!(img("8d\"200\"", &v8), "\"11001000\"");
+        assert_eq!(img("8x\"0F\"", &v8), "\"00001111\"");
+        assert_eq!(img("X\"Z_1\"", &v8), "\"ZZZZ0001\"");
+        assert_eq!(img(" \"0101UXZ-\" ", &v8), "\"0101UXZ-\"");
+        assert_eq!(img("(others => '1')", &v8), "\"11111111\"");
+        assert_eq!(
+            img("(7 downto 4 => '1', others => '0')", &v8),
+            "\"11110000\""
+        );
+        assert_eq!(img("(0 | 2 => '1', others => 'Z')", &v8), "\"ZZZZZ1Z1\"");
+        assert_eq!(img("('1', '0', others => 'U')", &v8), "\"10UUUUUU\"");
+        let err = |s: &str, t: &LitType| p(s, t).unwrap_err().to_string();
+        assert_eq!(
+            err("x\"A\"", &v8),
+            "string value x\"A\" has 4 elements, expected 8"
+        );
+        assert!(p("8x\"1FF\"", &v8).is_err());
+        assert!(p("\"0101010Q\"", &v8).is_err());
+        assert!(p("(others => '1', 0 => '0')", &v8).is_err());
+        assert_eq!(
+            err("(7 => '1')", &v8),
+            "aggregate \"(7 => '1')\": no value for index 6"
+        );
+        assert!(p("(8 => '1', others => '0')", &v8).is_err());
+        assert!(p("('1', '0')", &v8).is_err());
+
+        let time = LitType::Phys(time_type(), Bounds::I64);
+        assert_eq!(p("1.5 ns", &time), Ok(Lit::Phys(1_500_000)));
+        assert_eq!(img("2 us", &time), "2000000000 fs");
+        let rec = LitType::Record(vec![
+            ("a".into(), LitType::Int(Bounds::I32)),
+            ("b".into(), slv(2, 1)),
+            ("t".into(), time),
+        ]);
+        assert_eq!(
+            img("(t => 5 ns, A => -3, b => \"1Z\")", &rec),
+            "(a => -3, b => \"1Z\", t => 5000000 fs)"
+        );
+        assert_eq!(
+            img("(1, ('0', '1'), others => 1 ps)", &rec),
+            "(a => 1, b => \"01\", t => 1000 fs)"
+        );
+        assert!(p("(a => 1, b => \"11\")", &rec).is_err());
+        assert!(p("(a => 1, a => 2, others => 0 fs)", &rec).is_err());
+        assert!(p("(a => 4294967296, b => \"11\", t => 0 fs)", &rec).is_err());
+
+        let chars = LitType::Array {
+            left: 1,
+            ascending: true,
+            len: 3,
+            elem: Box::new(LitType::Enum(crate::types::character_type())),
+        };
+        assert_eq!(img("\"a\"\"b\"", &chars), "\"a\"\"b\"");
+        assert_eq!(img("(1 => 'x', 2 to 3 => ',')", &chars), "\"x,,\"");
+        let grid = LitType::Array {
+            left: 0,
+            ascending: true,
+            len: 2,
+            elem: Box::new(LitType::Array {
+                left: 0,
+                ascending: true,
+                len: 2,
+                elem: Box::new(LitType::Real(RealBounds::REAL)),
+            }),
+        };
+        assert_eq!(
+            img("((1.5, 2.0), (others => 0.0))", &grid),
+            "((1.5, 2), (0, 0))"
+        );
+        let b = LitType::Enum(crate::types::boolean_type());
+        assert_eq!(img(" true ", &b), "TRUE");
+        assert!(p("maybe", &b).is_err());
     }
 }

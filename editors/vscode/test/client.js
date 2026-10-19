@@ -88,6 +88,23 @@ async function main() {
   const hover = await dc.evaluateRequest({ expression: 'v', frameId: top.id, context: 'hover' });
   assert.equal(hover.body.result, '"0101"');
 
+  // "Set Value" in the Variables view: a local is written now, a signal deposited.
+  assert.equal(init.body.supportsSetVariable, true);
+  const setv = (i, name, value) => dc.setVariableRequest({
+    variablesReference: scopes.body.scopes[i].variablesReference, name, value,
+  });
+  assert.equal((await setv(0, 'i', '16#7#')).body.value, '7');
+  assert.equal((await vars(0)).i, '7');
+  await assert.rejects(setv(0, 'i', 'x"7"'), /integer/);
+  assert.equal((await setv(1, 'v', 'x"F"')).body.value, '"1111"');
+  // The extension's "Force a signal..." on `v` (mode in), released further down.
+  const sigs = (await dc.variablesRequest({
+    variablesReference: scopes.body.scopes[1].variablesReference,
+  })).body.variables;
+  assert.equal(sigs[1].__vscodeVariableMenuContext, 'signal');
+  const forced = await dc.customRequest('yavs/force', { signal: 'v', value: '"1010"', mode: 'in' });
+  assert.equal(forced.body.signal, ':tb:v');
+
   // Step into the function, over its first statement, back out.
   await Promise.all([dc.stepInRequest({ threadId: 1 }), dc.waitForEvent('stopped')]);
   st = await dc.stackTraceRequest({ threadId: 1 });
@@ -126,6 +143,10 @@ async function main() {
   let s = await stop(dc.continueRequest({ threadId: 1 }));
   assert.deepEqual([s.reason, s.description, s.text],
     ['data breakpoint', 'data breakpoint at 0 fs, delta 1', ':tb:cnt = 2']);
+
+  // The force holds while the process toggling `v` runs; release it.
+  assert.equal((await dc.evaluateRequest({ expression: 'tb.v' })).body.result, '"1010"');
+  await dc.customRequest('yavs/release', { signal: 'tb.v' });
 
   // A signal breakpoint on a value (the extension's "Break when a signal equals...").
   await dc.setDataBreakpointsRequest({ breakpoints: [] });

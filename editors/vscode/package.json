@@ -68,6 +68,21 @@
         "command": "yavs.clearValueBreaks",
         "title": "Clear signal value breakpoints",
         "category": "yavs"
+      },
+      {
+        "command": "yavs.force",
+        "title": "Force a signal...",
+        "category": "yavs"
+      },
+      {
+        "command": "yavs.deposit",
+        "title": "Deposit a signal value...",
+        "category": "yavs"
+      },
+      {
+        "command": "yavs.release",
+        "title": "Release a forced signal...",
+        "category": "yavs"
       }
     ],
     "menus": {
@@ -95,6 +110,32 @@
         {
           "command": "yavs.clearValueBreaks",
           "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.force",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.deposit",
+          "when": "debugType == 'yavs'"
+        },
+        {
+          "command": "yavs.release",
+          "when": "debugType == 'yavs'"
+        }
+      ],
+      "debug/variables/context": [
+        {
+          "command": "yavs.force",
+          "when": "debugType == 'yavs' && debugProtocolVariableMenuContext == 'signal'"
+        },
+        {
+          "command": "yavs.deposit",
+          "when": "debugType == 'yavs' && debugProtocolVariableMenuContext == 'signal'"
+        },
+        {
+          "command": "yavs.release",
+          "when": "debugType == 'yavs' && debugProtocolVariableMenuContext == 'signal'"
         }
       ]
     },

@@ -19,6 +19,7 @@ pub enum What {
     String,
     Format,
     Unit,
+    Aggregate,
 }
 
 impl What {
@@ -32,6 +33,7 @@ impl What {
             What::String => "string",
             What::Format => "format",
             What::Unit => "unit",
+            What::Aggregate => "aggregate",
         }
     }
 }
@@ -56,6 +58,10 @@ pub enum ErrorKind {
     TooShort { expected: usize, found: usize },
     /// A value that does not fit the target width (hread/oread high bits).
     DoesNotFit,
+    /// An array value with another number of elements than its type.
+    Length { expected: u64, found: u64 },
+    /// An aggregate that gives no value for an element, or two.
+    Element { what: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +134,11 @@ impl fmt::Display for ConvError {
                 f,
                 "{w} value \"{input}\" is too short: expected {expected}, found {found}"
             ),
+            ErrorKind::Length { expected, found } => write!(
+                f,
+                "{w} value {input} has {found} elements, expected {expected}"
+            ),
+            ErrorKind::Element { what } => write!(f, "{w} \"{input}\": {what}"),
             ErrorKind::DoesNotFit => write!(
                 f,
                 "{w} value \"{}\" does not fit the target width",

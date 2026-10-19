@@ -17,6 +17,7 @@
 //! Every stop reports the time and delta. Stops inside a process need `--threads 1` (the
 //! kernel is mid-delta); the CLI forces it when a session is attached.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,7 +25,8 @@ use std::sync::{Arc, Mutex};
 use yavs_ir::{FuncId, Program, StmtId, Ty, TyId};
 use yavs_kernel::{Ctx, Hook, Interrupt, Observer, SigRef, SignalId, Time, Value};
 
-use crate::exec::Frame;
+use crate::CallVal;
+use crate::exec::Machine;
 
 /// What to do after a stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,41 +256,44 @@ impl DebugSession {
     }
 }
 
-/// A stopped process's call stack, outermost frame first.
+/// A stopped process's call stack, outermost frame first. Locals can be read and written
+/// whole, composites included (`value`, `set_value`).
 pub struct FrameView<'a> {
-    pub(crate) frames: &'a [Frame],
+    pub(crate) m: RefCell<&'a mut Machine>,
     pub(crate) prog: &'a Program,
 }
 
-/// A named local of a frame and its bytes.
+/// A named local of a frame and its slot bytes (a composite's slot holds its addresses).
 pub struct LocalView<'a> {
     pub name: &'a str,
     pub ty: TyId,
-    pub bytes: &'a [u8],
+    pub bytes: Vec<u8>,
 }
 
-impl FrameView<'_> {
+impl<'a> FrameView<'a> {
     pub fn depth(&self) -> usize {
-        self.frames.len()
+        self.m.borrow().frames.len()
     }
 
     pub fn func(&self, i: usize) -> Option<FuncId> {
-        self.frames.get(i).map(|f| f.func)
+        self.m.borrow().frames.get(i).map(|f| f.func)
     }
 
-    pub fn func_name(&self, i: usize) -> Option<&str> {
+    pub fn func_name(&self, i: usize) -> Option<&'a str> {
         self.prog.func(self.func(i)?).map(|f| f.name.as_str())
     }
 
     /// The current statement of frame `i`.
     pub fn stmt(&self, i: usize) -> Option<StmtId> {
-        let f = self.frames.get(i)?;
+        let m = self.m.borrow();
+        let f = m.frames.get(i)?;
         self.prog.func(f.func)?.loc.get(f.pc as usize).copied()
     }
 
     /// The locals of frame `i` (parameters and variables the IR describes).
-    pub fn locals(&self, i: usize) -> Vec<LocalView<'_>> {
-        let Some(fr) = self.frames.get(i) else {
+    pub fn locals(&self, i: usize) -> Vec<LocalView<'a>> {
+        let m = self.m.borrow();
+        let Some(fr) = m.frames.get(i) else {
             return Vec::new();
         };
         let Some(f) = self.prog.func(fr.func) else {
@@ -303,10 +308,37 @@ impl FrameView<'_> {
                 Some(LocalView {
                     name: &l.name,
                     ty: l.ty,
-                    bytes,
+                    bytes: bytes.to_vec(),
                 })
             })
             .collect()
+    }
+
+    /// The IR type and slot address of local `name` of frame `i` (the first of that name).
+    fn slot(&self, i: usize, name: &str) -> Result<(TyId, u64), String> {
+        let func = self.func(i).ok_or_else(|| format!("no frame {i}"))?;
+        let l = self
+            .prog
+            .func(func)
+            .and_then(|f| f.locals.iter().find(|l| l.name == name))
+            .ok_or_else(|| format!("no local `{name}` in frame {i}"))?;
+        let a = crate::exec::mk_addr(crate::exec::FRAME, i as u32, u64::from(l.slot))
+            .map_err(crate::fault_text)?;
+        Ok((l.ty, a))
+    }
+
+    /// The whole value of local `name` of frame `i`: a scalar as a cell, a composite as data
+    /// and descriptor bytes.
+    pub fn value(&self, i: usize, name: &str) -> Result<(TyId, CallVal), String> {
+        let (ty, a) = self.slot(i, name)?;
+        let v = crate::read_slot(&self.m.borrow(), ty, a).map_err(crate::fault_text)?;
+        Ok((ty, v))
+    }
+
+    /// Writes `v` into local `name` of frame `i`; a composite keeps its bounds.
+    pub fn set_value(&self, i: usize, name: &str, v: &CallVal) -> Result<(), String> {
+        let (ty, a) = self.slot(i, name)?;
+        crate::write_slot(&mut self.m.borrow_mut(), ty, a, v).map_err(crate::fault_text)
     }
 
     /// A scalar local formatted the way VHDL `'image` shows it.

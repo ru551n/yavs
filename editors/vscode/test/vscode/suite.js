@@ -54,14 +54,33 @@ async function run() {
   const item = vscode.debug.activeStackItem;
   assert.ok(item && item.frameId === top.id, `active stack item ${JSON.stringify(item)}`);
 
+  // "Set Value" on a local, then the extension's force command (as its context menu entry
+  // on a signal calls it, with the answers given).
+  const sc = await session.customRequest('scopes', { frameId: top.id });
+  const set = await session.customRequest('setVariable', {
+    variablesReference: sc.scopes[0].variablesReference, name: 'i', value: '5',
+  });
+  assert.equal(set.value, '5');
+  await vscode.commands.executeCommand('yavs.force', { signal: 'v', mode: 'in', value: '"1111"' });
+
   // The command palette's "yavs: Step to the next delta" ends the cycle stopped in.
   const stepped = waitFor('stopped after the delta step', 60000, (r) => (onStop = r));
   await vscode.commands.executeCommand('yavs.stepDelta');
   const d = await stepped;
   assert.equal(d.reason, 'step');
   assert.match(d.description, /^step at 0 fs, delta 0$/);
+  // The force is made in the next cycle and holds; release it again.
+  const step2 = waitFor('stopped after the second delta step', 60000, (r) => (onStop = r));
+  await vscode.commands.executeCommand('yavs.stepDelta');
+  await step2;
+  const ev = await session.customRequest('evaluate', { expression: ':tb:v' });
+  assert.equal(ev.result, '"1111"');
+  await vscode.commands.executeCommand('yavs.release', { signal: ':tb:v', mode: 'in' });
 
-  // A signal value breakpoint (what "yavs: Break when a signal equals..." sends).
+  // A signal value breakpoint (what "yavs: Break when a signal equals..." sends), without the
+  // line breakpoint, which the process would hit first.
+  vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+  await new Promise((r) => setTimeout(r, 500));
   const hit = waitFor('stopped on the signal', 60000, (r) => (onStop = r));
   await session.customRequest('yavs/setSignalBreakpoints', {
     breakpoints: [{ signal: ':tb:cnt', value: '6' }],
@@ -73,10 +92,9 @@ async function run() {
   await session.customRequest('yavs/setSignalBreakpoints', { breakpoints: [] });
 
   const ended = waitFor('end of session', 60000, (r) => vscode.debug.onDidTerminateDebugSession(r));
-  vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
   await session.customRequest('continue', { threadId: 1 });
   await ended;
-  assert.equal(stops.length, 3);
+  assert.equal(stops.length, 4);
 }
 
 module.exports = { run };

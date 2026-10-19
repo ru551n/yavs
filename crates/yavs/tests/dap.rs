@@ -141,7 +141,12 @@ fn script_case(name: &str, extra: &[&str]) {
     let dir = setup(&format!("{name}{}", extra.len()));
     let src = dir.join("tb.vhd").display().to_string();
     let script = std::fs::read_to_string(cases().join(format!("{name}.script"))).expect("script");
-    let mut child = spawn(&dir, "tb", &[&["--dap=stdio"], extra].concat());
+    // An optional first line `top NAME` picks another top level than `tb`.
+    let (top, script) = match script.strip_prefix("top ") {
+        Some(rest) => rest.split_once('\n').expect("script after `top`"),
+        None => ("tb", script.as_str()),
+    };
+    let mut child = spawn(&dir, top.trim(), &[&["--dap=stdio"], extra].concat());
     let mut c = stdio_client(&mut child);
     let esc = serde_json::to_string(&src).expect("json");
     let esc = &esc[1..esc.len() - 1];
@@ -208,6 +213,15 @@ fn run_to_time_and_steps() {
 fn signal_breakpoints() {
     script_case("signals", &[]);
     script_case("signals", &["--threads=4"]);
+}
+
+/// Force, deposit and release signals (whole, from a stop inside a process and between
+/// cycles, in and out), `setVariable` on composite and scalar locals and on signals, and
+/// rejected values, names and modes. Identical at `--threads=4`.
+#[test]
+fn force_deposit_release() {
+    script_case("values", &[]);
+    script_case("values", &["--threads=4"]);
 }
 
 /// Pause a simulation that would run forever, then read a signal and disconnect.

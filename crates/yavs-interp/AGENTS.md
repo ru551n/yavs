@@ -32,7 +32,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | `src/env.rs` | 2019 std.env: call paths (`Sources`), the VHDL assert state (`Asserts`, cycle-deterministic), time_record |
 | `src/foreign.rs` | VHPIDIRECT marshalling (scalars, arrays, records, access, copy-back); `ForeignModel`, `ModelCall`: calls of `"VHPI library model"` subprograms as neutral cells (`Bindings::models`, #274) |
 | `src/reflect.rs` | `std.reflection`: mirror objects and the 123 mirror methods; a test checks every NATIVE.md reflection row is implemented |
-| `src/debug.rs` | `DebugSession`, `Debugger`, `LineBp`/`HitCond`, `SignalBreak`, `FrameView`/`LocalView`, `ProcState`, `Stop`/`StopReason`, `Resume`, `format_scalar` |
+| `src/debug.rs` | `DebugSession`, `Debugger`, `LineBp`/`HitCond`, `SignalBreak`, `FrameView` (`value`/`set_value`: a local of any frame read or written whole at a stop)/`LocalView`, `ProcState`, `Stop`/`StopReason`, `Resume`, `format_scalar` |
 | `tests/sim.rs`, `checks.rs`, `debug.rs`, `foreign.rs`, `textio.rs` | End-to-end designs at 1 and 4 threads, check texts, debug sessions, marshalling, textio/file/env; helpers in `tests/common/mod.rs` |
 
 ## 3. Design decisions that bind this module

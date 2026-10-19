@@ -28,9 +28,10 @@ use yavs_interp::{
     StopReason, Watches,
 };
 use yavs_kernel::{
-    Config, EndReason, Interrupt, RunStatus, SigRef, SignalId, SimControl, Time, Value,
+    Config, EndReason, ForceMode, Interrupt, RunStatus, SigRef, SignalId, SimControl, Time, Value,
 };
 use yavs_sem::Db;
+use yavs_std::value::{Lit, LitType, literal, literal_image};
 
 use design::Design;
 pub use wire::{read_message, write_message};
@@ -110,14 +111,30 @@ struct Shared {
     /// What the kernel's `SignalBreak` watches (every leaf of `sig_bps`) and its hits.
     watches: OnceLock<Watches>,
     hits: OnceLock<Hits>,
+    /// Forces, deposits and releases requested at a stop, for the run loop to hand to the
+    /// kernel before it runs on.
+    ops: Mutex<Vec<Op>>,
+    prog: Arc<yavs_ir::Program>,
 }
 
 /// A signal breakpoint: a change of the signal, or a change to a value.
 struct SigBp {
     /// Index into `Design::sigs`.
     sig: usize,
-    /// The value as `Sig::canon` writes it.
-    value: Option<String>,
+    value: Option<Lit>,
+}
+
+/// What a force, deposit or release does to a signal's kernel leaves.
+enum OpKind {
+    Deposit,
+    Force(ForceMode),
+    Release(ForceMode),
+}
+
+/// A force, deposit or release of a whole signal: its leaves and their new values.
+struct Op {
+    kind: OpKind,
+    leaves: Vec<(SignalId, Option<Value>)>,
 }
 
 impl Shared {
@@ -298,6 +315,14 @@ fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
                 evaluate(sh, at, &req);
                 None
             }
+            "yavs/force" | "yavs/deposit" | "yavs/release" => {
+                signal_op(sh, at, &req);
+                None
+            }
+            "setVariable" => {
+                set_variable(sh, at, &req);
+                None
+            }
             c => {
                 sh.fail(&req, &format!("`{c}` is not supported"));
                 None
@@ -430,7 +455,7 @@ fn proc_name(sh: &Shared, tid: i64) -> Option<String> {
 }
 
 /// Locals of frame `i` of the stopped process: name, value.
-fn locals(at: &At<'_, '_>, tid: i64, i: usize) -> Vec<(String, String)> {
+fn locals(sh: &Shared, at: &At<'_, '_>, tid: i64, i: usize) -> Vec<(String, String)> {
     let At::Process(s) = at else {
         return Vec::new();
     };
@@ -441,15 +466,49 @@ fn locals(at: &At<'_, '_>, tid: i64, i: usize) -> Vec<(String, String)> {
         .locals(i)
         .iter()
         .map(|l| {
-            // ponytail: composite variables live outside the frame; show them once FrameView
-            // can decode them through the heap.
-            let v = s
-                .frames
-                .format(l.ty, l.bytes)
-                .unwrap_or_else(|| "(...)".into());
+            let v = match local(sh, s, i, l.name) {
+                Some((t, v, _)) => literal_image(&v, &t),
+                // Access values.
+                None => s
+                    .frames
+                    .format(l.ty, &l.bytes)
+                    .unwrap_or_else(|| "?".into()),
+            };
             (l.name.to_string(), v)
         })
         .collect()
+}
+
+/// Local `name` of frame `i`: its type and value, and the value as the interpreter holds it.
+fn local(
+    sh: &Shared,
+    s: &Stop<'_>,
+    i: usize,
+    name: &str,
+) -> Option<(LitType, Lit, yavs_sem::stat::ConstValue)> {
+    let (ty, v) = s.frames.value(i, name).ok()?;
+    let c = yavs_elab::ir_decode(&sh.prog, ty, &v)?;
+    let (t, v) = design::ir_lit(&sh.prog, ty, &c)?;
+    Some((t, v, c))
+}
+
+/// Write `text` into local `name` of frame `i`; the new value as text.
+fn write_local(
+    sh: &Shared,
+    s: &Stop<'_>,
+    i: usize,
+    name: &str,
+    text: &str,
+) -> Result<String, String> {
+    let (ty, _) = s.frames.value(i, name)?;
+    let (t, _, like) =
+        local(sh, s, i, name).ok_or_else(|| format!("`{name}` cannot be written here"))?;
+    let v = literal(text.as_bytes(), &t).map_err(|e| e.to_string())?;
+    let bug = || format!("this is a bug in yavs: `{name}` not encoded");
+    let c = design::to_const(&v, &like).ok_or_else(bug)?;
+    let cv = yavs_elab::ir_encode(&sh.prog, ty, &c).ok_or_else(bug)?;
+    s.frames.set_value(i, name, &cv)?;
+    Ok(literal_image(&v, &t))
 }
 
 fn variables(sh: &Shared, at: &At<'_, '_>, req: &Json) {
@@ -465,7 +524,7 @@ fn variables(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     };
     let proc = proc_name(sh, tid).and_then(|n| sh.design.proc(&n));
     let vars: Vec<Json> = match kind {
-        1 => locals(at, tid, i)
+        1 => locals(sh, at, tid, i)
             .iter()
             .map(|(n, v)| var(n, v, None))
             .collect(),
@@ -474,7 +533,10 @@ fn variables(sh: &Shared, at: &At<'_, '_>, req: &Json) {
             .flat_map(|p| &p.signals)
             .map(|&k| {
                 let s = &sh.design.sigs[k];
-                var(&s.name, &s.show(&|r| at.read(r)), Some(&s.ty))
+                let mut v = var(&s.name, &s.show(&|r| at.read(r)), Some(&s.ty));
+                // VS Code's context key for the extension's force, deposit and release.
+                v["__vscodeVariableMenuContext"] = json!("signal");
+                v
             })
             .collect(),
         3 => proc
@@ -495,7 +557,7 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
         Some(f) => (f >> 16, (f & 0xffff) as usize),
         None => (at.process().map_or(0, |p| p as i64 + 1), 0),
     };
-    let local = locals(at, tid, i)
+    let local = locals(sh, at, tid, i)
         .into_iter()
         .find(|(n, _)| n.eq_ignore_ascii_case(expr));
     if let Some((_, v)) = local {
@@ -508,6 +570,141 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
             json!({"result": s.show(&|r| at.read(r)), "type": s.ty, "variablesReference": 0}),
         ),
         None => sh.fail(req, &format!("no variable or signal `{expr}` here")),
+    }
+}
+
+/// `yavs/force`, `yavs/deposit` and `yavs/release` of a whole signal (`signal`: a name seen
+/// from `frameId` or the stopped process, or a path; `value`: a literal of its type; `mode`:
+/// `in`, the default, or `out`).
+fn signal_op(sh: &Shared, at: &At<'_, '_>, req: &Json) {
+    let a = &req["arguments"];
+    let cmd = req["command"].as_str().unwrap_or_default();
+    let r = (|| -> Result<Json, String> {
+        let name = a["signal"].as_str().ok_or("expected a `signal` argument")?;
+        let tid = match a["frameId"].as_i64() {
+            Some(f) => f >> 16,
+            None => at.process().map_or(0, |p| p as i64 + 1),
+        };
+        let k = sh
+            .design
+            .find(thread_proc(sh, tid), name)
+            .ok_or_else(|| format!("no signal `{name}` here"))?;
+        let s = &sh.design.sigs[k];
+        let mode = match a["mode"].as_str() {
+            None | Some("in") => ForceMode::Effective,
+            Some("out") => ForceMode::Driving,
+            Some(m) => return Err(format!("force mode `{m}`: expected `in` or `out`")),
+        };
+        if cmd == "yavs/release" {
+            let leaves = s.leaves().map(|l| (l, None)).collect();
+            queue(
+                sh,
+                at,
+                Op {
+                    kind: OpKind::Release(mode),
+                    leaves,
+                },
+            );
+            return Ok(json!({"signal": s.path}));
+        }
+        let text = a["value"].as_str().ok_or("expected a `value` argument")?;
+        let v = s.parse(text)?;
+        let kind = if cmd == "yavs/force" {
+            OpKind::Force(mode)
+        } else {
+            OpKind::Deposit
+        };
+        let shown = put(sh, at, k, &v, kind)?;
+        Ok(json!({"signal": s.path, "value": shown}))
+    })();
+    match r {
+        Ok(b) => sh.respond(req, b),
+        Err(m) => sh.fail(req, &m),
+    }
+}
+
+/// Queue a force or deposit of value `v` to signal `k`; the value as text.
+fn put(sh: &Shared, at: &At<'_, '_>, k: usize, v: &Lit, kind: OpKind) -> Result<String, String> {
+    let s = &sh.design.sigs[k];
+    let leaves = s
+        .encode(v)
+        .ok_or_else(|| format!("this is a bug in yavs: a value of `{}` not encoded", s.path))?;
+    queue(
+        sh,
+        at,
+        Op {
+            kind,
+            leaves: leaves.into_iter().map(|(l, v)| (l, Some(v))).collect(),
+        },
+    );
+    Ok(literal_image(v, &s.lit))
+}
+
+/// Hand `op` to the run loop. From a stop inside a process, pause the kernel after the cycle
+/// (not a stop), so the change is made in the next one.
+fn queue(sh: &Shared, at: &At<'_, '_>, op: Op) {
+    sh.ops.lock().unwrap_or_else(|p| p.into_inner()).push(op);
+    if at.process().is_some() {
+        sh.paused_in_process.store(true, Ordering::Relaxed);
+        if let Some(i) = sh.interrupt.get() {
+            i.pause();
+        }
+    }
+}
+
+/// Make the queued forces, deposits and releases (`SimControl`, applied in the next cycle).
+fn apply_ops(sh: &Shared, sim: &mut SimControl) {
+    let ops = std::mem::take(&mut *sh.ops.lock().unwrap_or_else(|p| p.into_inner()));
+    for op in ops {
+        for (l, v) in &op.leaves {
+            let r = match (&op.kind, v) {
+                (OpKind::Deposit, Some(v)) => sim.deposit(*l, v),
+                (OpKind::Force(m), Some(v)) => sim.force(*l, *m, v),
+                (OpKind::Release(m), _) => sim.release(*l, *m),
+                _ => continue,
+            };
+            // The values were encoded for these leaves: a refusal is a bug.
+            if let Err(e) = r {
+                sh.output(
+                    "stderr",
+                    &format!("this is a bug in yavs: the kernel refused a change: {e}\n"),
+                );
+            }
+        }
+    }
+}
+
+/// `setVariable`: a local is written, a signal deposited (in the next cycle).
+fn set_variable(sh: &Shared, at: &At<'_, '_>, req: &Json) {
+    let a = &req["arguments"];
+    let r = a["variablesReference"].as_i64().unwrap_or(0);
+    let name = a["name"].as_str().unwrap_or_default();
+    let text = a["value"].as_str().unwrap_or_default();
+    let (frame, kind) = (r >> 2, r & 3);
+    let (tid, i) = (frame >> 16, (frame & 0xffff) as usize);
+    let res = match (kind, at) {
+        (1, At::Process(s)) if s.process as i64 == tid - 1 => write_local(sh, s, i, name, text),
+        (1, _) => Err(format!("no local `{name}` here")),
+        (2, _) => {
+            let k = thread_proc(sh, tid).and_then(|p| {
+                p.signals
+                    .iter()
+                    .copied()
+                    .find(|&k| sh.design.sigs[k].name == name)
+            });
+            match k {
+                Some(k) => sh.design.sigs[k]
+                    .parse(text)
+                    .and_then(|v| put(sh, at, k, &v, OpKind::Deposit)),
+                None => Err(format!("no signal `{name}` here")),
+            }
+        }
+        (3, _) => Err("generics are constants".into()),
+        _ => Err(format!("no variables {r}")),
+    };
+    match res {
+        Ok(v) => sh.respond(req, json!({"value": v, "variablesReference": 0})),
+        Err(m) => sh.fail(req, &m),
     }
 }
 
@@ -525,6 +722,7 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
                     "supportsEvaluateForHovers": true,
                     "supportsTerminateRequest": true,
                     "supportsDataBreakpoints": true,
+                    "supportsSetVariable": true,
                 }),
             );
             sh.event("initialized", json!({}));
@@ -668,7 +866,7 @@ fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
                     sig: k,
                     value: None,
                 }),
-                Some(v) => sh.design.sigs[k].canon(v).map(|v| SigBp {
+                Some(v) => sh.design.sigs[k].parse(v).map(|v| SigBp {
                     sig: k,
                     value: Some(v),
                 }),
@@ -719,10 +917,10 @@ fn signal_hit(sh: &Shared, sim: &SimControl) -> (bool, Option<String>) {
         if !hits.iter().any(|h| s.leaves().any(|l| l == h.2)) {
             return None;
         }
-        let now = s.show(&|r| sim.value(r).ok());
+        let read = |r| sim.value(r).ok();
         match &b.value {
-            Some(v) if design::squash(&now) != *v => None,
-            _ => Some(format!("{} = {now}", s.path)),
+            Some(v) if s.value(&read).as_ref() != Some(v) => None,
+            _ => Some(format!("{} = {}", s.path, s.show(&read))),
         }
     });
     (true, hit)
@@ -800,6 +998,8 @@ pub fn serve(
         sig_bps: Mutex::default(),
         watches: OnceLock::new(),
         hits: OnceLock::new(),
+        ops: Mutex::new(Vec::new()),
+        prog: ir.program.clone(),
     });
     let session = DebugSession::new(&ir.program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());
@@ -860,6 +1060,7 @@ pub fn serve(
     let mut limit = stop;
     let mut next = None;
     let r = loop {
+        apply_ops(&sh, &mut sim);
         let (r, step) = match next.take() {
             None => (sim.run_until(limit), false),
             Some(Run::Until(t)) => {

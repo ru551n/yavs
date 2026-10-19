@@ -1,0 +1,40 @@
+top vals
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 76}, {"line": 80}]}
+request configurationDone {}
+event stopped
+request threads {}
+request scopes {"frameId": 131072}
+request variables {"variablesReference": 524289}
+request variables {"variablesReference": 524290}
+request setVariable {"variablesReference": 524289, "name": "v", "value": "(b => x\"F\", a => 41)"}
+request setVariable {"variablesReference": 524289, "name": "n", "value": "3"}
+request setVariable {"variablesReference": 524289, "name": "n", "value": "three"}
+request setVariable {"variablesReference": 524289, "name": "big", "value": "(299 => 9, others => 1)"}
+request variables {"variablesReference": 524289}
+request setVariable {"variablesReference": 524290, "name": "d", "value": "x\"A5\""}
+request setVariable {"variablesReference": 524290, "name": "d", "value": "x\"A\""}
+request setVariable {"variablesReference": 524291, "name": "N", "value": "1"}
+request yavs/force {"signal": "q", "value": "8x\"FF\""}
+request yavs/force {"signal": "q", "value": "x\"FF\"", "mode": "sideways"}
+request yavs/deposit {"signal": "nosuch", "value": "1"}
+request yavs/deposit {"signal": "r"}
+request evaluate {"expression": "d"}
+request yavs/stepDelta {}
+event stopped
+request yavs/deposit {"signal": ":vals:t", "value": "5 ns"}
+request yavs/deposit {"signal": ":vals:r", "value": "(a => 7, b => \"01ZX\")"}
+request evaluate {"expression": ":vals:d"}
+request yavs/stepDelta {}
+event stopped
+request evaluate {"expression": ":vals:d"}
+request evaluate {"expression": ":vals:q"}
+request evaluate {"expression": ":vals:t"}
+request evaluate {"expression": ":vals:r"}
+request continue {"threadId": 2}
+event stopped
+request yavs/release {"signal": "q"}
+request continue {"threadId": 2}
+event terminated
+request disconnect {}

@@ -13,14 +13,15 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
   or drive the kernel other than through `SimControl` and the session (plan: nothing else drives
   simulation).
 - Depends on: `yavs-diag`, `yavs-elab`, `yavs-interp`, `yavs-ir`, `yavs-kernel`, `yavs-sem`,
-  `yavs-std` (TIME literals), `serde_json`. Called by: `yavs` (`src/elab.rs`, `run`).
+  `yavs-logic`, `yavs-std` (TIME literals, `value::literal` for values typed by the user),
+  `serde_json`. Called by: `yavs` (`src/elab.rs`, `run`).
 
 ## 2. Map
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `serve` (transport, session, run loop, end of run), `Transport`/`parse_transport`, `Shared` state, reader-thread requests (`handle`, `set_breakpoints`, `parse_hit`, `data_breakpoint_info`, `set_signal_breakpoints`), the run loop's `Run`s and `signal_hit`, stop-time requests (`Front::on_stop`, `serve_stop`, `stack_trace`, `scopes`, `variables`, `evaluate`), `Output` observer |
-| `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, signals (`Sig`, value text from kernel leaves, `Sig::canon` for value breakpoints), per process its regions, signals and generics |
+| `src/lib.rs` | `serve` (transport, session, run loop, end of run), `Transport`/`parse_transport`, `Shared` state, reader-thread requests (`handle`, `set_breakpoints`, `parse_hit`, `data_breakpoint_info`, `set_signal_breakpoints`), the run loop's `Run`s and `signal_hit`, stop-time requests (`Front::on_stop`, `serve_stop`, `stack_trace`, `scopes`, `variables`, `evaluate`, `signal_op`, `set_variable`, `write_local`), the force/deposit/release queue (`Op`, `queue`, `apply_ops`), `Output` observer |
+| `src/design.rs` | `Design`: what the debugger shows, extracted from `Db`/`Elaborated` before the run: statement locations, line table, signals (`Sig`: `Fmt` walks its kernel leaves with its `LitType`, `value`/`show` decode, `parse`/`encode` for deposits and value breakpoints), locals (`ir_lit`, `to_const` between interpreter values and `Lit`), per process its regions, signals and generics |
 | `src/wire.rs` | `Content-Length` framing (`read_message`, `write_message`) |
 | `../../editors/vscode/` | The VS Code extension and its client and in-editor tests (run them after changing this crate, `editors/vscode/AGENTS.md`) |
 | `../yavs/tests/dap.rs`, `../yavs/tests/dap/` | Scripted sessions over stdio (`NAME.script` in, `NAME.expected` transcript, `YAVS_BLESS=1`), pause, TCP |
@@ -39,7 +40,10 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 | A stop during a run to a time does not cancel it: the run loop keeps the limit until it is reached, so `continue` resumes it | One rule for line, signal and pause stops; matches a `run` command resumed after a breakpoint | this file |
 | Custom run requests answer, then send `continued` (thread of the stop, or 1) | A client marks the session running only for the standard resume requests | VS Code |
 | Signal breakpoints are one `SignalBreak` observer, subscribed before the run, whose shared watch list (`Watches`) holds every leaf of every signal breakpoint, on any change; `setDataBreakpoints` and `yavs/setSignalBreakpoints` each replace their own set (`Shared::sig_bps`), answered on the reader thread | The interpreter's signal breakpoint and the event bus, no second watcher; VS Code resends all data breakpoints on every change and must not drop the custom ones |
-| A value breakpoint compares text: the value as `Sig::show` writes it against the requested value normalized by `Sig::canon` (enumeration literals, integers, reals, physical values in the primary unit, string literals of character arrays are checked; other composites compare as typed, blanks ignored). After a pause with hits, a change that matches no breakpoint resumes the run | One value syntax, the one the Variables view shows; no value parser per type yet (#323 needs one for deposit) | issue #322 |
+| Values the user types (value breakpoints, `yavs/force`, `yavs/deposit`, `setVariable`) are parsed for the target's type by `yavs_std::value::literal` (scalars as `'VALUE` reads them, any unit of a physical type, string and bit string literals, aggregates) and compared or written as `Lit`; after a pause with hits, a change that matches no value breakpoint resumes the run | One value syntax, VHDL's, for every request; the Variables view writes values in it | issues #322, #323 |
+| Force, deposit and release act on whole signals through `SimControl::force`/`deposit`/`release` (one call per kernel leaf); a request at a stop only queues them (`Shared::ops`), the run loop makes them before it runs on, so they take effect in the next cycle. From a stop inside a process the kernel is paused after the current cycle, as for a queued run, and that pause is no stop | Nothing but `SimControl` drives the kernel, and a process stop is mid-cycle; one path for both kinds of stops | issue #323 |
+| `setVariable` on a signal is a deposit; on a local it writes the variable at once (`FrameView::set_value`, the whole value, composites keep their bounds); generics are refused | The Variables view's "Set Value" does what a user expects of each | issue #323 |
+| Signal variables carry `__vscodeVariableMenuContext: "signal"` | VS Code's context key for the extension's force, deposit and release menu entries | VS Code |
 | Conditions and hit conditions on data breakpoints are rejected (`verified: false`) | Not supported yet (#326); no silent drop | this file |
 | From a stop between cycles, every step request is a global step (next statement of any process) | No process is current there | ir.md 3.4 |
 | Reports and `OUTPUT` text are `output` events (stdout carries DAP in `stdio` mode); runtime errors an `output` event of category `stderr` | stdout is the protocol channel | `docs/cli-contract.md` 5 |
@@ -54,6 +58,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 - `Shared::rx` is locked only by the simulation thread (configuration wait, stops, end of run).
 - The transcript tests depend on message order: only send from the simulation thread while it
   runs, and keep reader-thread answers to requests a client sends while stopped or before start.
+- A queued force or deposit is lost when the session ends before the next cycle (disconnect).
 - Codes owned: `E0700`-`E0799`/`W0700`-`W0799` (in use: `E0701` connection cannot be opened).
 
 ## 5. How to work here
@@ -66,5 +71,5 @@ yavs run --work=lib:out/lib tb --dap=4711       # then attach an editor to 127.0
 
 ## 6. Open issues
 
-#323 force/deposit/release, #325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
+#325 live waves and `--wave`/`--vhpi` with `--dap`, #326 breakpoint conditions, composite
 variables, hierarchy browsing.

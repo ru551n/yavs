@@ -1565,6 +1565,14 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **DAP threads are processes**, frames are VHDL subprogram calls, and the variables of a frame
   are its locals plus the signals of the process's enclosing regions and the generics of its
   instance. Why: the plan's debugging list (call stack and locals per process).
+- **Values typed in the debugger are VHDL literals of the target's type** (#323): value
+  breakpoints, force, deposit and `setVariable` share one parser, `yavs_std::value::literal`
+  (scalars as `T'VALUE` reads them, string and bit string literals, aggregates with named
+  elements, ranges and `others`), and the Variables view writes values the same way. Why: one
+  syntax a VHDL user already knows; text comparison could not match `x"A5"` with `"10100101"`.
+- **Force, deposit and release from the debugger go through `SimControl`** and take effect in
+  the next cycle, from a stop between cycles or inside a process alike (#323). Why: the plan
+  lets nothing else drive the kernel, and a stop inside a process is mid-cycle.
 - Details of ids, request routing and pause handling: `crates/yavs-dap/AGENTS.md` section 3.
 
 ## Code coverage (yavs-cov, yavs-lower, yavs-elab, CLI, M9, #131, 2026-10-19)

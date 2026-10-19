@@ -13,7 +13,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
   marshals VHDL values and calls this crate; NATIVE.md symbol binding lives there.
 - Depends on: `jiff` (LOCALTIME). Called by: `yavs-interp`, `yavs-sem` (`value::lex_abstract`
   for decimal literals), `yavs-elab` (`-g` generic overrides through the `'value` parser),
-  `yavs` (`--stop-time` through `value::physical_value`).
+  `yavs` (`--stop-time` through `value::physical_value`), `yavs-dap` (`value::literal` for
+  deposits, forces, `setVariable` and value breakpoints).
 
 ## 2. Map
 
@@ -21,7 +22,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|
 | `src/types.rs` | `EnumType`/`EnumLit`, physical `Unit`s, `Bounds`, `time_type()`, `to_latin1` |
 | `src/image.rs` | `'IMAGE`, `TO_STRING`, `TO_HSTRING`/`TO_OSTRING`/`TO_BSTRING` |
-| `src/value.rs` | `'VALUE` (full literal syntax), `lex_abstract`/`Abstract`, `physical_value`, `time_literal` (`10ms`, `1.5 ns`: `--stop-time`, the debugger) |
+| `src/value.rs` | `'VALUE` (full literal syntax), `lex_abstract`/`Abstract`, `physical_value`, `time_literal` (`10ms`, `1.5 ns`: `--stop-time`, the debugger), `literal`/`literal_image` over `LitType`/`Lit` (any value as typed in the debugger: scalars, string and bit string literals, aggregates with named elements, ranges and `others`) |
 | `src/printf.rs` | C99 printf for one real (`TO_STRING(real, format)`, `%.15g`, `%a`) |
 | `src/textio.rs` | READ/WRITE of every textio type on a line, justify, hread/oread |
 | `src/file.rs` | TEXT files: READLINE (CRLF), WRITELINE (LF), ENDFILE, 2019 file ops |

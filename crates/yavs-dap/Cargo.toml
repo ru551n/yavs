@@ -13,6 +13,7 @@ yavs-elab = { path = "../yavs-elab" }
 yavs-interp = { path = "../yavs-interp" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
+yavs-logic.workspace = true
 yavs-sem = { path = "../yavs-sem" }
 yavs-std = { path = "../yavs-std" }
 

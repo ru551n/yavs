@@ -439,7 +439,7 @@ SignalBreak::watches(&self) -> Watches   // the shared watch list, changed while
 | pause inside a process | session flag polled every 4096 instructions, stops at the next statement (endless loops) |
 | signal breakpoint | `SignalBreak` observer on the event bus: on a change of the signal (or to a value) it records the hit and calls `Interrupt::pause`; `SimControl::run_*` returns `Paused` after that cycle |
 | run for / next delta / next time step | `SimControl::run_for`, `run_until`, `step_delta`, `step_timestep` |
-| stack and locals | `FrameView`: per frame the function, current statement and `Func::locals` (variables and typed parameters); `format_scalar` gives `'image` text, composites are decoded with `Ty::layout` |
+| stack and locals | `FrameView`: per frame the function, current statement and `Func::locals` (variables and typed parameters); `format_scalar` gives `'image` text; `FrameView::value`/`set_value` read and write a local whole (composites as data and descriptor bytes, `CallVal`) |
 | process list | `DebugSession::processes()`: each process publishes its state and what it waits on (sensitivity, absolute timeout, the wait statement whose span shows the condition) at every suspension |
 
 - Stops inside a process need `--threads 1` (the kernel is mid-delta); the CLI forces it when

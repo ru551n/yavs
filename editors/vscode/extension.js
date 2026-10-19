@@ -92,6 +92,39 @@ async function sendValueBps(s, bps) {
   }
 }
 
+/** Force (asking for the mode), deposit or release a signal: the variable of the Variables
+ * view's context menu, the `signal` (and `value`, `mode`) of a programmatic call, or asked
+ * for. */
+function signalOp(command, withValue) {
+  return async (ctx) => {
+    const s = vscode.debug.activeDebugSession;
+    if (!s || s.type !== 'yavs') return;
+    const signal = ctx?.signal || ctx?.variable?.name || (await vscode.window.showInputBox({
+      prompt: 'Signal (a name visible from the selected frame, or a path such as :tb:u1:s)',
+    }));
+    if (!signal) return;
+    const args = { signal, frameId: vscode.debug.activeStackItem?.frameId };
+    if (command !== 'yavs/deposit') {
+      args.mode = ctx?.mode || (await vscode.window.showQuickPick(['in', 'out'], {
+        placeHolder: 'in: the effective value (what readers see), out: the driving value',
+      }));
+      if (!args.mode) return;
+    }
+    if (withValue) {
+      args.value = ctx?.value || (await vscode.window.showInputBox({
+        prompt: `Value for ${signal}`,
+        placeHolder: `'1', 42, x"FF", (others => '0'), 10 ns`,
+      }));
+      if (!args.value) return;
+    }
+    try {
+      await s.customRequest(command, args);
+    } catch (e) {
+      vscode.window.showErrorMessage(`yavs: ${e.message}`);
+    }
+  };
+}
+
 function activate(context) {
   const reg = vscode.commands.registerCommand;
   context.subscriptions.push(
@@ -101,6 +134,9 @@ function activate(context) {
     reg('yavs.stepDelta', custom('yavs/stepDelta')),
     reg('yavs.stepTimestep', custom('yavs/stepTimestep')),
     reg('yavs.breakOnValue', breakOnValue),
+    reg('yavs.force', signalOp('yavs/force', true)),
+    reg('yavs.deposit', signalOp('yavs/deposit', true)),
+    reg('yavs.release', signalOp('yavs/release', false)),
     reg('yavs.clearValueBreaks', () => {
       const s = vscode.debug.activeDebugSession;
       if (s && s.type === 'yavs') return sendValueBps(s, []);

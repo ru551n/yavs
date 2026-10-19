@@ -296,9 +296,16 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   delta. Signal breakpoints are DAP data breakpoints (`supportsDataBreakpoints`; `dataId` is
   the signal's lower-case path `:top:u1:s`) and the custom request `yavs/setSignalBreakpoints`
   (`breakpoints: [{signal, value?}]`, `frameId` for names seen from a process; it replaces its
-  own set): a stop after the cycle in which the signal changed (to `value`, as the variables
-  view writes it), reason `data breakpoint`, `text` `PATH = VALUE`. Supported requests and the
-  id scheme: `crates/yavs-dap/AGENTS.md`.
+  own set): a stop after the cycle in which the signal changed (to `value`), reason `data
+  breakpoint`, `text` `PATH = VALUE`. `yavs/force` (`signal`, `value`, `mode` `in` or `out`,
+  default `in`), `yavs/deposit` (`signal`, `value`) and `yavs/release` (`signal`, `mode`) act on
+  a whole signal (`signal` a name seen from `frameId` or the stopped process, or a path) in the
+  next cycle; they answer with the signal's path and the value as text. `setVariable`
+  (`supportsSetVariable`) deposits a signal and writes a local at once; generics are refused.
+  Values are VHDL literals of the target's type: scalars as `T'VALUE` reads them (physical values
+  in any unit), string and bit string literals, aggregates with positional and named elements,
+  ranges and `others`; a value that does not parse is a failed response naming the problem.
+  Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
 - `--tier=interp|llvm` (`run`, default `interp`): `llvm` compiles every function of the design
   with the LLVM tier before time 0 and runs that code; the output is identical to `interp` (the
   interpreter is the reference). Elaboration-time code (package and instance initialisation)

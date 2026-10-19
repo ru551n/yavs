@@ -531,7 +531,7 @@ fn with_shared<T>(
 
 /// The value of a variable of IR type `ty` whose slot is at `a`: a scalar, or a composite's
 /// `[data, desc, ..]` (yavs-lower `VarShape`).
-fn read_slot(m: &Machine, ty: yavs_ir::TyId, a: u64) -> exec::R<CallVal> {
+pub(crate) fn read_slot(m: &Machine, ty: yavs_ir::TyId, a: u64) -> exec::R<CallVal> {
     if let Some(n) = m.rt.prog.types.get(ty).and_then(yavs_ir::Ty::scalar_size) {
         return Ok(CallVal::Cell(m.load(a, width(n))?));
     }
@@ -543,7 +543,7 @@ fn read_slot(m: &Machine, ty: yavs_ir::TyId, a: u64) -> exec::R<CallVal> {
 }
 
 /// Writes `v` into the variable slot at `a` (see [`read_slot`]).
-fn write_slot(m: &mut Machine, ty: yavs_ir::TyId, a: u64, v: &CallVal) -> exec::R<()> {
+pub(crate) fn write_slot(m: &mut Machine, ty: yavs_ir::TyId, a: u64, v: &CallVal) -> exec::R<()> {
     let scalar = m.rt.prog.types.get(ty).and_then(yavs_ir::Ty::scalar_size);
     match (v, scalar) {
         (CallVal::Cell(c), Some(n)) => m.store(a, width(n), *c),
@@ -589,7 +589,7 @@ fn width(n: u64) -> yavs_ir::Width {
     }
 }
 
-fn fault_text(e: exec::Fault) -> String {
+pub(crate) fn fault_text(e: exec::Fault) -> String {
     match e {
         exec::Fault::Runtime(m) | exec::Fault::Internal(m) | exec::Fault::Unbound(m, _) => m,
         exec::Fault::Kernel(e) => format!("{e:?}"),

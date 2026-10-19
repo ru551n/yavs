@@ -1250,7 +1250,7 @@ impl Machine {
             now: c.map(|c| c.now()),
             delta: c.map(|c| c.delta()),
             frames: FrameView {
-                frames: &self.frames,
+                m: std::cell::RefCell::new(&mut *self),
                 prog,
             },
             ctx: c,

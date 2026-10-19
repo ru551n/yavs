@@ -1,5 +1,5 @@
 > initialize {"adapterID":"yavs"}
-< {"body":{"supportsConditionalBreakpoints":false,"supportsConfigurationDoneRequest":true,"supportsDataBreakpoints":true,"supportsEvaluateForHovers":true,"supportsHitConditionalBreakpoints":true,"supportsTerminateRequest":true},"command":"initialize","request_seq":1,"success":true,"type":"response"}
+< {"body":{"supportsConditionalBreakpoints":false,"supportsConfigurationDoneRequest":true,"supportsDataBreakpoints":true,"supportsEvaluateForHovers":true,"supportsHitConditionalBreakpoints":true,"supportsSetVariable":true,"supportsTerminateRequest":true},"command":"initialize","request_seq":1,"success":true,"type":"response"}
 > launch {}
 < {"body":{},"event":"initialized","type":"event"}
 < {"body":{},"command":"launch","request_seq":2,"success":true,"type":"response"}
@@ -17,7 +17,7 @@
 > variables {"variablesReference":262145}
 < {"body":{"variables":[{"name":"i","value":"0","variablesReference":0},{"name":"k","value":"1","variablesReference":0}]},"command":"variables","request_seq":8,"success":true,"type":"response"}
 > variables {"variablesReference":262146}
-< {"body":{"variables":[{"name":"cnt","type":"INTEGER","value":"0","variablesReference":0},{"name":"v","type":"BIT_VECTOR","value":"\"0101\"","variablesReference":0}]},"command":"variables","request_seq":9,"success":true,"type":"response"}
+< {"body":{"variables":[{"__vscodeVariableMenuContext":"signal","name":"cnt","type":"INTEGER","value":"0","variablesReference":0},{"__vscodeVariableMenuContext":"signal","name":"v","type":"BIT_VECTOR","value":"\"0101\"","variablesReference":0}]},"command":"variables","request_seq":9,"success":true,"type":"response"}
 > variables {"variablesReference":262147}
 < {"body":{"variables":[{"name":"N","value":"3","variablesReference":0},{"name":"NAME","value":"\"dap\"","variablesReference":0}]},"command":"variables","request_seq":10,"success":true,"type":"response"}
 > evaluate {"expression":"v","frameId":65536}

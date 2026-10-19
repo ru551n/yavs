@@ -1458,6 +1458,7 @@ dependencies = [
  "yavs-interp",
  "yavs-ir",
  "yavs-kernel",
+ "yavs-logic",
  "yavs-sem",
  "yavs-std",
 ]

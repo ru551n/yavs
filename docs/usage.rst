@@ -401,9 +401,20 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
 * **Signal breakpoints** stop after the simulation cycle in which a signal changed: in VS Code
   "Break on Value Change" on a signal in the Variables view (DAP data breakpoints, also on a
   name or path through ``dataBreakpointInfo``). "yavs: Break when a signal equals..." stops only
-  when the signal takes a value, written as the Variables view shows it (``'1'``, ``"0101"``,
-  ``42``, ``TRUE``); other clients send the custom request ``yavs/setSignalBreakpoints``. The
-  stop gives the signal's path and new value.
+  when the signal takes a value, a VHDL literal of its type (see values below); other clients
+  send the custom request ``yavs/setSignalBreakpoints``. The stop gives the signal's path and new
+  value.
+* **Force, deposit and release** a signal: "Force a signal...", "Deposit a signal value..." and
+  "Release a forced signal..." in the context menu of a signal in the Variables view or as
+  "yavs:" commands (custom requests ``yavs/force``, ``yavs/deposit`` and ``yavs/release`` for
+  other clients). A force holds the effective value (mode ``in``, what readers see) or the
+  driving value (mode ``out``) until it is released; a deposit sets the value until a driver
+  next changes it. The change is made in the next simulation cycle, also from a stop inside a
+  process. "Set Value" in the Variables view deposits a signal and writes a variable at once.
+* **Values** are VHDL literals of the target's type: ``'1'``, ``42``, ``16#FF#``, ``TRUE``,
+  ``1.5``, ``10 ns`` (any unit of a physical type), ``"01ZX"``, bit strings such as ``x"A5"`` or
+  ``8ux"F"``, and aggregates with positional and named elements, ranges and ``others``:
+  ``(a => 1, b => x"F")``, ``(7 downto 4 => '1', others => '0')``.
 * **Pause** stops a running simulation: inside a process if one is running, otherwise between
   cycles.
 * **Run for a time or until a time**, **step to the next delta** and **step to the next time
@@ -416,8 +427,9 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
   time.
 * **Call stack**: one frame per subprogram with its source position; a waiting process shows its
   ``wait`` statement.
-* **Variables**: the locals of each frame (process variables, parameters, subprogram variables),
-  the signals and ports of the regions around the process, and the generics of its instance.
+* **Variables**: the locals of each frame (process variables, parameters, subprogram variables,
+  records and arrays included), the signals and ports of the regions around the process, and
+  the generics of its instance.
 * **Evaluate** reads a local, a signal visible from the process, or a signal by path
   (``:tb:u1:s`` or ``tb.u1.s``).
 * Every stop says its simulation time and delta, and reports and ``OUTPUT`` text appear in the
@@ -428,6 +440,6 @@ A stop is a defined point of the simulation: under ``--dap`` processes run on on
 simulation ends the client gets the exit status of the run; disconnecting ends the simulation
 (exit status 1 if it had not ended).
 
-Not yet: conditions on breakpoints, forcing and depositing signal values,
-live waveforms, composite variables (shown as ``(...)``), and ``--dap``
-together with ``--wave``, ``--vhpi`` or ``--cov``.
+Not yet: conditions on breakpoints, expanding records and arrays in the Variables view,
+forcing or depositing a part of a signal, live waveforms, and ``--dap`` together with
+``--wave``, ``--vhpi`` or ``--cov``.

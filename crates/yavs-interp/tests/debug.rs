@@ -33,7 +33,7 @@ impl Debugger for Front {
                     .collect::<Vec<_>>()
             })
             .map(|(i, l)| {
-                let v = f.format(l.ty, l.bytes).unwrap_or_default();
+                let v = f.format(l.ty, &l.bytes).unwrap_or_default();
                 format!("{}.{}={v}", f.func_name(i).unwrap_or("?"), l.name)
             })
             .collect();

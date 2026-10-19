@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
--- expect: E1704 15:7 component `c` is only default-bound
--- LRM 3.4.3, 7.3.3 (default binding; a default binding is not enough: sim1 and sim2 reject)
+-- expect: none
+-- LRM 3.4.3, 7.3.3 (the LRM does not forbid it: accepted, user 2026-10-19, rule 15)
 entity c is generic (n : integer := 0); end entity;
 architecture rtl of c is begin end architecture;
 entity top is end entity;

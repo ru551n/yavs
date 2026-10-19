@@ -578,6 +578,16 @@ the approved LCS text (read from an archived copy of the LCS pages), and black-b
   the prefix is active at time 0 in the case, so `'transaction` does not toggle. Kind "LRM
   clear". The initial value of `S'transaction` itself was not found quoted.
 
+### Rule 15 rows (user, 2026-10-19)
+
+Root rule 15 (user, 2026-10-19) replaces the majority rule: where the LRM is unclear, accept a
+construct it does not clearly forbid. The user re-decided the catalogue rows below on that basis
+(user, 2026-10-19).
+
+- **block-config-default-bound** (3.4.3, 7.3.3): accept. 3.4.3 does not say whether a default
+  binding counts for a block configuration, so the default binding supplies the entity whose
+  architecture the block configuration names; `E1704` stays for an instance with no entity at all.
+
 ## Changes to code paths
 
 `crates/yavs-sem` on main (skeleton commit `e7c0491`, read only here) has no base range,

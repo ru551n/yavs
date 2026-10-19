@@ -2342,32 +2342,25 @@ impl Db {
                     Some(EntityAspect::Entity { unit, .. }) => Some(*unit),
                     _ => bound,
                 };
-                // A default binding (7.3.3) is no binding for a block configuration (3.4.3):
-                // two of the three reference simulators reject it (user, 2026-10-19).
+                // Without an explicit binding the default binding applies (3.4.3, 7.3.3): the
+                // LRM does not forbid configuring it (user, 2026-10-19, rule 15, decisions.md).
+                let e = match e {
+                    Some(e) => Some(e),
+                    None if binding.is_none() => {
+                        let region = regions.first().copied().unwrap_or(scope);
+                        self.default_binding(region, comp).map(|(e, _)| e)
+                    }
+                    None => None,
+                };
                 let Some(e) = e else {
                     let cn = self.decls[comp].name;
-                    let region = regions.first().copied().unwrap_or(scope);
-                    let (msg, help) = if self.default_binding(region, comp).is_some() {
-                        (
-                            format!(
-                                "component `{cn}` is only default-bound, so a block configuration cannot configure its architecture"
-                            ),
-                            format!("bind it explicitly with `use entity lib.{cn}`"),
-                        )
-                    } else {
-                        (
-                            format!(
-                                "no entity is bound to component `{cn}`, so it has no architecture to configure"
-                            ),
-                            format!(
-                                "bind it with `use entity lib.{cn}` or analyze an entity `{cn}`"
-                            ),
-                        )
-                    };
                     return Err(self.error(
-                        Diagnostic::error(diag::NO_ENTITY_BOUND, msg)
-                            .with_primary(bc.span, "block configuration of an unbound instance")
-                            .with_help(help),
+                        Diagnostic::error(
+                            diag::NO_ENTITY_BOUND,
+                            format!("no entity is bound to component `{cn}`, so it has no architecture to configure"),
+                        )
+                        .with_primary(bc.span, "block configuration of an unbound instance")
+                        .with_help(format!("bind it with `use entity lib.{cn}` or analyze an entity `{cn}`")),
                     ));
                 };
                 Some(self.arch_block_config(&[scope], e, bc)?)

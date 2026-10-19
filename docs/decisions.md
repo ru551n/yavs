@@ -617,9 +617,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Selected entity names:** `architecture a of lib.e` is accepted (LRM 3.3.1 gives a name; the reference simulator,
   the reference simulators accept it); `lib` must be a visible library name and the architecture's own.
 - **Block configuration of a default-bound instance** (`for u : c  for rtl end for;  end for;`
-  with no binding indication): `E1704` (user, 2026-10-19, majority rule: two of the three
-  reference simulators reject it; it was accepted before). A default binding (7.3.3) is no binding
-  for a block configuration; bind the instance explicitly or by a configuration specification.
+  with no binding indication): accepted, the default binding (7.3.3) supplies the entity (user,
+  2026-10-19, rule 15: accept what the LRM does not clearly forbid; it replaces the morning's
+  majority-rule `E1704`). LRM 3.4.3 does not say whether a default binding counts for a block
+  configuration. With no entity to bind at all it stays `E1704`.
 - **`others` in a component configuration** (7.3.1) leaves out the instances that earlier
   component configurations of the same block configuration name, so `for others : c use entity
   ...` next to `for u2 : c ... end for;` does not rebind a `u2` bound by a configuration

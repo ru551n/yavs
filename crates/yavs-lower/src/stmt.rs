@@ -785,13 +785,11 @@ impl Fx<'_, '_> {
         let bias = self.code_bias(tid);
         let (_, rt, w) = self.scalar(elem, span)?;
         let count = self.dope_len(dope);
-        let m = self.msg("aggregate target", Dir::To);
         let named = self.named_target_positions(assocs, t, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
-        if assocs.iter().any(|a| a.slice_piece) {
-            // The pieces must cover the value exactly (LRM 10.6.2.1), checked first.
-            let want = self.pieces_dope(assocs, false, span)?;
+        // The aggregate must cover the value exactly (LRM 10.6.2.1), checked first.
+        if let Some(want) = self.cover_dope(assocs, named.as_deref(), false, span)? {
             let what = self.msg("target", Dir::To);
             self.emit(Inst::SubtypeCheck {
                 dope,
@@ -850,19 +848,11 @@ impl Fx<'_, '_> {
                     pos
                 }
                 Some(Choice::Expr(_)) if let Some(ps) = &named => self.int(ps[i].0),
-                Some(Choice::Expr(c)) if a.choices.len() == 1 => {
-                    let i = self.scalar_expr(*c)?;
-                    let p = self.reg(RegTy::I64);
-                    self.emit(Inst::Pos {
-                        dst: p,
-                        dope,
-                        dim: 0,
-                        idx: i,
-                        what: m,
-                    });
-                    p
+                Some(&Choice::Expr(c)) => {
+                    self.lone_choice(c, t, &[dope], span)?;
+                    self.int(0)
                 }
-                _ => return Err(self.cx.unsupported(span, "this aggregate target choice")),
+                _ => return Err(self.cx.ice(span, "unmapped aggregate target choice")),
             };
             let x = if logic {
                 let one = self.int(1);
@@ -897,7 +887,8 @@ impl Fx<'_, '_> {
     /// lowest to its highest choice in the direction of its first range choice, else of the
     /// index subtype of its type `t` (LRM 9.3.3.3); its leftmost index takes the value's
     /// leftmost element, and a piece takes the elements of its range in the aggregate's order.
-    /// `None` for a positional target.
+    /// `None` for a positional target and for one whose only choice is a non-static element
+    /// choice (`lone_choice`).
     fn named_target_positions(
         &mut self,
         assocs: &[yavs_sem::hir::AggAssoc],
@@ -905,10 +896,19 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<Option<Vec<(i64, i64)>>> {
         use yavs_sem::expr::aggregate::{StaticRange, range_value, subtype_range};
+        let db = self.db;
         if assocs.iter().any(|a| a.choices.is_empty()) {
             return Ok(None);
         }
-        let db = self.db;
+        if let [a] = assocs
+            && let [Choice::Expr(e)] = &a.choices[..]
+            && db
+                .value(*e)
+                .and_then(yavs_sem::stat::ConstValue::as_int)
+                .is_none()
+        {
+            return Ok(None);
+        }
         let first = assocs
             .iter()
             .flat_map(|a| a.choices.iter())
@@ -965,6 +965,30 @@ impl Fx<'_, '_> {
         ))
     }
 
+    /// The lone non-static element choice `c` of an aggregate target of type `t` (LRM 9.3.3.3
+    /// allows no other choice with it): checked against the index subtype, then each value
+    /// (descriptors `dopes`) must have exactly one element, which the choice's target takes.
+    fn lone_choice(&mut self, c: ExprId, t: TypeId, dopes: &[Reg], span: Span) -> R<()> {
+        let db = self.db;
+        let TypeKind::Array { indexes, .. } = &db.types[t].kind else {
+            return Err(self.cx.ice(span, "aggregate target of a non-array type"));
+        };
+        let i = self.scalar_expr(c)?;
+        self.check_scalar(i, Some(db.exprs[c].subtype), indexes[0], "index", span)?;
+        let z = self.int(0);
+        let want = self.one_dope(i, i, z);
+        let what = self.msg("target", Dir::To);
+        for &dope in dopes {
+            self.emit(Inst::SubtypeCheck {
+                dope,
+                want,
+                dims: 1,
+                what,
+            });
+        }
+        Ok(())
+    }
+
     /// The start of a named piece (`pos`, choice length) of an aggregate target, after
     /// checking that its choice has as many elements as the piece `pd`.
     fn named_piece(&mut self, (pos, len): (i64, i64), pd: Reg) -> Reg {
@@ -982,8 +1006,29 @@ impl Fx<'_, '_> {
         self.int(pos)
     }
 
-    /// A descriptor `0 to n - 1` for the `n` elements a positional aggregate target with
-    /// slice pieces covers (`signal`: its elements are signal names).
+    /// A descriptor `0 to n - 1` for the `n` elements an aggregate target covers: from its
+    /// choices' positions `named`, else positionally (`pieces_dope`); `None` for a lone
+    /// non-static choice, which `lone_choice` checks.
+    fn cover_dope(
+        &mut self,
+        assocs: &[yavs_sem::hir::AggAssoc],
+        named: Option<&[(i64, i64)]>,
+        signal: bool,
+        span: Span,
+    ) -> R<Option<Reg>> {
+        if let Some(ps) = named {
+            let n = ps.iter().map(|&(p, l)| p + l).max().unwrap_or(0);
+            let (z, last) = (self.int(0), self.int(n - 1));
+            return Ok(Some(self.one_dope(z, last, z)));
+        }
+        if assocs.iter().any(|a| !a.choices.is_empty()) {
+            return Ok(None);
+        }
+        self.pieces_dope(assocs, signal, span).map(Some)
+    }
+
+    /// A descriptor `0 to n - 1` for the `n` elements a positional aggregate target covers
+    /// (`signal`: its elements are signal names).
     fn pieces_dope(
         &mut self,
         assocs: &[yavs_sem::hir::AggAssoc],
@@ -1268,13 +1313,11 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        let m = self.msg("aggregate target", Dir::To);
         let named = self.named_target_positions(assocs, t, span)?;
         // The position of the next positional element; a 2008 slice piece takes as many
         // elements as its target has, from there.
-        if assocs.iter().any(|a| a.slice_piece) {
-            // The pieces must cover every value exactly (LRM 10.5.2.1), checked first.
-            let want = self.pieces_dope(assocs, true, span)?;
+        // The aggregate must cover every value exactly (LRM 10.5.2.1), checked first.
+        if let Some(want) = self.cover_dope(assocs, named.as_deref(), true, span)? {
             let what = self.msg("target", Dir::To);
             for &(_, (_, dope)) in &vals {
                 self.emit(Inst::SubtypeCheck {
@@ -1380,24 +1423,17 @@ impl Fx<'_, '_> {
                 }
                 _ => None,
             };
+            let pos = match a.choices.first() {
+                None => k,
+                Some(Choice::Expr(_)) if let Some(ps) = &named => self.int(ps[i].0),
+                Some(&Choice::Expr(c)) => {
+                    let dopes: Vec<Reg> = vals.iter().map(|&(_, (_, d))| d).collect();
+                    self.lone_choice(c, t, &dopes, span)?;
+                    self.int(0)
+                }
+                _ => return Err(self.cx.ice(span, "unmapped aggregate target choice")),
+            };
             for (j, &(at, (data, dope))) in vals.iter().enumerate() {
-                let pos = match a.choices.first() {
-                    None => k,
-                    Some(Choice::Expr(_)) if let Some(ps) = &named => self.int(ps[i].0),
-                    Some(Choice::Expr(c)) if a.choices.len() == 1 => {
-                        let i = self.scalar_expr(*c)?;
-                        let p = self.reg(RegTy::I64);
-                        self.emit(Inst::Pos {
-                            dst: p,
-                            dope,
-                            dim: 0,
-                            idx: i,
-                            what: m,
-                        });
-                        p
-                    }
-                    _ => return Err(self.cx.unsupported(span, "this aggregate target choice")),
-                };
                 let x = if vlogic {
                     let count = self.dope_len(dope);
                     let one = self.int(1);

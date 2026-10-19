@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:aggregate_target_dynamic:_p0	a=20
+diag	note	0	0	:aggregate_target_dynamic:_p0	a=7
+diag	note	1000000	0	:aggregate_target_dynamic:_p0	s=10
+diag	note	3000000	0	:aggregate_target_dynamic:_p0	s=7

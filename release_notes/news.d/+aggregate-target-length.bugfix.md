@@ -1,0 +1,1 @@
+An aggregate target whose only choice is not locally static, such as `(i => a) := v;`, works again, and every aggregate target now raises a runtime error when its value has more or fewer elements than the target covers, instead of assigning part of it.

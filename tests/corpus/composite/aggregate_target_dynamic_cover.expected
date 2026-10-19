@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:aggregate_target_dynamic_cover:_p0	a=10
+diag	fatal	0	0	-	value length 2 does not match target length 1

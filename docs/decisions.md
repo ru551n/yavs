@@ -1032,7 +1032,10 @@ which tools/difftest parses.
   use the same mapping (#264, 2026-10-19: LRM 9.3.3.3 gives the aggregate its index subtype's
   direction, two of the three reference simulators put the aggregate's leftmost index on the value's
   leftmost element, the third does not accept the form): the choices are not the value's own
-  indices, whatever its bounds.
+  indices, whatever its bounds. A lone non-static element choice, `(i => a) := v;` (LRM 9.3.3.3
+  allows no other choice with it), covers one element: `a` takes the value's single element. Every
+  aggregate target must cover its value exactly (LRM 10.5.2.1, 10.6.2.1), checked at run time before
+  anything is assigned, positional and element-only targets included.
 - **`&` on arrays of composites** (#234, LRM 9.2.5): arrays of arrays and of records
   concatenate like arrays of scalars (bounds from the index subtype, two null operands give
   the right operand), each element copied as a row with the piece copy shared with

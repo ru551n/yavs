@@ -493,6 +493,14 @@ finds its loader); on Windows x86_64 GNU the same testbench and error cases pass
 hand with a MinGW DLL (the test cannot spawn the compiler inside wine). Native Windows (MSVC CI)
 runs the test as written.
 
+## vhpi export (`crates/yavs-vhpi`, `crates/yavs`)
+
+Done (#266): the `yavs` executable exports the full `vhpi_*` C ABI of `vhpi_user.h` (42 symbols,
+functions and the `vhpiFS`..`vhpiS` time constants) on Linux x86_64 and aarch64 (also in the
+glibc 2.17 cargo-zigbuild release builds, where the linker exports more than the list) and in the
+Windows `.exe` export table (MinGW checked; MSVC `/DEF:` still never run, #124). No `yavs.lib`.
+`crates/yavs/tests/vhpi_exports.rs` checks the ELF `.dynsym` against the header (Linux only).
+
 ## discrepancies (simulator catalogue)
 
 `docs/design/simulator-discrepancies.md` lists 80 constructs where the reference simulators

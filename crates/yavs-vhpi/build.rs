@@ -3,13 +3,16 @@
 //!
 //! - `exports.rs`: the Rust table that references every exported symbol,
 //!   so none is dropped at link time.
-//! - `yavs-vhpi.dynlist` (Linux): passed as `-Wl,--dynamic-list`.
+//! - `yavs-vhpi.map` (Linux): a linker version script, passed as
+//!   `-Wl,--version-script` (`--dynamic-list` is rejected by cargo-zigbuild).
 //! - `exports.def` (Windows): passed to the linker of the executable.
-//! - `yavs.lib` and `yavs-vhpi-host.lib` (Windows): import libraries that
-//!   plugins link against, naming `yavs.exe` and the spike host.
+//! - `yavs-vhpi-host.lib` (Windows): import library for this crate's tests,
+//!   naming the spike host. No import library for `yavs.exe` is built or
+//!   shipped (plugins bring their own).
 //!
-//! This package's own binaries get the link arguments directly. Other
-//! packages (the `yavs` CLI) read the paths from `DEP_YAVS_VHPI_*`.
+//! This package's own binaries get the link arguments directly. Cargo
+//! does not forward `rustc-link-arg-bins` to dependents, so the `yavs`
+//! CLI's `build.rs` reads the paths from `DEP_YAVS_VHPI_*`.
 
 use std::env;
 use std::fmt::Write as _;
@@ -47,7 +50,7 @@ fn main() {
     let mut rs = String::from(
         "pub(crate) fn exported_symbols() -> Vec<(&'static str, *const ())> {\n    vec![\n",
     );
-    let mut dynlist = String::from("{\n");
+    let mut dynlist = String::from("{\n  global:\n");
     let mut def = String::from("EXPORTS\n");
     for (name, data) in &exports {
         let addr = if *data {
@@ -60,14 +63,14 @@ fn main() {
         writeln!(def, "    {name}{}", if *data { " DATA" } else { "" }).unwrap();
     }
     rs.push_str("    ]\n}\n");
-    dynlist.push_str("};\n");
+    dynlist.push_str("  local:\n    *;\n};\n");
     fs::write(out.join("exports.rs"), rs).unwrap();
-    let dynlist_path = out.join("yavs-vhpi.dynlist");
+    let dynlist_path = out.join("yavs-vhpi.map");
     fs::write(&dynlist_path, dynlist).unwrap();
     let def_path = out.join("exports.def");
     fs::write(&def_path, def).unwrap();
 
-    println!("cargo:dynamic_list={}", dynlist_path.display());
+    println!("cargo:version_script={}", dynlist_path.display());
     println!("cargo:def={}", def_path.display());
     println!(
         "cargo:include={}",
@@ -90,12 +93,10 @@ fn main() {
                 // GNU ld reads a .def file given as an input.
                 println!("cargo:rustc-link-arg-bins={}", def_path.display());
             }
-            for exe in ["yavs", "yavs-vhpi-host"] {
-                let lib = out.join(format!("{exe}.lib"));
-                match import_lib(&target, &target_env, &def_path, &format!("{exe}.exe"), &lib) {
-                    Ok(()) => {}
-                    Err(e) => println!("cargo:warning=no import library {}: {e}", lib.display()),
-                }
+            let lib = out.join("yavs-vhpi-host.lib");
+            if let Err(e) = import_lib(&target, &target_env, &def_path, "yavs-vhpi-host.exe", &lib)
+            {
+                println!("cargo:warning=no import library {}: {e}", lib.display());
             }
             println!("cargo:import_lib_dir={}", out.display());
             println!(
@@ -105,7 +106,7 @@ fn main() {
         }
         "macos" | "ios" => {}
         _ => println!(
-            "cargo:rustc-link-arg-bins=-Wl,--dynamic-list={}",
+            "cargo:rustc-link-arg-bins=-Wl,--version-script={}",
             dynlist_path.display()
         ),
     }

@@ -175,19 +175,26 @@ milestone users care about works.
   `abi_matches_c_header` compiles a C program generated from the Rust tables against the header
   and compares all ~610 constants and every struct size and field offset; a second test checks
   the header has no constant the Rust side lacks. Same result on Linux and Win64 (MinGW, wine).
-- **Export, Linux:** the executable exports exactly the symbols in `src/exports.txt` through
-  `-Wl,--dynamic-list` (the executable form of a version script; `--export-dynamic` would also
-  export every Rust and std symbol). Plugins leave `vhpi_*` unresolved; plugin loading uses
+- **Export, Linux:** the `yavs` executable (its own `build.rs`, #266: cargo does not forward a
+  dependency's `rustc-link-arg-bins`) is linked with `-rdynamic` plus
+  `-Wl,--version-script` listing `src/exports.txt` as `global` and `*` as `local`, so GNU ld
+  exports exactly the `vhpi_*` list. `--dynamic-list` was dropped because cargo-zigbuild
+  (the glibc 2.17 release) rejects it, as it does `--export-dynamic-symbol`. Under zig's linker
+  the version script does not narrow `-rdynamic`, so the release binary also exports its Rust
+  symbols (harmless, larger `.dynsym`). `yavs_vhpi::keep_exports()`, called first in the CLI
+  `main`, references every symbol so the linker keeps them. A test
+  (`crates/yavs/tests/vhpi_exports.rs`) reads the binary's `.dynsym` and fails if any symbol
+  of `vhpi_user.h` is missing. Plugins leave `vhpi_*` unresolved; plugin loading uses
   `RTLD_NOW | RTLD_GLOBAL`, so a missing symbol fails at load, naming it.
 - **Export, Windows:** no VHPI DLL. The executable is linked with a generated `.def`
-  (`/DEF:` for MSVC, the `.def` as linker input for MinGW). `build.rs` also writes import
-  libraries `yavs.lib` (naming `yavs.exe`) and `yavs-vhpi-host.lib` with `lib.exe` (MSVC), else
+  (`/DEF:` for MSVC, the `.def` as linker input for MinGW). `yavs`'s `build.rs` passes it; no `yavs.lib` is built.
+  `yavs-vhpi`'s `build.rs` writes only the test import library `yavs-vhpi-host.lib` with `lib.exe` (MSVC), else
   `llvm-dlltool`, else MinGW `dlltool`; short-format import libraries work with both MSVC link
   and GNU ld. The import names the executable, so a renamed `yavs.exe` breaks plugins linked
   that way (shims that use `GetProcAddress` on the main module do not care).
-- **One list:** `build.rs` turns `src/exports.txt` into the dynamic list, the `.def`, the import
-  libraries and a Rust table that references every symbol, which keeps them linked from the rlib.
-  Other packages (the `yavs` CLI) get the paths as `DEP_YAVS_VHPI_DYNAMIC_LIST`, `_DEF` and
+- **One list:** `build.rs` turns `src/exports.txt` into the version script, the `.def`, the host test
+  import library and a Rust table that references every symbol, which keeps them linked from the rlib.
+  Other packages (the `yavs` CLI) get the paths as `DEP_YAVS_VHPI_VERSION_SCRIPT`, `_DEF` and
   `_IMPORT_LIB_DIR` (the crate has `links = "yavs_vhpi"`) and must pass them to their own binary
   link. The spike binary `yavs-vhpi-host` gets them via `rustc-link-arg-bins`.
 - **Variadics:** `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` are in `src/shim.c`

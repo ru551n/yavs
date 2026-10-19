@@ -102,9 +102,6 @@ impl std::error::Error for LoadError {}
 /// The library stays loaded for the life of the process, since the
 /// callbacks it registered point into it.
 pub fn load(spec: &PluginSpec) -> Result<(), LoadError> {
-    // Keeps every exported symbol linked into the executable.
-    std::hint::black_box(crate::abi::exported_symbols());
-
     let path = &spec.path;
     let lib = open_path(path)?;
     match &spec.entry {

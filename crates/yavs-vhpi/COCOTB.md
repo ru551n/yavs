@@ -65,14 +65,13 @@ Behaviour the Python testbench framework relies on, for M5:
   `LIBRARY "<simulator>.exe"`. (A commercial simulator's `.def` names a DLL instead.)
 - So the Python testbench framework does not need yavs's shipped `yavs.lib`; it needs an `yavs.def`
   with `LIBRARY "yavs.exe"` and the export list above. Our generated
-  `exports.def` plus that line is exactly it. `yavs.lib` serves plugins that
-  are not built by the framework.
+  `exports.def` plus that line is exactly it. No `yavs.lib` is shipped
+  (user decision); a plugin brings its own.
 - The import names `yavs.exe`, so the loader binds to the running
   executable only if it is called `yavs.exe`. A renamed binary breaks VHPI
   plugins; document it next to the install instructions.
 - Other precedents (from the README of a Rust VHPI plugin crate, see below): the primary reference simulator ships its
-  import library under its install prefix, the same idea as our
-  `yavs.lib`. That crate's shim (the `dynamic` feature) avoids import
+  import library under its install prefix. That crate's shim (the `dynamic` feature) avoids import
   libraries altogether: it resolves every `vhpi_*` at run time with
   `GetProcAddress(GetModuleHandleA(NULL), name)`, i.e. from the export
   table of the main executable. That works with yavs as is and does not

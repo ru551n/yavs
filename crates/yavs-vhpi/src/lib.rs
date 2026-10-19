@@ -3,8 +3,8 @@
 //!
 //! There is no separate VHPI library. The simulator executable exports
 //! the symbols listed in `src/exports.txt`: on Linux through a linker
-//! dynamic list, on Windows through a `.def` file, with an import
-//! library (`yavs.lib`) for plugins to link against. `build.rs` generates
+//! version script, on Windows through a `.def` file; no import
+//! library is built or shipped. `build.rs` generates
 //! those files; see `docs/decisions.md` for the reasoning.
 //!
 //! The object model behind the ABI is a stub (a design root, the tool
@@ -24,6 +24,13 @@ mod plugin;
 
 pub use model::Control;
 pub use plugin::{ForeignLib, LoadError, PluginSpec, bind_foreign, load, load_foreign};
+
+/// Keeps every exported `vhpi_*` symbol linked into the executable. An
+/// executable that exports them calls this once at startup; without a
+/// reference the linker drops the symbols before the export list applies.
+pub fn keep_exports() {
+    std::hint::black_box(abi::exported_symbols());
+}
 
 /// Sets the name of the (stub) design root that plugins see.
 pub fn set_design_root(name: &str) {

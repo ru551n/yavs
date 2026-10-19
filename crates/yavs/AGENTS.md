@@ -10,7 +10,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: analyze, elaborate or simulate itself. All semantics live in the library crates; the
   CLI only wires them. External test runners depend on its behaviour through `docs/cli-contract.md`.
 - Depends on: `yavs-diag`, `yavs-syntax`, `yavs-lib`, `yavs-sem`, `yavs-std`, `yavs-elab`,
-  `yavs-kernel`, `yavs-wave`, `yavs-vhpi` (`--load` only), `clap`. Not yet wired: `--vhpi` (M5),
+  `yavs-kernel`, `yavs-wave`, `yavs-vhpi` (`--load` only; its exports are linked into this binary by `build.rs`, #266), `clap`. Not yet wired: `--vhpi` (M5),
   `yavs-llvm` (M6). Nothing depends on this crate.
 
 ## 2. Map

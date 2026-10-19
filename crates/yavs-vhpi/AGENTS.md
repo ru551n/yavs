@@ -10,7 +10,7 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 - The IEEE 1076-2019 VHPI C ABI: the vendored official `include/vhpi_user.h`, hand-written
   `#[repr(C)]` types and constants (`sys.rs`), the exported `vhpi_*` functions (`abi.rs`), the
   variadic shim (`shim.c`), plugin loading via `vhpi_startup_routines` or `LIB:ENTRY`
-  (`plugin.rs`), and export files for the executable (`build.rs`).
+  (`plugin.rs`), and export files for the executable (`build.rs`; the `yavs` CLI passes them to its link, #266).
 - **The object model is a stub** (a design root, tool info, start/end-of-simulation callbacks)
   until M5 puts the real one on `SimControl` and the event bus (#121).
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
@@ -33,7 +33,7 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 | `src/plugin.rs` | `PluginSpec`, `load`, `LoadError` (`E0901` cannot load, `E0902` no entry point); `ForeignLib`, `load_foreign`, `bind_foreign` (`--load`: libraries in order, then the executable; never unloaded) |
 | `src/shim.c` | `vhpi_printf`, `vhpi_vprintf`, `vhpi_assert`, `vhpi_control` (C variadics) |
 | `src/exports.txt` | The one list of exported symbols |
-| `build.rs` | Generates the Linux dynamic list, the Windows `.def`, import libraries (`yavs.lib`, `yavs-vhpi-host.lib`) and a Rust table referencing every symbol; exports `DEP_YAVS_VHPI_DYNAMIC_LIST`, `_DEF`, `_IMPORT_LIB_DIR` |
+| `build.rs` | Generates the Linux version script, the Windows `.def`, the test import library `yavs-vhpi-host.lib` (no `yavs.lib`) and a Rust table referencing every symbol; exports `DEP_YAVS_VHPI_VERSION_SCRIPT`, `_DEF`, `_IMPORT_LIB_DIR` |
 | `src/lib.rs` | `set_design_root`, `run_callbacks`, `take_control` |
 | `tests/vhpi.rs`, `tests/plugin/plugin.c` | ABI vs C header (`abi_matches_c_header`, all ~610 constants, sizes, offsets), C plugin loaded both ways, missing file/entry/symbol errors |
 
@@ -43,8 +43,8 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 |---|---|---|
 | VHPI is mandatory (Python testbench frameworks) and uses no separate DLL: the executable exports `vhpi_*`; no import library is built or shipped, plugins bring their own (user, 2026-10-18) | Plugins build against the exports themselves | `docs/plan.md` "Decisions" / "Platforms" |
 | Header is the official IEEE file, unchanged; Rust side hand-written, checked against it by a test | Names and layouts are fixed by the standard; no libclang on Windows | `docs/decisions.md` "VHPI ABI and symbol export" |
-| Linux exports exactly `src/exports.txt` via `-Wl,--dynamic-list`; plugins loaded `RTLD_NOW | RTLD_GLOBAL` | Missing symbols fail at load, naming them | same |
-| Windows: `.def` plus import libraries from `lib.exe`, `llvm-dlltool` or MinGW `dlltool` | Same symbol set as Linux | same; COCOTB.md "Windows" |
+| Linux exports `src/exports.txt` via `-rdynamic` plus `-Wl,--version-script` (cargo-zigbuild rejects `--dynamic-list`; zig exports more than the list); plugins loaded `RTLD_NOW | RTLD_GLOBAL` | Missing symbols fail at load, naming them | same |
+| Windows: `.def` only; no `yavs.lib` is built or shipped | Same symbol set as Linux | same; COCOTB.md "Windows" |
 | One process-wide state behind a mutex never held while plugin code runs | VHPI has no context argument | same |
 | Handles are `(index, generation)` packed into the pointer value; never NULL, never dereferenced; 64-bit only | Rule 9 | `docs/plan.md` rule 9 |
 | Disabled callbacks that are never removed must stay cheap | Python testbench frameworks never remove them | rule 9, #123 |
@@ -63,6 +63,9 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
   under wine.
 - The Windows MSVC path (`/DEF:`, `lib.exe`, `cl`) has never run (#124); MinGW was checked under
   wine.
+- The CLI must call `keep_exports()` (done first in its `main`); otherwise the linker drops the
+  symbols before the export list applies. `crates/yavs/tests/vhpi_exports.rs` checks the
+  built binary's `.dynsym` against `vhpi_user.h` (Linux only; no Windows export-table check yet).
 - Never hold the state mutex while calling into a plugin (callbacks re-enter the ABI).
 
 ## 5. How to work here

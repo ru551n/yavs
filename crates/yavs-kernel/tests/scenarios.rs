@@ -618,10 +618,13 @@ fn phases_steps_and_end() {
         trace.take(),
         [
             "0 fs +0 StartOfSim",
+            "0 fs +0 EndOfInit",
+            "0 fs +1 NextCycle",
             "0 fs +1 s[0..1]=[1]",
             "0 fs +1 LastKnownDelta",
             "0 fs +1 EndOfTimeStep",
             "10 ns +0 NextTimeStep",
+            "10 ns +0 NextCycle",
             "10 ns +0 p0 out: bye",
             "10 ns +0 LastKnownDelta",
             "10 ns +0 EndOfTimeStep",
@@ -1028,7 +1031,9 @@ fn observer_wake_up_defers_idle_end() {
         [
             "0 fs +0 StartOfSim",
             "0 fs +0 p0 Note: [0]",
+            "0 fs +0 EndOfInit",
             "7 ns +0 NextTimeStep",
+            "7 ns +0 NextCycle",
             "wake at 7 ns",
             "7 ns +0 s[0..1]=[4]",
             "7 ns +0 p0 Note: [4]",
@@ -1066,10 +1071,12 @@ fn observer_wake_up_in_the_past_or_now() {
         RunStatus::Ended(EndReason::Idle)
     );
     assert_eq!(
-        trace.take()[2..],
+        trace.take()[3..],
         [
             "7 ns +0 NextTimeStep",
+            "7 ns +0 NextCycle",
             "wake 7 ns +0",
+            "7 ns +1 NextCycle",
             "wake 7 ns +1",
             "7 ns +1 LastKnownDelta",
             "7 ns +1 EndOfTimeStep",

@@ -52,8 +52,12 @@ impl Default for Config {
 pub enum Phase {
     /// Before initialization.
     StartOfSim,
+    /// Initialization is complete (every process ran once); before the first cycle.
+    EndOfInit,
     /// A cycle at a new time is about to update signals.
     NextTimeStep,
+    /// Every cycle (after `NextTimeStep` at a new time), before its wake-ups and update.
+    NextCycle,
     /// No further delta is scheduled at this time; ops queued here create one.
     LastKnownDelta,
     /// After postponed processes; the time step is complete.
@@ -761,6 +765,7 @@ impl SimControl {
                     p.ready = true;
                 }
                 self.run_batch((0..self.procs.len() as u32).collect(), false, true)?;
+                self.phase(Phase::EndOfInit);
             }
             f(self)
         }))
@@ -854,6 +859,7 @@ impl SimControl {
         }
         self.cycle += 1;
         self.stats.cycles += 1;
+        self.phase(Phase::NextCycle);
         if !self.wakes.pending.is_empty() {
             self.fire_wakes();
         }

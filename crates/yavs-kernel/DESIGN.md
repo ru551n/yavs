@@ -61,7 +61,7 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 
 1. Advance to `Tn` (new time step: delta 0, `NextTimeStep` callback) or count a delta. More than
    `max_deltas` deltas at one time is an `ErrorKind::DeltaLimit` naming the processes of the last
-   delta. Then the observer wake-ups due now fire (`Observer::wake`, only to the observer that
+   delta. Then the `NextCycle` callback (every cycle) and the observer wake-ups due now fire (`Observer::wake`, only to the observer that
    scheduled each, in `WakeId` order); forces and deposits they queue apply in this cycle's
    update, and wake-ups they schedule at `now` fire in the next delta.
 2. **Update phase** (`update`), all within this cycle:
@@ -96,6 +96,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 5. If no delta follows: `LastKnownDelta` callback (it may queue deposits, which create a delta);
    if still none, run resumed postponed processes and call `EndOfTimeStep`. A postponed process
    that schedules anything at `now` is an `ErrorKind::PostponedDelta`.
+
+The run starts with the `StartOfSim` callback, runs every process once (initialization) and
+calls `EndOfInit` before the first cycle (#272).
 
 Initialization (`settle` at build) computes driving values bottom-up and effective values
 top-down through ports without events; no signal is active then, so `'transaction` keeps its

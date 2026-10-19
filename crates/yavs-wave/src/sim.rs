@@ -199,7 +199,7 @@ impl Observer for Recorder {
             Phase::NextTimeStep | Phase::EndOfTimeStep | Phase::EndOfSim => {
                 st.flush(|r| hook.value(r))
             }
-            Phase::LastKnownDelta => {}
+            Phase::EndOfInit | Phase::NextCycle | Phase::LastKnownDelta => {}
         }
         if st.error.is_some() {
             hook.stop();

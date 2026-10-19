@@ -91,12 +91,15 @@ fn write(path: &PathBuf, text: String) -> Result<(), Box<Diagnostic>> {
     })
 }
 
+/// Excluded items with the reasons of their rows.
+type Excluded = Vec<(yavs_cov::Key, yavs_cov::Entry, String)>;
+
 /// `db` without the items the exclusion file lists, and those items.
 fn excluded(
     out: &mut Out,
     db: Database,
     exclude: Option<PathBuf>,
-) -> Result<(Database, Vec<(yavs_cov::Key, yavs_cov::Entry, String)>), Box<Diagnostic>> {
+) -> Result<(Database, Excluded), Box<Diagnostic>> {
     let Some(p) = &exclude else {
         return Ok((db, Vec::new()));
     };

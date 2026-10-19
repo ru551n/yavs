@@ -208,6 +208,11 @@ impl Hook<'_> {
     pub fn cancel(&mut self, id: WakeId) -> bool {
         self.wakes.pending.remove(&id).is_some()
     }
+
+    /// End the run with `reason` (`Stop`/`Finish` carry a status), unless it already ends.
+    pub fn end(&mut self, reason: EndReason) {
+        self.end.get_or_insert(reason);
+    }
 }
 
 /// A subscriber on the event bus: waves, VHPI, DAP, the GUI.

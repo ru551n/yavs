@@ -507,6 +507,13 @@ glibc 2.17 cargo-zigbuild release builds, where the linker exports more than the
 Windows `.exe` export table (MinGW checked; MSVC `/DEF:` still never run, #124). No import library is built or shipped (user decision, 2026-10-18): a VHPI plugin brings its own.
 `crates/yavs/tests/vhpi_exports.rs` checks the ELF `.dynsym` (Linux) and the PE export directory (Windows, in the `windows-latest` CI job, #124) against the header.
 
+Done (#267): `yavs run --vhpi=LIB[:ENTRY]` (repeatable) loads plugins after elaboration,
+fires start/end of simulation (and start of initialization) callbacks through a kernel
+`Observer`, and ends the run on `vhpi_control(vhpiStop | vhpiFinish)` (status 0, new
+`Hook::end`); load failures are `E0901`/`E0902` with exit 2. `crates/yavs/tests/vhpi_run.rs`
+(2 tests, Unix only) loads the `yavs-vhpi` C test plugin through the CLI, both entry forms.
+Missing: end-of-initialization and timed callbacks, the real object model (#121).
+
 ## discrepancies (simulator catalogue)
 
 `docs/design/simulator-discrepancies.md` lists 80 constructs where the reference simulators

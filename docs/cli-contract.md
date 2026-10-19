@@ -246,6 +246,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   warning `W0108` before time 0 (one per subprogram) and `E0107` only when the
   subprogram is called (a runtime error, exit 1). No VHPI
   registration runs for `--load` libraries (that is `--vhpi`).
+- `--vhpi=LIB[:ENTRY]` (repeatable, in order): load a VHPI plugin after elaboration and before
+  initialisation. Without `ENTRY` the library's `vhpi_startup_routines` run, with it that
+  function. A plugin that cannot be loaded is `E0901`, a missing entry point `E0902`; both exit 2
+  before time 0. `vhpiCbStartOfSimulation` and `vhpiCbStartOfInitialization` fire before
+  initialisation, `vhpiCbEndOfSimulation` once when the run ends (also after a stop or finish).
+  `vhpi_control(vhpiStop | vhpiFinish)` ends the run between cycles with status 0 (prints the
+  same `STOP`/`FINISH called` note as `std.env`); other commands are `W0904`. The object model
+  is a stub (design root named after the top-level entity, tool); `vhpiCbEndOfInitialization` and
+  the rest need M5 (#121).
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

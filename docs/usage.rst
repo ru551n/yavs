@@ -99,8 +99,18 @@ explanation. ``-Werror`` turns warnings into errors, ``-Werror=CODE``, ``-Wno-CO
 ``-WCODE`` change one code. ``--message-format=json`` prints one JSON object per diagnostic,
 ``--color=never`` turns colour off (``NO_COLOR`` is honoured).
 
+VHPI plugins
+------------
+
+``--vhpi=LIB[:ENTRY]`` (repeatable, loaded in order) loads a VHPI plugin after elaboration and
+before the simulation starts. Without ``ENTRY`` every routine of the library's NULL-terminated
+``vhpi_startup_routines`` array runs; with it, that function runs. The plugin's start and end of
+simulation callbacks fire, and ``vhpi_control`` with ``vhpiStop`` or ``vhpiFinish`` ends the run
+like ``std.env.stop`` or ``std.env.finish`` with status 0. A plugin that cannot be loaded is error
+``E0901`` or ``E0902`` and exit code 2, before time 0. The object model behind the plugin API is
+still a stub: it offers the design root, the tool and these callbacks.
+
 Not implemented yet
 -------------------
 
-``--vhpi`` and ``--dap`` are accepted but report that they are not
-implemented yet, instead of being ignored.
+``--dap`` is accepted but reports that it is not implemented yet, instead of being ignored.

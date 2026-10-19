@@ -351,13 +351,25 @@ pub fn run(
         Diagnostic::error("E9999", format!("{what} is not implemented yet in yavs"))
             .with_note("this is a limitation of yavs, not an error in the design")
     };
-    for (given, what) in [
-        (!a.vhpi.is_empty(), "`--vhpi` (M5)"),
-        (a.dap.is_some(), "`--dap` (M8)"),
-    ] {
+    for (given, what) in [(a.dap.is_some(), "`--dap` (M8)")] {
         if given {
             out.emit(&none, &unsupported(what));
             return out.finish(2);
+        }
+    }
+    // Plugins load after elaboration and before initialisation; a load failure is fatal.
+    if !a.vhpi.is_empty() {
+        let root = &e.hier.scope(yavs_elab::ScopeId(0)).kind;
+        if let yavs_elab::ScopeKind::Instance { entity, .. } = root {
+            yavs_vhpi::set_design_root(&db.units[*entity].name.text.to_string());
+        }
+        for spec in &a.vhpi {
+            let p: yavs_vhpi::PluginSpec = spec.parse().unwrap_or_else(|e| match e {});
+            let loaded = yavs_vhpi::load(&p).map_err(|err| err.to_diagnostic());
+            if let Err(d) = loaded {
+                out.emit(&none, &d);
+                return out.finish(2);
+            }
         }
     }
     let cfg = yavs_kernel::Config {
@@ -422,6 +434,9 @@ pub fn run(
         })
         .collect();
     sim.subscribe(Box::new(Printer { names }));
+    if !a.vhpi.is_empty() {
+        sim.subscribe(Box::new(VhpiObserver));
+    }
     let wave_error = |path: &str, err: yavs_wave::Error| {
         Diagnostic::error("E0801", format!("cannot write the waveform file `{path}`"))
             .with_note(err.to_string())
@@ -533,6 +548,31 @@ pub fn run(
 
 /// Prints reports and `OUTPUT` text in NVC's format on stdout (cli-contract section 5;
 /// tools/difftest parses it).
+/// Fires the VHPI simulation-phase callbacks and applies `vhpi_control` requests.
+struct VhpiObserver;
+
+impl yavs_kernel::Observer for VhpiObserver {
+    fn phase(&mut self, hook: &mut yavs_kernel::Hook<'_>, phase: yavs_kernel::Phase) {
+        use yavs_kernel::{EndReason, Phase};
+        use yavs_vhpi::sys::{
+            vhpiCbEndOfSimulation, vhpiCbStartOfInitialization, vhpiCbStartOfSimulation,
+        };
+        match phase {
+            Phase::StartOfSim => {
+                yavs_vhpi::run_callbacks(vhpiCbStartOfSimulation);
+                yavs_vhpi::run_callbacks(vhpiCbStartOfInitialization);
+            }
+            Phase::EndOfSim => _ = yavs_vhpi::run_callbacks(vhpiCbEndOfSimulation),
+            _ => {}
+        }
+        match yavs_vhpi::take_control() {
+            Some(yavs_vhpi::Control::Finish) => hook.end(EndReason::Finish(0)),
+            Some(yavs_vhpi::Control::Stop) => hook.end(EndReason::Stop(0)),
+            None => {}
+        }
+    }
+}
+
 struct Printer {
     names: Vec<String>,
 }

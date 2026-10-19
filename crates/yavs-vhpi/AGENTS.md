@@ -14,13 +14,14 @@ the Python testbench framework needs (startup, symbol list, Linux and Windows li
 - **The object model is a stub** (a design root, tool info, start/end-of-simulation callbacks)
   until M5 puts the real one on `SimControl` and the event bus (#121).
 - Does not: drive simulation itself (only through `SimControl`, plan "Designed for the GUI"),
-  or ship a separate VHPI DLL. Not wired into the `yavs` CLI yet (`--vhpi` reports
-  "not implemented (M5)").
+  or ship a separate VHPI DLL. `yavs run --vhpi` (#267, `crates/yavs/src/elab.rs`) loads plugins
+  with `load`, sets the root with `set_design_root`, and a kernel `Observer` there calls
+  `run_callbacks` at `Phase::StartOfSim`/`EndOfSim` and turns `take_control` into
+  `Hook::end(Finish|Stop(0))`.
 - Also loads `--load` libraries and binds VHPIDIRECT symbols (`load_foreign`, `bind_foreign`,
   #95), since it already owns `libloading` and the plugin path rules.
 - Depends on: `yavs-diag`, `yavs-ffi`, `libloading`; build: `cc`. Called by: the `yavs` CLI
-  (`--load` only) and its spike binary `src/bin/yavs-vhpi-host.rs`; the CLI will read
-  `DEP_YAVS_VHPI_*` once `--vhpi` is wired.
+  (`--load`, `--vhpi`) and its spike binary `src/bin/yavs-vhpi-host.rs`.
 
 ## 2. Map
 

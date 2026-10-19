@@ -134,7 +134,7 @@ codes! {
     VIEW_NOT_RECORD = "E1902", "A mode view applies to a record subtype.";
     VIEW_MODE = "E1903", "The port is used against the mode its view gives the element.";
     SHARED_NOT_PROTECTED = "E1904", "A shared variable must be of a protected type (LRM 6.4.2.4); `--relaxed` turns this into warning W1904.";
-    PROTECTED_MISUSE = "E1905", "A protected type cannot be the type of a signal, port or file, and has no `=`.";
+    PROTECTED_MISUSE = "E1905", "A protected type cannot be the type of a signal, port or file, and has no `=`. A 2019 record with a protected element has only protected elements (LRM 5.3.1).";
     PROTECTED_ITEM = "E1906", "This declaration is not allowed in a protected type declaration or body (LRM 5.6): the declaration holds method declarations, use clauses, attribute specifications and, in VHDL-2019, private variables and aliases of methods; the body holds no signals or shared variables.";
     NEEDS_2019 = "E1910", "The construct needs VHDL-2019.";
     // Warnings

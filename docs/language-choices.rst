@@ -256,10 +256,10 @@ Record with protected and other elements
 
    type rec is record a : counter_t; n : integer; end record;   -- counter_t protected
 
-VHDL-2019 allows arrays and records of protected types; yavs also accepts a record that mixes a
-protected element with elements of other types (2019, 5.3.1, the reading is open). Each protected
-element is its own object; the record cannot be assigned, compared or be a shared variable. Some
-simulators reject the mix, others every composite of a protected type.
+VHDL-2019 allows arrays and records of protected types, but a record that mixes a protected
+element with elements of other types is rejected (``E1905``, 2019 5.3.1): if one element is
+protected, all must be. Each protected element is its own object; the record cannot be assigned,
+compared or, unless every scalar subelement is protected, be a shared variable.
 
 *Portable:* keep the other elements out of the record, or inside a protected type.
 

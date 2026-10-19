@@ -1548,6 +1548,9 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   rule 15):** accepted in 2019, as access results and file parameters are: 2019 drops the 5.6.2
   restriction on method profiles. 2008 keeps `E1223`. It replaces the morning's majority-rule
   `E1223` in 2019.
+- **Records mixing protected and other elements (L102, #371, 2019 5.3.1; user, 2026-10-19, "reject,
+  follow LRM"):** `E1905` at the first non-protected element; all four references reject it. Records
+  whose elements are all protected, arrays of protected types and access types to them stay accepted (#361).
 - **Negated literal at the i64 minimum (L58, #214; user, 2026-10-19, majority rule):** `-9223372036854775808`,
   for integer and physical types, is `E1402` in user code (all three reference simulators reject it;
   the range of `universal_integer` is implementation-defined). Library `std` stays exempt: its `TIME`

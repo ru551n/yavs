@@ -577,6 +577,33 @@ impl Db {
                 });
             }
         }
+        // 2019 5.3.1: if some element is protected, all must be.
+        if !failed
+            && elems
+                .iter()
+                .any(|e| self.type_contains_protected(self.base(e.subtype)))
+        {
+            let bad: Vec<_> = elems
+                .iter()
+                .filter(|e| !self.all_protected(self.base(e.subtype)))
+                .map(|e| e.name)
+                .collect();
+            for name in bad {
+                self.report(
+                    Diagnostic::error(
+                        diag::PROTECTED_MISUSE,
+                        format!(
+                            "record element `{}` is not of a protected type, but another element is",
+                            name.text
+                        ),
+                    )
+                    .with_primary(name.span, "not a protected type")
+                    .with_note("LRM 5.3.1 (2019): a record with a protected element can only have protected elements")
+                    .with_help("move the other elements into a protected type"),
+                );
+                failed = true;
+            }
+        }
         if failed {
             return Err(Reported);
         }

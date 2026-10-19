@@ -30,8 +30,8 @@ PASS osvvm osvvm-libraries/osvvm/CoveragePkg.vhd
 PASS osvvm osvvm-libraries/osvvm/CoveragePtPkg.vhd
 PASS osvvm osvvm-libraries/osvvm/DelayCoveragePkg.vhd
 PASS osvvm osvvm-libraries/osvvm/ResizePkg.vhd
-FAIL osvvm osvvm-libraries/osvvm/DynamicVectorGenericPkg.vhd
-FAIL osvvm osvvm-libraries/osvvm/DynamicVectorPkg_instances.vhd
+PASS osvvm osvvm-libraries/osvvm/DynamicVectorGenericPkg.vhd
+PASS osvvm osvvm-libraries/osvvm/DynamicVectorPkg_instances.vhd
 PASS osvvm osvvm-libraries/osvvm/ScoreboardGenericPkg.vhd
 PASS osvvm osvvm-libraries/osvvm/ScoreboardPkg_IntV.vhd
 PASS osvvm osvvm-libraries/osvvm/ScoreboardPkg_slv.vhd

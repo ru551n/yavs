@@ -185,8 +185,12 @@ An installed binary finds `lib/` next to itself (#43).
   specifications cloned with their region, default binding by name of generic types, subprograms
   and packages (#222). The fixed/float packages' declarations, generic bodies
   and instance bodies analyze clean in 2008 and 2019 (#37); mode views of generic packages and subprograms are
-  cloned with them (#32). Open: anonymous generic types, instantiating a generic protected type
-  (parser request).
+  cloned with them (#32). 2019 generic array types with anonymous index and element types
+  (`array (type is range <>) of type is private`), an index constraint, and anonymous designated or
+  file element types, in packages, subprograms and entities (#30; sem suite
+  `v2019/generic_array_*`, difftest `generics/generic_arrays_2019`,
+  `generics/generic_array_constrained_2019_hand`). Open: generic constants, ports and parameters of
+  an anonymous type (`E9999`), instantiating a generic protected type (parser request).
 - 2019 mode views and private variables (S7, #32): view declarations (`E1901`, `E1902`),
   `'converse` (`E1621` on a non-view), view ports and signal parameters (`E1903`), views in
   generic units; private variables visible only in the protected body (`E1105`), method aliases

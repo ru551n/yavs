@@ -595,8 +595,11 @@ impl Db {
             if let (Some(Actual::Subtype(st)), DeclKind::GenericType(t)) =
                 (&actual, &self.decls[f].kind)
             {
-                let t = *t;
-                self.inst_types.push((t, *st));
+                let (t, st) = (*t, *st);
+                self.inst_types.push((t, st));
+                // Its anonymous index and element types too (2019 6.5.3).
+                let parts = self.anonymous_parts(t, st);
+                self.inst_types.extend(parts);
             }
             if let Some(actual) = actual {
                 args.push(Arg {

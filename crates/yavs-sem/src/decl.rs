@@ -161,7 +161,8 @@ pub enum DeclKind {
         /// Its body region once analyzed.
         body: Option<ScopeId>,
     },
-    /// A generic type (its `TypeKind::Generic` carries the class).
+    /// A generic type (its `TypeKind::Generic` carries the class; a generic array type is
+    /// a `TypeKind::Array`).
     GenericType(TypeId),
     /// Formal generic subprogram (`Subprogram.body == Body::Interface`).
     GenericSubprogram(Subprogram),
@@ -1030,7 +1031,7 @@ impl Db {
                 | K::Record { .. }
                 | K::Error
                 | K::Generic {
-                    class: G::Private | G::Array { .. },
+                    class: G::Private,
                     ..
                 }
         ) {

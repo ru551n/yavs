@@ -587,10 +587,6 @@ impl Db {
                 GenericClass::Integer => Shape::Integer,
                 GenericClass::Floating => Shape::Floating,
                 GenericClass::Physical => Shape::Physical,
-                GenericClass::Array { indexes, elem } => Shape::Array {
-                    dims: indexes.len(),
-                    elem: *elem,
-                },
                 GenericClass::Access { .. } => Shape::Access,
                 GenericClass::File { elem } => Shape::File { elem: *elem },
             },
@@ -604,10 +600,7 @@ impl Db {
         match &self.types[ty].kind {
             TypeKind::Generic { class } => !matches!(
                 class,
-                GenericClass::Private
-                    | GenericClass::Array { .. }
-                    | GenericClass::Access { .. }
-                    | GenericClass::File { .. }
+                GenericClass::Private | GenericClass::Access { .. } | GenericClass::File { .. }
             ),
             k => k.is_scalar(),
         }
@@ -641,10 +634,7 @@ impl Db {
             return true;
         }
         match &self.types[ty].kind {
-            TypeKind::Array { elem, .. }
-            | TypeKind::Generic {
-                class: GenericClass::Array { elem, .. },
-            } => self.is_representable_2019(self.base(*elem)),
+            TypeKind::Array { elem, .. } => self.is_representable_2019(self.base(*elem)),
             TypeKind::Record { elems } => elems
                 .iter()
                 .all(|e| self.is_representable_2019(self.base(e.subtype))),
@@ -681,13 +671,7 @@ impl Db {
     // constrained; check the 2019 5.5.2 wording if a file of such a type ever appears.
     fn is_unconstrained_array(&self, st: SubtypeId) -> bool {
         let base = self.base(st);
-        let is_array = matches!(
-            self.types[base].kind,
-            TypeKind::Array { .. }
-                | TypeKind::Generic {
-                    class: GenericClass::Array { .. }
-                }
-        );
+        let is_array = matches!(self.types[base].kind, TypeKind::Array { .. });
         is_array
             && matches!(
                 self.subtypes[st].constraint,

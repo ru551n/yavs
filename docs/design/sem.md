@@ -481,7 +481,6 @@ pub enum GenericClass {           // M0 `GenericTypeDef`
     Integer,                       // `is range <>`
     Physical,                      // `is units <>`
     Floating,                      // `is range <> . <>`
-    Array { indexes: Box<[IndexClass]>, elem: SubtypeId },  // elem may itself be an anonymous generic
     Access { designated: SubtypeId },
     File { elem: SubtypeId },
 }
@@ -498,9 +497,17 @@ pub enum GenericClass {           // M0 `GenericTypeDef`
 | Access | `=`, `/=`, `deallocate`, `.all` |
 | File | the file operations |
 
-An actual must belong to the class (`E1503`). Anonymous generic types (`type is private` in an
-interface object, M0 `IncompleteSubtype::Anonymous`) become a fresh generic type per interface
-object.
+An actual must belong to the class (`E1503`). A generic array type (`array (natural range <>)
+of e`, `array (type is (<>)) of type is private`, `array (0 to 3) of e`) is a `TypeKind::Array`
+declared by a `GenericType` declaration, so inside the generic it indexes, slices and takes array
+attributes like any array type; with an index constraint its first subtype is constrained and
+the actual must be constrained too (L92). Anonymous generic types (`type is ...` as an index,
+element or designated type, M0 `IncompleteSubtype::Anonymous`) are fresh generic types named
+after their owner (`vt'index`, `vt'element`), not declared by name, with their class operations
+in the generic list's region; `check_class` checks their actual parts and `seed_type` maps them
+to the actual's index, element or designated subtype (#30). A literal converts implicitly to a
+generic type of the integer or floating class. Generic constants, ports and parameters with an
+anonymous type are still `E9999` (no reference simulator accepts them).
 
 ### 2.10 Implicitly declared operations (5.x, `lib/NATIVE.md` section 2)
 

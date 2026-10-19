@@ -202,9 +202,10 @@ impl Db {
                 (DeclKind::Object(_), None) => {}
                 (DeclKind::GenericType(t), Some(GenericActual::Subtype(st))) => {
                     let (t, st) = (*t, *st);
-                    failed |= self
-                        .seed_type(None, to, from, f, t, st, span, r, &mut map)
-                        .is_err();
+                    failed |= self.check_class(t, st, span, r).is_err()
+                        || self
+                            .seed_type(None, to, from, f, t, st, span, r, &mut map)
+                            .is_err();
                 }
                 (DeclKind::GenericSubprogram(_), Some(GenericActual::Subprogram(d))) => {
                     r.decls.insert(f, *d);

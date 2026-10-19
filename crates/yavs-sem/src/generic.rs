@@ -63,11 +63,6 @@ pub enum GenericClass {
     Physical,
     /// `is range <> . <>`
     Floating,
-    /// Index subtypes and element subtype; either may be an anonymous generic type.
-    Array {
-        indexes: Box<[SubtypeId]>,
-        elem: SubtypeId,
-    },
     Access {
         designated: SubtypeId,
     },
@@ -496,24 +491,8 @@ impl Db {
         match g {
             ast::InterfaceDecl::Object(o) => self.generic_object(scope, o),
             ast::InterfaceDecl::Type(t) => {
-                let class = self.generic_class(scope, t.def.as_ref(), t.span)?;
-                let decl = self.new_decl(scope, Designator::Ident(t.name), DeclKind::Error, t.span);
-                let constraint = match class {
-                    GenericClass::Array { .. } => Constraint::Array {
-                        dims: None,
-                        elem: Box::new(Constraint::None),
-                    },
-                    _ => Constraint::None,
-                };
-                let ty = self.new_type(
-                    decl,
-                    t.name,
-                    false,
-                    TypeKind::Generic { class },
-                    constraint,
-                    t.span,
-                );
-                self.decls[decl].kind = DeclKind::GenericType(ty);
+                let ty = self.generic_type(scope, t.name, t.def.as_ref(), false, t.span)?;
+                let decl = self.types[ty].decl;
                 self.declare(scope, decl);
                 // 2008 6.5.3: `=` and `/=` (and the class operations, 2019) follow the type.
                 self.declare_implicit_ops(ty, scope);
@@ -783,49 +762,125 @@ impl Db {
         Ok(out)
     }
 
+    /// A generic type of class `def` with its declaration in `scope` (not declared by
+    /// name). `anonymous`: a 2019 `type is ...` index, element or designated type, whose
+    /// class operations are declared here and which is mapped with its owner (`seed_type`).
+    fn generic_type(
+        &mut self,
+        scope: ScopeId,
+        name: ast::Ident,
+        def: Option<&ast::GenericTypeDef>,
+        anonymous: bool,
+        span: Span,
+    ) -> Result<TypeId, Reported> {
+        let (kind, dims) = self.generic_class(scope, name, def, span)?;
+        let decl = self.new_decl(scope, Designator::Ident(name), DeclKind::Error, span);
+        let constraint = match kind {
+            TypeKind::Array { .. } => Constraint::Array {
+                dims: None,
+                elem: Box::new(Constraint::None),
+            },
+            _ => Constraint::None,
+        };
+        let ty = self.new_type(decl, name, anonymous, kind, constraint, span);
+        // `array (0 to 3) of ...`: a constrained first subtype of the unconstrained base.
+        if let Some(dims) = dims {
+            let base = self.types[ty].base_subtype;
+            self.types[ty].first_subtype = self.subtypes.push(SubtypeDef {
+                base: ty,
+                name: Some(name),
+                parent: Some(base),
+                constraint: Constraint::Array {
+                    dims: Some(dims.into()),
+                    elem: Box::new(Constraint::None),
+                },
+                resolution: None,
+                span,
+            });
+        }
+        self.decls[decl].kind = DeclKind::GenericType(ty);
+        if anonymous {
+            self.declare_implicit_ops(ty, scope);
+        }
+        Ok(ty)
+    }
+
+    /// The kind of a generic type and, for an array class with an index constraint,
+    /// its ranges (2019 6.5.3). A generic array type is an array type whose index and
+    /// element subtypes may be anonymous generic types: inside the generic it is used
+    /// like any array type.
     fn generic_class(
         &mut self,
         scope: ScopeId,
+        name: ast::Ident,
         def: Option<&ast::GenericTypeDef>,
         span: Span,
-    ) -> Result<GenericClass, Reported> {
+    ) -> Result<(TypeKind, Option<Vec<RangeC>>), Reported> {
         use ast::GenericTypeDef as G;
-        let elem = |db: &mut Db, s: &ast::IncompleteSubtype| match s {
-            ast::IncompleteSubtype::Subtype(si) => db.subtype_indication(scope, si),
-            ast::IncompleteSubtype::Anonymous(_, sp) => {
-                Err(db.unsupported(*sp, "anonymous generic types", "S7"))
-            }
+        // `type is ...`: a fresh anonymous generic type named after its owner.
+        let anon = |db: &mut Db, def: &ast::GenericTypeDef, what: &str, sp: Span| {
+            let text = format!("{}{what}", name.text);
+            let n = ast::Ident {
+                text: Symbol::intern(&text),
+                key: Symbol::intern(&format!("<{}>", text.to_ascii_lowercase())),
+                span: sp,
+            };
+            let ty = db.generic_type(scope, n, Some(def), true, sp)?;
+            Ok(db.types[ty].first_subtype)
         };
+        let elem = |db: &mut Db, s: &ast::IncompleteSubtype, what: &str| match s {
+            ast::IncompleteSubtype::Subtype(si) => db.subtype_indication(scope, si),
+            ast::IncompleteSubtype::Anonymous(def, sp) => anon(db, def, what, *sp),
+        };
+        let class = |c| (TypeKind::Generic { class: c }, None);
         Ok(match def {
-            None | Some(G::Private) => GenericClass::Private,
-            Some(G::Scalar) => GenericClass::Scalar,
-            Some(G::Discrete) => GenericClass::Discrete,
-            Some(G::Integer) => GenericClass::Integer,
-            Some(G::Physical) => GenericClass::Physical,
-            Some(G::Floating) => GenericClass::Floating,
+            None | Some(G::Private) => class(GenericClass::Private),
+            Some(G::Scalar) => class(GenericClass::Scalar),
+            Some(G::Discrete) => class(GenericClass::Discrete),
+            Some(G::Integer) => class(GenericClass::Integer),
+            Some(G::Physical) => class(GenericClass::Physical),
+            Some(G::Floating) => class(GenericClass::Floating),
             Some(G::Array { indexes, element }) => {
-                let ast::ArrayIndexes::Unconstrained(marks) = indexes else {
-                    return Err(self.unsupported(
-                        span,
-                        "generic array types with constrained or anonymous index types",
-                        "S7",
-                    ));
-                };
                 let mut idx = Vec::new();
-                for m in marks {
-                    idx.push(self.type_mark(scope, m)?);
+                let mut dims = None;
+                match indexes {
+                    ast::ArrayIndexes::Unconstrained(marks) => {
+                        for m in marks {
+                            idx.push(self.type_mark(scope, m)?);
+                        }
+                    }
+                    ast::ArrayIndexes::Constrained(ranges) => {
+                        let mut ds = Vec::new();
+                        for r in ranges {
+                            let (rc, ix) = self.index_constraint(scope, r)?;
+                            ds.push(rc);
+                            idx.push(ix);
+                        }
+                        dims = Some(ds);
+                    }
+                    ast::ArrayIndexes::Anonymous(defs) => {
+                        for (i, d) in defs.iter().enumerate() {
+                            let what = if defs.len() == 1 {
+                                "'index".to_string()
+                            } else {
+                                format!("'index({})", i + 1)
+                            };
+                            idx.push(anon(self, d, &what, span)?);
+                        }
+                    }
                 }
-                GenericClass::Array {
+                let kind = TypeKind::Array {
                     indexes: idx.into(),
-                    elem: elem(self, element)?,
-                }
+                    elem: elem(self, element, "'element")?,
+                };
+                (kind, dims)
             }
-            Some(G::Access(s)) => GenericClass::Access {
-                designated: elem(self, s)?,
-            },
-            Some(G::File(s)) => GenericClass::File {
-                elem: elem(self, s)?,
-            },
+            Some(G::Access(s)) => class(GenericClass::Access {
+                designated: elem(self, s, "'designated_subtype")?,
+            }),
+            Some(G::File(s)) => class(GenericClass::File {
+                elem: elem(self, s, "'element")?,
+            }),
         })
     }
 
@@ -1376,12 +1431,14 @@ impl Db {
                 ));
             }
         };
-        let TypeKind::Generic { class } = &self.types[t].kind else {
-            return Err(Reported);
-        };
-        let class = class.clone();
-        self.check_class(&class, actual, span, r)?;
-        let warn = matches!(class, GenericClass::Private).then_some(scope);
+        let warn = matches!(
+            self.types[t].kind,
+            TypeKind::Generic {
+                class: GenericClass::Private
+            }
+        )
+        .then_some(scope);
+        self.check_class(t, actual, span, r)?;
         self.seed_type(warn, inst_scope, gscope, f, t, actual, span, r, map)
     }
 
@@ -1417,6 +1474,11 @@ impl Db {
             self.decls[f].span,
         );
         r.decls.insert(f, new);
+        // Anonymous index, element and designated types denote the actual's (2019 6.5.3).
+        for (ft, part) in self.anonymous_parts(t, actual) {
+            let fd = self.types[ft].decl;
+            self.seed_type(None, inst_scope, gscope, fd, ft, part, span, r, map)?;
+        }
         // The class operations of the formal denote the actual's predefined ones (Q9).
         let ops: Vec<(DeclId, ImplicitOp)> = self.scopes[gscope]
             .order
@@ -1458,6 +1520,43 @@ impl Db {
             }
         }
         if failed { Err(Reported) } else { Ok(()) }
+    }
+
+    /// Whether `st` is an anonymous generic type (`type is ...`, 2019 6.5.3).
+    fn anonymous_generic(&self, st: SubtypeId) -> bool {
+        let t = &self.types[self.base(st)];
+        t.anonymous && matches!(self.decls[t.decl].kind, DeclKind::GenericType(_))
+    }
+
+    /// The anonymous generic types among the parts of formal generic type `t`, each with
+    /// the matching part of `actual` (checked by `check_class`; a mismatch has no pairs).
+    pub(crate) fn anonymous_parts(&self, t: TypeId, actual: SubtypeId) -> Vec<(TypeId, SubtypeId)> {
+        let parts = |k: &TypeKind| -> Vec<SubtypeId> {
+            match k {
+                TypeKind::Array { indexes, elem } => {
+                    indexes.iter().copied().chain([*elem]).collect()
+                }
+                TypeKind::Access { designated }
+                | TypeKind::Generic {
+                    class: GenericClass::Access { designated },
+                } => vec![*designated],
+                TypeKind::File { elem }
+                | TypeKind::Generic {
+                    class: GenericClass::File { elem },
+                } => vec![*elem],
+                _ => Vec::new(),
+            }
+        };
+        let fp = parts(&self.types[t].kind);
+        let ap = parts(&self.types[self.base(actual)].kind);
+        if fp.len() != ap.len() {
+            return Vec::new();
+        }
+        fp.into_iter()
+            .zip(ap)
+            .filter(|&(f, _)| self.anonymous_generic(f))
+            .map(|(f, a)| (self.base(f), a))
+            .collect()
     }
 
     fn is_error_type(&self, t: TypeId) -> bool {
@@ -1512,14 +1611,22 @@ impl Db {
         }
     }
 
-    /// `E1503`: the actual belongs to the class of the formal (2.9; 2019 6.5.3).
-    fn check_class(
+    /// `E1503`: the actual belongs to the class of formal generic type `t` (2.9; 2019
+    /// 6.5.3), and so do its parts that are anonymous generic types.
+    pub(crate) fn check_class(
         &mut self,
-        class: &GenericClass,
+        t: TypeId,
         actual: SubtypeId,
         span: Span,
         r: &mut Remap,
     ) -> Result<(), Reported> {
+        let (class, formal_array) = match &self.types[t].kind {
+            TypeKind::Generic { class } => (class.clone(), None),
+            TypeKind::Array { indexes, elem } => {
+                (GenericClass::Private, Some((indexes.clone(), *elem)))
+            }
+            _ => return Ok(()),
+        };
         let base = self.base(actual);
         let kind = &self.types[base].kind;
         if matches!(kind, TypeKind::Error) {
@@ -1554,7 +1661,52 @@ impl Db {
         };
         let discrete: fn(&GenericClass) -> bool =
             |c| matches!(c, GenericClass::Discrete | GenericClass::Integer);
-        match class {
+        if let Some((indexes, elem)) = formal_array {
+            let (aidx, aelem) = match kind {
+                TypeKind::Array { indexes, elem } => (indexes.clone(), *elem),
+                _ => return fail(self, format!("`{an}` is not an array type")),
+            };
+            if aidx.len() != indexes.len() {
+                return fail(
+                    self,
+                    format!(
+                        "`{an}` has {} dimensions, the generic array type has {}",
+                        aidx.len(),
+                        indexes.len()
+                    ),
+                );
+            }
+            // `array (0 to 3) of ...` (2019 6.5.3): the actual is constrained too.
+            let constrained = matches!(
+                &self.subtypes[self.types[t].first_subtype].constraint,
+                Constraint::Array { dims: Some(_), .. }
+            );
+            if constrained && self.constrainedness(actual) == Constrainedness::Unconstrained {
+                return fail(
+                    self,
+                    format!(
+                        "`{an}` is unconstrained, the generic array type has an index constraint"
+                    ),
+                );
+            }
+            for (&fi, &ai) in indexes.iter().zip(aidx.iter()) {
+                if self.anonymous_generic(fi) {
+                    self.check_class(self.base(fi), ai, span, r)?;
+                    continue;
+                }
+                let want = self.r_subtype(r, fi);
+                let (w, g) = (self.base(want), self.base(ai));
+                if w != g && !self.is_error_type(w) {
+                    let (wn, gn) = (self.type_name(w), self.type_name(g));
+                    return fail(
+                        self,
+                        format!("index type of `{an}` is `{gn}`, expected `{wn}`"),
+                    );
+                }
+            }
+            return self.same_elem(r, elem, aelem, &an, "element", span);
+        }
+        match &class {
             GenericClass::Private => Ok(()),
             GenericClass::Scalar if !is(TypeKind::is_scalar, &[scalar]) => {
                 fail(self, format!("`{an}` is not a scalar type"))
@@ -1586,35 +1738,6 @@ impl Db {
             {
                 fail(self, format!("`{an}` is not a physical type"))
             }
-            GenericClass::Array { indexes, elem } => {
-                let (aidx, aelem) = match (kind, &gen_class) {
-                    (TypeKind::Array { indexes, elem }, _)
-                    | (_, Some(GenericClass::Array { indexes, elem })) => (indexes.clone(), *elem),
-                    _ => return fail(self, format!("`{an}` is not an array type")),
-                };
-                if aidx.len() != indexes.len() {
-                    return fail(
-                        self,
-                        format!(
-                            "`{an}` has {} dimensions, the generic array type has {}",
-                            aidx.len(),
-                            indexes.len()
-                        ),
-                    );
-                }
-                for (&fi, &ai) in indexes.iter().zip(aidx.iter()) {
-                    let want = self.r_subtype(r, fi);
-                    let (w, g) = (self.base(want), self.base(ai));
-                    if w != g && !self.is_error_type(w) {
-                        let (wn, gn) = (self.type_name(w), self.type_name(g));
-                        return fail(
-                            self,
-                            format!("index type of `{an}` is `{gn}`, expected `{wn}`"),
-                        );
-                    }
-                }
-                self.same_elem(r, *elem, aelem, &an, "element", span)
-            }
             GenericClass::Access { designated } => {
                 let ad = match (kind, &gen_class) {
                     (TypeKind::Access { designated }, _)
@@ -1643,6 +1766,9 @@ impl Db {
         what: &str,
         span: Span,
     ) -> Result<(), Reported> {
+        if self.anonymous_generic(formal) {
+            return self.check_class(self.base(formal), actual, span, r);
+        }
         let want = self.r_subtype(r, formal);
         let (w, g) = (self.base(want), self.base(actual));
         if w == g || self.is_error_type(w) || self.is_error_type(g) {
@@ -2722,10 +2848,6 @@ impl Db {
 
     fn r_class(&mut self, r: &mut Remap, c: &GenericClass) -> GenericClass {
         match c {
-            GenericClass::Array { indexes, elem } => GenericClass::Array {
-                indexes: indexes.iter().map(|&s| self.r_subtype(r, s)).collect(),
-                elem: self.r_subtype(r, *elem),
-            },
             GenericClass::Access { designated } => GenericClass::Access {
                 designated: self.r_subtype(r, *designated),
             },

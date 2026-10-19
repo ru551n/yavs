@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:generic_arrays_2019:_p0	7
+diag	note	0	0	:generic_arrays_2019:_p0	3
+diag	note	0	0	:generic_arrays_2019:_p0	9
+diag	note	0	0	:generic_arrays_2019:_p0	'0'
+diag	note	0	0	:generic_arrays_2019:_p0	4 5
+diag	note	1000000	0	:generic_arrays_2019:_p0	10
+diag	note	2000000	0	:generic_arrays_2019:_p0	30

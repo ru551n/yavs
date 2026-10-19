@@ -326,9 +326,19 @@ impl Db {
                 let ui = self.well_known.universal_integer;
                 let ur = self.well_known.universal_real;
                 let target = &self.types[t].kind;
+                // A generic type of the integer or floating class is such a type (2019 6.5.3).
+                use crate::generic::GenericClass as G;
                 if i.convertible
-                    && ((Some(i.ty) == ui && matches!(target, TypeKind::Integer))
-                        || (Some(i.ty) == ur && matches!(target, TypeKind::Floating)))
+                    && ((Some(i.ty) == ui
+                        && matches!(
+                            target,
+                            TypeKind::Integer | TypeKind::Generic { class: G::Integer }
+                        ))
+                        || (Some(i.ty) == ur
+                            && matches!(
+                                target,
+                                TypeKind::Floating | TypeKind::Generic { class: G::Floating }
+                            )))
                 {
                     return Some(i.convs + 1);
                 }

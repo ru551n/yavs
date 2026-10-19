@@ -890,30 +890,7 @@ impl Db {
                 let mut dims = Vec::new();
                 let mut idx = Vec::new();
                 for r in ranges {
-                    // Array type bounds are required (Q5): overflow there is `E1401`.
-                    self.required_ctx = true;
-                    let res = self.discrete_range(scope, r, None);
-                    self.required_ctx = false;
-                    let (rc, t) = res?;
-                    // 5.3.2.1: the index subtype is the type mark of the discrete range
-                    // (`byte range 3 to 4`, `mid`), else the range's type.
-                    let ix = match (r, &rc) {
-                        (
-                            ast::DiscreteRange::Range(ast::Range::Name(n)),
-                            RangeC::Attr {
-                                prefix: AttrPrefix::Subtype(st),
-                                ..
-                            },
-                        ) if !matches!(n.kind, ast::NameKind::Attribute { .. }) => *st,
-                        (
-                            ast::DiscreteRange::Subtype(_),
-                            RangeC::Attr {
-                                prefix: AttrPrefix::Subtype(st),
-                                ..
-                            },
-                        ) => self.subtypes[*st].parent.unwrap_or(*st),
-                        _ => self.types[t].first_subtype,
-                    };
+                    let (rc, ix) = self.index_constraint(scope, r)?;
                     dims.push(rc);
                     idx.push(ix);
                 }
@@ -957,6 +934,39 @@ impl Db {
                 Err(self.unsupported(span, "anonymous generic index types", "S7"))
             }
         }
+    }
+
+    /// One range of an array type's index constraint and its index subtype.
+    pub(crate) fn index_constraint(
+        &mut self,
+        scope: ScopeId,
+        r: &ast::DiscreteRange,
+    ) -> Result<(RangeC, SubtypeId), Reported> {
+        // Array type bounds are required (Q5): overflow there is `E1401`.
+        self.required_ctx = true;
+        let res = self.discrete_range(scope, r, None);
+        self.required_ctx = false;
+        let (rc, t) = res?;
+        // 5.3.2.1: the index subtype is the type mark of the discrete range
+        // (`byte range 3 to 4`, `mid`), else the range's type.
+        let ix = match (r, &rc) {
+            (
+                ast::DiscreteRange::Range(ast::Range::Name(n)),
+                RangeC::Attr {
+                    prefix: AttrPrefix::Subtype(st),
+                    ..
+                },
+            ) if !matches!(n.kind, ast::NameKind::Attribute { .. }) => *st,
+            (
+                ast::DiscreteRange::Subtype(_),
+                RangeC::Attr {
+                    prefix: AttrPrefix::Subtype(st),
+                    ..
+                },
+            ) => self.subtypes[*st].parent.unwrap_or(*st),
+            _ => self.types[t].first_subtype,
+        };
+        Ok((rc, ix))
     }
 
     /// A type mark that must be discrete (array index subtypes).

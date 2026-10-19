@@ -453,9 +453,10 @@ impl<'a> Cx<'a> {
             }
             ExprKind::Deref { prefix } => {
                 let pt = self.base_of(*prefix);
-                match self.kind(pt) {
-                    TypeKind::Access { designated } => {
-                        let want = self.norm(self.db.subtypes[*designated].base);
+                // A generic access type too (2019 6.5.3).
+                match self.db.designated(pt) {
+                    Some(designated) => {
+                        let want = self.norm(self.db.subtypes[designated].base);
                         let got = self.norm(self.db.subtypes[e.subtype].base);
                         if want != got && !self.is_error(got) && !self.is_error(want) {
                             self.bad(span, "Deref result is not the designated type");

@@ -407,7 +407,7 @@ pub trait Debugger: Send + Sync {
     /// Called at a stop. Blocks while the user inspects.
     fn on_stop(&self, stop: &Stop<'_>, session: &DebugSession) -> Resume;
 }
-pub enum Resume { Continue, StepIn, StepOver, StepOut, GlobalStep }
+pub enum Resume { Continue, StepIn, StepOver, StepOut, GlobalStep, Skip }  // Skip: not a stop after all
 pub struct Stop<'a> {
     pub reason: StopReason,      // Breakpoint { hits } | Step | GlobalStep | Pause | ConditionError(msg)
     pub stmt: StmtId,

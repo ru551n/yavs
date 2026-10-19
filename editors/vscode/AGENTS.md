@@ -25,8 +25,8 @@ VS Code).
 | `package.json` | Manifest: `contributes.debuggers`, languages, breakpoints, snippets |
 | `extension.js` | The adapter descriptor factory (`runArgs`, `libArgs`) and the commands (`custom`) |
 | `sample/` | A testbench workspace with `.vscode/launch.json` (used by the tests) |
-| `test/client.js` | A VS Code style session through the DAP test client against `yavs run --dap=stdio`: data breakpoints, `setVariable`, force and release |
-| `test/vscode/run.js`, `suite.js` | A real VS Code (headless) on a copy of `sample/`: breakpoint hit, frame, `setVariable`, the force and release commands, the delta step command, a signal value breakpoint, continue to the end |
+| `test/client.js` | A VS Code style session through the DAP test client against `yavs run --dap=stdio`: data breakpoints, `setVariable`, force and release, conditional line breakpoints, a paged array, the Hierarchy scope and `yavs/hierarchy` |
+| `test/vscode/run.js`, `suite.js` | A real VS Code (headless) on a copy of `sample/`: breakpoints with conditions VS Code sends, frame, scopes, an array paged as VS Code asks, `setVariable`, the force and release commands, the delta step command, a signal value breakpoint, continue to the end |
 
 ## 3. Design decisions
 

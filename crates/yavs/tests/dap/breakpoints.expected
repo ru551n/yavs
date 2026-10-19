@@ -1,5 +1,5 @@
 > initialize {"adapterID":"yavs"}
-< {"body":{"supportsConditionalBreakpoints":false,"supportsConfigurationDoneRequest":true,"supportsDataBreakpoints":true,"supportsEvaluateForHovers":true,"supportsHitConditionalBreakpoints":true,"supportsSetVariable":true,"supportsTerminateRequest":true},"command":"initialize","request_seq":1,"success":true,"type":"response"}
+< {"body":{"supportsConditionalBreakpoints":true,"supportsConfigurationDoneRequest":true,"supportsDataBreakpoints":true,"supportsEvaluateForHovers":true,"supportsHitConditionalBreakpoints":true,"supportsSetVariable":true,"supportsTerminateRequest":true},"command":"initialize","request_seq":1,"success":true,"type":"response"}
 > launch {}
 < {"body":{},"event":"initialized","type":"event"}
 < {"body":{},"command":"launch","request_seq":2,"success":true,"type":"response"}
@@ -13,15 +13,15 @@
 > stackTrace {"threadId":1}
 < {"body":{"stackFrames":[{"column":7,"id":65536,"line":20,"name":":tb:p","source":{"name":"tb.vhd","path":"$TMP/tb.vhd"}}],"totalFrames":1},"command":"stackTrace","request_seq":6,"success":true,"type":"response"}
 > scopes {"frameId":65536}
-< {"body":{"scopes":[{"expensive":false,"name":"Locals","variablesReference":262145},{"expensive":false,"name":"Signals","variablesReference":262146},{"expensive":false,"name":"Generics","variablesReference":262147}]},"command":"scopes","request_seq":7,"success":true,"type":"response"}
+< {"body":{"scopes":[{"expensive":false,"name":"Locals","variablesReference":262145},{"expensive":false,"name":"Signals","variablesReference":262146},{"expensive":false,"name":"Generics","variablesReference":262147},{"expensive":true,"name":"Hierarchy","variablesReference":262144}]},"command":"scopes","request_seq":7,"success":true,"type":"response"}
 > variables {"variablesReference":262145}
 < {"body":{"variables":[{"name":"i","value":"0","variablesReference":0},{"name":"k","value":"1","variablesReference":0}]},"command":"variables","request_seq":8,"success":true,"type":"response"}
 > variables {"variablesReference":262146}
-< {"body":{"variables":[{"__vscodeVariableMenuContext":"signal","name":"cnt","type":"INTEGER","value":"0","variablesReference":0},{"__vscodeVariableMenuContext":"signal","name":"v","type":"BIT_VECTOR","value":"\"0101\"","variablesReference":0}]},"command":"variables","request_seq":9,"success":true,"type":"response"}
+< {"body":{"variables":[{"__vscodeVariableMenuContext":"signal","name":"cnt","type":"INTEGER","value":"0","variablesReference":0},{"__vscodeVariableMenuContext":"signal","indexedVariables":4,"name":"v","type":"BIT_VECTOR","value":"\"0101\"","variablesReference":4294967296}]},"command":"variables","request_seq":9,"success":true,"type":"response"}
 > variables {"variablesReference":262147}
 < {"body":{"variables":[{"name":"N","value":"3","variablesReference":0},{"name":"NAME","value":"\"dap\"","variablesReference":0}]},"command":"variables","request_seq":10,"success":true,"type":"response"}
 > evaluate {"expression":"v","frameId":65536}
-< {"body":{"result":"\"0101\"","type":"BIT_VECTOR","variablesReference":0},"command":"evaluate","request_seq":11,"success":true,"type":"response"}
+< {"body":{"indexedVariables":4,"result":"\"0101\"","type":"BIT_VECTOR","variablesReference":4294967297},"command":"evaluate","request_seq":11,"success":true,"type":"response"}
 > evaluate {"expression":"tb.cnt"}
 < {"body":{"result":"0","type":"INTEGER","variablesReference":0},"command":"evaluate","request_seq":12,"success":true,"type":"response"}
 > continue {"threadId":1}

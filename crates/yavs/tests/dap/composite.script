@@ -1,0 +1,32 @@
+top vals
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 76}]}
+request configurationDone {}
+event stopped
+request yavs/hierarchy {}
+request scopes {"frameId": 131072}
+request variables {"variablesReference": 524289}
+request variables {"variablesReference": 4294967296}
+request variables {"variablesReference": 4294967297, "filter": "indexed", "start": 295, "count": 10}
+request variables {"variablesReference": 4294967298}
+request setVariable {"variablesReference": 4294967296, "name": "a", "value": "9"}
+request setVariable {"variablesReference": 4294967298, "name": "0", "value": "'Z'"}
+request setVariable {"variablesReference": 4294967298, "name": "7", "value": "'Z'"}
+request setVariable {"variablesReference": 4294967297, "name": "299", "value": "3"}
+request evaluate {"expression": "v", "frameId": 131072}
+request variables {"variablesReference": 524290}
+request variables {"variablesReference": 4294967300}
+request setVariable {"variablesReference": 4294967300, "name": "b", "value": "\"1100\""}
+request variables {"variablesReference": 524288}
+request variables {"variablesReference": 4294967304}
+request setVariable {"variablesReference": 4294967304, "name": "t", "value": "3 ns"}
+request yavs/stepDelta {}
+event stopped
+request yavs/stepDelta {}
+event stopped
+request evaluate {"expression": ":vals:r"}
+request evaluate {"expression": ":vals:t"}
+request continue {"threadId": 2}
+event terminated
+request disconnect {}

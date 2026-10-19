@@ -21,9 +21,11 @@ async function run() {
   const tb = vscode.Uri.joinPath(folder.uri, 'tb.vhd');
   const doc = await vscode.workspace.openTextDocument(tb);
   assert.equal(doc.languageId, 'vhdl');
-  // Line 20, `i := twice(k);` (0-based 19).
+  // Line 20, `i := twice(k);` (0-based 19), with a condition VS Code sends, and one on the
+  // function body that never holds.
   vscode.debug.addBreakpoints([
-    new vscode.SourceBreakpoint(new vscode.Location(tb, new vscode.Position(19, 0))),
+    new vscode.SourceBreakpoint(new vscode.Location(tb, new vscode.Position(19, 0)), true, 'k = 1'),
+    new vscode.SourceBreakpoint(new vscode.Location(tb, new vscode.Position(11, 0)), true, 'x > 9'),
   ]);
 
   const stops = [];
@@ -53,6 +55,15 @@ async function run() {
   await new Promise((r) => setTimeout(r, 500));
   const item = vscode.debug.activeStackItem;
   assert.ok(item && item.frameId === top.id, `active stack item ${JSON.stringify(item)}`);
+
+  // The Variables view's scopes, and a composite expanded the way VS Code pages it.
+  const scopeNames = (await session.customRequest('scopes', { frameId: top.id })).scopes.map((x) => x.name);
+  assert.deepEqual(scopeNames, ['Locals', 'Signals', 'Generics', 'Hierarchy']);
+  const vv = await session.customRequest('evaluate', { expression: 'v', frameId: top.id });
+  const el = await session.customRequest('variables', {
+    variablesReference: vv.variablesReference, filter: 'indexed', start: 0, count: vv.indexedVariables,
+  });
+  assert.deepEqual(el.variables.map((x) => x.value), ["'0'", "'1'", "'0'", "'1'"]);
 
   // "Set Value" on a local, then the extension's force command (as its context menu entry
   // on a signal calls it, with the answers given).

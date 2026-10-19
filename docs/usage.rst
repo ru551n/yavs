@@ -459,6 +459,13 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
 * **Threads are processes**, named by their path such as ``:tb:u1:p``.
 * **Line breakpoints** stop at the statements that start on the line, or on the next line that
   has one; a hit condition (``3``, ``>= 3``, ``% 3``) is supported.
+* **Conditions** on line and signal breakpoints are VHDL boolean expressions over the locals of
+  the stopped frame and the signals visible from the process (or names by path): ``count = 3
+  and state = IDLE``, ``data(7) = '1'``, ``now_t >= 20 ns``, ``r.valid``. Relations, ``and``,
+  ``or``, ``not`` and the others on ``boolean`` and ``bit``, arithmetic on integers, reals and
+  physical values, fields and elements are supported; a ``bit`` or ``std_ulogic`` result counts
+  as ``'1'``. Function calls and attributes are not: such a breakpoint is shown as unverified
+  with the reason. An error while evaluating stops with the message.
 * **Stepping** within the stopped process: step over (``next``), into a subprogram (``stepIn``)
   and out of it (``stepOut``). Stepping over a ``wait`` stops when the process resumes. After a
   pause between simulation cycles, a step stops at the next statement of any process.
@@ -491,9 +498,13 @@ Debug Console. With ``"port": 4711`` instead, the extension attaches to a ``yavs
   time.
 * **Call stack**: one frame per subprogram with its source position; a waiting process shows its
   ``wait`` statement.
-* **Variables**: the locals of each frame (process variables, parameters, subprogram variables,
-  records and arrays included), the signals and ports of the regions around the process, and
-  the generics of its instance.
+* **Variables**: the locals of each frame (process variables, parameters, subprogram variables),
+  the signals and ports of the regions around the process, and the generics of its instance.
+  Records expand by field and arrays by index (large arrays in pages); "Set Value" works on a
+  field or an element too.
+* **Hierarchy**: a scope listing the design's instances, blocks and generates, each with its
+  processes (and their state) and signals; the custom request ``yavs/hierarchy`` gives the same
+  tree to other clients.
 * **Evaluate** reads a local, a signal visible from the process, or a signal by path
   (``:tb:u1:s`` or ``tb.u1.s``).
 * Every stop says its simulation time and delta, and reports and ``OUTPUT`` text appear in the
@@ -504,6 +515,5 @@ A stop is a defined point of the simulation: under ``--dap`` processes run on on
 simulation ends the client gets the exit status of the run; disconnecting ends the simulation
 (exit status 1 if it had not ended).
 
-Not yet: conditions on breakpoints, expanding records and arrays in the Variables view,
-forcing or depositing a part of a signal, live waveforms, and ``--dap`` together with
-``--wave``, ``--vhpi`` or ``--cov``.
+Not yet: function calls and attributes in breakpoint conditions, forcing a part of a signal,
+live waveforms, and ``--dap`` together with ``--wave``, ``--vhpi`` or ``--cov``.

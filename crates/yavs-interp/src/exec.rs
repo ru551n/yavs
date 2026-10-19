@@ -1256,6 +1256,9 @@ impl Machine {
             ctx: c,
         };
         let resume = session.stop(&stop);
+        if resume == crate::Resume::Skip {
+            return Ok(());
+        }
         if resume == crate::Resume::GlobalStep {
             session.request_global_step();
         }

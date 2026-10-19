@@ -1596,6 +1596,13 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Force, deposit and release from the debugger go through `SimControl`** and take effect in
   the next cycle, from a stop between cycles or inside a process alike (#323). Why: the plan
   lets nothing else drive the kernel, and a stop inside a process is mid-cycle.
+- **Breakpoint conditions are evaluated by the DAP server, not lowered to IR** (#326): the
+  condition is parsed as a VHDL expression and evaluated over the locals and signals the
+  debugger shows, with the predefined operators (relations, logic on boolean and bit, integer,
+  real and physical arithmetic, `??`); function calls, attributes and overloaded operators are
+  rejected when the breakpoint is set. Why: ir.md 3.4 plans a condition function nested in the
+  statement's function, but the program is fixed once the simulation runs; this covers the
+  conditions users write (`count = 3 and state = IDLE`), and lowering stays possible later.
 - Details of ids, request routing and pause handling: `crates/yavs-dap/AGENTS.md` section 3.
 
 ## Code coverage (yavs-cov, yavs-lower, yavs-elab, CLI, M9, #131, 2026-10-19)

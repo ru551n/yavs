@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use yavs_elab::{Elaborated, ObjKind, ScopeId, Shape};
+use yavs_elab::{Elaborated, ObjKind, ScopeId, ScopeKind, Shape};
 use yavs_ir::{Program, StmtId, Ty, TyId};
 use yavs_kernel::{Elem, LogicVec, SigRef, SignalId, Value};
 use yavs_logic::StdULogic;
@@ -216,6 +216,25 @@ pub(crate) struct Design {
     by_path: HashMap<String, usize>,
     /// By process name ([`Elaborated::proc_name`]).
     procs: HashMap<String, Proc>,
+    /// The elaborated hierarchy: instances, blocks, generates and packages with signals.
+    pub regions: Vec<Region>,
+    /// Indices into `regions` of the regions without a parent (the top level, libraries).
+    pub roots: Vec<usize>,
+}
+
+/// A region of the elaborated hierarchy (component scopes are left out: their instance
+/// carries the label, as in path names).
+pub(crate) struct Region {
+    /// The label with a generate index (`g(0)`), original spelling.
+    pub name: String,
+    /// Lower-case path, `:top:u1:`.
+    pub path: String,
+    pub kind: &'static str,
+    pub children: Vec<usize>,
+    /// Indices into `Design::sigs`.
+    pub sigs: Vec<usize>,
+    /// Process names ([`Elaborated::proc_name`]).
+    pub procs: Vec<String>,
 }
 
 /// A file path as the client sees it: absolute.
@@ -273,6 +292,8 @@ impl Design {
             sigs: Vec::new(),
             by_path: HashMap::new(),
             procs: HashMap::new(),
+            regions: Vec::new(),
+            roots: Vec::new(),
         };
         let mut scope_sigs: HashMap<ScopeId, Vec<usize>> = HashMap::new();
         for (i, sc) in e.hier.scopes.iter().enumerate() {
@@ -329,6 +350,56 @@ impl Design {
             }
             d.procs.insert(e.proc_name(p), pr);
         }
+        // Regions: every scope but processes and components, attached to the nearest such
+        // ancestor.
+        let mut region_of: HashMap<ScopeId, usize> = HashMap::new();
+        for (i, sc) in e.hier.scopes.iter().enumerate() {
+            let s = ScopeId(i as u32);
+            let kind = match sc.kind {
+                ScopeKind::Process { .. } | ScopeKind::Component { .. } => continue,
+                ScopeKind::Instance { .. } => "instance",
+                ScopeKind::Block => "block",
+                ScopeKind::ForGenerate { .. } | ScopeKind::Generate { .. } => "generate",
+                ScopeKind::Library => "library",
+                ScopeKind::Package { .. } => "package",
+            };
+            let mut name = sc.name.text.to_string();
+            if let Some(i) = &sc.index {
+                name.push_str(&format!("({i})"));
+            }
+            region_of.insert(s, d.regions.len());
+            d.regions.push(Region {
+                name,
+                path: e.hier.path_name(s, yavs_elab::Case::Lrm),
+                kind,
+                children: Vec::new(),
+                sigs: scope_sigs.remove(&s).unwrap_or_default(),
+                procs: Vec::new(),
+            });
+        }
+        // Scopes come in elaboration order, parents first.
+        let up = |mut s: ScopeId| loop {
+            match e.hier.scope(s).parent {
+                Some(p) if region_of.contains_key(&p) => return Some(region_of[&p]),
+                Some(p) => s = p,
+                None => return None,
+            }
+        };
+        for (&s, &r) in &region_of {
+            match up(s) {
+                Some(p) => d.regions[p].children.push(r),
+                None => d.roots.push(r),
+            }
+        }
+        for reg in &mut d.regions {
+            reg.children.sort_unstable();
+        }
+        d.roots.sort_unstable();
+        for p in &e.procs {
+            if let Some(r) = up(p.scope) {
+                d.regions[r].procs.push(e.proc_name(p));
+            }
+        }
         d
     }
 
@@ -347,12 +418,8 @@ impl Design {
         self.procs.get(name)
     }
 
-    /// A signal by simple name seen from process `p`, or by path (`:top:u1:s`, `top.u1.s`).
-    pub fn lookup(&self, p: Option<&Proc>, name: &str) -> Option<&Sig> {
-        self.find(p, name).map(|k| &self.sigs[k])
-    }
-
-    /// [`Design::lookup`], as an index into `sigs`.
+    /// A signal by simple name seen from process `p`, or by path (`:top:u1:s`, `top.u1.s`): its
+    /// index into `sigs`.
     pub fn find(&self, p: Option<&Proc>, name: &str) -> Option<usize> {
         let n = name.trim().to_ascii_lowercase();
         let path = if n.starts_with(':') {

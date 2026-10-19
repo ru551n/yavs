@@ -77,7 +77,8 @@ async function main() {
   assert.ok(path.isAbsolute(top.source.path));
 
   const scopes = await dc.scopesRequest({ frameId: top.id });
-  assert.deepEqual(scopes.body.scopes.map((s) => s.name), ['Locals', 'Signals', 'Generics']);
+  assert.deepEqual(scopes.body.scopes.map((s) => s.name),
+    ['Locals', 'Signals', 'Generics', 'Hierarchy']);
   const vars = async (i) =>
     Object.fromEntries(
       (await dc.variablesRequest({ variablesReference: scopes.body.scopes[i].variablesReference }))
@@ -87,6 +88,24 @@ async function main() {
   assert.deepEqual(await vars(2), { N: '3', NAME: '"dap"' });
   const hover = await dc.evaluateRequest({ expression: 'v', frameId: top.id, context: 'hover' });
   assert.equal(hover.body.result, '"0101"');
+
+  // Composites expand: VS Code pages an array's elements through `indexedVariables`.
+  assert.equal(hover.body.indexedVariables, 4);
+  const elems = await dc.variablesRequest({
+    variablesReference: hover.body.variablesReference, filter: 'indexed', start: 1, count: 2,
+  });
+  assert.deepEqual(elems.body.variables.map((v) => [v.name, v.value]), [['2', "'1'"], ['1', "'0'"]]);
+
+  // The hierarchy: a custom request, and a scope whose regions expand.
+  const h = await dc.customRequest('yavs/hierarchy');
+  assert.deepEqual([h.body.regions[0].name, h.body.regions[0].processes], ['tb', [':tb:p', ':tb:q']]);
+  const roots = (await dc.variablesRequest({
+    variablesReference: scopes.body.scopes[3].variablesReference,
+  })).body.variables;
+  assert.deepEqual(roots.map((v) => [v.name, v.value]), [['tb', 'instance']]);
+  const inTb = (await dc.variablesRequest({ variablesReference: roots[0].variablesReference }))
+    .body.variables.map((v) => v.name);
+  assert.deepEqual(inTb, ['p', 'q', 'cnt', 'v']);
 
   // "Set Value" in the Variables view: a local is written now, a signal deposited.
   assert.equal(init.body.supportsSetVariable, true);
@@ -158,6 +177,18 @@ async function main() {
   assert.deepEqual([s.reason, s.description, s.text],
     ['data breakpoint', 'data breakpoint at 20 ns, delta 1', ':tb:cnt = 6']);
   await dc.customRequest('yavs/setSignalBreakpoints', { breakpoints: [] });
+
+  // Conditional line breakpoints: `report "done"` stops when cnt = 6, `wait;` never.
+  const cb = await dc.setBreakpointsRequest({
+    source: { path: src },
+    breakpoints: [{ line: 24, condition: 'cnt = 6 and v /= "1111"' }, { line: 25, condition: 'cnt = 7' },
+      { line: 22, condition: 'cnt =' }],
+  });
+  assert.deepEqual(cb.body.breakpoints.map((b) => b.verified), [true, true, false]);
+  assert.match(cb.body.breakpoints[2].message, /does not parse/);
+  s = await stop(dc.continueRequest({ threadId: 1 }));
+  assert.deepEqual([s.reason, s.description], ['breakpoint', 'breakpoint at 30 ns, delta 0']);
+  await dc.setBreakpointsRequest({ source: { path: src }, breakpoints: [] });
 
   // Run to the end.
   const out = dc.waitForEvent('output');

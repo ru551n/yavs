@@ -1,0 +1,23 @@
+request initialize {"adapterID": "yavs"}
+request launch {}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 20, "condition": "k = 2 and cnt = 2"}, {"line": 12, "condition": "x = 99"}, {"line": 22, "condition": "i >= 2", "hitCondition": "2"}, {"line": 21, "condition": "i ="}, {"line": 24, "condition": "i ** 2 = 4"}]}
+request configurationDone {}
+event stopped
+request stackTrace {"threadId": 1}
+request next {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request continue {"threadId": 1}
+event stopped
+request stackTrace {"threadId": 1}
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": [{"line": 20, "condition": "nosuch = 1"}]}
+request continue {"threadId": 1}
+event stopped
+request setBreakpoints {"source": {"path": "$SRC"}, "breakpoints": []}
+request setDataBreakpoints {"breakpoints": [{"dataId": ":tb:cnt", "condition": "cnt >= 4 and v /= \"1111\"", "hitCondition": ">= 1"}, {"dataId": ":tb:v", "condition": "v ="}]}
+request continue {"threadId": 1}
+event stopped
+request setDataBreakpoints {"breakpoints": []}
+request continue {"threadId": 1}
+event terminated
+request disconnect {}

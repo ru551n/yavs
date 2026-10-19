@@ -1,5 +1,5 @@
 > initialize {"adapterID":"yavs"}
-< {"body":{"supportsConditionalBreakpoints":false,"supportsConfigurationDoneRequest":true,"supportsDataBreakpoints":true,"supportsEvaluateForHovers":true,"supportsHitConditionalBreakpoints":true,"supportsSetVariable":true,"supportsTerminateRequest":true},"command":"initialize","request_seq":1,"success":true,"type":"response"}
+< {"body":{"supportsConditionalBreakpoints":true,"supportsConfigurationDoneRequest":true,"supportsDataBreakpoints":true,"supportsEvaluateForHovers":true,"supportsHitConditionalBreakpoints":true,"supportsSetVariable":true,"supportsTerminateRequest":true},"command":"initialize","request_seq":1,"success":true,"type":"response"}
 > launch {}
 < {"body":{},"event":"initialized","type":"event"}
 < {"body":{},"command":"launch","request_seq":2,"success":true,"type":"response"}
@@ -11,11 +11,11 @@
 > threads {}
 < {"body":{"threads":[{"id":1,"name":":vals:_p0"},{"id":2,"name":":vals:p"}]},"command":"threads","request_seq":5,"success":true,"type":"response"}
 > scopes {"frameId":131072}
-< {"body":{"scopes":[{"expensive":false,"name":"Locals","variablesReference":524289},{"expensive":false,"name":"Signals","variablesReference":524290},{"expensive":false,"name":"Generics","variablesReference":524291}]},"command":"scopes","request_seq":6,"success":true,"type":"response"}
+< {"body":{"scopes":[{"expensive":false,"name":"Locals","variablesReference":524289},{"expensive":false,"name":"Signals","variablesReference":524290},{"expensive":false,"name":"Generics","variablesReference":524291},{"expensive":true,"name":"Hierarchy","variablesReference":524288}]},"command":"scopes","request_seq":6,"success":true,"type":"response"}
 > variables {"variablesReference":524289}
-< {"body":{"variables":[{"name":"v","value":"(a => 5, b => \"1010\")","variablesReference":0},{"name":"big","value":"(7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, ...)","variablesReference":0},{"name":"n","value":"0","variablesReference":0}]},"command":"variables","request_seq":7,"success":true,"type":"response"}
+< {"body":{"variables":[{"name":"v","namedVariables":2,"value":"(a => 5, b => \"1010\")","variablesReference":4294967296},{"indexedVariables":300,"name":"big","value":"(7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, ...)","variablesReference":4294967297},{"name":"n","value":"0","variablesReference":0}]},"command":"variables","request_seq":7,"success":true,"type":"response"}
 > variables {"variablesReference":524290}
-< {"body":{"variables":[{"__vscodeVariableMenuContext":"signal","name":"r","type":"rec_t","value":"(a => 1, b => \"0000\")","variablesReference":0},{"__vscodeVariableMenuContext":"signal","name":"d","type":"STD_ULOGIC_VECTOR","value":"\"00000000\"","variablesReference":0},{"__vscodeVariableMenuContext":"signal","name":"t","type":"TIME","value":"0 fs","variablesReference":0},{"__vscodeVariableMenuContext":"signal","name":"q","type":"STD_ULOGIC_VECTOR","value":"\"00000000\"","variablesReference":0}]},"command":"variables","request_seq":8,"success":true,"type":"response"}
+< {"body":{"variables":[{"__vscodeVariableMenuContext":"signal","name":"r","namedVariables":2,"type":"rec_t","value":"(a => 1, b => \"0000\")","variablesReference":4294967298},{"__vscodeVariableMenuContext":"signal","indexedVariables":8,"name":"d","type":"STD_ULOGIC_VECTOR","value":"\"00000000\"","variablesReference":4294967299},{"__vscodeVariableMenuContext":"signal","name":"t","type":"TIME","value":"0 fs","variablesReference":0},{"__vscodeVariableMenuContext":"signal","indexedVariables":8,"name":"q","type":"STD_ULOGIC_VECTOR","value":"\"00000000\"","variablesReference":4294967300}]},"command":"variables","request_seq":8,"success":true,"type":"response"}
 > setVariable {"name":"v","value":"(b => x\"F\", a => 41)","variablesReference":524289}
 < {"body":{"value":"(a => 41, b => \"1111\")","variablesReference":0},"command":"setVariable","request_seq":9,"success":true,"type":"response"}
 > setVariable {"name":"n","value":"3","variablesReference":524289}
@@ -25,7 +25,7 @@
 > setVariable {"name":"big","value":"(299 => 9, others => 1)","variablesReference":524289}
 < {"body":{"value":"(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...)","variablesReference":0},"command":"setVariable","request_seq":12,"success":true,"type":"response"}
 > variables {"variablesReference":524289}
-< {"body":{"variables":[{"name":"v","value":"(a => 41, b => \"1111\")","variablesReference":0},{"name":"big","value":"(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...)","variablesReference":0},{"name":"n","value":"3","variablesReference":0}]},"command":"variables","request_seq":13,"success":true,"type":"response"}
+< {"body":{"variables":[{"name":"v","namedVariables":2,"value":"(a => 41, b => \"1111\")","variablesReference":4294967301},{"indexedVariables":300,"name":"big","value":"(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...)","variablesReference":4294967302},{"name":"n","value":"3","variablesReference":0}]},"command":"variables","request_seq":13,"success":true,"type":"response"}
 > setVariable {"name":"d","value":"x\"A5\"","variablesReference":524290}
 < {"body":{"value":"\"10100101\"","variablesReference":0},"command":"setVariable","request_seq":14,"success":true,"type":"response"}
 > setVariable {"name":"d","value":"x\"A\"","variablesReference":524290}
@@ -41,7 +41,7 @@
 > yavs/deposit {"signal":"r"}
 < {"command":"yavs/deposit","message":"expected a `value` argument","request_seq":20,"success":false,"type":"response"}
 > evaluate {"expression":"d"}
-< {"body":{"result":"\"00000000\"","type":"STD_ULOGIC_VECTOR","variablesReference":0},"command":"evaluate","request_seq":21,"success":true,"type":"response"}
+< {"body":{"indexedVariables":8,"result":"\"00000000\"","type":"STD_ULOGIC_VECTOR","variablesReference":4294967303},"command":"evaluate","request_seq":21,"success":true,"type":"response"}
 > yavs/stepDelta {}
 < {"body":{},"command":"yavs/stepDelta","request_seq":22,"success":true,"type":"response"}
 < {"body":{"allThreadsContinued":true,"threadId":2},"event":"continued","type":"event"}
@@ -51,19 +51,19 @@
 > yavs/deposit {"signal":":vals:r","value":"(a => 7, b => \"01ZX\")"}
 < {"body":{"signal":":vals:r","value":"(a => 7, b => \"01ZX\")"},"command":"yavs/deposit","request_seq":24,"success":true,"type":"response"}
 > evaluate {"expression":":vals:d"}
-< {"body":{"result":"\"00000000\"","type":"STD_ULOGIC_VECTOR","variablesReference":0},"command":"evaluate","request_seq":25,"success":true,"type":"response"}
+< {"body":{"indexedVariables":8,"result":"\"00000000\"","type":"STD_ULOGIC_VECTOR","variablesReference":4294967296},"command":"evaluate","request_seq":25,"success":true,"type":"response"}
 > yavs/stepDelta {}
 < {"body":{},"command":"yavs/stepDelta","request_seq":26,"success":true,"type":"response"}
 < {"body":{"allThreadsContinued":true,"threadId":1},"event":"continued","type":"event"}
 < {"body":{"allThreadsStopped":true,"description":"step at 10 ns, delta 1","reason":"step"},"event":"stopped","type":"event"}
 > evaluate {"expression":":vals:d"}
-< {"body":{"result":"\"10100101\"","type":"STD_ULOGIC_VECTOR","variablesReference":0},"command":"evaluate","request_seq":27,"success":true,"type":"response"}
+< {"body":{"indexedVariables":8,"result":"\"10100101\"","type":"STD_ULOGIC_VECTOR","variablesReference":4294967296},"command":"evaluate","request_seq":27,"success":true,"type":"response"}
 > evaluate {"expression":":vals:q"}
-< {"body":{"result":"\"11111111\"","type":"STD_ULOGIC_VECTOR","variablesReference":0},"command":"evaluate","request_seq":28,"success":true,"type":"response"}
+< {"body":{"indexedVariables":8,"result":"\"11111111\"","type":"STD_ULOGIC_VECTOR","variablesReference":4294967297},"command":"evaluate","request_seq":28,"success":true,"type":"response"}
 > evaluate {"expression":":vals:t"}
 < {"body":{"result":"5000000 fs","type":"TIME","variablesReference":0},"command":"evaluate","request_seq":29,"success":true,"type":"response"}
 > evaluate {"expression":":vals:r"}
-< {"body":{"result":"(a => 7, b => \"01ZX\")","type":"rec_t","variablesReference":0},"command":"evaluate","request_seq":30,"success":true,"type":"response"}
+< {"body":{"namedVariables":2,"result":"(a => 7, b => \"01ZX\")","type":"rec_t","variablesReference":4294967298},"command":"evaluate","request_seq":30,"success":true,"type":"response"}
 > continue {"threadId":2}
 < {"body":{"allThreadsContinued":true},"command":"continue","request_seq":31,"success":true,"type":"response"}
 < {"body":{"allThreadsStopped":true,"description":"breakpoint at 11 ns, delta 0","reason":"breakpoint","threadId":2},"event":"stopped","type":"event"}

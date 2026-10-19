@@ -10,6 +10,7 @@
 //! Frame ids are `threadId << 16 | frame` (outermost frame 0); variable references are
 //! `frameId << 2 | scope` with scopes locals (1), signals (2) and generics (3).
 
+mod cond;
 mod design;
 mod wire;
 
@@ -115,6 +116,61 @@ struct Shared {
     /// kernel before it runs on.
     ops: Mutex<Vec<Op>>,
     prog: Arc<yavs_ir::Program>,
+    /// What the variables references from `CHILD` on stand for; cleared at every stop.
+    nodes: Mutex<Vec<Node>>,
+    /// Line breakpoints with a condition, per statement.
+    conds: Mutex<HashMap<yavs_ir::StmtId, Arc<LineCond>>>,
+}
+
+/// The first variables reference of the per-stop table (`Shared::nodes`); the stateless
+/// references of scopes stay below it.
+const CHILD: i64 = 1 << 32;
+
+/// A composite variable's children, or a hierarchy region (valid for one stop).
+#[derive(Clone)]
+enum Node {
+    /// Local `name` of frame `frame` of thread `tid`, and the field and element positions to
+    /// the composite shown.
+    Local {
+        tid: i64,
+        frame: usize,
+        name: String,
+        path: Vec<usize>,
+    },
+    Signal {
+        sig: usize,
+        path: Vec<usize>,
+    },
+    /// Index into `Design::regions`.
+    Region(usize),
+}
+
+impl Node {
+    fn child(&self, k: usize) -> Node {
+        let mut n = self.clone();
+        if let Node::Local { path, .. } | Node::Signal { path, .. } = &mut n {
+            path.push(k);
+        }
+        n
+    }
+}
+
+/// A line breakpoint's condition (evaluated here, `cond`) and hit condition, counted over
+/// the hits where the condition held.
+struct LineCond {
+    cond: cond::Cond,
+    hit: HitCond,
+    hits: std::sync::atomic::AtomicU64,
+}
+
+/// Whether the `n`-th hit fires under `h`.
+fn fires(h: HitCond, n: u64) -> bool {
+    match h {
+        HitCond::Always => true,
+        HitCond::Eq(k) => n == k,
+        HitCond::Ge(k) => n >= k,
+        HitCond::Multiple(k) => k != 0 && n.is_multiple_of(k),
+    }
 }
 
 /// A signal breakpoint: a change of the signal, or a change to a value.
@@ -122,6 +178,12 @@ struct SigBp {
     /// Index into `Design::sigs`.
     sig: usize,
     value: Option<Lit>,
+    cond: Option<cond::Cond>,
+    hit: HitCond,
+    /// Hits where the change, the value and the condition held.
+    hits: u64,
+    /// The thread whose names the condition uses (0: paths only).
+    tid: i64,
 }
 
 /// What a force, deposit or release does to a signal's kernel leaves.
@@ -226,8 +288,44 @@ impl Debugger for Front {
         if sh.terminating.load(Ordering::Relaxed) {
             return Resume::Continue;
         }
+        let line = match &stop.reason {
+            StopReason::Breakpoint { .. } => {
+                let c = sh
+                    .conds
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&stop.stmt)
+                    .cloned();
+                match c {
+                    None => Ok(()),
+                    Some(c) => {
+                        let env = Names {
+                            sh,
+                            at: &At::Process(stop),
+                            tid: stop.process as i64 + 1,
+                            frame: stop.frames.depth().checked_sub(1),
+                            region: None,
+                        };
+                        match c.cond.eval(&env) {
+                            Ok(true)
+                                if fires(c.hit, c.hits.fetch_add(1, Ordering::Relaxed) + 1) =>
+                            {
+                                Ok(())
+                            }
+                            // Not a stop: a step under way goes on.
+                            Ok(_) => return Resume::Skip,
+                            Err(m) => Err(format!("breakpoint condition: {m}")),
+                        }
+                    }
+                }
+            }
+            _ => Ok(()),
+        };
         let (reason, text) = match &stop.reason {
-            StopReason::Breakpoint { .. } => ("breakpoint", None),
+            StopReason::Breakpoint { .. } => match line {
+                Ok(()) => ("breakpoint", None),
+                Err(m) => ("exception", Some(m)),
+            },
             StopReason::Step => ("step", None),
             StopReason::GlobalStep if sh.stop_on_entry.swap(false, Ordering::Relaxed) => {
                 ("entry", None)
@@ -268,6 +366,7 @@ impl Debugger for Front {
 
 /// Report the stop, then answer requests until one resumes; `None` ends the session.
 fn serve_stop(sh: &Shared, at: &At<'_, '_>, stopped: Json) -> Option<Next> {
+    sh.nodes.lock().unwrap_or_else(|p| p.into_inner()).clear();
     sh.stopped.store(true, Ordering::Relaxed);
     sh.event("stopped", stopped);
     let rx = sh.rx.lock().unwrap_or_else(|p| p.into_inner());
@@ -445,6 +544,7 @@ fn scopes(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     }
     s.push(json!({"name": "Signals", "variablesReference": id << 2 | 2, "expensive": false}));
     s.push(json!({"name": "Generics", "variablesReference": id << 2 | 3, "expensive": false}));
+    s.push(json!({"name": "Hierarchy", "variablesReference": id << 2, "expensive": true}));
     sh.respond(req, json!({"scopes": s}));
 }
 
@@ -454,29 +554,12 @@ fn proc_name(sh: &Shared, tid: i64) -> Option<String> {
     Some(procs.get(usize::try_from(tid - 1).ok()?)?.name.clone())
 }
 
-/// Locals of frame `i` of the stopped process: name, value.
-fn locals(sh: &Shared, at: &At<'_, '_>, tid: i64, i: usize) -> Vec<(String, String)> {
-    let At::Process(s) = at else {
-        return Vec::new();
-    };
-    if s.process as i64 != tid - 1 {
-        return Vec::new();
+/// The stop inside thread `tid`'s process, if it is that one.
+fn stop_of<'a, 'b>(at: &'a At<'a, 'b>, tid: i64) -> Option<&'a Stop<'b>> {
+    match at {
+        At::Process(s) if s.process as i64 == tid - 1 => Some(s),
+        _ => None,
     }
-    s.frames
-        .locals(i)
-        .iter()
-        .map(|l| {
-            let v = match local(sh, s, i, l.name) {
-                Some((t, v, _)) => literal_image(&v, &t),
-                // Access values.
-                None => s
-                    .frames
-                    .format(l.ty, &l.bytes)
-                    .unwrap_or_else(|| "?".into()),
-            };
-            (l.name.to_string(), v)
-        })
-        .collect()
 }
 
 /// Local `name` of frame `i`: its type and value, and the value as the interpreter holds it.
@@ -492,64 +575,280 @@ fn local(
     Some((t, v, c))
 }
 
-/// Write `text` into local `name` of frame `i`; the new value as text.
-fn write_local(
-    sh: &Shared,
-    s: &Stop<'_>,
-    i: usize,
-    name: &str,
-    text: &str,
-) -> Result<String, String> {
+/// Write `v` (of the type `local` gives) into local `name` of frame `i`.
+fn write_local(sh: &Shared, s: &Stop<'_>, i: usize, name: &str, v: &Lit) -> Result<(), String> {
     let (ty, _) = s.frames.value(i, name)?;
-    let (t, _, like) =
+    let (_, _, like) =
         local(sh, s, i, name).ok_or_else(|| format!("`{name}` cannot be written here"))?;
-    let v = literal(text.as_bytes(), &t).map_err(|e| e.to_string())?;
     let bug = || format!("this is a bug in yavs: `{name}` not encoded");
-    let c = design::to_const(&v, &like).ok_or_else(bug)?;
+    let c = design::to_const(v, &like).ok_or_else(bug)?;
     let cv = yavs_elab::ir_encode(&sh.prog, ty, &c).ok_or_else(bug)?;
-    s.frames.set_value(i, name, &cv)?;
-    Ok(literal_image(&v, &t))
+    s.frames.set_value(i, name, &cv)
+}
+
+/// A reference to `n` for this stop.
+fn node_ref(sh: &Shared, n: Node) -> i64 {
+    let mut nodes = sh.nodes.lock().unwrap_or_else(|p| p.into_inner());
+    nodes.push(n);
+    CHILD + nodes.len() as i64 - 1
+}
+
+/// The element at `path` of a value.
+fn descend(mut t: LitType, mut v: Lit, path: &[usize]) -> Option<(LitType, Lit)> {
+    for &k in path {
+        (t, v) = match (t, v) {
+            (LitType::Record(mut fs), Lit::Record(mut xs)) if k < xs.len() => {
+                (fs.swap_remove(k).1, xs.swap_remove(k))
+            }
+            (LitType::Array { elem, .. }, Lit::Array(mut xs)) if k < xs.len() => {
+                (*elem, xs.swap_remove(k))
+            }
+            _ => return None,
+        };
+    }
+    Some((t, v))
+}
+
+/// The whole value a node's local or signal holds, and its path into it.
+fn node_root(sh: &Shared, at: &At<'_, '_>, n: &Node) -> Option<(LitType, Lit)> {
+    match n {
+        Node::Local {
+            tid, frame, name, ..
+        } => {
+            let (t, v, _) = local(sh, stop_of(at, *tid)?, *frame, name)?;
+            Some((t, v))
+        }
+        Node::Signal { sig, .. } => {
+            let s = &sh.design.sigs[*sig];
+            Some((s.lit.clone(), s.value(&|r| at.read(r))?))
+        }
+        Node::Region(_) => None,
+    }
+}
+
+fn node_path(n: &Node) -> &[usize] {
+    match n {
+        Node::Local { path, .. } | Node::Signal { path, .. } => path,
+        Node::Region(_) => &[],
+    }
+}
+
+/// A variable showing value `v` of type `t`; a composite gets a reference to `node`, its
+/// children (an array's paged through `indexedVariables`).
+fn value_var(sh: &Shared, name: &str, t: &LitType, v: &Lit, node: impl FnOnce() -> Node) -> Json {
+    let mut j = json!({"name": name, "value": literal_image(v, t), "variablesReference": 0});
+    match (t, v) {
+        (LitType::Array { .. }, Lit::Array(xs)) => {
+            j["variablesReference"] = json!(node_ref(sh, node()));
+            j["indexedVariables"] = json!(xs.len());
+        }
+        (LitType::Record(fs), _) => {
+            j["variablesReference"] = json!(node_ref(sh, node()));
+            j["namedVariables"] = json!(fs.len());
+        }
+        _ => {}
+    }
+    j
+}
+
+/// A signal as a variable.
+fn signal_var(sh: &Shared, at: &At<'_, '_>, k: usize) -> Json {
+    let s = &sh.design.sigs[k];
+    let mut j = match s.value(&|r| at.read(r)) {
+        Some(v) => value_var(sh, &s.name, &s.lit, &v, || Node::Signal {
+            sig: k,
+            path: Vec::new(),
+        }),
+        None => json!({"name": s.name, "value": "?", "variablesReference": 0}),
+    };
+    j["type"] = json!(s.ty);
+    // VS Code's context key for the extension's force, deposit and release.
+    j["__vscodeVariableMenuContext"] = json!("signal");
+    j
+}
+
+/// The locals of frame `i` of thread `tid`, as variables.
+fn local_vars(sh: &Shared, at: &At<'_, '_>, tid: i64, i: usize) -> Vec<Json> {
+    let Some(s) = stop_of(at, tid) else {
+        return Vec::new();
+    };
+    s.frames
+        .locals(i)
+        .iter()
+        .map(|l| match local(sh, s, i, l.name) {
+            Some((t, v, _)) => value_var(sh, l.name, &t, &v, || Node::Local {
+                tid,
+                frame: i,
+                name: l.name.to_string(),
+                path: Vec::new(),
+            }),
+            // Access values.
+            None => {
+                let v = s
+                    .frames
+                    .format(l.ty, &l.bytes)
+                    .unwrap_or_else(|| "?".into());
+                json!({"name": l.name, "value": v, "variablesReference": 0})
+            }
+        })
+        .collect()
+}
+
+/// The children of a region: regions, processes (with their state) and signals.
+fn region_vars(sh: &Shared, at: &At<'_, '_>, regions: &[usize], r: Option<usize>) -> Vec<Json> {
+    let mut out: Vec<Json> = regions
+        .iter()
+        .map(|&c| {
+            let reg = &sh.design.regions[c];
+            json!({
+                "name": reg.name,
+                "value": reg.kind,
+                "variablesReference": node_ref(sh, Node::Region(c)),
+                "presentationHint": {"kind": "class"},
+            })
+        })
+        .collect();
+    let Some(r) = r else {
+        return out;
+    };
+    let procs = sh.session().processes();
+    for p in &sh.design.regions[r].procs {
+        let state = procs.iter().find(|s| s.name == *p).map(|s| match s.state {
+            ProcState::NotStarted => "not started",
+            ProcState::Running => "running",
+            ProcState::Waiting => "waiting",
+            ProcState::Terminated => "terminated",
+        });
+        let name = p.rsplit(':').next().unwrap_or(p);
+        out.push(json!({
+            "name": name,
+            "value": format!("process, {}", state.unwrap_or("?")),
+            "variablesReference": 0,
+            "evaluateName": p,
+        }));
+    }
+    out.extend(
+        sh.design.regions[r]
+            .sigs
+            .iter()
+            .map(|&k| signal_var(sh, at, k)),
+    );
+    out
 }
 
 fn variables(sh: &Shared, at: &At<'_, '_>, req: &Json) {
-    let r = req["arguments"]["variablesReference"].as_i64().unwrap_or(0);
+    let a = &req["arguments"];
+    let r = a["variablesReference"].as_i64().unwrap_or(0);
+    let start = a["start"].as_u64().unwrap_or(0) as usize;
+    let count = a["count"].as_u64().map_or(usize::MAX, |c| c as usize);
+    if r >= CHILD {
+        let node = sh
+            .nodes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get((r - CHILD) as usize)
+            .cloned();
+        let vars = match &node {
+            None => return sh.fail(req, &format!("no variables {r}")),
+            Some(Node::Region(g)) => region_vars(sh, at, &sh.design.regions[*g].children, Some(*g)),
+            Some(n) => match node_root(sh, at, n).and_then(|(t, v)| descend(t, v, node_path(n))) {
+                Some((LitType::Record(fs), Lit::Record(xs))) => fs
+                    .iter()
+                    .zip(&xs)
+                    .enumerate()
+                    .map(|(k, ((f, t), x))| value_var(sh, f, t, x, || n.child(k)))
+                    .collect(),
+                Some((t, Lit::Array(xs))) => {
+                    let LitType::Array { elem, .. } = &t else {
+                        return sh.fail(req, "this is a bug in yavs: an array of no array type");
+                    };
+                    xs.iter()
+                        .enumerate()
+                        .skip(start)
+                        .take(count)
+                        .map(|(k, x)| {
+                            let i = t.index(k as u64).unwrap_or(k as i64);
+                            value_var(sh, &i.to_string(), elem, x, || n.child(k))
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            },
+        };
+        return sh.respond(req, json!({"variables": vars}));
+    }
     let (frame, kind) = (r >> 2, r & 3);
     let (tid, i) = (frame >> 16, (frame & 0xffff) as usize);
-    let var = |name: &str, value: &str, ty: Option<&str>| {
-        let mut v = json!({"name": name, "value": value, "variablesReference": 0});
-        if let Some(t) = ty {
-            v["type"] = json!(t);
-        }
-        v
-    };
     let proc = proc_name(sh, tid).and_then(|n| sh.design.proc(&n));
     let vars: Vec<Json> = match kind {
-        1 => locals(sh, at, tid, i)
-            .iter()
-            .map(|(n, v)| var(n, v, None))
-            .collect(),
+        0 => region_vars(sh, at, &sh.design.roots, None),
+        1 => local_vars(sh, at, tid, i),
         2 => proc
             .into_iter()
             .flat_map(|p| &p.signals)
-            .map(|&k| {
-                let s = &sh.design.sigs[k];
-                let mut v = var(&s.name, &s.show(&|r| at.read(r)), Some(&s.ty));
-                // VS Code's context key for the extension's force, deposit and release.
-                v["__vscodeVariableMenuContext"] = json!("signal");
-                v
-            })
+            .map(|&k| signal_var(sh, at, k))
             .collect(),
         3 => proc
             .into_iter()
             .flat_map(|p| &p.generics)
-            .map(|(n, v)| var(n, v, None))
+            .map(|(n, v)| json!({"name": n, "value": v, "variablesReference": 0}))
             .collect(),
         _ => return sh.fail(req, &format!("no variables {r}")),
     };
     sh.respond(req, json!({"variables": vars}));
 }
 
-/// A local of the frame, or a signal by name or path: its value.
+/// The names a condition or an evaluation sees at a stop: the locals of frame `frame` of
+/// thread `tid` and of its process frame, then signals by name seen from its process or by
+/// path.
+struct Names<'a, 'b, 'c> {
+    sh: &'a Shared,
+    at: &'a At<'b, 'c>,
+    tid: i64,
+    frame: Option<usize>,
+    /// Without a process: the region (path prefix `:tb:u1:`) simple names are seen from.
+    region: Option<&'a str>,
+}
+
+impl Names<'_, '_, '_> {
+    /// The local `name` names (frame and exact name), or the signal.
+    fn find(&self, name: &str) -> Option<Result<(usize, String), usize>> {
+        if let Some(s) = stop_of(self.at, self.tid) {
+            for i in self.frame.into_iter().chain([0]) {
+                let l = s.frames.locals(i);
+                if let Some(l) = l.iter().find(|l| l.name.eq_ignore_ascii_case(name)) {
+                    return Some(Ok((i, l.name.to_string())));
+                }
+            }
+        }
+        let proc = proc_name(self.sh, self.tid).and_then(|n| self.sh.design.proc(&n));
+        let in_region = || {
+            let r = self.region?;
+            self.sh.design.find(None, &format!("{r}{name}"))
+        };
+        in_region()
+            .filter(|_| proc.is_none())
+            .or_else(|| self.sh.design.find(proc, name))
+            .map(Err)
+    }
+}
+
+impl cond::Env for Names<'_, '_, '_> {
+    fn get(&self, name: &str) -> Option<(LitType, Lit)> {
+        match self.find(name)? {
+            Ok((i, n)) => {
+                let (t, v, _) = local(self.sh, stop_of(self.at, self.tid)?, i, &n)?;
+                Some((t, v))
+            }
+            Err(k) => {
+                let s = &self.sh.design.sigs[k];
+                Some((s.lit.clone(), s.value(&|r| self.at.read(r))?))
+            }
+        }
+    }
+}
+
+/// A local of the frame, or a signal by name or path: its value (a composite expands).
 fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     let a = &req["arguments"];
     let expr = a["expression"].as_str().unwrap_or_default().trim();
@@ -557,20 +856,46 @@ fn evaluate(sh: &Shared, at: &At<'_, '_>, req: &Json) {
         Some(f) => (f >> 16, (f & 0xffff) as usize),
         None => (at.process().map_or(0, |p| p as i64 + 1), 0),
     };
-    let local = locals(sh, at, tid, i)
-        .into_iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(expr));
-    if let Some((_, v)) = local {
-        return sh.respond(req, json!({"result": v, "variablesReference": 0}));
+    let names = Names {
+        sh,
+        at,
+        tid,
+        frame: Some(i),
+        region: None,
+    };
+    let found = names.find(expr);
+    let mut j = match found {
+        Some(Ok((frame, name))) => {
+            let Some(s) = stop_of(at, tid) else {
+                return sh.fail(req, "no locals here");
+            };
+            match local(sh, s, frame, &name) {
+                Some((t, v, _)) => value_var(sh, &name, &t, &v, || Node::Local {
+                    tid,
+                    frame,
+                    name: name.clone(),
+                    path: Vec::new(),
+                }),
+                None => {
+                    let l = s.frames.locals(frame);
+                    let l = l.iter().find(|l| l.name == name);
+                    let v = l.and_then(|l| s.frames.format(l.ty, &l.bytes));
+                    json!({"value": v.unwrap_or_else(|| "?".into()), "variablesReference": 0})
+                }
+            }
+        }
+        Some(Err(k)) => signal_var(sh, at, k),
+        None => return sh.fail(req, &format!("no variable or signal `{expr}` here")),
+    };
+    // A variable becomes a result.
+    if let Some(o) = j.as_object_mut() {
+        o.remove("name");
+        o.remove("__vscodeVariableMenuContext");
+        if let Some(v) = o.remove("value") {
+            o.insert("result".into(), v);
+        }
     }
-    let proc = proc_name(sh, tid).and_then(|n| sh.design.proc(&n));
-    match sh.design.lookup(proc, expr) {
-        Some(s) => sh.respond(
-            req,
-            json!({"result": s.show(&|r| at.read(r)), "type": s.ty, "variablesReference": 0}),
-        ),
-        None => sh.fail(req, &format!("no variable or signal `{expr}` here")),
-    }
+    sh.respond(req, j)
 }
 
 /// `yavs/force`, `yavs/deposit` and `yavs/release` of a whole signal (`signal`: a name seen
@@ -674,7 +999,8 @@ fn apply_ops(sh: &Shared, sim: &mut SimControl) {
     }
 }
 
-/// `setVariable`: a local is written, a signal deposited (in the next cycle).
+/// `setVariable`: a local (or a field or element of one) is written, a signal deposited (in
+/// the next cycle; a field or element deposits the whole signal with that part changed).
 fn set_variable(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     let a = &req["arguments"];
     let r = a["variablesReference"].as_i64().unwrap_or(0);
@@ -682,30 +1008,106 @@ fn set_variable(sh: &Shared, at: &At<'_, '_>, req: &Json) {
     let text = a["value"].as_str().unwrap_or_default();
     let (frame, kind) = (r >> 2, r & 3);
     let (tid, i) = (frame >> 16, (frame & 0xffff) as usize);
-    let res = match (kind, at) {
-        (1, At::Process(s)) if s.process as i64 == tid - 1 => write_local(sh, s, i, name, text),
-        (1, _) => Err(format!("no local `{name}` here")),
-        (2, _) => {
-            let k = thread_proc(sh, tid).and_then(|p| {
-                p.signals
-                    .iter()
-                    .copied()
-                    .find(|&k| sh.design.sigs[k].name == name)
-            });
-            match k {
-                Some(k) => sh.design.sigs[k]
-                    .parse(text)
-                    .and_then(|v| put(sh, at, k, &v, OpKind::Deposit)),
-                None => Err(format!("no signal `{name}` here")),
-            }
+    let target = if r >= CHILD {
+        let node = sh
+            .nodes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get((r - CHILD) as usize)
+            .cloned();
+        match node {
+            Some(Node::Region(g)) => sh.design.regions[g]
+                .sigs
+                .iter()
+                .copied()
+                .find(|&k| sh.design.sigs[k].name == name)
+                .map(|sig| Node::Signal {
+                    sig,
+                    path: Vec::new(),
+                })
+                .ok_or_else(|| format!("no signal `{name}` here")),
+            Some(n) => child_pos(sh, at, &n, name).map(|k| n.child(k)),
+            None => Err(format!("no variables {r}")),
         }
-        (3, _) => Err("generics are constants".into()),
-        _ => Err(format!("no variables {r}")),
+    } else {
+        match kind {
+            1 => Ok(Node::Local {
+                tid,
+                frame: i,
+                name: name.to_string(),
+                path: Vec::new(),
+            }),
+            2 => thread_proc(sh, tid)
+                .and_then(|p| {
+                    p.signals
+                        .iter()
+                        .copied()
+                        .find(|&k| sh.design.sigs[k].name == name)
+                })
+                .map(|sig| Node::Signal {
+                    sig,
+                    path: Vec::new(),
+                })
+                .ok_or_else(|| format!("no signal `{name}` here")),
+            3 => Err("generics are constants".into()),
+            _ => Err(format!("no variables {r}")),
+        }
     };
-    match res {
+    match target.and_then(|n| write_node(sh, at, &n, text)) {
         Ok(v) => sh.respond(req, json!({"value": v, "variablesReference": 0})),
         Err(m) => sh.fail(req, &m),
     }
+}
+
+/// The position of child `name` (a field, or an element by its index) of a node's value.
+fn child_pos(sh: &Shared, at: &At<'_, '_>, n: &Node, name: &str) -> Result<usize, String> {
+    let (t, _) = node_root(sh, at, n)
+        .and_then(|(t, v)| descend(t, v, node_path(n)))
+        .ok_or("the variable is not readable here")?;
+    match &t {
+        LitType::Record(fs) => fs.iter().position(|(f, _)| f == name),
+        LitType::Array { len, .. } => name
+            .parse::<i64>()
+            .ok()
+            .and_then(|i| (0..*len).find(|&k| t.index(k) == Some(i)))
+            .map(|k| k as usize),
+        _ => None,
+    }
+    .ok_or_else(|| format!("no element `{name}` here"))
+}
+
+/// Write `text` at a node's path: a local at once, a signal as a deposit of its whole
+/// value; the new part as text.
+fn write_node(sh: &Shared, at: &At<'_, '_>, n: &Node, text: &str) -> Result<String, String> {
+    let (t, mut root) = node_root(sh, at, n).ok_or_else(|| match n {
+        Node::Local { name, .. } => format!("no local `{name}` here"),
+        _ => "the signal is not readable here".to_string(),
+    })?;
+    let path = node_path(n);
+    let mut pt = &t;
+    let mut pv = &mut root;
+    for &k in path {
+        (pt, pv) = match (pt, pv) {
+            (LitType::Record(fs), Lit::Record(xs)) => (&fs[k].1, &mut xs[k]),
+            (LitType::Array { elem, .. }, Lit::Array(xs)) => (&**elem, &mut xs[k]),
+            _ => return Err("this is a bug in yavs: a path into a scalar".into()),
+        };
+    }
+    *pv = literal(text.as_bytes(), pt).map_err(|e| e.to_string())?;
+    let shown = literal_image(pv, pt);
+    match n {
+        Node::Local {
+            tid, frame, name, ..
+        } => {
+            let s = stop_of(at, *tid).ok_or_else(|| format!("no local `{name}` here"))?;
+            write_local(sh, s, *frame, name, &root)?;
+        }
+        Node::Signal { sig, .. } => {
+            put(sh, at, *sig, &root, OpKind::Deposit)?;
+        }
+        Node::Region(_) => return Err("a region has no value".into()),
+    }
+    Ok(shown)
 }
 
 /// Requests the reader thread answers itself; the rest go to the simulation thread.
@@ -717,7 +1119,7 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
                 &req,
                 json!({
                     "supportsConfigurationDoneRequest": true,
-                    "supportsConditionalBreakpoints": false,
+                    "supportsConditionalBreakpoints": true,
                     "supportsHitConditionalBreakpoints": true,
                     "supportsEvaluateForHovers": true,
                     "supportsTerminateRequest": true,
@@ -737,6 +1139,7 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
         "setDataBreakpoints" => set_signal_breakpoints(sh, &req, 0),
         "yavs/setSignalBreakpoints" => set_signal_breakpoints(sh, &req, 1),
         "setExceptionBreakpoints" => sh.respond(&req, json!({})),
+        "yavs/hierarchy" => sh.respond(&req, hierarchy(sh)),
         "configurationDone" => {
             sh.respond(&req, json!({}));
             let _ = tx.send(Msg::Start);
@@ -773,6 +1176,25 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
     }
 }
 
+/// `yavs/hierarchy`: the elaborated regions, nested, with their processes and signals.
+fn hierarchy(sh: &Shared) -> Json {
+    fn region(sh: &Shared, r: usize) -> Json {
+        let reg = &sh.design.regions[r];
+        json!({
+            "name": reg.name,
+            "path": reg.path,
+            "kind": reg.kind,
+            "regions": reg.children.iter().map(|&c| region(sh, c)).collect::<Vec<_>>(),
+            "processes": reg.procs,
+            "signals": reg.sigs.iter().map(|&k| {
+                let s = &sh.design.sigs[k];
+                json!({"name": s.name, "path": s.path, "type": s.ty})
+            }).collect::<Vec<_>>(),
+        })
+    }
+    json!({"regions": sh.design.roots.iter().map(|&r| region(sh, r)).collect::<Vec<_>>()})
+}
+
 /// Map each requested line to the statements starting on it (or the next line that has
 /// some) and replace the file's breakpoints.
 fn set_breakpoints(sh: &Shared, req: &Json) {
@@ -781,8 +1203,10 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
     let key = design::absolute(path);
     let session = sh.session();
     let mut set = sh.bps.lock().unwrap_or_else(|p| p.into_inner());
+    let mut conds = sh.conds.lock().unwrap_or_else(|p| p.into_inner());
     for s in set.remove(&key).into_iter().flatten() {
         session.clear_breakpoint(s);
+        conds.remove(&s);
     }
     let mut ids = Vec::new();
     let mut out = Vec::new();
@@ -793,11 +1217,26 @@ fn set_breakpoints(sh: &Shared, req: &Json) {
             None => Ok(HitCond::Always),
             Some(h) => h,
         };
+        // A condition is evaluated here; the interpreter then stops on every hit.
+        let hit = hit.and_then(|hit| match bp["condition"].as_str() {
+            None => Ok((hit, None)),
+            Some(c) => cond::parse(c).map(|cond| {
+                let c = Arc::new(LineCond {
+                    cond,
+                    hit,
+                    hits: std::sync::atomic::AtomicU64::new(0),
+                });
+                (HitCond::Always, Some(c))
+            }),
+        });
         let found = sh.design.line_stmts(&key, line);
         match (found, hit) {
-            (Some((l, stmts)), Ok(hit)) => {
+            (Some((l, stmts)), Ok((hit, c))) => {
                 for &s in stmts {
                     session.set_breakpoint(s, LineBp::new(None, hit));
+                    if let Some(c) = &c {
+                        conds.insert(s, c.clone());
+                    }
                     ids.push(s);
                 }
                 out.push(json!({"verified": true, "line": l, "source": source(&key)}));
@@ -848,7 +1287,8 @@ fn data_breakpoint_info(sh: &Shared, req: &Json) {
 /// and an optional `value`), then the watch list.
 fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
     let a = &req["arguments"];
-    let p = thread_proc(sh, a["frameId"].as_i64().map_or(0, |f| f >> 16));
+    let tid = a["frameId"].as_i64().map_or(0, |f| f >> 16);
+    let p = thread_proc(sh, tid);
     let mut bps = Vec::new();
     let mut out = Vec::new();
     let empty = Vec::new();
@@ -856,22 +1296,32 @@ fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
         let name = bp[if set == 0 { "dataId" } else { "signal" }]
             .as_str()
             .unwrap_or_default();
-        let r = match sh.design.find(p, name) {
-            None => Err(format!("no signal `{name}` here")),
-            Some(_) if !bp["condition"].is_null() || !bp["hitCondition"].is_null() => {
-                Err("conditions on signal breakpoints are not supported (#326)".into())
-            }
-            Some(k) => match bp["value"].as_str() {
-                None => Ok(SigBp {
-                    sig: k,
-                    value: None,
-                }),
-                Some(v) => sh.design.sigs[k].parse(v).map(|v| SigBp {
-                    sig: k,
-                    value: Some(v),
-                }),
-            },
-        };
+        let r = (|| {
+            let k = sh
+                .design
+                .find(p, name)
+                .ok_or_else(|| format!("no signal `{name}` here"))?;
+            let value = match bp["value"].as_str() {
+                None => None,
+                Some(v) => Some(sh.design.sigs[k].parse(v)?),
+            };
+            let cond = match bp["condition"].as_str() {
+                None => None,
+                Some(c) => Some(cond::parse(c)?),
+            };
+            let hit = match bp["hitCondition"].as_str() {
+                None => HitCond::Always,
+                Some(h) => parse_hit(h)?,
+            };
+            Ok::<_, String>(SigBp {
+                sig: k,
+                value,
+                cond,
+                hit,
+                hits: 0,
+                tid,
+            })
+        })();
         out.push(match r {
             Ok(b) => {
                 let d = &sh.design.sigs[b.sig].path;
@@ -898,8 +1348,9 @@ fn set_signal_breakpoints(sh: &Shared, req: &Json, set: usize) {
 }
 
 /// After a pause: whether a watched signal changed in the last cycle, and the first signal
-/// breakpoint that holds now, as text for the stop.
-fn signal_hit(sh: &Shared, sim: &SimControl) -> (bool, Option<String>) {
+/// breakpoint that fires now (its change, value, condition and hit count held): the stop's
+/// reason and text.
+fn signal_hit(sh: &Shared, sim: &SimControl) -> (bool, Option<(&'static str, String)>) {
     let hits = std::mem::take(
         &mut *sh
             .hits
@@ -911,19 +1362,49 @@ fn signal_hit(sh: &Shared, sim: &SimControl) -> (bool, Option<String>) {
     if hits.is_empty() {
         return (false, None);
     }
-    let all = sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner());
-    let hit = all.iter().flatten().find_map(|b| {
+    let at = At::Kernel(sim);
+    let mut all = sh.sig_bps.lock().unwrap_or_else(|p| p.into_inner());
+    let mut stop = None;
+    for b in all.iter_mut().flatten() {
         let s = &sh.design.sigs[b.sig];
         if !hits.iter().any(|h| s.leaves().any(|l| l == h.2)) {
-            return None;
+            continue;
         }
         let read = |r| sim.value(r).ok();
-        match &b.value {
-            Some(v) if s.value(&read).as_ref() != Some(v) => None,
-            _ => Some(format!("{} = {}", s.path, s.show(&read))),
+        if b.value
+            .as_ref()
+            .is_some_and(|v| s.value(&read).as_ref() != Some(v))
+        {
+            continue;
         }
-    });
-    (true, hit)
+        let held = match &b.cond {
+            None => Ok(true),
+            // Names as seen from the process of the request, else from the signal's region.
+            Some(c) => c.eval(&Names {
+                sh,
+                at: &at,
+                tid: b.tid,
+                frame: None,
+                region: s.path.rfind(':').map(|i| &s.path[..=i]),
+            }),
+        };
+        let fire = match held {
+            Ok(true) => {
+                b.hits += 1;
+                fires(b.hit, b.hits)
+                    .then(|| ("data breakpoint", format!("{} = {}", s.path, s.show(&read))))
+            }
+            Ok(false) => None,
+            Err(m) => Some((
+                "exception",
+                format!("{}: breakpoint condition: {m}", s.path),
+            )),
+        };
+        if stop.is_none() {
+            stop = fire;
+        }
+    }
+    (true, stop)
 }
 
 /// `N`, `= N`, `>= N`, `% N`: the hit count condition.
@@ -1000,6 +1481,8 @@ pub fn serve(
         hits: OnceLock::new(),
         ops: Mutex::new(Vec::new()),
         prog: ir.program.clone(),
+        nodes: Mutex::new(Vec::new()),
+        conds: Mutex::new(HashMap::new()),
     });
     let session = DebugSession::new(&ir.program, Box::new(Front(sh.clone())));
     let _ = sh.session.set(session.clone());
@@ -1085,8 +1568,8 @@ pub fn serve(
             }
             None => step,
         };
-        let reason = if hit.is_some() {
-            "data breakpoint"
+        let reason = if let Some((r, _)) = &hit {
+            r
         } else if next.is_some() {
             continue;
         } else if step {
@@ -1109,7 +1592,7 @@ pub fn serve(
             "allThreadsStopped": true,
             "description": format!("{reason} at {}, delta {}", sim.now(), sim.delta()),
         });
-        if let Some(t) = hit {
+        if let Some((_, t)) = hit {
             body["text"] = json!(t);
         }
         match serve_stop(&sh, &At::Kernel(&sim), body) {

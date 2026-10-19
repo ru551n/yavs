@@ -40,6 +40,9 @@ pub enum Resume {
     StepOut,
     /// Stop at the next statement executed by any process.
     GlobalStep,
+    /// Not a stop after all (a breakpoint condition the debugger evaluates did not hold):
+    /// run on as before it, a step under way included.
+    Skip,
 }
 
 /// When a line breakpoint fires, counting the hits where its condition held.
@@ -390,7 +393,7 @@ impl StepMode {
 
     pub(crate) fn after(r: Resume, depth: usize) -> StepMode {
         match r {
-            Resume::Continue | Resume::GlobalStep => StepMode::Run,
+            Resume::Continue | Resume::GlobalStep | Resume::Skip => StepMode::Run,
             Resume::StepIn => StepMode::In,
             Resume::StepOver => StepMode::Over(depth),
             Resume::StepOut => StepMode::Out(depth),

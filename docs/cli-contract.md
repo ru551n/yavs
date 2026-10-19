@@ -305,7 +305,16 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   Values are VHDL literals of the target's type: scalars as `T'VALUE` reads them (physical values
   in any unit), string and bit string literals, aggregates with positional and named elements,
   ranges and `others`; a value that does not parse is a failed response naming the problem.
-  Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
+  `condition` on line and data breakpoints (`supportsConditionalBreakpoints`) is a VHDL boolean
+  expression over the stopped frame's locals and the signals visible from the process (or the
+  watched signal's region) or by path, with predefined operators; one that does not parse or
+  uses something unsupported is `verified: false` with a `message`, an error while evaluating a
+  stop with reason `exception`. `hitCondition` counts the hits where the condition held.
+  Composite variables have a `variablesReference` (records with `namedVariables`, arrays with
+  `indexedVariables`, children named by field or index, paged by `start` and `count`).
+  The scope `Hierarchy` and the custom request `yavs/hierarchy` (answered at any time;
+  `regions: [{name, path, kind, regions, processes, signals: [{name, path, type}]}]`) give the
+  elaborated hierarchy. Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
 - `--tier=interp|llvm` (`run`, default `interp`): `llvm` compiles every function of the design
   with the LLVM tier before time 0 and runs that code; the output is identical to `interp` (the
   interpreter is the reference). Elaboration-time code (package and instance initialisation)

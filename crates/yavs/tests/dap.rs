@@ -207,8 +207,8 @@ fn run_to_time_and_steps() {
 }
 
 /// Signal breakpoints: data breakpoint info for a signal, a local and unknown names, stops on
-/// changes (`setDataBreakpoints`) and on values (`yavs/setSignalBreakpoints`), rejected
-/// values and conditions. Identical at `--threads=4`.
+/// changes (`setDataBreakpoints`, one with a condition that never holds) and on values
+/// (`yavs/setSignalBreakpoints`), rejected values. Identical at `--threads=4`.
 #[test]
 fn signal_breakpoints() {
     script_case("signals", &[]);
@@ -222,6 +222,22 @@ fn signal_breakpoints() {
 fn force_deposit_release() {
     script_case("values", &[]);
     script_case("values", &["--threads=4"]);
+}
+
+/// Breakpoint conditions: on line breakpoints (held, not held inside a function stepped over,
+/// an error in one, with a hit count), on data breakpoints (names seen from the signal's
+/// region, with a hit count), and unparsable or unsupported ones. Identical at `--threads=4`.
+#[test]
+fn conditions() {
+    script_case("conditions", &[]);
+    script_case("conditions", &["--threads=4"]);
+}
+
+/// Composite variables (records by field, arrays by index, paged), setting a field or an
+/// element of a local and of a signal, the Hierarchy scope and `yavs/hierarchy`.
+#[test]
+fn composites_and_hierarchy() {
+    script_case("composite", &[]);
 }
 
 /// Pause a simulation that would run forever, then read a signal and disconnect.

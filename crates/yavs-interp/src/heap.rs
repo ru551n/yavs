@@ -8,7 +8,9 @@
 //! An *address* into an object (from `Deref`) carries no generation, so a deallocated slot is
 //! not reused at once: it waits in quarantine until the owner suspends (registers are dead
 //! then) and [`Heap::recycle`] finds no address to it in the frames (#81). An access through
-//! a stale address therefore always meets the freed slot, a clean runtime error.
+//! a stale address therefore always meets the freed slot, a clean runtime error. A process
+//! that runs long without a wait also recycles inside its activation, between instructions,
+//! once [`Heap::reclaim_due`]; its registers then count as addresses too (#355).
 //!
 //! The shared heap is collected the same way, at a serial safepoint between cycles
 //! (`crate::SharedGc`): roots are the shared variables area, the objects that existed when
@@ -23,6 +25,9 @@ pub const PRIVATE: u8 = 1;
 pub const SHARED: u8 = 2;
 
 const MAX_INDEX: u32 = (1 << 24) - 1;
+
+/// Quarantined slots that make an in-activation [`Heap::recycle`] due, at least.
+const RECLAIM_MIN: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeapError {
@@ -61,6 +66,8 @@ pub struct Heap {
     free: Vec<u32>,
     /// Deallocated slots not reusable yet (module docs).
     quarantine: Vec<u32>,
+    /// Quarantine length at which [`Heap::reclaim_due`].
+    reclaim_at: usize,
     /// Bytes allocated since the last collection.
     pub since_gc: u64,
     /// Bytes of the objects that survived the last collection.
@@ -84,10 +91,16 @@ impl Heap {
             slots: Vec::new(),
             free: Vec::new(),
             quarantine: Vec::new(),
+            reclaim_at: RECLAIM_MIN,
             since_gc: 0,
             live_bytes: 0,
             sealed: Vec::new(),
         }
+    }
+
+    /// Slots in use, deallocated or not (for tests and statistics).
+    pub fn slots(&self) -> usize {
+        self.slots.len()
     }
 
     pub fn live(&self) -> usize {
@@ -176,6 +189,16 @@ impl Heap {
             .partition(|i| pinned.binary_search(i).is_ok());
         self.quarantine = keep;
         self.free.extend(go);
+        self.reclaim_at = (2 * self.quarantine.len()).max(RECLAIM_MIN);
+    }
+
+    /// Whether enough deallocated slots wait that a [`Heap::recycle`] inside an activation
+    /// pays for its address search: twice what the last one had to keep, so slots that stay
+    /// pinned do not make every search due. ponytail: the search also scans every frame, so a
+    /// process with megabytes of frame data still searches once per few thousand frees; a
+    /// bound proportional to the frame size if that shows in a profile.
+    pub fn reclaim_due(&self) -> bool {
+        self.quarantine.len() >= self.reclaim_at
     }
 
     pub fn data(&self, index: u32) -> Option<&[u8]> {

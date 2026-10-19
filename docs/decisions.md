@@ -581,7 +581,13 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   (a by-reference parameter of a waiting procedure). An access through a stale address
   therefore always meets the freed slot and is the runtime error `access to a deallocated
   object`. For the shared heap the addresses of every serial process's frames count, as each
-  published them at its last suspension (#303).
+  published them at its last suspension (#303). A process that runs long without a wait
+  also recycles inside its activation (#355): before a native call or a `deallocate`, once
+  at least 4096 slots (and twice what the last recycle kept) wait, with the same search over
+  its frames, temporaries and, live between instructions, its registers. Rationale: a loop
+  that writes millions of textio lines kept every freed slot until it ended. Deterministic:
+  it depends only on the process's own instruction stream (the shared heap's other users,
+  serial processes, are suspended then).
 - **2019 `std.env` assert state, call paths and time_record** (#99, yavs-interp `env.rs`):
   - The assert state (counts, enables, read severity) is global but read deterministically
     (rule 3): a process sees the state as of the start of its cycle plus its own changes;

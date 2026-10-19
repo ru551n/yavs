@@ -1042,6 +1042,105 @@ fn shared_heap_collected_at_safepoints() {
     );
 }
 
+/// A serial process that allocates and deallocates in a loop without a wait (#355): freed
+/// slots are recycled inside the activation, so the shared heap stays at a few thousand slots
+/// instead of one per iteration, and an address held in a register across the loop to a
+/// slot freed before it still meets the freed object (the stale-address error). Same
+/// at 1 and 4 threads.
+#[test]
+fn freed_slots_recycled_within_an_activation() {
+    use std::sync::{Arc, Mutex};
+    const N: i64 = 20_000;
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let acc = pb.ty(Ty::Access { target: int });
+    let what = pb.check_msg("p.all", Dir::To);
+    let p = pb.declare("p", FuncKind::Process, None);
+    let s;
+    {
+        let mut fb = pb.define(p);
+        let ps = fb.local("p", acc, 8, 8);
+        let qs = fb.local("q", acc, 8, 8);
+        let i = fb.local("i", int, 8, 8);
+        fb.root(ps, RootKind::Handle);
+        fb.root(qs, RootKind::Handle);
+        stmt(&mut fb, StmtKind::VarAssign);
+        // A shared variable access makes the process serial.
+        let zero = fb.int(0);
+        store(&mut fb, AddrSpace::Shared, 0, zero, Width::B8);
+        let h = new_int(&mut fb, int, 41);
+        store(&mut fb, AddrSpace::Frame, ps, h, Width::B8);
+        let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
+        let obj = deref(&mut fb, h, what);
+        let pa = fb.addr(AddrSpace::Frame, ps);
+        fb.emit(Inst::Free { ptr: pa });
+        let (lp, body, done) = (fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::Br { to: lp });
+        fb.at(lp);
+        stmt(&mut fb, StmtKind::Loop);
+        let iv = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+        let lim = fb.int(N);
+        let c = cmp(&mut fb, CmpOp::Lt, iv, lim);
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let h = new_int(&mut fb, int, 99);
+        store(&mut fb, AddrSpace::Frame, qs, h, Width::B8);
+        let qa = fb.addr(AddrSpace::Frame, qs);
+        fb.emit(Inst::Free { ptr: qa });
+        let iv = load(&mut fb, AddrSpace::Frame, i, Width::B8);
+        let one = fb.int(1);
+        let iv = bin(&mut fb, IntOp::Add, iv, one);
+        store(&mut fb, AddrSpace::Frame, i, iv, Width::B8);
+        fb.emit(Inst::Br { to: lp });
+        fb.at(done);
+        s = stmt(&mut fb, StmtKind::VarAssign);
+        let v = fb.int(5);
+        fb.emit(Inst::Store {
+            addr: obj,
+            src: v,
+            w: Width::B8,
+        });
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let prog = Arc::new(pb.finish().unwrap());
+    assert!(yavs_interp::proc_flags(&prog, p).serial);
+    let rt = Runtime::new(prog.clone(), Bindings::default()).unwrap();
+    for threads in [1, 4] {
+        let shared = Arc::new(Mutex::new(yavs_interp::SharedState::new(vec![0; 8])));
+        let mut b = Builder::new();
+        let ip = yavs_interp::InterpProcess::new(
+            rt.clone(),
+            p,
+            Arc::new(yavs_interp::InstData::default()),
+            vec![],
+            Some(shared.clone()),
+        )
+        .unwrap();
+        b.process("p", yavs_interp::proc_flags(&prog, p), &[], ip);
+        let mut sim = b
+            .build(Config {
+                threads,
+                ..Config::default()
+            })
+            .unwrap();
+        let e = sim.run_until(Time::ns(10)).unwrap_err();
+        assert_eq!(
+            e.kind,
+            ErrorKind::Runtime("access to a deallocated object".into())
+        );
+        assert_eq!(e.trace, [s]);
+        // One slot per iteration without the recycling; at most twice its trigger with it.
+        let slots = shared.lock().unwrap().heap_slots();
+        assert!(slots <= 8192, "{slots} slots at {threads} threads");
+    }
+}
+
 /// `to_string` and `'image` natives on integer, real, enumeration and character values;
 /// an unimplemented native names its symbol; an unknown symbol fails early.
 #[test]

@@ -479,7 +479,7 @@ impl Machine {
         if self.heap.since_gc > self.rt.limits.gc_threshold {
             self.collect();
         } else if self.heap.has_quarantine() {
-            let pinned = self.pinned(HEAP);
+            let pinned = self.pinned(HEAP, false);
             self.heap.recycle(&pinned);
         }
         if let Some(d) = &self.dbg {
@@ -522,21 +522,29 @@ impl Machine {
         let Some(roots) = self.frame_roots() else {
             return false;
         };
-        let pinned = self.pinned(HEAP);
+        let pinned = self.pinned(HEAP, false);
         self.heap.collect(&self.rt.prog, &roots, &pinned)
     }
 
     /// Slot indices of `space` (a heap) that addresses in this process's frames and
-    /// temporaries may reach, sorted. Any aligned word that decodes to such an address counts:
-    /// a false hit only delays reuse or collection of one object.
-    pub(crate) fn pinned(&self, space: u8) -> Vec<u32> {
+    /// temporaries, and with `regs` its registers, may reach, sorted. Any aligned word that
+    /// decodes to such an address counts: a false hit only delays reuse or collection of one
+    /// object. Registers are dead at a suspension, live between instructions.
+    pub(crate) fn pinned(&self, space: u8, regs: bool) -> Vec<u32> {
         let words = self
             .frames
             .iter()
             .flat_map(|f| f.slots.as_chunks::<8>().0)
-            .chain(self.temp.as_chunks::<8>().0);
+            .chain(self.temp.as_chunks::<8>().0)
+            .map(|w| u64::from_le_bytes(*w))
+            .chain(
+                self.frames
+                    .iter()
+                    .filter(|_| regs)
+                    .flat_map(|f| f.regs.iter().copied()),
+            );
         let mut v: Vec<u32> = words
-            .map(|w| split(u64::from_le_bytes(*w)))
+            .map(split)
             .filter(|&(sp, _, _)| sp == space)
             .map(|(_, i, _)| i)
             .collect();
@@ -560,7 +568,7 @@ impl Machine {
             v.retain(|&h| heap::tag_of(h) == heap::SHARED);
             v
         });
-        let pinned = self.pinned(SHARED_HEAP);
+        let pinned = self.pinned(SHARED_HEAP, false);
         let Some(sh) = self.sh.as_mut() else {
             return;
         };
@@ -573,6 +581,34 @@ impl Machine {
             let pinned = sh.pinned();
             if let Some(h) = sh.heap.as_mut() {
                 h.recycle(&pinned);
+            }
+        }
+    }
+
+    /// Recycle deallocated slots inside an activation once enough wait (#355), so a loop
+    /// without a wait does not keep every slot it frees. Call only between instructions
+    /// (before a native call or a `deallocate`): every address the process holds is then in
+    /// its frames, registers or temporaries. Other serial processes are suspended, so their
+    /// published addresses are current for the shared heap.
+    fn reclaim(&mut self) {
+        if self.heap.reclaim_due() {
+            let pinned = self.pinned(HEAP, true);
+            self.heap.recycle(&pinned);
+        }
+        let due = self
+            .sh
+            .as_ref()
+            .and_then(|sh| sh.heap.as_ref())
+            .is_some_and(Heap::reclaim_due);
+        if due {
+            let mut pinned = self.pinned(SHARED_HEAP, true);
+            if let Some(sh) = self.sh.as_mut() {
+                pinned.extend(sh.pinned());
+                pinned.sort_unstable();
+                pinned.dedup();
+                if let Some(h) = sh.heap.as_mut() {
+                    h.recycle(&pinned);
+                }
             }
         }
     }
@@ -1910,6 +1946,7 @@ impl Machine {
                 return Ok(flow);
             }
             Inst::CallNative { native, args, dst } => {
+                self.reclaim();
                 let n = prog
                     .natives
                     .get(native)
@@ -1956,7 +1993,10 @@ impl Machine {
                 })?;
                 self.set(dst, h);
             }
-            Inst::Free { ptr } => self.deallocate(self.r(ptr))?,
+            Inst::Free { ptr } => {
+                self.reclaim();
+                self.deallocate(self.r(ptr))?;
+            }
             Inst::Deref { dst, handle, what } => {
                 let h = self.r(handle);
                 let (w, _) = self.check_msg(what);
@@ -2431,5 +2471,25 @@ mod tests {
         m.sh = Some(SharedState::new(vec![]));
         m.publish_shared(&mut slot);
         assert_eq!((ROOT_BUILDS.get(), slot), (1, Some(0)));
+    }
+
+    /// Between instructions the registers hold addresses too: the in-activation recycle
+    /// counts them, the one at a suspension does not (#355).
+    #[test]
+    fn registers_pin_between_instructions() {
+        let rt = Runtime::new(Arc::new(Program::default()), crate::Bindings::default()).unwrap();
+        let mut m = Machine::new(rt, Arc::default(), vec![], FuncId(0));
+        m.frames.push(Frame {
+            func: FuncId(0),
+            pc: 0,
+            slots: mk_addr(HEAP, 3, 8).unwrap().to_le_bytes().to_vec(),
+            regs: vec![mk_addr(HEAP, 5, 0).unwrap(), 7],
+            link: None,
+            ret: None,
+            temp_base: 0,
+            shared_alloc: false,
+        });
+        assert_eq!(m.pinned(HEAP, false), [3]);
+        assert_eq!(m.pinned(HEAP, true), [3, 5]);
     }
 }

@@ -131,6 +131,11 @@ impl SharedState {
     pub fn heap_live(&self) -> usize {
         self.heap.as_ref().map_or(0, Heap::live)
     }
+
+    /// Slots of the shared heap, deallocated or not (for tests and statistics).
+    pub fn heap_slots(&self) -> usize {
+        self.heap.as_ref().map_or(0, Heap::slots)
+    }
 }
 
 /// Collects the shared heap at serial safepoints: seals it when the simulation starts

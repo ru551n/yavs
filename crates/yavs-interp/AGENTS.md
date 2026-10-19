@@ -48,7 +48,7 @@ section 9; the interpreter API and the Requests log are in `crates/yavs-ir/READM
 | Heap: generational handles, precise roots (`Func::roots`), mark and sweep at suspensions; skip collection rather than be unsound | Rule 6 | `docs/plan.md` rule 6, ir.md 1.6 |
 | Allocations in elaboration code run with the shared state, in methods of shared protected objects, and in everything they call go to the shared heap (`Frame::shared_alloc`, `Machine::alloc_heap`, the one allocation path) | Their objects outlive the elaboration call's private heap (#184, #246) | `docs/decisions.md` "Allocators of shared objects" |
 | Serial processes allocate in the shared heap; it is sealed at the start of the simulation and collected at `Phase::NextCycle` by `SharedGc` from `Program::shared_roots`, the sealed objects and the roots each serial process publishes at its suspensions (`Machine::publish_shared`) | Values reached through non-protected shared variables, bounded growth, never during a cycle (user, 2026-10-19, #303) | `docs/decisions.md` "Shared heap collection" |
-| Deallocated heap slots are quarantined until a suspension finds no address to them in the frames and temporaries; such addresses also keep objects alive in a collection | Addresses have no generation (#81) | `docs/decisions.md` "IR and interpreter" |
+| Deallocated heap slots are quarantined until a suspension finds no address to them in the frames and temporaries; such addresses also keep objects alive in a collection. A long activation also recycles between instructions (`Machine::reclaim`, before a native call or `deallocate`, once `Heap::reclaim_due`), searching the registers too | Addresses have no generation (#81); a loop without a wait kept every freed slot (#355) | `docs/decisions.md` "IR and interpreter" |
 | Disk files written directly by the owning process, every caller of a file native serial; `STD_OUTPUT` through `Ctx::output` | Write/close/reopen in one delta; `--threads` independent; ordered with `report` (orchestrator, 2026-10-18; serial: #82) | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes and file writes", "Kernel round 3" |
 | BIT/BOOLEAN elements of logic arrays use std_ulogic codes '0'/'1' (2/3); scalar BIT/BOOLEAN are positions 0/1 | Shared plane ops | same; `src/implicit.rs` docs |
 | Foreign arrays as C-layout copies left to right, logic elements one code byte, records as aligned structs, access as pointer; copy-back range-checked | The reference simulator convention plus yavs additions | `docs/decisions.md` "IR and interpreter" |
@@ -72,9 +72,11 @@ Module-local decisions go in this section and ir.md section 9 in the same commit
   `InterpProcess`'s `Process::serial`, which the kernel ORs in so no builder can drop it).
 - **Checked i64 everywhere** through `yavs_std::arith`; never wrap, clamp or saturate.
 - **Generational handles:** a stale access value is a clean runtime error. Heap *addresses*
-  carry no generation: deallocated slots wait in quarantine until a suspension finds no address
-  to them (`Machine::pinned`), so never hand out a freed slot any other way; the GC follows
-  descriptors (`heap::handles_in`).
+  carry no generation: deallocated slots wait in quarantine until a suspension, or
+  `Machine::reclaim` between instructions, finds no address to them (`Machine::pinned`), so
+  never hand out a freed slot any other way, and never recycle in the middle of an
+  instruction or native (Rust locals may hold addresses there); the GC follows descriptors
+  (`heap::handles_in`).
 - A runtime error's `SimError::trace` is the VHDL stack as `StmtId`s, innermost first; keep it
   correct when adding call paths (natives calling back into IR).
 - `reflect.rs` has a test that NATIVE.md reflection rows and the implementation agree: add both.

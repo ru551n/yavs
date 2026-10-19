@@ -182,7 +182,8 @@ traces with wake-ups at 1, 4 and 8 threads.
 **GC and heap safepoints.** The commit phase is the only point at which no process runs and no
 `Ctx` exists. The shared heap collects between cycles, from an observer at `Phase::NextCycle`
 (`yavs_interp::SharedGc`, #303); process heaps collect when their process suspends
-(docs/design/ir.md 1.6). Protected-type locks are never held across a suspension.
+(docs/design/ir.md 1.6). Deallocated slots are also recycled inside a long activation, by the
+process itself between instructions (#355). Protected-type locks are never held across a suspension.
 
 ## How the IR plugs in
 

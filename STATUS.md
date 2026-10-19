@@ -465,7 +465,7 @@ compact constants, natives by NATIVE.md symbol, foreign references, flag propaga
 (`crates/yavs-ir/README.md` says what is stable). `yavs-interp`: `InterpProcess` implements the
 kernel `Process` (heap frame stack, waits inside procedures), checked arithmetic through
 yavs-std, checks, signal ops mapped 1:1 to `Ctx`, natives (`now`, `stop`, `finish`, scalar
-`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined; the shared heap, where serial processes allocate, collected between cycles from the shared variables, the objects elaboration made and every serial process's frames, #303),
+`to_string`/`'image`), VHPIDIRECT calls of scalars, generational heaps with precise-root GC (descriptor-aware, deallocated slots quarantined until a suspension or, in a long activation, a recycle between instructions, #355; the shared heap, where serial processes allocate, collected between cycles from the shared variables, the objects elaboration made and every serial process's frames, #303),
 serial marking, kernel-free `call` / `call_shared` for elaboration (allocations with the shared state, at any call depth, in the shared heap, #246), protected objects,
 std.textio (read/write of every textio type, linear in the line length over many calls,
 readline/writeline/tee, hread/oread/sread, justify), TEXT file ops including the 2019 ones, std.env (getenv, dir_*, tool and version
@@ -541,7 +541,9 @@ Findings:
   scoreboard designs, 147 KB for the library testbench). No collection runs inside one
   activation of a serial process (b1: 2M lines in one loop without a wait never reach a
   safepoint, 550 MB of quarantined slots, about 270 bytes per deallocated line); this is the
-  same before the collector.
+  same before the collector. Fixed by #355: a long activation recycles freed slots between
+  instructions; peak RSS of b1 and b2 went from 544 MB to 10 MB (3 runs each, CPU time
+  unchanged within the spread, same output).
 - Ranking by measured benefit: (1) a safepoint or slot reclaim inside long activations
   (memory only; 550 MB in b1, equal before and after); (2) dirty flags on protected-object
   writes, only worthwhile for live sets of hundreds of MB (worst pause measured 38 ms, 0.6%

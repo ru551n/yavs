@@ -1191,6 +1191,9 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   hierarchy (packages it uses, code that never runs) is `E2120` before time 0 (LRM 5.2.4.2); the
   built-in std and ieee sources are exempt (`std.textio` defaults `UNIT` to `ns`). One reference
   simulator only warns. Recorded in `docs/design/lrm-checks.md` L78.
+- **Constant parameters of access type in 2019 (L46, #198; user, 2026-10-19, majority rule):** `E1223`
+  in 2019 user code as in 2008, because all three reference simulators reject them. Only library
+  `std` stays exempt (its `std.env` declares such parameters).
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

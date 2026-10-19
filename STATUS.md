@@ -82,7 +82,7 @@ An installed binary finds `lib/` next to itself (#43).
   `??` found next to the condition's type when none is visible (L53), and conversion helps
   (`unsigned(x)`, `to_unsigned(x, n)`) on type mismatches.
 - Object types: constants, signals, generics, ports and constant or signal parameters of an access
-  or file type (or containing one) are `E1223` (#198; constant parameters are legal in 2019; 2008 protected method profiles too, #212); protected ones `E1905`.
+  or file type (or containing one) are `E1223` (#198; also in 2019, except in library `std`; 2008 protected method profiles too, #212); protected ones `E1905`.
 - Protected types (#52): signals and constants of a protected type, assignments to a protected
   variable and operators on protected operands are `E1905`; a shared variable of another type is
   `E1904` (`W1904` with `--relaxed`); a method without a body is `E1230` at its name. A shared variable of a protected type declared before its body in the same region (a package declaration) is `E1230` at the variable (#258).

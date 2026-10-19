@@ -1590,11 +1590,10 @@ impl Db {
             }
             _ => return Err(self.unsupported(o.span, "anonymous interface types", "S7")),
         };
-        // The IEEE 2019 std.env source itself declares constant parameters of
-        // DIRECTORY and CALL_PATH_VECTOR_PTR (16.5): 2019 allows constant parameters of access
-        // type (the reference simulators still reject them); 2008 only in library `std` (#198).
-        let in_std = self.in_std_library(pscope)
-            || (class == ObjClass::Constant && self.file_rev() >= LangRev::Vhdl2019);
+        // Only library `std` is exempt: its sources declare constant parameters of DIRECTORY
+        // and CALL_PATH_VECTOR_PTR (#198). User code gets `E1223` in 2008 and 2019
+        // (majority of the reference simulators, user 2026-10-19).
+        let in_std = self.in_std_library(pscope);
         let first = o.names.first().map_or(o.span, |n| n.span);
         match class {
             _ if in_std => {}

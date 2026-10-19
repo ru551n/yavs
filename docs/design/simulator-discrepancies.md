@@ -61,7 +61,7 @@ there is untested.
 
 | Case | Construct | LRM | Kind | sim1 | sim2 | sim3 | sim4 | yavs | yavs's choice | Decided |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `access-constant-parameter` | constant parameter of an access type (2008 and 2019) | 6.4.2.2, 6.5.2 | LRM clear | REJECT | REJECT | REJECT | to be filled | 08: REJECT / 19: OK | 2008: E1223; 2019: accepted (against the LRM: the 2019 6.5.2 still forbids an interface constant of an access type, and the std.env declarations that use one are a confirmed defect, VI#259; decision pending) | agent, 2026-10-18/19 (lrm-checks L46) |
+| `access-constant-parameter` | constant parameter of an access type (2008 and 2019) | 6.4.2.2, 6.5.2 | LRM clear | REJECT | REJECT | REJECT | to be filled | REJECT | reject, majority (user, 2026-10-19): E1223 in both revisions; only library `std` is exempt (its `std.env` declares such parameters) | user, 2026-10-19 (lrm-checks L46) |
 | `access-to-protected` | access type designating a protected type | 5.4.1 | LRM ambiguity | 08: REJECT / 19: OK | 08: REJECT / 19: OK | REJECT | to be filled | 08: REJECT / 19: OK | 2008: E1221; 2019: accepted | agent (lrm-checks L19) |
 | `actual-conversion-in-variable-parameter` | actual conversion of an in variable parameter | 6.5.7.1, 4.2.2.2 | LRM clear | REJECT | OK | OK | to be filled | OK | accepted | agent (#229, L66) |
 | `alias-of-external-method` | method call through an alias of an external shared variable | 6.6.2, 8.7 | LRM clear | REJECT | OK | OK | to be filled | OK | accepted | agent (NVC.md) |

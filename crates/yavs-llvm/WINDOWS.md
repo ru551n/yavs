@@ -3,8 +3,9 @@
 How to get a pinned LLVM 21 for MSVC, how `llvm-sys` 211 finds it, what ORC does on COFF, and a
 CI recipe. Each claim is marked **[verified]** (checked on 2026-10-18 against the release
 artifacts, the LLVM 21.1.8 sources or the `llvm-sys` 211.1.1 sources, mostly under Wine on Linux)
-or **[assumed]** (not yet run on a Windows machine). No Windows build of yavs has been run yet:
-the first CI run on `windows-latest` turns the assumed items into facts.
+or **[assumed]** (not yet run on a Windows machine). Since #127 the `llvm` CI job builds and tests
+on `windows-latest`: section 5 lists what that run turned into fact; remaining **[assumed]** items
+below are the ones it did not exercise.
 
 ## 1. Where LLVM 21 comes from
 
@@ -130,3 +131,19 @@ it lists exists, so all `lib\LLVM*.lib` must stay **[verified]**. Windows `tar`
 (bsdtar) reads `.tar.xz` **[assumed]** on the runner image. The `crt-static` flag in `RUSTFLAGS`
 applies to the whole build; once confirmed it can move to `.cargo/config.toml` under
 `[target.x86_64-pc-windows-msvc]`.
+
+## 5. CI result (#127, `windows-latest`, LLVM 21.1.8 official tarball)
+
+- **[verified]** `cargo clippy` and `cargo test -p yavs-llvm -p yavs --features llvm` pass,
+  including `tests/jit.rs` and `tests/tier.rs`: RuntimeDyld COFF, absolute symbols, background
+  compile and the tier work with no further changes.
+- **[verified]** `LLVM_SYS_211_PREFIX` plus the static fallback of `prefer-dynamic` is enough;
+  `-C target-feature=+crt-static` with the `/MT` libraries links; the empty `libxml2s.lib` stub
+  satisfies the linker; Windows `tar` extracts the `.tar.xz`.
+- **Differs from the recipe in section 4:** `llvm-sys` emits the system libs as `static=<name>`, so
+  rustc itself must find `psapi.lib`, `shell32.lib`, `ole32.lib`, `uuid.lib`, `advapi32.lib`,
+  `ws2_32.lib` and `ntdll.lib` on a `-L` path (error `could not find native static library
+  psapi`). The job copies them from `C:\Program Files (x86)\Windows Kits\10\Lib\<ver>\um\x64`
+  into `<prefix>\lib`. The cache holds a trimmed tree (`llvm-config`, `llvm-lib`, `include`,
+  `lib\LLVM*.lib`, stub, SDK libs).
+- Not run on Windows: the `--tier=llvm` difftest slice (the harness uses a POSIX shell template).

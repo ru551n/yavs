@@ -38,3 +38,22 @@ With Rust stable and a C compiler:
     cd yavs
     cargo build --release -p yavs   # target/release/yavs
     cd gui && cargo build --release  # gui/target/release/yavs-gui (optional)
+
+With the LLVM tier
+~~~~~~~~~~~~~~~~~~
+
+``yavs run --tier=llvm`` needs a build with the ``llvm`` feature and LLVM 21.1 (pinned). Point
+``LLVM_SYS_211_PREFIX`` at the install if ``llvm-config`` is not on ``PATH``.
+
+.. code-block:: bash
+
+    # Linux x86_64 and aarch64 (apt.llvm.org package llvm-21-dev, which includes the static libs)
+    export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+    cargo build --release -p yavs --features llvm
+
+On Windows (x86_64-pc-windows-msvc) use the official ``clang+llvm-21.1.8-x86_64-pc-windows-msvc``
+release archive (static libraries, ``llvm-config.exe``) with ``RUSTFLAGS="-C
+target-feature=+crt-static"``. The archive lacks ``libxml2s.lib``: create an empty one with
+``llvm-lib /llvmlibempty /out:<prefix>\lib\libxml2s.lib``, and copy ``psapi``, ``shell32``,
+``ole32``, ``uuid``, ``advapi32``, ``ws2_32`` and ``ntdll`` ``.lib`` from the Windows SDK into
+``<prefix>\lib`` (see the ``llvm`` job in ``.github/workflows/ci.yml`` for the exact steps).

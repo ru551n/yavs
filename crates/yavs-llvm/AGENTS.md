@@ -19,7 +19,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   re-executes for the identical error. Everything else goes through the `yavs_rt_step` callback.
   The open native lowerings are issues (section 6).
 - Not yet: tier-up of hot functions on a background thread (`--tier=auto`, #125), the size
-  threshold (#126, the user's), Windows (#127), aarch64 (#128). The spike (`spike.rs`) stays as
+  threshold (#126, the user's), The spike (`spike.rs`) stays as
   the JIT smoke test.
 - Everything is behind the `llvm` feature (off by default), so the workspace builds without
   LLVM 21.
@@ -67,7 +67,10 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
   `llvm-config` (Windows packages have none, see WINDOWS.md).
 - Codegen cost grows faster than linearly with function size; measure with
   `examples/measure.rs` before changing thresholds, one process per row.
-- Windows LLVM (static CRT, libxml2s stub) is researched, never run (#127).
+- CI (`llvm` job in `.github/workflows/ci.yml`, #127, #128) clippys, tests and runs 47 difftest cases
+  with `--tier=llvm` on Linux x86_64, Linux aarch64 (native runner) and Windows x86_64 (tests only,
+  the difftest harness needs a POSIX shell). Windows needs the steps in WINDOWS.md section 4: static
+  CRT, empty `libxml2s.lib`, SDK import libs copied into the LLVM `lib` dir.
 
 ## 5. How to work here
 
@@ -89,7 +92,7 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
 
 - Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
   tiering and background compilation (`--tier=auto`); #126 decision: O2 threshold of 40k
-  instructions; #127 Windows LLVM unverified; #128 JIT tier and CI on aarch64. Native lowering
+  instructions; native lowering
   still to do, by IR construct: #334 memory and addresses, #335 descriptors and layouts, #336
   calls between compiled functions, #337 natives, foreign calls and reports, #338 logic arrays,
   #339 signals and waits, #340 heap, #341 real conversions and powers. Epic: #144 (M6).

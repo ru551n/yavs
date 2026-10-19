@@ -292,6 +292,10 @@ pub(crate) struct Signal {
     pub dirty: Vec<Range>,
     /// Ranges whose effective value must be recomputed this cycle.
     pub eff_dirty: Vec<Range>,
+    /// The simulation runs (not initialising): reports of its resolution function are
+    /// collected in `callouts` for the kernel to commit (#372).
+    pub live: bool,
+    pub callouts: Vec<(crate::process::Severity, String)>,
 }
 
 impl Signal {
@@ -323,6 +327,8 @@ impl Signal {
             changed: Vec::new(),
             dirty: Vec::new(),
             eff_dirty: Vec::new(),
+            live: false,
+            callouts: Vec::new(),
         }
     }
 
@@ -415,7 +421,14 @@ impl Signal {
                                     srcs.iter().map(|(b, o)| b.codes(*o, n)).collect();
                                 let views: Vec<&[u8]> = codes.iter().map(Vec::as_slice).collect();
                                 let mut out = self.driving.codes(off, n);
-                                f(&views, &mut out).map_err(|message| ErrorKind::Resolution {
+                                let r = if self.live {
+                                    let (r, reps) = crate::callout::capture(|| f(&views, &mut out));
+                                    self.callouts.extend(reps);
+                                    r
+                                } else {
+                                    f(&views, &mut out)
+                                };
+                                r.map_err(|message| ErrorKind::Resolution {
                                     signal: self.name.clone(),
                                     message,
                                 })?;

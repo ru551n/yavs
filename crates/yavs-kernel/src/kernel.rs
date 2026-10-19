@@ -98,7 +98,10 @@ pub enum RunStatus {
 /// A committed `report`/`assert`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
-    pub process: ProcId,
+    /// The reporting process; `None` for a report of a function the kernel called itself (a
+    /// resolution function or port conversion), which `context` names.
+    pub process: Option<ProcId>,
+    pub context: Option<String>,
     pub severity: Severity,
     pub message: String,
 }
@@ -423,6 +426,10 @@ pub struct SimControl {
     rng: Option<u64>,
     interrupt: Interrupt,
     stats: Stats,
+    /// Initialisation is over: reports of resolution functions and port conversions go to
+    /// `callouts` (with their context) instead of the interpreter printing them (#372).
+    live: bool,
+    callouts: Vec<(Severity, String, String)>,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -433,6 +440,7 @@ fn convert(
     signals: &[Signal],
     targets: &[(SignalId, Range)],
     formal: &str,
+    callouts: Option<&mut Vec<(Severity, String, String)>>,
 ) -> Result<Vec<Buf>, ErrorKind> {
     let Some(f) = conv else { return Ok(v) };
     let fail = |message| ErrorKind::Conversion {
@@ -440,7 +448,18 @@ fn convert(
         message,
     };
     let vals: Vec<Value> = v.iter().map(Buf::to_value).collect();
-    let out = f(&vals).map_err(fail)?;
+    let out = match callouts {
+        Some(c) => {
+            let (r, reps) = crate::callout::capture(|| f(&vals));
+            c.extend(
+                reps.into_iter()
+                    .map(|(s, m)| (s, m, format!("port conversion of {formal}"))),
+            );
+            r
+        }
+        None => f(&vals),
+    }
+    .map_err(fail)?;
     if out.len() != targets.len() {
         let m = format!("{} values for {} port parts", out.len(), targets.len());
         return Err(fail(m));
@@ -539,8 +558,12 @@ impl SimControl {
             pool,
             interrupt: Interrupt::default(),
             stats: Stats::default(),
+            live: false,
+            callouts: Vec::new(),
         };
         sim.settle().map_err(SimError::new)?;
+        sim.live = true;
+        sim.signals.iter_mut().for_each(|s| s.live = true);
         Ok(sim)
     }
 
@@ -596,7 +619,14 @@ impl SimControl {
                 .map(|(f, r)| self.signals[f.0 as usize].driving_of(*r))
                 .collect();
             let name = &self.signals[p.formal[0].0.0 as usize].name;
-            let vs = convert(p.conv.to_actual.as_ref(), v, &self.signals, &p.actual, name)?;
+            let vs = convert(
+                p.conv.to_actual.as_ref(),
+                v,
+                &self.signals,
+                &p.actual,
+                name,
+                self.live.then_some(&mut self.callouts),
+            )?;
             if p.slots.len() != p.actual.len() {
                 return Err(ErrorKind::Internal("out-port without a source slot".into()));
             }
@@ -641,7 +671,14 @@ impl SimControl {
                 })
                 .collect();
             let name = &self.signals[p.formal[0].0.0 as usize].name;
-            let vs = convert(p.conv.to_formal.as_ref(), v, &self.signals, &p.formal, name)?;
+            let vs = convert(
+                p.conv.to_formal.as_ref(),
+                v,
+                &self.signals,
+                &p.formal,
+                name,
+                self.live.then_some(&mut self.callouts),
+            )?;
             for (v, &(f, fr)) in vs.into_iter().zip(&p.formal) {
                 let formal = &mut self.signals[f.0 as usize];
                 let layer = formal.port_in.as_mut().ok_or_else(|| {
@@ -948,6 +985,7 @@ impl SimControl {
             self.fire_wakes();
         }
         self.update().map_err(|k| self.err(k))?;
+        self.commit_callouts();
         let mut changed = std::mem::take(&mut self.changed_sigs);
         changed.sort_unstable();
         changed.dedup();
@@ -1231,7 +1269,15 @@ impl SimControl {
             );
         }
         let views: Vec<&[u8]> = srcs.iter().map(Vec::as_slice).collect();
-        f(&views, &mut out).map_err(|message| ErrorKind::Resolution {
+        let r = if self.live {
+            let (r, reps) = crate::callout::capture(|| f(&views, &mut out));
+            let ctx = format!("resolution of {}", lead.name);
+            (self.callouts).extend(reps.into_iter().map(|(s, m)| (s, m, ctx.clone())));
+            r
+        } else {
+            f(&views, &mut out)
+        };
+        r.map_err(|message| ErrorKind::Resolution {
             signal: lead.name.clone(),
             message,
         })?;
@@ -1464,12 +1510,36 @@ impl SimControl {
         first_err.map_or(Ok(()), Err)
     }
 
+    /// Report what resolution functions and port conversions reported in the update phase, in
+    /// signal order after the port conversions (so `--threads` does not matter).
+    fn commit_callouts(&mut self) {
+        if crate::callout::PENDING.swap(false, Ordering::Relaxed) {
+            for s in &mut self.signals {
+                let ctx = format!("resolution of {}", s.name);
+                (self.callouts).extend(s.callouts.drain(..).map(|(v, m)| (v, m, ctx.clone())));
+            }
+        }
+        for (severity, message, context) in std::mem::take(&mut self.callouts) {
+            let report = Report {
+                process: None,
+                context: Some(context),
+                severity,
+                message,
+            };
+            self.notify(|o, h| o.report(h, &report));
+            if severity >= self.cfg.stop_severity {
+                self.end.get_or_insert(EndReason::Severity(severity));
+            }
+        }
+    }
+
     fn commit(&mut self, process: ProcId, effects: Vec<Effect>) {
         for e in effects {
             match e {
                 Effect::Report(severity, message) => {
                     let report = Report {
-                        process,
+                        process: Some(process),
+                        context: None,
                         severity,
                         message,
                     };

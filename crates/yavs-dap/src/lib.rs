@@ -1946,14 +1946,17 @@ impl yavs_kernel::Observer for Output {
             yavs_kernel::Severity::Error => "Error",
             yavs_kernel::Severity::Failure => "Failure",
         };
-        let name = self
-            .names
-            .get(r.process.0 as usize)
-            .map_or("?", |s| s.as_str());
+        let at = match (r.process, &r.context) {
+            (Some(p), _) => format!(
+                "Process {}",
+                self.names.get(p.0 as usize).map_or("?", |s| s.as_str())
+            ),
+            (None, c) => format!("Function {}", c.as_deref().unwrap_or("?")),
+        };
         self.sh.output(
             "stdout",
             &format!(
-                "** {sev}: {}fs+{}: {}\n    Process {name}\n",
+                "** {sev}: {}fs+{}: {}\n    {at}\n",
                 hook.now().as_fs(),
                 hook.delta(),
                 r.message

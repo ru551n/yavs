@@ -2496,6 +2496,12 @@ impl Machine {
                         if !self.rt.asserts.report_elab(s) {
                             return Ok(Flow::Next);
                         }
+                        // A function the kernel calls during the run (resolution, port
+                        // conversion): the kernel prints it like any report (#372).
+                        let text = match yavs_kernel::callout::push(s, text) {
+                            Ok(()) => return Ok(Flow::Next),
+                            Err(text) => text,
+                        };
                         let name = ["Note", "Warning", "Error", "Failure"][s as usize];
                         let mut o = std::io::stderr().lock();
                         let _ = writeln!(o, "** {name}: (init): {text}");

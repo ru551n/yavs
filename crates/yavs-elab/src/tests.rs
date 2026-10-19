@@ -551,7 +551,7 @@ impl yavs_kernel::Observer for Collect {
         self.0.lock().expect("lock").push(format!(
             "{} {} {}",
             hook.now().as_fs(),
-            r.process.0,
+            r.process.map_or(u32::MAX, |p| p.0),
             r.message
         ));
     }

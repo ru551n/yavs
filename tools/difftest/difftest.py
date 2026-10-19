@@ -101,7 +101,7 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
 
 # ---------------------------------------------------------------- normalise
 NVC_HDR = re.compile(r"^\*\* (Note|Warning|Error|Failure|Fatal): (\d+)([a-z]+)\+(\d+): (.*)$")
-NVC_TRACE = re.compile(r"^\s+(Process|Procedure|Function|Protected|Instance|Package)\b\s*(\S*)")
+NVC_TRACE = re.compile(r"^\s+(Process|Procedure|Function|Protected|Instance|Package|Port conversion)\b\s*(\S*)")
 # Source snippets, and the "Label L at file:line" line of a PSL directive with a report.
 NVC_SNIP = re.compile(r"^\s*(>|\||\d+ \||Label \S+ at \S+:\d+$)")
 NVC_CTL = re.compile(r"^(FINISH|STOP) called(?: with status (\d+))?$")

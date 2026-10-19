@@ -849,14 +849,17 @@ impl yavs_kernel::Observer for Printer {
             yavs_kernel::Severity::Error => "Error",
             yavs_kernel::Severity::Failure => "Failure",
         };
-        let name = self
-            .names
-            .get(r.process.0 as usize)
-            .map_or("?", |s| s.as_str());
+        let at = match (r.process, &r.context) {
+            (Some(p), _) => format!(
+                "Process {}",
+                self.names.get(p.0 as usize).map_or("?", |s| s.as_str())
+            ),
+            (None, c) => format!("Function {}", c.as_deref().unwrap_or("?")),
+        };
         let mut o = std::io::stdout().lock();
         let _ = writeln!(
             o,
-            "** {sev}: {}fs+{}: {}\n    Process {name}",
+            "** {sev}: {}fs+{}: {}\n    {at}",
             hook.now().as_fs(),
             hook.delta(),
             r.message

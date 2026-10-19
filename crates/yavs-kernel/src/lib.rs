@@ -5,6 +5,7 @@
 //! bit-plane logic, described by [`SignalType`]. See `DESIGN.md`.
 
 mod builder;
+pub mod callout;
 mod error;
 mod kernel;
 mod process;

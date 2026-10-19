@@ -154,6 +154,7 @@ conv6
 conv7
 conv8
 counter
+debug1
 debug2
 default1
 default2
@@ -169,6 +170,7 @@ driver18
 driver19
 driver2
 driver20
+driver21
 driver3
 driver4
 driver5
@@ -339,6 +341,7 @@ issue121
 issue122
 issue1229
 issue123
+issue126
 issue1260
 issue1266
 issue1267
@@ -362,6 +365,7 @@ issue1406
 issue141
 issue1420
 issue143
+issue1453
 issue146
 issue1460
 issue1474
@@ -497,6 +501,7 @@ issue714
 issue718
 issue72
 issue724
+issue726
 issue731
 issue732
 issue750
@@ -708,6 +713,8 @@ stdenv3
 stdenv4
 stdenv5
 stop1
+synopsys1
+synopsys2
 textio1
 textio2
 textio3
@@ -740,6 +747,7 @@ vests32
 vests33
 vests34
 vests35
+vests36
 vests39
 vests4
 vests40
@@ -752,6 +760,7 @@ vests49
 vests5
 vests6
 vests7
+vests8
 vests9
 view1
 view2

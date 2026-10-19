@@ -394,7 +394,7 @@ impl Observer for Reports {
             r.severity,
             hook.now().as_fs(),
             hook.delta(),
-            r.process.0 as usize,
+            r.process.map_or(usize::MAX, |p| p.0 as usize),
             r.message.clone(),
         ));
     }
@@ -468,7 +468,13 @@ fn simulate(file: &Path) -> Result<String, String> {
             Severity::Error => "error",
             Severity::Failure => "failure",
         };
-        writeln!(out, "diag\t{s}\t{t}\t{d}\t{}\t{}", names[*p], escape(m)).unwrap();
+        writeln!(
+            out,
+            "diag\t{s}\t{t}\t{d}\t{}\t{}",
+            names.get(*p).map_or("-", String::as_str),
+            escape(m)
+        )
+        .unwrap();
     }
     match status {
         Ok(RunStatus::Ended(r @ (EndReason::Stop(c) | EndReason::Finish(c)))) => {

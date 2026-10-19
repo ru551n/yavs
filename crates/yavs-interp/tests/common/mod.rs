@@ -306,7 +306,7 @@ impl Observer for Trace {
             "{} +{} p{} {:?}: {}",
             h.now(),
             h.delta(),
-            r.process.0,
+            r.process.map_or(u32::MAX, |p| p.0),
             r.severity,
             r.message
         );

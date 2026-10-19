@@ -292,9 +292,9 @@ Access and file types (2019)
 
 In 2008 files, constants, signals, ports and constant parameters of an access or file type, and
 protected method parameters and results of such types, are errors (``E1223``). In 2019 files
-constant parameters of access type are errors too (6.5.2), while protected method parameters and
-results are accepted, and so are access types designating protected or file types (5.4.1,
-5.6.2, 6.4.2.2).
+constant parameters of access type and protected method parameters of access type are errors too
+(6.5.2, 5.6.2), while protected method results and file parameters are accepted, and so are
+access types designating protected or file types (5.4.1, 5.6.2, 6.4.2.2).
 
 *Portable:* use variable parameters.
 

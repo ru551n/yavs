@@ -1194,6 +1194,15 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **Constant parameters of access type in 2019 (L46, #198; user, 2026-10-19, majority rule):** `E1223`
   in 2019 user code as in 2008, because all three reference simulators reject them. Only library
   `std` stays exempt (its `std.env` declares such parameters).
+- **Constant parameters of access type in 2019 (L46, #198; user, 2026-10-19, majority rule):** `E1223`
+  in 2019 user code as in 2008, because all three reference simulators reject them. Only library
+  `std` stays exempt (its `std.env` declares such parameters).
+- **Access parameters of protected methods in 2019 (L46, #212; user, 2026-10-19, majority rule):**
+  `E1223` in 2019 as in 2008, because at least two of the three reference simulators reject them.
+  Access results and file parameters stay accepted in 2019 (the simulators disagree).
+- **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
+  prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
+  depth, summing the dimension cells, to find the descriptor part (#256).
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

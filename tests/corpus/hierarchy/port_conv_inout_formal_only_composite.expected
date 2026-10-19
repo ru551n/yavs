@@ -1,0 +1,5 @@
+exit	0
+diag	note	2000000	0	:port_conv_inout_formal_only_composite:u:_p0	sub q 0100 X101
+diag	note	2000000	0	:port_conv_inout_formal_only_composite:u:_p0	sub qs 0010 0010 1000 X000
+diag	note	3000000	0	:port_conv_inout_formal_only_composite:_p2	s 0100 X101
+diag	note	3000000	0	:port_conv_inout_formal_only_composite:_p2	ss 0010 0010 1000 X000

@@ -124,6 +124,8 @@ const PASS: &[&str] = &[
     "hierarchy/package_signal_alias",
     "hierarchy/port_conv_composite",
     "hierarchy/port_conv_inout",
+    "hierarchy/port_conv_inout_formal_only",
+    "hierarchy/port_conv_inout_formal_only_composite",
     "hierarchy/port_conv_record",
     "hierarchy/port_conv_type_composite",
     "hierarchy/port_expr_actual",

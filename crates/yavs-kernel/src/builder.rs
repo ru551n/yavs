@@ -350,13 +350,13 @@ impl Builder {
             PortMode::Inout => conv.to_formal.is_none() || conv.to_actual.is_none(),
         };
         if needs {
-            let same = match (fs.as_slice(), as_.as_slice()) {
-                ([(f, fr)], [(a, ar)]) => {
+            // No conversion: the parts must line up one to one (an `inout` port converted
+            // on the formal side only passes the actual in unchanged).
+            let same = fs.len() == as_.len()
+                && fs.iter().zip(&as_).all(|((f, fr), (a, ar))| {
                     self.signals[f.0 as usize].ty.elem == self.signals[a.0 as usize].ty.elem
                         && fr.len == ar.len
-                }
-                _ => false,
-            };
+                });
             if !same {
                 let msg = format!(
                     "port {} -> {}: types differ and no conversion is given",

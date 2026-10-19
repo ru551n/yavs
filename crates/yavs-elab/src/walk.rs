@@ -1238,16 +1238,15 @@ impl Elab<'_> {
                     let one_way = match mode {
                         PortMode::In => to_formal.is_none(),
                         PortMode::Out | PortMode::Buffer => to_actual.is_none(),
-                        PortMode::Inout => to_formal.is_none() || to_actual.is_none(),
+                        // The formal side alone (L72): copy-in passes the actual unchanged.
+                        PortMode::Inout => to_actual.is_none(),
                     };
                     if one_way {
-                        // Sem rejects the other modes; an `inout` formal conversion alone
-                        // (L72) on a composite is not wired up (one kernel converter per side).
-                        return Err(unsupported(
+                        // Sem rejects the other modes and the actual side alone.
+                        return Err(Box::new(ice(
                             aspan,
-                            "a composite `inout` port converted the way out only",
-                            "M3",
-                        ));
+                            "a composite port converted in one direction only",
+                        )));
                     }
                     self.m.nets.conv_ports.push(crate::hier::ConvPort {
                         formal: fl,

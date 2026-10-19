@@ -1175,6 +1175,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   initialization (LRM 14.7.5.2), as the third reference simulator and unlike the other two.
 - **Scalar named return values (L77, #239; user, 2026-10-19):** `function f return r of integer`
   stays rejected with `E1233` (commit 2462e0aa).
+- **Incremental binding repeating the entity aspect (config-rebinding, 7.3.2.1; user, 2026-10-19: LRM
+  and majority):** a component configuration may repeat the entity aspect of the configuration
+  specification that binds the instance (same entity and architecture, or same configuration, after
+  resolution); only a different entity aspect is `E1702`. Two of three reference simulators accept.
 - **`'element` chains of open objects** (`FromObject { elem_depth }`): sem adds one to the
   prefix's depth for each `'element`; `subtype_dope` walks the object's type one array level per
   depth, summing the dimension cells, to find the descriptor part (#256).

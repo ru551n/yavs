@@ -1064,7 +1064,7 @@ and result) is unique among homographs, so there is no code for it.
   component. Binding indications: `use entity l.e(a)`, `use configuration l.c`, `use open`,
   with generic and port maps checked against the entity. Incremental binding (7.3.2.? 2008): a
   configuration declaration may add maps to an instance already bound by a configuration
-  specification, but may not rebind it (`E1702`).
+  specification and may repeat its entity aspect, but may not bind a different one (`E1702`).
 - Configuration specifications in architecture declarative parts are checked the same way.
 - **Default binding** (7.3.3) is computed by elab through `sem::default_binding(instance)`:
   1. an entity with the component's simple name that is **directly visible** at the instance

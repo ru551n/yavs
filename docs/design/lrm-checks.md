@@ -515,8 +515,9 @@ the approved LCS text (read from an archived copy of the LCS pages), and black-b
   carry an entity aspect that matches the primary binding's (it is an error only when it names a
   different entity or architecture); the sentence "an incremental binding indication must not
   have an entity aspect" quoted in one reference simulator's source is the 1993 text. The case
-  repeats the primary binding's entity aspect, so it is legal: yavs's `E1702` should apply only to
-  a different entity aspect (medium confidence: the 2008 rule is recalled, and an independent
+  repeats the primary binding's entity aspect, so it is legal: `E1702` now applies only to
+  a different entity aspect (same entity and architecture or same configuration after resolution
+  is accepted; implemented 2026-10-19; medium confidence: the 2008 rule is recalled, and an independent
   tool's message documents the same rule).
 - **incomplete-type-never-completed** (5.4.2): holds. "For each incomplete type declaration there
   must be a corresponding full type declaration with the same identifier ... immediately within

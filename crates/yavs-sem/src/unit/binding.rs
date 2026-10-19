@@ -2154,26 +2154,42 @@ impl Db {
         });
         let binding = match &c.binding {
             Some(b) => {
-                if b.entity_aspect.is_some() && matches!(spec, Some(Some(_))) {
-                    let what = match &instances {
-                        InstanceSel::Labels(ls) if ls.len() == 1 => {
-                            self.stmts[ls[0]].label.map_or_else(
-                                || "this instance".into(),
-                                |l| format!("instance `{}`", l.text),
-                            )
+                let bi = self.binding_indication(scope, comp, b, bound)?;
+                // 7.3.2.1: an incremental binding may repeat the primary binding's entity
+                // aspect; only a different one is an error.
+                if let (Some(Some(old)), Some(new)) = (&spec, &bi.aspect) {
+                    let same = match (old, new) {
+                        (
+                            EntityAspect::Entity { unit: u1, arch: a1 },
+                            EntityAspect::Entity { unit: u2, arch: a2 },
+                        ) => u1 == u2 && a1.map(|i| i.key) == a2.map(|i| i.key),
+                        (EntityAspect::Configuration(u1), EntityAspect::Configuration(u2)) => {
+                            u1 == u2
                         }
-                        _ => "these instances".into(),
+                        (EntityAspect::Open, EntityAspect::Open) => true,
+                        _ => false,
                     };
-                    return Err(self.error(
-                        Diagnostic::error(
-                            diag::REBINDING,
-                            format!("{what} is already bound by a configuration specification"),
-                        )
-                        .with_primary(b.span, "bound again here")
-                        .with_help("an incremental binding may only add generic and port maps: drop the entity aspect"),
-                    ));
+                    if !same {
+                        let what = match &instances {
+                            InstanceSel::Labels(ls) if ls.len() == 1 => {
+                                self.stmts[ls[0]].label.map_or_else(
+                                    || "this instance".into(),
+                                    |l| format!("instance `{}`", l.text),
+                                )
+                            }
+                            _ => "these instances".into(),
+                        };
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::REBINDING,
+                                format!("{what} is already bound by a configuration specification"),
+                            )
+                            .with_primary(b.span, "bound to a different entity aspect here")
+                            .with_help("an incremental binding may repeat the entity aspect of the primary binding or add generic and port maps: drop the entity aspect or make it the same"),
+                        ));
+                    }
                 }
-                Some(self.binding_indication(scope, comp, b, bound)?)
+                Some(bi)
             }
             None => None,
         };

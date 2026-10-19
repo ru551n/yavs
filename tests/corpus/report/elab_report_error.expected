@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:elab_report_error:_p0	s = 1
+err	** Error: (init): bad from f
+err	** Error: (init): bad from f

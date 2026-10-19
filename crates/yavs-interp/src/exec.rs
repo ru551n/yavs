@@ -2227,6 +2227,9 @@ impl Machine {
                     // elaboration as it stops a run.
                     None => {
                         use std::io::Write;
+                        if !self.rt.asserts.report_elab(s) {
+                            return Ok(Flow::Next);
+                        }
                         let name = ["Note", "Warning", "Error", "Failure"][s as usize];
                         let mut o = std::io::stderr().lock();
                         let _ = writeln!(o, "** {name}: (init): {text}");

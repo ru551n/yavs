@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use yavs_diag::{SourceMap, Span};
 use yavs_ir::{Program, TyId, Width};
@@ -302,9 +303,27 @@ impl AssertState {
     }
 }
 
+/// Reports made while elaborating, per severity. Elaboration evaluates functions in throwaway
+/// runtimes; the simulation's own runtime starts from these counts.
+// ponytail: process-wide, so a second elaboration in one process (tests) inherits the counts;
+// carry them in the elaboration result if that ever matters.
+static ELAB_COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
 /// The assert state of a simulation (module docs).
-#[derive(Default)]
 pub(crate) struct Asserts(Mutex<Shared>);
+
+impl Default for Asserts {
+    fn default() -> Asserts {
+        let mut base = AssertState::default();
+        for (c, e) in base.counts.iter_mut().zip(&ELAB_COUNTS) {
+            *c = e.load(Ordering::Relaxed);
+        }
+        Asserts(Mutex::new(Shared {
+            base,
+            ..Default::default()
+        }))
+    }
+}
 
 #[derive(Default)]
 struct Shared {
@@ -346,6 +365,18 @@ impl Asserts {
             st.apply(op);
         }
         st.counts
+    }
+
+    /// A report during elaboration (no kernel yet): counted in the base state, false when
+    /// that severity is disabled.
+    pub(crate) fn report_elab(&self, s: Severity) -> bool {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let on = g.base.enabled[s as usize];
+        if on {
+            g.base.apply(Op::Count(s));
+            ELAB_COUNTS[s as usize].fetch_add(1, Ordering::Relaxed);
+        }
+        on
     }
 
     /// A report or assertion violation of severity `s`: false when that severity is disabled

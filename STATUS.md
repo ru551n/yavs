@@ -563,6 +563,11 @@ Findings.
 - Not measured: the long accelerator testbenches (above), a third reference simulator, executed
   instruction shares, and design 2 at 1e6 clock cycles (yavs needs 17 s to 20 s for 5000 to 20000).
 
+A study of how the reference simulators reach their speed, with ranked recommendations per crate
+(native ieee fast paths with fallback, interpreter constant factors, kernel assignment and wake
+fast paths, hot-only tier-up, start-up breakdown), is in `docs/design/performance.md`. No
+recommendation is implemented yet.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

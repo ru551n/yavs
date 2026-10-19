@@ -1,0 +1,10 @@
+== 2019
+note: p null false val 42 sub INT_PTR des INTEGER
+note: q null true
+note: s 'e' len 3
+note: rp 3 des REC
+note: line des STRING
+note: f name reflect_af.bin kind write_mode sub INT_FILE des INTEGER
+note: text des STRING
+note: pc COUNTER COUNTER COUNTER
+note: done

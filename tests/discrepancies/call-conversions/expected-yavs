@@ -1,0 +1,10 @@
+== 2008
+note: seti 3
+note: inc 4
+note: rgb blue
+note: dbl 8
+note: shl 11000000
+note: fill 11110000
+note: swap 2 11
+note: show 8
+note: show 2

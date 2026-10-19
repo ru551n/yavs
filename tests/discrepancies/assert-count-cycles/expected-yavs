@@ -1,0 +1,5 @@
+== 2019
+warning: from a
+note: a sees 1
+note: b sees 0
+note: b then sees 1

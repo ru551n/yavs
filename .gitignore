@@ -4,3 +4,4 @@
 /fuzz/artifacts
 __pycache__/
 *.pyc
+tools/discrepancies/sims.local.conf

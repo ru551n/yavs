@@ -9,6 +9,7 @@ by several crates; the test code lives in the crates. Each subdirectory has its 
 | `diag/sem/<area>/*.vhd` | Negative semantic suite with `-- expect:` headers | `crates/yavs-sem/tests/diag_sem.rs` | `tests/diag/AGENTS.md` |
 | `cli/` | `yavs analyze/elab/run` sources and expected stderr (`$TMP` placeholder) | `crates/yavs/tests/cli.rs` (cases listed in the test) | `crates/yavs/AGENTS.md` |
 | `corpus/<group>/*.vhd`, `*.expected` | Differential testbenches with reference simulator outputs, `RESULTS.md` | `tools/difftest`, `crates/yavs-lower/tests/corpus.rs` | `tests/corpus/AGENTS.md` |
+| `discrepancies/<id>/` | One reproducer per simulator discrepancy, with expected yavs output and recorded verdicts | `tools/discrepancies/run.py` | `tests/discrepancies/AGENTS.md` |
 | `parse-corpus/*.txt` | Expected parse results for external corpora | `crates/yavs/tests/corpus.rs` (`--features corpus`) | `tests/parse-corpus/AGENTS.md` |
 
 ## Rules that bind every test input here

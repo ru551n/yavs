@@ -1,0 +1,9 @@
+== 2008
+note: rc false/2/'0''0' false/4/'0''0'
+note: rb a false/2/'0''0' true/0/'0''1'
+note: rc true/11/'1''0' false/22/'1''0'
+note: rb c false/6/'1''0' true/6/'0''1'
+note: rc true/11/'1''0' false/27/'1''0'
+note: rc true/13/'0''0' false/27/'1''0'
+note: rb z false/6/'1''0' true/6/'0''1'
+note: done

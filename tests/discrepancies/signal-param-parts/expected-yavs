@@ -1,0 +1,8 @@
+== 2008
+note: s1='1' s0='0'
+note: s1='0' s0='1'
+note: show 3 0 0UUU event=true
+note: show 3 0 0101 event=true
+note: l='0''1''0''1'
+note: sum 7 last_event 1000000 fs
+note: watch 1 5 30 active=true

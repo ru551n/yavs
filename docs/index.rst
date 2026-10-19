@@ -47,6 +47,7 @@ Getting started
 
    install
    usage
+   language-choices
 
 .. toctree::
    :caption: About

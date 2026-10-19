@@ -1,0 +1,8 @@
+== 2008
+note: show 7 00 '1' event=false
+note: show 42 10 '0' event=true
+note: show 2 00 '0' event=true
+note: show 2 00 '0' event=true
+note: c 42
+note: show 0 00 '0' event=true
+note: c -1

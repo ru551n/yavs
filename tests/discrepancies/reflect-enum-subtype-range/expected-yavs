@@ -1,0 +1,11 @@
+== 2019
+note: mid MID len 2 left green right blue low green high blue asc true
+note: rev REV len 3 left blue right red low red high blue asc false
+note: color lit0 red lit3 white byname 3
+note: c pos 2 image blue sub MID
+note: c roundtrip blue MID
+note: color sm COLOR white
+note: sl 'Z' pos 4 sub STD_ULOGIC len 9
+note: ch 'A' pos 65 len 256
+note: bit '1' sev failure
+note: done

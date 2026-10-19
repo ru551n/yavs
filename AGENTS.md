@@ -26,7 +26,7 @@ to, and those documents win over your memory.
 | diagnostics, logic, std natives | `crates/yavs-{diag,logic,std}/AGENTS.md` |
 | FFI, VHPI, waves, LLVM | `crates/yavs-{ffi,vhpi,wave,llvm}/AGENTS.md` |
 | `lib/` (std/ieee sources) | `lib/AGENTS.md`, `lib/README.md`, `lib/SOURCES.md`, `lib/NATIVE.md` |
-| tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest}/AGENTS.md`), `fuzz/AGENTS.md` |
+| tests and tools | `tests/AGENTS.md` (and `tests/{diag,corpus,parse-corpus,discrepancies}/AGENTS.md`), `tools/AGENTS.md` (and `tools/{corpus,difftest,discrepancies}/AGENTS.md`), `fuzz/AGENTS.md` |
 
 ## 2. Repository map
 
@@ -49,6 +49,7 @@ to, and those documents win over your memory.
 | `tests/diag/` | Rendered-diagnostic snapshots; `tests/diag/sem/` negative suite with `-- expect:` headers |
 | `tests/corpus/` | Differential testbenches with reference-simulator outputs (`tools/difftest`) |
 | `tests/parse-corpus/` | Expected parse results for external corpora |
+| `tests/discrepancies/` | Reproducers of every known simulator discrepancy; catalogue `docs/design/simulator-discrepancies.md`, runner `tools/discrepancies/run.py` |
 | `tools/corpus/` | Analysis corpus manifests (external libraries, `lib`), `run.py`, `RESULTS.md` |
 | `fuzz/` | cargo-fuzz targets (own workspace) |
 
@@ -151,6 +152,8 @@ to, and those documents win over your memory.
       the plan);
     - decisions local to one module: that module's `AGENTS.md` "Design decisions" section (plus its
       design doc section if one exists, e.g. `docs/design/sem.md`, `ir.md`, a crate `DESIGN.md`);
+    - simulator disagreements: a row and a reproducer in `docs/design/simulator-discrepancies.md`
+      and `tests/discrepancies/` (the reading itself stays in `lrm-checks.md`);
     - LRM interpretations: `docs/design/lrm-checks.md` (policy, rule 2: a clear LRM wins; where it
       is unclear, be permissive and match the other simulators);
     - CLI or test-runner-facing behaviour: `docs/cli-contract.md`.
@@ -182,6 +185,7 @@ tools/fetch-corpus.sh                                # external corpora into ~/.
 YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus   # parse corpora
 tools/corpus/report.sh                               # analyze all corpora, write tools/corpus/RESULTS.md
 python3 tools/difftest/difftest.py --candidate nvc   # differential corpus (see tools/difftest/README.md)
+python3 tools/discrepancies/run.py --check           # simulator discrepancy catalogue (docs/design/simulator-discrepancies.md)
 cargo test -p yavs-llvm --features llvm              # LLVM tier (needs LLVM 21)
 cargo run -p yavs -- analyze --std=2008 --work=work:out/work file.vhd
 ```

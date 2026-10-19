@@ -1,0 +1,13 @@
+== 2019
+note: word 4 3
+note: rng -2 2 2
+note: r.k -1 w 4
+note: p '1' 4
+note: nested 2 -2 5
+note: letters 'd' 4
+note: rng_arr 2 'd'
+note: local 7 3
+note: ts 3000000 3000000 FS sr 0 '1'
+note: pc 12
+note: inst INTEGER/class_integer REC/class_record
+note: snapshot -2 now 1

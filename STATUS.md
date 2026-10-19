@@ -470,6 +470,15 @@ finds its loader); on Windows x86_64 GNU the same testbench and error cases pass
 hand with a MinGW DLL (the test cannot spawn the compiler inside wine). Native Windows (MSVC CI)
 runs the test as written.
 
+## discrepancies (simulator catalogue)
+
+`docs/design/simulator-discrepancies.md` lists 79 constructs where the reference simulators
+disagree with each other, the LRM or yavs, each with a reproducer in `tests/discrepancies/` and a
+recorded verdict per simulator. `python3 tools/discrepancies/run.py --sims sim1,sim2,sim3 --check`
+runs them all (yavs plus the configured simulators; the label mapping is local) and fails when yavs
+or a recorded verdict drifts. A fourth simulator is added with one template and `--record`. The
+user page `docs/language-choices.rst` is the user-facing subset.
+
 ## difftest (yavs candidate)
 
 `python3 tools/difftest/difftest.py --candidate yavs` drives `yavs analyze`, `yavs elab` and

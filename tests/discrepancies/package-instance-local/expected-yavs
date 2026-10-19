@@ -1,0 +1,11 @@
+== 2008
+note: gen 1 first=1001 next=1
+note: gen 2 first=2002 next=2
+note: if first=0
+note: process first=33 next=4
+note: process acc=505
+note: func=10 16
+note: proc=13
+note: proc=15
+note: fresh=7 7 17
+note: shift=101 100

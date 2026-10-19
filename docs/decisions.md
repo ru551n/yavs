@@ -1,5 +1,17 @@
 # Decisions
 
+## Simulator discrepancy catalogue (user, 2026-10-19)
+
+- **Choice:** every known disagreement between the reference simulators, with the LRM or with
+  yavs, is catalogued in `docs/design/simulator-discrepancies.md`, one reproducer per distinct
+  behaviour under `tests/discrepancies/`, run by `tools/discrepancies/run.py` on yavs and on any
+  configured simulator (labels `sim1` to `sim4`; the label to tool mapping stays local). A new
+  disagreement found by anyone gets a row and a case in the same commit as the decision.
+- **Majority rule (user, 2026-10-19):** yavs is never counted in a majority; a majority means 2
+  of the 3 reference simulators.
+- **Why:** the fourth simulator can then be checked with one command, and each choice shows who
+  made it and when.
+
 ## Project name: yavs (user, 2026-10-18), formerly the working name rsim
 
 - **Choice:** the project is yavs, "Yet Another VHDL Simulator". Crates are `yavs-*`, the

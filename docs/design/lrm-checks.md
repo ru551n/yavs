@@ -9,6 +9,8 @@ is clear, follow it and fail early; where it is unclear or silent, be permissive
 the reference simulators accept, semantics that let the most designs elaborate), and warn only
 where the simulators give different results. Every item that was "still ambiguous" or open as a
 question U-n is resolved below under that policy ("Decisions").
+The verdict of each simulator per construct, with a reproducer, is in
+`docs/design/simulator-discrepancies.md`.
 
 The third reference simulator Starter 2025.3 (`vcom -2008/-2019`) was added as a third black box after the first pass;
 A commercial simulator was not available.

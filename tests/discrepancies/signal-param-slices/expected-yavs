@@ -1,0 +1,7 @@
+== 2008
+note: show 3 0 0UUU event=true
+note: show 3 0 0101 event=true
+note: show 1 0 01 event=true
+note: lv=010 l0='1'
+note: sum 5 to 7 = 6
+note: i0=10 iv=11,12

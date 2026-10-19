@@ -25,6 +25,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `rename-yavs.sh` | Idempotent rsim to yavs sweep for worktrees that still carry the old name |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
 | `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |
+| `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |
 
 ## 3. Design decisions that bind this module
 

@@ -1,0 +1,6 @@
+== 2008
+warning: NUMERIC_STD.TO_UNSIGNED: vector truncated
+note: trunc 00101100
+warning: NUMERIC_STD.TO_INTEGER: metavalue detected, returning 0
+note: meta 0
+warning: NUMERIC_STD."/=": metavalue detected, returning TRUE

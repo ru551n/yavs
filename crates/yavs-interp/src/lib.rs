@@ -28,7 +28,7 @@ mod textio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use env::Sources;
+pub use env::{Sources, elaboration_reports};
 use yavs_ffi::ForeignFn;
 use yavs_ir::{ForeignId, FuncId, FuncKind, Program};
 use yavs_kernel::{

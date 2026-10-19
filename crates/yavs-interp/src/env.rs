@@ -304,26 +304,19 @@ impl AssertState {
 }
 
 /// Reports made while elaborating, per severity. Elaboration evaluates functions in throwaway
-/// runtimes; the simulation's own runtime starts from these counts.
-// ponytail: process-wide, so a second elaboration in one process (tests) inherits the counts;
-// carry them in the elaboration result if that ever matters.
+/// runtimes, so the count lives outside them; the CLI adds it to the exit status.
+// ponytail: process-wide and not cleared by ClearVhdlAssert; carry it in the elaboration result
+// if a second elaboration in one process (the in-process tests) or a clear must see it.
 static ELAB_COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
-/// The assert state of a simulation (module docs).
-pub(crate) struct Asserts(Mutex<Shared>);
-
-impl Default for Asserts {
-    fn default() -> Asserts {
-        let mut base = AssertState::default();
-        for (c, e) in base.counts.iter_mut().zip(&ELAB_COUNTS) {
-            *c = e.load(Ordering::Relaxed);
-        }
-        Asserts(Mutex::new(Shared {
-            base,
-            ..Default::default()
-        }))
-    }
+/// The reports of severity `s` made during elaboration so far in this process.
+pub fn elaboration_reports(s: Severity) -> u64 {
+    ELAB_COUNTS[s as usize].load(Ordering::Relaxed)
 }
+
+/// The assert state of a simulation (module docs).
+#[derive(Default)]
+pub(crate) struct Asserts(Mutex<Shared>);
 
 #[derive(Default)]
 struct Shared {
@@ -367,13 +360,12 @@ impl Asserts {
         st.counts
     }
 
-    /// A report during elaboration (no kernel yet): counted in the base state, false when
-    /// that severity is disabled.
+    /// A report during elaboration (no kernel yet): counted in `ELAB_COUNTS`, false when that
+    /// severity is disabled.
     pub(crate) fn report_elab(&self, s: Severity) -> bool {
-        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let on = g.base.enabled[s as usize];
         if on {
-            g.base.apply(Op::Count(s));
             ELAB_COUNTS[s as usize].fetch_add(1, Ordering::Relaxed);
         }
         on

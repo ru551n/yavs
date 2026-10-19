@@ -922,7 +922,7 @@ which tools/difftest parses.
   the reference simulator prints the same line. Source: #299.
 - **Decision (#349, agent, 2026-10-19):** a report or assertion of severity error or higher
   during elaboration is counted in the VHDL assert counts like a run-time one, so the run
-  exits 1 at the end (unless `ClearVhdlAssert` clears it); a disabled severity is neither shown
+  exits 1 at the end (`ClearVhdlAssert` does not clear it: process-wide count); a disabled severity is neither shown
   nor counted. Elaboration still goes on after an error. Why: of four reference simulators two
   stop at an elaboration-time error (exit 1) and two print it and simulate on (exit 0): a tie,
   so the permissive reading (go on, rule 15) with the exit status yavs gives a run-time error

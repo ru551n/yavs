@@ -618,11 +618,11 @@ pub fn run(
     // A report of severity error or failure fails the run even below `--exit-severity`, unless
     // ClearVhdlAssert cleared the counts since: the status follows the VHDL assert counts of
     // std.env (as the reference simulator; test runners only look at zero or non-zero).
-    let failed = rt.is_some_and(|rt| {
-        rt.assert_count(yavs_kernel::Severity::Error)
-            + rt.assert_count(yavs_kernel::Severity::Failure)
-            > 0
-    });
+    // Reports made while elaborating (#349) count too.
+    use yavs_kernel::Severity::{Error, Failure};
+    let failed = yavs_elab::elaboration_reports(Error) + yavs_elab::elaboration_reports(Failure)
+        > 0
+        || rt.is_some_and(|rt| rt.assert_count(Error) + rt.assert_count(Failure) > 0);
     let code = if code == 0 && failed { 1 } else { code };
     out.finish(code)
 }

@@ -249,6 +249,20 @@ The header declares an instance of the subprogram, called with the instantiated 
 
 *Portable:* ``function f_int is new f generic map (t => integer);``.
 
+Record with protected and other elements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: vhdl
+
+   type rec is record a : counter_t; n : integer; end record;   -- counter_t protected
+
+VHDL-2019 allows arrays and records of protected types; yavs also accepts a record that mixes a
+protected element with elements of other types (2019, 5.3.1, the reading is open). Each protected
+element is its own object; the record cannot be assigned, compared or be a shared variable. Some
+simulators reject the mix, others every composite of a protected type.
+
+*Portable:* keep the other elements out of the record, or inside a protected type.
+
 Interface lists
 ~~~~~~~~~~~~~~~
 

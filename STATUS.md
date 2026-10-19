@@ -187,7 +187,7 @@ An installed binary finds `lib/` next to itself (#43).
   objects whose elements are protected get one new object per element (variables, protected state,
   subprogram frames, allocators, shared variables whose scalar subelements are all protected);
   method calls through indexing, selection and `.all` run, and such types have no `=` or
-  assignment (`E1905`). A variable port of such a composite is `E9999`. Sem suite
+  assignment (`E1905`). A variable port of such a composite is `E9999` (#370). Sem suite
   `prot/composite_of_protected_*`, difftest `protected/composites_2019_hand`.
 - Use clauses and visibility (#54): expanded names into labelled statements and subprograms
   (8.3, `E1103` outside them), and with a protected type prefix inside its body (`pt.n`, `pt.get`,

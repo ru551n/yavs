@@ -960,6 +960,21 @@ fn composite_groups_over_slices() {
     );
 }
 
+/// A composite resolved as a whole without sources keeps its initial value: the resolver
+/// is not called (LRM 14.7.3.2 a, #328).
+#[test]
+fn composite_without_sources() {
+    let mut b = Builder::new();
+    let n = b.signal("r.n", SignalType::bytes(4, 1), &7i32.to_le_bytes());
+    b.resolved_composite(
+        &[n],
+        Arc::new(|_: &[&[u8]], _: &mut [u8]| Err("called without sources".into())),
+    );
+    let mut sim = b.build(Config::default()).unwrap();
+    sim.run_until(ns(1)).unwrap();
+    assert_eq!(v(&sim, n), 7i32.to_le_bytes());
+}
+
 /// #252: at initialisation elaboration order; then the processes with one suspension point in
 /// elaboration order, then the others in reverse, those resumed by a signal before those
 /// resumed by a timeout. The same at any thread count and with shuffled execution.

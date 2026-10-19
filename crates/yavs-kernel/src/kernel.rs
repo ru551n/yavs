@@ -1166,6 +1166,11 @@ impl SimControl {
             })
         };
         let n = srcs_of(l0, r0).count();
+        // LRM 14.7.3.2 a: without sources the driving value stays the default value; the
+        // resolution function is not called.
+        if n == 0 {
+            return Ok(());
+        }
         let mut srcs: Vec<Vec<u8>> = vec![Vec::new(); n];
         let mut out = Vec::new();
         for &(l, r) in parts {

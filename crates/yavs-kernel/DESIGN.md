@@ -36,7 +36,8 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   covering its part, at one port level. A signal can hold several groups, which cover it. The
   first part popped in the update phase with any part dirty calls the resolver once per cycle
   with whole composite values (the parts concatenated in order) and writes every part's
-  driving value; at initialisation the lowest leaf id does.
+  driving value; at initialisation the lowest leaf id does. A group without sources keeps
+  its driving value without calling the resolver (LRM 14.7.3.2 a).
 - **Transactions** carry `(time, range, Option<value>)`, `None` being a null transaction. LRM
   10.5.2.2 preemption (transport, inertial with rejection limit, the "same value immediately
   before" chain) is decided per element using chunked diffs; a partly preempted old transaction

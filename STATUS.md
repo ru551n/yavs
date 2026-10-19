@@ -43,7 +43,7 @@ No run fails at elaboration on the record-resolution or composite-force cause an
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 31 | 2 | 3 | not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); 3 skipped: over 5 minutes (two `rand_tb`, `rand_multi_method_tb`) |
+| uvvm_util | 34 | 2 | 0 | not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); the three long random-distribution tests run within 5 minutes since the interpreter work of #386 (re-run of this component at `bc74c892`) |
 | uvvm_assertions | 2 | 0 | 0 | none |
 | uvvm_vvc_framework | 2 | 1 | 0 | resolution function that accesses a shared variable #392 |
 | bitvis_irqc | 2 | 0 | 0 | none |
@@ -164,6 +164,31 @@ instructions per element). Equal elements are now written by one `Fill` or by do
 
 `elab_heavy` init (0.60 s) is the kernel model build (`Builder::build`, about 0.54 s of it for 20000 instances), not
 package or instance data; it belongs to the kernel work. The UVVM and OSVVM benchmarks have no init cost (0.01 s).
+
+### Interpreter run time (#386)
+
+Interpreter hot paths (`crates/yavs-interp`, commits of #386): constant expansions and layouts
+reused instead of recomputed, logic elements read and written in place, dispatch with the function
+looked up once per frame change and `step` inlined, calls without allocations (frame vectors and
+argument cells reused), the top frame's registers held in the machine. Release builds, CPU seconds
+(user + sys), host shared with other agents (load 15 to 30). Before: main at `4a551b39`; after: main
+at `bc74c892` (which also contains other agents' commits of the same period).
+
+Long verification-library tests (one run each; previously skipped at the 5-minute cap):
+
+| Test | before | after | ref-A | ref-B |
+|---|---|---|---|---|
+| `rand_tb` `rand_gaussian` | 928 | 268 | 1.9 | 8.6 |
+| `rand_tb` `rand_cyclic_performance` | 601 | 179 | needs a heap over the 2 GB cap | 4.9 |
+| AXI-stream VVC testbench, first generic set, to 20 us | 35.8 | 13.2 | | |
+
+`tools/bench --compare` (median CPU of 3 runs, total including analysis): `compute_loop` ratio 0.36,
+`ff_rtl` 0.37, `resolved_bus` 0.48, `delta_chain` 0.32, `textio_heavy` 0.56, `protected_scoreboard` 0.36,
+`uvvm_axistream_vvc_tb` 0.36 (23.8 s to 8.7 s), `uvvm_util_rand_tb` 0.38 (62.6 s to 23.7 s), `vai_pe_array`
+0.36. The difftest corpus is unchanged at `--threads 1` and `4`. What is left per instruction is
+dispatch itself (about 5 ns for a simple instruction, 8 ns in call-heavy code); most of the time of these
+tests is spent inside a few ieee subprograms run from their VHDL bodies, which R1 of
+`docs/design/performance.md` addresses (#395).
 
 ## CI and releases
 

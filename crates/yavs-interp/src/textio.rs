@@ -376,6 +376,8 @@ pub(crate) fn lookup(symbol: &str, family: Option<&str>) -> Option<Native> {
     let f: Native = match (symbol, family) {
         (_, Some("file_open")) => file_open,
         (_, Some("file_close")) => file_close,
+        (s, Some("read")) if is_text(s) => text_read,
+        (s, Some("write")) if is_text(s) => text_write,
         (_, Some("read")) => crate::binfile::read,
         (_, Some("write")) => crate::binfile::write,
         (_, Some("endfile")) => endfile,
@@ -428,6 +430,49 @@ pub(crate) fn lookup(symbol: &str, family: Option<&str>) -> Option<Native> {
         }
     };
     Some(f)
+}
+
+/// The implicit READ and WRITE of `std.textio.TEXT` itself (a file of `string`): its records are
+/// the characters with nothing around them, so READLINE and WRITELINE see what WRITE wrote.
+fn is_text(symbol: &str) -> bool {
+    symbol
+        .split('#')
+        .next()
+        .is_some_and(|b| b.ends_with(".std.textio.text"))
+}
+
+fn text_write(
+    m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: Args<'_>,
+) -> R<Option<u64>> {
+    let b = m.fat_bytes(arg(a, 1)?)?;
+    let out = m.with_file(arg(a, 0)?, |s| match s {
+        FileSlot::Text(t) => t.write_bytes(&b).map(|()| false).map_err(file_err),
+        FileSlot::Output { open: true } => Ok(true),
+        FileSlot::Output { open: false } => Err(file_err(FileError::NotOpen)),
+    })?;
+    if out {
+        emit(ctx, &b)?;
+    }
+    Ok(None)
+}
+
+fn text_read(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: Args<'_>,
+) -> R<Option<u64>> {
+    // VALUE'LENGTH characters; the LENGTH form reports how many were read.
+    let (data, n) = m.fat1(arg(a, 1)?)?;
+    let b = text(m, arg(a, 0)?, |f| f.read_bytes(n as usize))?;
+    m.wr(data, n)?.copy_from_slice(&b);
+    if let Some(&l) = a.get(2) {
+        m.store(l, Width::B8, n)?;
+    }
+    Ok(None)
 }
 
 fn file_open(

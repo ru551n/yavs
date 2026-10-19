@@ -1433,6 +1433,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   form is a runtime error when the stored count differs. A value outside the type's range, or
   reading past the end of the file, is a runtime error.
 - Records and arrays of composites are not implemented (runtime error naming #79).
+- **`std.textio.TEXT` is the exception** (#365, lrm-checks L100): its implicit `WRITE` stores the
+  characters alone and `READ (F, VALUE, LENGTH)` reads `VALUE'LENGTH` characters, so `READLINE`
+  and `WRITELINE` share the file; `WRITE (OUTPUT, s)` prints `s`. Other files of `string` keep the
+  element count.
 
 ## Linux release archives (2026-10-18)
 

@@ -320,6 +320,7 @@ const PASS: &[&str] = &[
     "sigassign/waveforms",
     "textio/file_roundtrip",
     "textio/std_logic_textio",
+    "textio/text_write_raw",
     "textio/write_read_line",
 ];
 

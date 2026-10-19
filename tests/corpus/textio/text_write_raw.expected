@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:text_write_raw:_p0	done
+out	to output
+out	no newline, then one

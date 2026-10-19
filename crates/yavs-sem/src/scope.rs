@@ -3,7 +3,7 @@
 //! Analysis is sequential in textual order, so inserting declarations as they
 //! are analyzed gives the LRM scope rule (12.2) without position bookkeeping.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use yavs_syntax::Symbol;
 
@@ -106,6 +106,19 @@ use crate::decl::{Alias, DeclKind};
 use crate::diag;
 use crate::ids::TypeId;
 
+/// Parameter count, result base type and first parameter base type.
+type Shape = (usize, Option<TypeId>, Option<TypeId>);
+
+/// Overloadable declarations seen so far in a lookup, indexed so that "does `d` hide or equal
+/// one of them" does not scan all of them (a region can hold hundreds of `"="`).
+#[derive(Default)]
+struct OverSet {
+    entities: HashSet<DeclId>,
+    shapes: HashMap<Shape, Vec<DeclId>>,
+    /// Members that are not poison.
+    live: usize,
+}
+
 /// Parameter and result type profile (4.5.3): base types only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
@@ -156,8 +169,79 @@ impl Db {
             return false;
         }
         match (self.is_overloadable(a), self.is_overloadable(b)) {
-            (true, true) => self.profile(a) == self.profile(b),
+            (true, true) => self.same_profile(a, b),
             _ => true,
+        }
+    }
+
+    /// Cheap hash key of the profile of an overloadable entity: equal profiles have equal shapes.
+    fn profile_shape(&self, d: DeclId) -> Option<Shape> {
+        match &self.decls[self.entity(d)].kind {
+            DeclKind::Subprogram(s) | DeclKind::GenericSubprogram(s) => Some((
+                s.params.len(),
+                s.ret.map(|r| self.base(r)),
+                s.params.first().map(|p| self.base(p.subtype)),
+            )),
+            DeclKind::EnumLit { ty, .. } => Some((0, Some(*ty), None)),
+            _ => None,
+        }
+    }
+
+    fn over_insert(&self, set: &mut OverSet, d: DeclId) {
+        set.entities.insert(self.entity(d));
+        if !self.is_poison(d) {
+            set.live += 1;
+            if let Some(sh) = self.profile_shape(d) {
+                set.shapes.entry(sh).or_default().push(d);
+            }
+        }
+    }
+
+    /// `set.iter().any(|o| homographs(o, p) || entity(o) == entity(p))`.
+    fn over_hides(&self, set: &OverSet, p: DeclId) -> bool {
+        if set.entities.contains(&self.entity(p)) {
+            return true;
+        }
+        if self.is_poison(p) || set.live == 0 {
+            return false;
+        }
+        match self.profile_shape(p) {
+            // Members are overloadable: homograph iff same profile.
+            Some(sh) => set
+                .shapes
+                .get(&sh)
+                .is_some_and(|os| os.iter().any(|&o| self.homographs(o, p))),
+            // A non-overloadable declaration conflicts with every other live member.
+            None => true,
+        }
+    }
+
+    /// `profile(a) == profile(b)` without building the profiles (hot in `lookup`).
+    fn same_profile(&self, a: DeclId, b: DeclId) -> bool {
+        enum P<'a> {
+            Sub(&'a crate::decl::Subprogram),
+            Lit(TypeId),
+        }
+        let get = |d: DeclId| match &self.decls[self.entity(d)].kind {
+            DeclKind::Subprogram(s) | DeclKind::GenericSubprogram(s) => Some(P::Sub(s)),
+            DeclKind::EnumLit { ty, .. } => Some(P::Lit(*ty)),
+            _ => None,
+        };
+        match (get(a), get(b)) {
+            (Some(P::Sub(x)), Some(P::Sub(y))) => {
+                x.params.len() == y.params.len()
+                    && x.ret.map(|r| self.base(r)) == y.ret.map(|r| self.base(r))
+                    && x.params
+                        .iter()
+                        .zip(&y.params)
+                        .all(|(p, q)| self.base(p.subtype) == self.base(q.subtype))
+            }
+            (Some(P::Lit(x)), Some(P::Lit(y))) => x == y,
+            (Some(P::Sub(s)), Some(P::Lit(t))) | (Some(P::Lit(t)), Some(P::Sub(s))) => {
+                s.params.is_empty() && s.ret.map(|r| self.base(r)) == Some(t)
+            }
+            (None, None) => true,
+            _ => false,
         }
     }
 
@@ -293,8 +377,45 @@ impl Db {
 
     /// Visibility (sem.md 1.4, LRM 12.3 and 12.4).
     pub fn lookup(&mut self, scope: ScopeId, key: Symbol) -> Visible {
+        let (rev, epoch) = (self.file_rev(), crate::ids::epoch());
+        if let Some((r, e, direct, v)) = self.lookup_cache.get(&(scope, key))
+            && *r == rev
+            && *e == epoch
+        {
+            let (v, direct) = (v.clone(), *direct);
+            #[cfg(debug_assertions)]
+            {
+                let (mut cacheable, mut d) = (false, false);
+                let fresh = self.lookup_uncached(scope, key, &mut cacheable, &mut d);
+                assert_eq!(d, direct);
+                assert_eq!(fresh, v, "stale lookup cache entry for `{key}`");
+            }
+            if let (true, Visible::One(d)) = (direct, &v) {
+                // Same side effect as an uncached direct hit.
+                self.generic.unused.remove(d);
+            }
+            return v;
+        }
+        let (mut cacheable, mut direct) = (true, false);
+        let v = self.lookup_uncached(scope, key, &mut cacheable, &mut direct);
+        // Something changed during the lookup (a unit was loaded): do not trust the epoch.
+        if cacheable && crate::ids::epoch() == epoch {
+            self.lookup_cache
+                .insert((scope, key), (rev, epoch, direct, v.clone()));
+        }
+        v
+    }
+
+    fn lookup_uncached(
+        &mut self,
+        scope: ScopeId,
+        key: Symbol,
+        cacheable: &mut bool,
+        direct: &mut bool,
+    ) -> Visible {
         // 1. Direct visibility, innermost region first.
         let mut over: Vec<DeclId> = Vec::new();
+        let mut over_set = OverSet::default();
         let mut single: Option<DeclId> = None;
         let mut regions = Vec::new();
         let mut cur = Some(scope);
@@ -304,10 +425,8 @@ impl Db {
             if let Some(ds) = self.scopes[s].names.get(&key) {
                 for &d in ds {
                     if self.is_overloadable(d) {
-                        if !over
-                            .iter()
-                            .any(|&o| self.homographs(o, d) || self.entity(o) == self.entity(d))
-                        {
+                        if !self.over_hides(&over_set, d) {
+                            self.over_insert(&mut over_set, d);
                             over.push(d);
                         }
                     } else if over.is_empty() {
@@ -326,6 +445,7 @@ impl Db {
         }
         if let Some(d) = single {
             self.generic.unused.remove(&d);
+            *direct = true;
             return Visible::One(d);
         }
         // Keep walking parents for use clauses even when overloadables were found.
@@ -338,19 +458,24 @@ impl Db {
 
         // 2. Potential visibility through use clauses of every enclosing region.
         let mut pot: Vec<DeclId> = Vec::new();
+        let mut seen: HashSet<DeclId> = HashSet::new();
         for &s in &regions {
-            let uses = self.scopes[s].uses.clone();
-            for u in uses {
-                let found: Vec<DeclId> = match u {
-                    UseItem::All(p) => self.scopes[p].names.get(&key).cloned().unwrap_or_default(),
+            for i in 0..self.scopes[s].uses.len() {
+                let found: Vec<DeclId> = match &self.scopes[s].uses[i] {
+                    UseItem::All(p) => self.scopes[*p].names.get(&key).cloned().unwrap_or_default(),
                     UseItem::One(ds) => ds
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .filter(|&d| self.decls[d].name.key() == key)
                         .collect(),
-                    UseItem::Library(lib) => self.library_unit_decl(lib, key).into_iter().collect(),
+                    UseItem::Library(lib) => {
+                        let lib = *lib;
+                        *cacheable = false;
+                        self.library_unit_decl(lib, key).into_iter().collect()
+                    }
                 };
                 for d in found {
-                    if !pot.iter().any(|&p| self.entity(p) == self.entity(d)) {
+                    if seen.insert(self.entity(d)) {
                         pot.push(d);
                     }
                 }
@@ -371,19 +496,44 @@ impl Db {
             pot = old;
         }
         // (a) a directly visible homograph hides the potentially visible declaration.
-        pot.retain(|&p| {
-            !over
-                .iter()
-                .any(|&o| self.homographs(o, p) || self.entity(o) == self.entity(p))
-        });
-        // (b) of two potentially visible homographs, explicit beats implicit.
-        let snapshot = pot.clone();
-        pot.retain(|&p| {
-            !(self.decls[p].implicit
-                && snapshot
-                    .iter()
-                    .any(|&q| q != p && !self.decls[q].implicit && self.homographs(p, q)))
-        });
+        if !over.is_empty() {
+            pot.retain(|&p| !self.over_hides(&over_set, p));
+        }
+        // (b) of two potentially visible homographs, explicit beats implicit. Explicit
+        // overloadables are bucketed by profile shape, so only equal shapes are compared.
+        if pot.iter().any(|&p| self.decls[p].implicit) {
+            let mut by_shape: HashMap<Shape, Vec<DeclId>> = HashMap::new();
+            let mut explicit_other: Vec<DeclId> = Vec::new();
+            for &q in &pot {
+                if self.decls[q].implicit || self.is_poison(q) {
+                    continue;
+                }
+                match self.profile_shape(q) {
+                    Some(sh) => by_shape.entry(sh).or_default().push(q),
+                    None => explicit_other.push(q),
+                }
+            }
+            pot.retain(|&p| {
+                if !self.decls[p].implicit || self.is_poison(p) {
+                    return true;
+                }
+                let hidden = match self.profile_shape(p) {
+                    Some(sh) => {
+                        explicit_other
+                            .iter()
+                            .any(|&q| self.entity(q) != self.entity(p))
+                            || by_shape
+                                .get(&sh)
+                                .is_some_and(|qs| qs.iter().any(|&q| self.homographs(p, q)))
+                    }
+                    None => explicit_other
+                        .iter()
+                        .chain(by_shape.values().flatten())
+                        .any(|&q| self.homographs(p, q)),
+                };
+                !hidden
+            });
+        }
         let (pot_over, pot_single): (Vec<DeclId>, Vec<DeclId>) =
             pot.into_iter().partition(|&d| self.is_overloadable(d));
         // (c) non-overloadable conflicts make all of them invisible.

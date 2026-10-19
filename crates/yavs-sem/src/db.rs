@@ -140,6 +140,10 @@ pub struct Db {
     /// classified once per resolution pass).
     pub(crate) rev_reported: HashSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
+    /// `lookup` results valid while `ids::epoch()` is unchanged: (scope, key) -> (revision, epoch, direct hit, result).
+    #[serde(skip)]
+    pub(crate) lookup_cache:
+        HashMap<(ScopeId, Symbol), (LangRev, u64, bool, crate::scope::Visible)>,
     #[serde(skip)]
     pub(crate) memo: HashMap<usize, crate::expr::CandSet>,
     /// The same for name nodes.
@@ -261,11 +265,11 @@ impl Db {
     }
 
     pub fn new(opts: Options) -> Db {
-        let mut scopes = Arena::new();
+        let mut scopes = Arena::tracked();
         let root = scopes.push(Scope::new(ScopeKind::Root, None, None));
-        let mut decls: Arena<DeclId, Decl> = Arena::new();
+        let mut decls: Arena<DeclId, Decl> = Arena::tracked();
         let mut types: Arena<TypeId, TypeDef> = Arena::new();
-        let mut subtypes: Arena<SubtypeId, SubtypeDef> = Arena::new();
+        let mut subtypes: Arena<SubtypeId, SubtypeDef> = Arena::tracked();
         let mut exprs: Arena<ExprId, Expr> = Arena::new();
         let name = Ident {
             text: Symbol::intern("<error>"),
@@ -343,6 +347,7 @@ impl Db {
             stack: Vec::new(),
             undeclared: HashSet::new(),
             rev_reported: HashSet::new(),
+            lookup_cache: HashMap::new(),
             memo: HashMap::new(),
             name_memo: HashMap::new(),
             pending_implicit: Vec::new(),

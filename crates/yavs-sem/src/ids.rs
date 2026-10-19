@@ -55,14 +55,32 @@ id!(
 /// A growable vector indexed by a typed id. Entries are never removed.
 pub struct Arena<I, T> {
     items: Vec<T>,
+    /// A tracked arena counts every mutable access in [`epoch`] (visibility caches).
+    track: bool,
     _id: PhantomData<I>,
+}
+
+static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Counts mutable accesses to tracked arenas (any `Db`): equal values mean nothing a cache
+/// could depend on changed in between.
+pub fn epoch() -> u64 {
+    EPOCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 impl<I: Id, T> Arena<I, T> {
     pub fn new() -> Self {
         Arena {
             items: Vec::new(),
+            track: false,
             _id: PhantomData,
+        }
+    }
+
+    pub fn tracked() -> Self {
+        Arena {
+            track: true,
+            ..Self::new()
         }
     }
 
@@ -122,6 +140,9 @@ impl<I: Id, T> std::ops::Index<I> for Arena<I, T> {
 
 impl<I: Id, T> std::ops::IndexMut<I> for Arena<I, T> {
     fn index_mut(&mut self, id: I) -> &mut T {
+        if self.track {
+            EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         &mut self.items[id.index()]
     }
 }

@@ -2490,6 +2490,9 @@ impl Machine {
                     // elaboration as it stops a run.
                     None => {
                         use std::io::Write;
+                        if self.rt.replay.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Ok(Flow::Next);
+                        }
                         if !self.rt.asserts.report_elab(s) {
                             return Ok(Flow::Next);
                         }

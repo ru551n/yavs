@@ -1785,8 +1785,18 @@ impl Db {
                 let t = self.base(st);
                 Ok(self.types[t].base_subtype)
             }
-            "element" => match self.element_subtype(st) {
+            "element" => match self.element_subtype(match self.subtypes[st].constraint {
+                Constraint::FromObject { .. } => self.subtypes[st].parent.unwrap_or(st),
+                _ => st,
+            }) {
                 Some(e) => match self.subtypes[st].constraint {
+                    // A constrained element subtype (`ow(open)(7 downto 0)`) is the formal's,
+                    // not the object's.
+                    Constraint::FromObject { .. }
+                        if self.constrainedness(e) == Constrainedness::Full =>
+                    {
+                        Ok(e)
+                    }
                     Constraint::FromObject { expr, elem_depth } => {
                         let base = self.base(e);
                         Ok(self.subtypes.push(SubtypeDef {

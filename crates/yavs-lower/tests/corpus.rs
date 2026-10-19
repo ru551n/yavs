@@ -32,6 +32,8 @@ const PASS: &[&str] = &[
     "composite/aggregate_open_elements",
     "composite/element_attr_open",
     "composite/element_depth",
+    "composite/element_open_formal",
+    "composite/element_open_formal_mismatch",
     "composite/port_length_const",
     "composite/aggregate_pieces",
     "composite/aggregate_target_cover",

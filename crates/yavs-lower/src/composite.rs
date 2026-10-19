@@ -321,6 +321,61 @@ impl Fx<'_, '_> {
 
     // ---- descriptors ----
 
+    /// The descriptor an array parameter of subtype `st` sees for an actual with descriptor
+    /// `dope`: the subtype's own when it is constrained, else its dimensions from the actual
+    /// and its constrained elements from the subtype (`ow(open)(7 downto 0)`). Every
+    /// constrained level's length is checked against the actual's (LRM 5.3.2.2, 6.5.6.2).
+    pub(crate) fn param_dope(
+        &mut self,
+        st: SubtypeId,
+        dope: Reg,
+        name: &str,
+        span: Span,
+    ) -> R<Reg> {
+        let db = self.db;
+        let partial = matches!(
+            &db.subtypes[st].constraint,
+            Constraint::Array { dims: None, elem } if !matches!(**elem, Constraint::None)
+        );
+        let want = match self.subtype_dope(st, span)? {
+            Some(w) => w,
+            None if partial => match self.desc_of(st, Some(dope), span)? {
+                Some(w) => w,
+                None => return Err(self.cx.ice(span, "partial formal without a descriptor")),
+            },
+            None => return Ok(dope),
+        };
+        let what = self.msg(name, yavs_ir::Dir::To);
+        let mut t = db.base(st);
+        let mut c = db.subtypes[st].constraint.clone();
+        let mut tid = self.ty(t, span)?;
+        let mut off = 0;
+        while let Some(Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        }) = self.fb.program().types().get(tid).cloned()
+        {
+            if !matches!(c, Constraint::Array { dims: None, .. } | Constraint::None) {
+                let (d, w) = (self.offset(dope, off), self.offset(want, off));
+                self.emit(Inst::SubtypeCheck {
+                    dope: d,
+                    want: w,
+                    dims,
+                    what,
+                });
+            }
+            if elem_desc.is_some() || !Ty::needs_desc(self.fb.program().types(), elem) {
+                break;
+            }
+            off += 24 * u32::from(dims);
+            tid = elem;
+            let (est, ec) = elem_constraint(db, t, &c);
+            (t, c) = (db.base(est), ec);
+        }
+        Ok(want)
+    }
+
     /// The descriptor of subtype `st`, its unconstrained parts taken from `actual` (a
     /// descriptor of the same type); `None` when `st` leaves parts open and there is no
     /// actual.

@@ -2285,12 +2285,14 @@ impl<'a> Fx<'a, '_> {
                 Shape::Sig => {
                     let (_, sref, dope) = self.sig_name(e)?;
                     cells.push(sref);
+                    let dope = self.sig_formal_dope(p, dope, es)?;
                     cells.extend(dope);
                 }
                 Shape::SigOut => {
                     let (d, sref, dope) = self.sig_name(e)?;
                     let slot = self.out_driver_slot(d, e)?;
                     cells.extend([sref, slot]);
+                    let dope = self.sig_formal_dope(p, dope, es)?;
                     cells.extend(dope);
                 }
                 Shape::RecSig(out) => {
@@ -2314,17 +2316,9 @@ impl<'a> Fx<'a, '_> {
                     if Ty::needs_desc(self.fb.program().types(), t) {
                         let mut desc = part.desc;
                         // A constrained array formal takes its own bounds (LRM 4.2.2.3).
-                        if let Some((_, dims)) = ty::array_of(db, db.base(p.subtype))
-                            && let Some(want) = self.subtype_dope(p.subtype, es)?
-                        {
-                            let what = self.msg(&p.name.text.to_string(), Dir::To);
-                            self.emit(Inst::SubtypeCheck {
-                                dope: desc,
-                                want,
-                                dims,
-                                what,
-                            });
-                            desc = want;
+                        if ty::array_of(db, db.base(p.subtype)).is_some() {
+                            desc =
+                                self.param_dope(p.subtype, desc, &p.name.text.to_string(), es)?;
                         }
                         cells.push(desc);
                     }
@@ -2372,16 +2366,8 @@ impl<'a> Fx<'a, '_> {
                             }
                         },
                     };
-                    if let Some(want) = self.subtype_dope(p.subtype, es)? {
-                        let dims = ty::array_of(db, db.base(p.subtype)).map_or(0, |x| x.1);
-                        let what = self.msg(&p.name.text.to_string(), Dir::To);
-                        self.emit(Inst::SubtypeCheck {
-                            dope,
-                            want,
-                            dims,
-                            what,
-                        });
-                        dope = want;
+                    if ty::array_of(db, db.base(p.subtype)).is_some() {
+                        dope = self.param_dope(p.subtype, dope, &p.name.text.to_string(), es)?;
                     }
                     if native {
                         cells.push(self.make_fat(data, dope));
@@ -2392,6 +2378,17 @@ impl<'a> Fx<'a, '_> {
             }
         }
         Ok(cells)
+    }
+
+    /// The descriptor of an array signal actual as the formal `p` sees it.
+    fn sig_formal_dope(&mut self, p: &Param, dope: Option<Reg>, span: Span) -> R<Option<Reg>> {
+        let Some(d) = dope else { return Ok(None) };
+        if ty::array_of(self.db, self.db.base(p.subtype)).is_some() {
+            return self
+                .param_dope(p.subtype, d, &p.name.text.to_string(), span)
+                .map(Some);
+        }
+        Ok(Some(d))
     }
 
     pub(crate) fn native(

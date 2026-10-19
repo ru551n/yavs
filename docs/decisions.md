@@ -1133,3 +1133,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   hierarchy sub-cases), and keeping elaboration order (fails those testbenches).
 - Corpus tests whose processes report in one cycle and whose order the reference simulator does
   not share carry `ignore=order`; `process/process_order` is `ref=hand`.
+- **Formals with open dimensions and constrained elements** (`Fx::param_dope`, #257): the
+  callee's descriptor is built from the actual's dimensions and the formal's element
+  constraint, and every constrained level is length-checked against the actual (signal and
+  non-signal array parameters alike); `x'element` of such a formal is the formal's constrained
+  element subtype, not a `FromObject` one (L79).

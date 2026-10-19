@@ -511,6 +511,10 @@ runs them all (yavs plus the configured simulators; the label mapping is local) 
 or a recorded verdict drifts. A fourth simulator is added with one template and `--record`. The
 user page `docs/language-choices.rst` is the user-facing subset.
 
+## test runner recipes
+
+`docs/recipes.rst` (user page): CLI use from an external Python test runner, libraries from source, per-file `--std`, response files, exit codes, and the vendor-library pattern (#275).
+
 ## difftest (yavs candidate)
 
 `python3 tools/difftest/difftest.py --candidate yavs` drives `yavs analyze`, `yavs elab` and

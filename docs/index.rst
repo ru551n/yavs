@@ -47,6 +47,7 @@ Getting started
 
    install
    usage
+   recipes
    language-choices
 
 .. toctree::

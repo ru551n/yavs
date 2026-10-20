@@ -116,6 +116,7 @@ const PASS: &[&str] = &[
     "generics/call_generic_map_2019_hand",
     "generics/case_generate_array",
     "generics/composite_eval",
+    "generics/decl_only_arch",
     "generics/deferred_constant",
     "generics/elab_calls",
     "generics/elab_values",

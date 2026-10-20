@@ -1,0 +1,2 @@
+exit	2
+diag	fatal	0	0	-	value -2 outside of NATURAL range 0 to 2147483647 for constant C

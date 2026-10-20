@@ -814,6 +814,13 @@ a note and a help suggesting an access type, as the reference simulators reject 
 
 ## Elaboration (yavs-elab, M2)
 
+- **Instances without processes run their declarative part** (#449, LRM 14.4.1, 14.5): only
+  architectures that own processes were lowered, so a constant that fails when evaluated (a call,
+  an overflow, `'value` of a bad string) went unnoticed in an instance with none. An instance whose
+  entity or architecture declares a constant with a run-time initial value (no analysis-time
+  value) is lowered and its instance data built at the start (`Ir::init_regions`). Ceiling:
+  blocks and generates without processes are not covered, nor are other failing declarations
+  (subtype ranges, signal initial values).
 - **`in` ports collapse into their actuals** (R4 of `docs/design/performance.md`, #413, user,
   2026-10-19; plan rule 3): after `bind_late` (`collapse.rs`), the formal of an `in` port (or a
   component port) whose actual is whole kernel leaves of the same type (one consecutive range

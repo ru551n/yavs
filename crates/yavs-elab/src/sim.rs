@@ -34,6 +34,9 @@ pub struct Ir {
     /// Leaves resolved by a function declared in an entity or architecture: the instance
     /// whose data the function reads (its constants and generics, #164).
     pub res_regions: std::collections::BTreeMap<crate::LeafId, ScopeId>,
+    /// Instances without processes whose declarative part runs at the start (constants that
+    /// can fail).
+    pub init_regions: Vec<ScopeId>,
     /// `'path_name`/`'instance_name` strings per (region, named entity, instance?).
     pub names: HashMap<(ScopeId, yavs_sem::DeclId, bool), String>,
     /// Packages with run-time objects, in initialisation order (#183).
@@ -134,12 +137,29 @@ impl Elaborated {
     /// [`Elaborated::lower`] with options (coverage counters).
     pub fn lower_with(&mut self, db: &mut Db, opts: LowerOptions) -> Result<(), Vec<Diagnostic>> {
         let mut archs: Vec<UnitId> = Vec::new();
+        let mut with_procs = std::collections::HashSet::new();
         for p in &self.procs {
             let i = self.instance_of(p.scope);
+            with_procs.insert(i);
             if let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind
                 && !archs.contains(&arch)
             {
                 archs.push(arch);
+            }
+        }
+        // A constant whose value only the run-time evaluation gives can fail (a call, an
+        // overflow, `'value` of a bad string): the declarative part of an instance without
+        // processes runs too (LRM 14.4.1).
+        let mut init_regions = Vec::new();
+        for (k, sc) in self.hier.scopes.iter().enumerate() {
+            if let ScopeKind::Instance { entity, arch } = sc.kind
+                && !with_procs.contains(&ScopeId(k as u32))
+                && [entity, arch].iter().any(|&u| runtime_constant(db, db.units[u].scope))
+            {
+                if !archs.contains(&arch) {
+                    archs.push(arch);
+                }
+                init_regions.push(ScopeId(k as u32));
             }
         }
         // A resolution function declared in an entity or architecture reads that instance's
@@ -310,6 +330,7 @@ impl Elaborated {
             res_types,
             res_index,
             res_regions,
+            init_regions,
             names,
             packages: lowered.packages,
             shared_size: lowered.shared_size,
@@ -644,6 +665,18 @@ impl Elaborated {
                     .get_mut(at..at + 8)
                     .ok_or_else(|| sim_err("shared variables area too short".into()))?
                     .copy_from_slice(&h.to_le_bytes());
+            }
+        }
+        for &region in &ir.init_regions {
+            match self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base) {
+                // ponytail: a constant initialised from a signal has no signal context here
+                // (#453); the instance is left unevaluated, as before, until that is fixed.
+                Err(e)
+                    if matches!(&e.kind, ErrorKind::Runtime(m)
+                        if m == "signal or wait operation during elaboration") => {}
+                r => {
+                    r?;
+                }
             }
         }
         // Instance data of the regions whose resolution functions read it (#164).
@@ -1478,4 +1511,14 @@ fn res_index_of(db: &Db, param: yavs_sem::SubtypeId) -> (i64, bool) {
         // evaluate it per instance if a design needs its bounds.
         _ => (0, false),
     }
+}
+
+/// Whether `scope` declares a constant with an initial value that has no value at analysis time.
+fn runtime_constant(db: &Db, scope: yavs_sem::ScopeId) -> bool {
+    db.scopes[scope].order.iter().any(|&d| {
+        matches!(&db.decls[d].kind, yavs_sem::decl::DeclKind::Object(o)
+            if o.class == yavs_sem::decl::ObjClass::Constant
+                && o.role == yavs_sem::decl::ObjRole::Plain
+                && o.default.is_some_and(|e| db.value(e).is_none()))
+    })
 }

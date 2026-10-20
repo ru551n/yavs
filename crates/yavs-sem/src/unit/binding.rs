@@ -2278,10 +2278,22 @@ impl Db {
             _ => return Err(self.not_block(label.span, named_in)),
         };
         let bscope = self.add_scope(ScopeKind::Configuration, Some(scope), None);
+        // The block configuration sees the declarations of its block, such as a component
+        // declared there (3.4.2, #473).
+        let first = inner[0];
+        let names: Vec<(Symbol, Vec<DeclId>)> = self.scopes[first]
+            .names
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        for (k, ds) in names {
+            self.scopes[bscope].names.entry(k).or_default().extend(ds);
+        }
+        let uses = self.scopes[first].uses.clone();
+        self.scopes[bscope].uses.extend(uses);
         for u in &b.uses {
             self.use_clause(bscope, u);
         }
-        let first = inner[0];
         let items = self.config_items(bscope, &inner, first, &b.items)?;
         Ok(BlockConfig {
             target,

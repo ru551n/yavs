@@ -486,6 +486,7 @@ impl Builder {
                 }
             }
         }
+        drop(taken);
         // Port levels: every formal part deeper than every actual part.
         let mut changed = true;
         let mut passes = 0;

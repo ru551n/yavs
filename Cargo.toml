@@ -18,7 +18,7 @@ rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 rustc-hash = "2.1"
-smallvec = "1"
+smallvec = { version = "1", features = ["union"] }
 yavs-logic = { path = "crates/yavs-logic" }
 
 [workspace.lints.rust]

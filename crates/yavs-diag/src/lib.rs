@@ -100,6 +100,12 @@ impl SourceFile {
         self.raw.as_deref().unwrap_or(self.text.as_bytes())
     }
 
+    /// Offsets of the first byte of each line, in `text`: those of the file on disk unless
+    /// [`SourceFile::is_latin1`].
+    pub fn line_starts(&self) -> &[u32] {
+        &self.line_starts
+    }
+
     /// The file was read as ISO-8859-1 bytes rather than UTF-8.
     pub fn is_latin1(&self) -> bool {
         self.raw.is_some()

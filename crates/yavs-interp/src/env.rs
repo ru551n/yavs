@@ -9,8 +9,8 @@
 //! kernel commits their reports. `--threads 1` and `--threads N` see the same values.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use yavs_diag::{SourceMap, Span};
 use yavs_ir::{Program, TyId, Width};
@@ -27,8 +27,12 @@ use crate::textio::arg;
 /// count) per `FileId`.
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
-    files: Vec<Option<(String, Vec<u32>)>>,
+    // Shared: a runtime is made per package initialisation and holds a copy of these.
+    files: Vec<Option<Arc<File>>>,
 }
+
+/// A file's path and line starts.
+type File = (String, Vec<u32>);
 
 impl Sources {
     /// The files `prog`'s statements are in, taken from the session's source map.
@@ -44,7 +48,16 @@ impl Sources {
             let id = st.span.file;
             if self.files.get(id.0 as usize).is_none_or(Option::is_none) {
                 let f = map.get(id);
-                self.add(id, &f.path, f.bytes());
+                if f.is_latin1() {
+                    self.add(id, &f.path, f.bytes());
+                } else {
+                    // The map has the line starts already.
+                    let i = id.0 as usize;
+                    if self.files.len() <= i {
+                        self.files.resize(i + 1, None);
+                    }
+                    self.files[i] = Some(Arc::new((f.path.clone(), f.line_starts().to_vec())));
+                }
             }
         }
     }
@@ -59,12 +72,12 @@ impl Sources {
         let starts = std::iter::once(0)
             .chain(nl.map(|(i, _)| i as u32 + 1))
             .collect();
-        self.files[i] = Some((path.to_string(), starts));
+        self.files[i] = Some(Arc::new((path.to_string(), starts)));
     }
 
     /// File path and 1-based line of a span.
     fn locate(&self, span: Span) -> Option<(&str, i64)> {
-        let (path, starts) = self.files.get(span.file.0 as usize)?.as_ref()?;
+        let (path, starts) = &**self.files.get(span.file.0 as usize)?.as_ref()?;
         let line = starts.partition_point(|&s| s <= span.start);
         Some((path, line as i64))
     }

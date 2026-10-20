@@ -355,7 +355,8 @@ covers ranges of several kernel signals. Such a reference keeps the two-register
   table). No threaded code, no `unsafe` (foreign calls are the one exception, isolated in `yavs-ffi`, 1.7).
 - Two loop instances: `exec::<false>` (fast: `Stmt` is a nop, no hook checks) and
   `exec::<true>` (debug: `Stmt` calls the debugger hook). The process switches loops when a
-  debugger is attached.
+  debugger is attached. The fast loop without a compiled tier runs a predecoded form of each
+  function instead of `code` (section 9, #431).
 - Fuel: the debug loop also counts instructions so a `pause` request interrupts an endless loop
   inside a process (fast loop: `run_for` timeouts are the user's guard).
 
@@ -715,6 +716,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 | address spaces | `Up(d)` is only an `AddrOf` operand (it yields a frame address). Added `Shared` (shared variables, serial processes only). Runtime addresses use 8 spaces: frame, instance, package, constant, heap, temp, shared, shared heap; the heap tag is the space |
 | `Ty` | `Enum` keeps literal names (for `'image`), `Physical {lo, hi, units}` is its own variant, `Array.elem_desc` / `Field.desc` hold static constraints as pool constants, `Protected {state: TyId}` names the record of its variables (units are elab's) |
 | frames | `Func.frame` (size), `Func.roots`, `Func.locals`; `Param {slot, width, class, mode, ty}`; a signal parameter is `Width::Sig` (16 bytes, two registers) |
+| fast dispatch | Without a debugger or a compiled tier the interpreter runs `pre::Code`, made once per function on its first call: 24-byte ops, constants and variable addresses a frame starts with left out, unconditional jumps threaded, targets as op indices, frame and instance accesses through preloaded addresses as slot offsets, constant `Index` offsets folded into the access, `Cmp` fused with its `CondBr`, `LayoutOf` with the one `Field` or load that reads it; everything else steps the IR instruction. Frames keep IR pcs (`Code::at`, `Code::entry`), so traces, messages, root maps, coverage, DAP and compiled code are unchanged; fusion never crosses a block start, so no frame stops inside a fused op (#431) |
 | operand lists | `Regs {start, len}` into `Func::operands`, so `Inst` is `Copy`; it is 32 bytes (the largest, `Drive`, has optional operands), not 8 to 16 |
 | attributes | `SigAttr {Event, Active, LastEvent, LastActive}`, `SigLastValue`, `Driving` and `DrivingValue` per driver slot |
 | logic ops | added `LEq` (element-wise `=`); `LNum::{Add, Sub, Cmp(op)}`; a compare with a metavalue is FALSE (numeric_std) |

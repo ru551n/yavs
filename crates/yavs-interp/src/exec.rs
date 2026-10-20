@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use yavs_ir::{
-    AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, ConstData, Dir, DriveMode, FOp, FUnOp,
+    AddrSpace, AttrKind, BlockId, BoolOp, CheckKind, CmpOp, ConstData, Dir, DriveMode, FOp, FUnOp,
     ForceKind, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp, LNumOp, LOp, LayoutError, ParamClass,
-    PhysOp, Program, Reg, StmtId, Ty, Width,
+    PhysOp, Program, Reg, StmtId, Ty, TyId, Width,
 };
 use yavs_kernel::{
     Ctx, DelayMode, Elem, ErrorKind, ForceMode, LogicVec, Severity, SigRef, SimError, Time, Value,
@@ -23,6 +23,7 @@ use yavs_std::arith;
 
 use crate::debug::{DebugSession, FrameView, ProcState, StepMode, Stop, StopReason};
 use crate::heap::{self, Heap, HeapError};
+use crate::pre::{self, Op};
 use crate::{InstData, ProcDriver, ProcRoots, Runtime, SharedState};
 
 /// An execution failure before it becomes a `SimError` with a trace.
@@ -343,6 +344,24 @@ fn fast_op(op: IntOp, x: i64, y: i64) -> Option<i64> {
     }
 }
 
+/// Checked integer arithmetic (rule 7).
+#[inline(always)]
+fn bin(op: IntOp, x: i64, y: i64) -> R<u64> {
+    match fast_op(op, x, y) {
+        Some(v) => Ok(v as u64),
+        None => arith_r(int_op(op, x, y)),
+    }
+}
+
+/// `base + pos * stride`.
+#[inline(always)]
+fn index_addr(base: u64, pos: u64, stride: u32) -> R<u64> {
+    let off = pos
+        .checked_mul(u64::from(stride))
+        .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
+    add_addr(base, off)
+}
+
 fn op_symbol(op: IntOp) -> &'static str {
     match op {
         IntOp::Add => "+",
@@ -528,7 +547,7 @@ impl Machine {
         });
         // Registers are written before they are read: stale values are harmless, except
         // those a frame starts with (`pre.rs`).
-        let rt = self.rt.clone();
+        let rt = &self.rt;
         let root = self.frames.first().map(|fr| fr.func);
         match root.and_then(|id| Some((id, rt.prog.func(id)?))) {
             Some((id, f)) => {
@@ -1482,6 +1501,111 @@ impl Machine {
         r
     }
 
+    /// The layout words of `ty` constrained by the descriptor at `desc`
+    /// (`[size, align, offsets...]` or `[size, align, stride, count]`), from `layouts`, which
+    /// is brought up to date first.
+    fn layout_words(&mut self, prog: &Program, ty: TyId, desc: u64) -> R<&[u8]> {
+        let t = ty.0 as usize;
+        if self.layouts.len() <= t {
+            self.layouts.resize_with(t + 1, || None);
+        }
+        let mut memo = self.layouts[t].take();
+        let dsz = match &memo {
+            Some(m) => m.dsz,
+            None => Ty::desc_size(&prog.types, ty)
+                .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?,
+        };
+        let d = self.rd(desc, dsz)?;
+        if memo.as_ref().is_none_or(|m| m.desc != d) {
+            let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
+                LayoutError::TooLarge => Fault::Runtime(e.to_string()),
+                LayoutError::Malformed(_) => ice(e.to_string()),
+            })?;
+            let mut words = vec![l.size, l.align];
+            if l.offsets.is_empty() {
+                words.extend([l.stride, l.count]);
+            } else {
+                words.extend(&l.offsets);
+            }
+            memo = Some(LayoutMemo {
+                dsz,
+                desc: d.to_vec(),
+                words: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+            });
+        }
+        let m = self.layouts[t].insert(memo.ok_or_else(|| ice("layout memo missing"))?);
+        Ok(&m.words)
+    }
+
+    /// `Inst::LayoutOf`: the layout words in temporary memory.
+    fn layout_of(&mut self, prog: &Program, ty: TyId, desc: u64) -> R<u64> {
+        let n = self.layout_words(prog, ty, desc)?.len() as u64;
+        let a = self.temp_alloc(n)?;
+        let t = ty.0 as usize;
+        let (temp, words) = (&mut self.temp, &self.layouts[t]);
+        let words = words.as_ref().map(|m| &m.words[..]).unwrap_or_default();
+        let off = split(a).2 as usize;
+        temp.get_mut(off..off + words.len())
+            .ok_or_else(|| ice("layout words outside the temporary area"))?
+            .copy_from_slice(words);
+        Ok(a)
+    }
+
+    /// Word `k` of the layout of `ty` constrained by the descriptor at `desc`, without
+    /// writing the layout to memory (a `LayoutOf` whose result only one load reads).
+    fn layout_word(&mut self, prog: &Program, ty: TyId, desc: u64, k: u32) -> R<u64> {
+        let words = self.layout_words(prog, ty, desc)?;
+        let o = k as usize * 8;
+        match words.get(o..o + 8) {
+            Some(b) => Ok(le_bytes(b)),
+            None => Err(ice(format!(
+                "read of 8 bytes at {o} outside a temporary object of {} bytes",
+                words.len()
+            ))),
+        }
+    }
+
+    /// `step` out of line: the fast loop stays small.
+    #[inline(never)]
+    fn step_out(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        inst: Inst,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Flow> {
+        self.step(prog, f, inst, ctx)
+    }
+
+    /// `Inst::DopeLen`: the element count of dimension `dim` of the descriptor at `dope`.
+    #[inline(always)]
+    fn dope_len(&self, dope: u64, dim: u8) -> R<u64> {
+        let (l, rr, dir) = self.dim_of(dope, u64::from(dim))?;
+        yavs_ir::dim_len(l, rr, dir == 1)
+            .filter(|&n| n <= i64::MAX as u64)
+            .ok_or_else(|| Fault::Runtime(format!("range {l} .. {rr} too long")))
+    }
+
+    /// `Inst::SigVal`: the two registers of a reference to elements `o .. o + l` of instance
+    /// signal `sig`.
+    #[inline(always)]
+    fn sig_val(&self, sig: u32, o: i64, l: i64) -> R<(u64, u64)> {
+        let (Ok(o), Ok(l)) = (u32::try_from(o), u32::try_from(l)) else {
+            return rt_err(format!("signal element range {o} + {l} out of bounds"));
+        };
+        if self.inst.sigs.get(sig as usize).is_none() {
+            return Err(ice(format!("no instance signal {sig}")));
+        }
+        Ok((u64::from(sig) << 32 | u64::from(o), u64::from(l)))
+    }
+
+    /// The temporaries of the statement that ended (`Inst::Stmt`).
+    #[inline(always)]
+    fn end_stmt(&mut self) {
+        let base = self.top().temp_base;
+        self.temp.truncate(base);
+    }
+
     fn exec_in<const DEBUG: bool>(
         &mut self,
         rt: &Runtime,
@@ -1490,6 +1614,9 @@ impl Machine {
     ) -> R<Outcome> {
         let prog = &rt.prog;
         let tier = if DEBUG { None } else { rt.tier.get() };
+        if !DEBUG && tier.is_none() {
+            return self.exec_fast(rt, ctx, base);
+        }
         loop {
             // The top frame changes only at calls and returns: look its function up once.
             let fr = self
@@ -1580,8 +1707,7 @@ impl Machine {
                     Inst::Br { to } => jump!(to),
                     Inst::CondBr { c, t, f: e } => jump!(if self.r(c) != 0 { t } else { e }),
                     Inst::Stmt => {
-                        let base = self.top().temp_base;
-                        self.temp.truncate(base);
+                        self.end_stmt();
                         pc += 1;
                         continue;
                     }
@@ -1751,6 +1877,336 @@ impl Machine {
                         self.top().pc += 1;
                         return Ok(Outcome::Suspended);
                     }
+                }
+            }
+        }
+    }
+
+    /// The dispatch loop on predecoded code (`pre::Code`, #431), without a debugger or a
+    /// compiled tier: the top frame's function runs from its ops until a call, a return or a
+    /// suspension, which are handled here as in `exec_in`.
+    fn exec_fast(
+        &mut self,
+        rt: &Runtime,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        base: usize,
+    ) -> R<Outcome> {
+        let prog = &rt.prog;
+        loop {
+            let top = self
+                .frames
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| ice("no frame to execute"))?;
+            let func = self.frames[top].func;
+            let f = prog
+                .func(func)
+                .ok_or_else(|| ice(format!("no function {func}")))?;
+            let pre = rt
+                .pre(func, f)
+                .ok_or_else(|| ice(format!("no function {func}")))?;
+            match self.run_ops(prog, f, &pre.code, top, ctx)? {
+                Flow::Call => {}
+                Flow::Ret(v) => {
+                    let done = self
+                        .pop_frame()
+                        .ok_or_else(|| ice("return without frame"))?;
+                    if self.frames.len() <= base {
+                        return Ok(Outcome::Returned(v));
+                    }
+                    if let Some(d) = done.ret {
+                        self.regs[d.0 as usize] =
+                            v.ok_or_else(|| ice("function returned no value"))?;
+                    }
+                    self.top().pc += 1;
+                    if self.spare.len() < SPARE_FRAMES {
+                        self.spare.push((done.slots, done.regs));
+                    }
+                }
+                Flow::Suspend => {
+                    self.top().pc += 1;
+                    return Ok(Outcome::Suspended);
+                }
+                // A jump to the block the machine pauses at.
+                Flow::Next | Flow::Jump(_) => return Ok(Outcome::Suspended),
+            }
+        }
+    }
+
+    /// Run the ops of frame `top` (function `f`) from its pc. Returns at a call, a return, a
+    /// suspension (`Flow::Suspend`) or a pause (`Flow::Next`), with the frame's pc the IR pc
+    /// of the instruction; on a fault the frame's pc is the failing op's IR pc.
+    fn run_ops(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        code: &pre::Code,
+        top: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Flow> {
+        let ops = &code.ops[..];
+        let entry = |pc: u32| {
+            code.entry
+                .get(pc as usize)
+                .copied()
+                .filter(|&k| k != pre::NONE)
+                .ok_or_else(|| ice(format!("pc {pc} of `{}` inside a fused operation", f.name)))
+        };
+        let mut k = entry(self.frames[top].pc)? as usize;
+        // A fault leaves the IR pc of the op that failed in the frame.
+        macro_rules! t {
+            ($e:expr) => {
+                match $e {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                        return Err(e);
+                    }
+                }
+            };
+        }
+        loop {
+            match ops[k] {
+                Op::Step(pc) => {
+                    let inst = *f
+                        .code
+                        .get(pc as usize)
+                        .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
+                    self.frames[top].pc = pc;
+                    match self.step_out(prog, f, inst, ctx)? {
+                        Flow::Next => k += 1,
+                        Flow::Jump(b) => {
+                            let blk = f
+                                .blocks
+                                .get(b)
+                                .ok_or_else(|| ice(format!("no block {b}")))?;
+                            if self.pause == Some(b) && self.frames.len() == 1 {
+                                self.pause = None;
+                                return Ok(Flow::Next);
+                            }
+                            k = entry(blk.start)? as usize;
+                        }
+                        flow => return Ok(flow),
+                    }
+                }
+                Op::Stmt => {
+                    self.end_stmt();
+                    k += 1;
+                }
+                Op::Move { dst, src } => {
+                    self.regs[dst as usize] = self.regs[src as usize];
+                    k += 1;
+                }
+                Op::Load { dst, addr, w } => {
+                    self.regs[dst as usize] = t!(self.load(self.regs[addr as usize], w));
+                    k += 1;
+                }
+                Op::Store { addr, src, w } => {
+                    t!(self.store(self.regs[addr as usize], w, self.regs[src as usize]));
+                    k += 1;
+                }
+                Op::LoadSlot { dst, off, w } => {
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    self.regs[dst as usize] = match self.frames[top].slots.get(o..o + n) {
+                        Some(b) => le_bytes(b),
+                        None => t!(
+                            mk_addr(FRAME, top as u32, off.into()).and_then(|a| self.load(a, w))
+                        ),
+                    };
+                    k += 1;
+                }
+                Op::StoreSlot { src, off, w } => {
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    let v = self.regs[src as usize];
+                    match self.frames[top].slots.get_mut(o..o + n) {
+                        Some(b) => put_le(b, v),
+                        None => t!(mk_addr(FRAME, top as u32, off.into())
+                            .and_then(|a| self.store(a, w, v))),
+                    }
+                    k += 1;
+                }
+                Op::LoadInst { dst, off, w } => {
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    self.regs[dst as usize] = match self.inst.data.get(o..o + n) {
+                        Some(b) => le_bytes(b),
+                        None => t!(mk_addr(INST, 0, off.into()).and_then(|a| self.load(a, w))),
+                    };
+                    k += 1;
+                }
+                Op::LoadOff { dst, base, off, w } => {
+                    let a = t!(add_addr(self.regs[base as usize], off.into()));
+                    self.regs[dst as usize] = t!(self.load(a, w));
+                    k += 1;
+                }
+                Op::StoreOff { base, off, src, w } => {
+                    let a = t!(add_addr(self.regs[base as usize], off.into()));
+                    t!(self.store(a, w, self.regs[src as usize]));
+                    k += 1;
+                }
+                Op::Index {
+                    dst,
+                    base,
+                    pos,
+                    stride,
+                } => {
+                    self.regs[dst as usize] = t!(index_addr(
+                        self.regs[base as usize],
+                        self.regs[pos as usize],
+                        stride
+                    ));
+                    k += 1;
+                }
+                Op::IndexImm { dst, base, off } => {
+                    self.regs[dst as usize] = t!(add_addr(self.regs[base as usize], off.into()));
+                    k += 1;
+                }
+                Op::Pos {
+                    dst,
+                    dope,
+                    idx,
+                    what,
+                    dim,
+                } => {
+                    self.regs[dst as usize] = t!(self.pos_of(
+                        self.regs[dope as usize],
+                        dim,
+                        self.regs[idx as usize] as i64,
+                        what
+                    ));
+                    k += 1;
+                }
+                Op::Bin { op, dst, a, b } => {
+                    self.regs[dst as usize] = t!(bin(
+                        op,
+                        self.regs[a as usize] as i64,
+                        self.regs[b as usize] as i64
+                    ));
+                    k += 1;
+                }
+                Op::BinRange {
+                    op,
+                    dst,
+                    a,
+                    b,
+                    lo,
+                    hi,
+                } => {
+                    let (x, y) = (self.regs[a as usize] as i64, self.regs[b as usize] as i64);
+                    let (l, h) = (self.regs[lo as usize] as i64, self.regs[hi as usize] as i64);
+                    self.regs[dst as usize] = match fast_op(op, x, y) {
+                        Some(v) if l <= v && v <= h => v as u64,
+                        _ => t!(self.bin_range_slow(op, x, y, l, h, || {
+                            match code.at.get(k).and_then(|&p| f.code.get(p as usize)) {
+                                Some(&Inst::BinRange { what, .. }) => what,
+                                _ => yavs_ir::CheckMsgId(0),
+                            }
+                        })),
+                    };
+                    k += 1;
+                }
+                Op::Cmp { op, dst, a, b } => {
+                    let v = cmp(
+                        op,
+                        (self.regs[a as usize] as i64).cmp(&(self.regs[b as usize] as i64)),
+                    );
+                    self.regs[dst as usize] = v.into();
+                    k += 1;
+                }
+                Op::CmpBr {
+                    op,
+                    dst,
+                    a,
+                    b,
+                    t,
+                    f: e,
+                } => {
+                    let v = cmp(
+                        op,
+                        (self.regs[a as usize] as i64).cmp(&(self.regs[b as usize] as i64)),
+                    );
+                    self.regs[dst as usize] = v.into();
+                    k = if v { t } else { e } as usize;
+                }
+                Op::Check {
+                    kind,
+                    v,
+                    lo,
+                    hi,
+                    what,
+                } => {
+                    t!(self.check_val(
+                        kind,
+                        self.regs[v as usize] as i64,
+                        self.regs[lo as usize] as i64,
+                        self.regs[hi as usize] as i64,
+                        what
+                    ));
+                    k += 1;
+                }
+                Op::Layout { dst, ty, desc } => {
+                    self.regs[dst as usize] =
+                        t!(self.layout_of(prog, TyId(ty), self.regs[desc as usize]));
+                    k += 1;
+                }
+                Op::LayoutWord {
+                    dst,
+                    ty,
+                    desc,
+                    k: w,
+                } => {
+                    self.regs[dst as usize] =
+                        t!(self.layout_word(prog, TyId(ty), self.regs[desc as usize], w));
+                    k += 1;
+                }
+                Op::FieldOf {
+                    dst,
+                    base,
+                    ty,
+                    desc,
+                    n,
+                } => {
+                    let off = t!(self.layout_word(prog, TyId(ty), self.regs[desc as usize], 2 + n));
+                    self.regs[dst as usize] = t!(add_addr(self.regs[base as usize], off));
+                    k += 1;
+                }
+                Op::Br { to } => k = to as usize,
+                Op::BrBody { to, block } => {
+                    if self.pause == Some(BlockId(block)) && self.frames.len() == 1 {
+                        // Stopped before the jump, which runs again on resumption.
+                        self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                        self.pause = None;
+                        return Ok(Flow::Next);
+                    }
+                    k = to as usize;
+                }
+                Op::SigVal {
+                    dst,
+                    sig,
+                    offset,
+                    len,
+                } => {
+                    let (a, b) = t!(self.sig_val(
+                        sig,
+                        self.regs[offset as usize] as i64,
+                        self.regs[len as usize] as i64
+                    ));
+                    self.regs[dst as usize] = a;
+                    self.regs[dst as usize + 1] = b;
+                    k += 1;
+                }
+                Op::DopeLen { dst, dope, dim } => {
+                    self.regs[dst as usize] = t!(self.dope_len(self.regs[dope as usize], dim));
+                    k += 1;
+                }
+                Op::Alloc { dst, size } => {
+                    self.regs[dst as usize] = t!(self.temp_alloc(self.regs[size as usize]));
+                    k += 1;
+                }
+                Op::CondBr { c, t, f: e } => {
+                    k = if self.regs[c as usize] != 0 { t } else { e } as usize;
                 }
             }
         }
@@ -2047,11 +2503,7 @@ impl Machine {
 
     #[inline(always)]
     fn do_index(&mut self, dst: Reg, base: Reg, pos: Reg, stride: u32) -> R<()> {
-        let off = self
-            .r(pos)
-            .checked_mul(u64::from(stride))
-            .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
-        let a = add_addr(self.r(base), off)?;
+        let a = index_addr(self.r(base), self.r(pos), stride)?;
         self.set(dst, a);
         Ok(())
     }
@@ -2065,16 +2517,22 @@ impl Machine {
         idx: Reg,
         what: yavs_ir::CheckMsgId,
     ) -> R<()> {
-        let (l, rr, dir) = self.dim_of(self.r(dope), u64::from(dim))?;
-        let i = self.ri(idx);
+        let pos = self.pos_of(self.r(dope), dim, self.ri(idx), what)?;
+        self.set(dst, pos);
+        Ok(())
+    }
+
+    /// The checked position of index `i` in dimension `dim` of the descriptor at `dope`.
+    #[inline(always)]
+    fn pos_of(&self, dope: u64, dim: u8, i: i64, what: yavs_ir::CheckMsgId) -> R<u64> {
+        let (l, rr, dir) = self.dim_of(dope, u64::from(dim))?;
         let pos = match dir {
             // The distance fits a u64 even when it does not fit an i64.
             0 if l <= i && i <= rr => i.wrapping_sub(l),
             1 if rr <= i && i <= l => l.wrapping_sub(i),
-            _ => return self.pos_fail(l, rr, dir, i, what),
+            _ => return self.pos_fail(l, rr, dir, i, what).map(|()| 0),
         };
-        self.set(dst, pos as u64);
-        Ok(())
+        Ok(pos as u64)
     }
 
     #[cold]
@@ -2095,11 +2553,7 @@ impl Machine {
 
     #[inline(always)]
     fn do_bin(&mut self, op: IntOp, dst: Reg, a: Reg, b: Reg) -> R<()> {
-        let (x, y) = (self.ri(a), self.ri(b));
-        let v = match fast_op(op, x, y) {
-            Some(v) => v as u64,
-            None => arith_r(int_op(op, x, y))?,
-        };
+        let v = bin(op, self.ri(a), self.ri(b))?;
         self.set(dst, v);
         Ok(())
     }
@@ -2118,34 +2572,30 @@ impl Machine {
     ) -> R<()> {
         let (x, y) = (self.ri(a), self.ri(b));
         let (l, h) = (self.ri(lo), self.ri(hi));
-        match fast_op(op, x, y) {
-            Some(v) if l <= v && v <= h => {
-                self.set(dst, v as u64);
-                Ok(())
-            }
-            _ => self.bin_range_slow(op, x, y, l, h, dst, what),
-        }
+        let v = match fast_op(op, x, y) {
+            Some(v) if l <= v && v <= h => v as u64,
+            _ => self.bin_range_slow(op, x, y, l, h, || what)?,
+        };
+        self.set(dst, v);
+        Ok(())
     }
 
+    /// `BinRange` off the fast path; `what` gives its message (the fast loop reads it from
+    /// the IR only here).
     #[cold]
     #[inline(never)]
-    #[allow(clippy::too_many_arguments)]
     fn bin_range_slow(
-        &mut self,
+        &self,
         op: IntOp,
         x: i64,
         y: i64,
         l: i64,
         h: i64,
-        dst: Reg,
-        what: yavs_ir::CheckMsgId,
-    ) -> R<()> {
+        what: impl FnOnce() -> yavs_ir::CheckMsgId,
+    ) -> R<u64> {
         match int_op(op, x, y) {
-            Ok(v) if l <= v && v <= h => {
-                self.set(dst, v as u64);
-                Ok(())
-            }
-            r => self.bin_range_fail(op, x, y, r, what),
+            Ok(v) if l <= v && v <= h => Ok(v as u64),
+            r => self.bin_range_fail(op, x, y, r, what()).map(|()| 0),
         }
     }
 
@@ -2184,14 +2634,25 @@ impl Machine {
         hi: Reg,
         what: yavs_ir::CheckMsgId,
     ) -> R<()> {
-        let x = self.ri(v);
+        self.check_val(kind, self.ri(v), self.ri(lo), self.ri(hi), what)
+    }
+
+    #[inline(always)]
+    fn check_val(
+        &self,
+        kind: CheckKind,
+        x: i64,
+        l: i64,
+        h: i64,
+        what: yavs_ir::CheckMsgId,
+    ) -> R<()> {
         let bad = match kind {
-            CheckKind::Range | CheckKind::Index => x < self.ri(lo) || x > self.ri(hi),
-            CheckKind::Length => x != self.ri(lo),
+            CheckKind::Range | CheckKind::Index => x < l || x > h,
+            CheckKind::Length => x != l,
             CheckKind::Null => x == 0,
         };
         if bad {
-            return self.check_fail(kind, x, lo, hi, what);
+            return self.check_fail(kind, x, l, h, what);
         }
         Ok(())
     }
@@ -2202,14 +2663,13 @@ impl Machine {
         &self,
         kind: CheckKind,
         x: i64,
-        lo: Reg,
-        hi: Reg,
+        l: i64,
+        h: i64,
         what: yavs_ir::CheckMsgId,
     ) -> R<()> {
         let (w, dir) = self.check_msg(what);
         match kind {
             CheckKind::Range | CheckKind::Index => {
-                let (l, h) = (self.ri(lo), self.ri(hi));
                 let k = if kind == CheckKind::Index {
                     "index"
                 } else {
@@ -2218,10 +2678,7 @@ impl Machine {
                 let m = self.msg(what);
                 rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m))
             }
-            CheckKind::Length => {
-                let l = self.ri(lo);
-                rt_err(format!("value length {x} does not match {w} length {l}"))
-            }
+            CheckKind::Length => rt_err(format!("value length {x} does not match {w} length {l}")),
             CheckKind::Null => rt_err(format!("null access value: {w}")),
         }
     }
@@ -2548,47 +3005,12 @@ impl Machine {
                 self.put(self.r(at), &out)?;
             }
             Inst::DopeLen { dst, dope, dim } => {
-                let (l, rr, dir) = self.dim_of(self.r(dope), u64::from(dim))?;
-                let n = yavs_ir::dim_len(l, rr, dir == 1)
-                    .filter(|&n| n <= i64::MAX as u64)
-                    .ok_or_else(|| Fault::Runtime(format!("range {l} .. {rr} too long")))?;
+                let n = self.dope_len(self.r(dope), dim)?;
                 self.set(dst, n);
             }
             Inst::LayoutOf { dst, ty, desc } => {
-                let t = ty.0 as usize;
-                if self.layouts.len() <= t {
-                    self.layouts.resize_with(t + 1, || None);
-                }
-                let mut memo = self.layouts[t].take();
-                let dsz = match &memo {
-                    Some(m) => m.dsz,
-                    None => Ty::desc_size(&prog.types, ty)
-                        .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?,
-                };
-                let d = self.rd(self.r(desc), dsz)?;
-                if memo.as_ref().is_none_or(|m| m.desc != d) {
-                    let (l, _) =
-                        Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
-                            LayoutError::TooLarge => Fault::Runtime(e.to_string()),
-                            LayoutError::Malformed(_) => ice(e.to_string()),
-                        })?;
-                    let mut words = vec![l.size, l.align];
-                    if l.offsets.is_empty() {
-                        words.extend([l.stride, l.count]);
-                    } else {
-                        words.extend(&l.offsets);
-                    }
-                    memo = Some(LayoutMemo {
-                        dsz,
-                        desc: d.to_vec(),
-                        words: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
-                    });
-                }
-                let m = memo.ok_or_else(|| ice("layout memo missing"))?;
-                let a = self.temp_alloc(m.words.len() as u64)?;
-                self.put(a, &m.words)?;
+                let a = self.layout_of(prog, ty, self.r(desc))?;
                 self.set(dst, a);
-                self.layouts[t] = Some(m);
             }
             Inst::SubtypeCheck {
                 dope,
@@ -2760,15 +3182,9 @@ impl Machine {
                 offset,
                 len,
             } => {
-                let (o, l) = (self.ri(offset), self.ri(len));
-                let (Ok(o), Ok(l)) = (u32::try_from(o), u32::try_from(l)) else {
-                    return rt_err(format!("signal element range {o} + {l} out of bounds"));
-                };
-                if self.inst.sigs.get(sig as usize).is_none() {
-                    return Err(ice(format!("no instance signal {sig}")));
-                }
-                self.set(dst, u64::from(sig) << 32 | u64::from(o));
-                self.set(Reg(dst.0 + 1), u64::from(l));
+                let (a, b) = self.sig_val(sig, self.ri(offset), self.ri(len))?;
+                self.set(dst, a);
+                self.set(Reg(dst.0 + 1), b);
             }
             Inst::SigParts { dst, parts, n } => {
                 // Flatten nested references, order by first element, check the tiling.
@@ -3117,10 +3533,7 @@ impl Machine {
                     .ok_or_else(|| ice(format!("no coverage counter {i}")))?
                     .fetch_add(1, Ordering::Relaxed);
             }
-            Inst::Stmt => {
-                let base = self.frames[self.frames.len() - 1].temp_base;
-                self.temp.truncate(base);
-            }
+            Inst::Stmt => self.end_stmt(),
             Inst::Elab { op, .. } => {
                 return rt_err(format!(
                     "elaboration instruction {op:?} needs yavs-elab (not implemented yet)"

@@ -3,7 +3,7 @@
 //! `INPUT` and `OUTPUT` are the pre-opened cells `FILE_INPUT` and `FILE_OUTPUT`.
 
 use yavs_diag::Span;
-use yavs_ir::{AddrSpace, ConstData, Reg, RegTy, Width};
+use yavs_ir::{AddrSpace, ConstData, FuncKind, Reg, RegTy, Width};
 use yavs_sem::decl::DeclKind;
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
 use yavs_sem::{DeclId, ScopeId};
@@ -39,6 +39,15 @@ impl Fx<'_, '_> {
                 w: Width::B4,
             },
         );
+        if matches!(self.kind, FuncKind::Procedure | FuncKind::Function) {
+            let op = ImplicitOp {
+                family: Family::FileClose,
+                ty: t,
+                form: Form::Plain,
+            };
+            let sym = yavs_sem::mangle::implicit_native(db, &op);
+            self.local_files.push((off, sym, tid));
+        }
         self.open_file(d, Space::Frame(self.depth), off)
     }
 

@@ -2311,7 +2311,7 @@ impl Fx<'_, '_> {
     fn return_(&mut self, v: Option<ExprId>, span: Span) -> R<()> {
         let db = self.db;
         let (Some(e), Some(ret)) = (v, self.ret) else {
-            self.term(Inst::Ret { v: None });
+            self.ret_term(None);
             return Ok(());
         };
         let val = self.expr(e)?;
@@ -2324,7 +2324,7 @@ impl Fx<'_, '_> {
                     &format!("the result of {}", self.name),
                     span,
                 )?;
-                self.term(Inst::Ret { v: Some(r) });
+                self.ret_term(Some(r));
             }
             crate::expr::V::A(data, dope) if self.is_general(db.base(ret), span)? => {
                 let t = db.base(ret);
@@ -2348,7 +2348,7 @@ impl Fx<'_, '_> {
                 let d = self.offset(fat, 8);
                 self.store(d, nd, Width::B8);
                 self.fat_root(fat);
-                self.term(Inst::Ret { v: Some(fat) });
+                self.ret_term(Some(fat));
             }
             crate::expr::V::A(data, mut dope) => {
                 let dims = ty::array_of(db, db.base(ret)).map_or(1, |x| x.1);
@@ -2376,7 +2376,7 @@ impl Fx<'_, '_> {
                 let d = self.offset(fat, 8);
                 self.store(d, nd, Width::B8);
                 self.fat_root(fat);
-                self.term(Inst::Ret { v: Some(fat) });
+                self.ret_term(Some(fat));
             }
         }
         Ok(())

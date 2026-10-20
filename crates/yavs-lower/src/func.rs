@@ -183,6 +183,9 @@ pub(crate) struct Fx<'a, 'b> {
     /// temporary formal, the formal, its parts; a converted formal is one part whose
     /// formal part is the conversion).
     pub writeback_parts: Vec<(crate::Obj, DeclId, Box<[yavs_sem::hir::IndividualPart]>)>,
+    /// Files declared in this subprogram (frame offset of the cell, `file_close` symbol and
+    /// type), closed when it returns (LRM 14.6).
+    pub local_files: Vec<(u32, String, TyId)>,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -213,6 +216,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             guard: None,
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
+            local_files: Vec::new(),
         }
     }
 
@@ -886,6 +890,17 @@ impl<'a, 'b> Fx<'a, 'b> {
         self.layout(tid, dope).1
     }
 
+    /// Return `v`, closing the files this subprogram declared first.
+    pub fn ret_term(&mut self, v: Option<Reg>) {
+        for (off, sym, tid) in std::mem::take(&mut self.local_files) {
+            let a = self.addr(crate::Space::Frame(self.depth), off);
+            // A failure was reported by `native`; the return goes on.
+            let _ = self.native(&sym, Some(tid), &[a], None, Span::default());
+            self.local_files.push((off, sym, tid));
+        }
+        self.term(Inst::Ret { v });
+    }
+
     /// Finish the body: a function falling off its end is a runtime error.
     pub fn end(mut self, span: Span) {
         if self.live {
@@ -895,7 +910,7 @@ impl<'a, 'b> Fx<'a, 'b> {
                 let _ = span;
                 self.term(Inst::Unreachable { what });
             } else {
-                self.term(Inst::Ret { v: None });
+                self.ret_term(None);
             }
         }
         self.fb.finish();

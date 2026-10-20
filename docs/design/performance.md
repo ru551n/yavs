@@ -521,7 +521,11 @@ interpreter's `Index` on a logic array is a fused index-and-extract, and that bu
 (slices, concatenation, copies at any alignment, comparisons) stay word-wise (they are).
 Crates: `yavs-llvm`, `yavs-interp`.
 
-**R12 (rank 10, decision for the user): narrow storage of integer arrays.** Store integer
+**R12 (rank 10; step 1 done, #415): narrow storage of integer arrays.** Done: integer types within
+32 bits are 4 bytes as array elements and in kernel signals (STATUS.md "Narrow integer storage": a
+large integer array uses a quarter less peak memory, the library benchmarks are unchanged). Step 2, 1- and
+2-byte elements from subtype ranges, is not worth it for the measured workloads. The original text:
+Store integer
 elements of large arrays (above a size threshold, in memory only, widened on load, narrowed
 with the existing range check on store) in the smallest width that holds the subtype range.
 Rule 7 says integers are `i64` in memory; this is a deliberate exception for memory size and

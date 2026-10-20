@@ -255,6 +255,21 @@ memos, wait list) belongs to the heap work of #422 and the dispatch work of #412
 sharing per-architecture data between instances (shapes, port tables) needs the elaborator to build the
 instance's constants lazily, a larger change.
 
+### Narrow integer storage (R12, #415)
+
+Elements of arrays of an integer type within 32 bits, and kernel signals of such types, take 4 bytes instead of 8
+(`docs/decisions.md` "Narrow integer storage"). Release builds, `--threads 1`, host shared with other agents (load
+about 10); before is main at the commit below it, after is #415:
+
+| Run | peak before | peak after | CPU before | CPU after |
+|---|---|---|---|---|
+| a 4M-element `integer` array variable written and summed 4 times, interpreted | 123 MB | 91 MB | 6.97 s | 7.08 s |
+| the same, `--tier=llvm` | 142 MB | 109 MB | 0.44 s | 0.45 s |
+| `tools/bench` (7 benchmarks: the internal scoreboard, compute, text and elaboration designs, `uvvm_util_rand_tb`, `osvvm_axistream`, `vunit_vc30`), median of 5 | unchanged (`vunit_vc30` 120.7 to 119.1 MiB) | | geometric mean of total CPU 1.006 (noise) | |
+
+The library testbenches hold few large integer arrays, so their footprint does not change; 1- and 2-byte elements
+(step 2 of R12) are not worth doing for them.
+
 ### Interpreter run time (#386)
 
 Interpreter hot paths (`crates/yavs-interp`, commits of #386): constant expansions and layouts

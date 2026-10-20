@@ -304,7 +304,9 @@ impl Default for AssertState {
 
 #[derive(Clone, Copy, Debug)]
 enum Op {
-    Count(Severity),
+    /// `n` reports of the severity (consecutive counts are merged: `Asserts::with` replays the
+    /// log on every report, so a log with one entry per report is quadratic).
+    Count(Severity, u64),
     Clear,
     Enable(Severity, bool),
     ReadSeverity(Severity),
@@ -313,7 +315,7 @@ enum Op {
 impl AssertState {
     fn apply(&mut self, op: Op) {
         match op {
-            Op::Count(s) => self.counts[s as usize] += 1,
+            Op::Count(s, n) => self.counts[s as usize] += n,
             Op::Clear => self.counts = [0; 4],
             Op::Enable(s, b) => self.enabled[s as usize] = b,
             Op::ReadSeverity(s) => self.read_severity = s,
@@ -363,7 +365,24 @@ impl Asserts {
         }
         let r = f(&st);
         if let Some(op) = op {
-            g.logs.entry(pid).or_default().push(op);
+            let log = g.logs.entry(pid).or_default();
+            // Counts commute with each other: fold into the trailing run of counts.
+            let merged = match op {
+                Op::Count(s, n) => log
+                    .iter_mut()
+                    .rev()
+                    .map_while(|o| match o {
+                        Op::Count(s2, n2) => Some((s2, n2)),
+                        _ => None,
+                    })
+                    .find(|(s2, _)| **s2 == s)
+                    .map(|(_, n2)| *n2 += n)
+                    .is_some(),
+                _ => false,
+            };
+            if !merged {
+                log.push(op);
+            }
         }
         r
     }
@@ -405,7 +424,7 @@ impl Asserts {
     pub(crate) fn report(&self, ctx: &Ctx<'_>, s: Severity) -> bool {
         let on = self.with(ctx, None, |st| st.enabled[s as usize]);
         if on {
-            self.with(ctx, Some(Op::Count(s)), |_| ());
+            self.with(ctx, Some(Op::Count(s, 1)), |_| ());
         }
         on
     }

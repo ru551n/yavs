@@ -1344,6 +1344,43 @@ A study of how the reference simulators reach their speed, with ranked recommend
 fast paths, hot-only tier-up, start-up breakdown), is in `docs/design/performance.md`. No
 recommendation is implemented yet.
 
+## Synopsys testbenches: where the time went (#439)
+
+Profile of the 20 `tests/corpus/synopsys/` testbenches (release build, `--threads 1`, user+system CPU seconds,
+one run each, shared host): 88% of `tb_arith_addsub` and `tb_arith_cmp` was not ieee at all but the assert
+state of `std.env`: every report appended an entry to the process's change log and every report replayed
+that whole log (`Asserts::with`), so the 129k reports of one process in one time step were quadratic.
+Consecutive counts are now folded into one entry (`crates/yavs-interp/src/env.rs`; corpus test
+`env/assert_count_many`). With the ieee natives off (`YAVS_NO_NATIVE_IEEE=1`) the same testbenches cost only
+20 to 25% more (`tb_arith_cmp` 1.27 s against 1.05 s, `tb_unsigned_cmp` 0.39 s against 0.32 s), so
+`std_logic_unsigned`/`std_logic_signed` wrappers need no natives; the 1.0 to 1.4 s that remain in the two
+largest testbenches is their own helper functions (`fill`, `rnd`, `img`, string building), interpreter work
+for #431. Output is byte-identical (md5 of every run unchanged).
+
+| Testbench | before | after |
+|---|---:|---:|
+| `tb_arith_addsub` | 6.05 | 1.46 |
+| `tb_arith_cmp` | 4.01 | 1.07 |
+| `tb_arith_conv_integer` | 0.02 | 0.01 |
+| `tb_arith_conv_vec` | 0.43 | 0.22 |
+| `tb_arith_ext` | 0.11 | 0.08 |
+| `tb_arith_mul` | 0.61 | 0.34 |
+| `tb_arith_shift` | 0.10 | 0.08 |
+| `tb_arith_unary` | 0.04 | 0.03 |
+| `tb_signed_addsub` | 0.53 | 0.28 |
+| `tb_signed_cmp` | 0.62 | 0.33 |
+| `tb_signed_conv_integer` | 0.02 | 0.01 |
+| `tb_signed_mul` | 0.06 | 0.06 |
+| `tb_signed_shift` | 0.05 | 0.05 |
+| `tb_signed_unary` | 0.02 | 0.02 |
+| `tb_unsigned_addsub` | 0.59 | 0.30 |
+| `tb_unsigned_cmp` | 0.65 | 0.33 |
+| `tb_unsigned_conv_integer` | 0.01 | 0.01 |
+| `tb_unsigned_mul` | 0.07 | 0.05 |
+| `tb_unsigned_shift` | 0.05 | 0.04 |
+| `tb_unsigned_unary` | 0.01 | 0.01 |
+| **total** | 14.05 | 4.78 |
+
 ## performance against the two reference simulators, interpreter tier, 2026-10-20
 
 Measurement only. yavs at `f2ab69be` (release build, `--tier=interp`) against reference simulator A

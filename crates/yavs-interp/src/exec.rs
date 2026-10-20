@@ -111,7 +111,7 @@ pub const FRAME: u8 = 0;
 pub const INST: u8 = 1;
 pub const PKG: u8 = 2;
 pub const CONST: u8 = 3;
-const HEAP: u8 = 4;
+pub(crate) const HEAP: u8 = 4;
 pub const TEMP: u8 = 5;
 pub const SHARED: u8 = 6;
 pub(crate) const SHARED_HEAP: u8 = 7;
@@ -1128,19 +1128,18 @@ impl Machine {
         mk_addr(TEMP, 0, off)
     }
 
-    /// A string result: data, `1 to len` descriptor and the fat pair `[data, dope]`.
+    /// A string result: the fat pair `[data, dope]`, the `1 to len` descriptor and the bytes in
+    /// one block of temporary memory.
     pub(crate) fn ret_string(&mut self, s: &[u8]) -> R<u64> {
-        let data = self.temp_alloc(s.len() as u64)?;
-        self.put(data, s)?;
-        let dope = self.temp_alloc(24)?;
-        let d: Vec<u8> = [1i64, s.len() as i64, 0]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        self.put(dope, &d)?;
-        let fat = self.temp_alloc(16)?;
-        self.store(fat, Width::B8, data)?;
-        self.store(add_addr(fat, 8)?, Width::B8, dope)?;
+        let fat = self.temp_alloc(40 + s.len() as u64)?;
+        let (dope, data) = (add_addr(fat, 16)?, add_addr(fat, 40)?);
+        let b = self.wr(fat, 40 + s.len() as u64)?;
+        b[0..8].copy_from_slice(&data.to_le_bytes());
+        b[8..16].copy_from_slice(&dope.to_le_bytes());
+        b[16..24].copy_from_slice(&1i64.to_le_bytes());
+        b[24..32].copy_from_slice(&(s.len() as i64).to_le_bytes());
+        b[32..40].copy_from_slice(&0i64.to_le_bytes());
+        b[40..].copy_from_slice(s);
         Ok(fat)
     }
 
@@ -1924,19 +1923,6 @@ impl Machine {
         Ok(Flow::Call)
     }
 
-    /// Argument cells: two for a register that holds a signal reference.
-    fn arg_cells(
-        &self,
-        f: &Func,
-        args: yavs_ir::Regs,
-        callee: Option<&Func>,
-        skip: usize,
-    ) -> R<Vec<u64>> {
-        let mut out = Vec::new();
-        self.push_args(&mut out, f, args, callee, skip)?;
-        Ok(out)
-    }
-
     /// Call `func` with the argument cells of `args` after `first` (a protected object).
     /// The cells go through `Machine::cells`, so a call allocates no argument vector.
     fn call_with(
@@ -2650,11 +2636,17 @@ impl Machine {
                         n.symbol
                     ));
                 };
-                let cells = self.arg_cells(f, args, None, 0)?;
+                // The argument cells go through `Machine::cells`: a native call allocates no vector.
+                let mut cells = std::mem::take(&mut self.cells);
+                cells.clear();
+                self.push_args(&mut cells, f, args, None, 0)?;
                 let v = fun(self, ctx, n.ty, &cells)?;
                 if std::mem::take(&mut self.ieee_fallback) {
-                    return self.ieee_body(prog, &n.symbol, &cells, dst);
+                    let r = self.ieee_body(prog, &n.symbol, &cells, dst);
+                    self.cells = cells;
+                    return r;
                 }
+                self.cells = cells;
                 if let Some(d) = dst {
                     let v =
                         v.ok_or_else(|| ice(format!("native `{}` returned no value", n.symbol)))?;
@@ -2666,8 +2658,9 @@ impl Machine {
                 if std::mem::take(&mut self.ieee_stop) {
                     return Ok(Flow::Suspend);
                 }
-                if n.symbol.starts_with("yavs.env.stop.")
-                    || n.symbol.starts_with("yavs.env.finish.")
+                if n.symbol.starts_with("yavs.env.")
+                    && (n.symbol.starts_with("yavs.env.stop.")
+                        || n.symbol.starts_with("yavs.env.finish."))
                 {
                     return Ok(Flow::Suspend);
                 }

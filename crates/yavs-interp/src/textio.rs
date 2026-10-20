@@ -28,7 +28,7 @@ use yavs_std::file::{
 use yavs_std::textio::{self as tio, Side};
 use yavs_std::types::{Bounds, RealBounds, time_type};
 
-use crate::exec::{Fault, Machine, R, SHARED, SHARED_HEAP, add_addr, ice, rt_err, split};
+use crate::exec::{Fault, HEAP, Machine, R, SHARED, SHARED_HEAP, add_addr, ice, rt_err, split};
 use crate::heap::{Heap, HeapError, Obj};
 
 /// The file cell value of `std.textio.INPUT` (STD_INPUT, read mode).
@@ -248,6 +248,20 @@ impl Machine {
     /// [`Machine::line_get`] then [`Machine::line_set`], but the bytes move to the new object
     /// instead of being copied, so N READs or WRITEs on one line are O(N) (#196).
     fn line_edit(&mut self, cell: u64, drop: usize, tail: &[u8]) -> R<()> {
+        self.line_edit_with(cell, drop, |_, v| {
+            v.extend_from_slice(tail);
+            Ok(())
+        })
+    }
+
+    /// [`Machine::line_edit`] with the appended bytes produced by `tail` from the machine's
+    /// memory, so a WRITE of a string needs no temporary copy of it.
+    fn line_edit_with(
+        &mut self,
+        cell: u64,
+        drop: usize,
+        tail: impl FnOnce(&Machine, &mut Vec<u8>) -> R<()>,
+    ) -> R<()> {
         let h = self.load(cell, Width::B8)?;
         let (mut v, mut start) = if h == 0 {
             (line_desc(0).to_vec(), 0)
@@ -263,7 +277,7 @@ impl Machine {
         }
         v.truncate(start + 24 + n);
         start += drop;
-        v.extend_from_slice(tail);
+        tail(self, &mut v)?;
         // Compact once the dropped prefix is the larger half: amortized O(1) per byte.
         if start > v.len() - start {
             v.drain(..start);
@@ -851,8 +865,24 @@ natives! {
         write_with(m, a, |_, l| { tio::write_integer(l, v, sd, w); Ok(()) })
     }
     write_string(m, ctx, a) {
-        let (v, sd, w) = (m.fat_bytes(arg(a, 1)?)?, side(arg(a, 2)?)?, width(arg(a, 3)?)?);
-        write_with(m, a, |_, l| { tio::write_string(l, &v, sd, w); Ok(()) })
+        let (sd, w) = (side(arg(a, 2)?)?, width(arg(a, 3)?)?);
+        let (data, n) = m.fat1(arg(a, 1)?)?;
+        // A string in a heap object may be the line itself (`write(l, l.all)`), which the
+        // edit deallocates: those are copied first.
+        let in_heap = matches!(split(data).0, HEAP | SHARED_HEAP);
+        if w as u64 <= n && !in_heap {
+            // No padding: the string goes from its memory into the line.
+            let cell = arg(a, 0)?;
+            m.line_ref(cell)?;
+            m.line_edit_with(cell, 0, |m, l| {
+                l.extend_from_slice(m.rd(data, n)?);
+                Ok(())
+            })?;
+            Ok(None)
+        } else {
+            let v = m.rd(data, n)?.to_vec();
+            write_with(m, a, |_, l| { tio::write_string(l, &v, sd, w); Ok(()) })
+        }
     }
     write_bit_vector(m, ctx, a) { write_bits(m, a, tio::write_bit_vector) }
     hwrite(m, ctx, a) { write_bits(m, a, tio::hwrite) }

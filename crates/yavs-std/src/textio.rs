@@ -36,7 +36,14 @@ pub fn justify(value: &[u8], side: Side, field: usize) -> Vec<u8> {
 }
 
 fn put(line: &mut Vec<u8>, value: &[u8], side: Side, field: usize) {
-    line.extend(justify(value, side, field));
+    let pad = field.saturating_sub(value.len());
+    if side == Side::Right {
+        line.resize(line.len() + pad, b' ');
+    }
+    line.extend_from_slice(value);
+    if side == Side::Left {
+        line.resize(line.len() + pad, b' ');
+    }
 }
 
 pub fn write_bit(line: &mut Vec<u8>, v: bool, side: Side, field: usize) {

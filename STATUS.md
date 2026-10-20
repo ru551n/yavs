@@ -636,6 +636,51 @@ One commit per change; each table is an interleaved A/B of the binary before and
    but kept garbage alive in the conservative register scan of the collection (`uvvm_util_rand_tb` +25% run
    time, +31% peak memory), so stale registers wait for precise roots (#422).
 
+### Verification-testbench runtime library (#428)
+
+Sampled profiles (stack samples every 2 to 4 ms of one thread) of the shared benchmarks, the runner's
+`logging` and `data_types` suites and per-operation microbenchmarks. Where the time is, by instruction kind
+(share of samples in the instruction's implementation; the rest is the dispatch loop itself):
+
+| Benchmark | dispatch loop only | `CallNative` | `Call` | `New` | `LayoutOf` | `Copy` | `LSet` |
+|---|---|---|---|---|---|---|---|
+| `uvvm_util_rand_tb` | 51% | 15% | 8% | 5.5% | 5% | 5% | |
+| `osvvm_axistream` | 55% | 4% | 4% | 1% | 18% | 2% | |
+| `uvvm_axistream_vvc_tb` | 78% | 1% | 2% | 1% | 4% | 2% | 8% |
+
+Natives total 14% of the random testbench (`textio.write` of strings: 1.7 million calls, 8%; `to_string` of
+integers 0.8 million calls, 2%), 4% of `osvvm_axistream` and 1% of `uvvm_axistream_vvc_tb`; in the runner's
+`logging` suite they are 0.5% (83 ms of 16 s; the rest is start-up). So the library side is small for these
+testbenches; what is left is interpreter work (calls at about 200 ns, `LayoutOf`, `New`) and the
+per-suspension address search for shared-heap slots (4% of the VVC testbench, #422).
+
+Tried and not kept (measured, no gain on the real testbenches): routing string `=`/`<` to the native
+`implicit.eq` (a 20-character compare gets 5 times faster, but the testbench compares are 3 to 8
+characters and the native call costs more than the inline loop: `uvvm_util_rand_tb` 1.02); block-buffered
+stdout for reports (the cost is the write system call, 6% in the sampled `osvvm_axistream` run with a stopped
+process, not visible in CPU time of the real run; output ordering against C code in the process and a
+lost tail on a kill are the price).
+
+1. A native call takes its argument cells from `Machine::cells` instead of allocating a vector; `WRITE`
+   of a string copies it from the memory it is in straight into the line (no temporary string, no
+   justification vector) except when the string is in a heap object, which may be the line itself;
+   string results (`to_string`, `'image`, `to_hstring` ...) are built with one temporary allocation
+   instead of three.
+
+| Benchmark (median total CPU of 5, s) | before | after | ratio |
+|---|---|---|---|
+| `uvvm_util_rand_tb` | 5.59 | 4.96 | 0.89 |
+| `osvvm_axistream` | 2.03 | 1.97 | 0.97 |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 4.22 | 4.29 | 1.02 |
+| `textio_heavy` | 0.42 | 0.35 | 0.83 |
+| `file_io` (new) | 0.31 | 0.27 | 0.86 |
+| `strings_heavy` (new) | 0.46 | 0.44 | 0.97 |
+| `report_heavy` (new) | 0.37 | 0.36 | 0.98 |
+| `access_heavy` (new) | 0.25 | 0.25 | 0.97 |
+
+The four new internal benchmarks (`strings_heavy`, `access_heavy`, `report_heavy`, `file_io`) change the
+benchmark set: earlier JSON files do not contain them.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

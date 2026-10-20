@@ -79,7 +79,8 @@ mod tests {
 // Images (the compilation cache): symbols are written as indices into a table of
 // their texts, so one image holds each text once and loads without hashing it per use.
 
-type EncTable = (FxHashMap<Symbol, u32>, Vec<Symbol>);
+/// Table index by symbol number (`u32::MAX`: not written yet), and the symbols in table order.
+type EncTable = (Vec<u32>, Vec<Symbol>);
 
 thread_local! {
     static ENC: std::cell::RefCell<Option<EncTable>> = const { std::cell::RefCell::new(None) };
@@ -109,10 +110,15 @@ impl serde::Serialize for Symbol {
         let i = ENC.with(|e| {
             let mut e = e.borrow_mut();
             let (ids, list) = e.as_mut()?;
-            Some(*ids.entry(*self).or_insert_with(|| {
+            let at = self.0 as usize;
+            if at >= ids.len() {
+                ids.resize(at + 1, u32::MAX);
+            }
+            if ids[at] == u32::MAX {
                 list.push(*self);
-                list.len() as u32 - 1
-            }))
+                ids[at] = list.len() as u32 - 1;
+            }
+            Some(ids[at])
         });
         match i {
             Some(i) => s.serialize_u32(i),

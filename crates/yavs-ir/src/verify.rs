@@ -293,7 +293,9 @@ fn check_inst(
         {
             err(format!("missing check message {what}"))
         }
-        Inst::LayoutOf { ty, .. } | Inst::New { ty, .. } if prog.types.get(ty).is_none() => {
+        Inst::LayoutOf { ty, .. } | Inst::New { ty, .. } | Inst::NewFill { ty, .. }
+            if prog.types.get(ty).is_none() =>
+        {
             err(format!("missing type {ty}"))
         }
         Inst::Case { table, .. } => match prog.cases.get(table) {

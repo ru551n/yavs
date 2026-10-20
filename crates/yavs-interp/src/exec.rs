@@ -3319,6 +3319,52 @@ impl Machine {
                 })?;
                 self.set(dst, h);
             }
+            Inst::NewFill {
+                dst,
+                ty,
+                desc,
+                dsize,
+                data,
+                size,
+                fill,
+                shared,
+            } => {
+                self.reclaim();
+                let size = self.r(size);
+                if size > 1 << 32 {
+                    return Err(Fault::Runtime("object larger than 4 GiB".into()));
+                }
+                if fill != 0 && size % u64::from(fill) != 0 {
+                    return Err(ice("NewFill size is not a multiple of its element"));
+                }
+                let (ds, size) = (dsize as usize, size as usize);
+                let mut v = Vec::with_capacity(ds + size);
+                v.extend_from_slice(self.rd(self.r(desc), u64::from(dsize))?);
+                let src = self.rd(
+                    self.r(data),
+                    if fill == 0 {
+                        size as u64
+                    } else {
+                        u64::from(fill)
+                    },
+                )?;
+                if fill == 0 {
+                    v.extend_from_slice(src);
+                } else if src.iter().all(|&b| b == 0) {
+                    v.resize(ds + size, 0);
+                } else if fill == 1 {
+                    v.resize(ds + size, src[0]);
+                } else {
+                    for _ in 0..size / fill as usize {
+                        v.extend_from_slice(src);
+                    }
+                }
+                let r = self.alloc_heap(shared)?.alloc(heap::Obj::Typed(ty), v);
+                let h = r.map_err(|_| {
+                    Fault::Runtime("heap object limit (16M objects per heap) exceeded".into())
+                })?;
+                self.set(dst, h);
+            }
             Inst::Free { ptr } => {
                 self.reclaim();
                 self.deallocate(self.r(ptr))?;

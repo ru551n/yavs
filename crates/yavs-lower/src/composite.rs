@@ -322,7 +322,7 @@ impl Fx<'_, '_> {
         dst
     }
 
-    fn bytes_addr(&mut self, b: Vec<u8>) -> Reg {
+    pub(crate) fn bytes_addr(&mut self, b: Vec<u8>) -> Reg {
         let c = self.fb.program().konst(ConstData::Bytes(b));
         self.const_addr(c)
     }
@@ -1200,6 +1200,28 @@ impl Fx<'_, '_> {
             Some(w) => self.int(i64::from(w.bytes())),
             None => self.size_of(tid, desc),
         };
+        let h = self.reg(RegTy::I64);
+        // The object is built in place by the allocation, not in a temporary copied from.
+        let direct = match v {
+            Some(V::A(d, vd)) if !self.logic(tid) && scalar_w(self.fb.program(), tid).is_none() => {
+                Some((d, self.size_of(tid, vd), 0))
+            }
+            None if self.zero_default(st, tid, span)? => Some((self.bytes_addr(vec![0]), size, 1)),
+            _ => None,
+        };
+        if let Some((data, n, fill)) = direct {
+            self.emit(Inst::NewFill {
+                dst: h,
+                ty: tid,
+                desc,
+                dsize: ds,
+                data,
+                size: n,
+                fill,
+                shared,
+            });
+            return self.new_object_end(h, ds);
+        }
         let dsr = self.int(i64::from(ds));
         let total = self.bin(IntOp::Add, size, dsr);
         let buf = self.alloc(total);
@@ -1227,7 +1249,6 @@ impl Fx<'_, '_> {
                 self.default_into(st, &c, vat, buf, span)?
             }
         }
-        let h = self.reg(RegTy::I64);
         self.emit(Inst::New {
             dst: h,
             ty: tid,
@@ -1235,6 +1256,11 @@ impl Fx<'_, '_> {
             size: total,
             shared,
         });
+        self.new_object_end(h, ds)
+    }
+
+    /// The handle, data address and descriptor address of the heap object just allocated.
+    fn new_object_end(&mut self, h: Reg, ds: u32) -> R<(Reg, Reg, Reg)> {
         let what = self.msg("object", Dir::To);
         let p = self.reg(RegTy::Ptr);
         self.emit(Inst::Deref {
@@ -1244,6 +1270,27 @@ impl Fx<'_, '_> {
         });
         let data = self.offset(p, ds);
         Ok((h, data, p))
+    }
+
+    /// The default value of an array of subtype `st` (IR type `tid`) is all zero bytes: scalar
+    /// elements whose left bound has code 0 and whose planes need no bias.
+    pub(crate) fn zero_default(&mut self, st: SubtypeId, tid: TyId, span: Span) -> R<bool> {
+        let db = self.db;
+        let Some((elem, _)) = ty::array_of(db, db.base(st)) else {
+            return Ok(false);
+        };
+        let pt = db.base(elem);
+        if !matches!(self.fb.program().types().get(tid), Some(Ty::Array { .. }))
+            || matches!(db.types[pt].kind, TypeKind::Protected { .. })
+        {
+            return Ok(false);
+        }
+        let left0 = db
+            .static_bounds(elem)
+            .and_then(|(l, _, _)| ty::cell(&l))
+            .is_some_and(|c| c == 0);
+        let etid = self.ty(pt, span)?;
+        Ok(left0 && self.code_bias(etid) == 0 && scalar_w(self.fb.program(), etid).is_some())
     }
 
     /// The slot of a variable or constant of a record type or an array of composites:

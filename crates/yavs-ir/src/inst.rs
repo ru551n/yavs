@@ -511,6 +511,20 @@ pub enum Inst {
         size: Reg,
         shared: bool,
     },
+    /// Allocate an object of `ty` made of the `dsize` bytes at `desc` followed by `size` bytes:
+    /// a copy of the bytes at `data`, or, with `fill` > 0, the `fill` bytes at `data` repeated
+    /// (`size` is a multiple of `fill`). A `New` without the temporary the value would be
+    /// built and copied through.
+    NewFill {
+        dst: Reg,
+        ty: TyId,
+        desc: Reg,
+        dsize: u32,
+        data: Reg,
+        size: Reg,
+        fill: u32,
+        shared: bool,
+    },
     /// `deallocate`: frees the object the access variable at `ptr` designates and sets the
     /// variable to null; null is a no-op.
     Free {
@@ -924,6 +938,18 @@ impl Inst {
             } => {
                 d(dst, i);
                 f(init, Use, p);
+                f(size, Use, i);
+            }
+            Inst::NewFill {
+                dst,
+                desc,
+                data,
+                size,
+                ..
+            } => {
+                d(dst, i);
+                f(desc, Use, p);
+                f(data, Use, p);
                 f(size, Use, i);
             }
             Inst::Free { ptr } => f(ptr, Use, p),

@@ -40,6 +40,10 @@ textual dump.
 
 ## Changes
 
+- `Inst::NewFill` (#427): a heap object from descriptor bytes plus a copy of a value, or a repeated
+  element (an all-zero default is one `fill: 1` zero byte), so allocators and array variables with an
+  all-zero default no longer build a temporary and copy it. The interpreter implements it next to
+  `New`; the LLVM tier leaves it to the interpreter.
 - `opt.rs` (#427): `Program::func` returns a function optimised the first time it is asked
   for (a `OnceLock` in `Func::opt` holds the optimised copy; `Program::funcs` keeps the code as
   lowering emitted it, with its own pc numbers, blocks and resume points; the copy is numbered

@@ -291,7 +291,8 @@ fn propagate(prog: &mut Program, first: usize) {
                     ..
                 }
                 | Inst::CallProt { .. }
-                | Inst::New { shared: true, .. } => fl.insert(FuncFlags::TOUCHES_SHARED),
+                | Inst::New { shared: true, .. }
+                | Inst::NewFill { shared: true, .. } => fl.insert(FuncFlags::TOUCHES_SHARED),
                 Inst::CallNative { native, .. }
                     if prog
                         .natives

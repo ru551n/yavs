@@ -670,18 +670,33 @@ impl<'a, 'b> Fx<'a, 'b> {
                     }
                 };
                 let (size, count) = self.layout(tid, dope);
-                let data = match init {
-                    Some((data, _)) => data,
-                    None => self.default_array(o.subtype, size, count, decl.span)?,
-                };
                 let h = self.reg(RegTy::I64);
-                self.emit(Inst::New {
-                    dst: h,
-                    ty: tid,
-                    init: data,
-                    size,
-                    shared,
-                });
+                if init.is_none() && self.zero_default(o.subtype, tid, decl.span)? {
+                    // All-zero default: allocated in place, no temporary to copy from.
+                    let z = self.bytes_addr(vec![0]);
+                    self.emit(Inst::NewFill {
+                        dst: h,
+                        ty: tid,
+                        desc: dope,
+                        dsize: 0,
+                        data: z,
+                        size,
+                        fill: 1,
+                        shared,
+                    });
+                } else {
+                    let data = match init {
+                        Some((data, _)) => data,
+                        None => self.default_array(o.subtype, size, count, decl.span)?,
+                    };
+                    self.emit(Inst::New {
+                        dst: h,
+                        ty: tid,
+                        init: data,
+                        size,
+                        shared,
+                    });
+                }
                 let hslot = self.offset(slot, 16);
                 self.store(hslot, h, Width::B8);
                 let what = self.msg(&name, yavs_ir::Dir::To);

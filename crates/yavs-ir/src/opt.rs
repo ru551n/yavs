@@ -993,6 +993,7 @@ impl<'a> Opt<'a> {
             | Inst::Unreachable { .. }
             | Inst::Deref { .. }
             | Inst::New { .. }
+            | Inst::NewFill { .. }
             | Inst::SigVal { .. }
             | Inst::SigParts { .. }
             | Inst::SigSlice { .. }

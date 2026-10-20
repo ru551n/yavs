@@ -1450,24 +1450,28 @@ compiled caller and entered it again on every call). Still stepped: the numeric 
 
 RTL set, `--threads 1`, median CPU seconds of 5 runs (total without analysis), every run pinned
 to performance cores 2 and 3 (`taskset -c 2,3`: the compile thread of `--tier=auto` gets the
-second), host load 10 to 20 from other agents. Before = main at `1bea8e40`; after = this work
-on main at `cde6b848`, which also has the block kernels of #199 in between (the `bus` row is
-mostly theirs). sim1 run as `-H 64m -e <top> --no-save --jit -r`, pinned the same way. Designs
-2a/2b: 64 LFSR processes over `unsigned` (2a with a process XOR-reducing the 64 registers
-through `numeric_std`'s `"xor"`, 5000 cycles; 2b without it, 20000 cycles).
+second). Before = main at `1bea8e40`; after = main at `6dabc9fc`, this work together with the
+interpreter's (#443) and the kernel's (#440) rounds and the block kernels of #199 that landed
+in between, so the interp columns are mostly theirs and auto against interp of the same binary
+is this work's share. sim1 run as `-H 64m -e <top> --no-save --jit -r`, pinned the same way.
+Designs 2a/2b: 64 LFSR processes over `unsigned` (2a with a process XOR-reducing the 64
+registers through `numeric_std`'s `"xor"`, 5000 cycles; 2b without it, 20000 cycles).
 
-| Design | sim1 | interp before | interp after | auto before | auto after | auto after / sim1 | auto before / sim1 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 2b 64 LFSR x 20000 | 0.14 | 1.16 | 0.99 | 1.19 | 1.01 | 7.2x | 8.5x |
-| `lfsr` (512 x 16 bit x 5000) | 0.17 | 2.15 | 1.87 | 2.18 | 1.80 | 10.6x | 12.8x |
-| `ff` (4096 x 2000) | 0.53 | 3.09 | 3.01 | 3.13 | 2.96 | 5.6x | 5.9x |
-| 2a 64 LFSR x 5000, XOR reduce | 0.10 | 0.46 | 0.44 | 0.61 | 0.60 | 6.0x | 6.1x |
-| `chain` (1000 x 2000) | 0.15 | 1.01 | 0.99 | 1.01 | 1.02 | 6.8x | 6.7x |
-| `fan` (4000 x 5000) | 1.08 | 2.37 | 2.57 | 3.25 | 2.76 | 2.6x | 3.0x |
-| `bus` (32 drivers x 20000) | 0.76 | 0.66 | 0.41 | 0.75 | 0.48 | 0.6x | 1.0x |
+| Design | sim1 | interp before | interp after | auto before | auto after | auto after / sim1 | interp after / sim1 | auto before / sim1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2b 64 LFSR x 20000 | 0.14 | 0.94 | 0.75 | 1.06 | 0.75 | 5.4x | 5.4x | 7.6x |
+| `lfsr` (512 x 16 bit x 5000) | 0.17 | 2.03 | 1.69 | 1.97 | 1.47 | 8.6x | 9.9x | 11.6x |
+| `ff` (4096 x 2000) | 0.53 | 2.55 | 1.94 | 2.73 | 2.22 | 4.2x | 3.7x | 5.2x |
+| 2a 64 LFSR x 5000, XOR reduce | 0.10 | 0.42 | 0.33 | 0.51 | 0.46 | 4.6x | 3.3x | 5.1x |
+| `chain` (1000 x 2000) | 0.15 | 0.97 | 0.66 | 0.99 | 0.64 | 4.3x | 4.4x | 6.6x |
+| `fan` (4000 x 5000) | 1.08 | 2.28 | 1.72 | 2.78 | 1.89 | 1.8x | 1.6x | 2.6x |
+| `bus` (32 drivers x 20000) | 0.76 | 0.61 | 0.35 | 0.68 | 0.33 | 0.4x | 0.5x | 0.9x |
 
-2a is short (0.5 s): its `--tier=auto` CPU includes three O2 compiles (0.2 s); its median wall
-went from 0.60 to 0.54 s.
+2a is short (0.3 s): its `--tier=auto` CPU includes three O2 compiles; its wall time is 0.33 s
+in both tiers. `ff` under `--tier=auto` is now 14% slower than the interpreter: its 96-instruction
+process is compiled at O2, and the interpreter's fused clocked-process ops (#443) run it faster
+than compiled code that calls `TierHost::signal` per signal operation; `fan` stays interpreted
+and pays the tier-mode loop (about 10%, #480).
 
 Interleaved A/B pairs (7 to 9 pairs, median CPU ratio, at lower load): `--tier=auto` against
 `--tier=interp` of the same binary is 0.88 on `lfsr` (wall 0.82), 0.91 wall on 2b and 1.03 wall

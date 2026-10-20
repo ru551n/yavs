@@ -683,6 +683,42 @@ One commit per change; each table is an interleaved A/B of the binary before and
    interpreter still zeroes the other registers: starting them stale was 5-12% faster on call-heavy designs
    but kept garbage alive in the conservative register scan of the collection (`uvvm_util_rand_tb` +25% run
    time, +31% peak memory), so stale registers wait for precise roots (#422).
+2. Predecoded code (`yavs-interp` `pre.rs`, `Code`): each function is converted once, on its first call, into
+   24-byte ops that the fast loop dispatches on (no debugger, no compiled tier). Preloaded definitions and
+   unconditional jumps are gone from it, jump targets are op indices, loads and stores through a variable's
+   preloaded frame or instance address read the slot directly, an `Index` by a constant folds into the access,
+   a compare fuses with its branch, a `LayoutOf` with the one `Field` or load that reads it, and `SigVal`,
+   `DopeLen`, `Alloc` and the jump back to a process's body are ops of the loop; the rest steps the IR
+   instruction out of line. Frames keep IR pcs (`Code::at`, `Code::entry`), so messages, traces, root maps,
+   coverage, DAP stepping and the LLVM tier are unchanged; the debug loop runs the IR unfused.
+3. `Copy` and `Fill` stage their bytes in a reused buffer instead of a new vector per execution.
+
+Release builds, median CPU seconds of 5 interleaved runs (3 for the synthetic designs) at `--threads 1`, host
+load about 24 on 24 cores; main at `e453131d` (with the IR optimiser of #427) against each step. Synthetic designs
+(scratch, see "Simulation kernel"; `calls`: 3 million calls of a one-line function):
+
+| Benchmark | main | step 2 | ratio | step 3 | ratio |
+|---|---|---|---|---|---|
+| `compute_loop` | 0.33 | 0.23 | 0.68 | 0.24 | 0.72 |
+| `ff_rtl` | 0.048 | 0.042 | 0.87 | 0.040 | 0.85 |
+| `delta_chain` | 0.20 | 0.19 | 0.99 | 0.19 | 0.99 |
+| `protected_scoreboard` | 0.19 | 0.14 | 0.73 | 0.13 | 0.72 |
+| `strings_heavy` | 0.44 | 0.30 | 0.67 | 0.31 | 0.72 |
+| `access_heavy` | 0.20 | 0.15 | 0.76 | 0.15 | 0.74 |
+| `uvvm_util_rand_tb` | 5.15 | 3.81 | 0.74 | 3.70 | 0.72 |
+| `osvvm_axistream` | 1.69 | 1.39 | 0.82 | 1.30 | 0.77 |
+| `vai_window_gen` | 1.52 | 1.28 | 0.84 | 1.36 | 0.90 |
+| `ff` | 10.54 | | | 9.44 | 0.90 |
+| `lfsr` | 14.82 | | | 12.04 | 0.81 |
+| `chain` | 2.45 | | | 2.40 | 0.98 |
+| `fan` | 7.14 | | | 6.70 | 0.94 |
+| `calls` | 0.47 | | | 0.36 | 0.77 |
+
+What is left in these profiles: `lfsr` reads its whole array signal for one element (#436, lowering); a call
+costs about 120 ns (frame vectors, root-map-ready frame setup, the step of `Call` and `Ret`), spread over many
+small parts; `fan` and `ff` are dominated by the kernel and by per-activation work (scratch vectors, the
+register fill, native `rising_edge`). The difftest corpus (356) passes at 1 and 4 threads, shuffled, and on
+the LLVM tier; the external runner's `check` and `verification_components` suites pass.
 
 ### Verification-testbench runtime library (#428)
 

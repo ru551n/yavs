@@ -228,6 +228,8 @@ pub(crate) struct Machine {
     spare: Vec<(Vec<u8>, Vec<u64>)>,
     /// Argument cells of the call being made (`call_with`).
     cells: Vec<u64>,
+    /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
+    bytes: Vec<u8>,
     /// `regs`, `temp` and `spare` went to the thread's scratch at the last suspension
     /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
     released: bool,
@@ -529,6 +531,7 @@ impl Machine {
             layouts: Vec::new(),
             spare: Vec::new(),
             cells: Vec::new(),
+            bytes: Vec::new(),
             released: false,
         }
     }
@@ -1597,6 +1600,20 @@ impl Machine {
             return Err(ice(format!("no instance signal {sig}")));
         }
         Ok((u64::from(sig) << 32 | u64::from(o), u64::from(l)))
+    }
+
+    /// The empty staging buffer of `Copy` and `Fill`; hand it back with `give_bytes`.
+    fn take_bytes(&mut self) -> Vec<u8> {
+        let mut b = std::mem::take(&mut self.bytes);
+        b.clear();
+        b
+    }
+
+    /// Keep a staging buffer for the next `Copy` or `Fill`, unless it grew large.
+    fn give_bytes(&mut self, b: Vec<u8>) {
+        if b.capacity() <= 1 << 16 {
+            self.bytes = b;
+        }
     }
 
     /// The temporaries of the statement that ended (`Inst::Stmt`).
@@ -2753,19 +2770,32 @@ impl Machine {
             Inst::Load { dst, addr, w } => self.do_load(dst, addr, w)?,
             Inst::Store { addr, src, w } => self.do_store(addr, src, w)?,
             Inst::Copy { dst, src, bytes } => {
-                let b = self.rd(self.r(src), self.r(bytes))?.to_vec();
-                self.put(self.r(dst), &b)?;
+                let mut b = self.take_bytes();
+                let r = self
+                    .rd(self.r(src), self.r(bytes))
+                    .map(|s| b.extend_from_slice(s))
+                    .and_then(|()| self.put(self.r(dst), &b));
+                self.give_bytes(b);
+                r?;
             }
             Inst::Fill { dst, elem, n, size } => {
-                let e = self.rd(self.r(elem), u64::from(size))?.to_vec();
-                let n = self.r(n);
-                let total = n
-                    .checked_mul(u64::from(size))
-                    .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
-                let out = self.wr(self.r(dst), total)?;
-                for c in out.chunks_exact_mut(size.max(1) as usize) {
-                    c.copy_from_slice(&e);
-                }
+                let mut e = self.take_bytes();
+                let r = self
+                    .rd(self.r(elem), u64::from(size))
+                    .map(|s| e.extend_from_slice(s))
+                    .and_then(|()| {
+                        let total = self
+                            .r(n)
+                            .checked_mul(u64::from(size))
+                            .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
+                        let out = self.wr(self.r(dst), total)?;
+                        for c in out.chunks_exact_mut(size.max(1) as usize) {
+                            c.copy_from_slice(&e);
+                        }
+                        Ok(())
+                    });
+                self.give_bytes(e);
+                r?;
             }
             Inst::Pos {
                 dst,

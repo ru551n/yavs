@@ -65,8 +65,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   nothing changes.
 - **Waiters**: per signal, `(proc, range, generation)`. A process's generation increases on every
   resumption, invalidating its other waiters and its timeout in O(1). Each signal buckets its
-  waiters by chunk of 64 elements (a waiter over at most 4 chunks sits in each of them, a wider
-  or null one in a wide list; a signal of one chunk has the one list), so an event looks only at the waiters of the chunks it touches
+  waiters by chunk of 8 elements, 64 for a signal over 4096 elements (a waiter over at most 4 chunks
+  sits in each of them, a wider or null one in a wide list; a signal of one chunk has the one list;
+  the lists are made when the first process waits), so an event looks only at the waiters of the chunks it touches
   and the wide list: one process per element of a wide vector costs O(1) per event, not
   O(processes). Waiters carry their registration number and wake in that order, each once.
   Lists are compacted when they reach twice their live size.

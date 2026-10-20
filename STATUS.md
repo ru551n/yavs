@@ -1227,6 +1227,8 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data
 (restart test with the interpreter).
 
+In-port collapsing (R4, #413; `collapse.rs`, on by default, `--no-collapse-ports` turns it off): done for `in` ports and component pass-through ports whose actual is whole leaves or part of one leaf (element, slice). Verified identical with and without it: difftest corpus (353) at 1 and 4 threads and 4 threads shuffled on both tiers, UVVM suite (76 pass / 33 fail / 28 skip either way), OSVVM `.pro` 2008 and 2019 (314/314), external runner pass lists. Measured (release, median CPU of 5, collapsed vs not): elab_heavy total 0.66 s -> 0.56 s (0.85), peak RSS 254 -> 211 MiB (0.83); ff_rtl, resolved_bus, vai_pe_array, vai_window_gen, uvvm_axistream_vvc_tb within noise (0.97 to 1.03), peak RSS unchanged. Still apart: forced or released ports, ports with conversions or drivers, guarded, user-resolved or whole-resolved composites, every port under `--dap`/`--vhpi`; widening these was not measured as worthwhile (the designs above have none of them in a hot path).
+
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in the reference simulator's
 format on stdout). Difftest: see `tests/corpus/RESULTS.md`; `generics/generic_types_2019` and the other generic-type cases pass since #75.

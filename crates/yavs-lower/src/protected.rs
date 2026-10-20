@@ -47,7 +47,10 @@ pub(crate) fn state_vars(db: &Db, t: TypeId) -> Vec<DeclId> {
         for &d in &db.scopes[s].order {
             if let DeclKind::Object(o) = &db.decls[d].kind
                 && o.role != ObjRole::Param
-                && matches!(o.class, ObjClass::Variable | ObjClass::Constant)
+                && matches!(
+                    o.class,
+                    ObjClass::Variable | ObjClass::Constant | ObjClass::File
+                )
             {
                 out.push(d);
             }
@@ -377,6 +380,14 @@ impl Fx<'_, '_> {
                     .ice(span, "protected state variable is not an object"));
             };
             let ft = db.base(o.subtype);
+            if o.class == ObjClass::File {
+                // The cell is zero from `default_into`; open it when the declaration says so.
+                if o.file_open.is_some() {
+                    let (a, _) = self.field_addr(state, base, p, n as u32, span)?;
+                    self.open_file_at(v, a)?;
+                }
+                continue;
+            }
             let val = match o.default {
                 Some(e) => self.expr(e)?,
                 None if matches!(db.types[ft].kind, TypeKind::Protected { .. }) => {

@@ -44,6 +44,12 @@ impl Fx<'_, '_> {
 
     /// Open file object `d` (its cell at `off` in `space`) as its declaration says, if it does.
     pub fn open_file(&mut self, d: DeclId, space: Space, off: u32) -> R<()> {
+        let a = self.addr(space, off);
+        self.open_file_at(d, a)
+    }
+
+    /// Open file object `d`, whose cell is at address `a`, as its declaration says, if it does.
+    pub fn open_file_at(&mut self, d: DeclId, a: Reg) -> R<()> {
         let db = self.db;
         let decl = &db.decls[d];
         let DeclKind::Object(o) = &decl.kind else {
@@ -68,7 +74,6 @@ impl Fx<'_, '_> {
             form: Form::Plain,
         };
         let sym = yavs_sem::mangle::implicit_native(db, &op);
-        let a = self.addr(space, off);
         self.native(&sym, Some(tid), &[a, fat, kind], None, span)?;
         Ok(())
     }

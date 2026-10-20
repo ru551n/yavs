@@ -607,19 +607,19 @@ impl Fx<'_, '_> {
 
     /// Descriptor of field `n` of a record of type `tid` with descriptor `desc`.
     pub fn field_desc(&mut self, tid: TyId, desc: Reg, n: u32, span: Span) -> R<Reg> {
-        let Some(Ty::Record { fields }) = self.fb.program().types().get(tid).cloned() else {
+        // Not a clone of the record type: this runs for every field access.
+        let Some(Ty::Record { fields }) = self.fb.program().types().get(tid) else {
             return Err(self.cx.ice(span, "field of a non-record"));
         };
-        let f = &fields[n as usize];
-        Ok(match f.desc {
+        Ok(match fields[n as usize].desc {
             Some(c) => self.const_addr(c),
             None => {
-                let mut off = 0;
-                for g in &fields[..n as usize] {
-                    if g.desc.is_none() {
-                        off += self.desc_size(g.ty);
-                    }
-                }
+                let before: Vec<TyId> = fields[..n as usize]
+                    .iter()
+                    .filter(|g| g.desc.is_none())
+                    .map(|g| g.ty)
+                    .collect();
+                let off = before.into_iter().map(|t| self.desc_size(t)).sum();
                 self.offset(desc, off)
             }
         })
@@ -1932,6 +1932,12 @@ impl Fx<'_, '_> {
             Elems::Bytes(b) => out.extend(b.iter().map(|&x| x + bias)),
             Elems::Runs(runs) => {
                 for (n, c) in runs.iter() {
+                    if !matches!(c, ConstValue::Array(_)) {
+                        // A run of one scalar: no per-element work.
+                        let code = u8::try_from(ty::cell(c)?).ok()? + bias;
+                        out.resize(out.len() + usize::try_from(*n).ok()?, code);
+                        continue;
+                    }
                     for _ in 0..*n {
                         one(self, c, out, ed)?;
                     }
@@ -1944,19 +1950,39 @@ impl Fx<'_, '_> {
 
 /// Bit-planes of `codes` (left first): element 0 of the planes is the rightmost.
 fn planes(codes: &[u8]) -> Vec<u8> {
-    let n = codes.len();
-    let mut blocks = vec![[0u64; 4]; n.div_ceil(64)];
-    for (k, &c) in codes.iter().rev().enumerate() {
-        for (p, plane) in blocks[k / 64].iter_mut().enumerate() {
+    let mut out = Vec::with_capacity(codes.len().div_ceil(64) * 32);
+    let mut push = |w: [u64; 4]| {
+        w.iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes()))
+    };
+    // A constant of one value (`(others => '0')`) is most of the large ones: whole words.
+    if let Some(&c) = codes.first().filter(|&&c| codes.iter().all(|&x| x == c)) {
+        let word = |p: u32, bits: usize| {
             if c >> p & 1 == 1 {
-                *plane |= 1 << (k % 64);
+                u64::MAX >> (64 - bits)
+            } else {
+                0
+            }
+        };
+        for _ in 0..codes.len() / 64 {
+            push([0, 1, 2, 3].map(|p| word(p, 64)));
+        }
+        if !codes.len().is_multiple_of(64) {
+            push([0, 1, 2, 3].map(|p| word(p, codes.len() % 64)));
+        }
+        return out;
+    }
+    for chunk in codes.rchunks(64) {
+        let mut w = [0u64; 4];
+        for (k, &c) in chunk.iter().rev().enumerate() {
+            let c = u64::from(c);
+            for (p, plane) in w.iter_mut().enumerate() {
+                *plane |= (c >> p & 1) << k;
             }
         }
+        push(w);
     }
-    blocks
-        .iter()
-        .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
-        .collect()
+    out
 }
 
 /// Does a value of type `t` hold a protected object (arrays and records are searched)?
@@ -1967,5 +1993,36 @@ fn holds_protected(db: &Db, t: TypeId) -> bool {
             .iter()
             .any(|e| holds_protected(db, db.base(e.subtype))),
         _ => ty::array_of(db, t).is_some_and(|(e, _)| holds_protected(db, db.base(e))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::planes;
+
+    /// The definition: element `k` from the right is bit `k % 64` of block `k / 64`.
+    fn naive(codes: &[u8]) -> Vec<u8> {
+        let mut blocks = vec![[0u64; 4]; codes.len().div_ceil(64)];
+        for (k, &c) in codes.iter().rev().enumerate() {
+            for (p, plane) in blocks[k / 64].iter_mut().enumerate() {
+                *plane |= u64::from(c >> p & 1) << (k % 64);
+            }
+        }
+        blocks
+            .iter()
+            .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+            .collect()
+    }
+
+    #[test]
+    fn planes_match_the_definition() {
+        for n in [0, 1, 63, 64, 65, 200, 1024] {
+            for c in [0u8, 3, 9, 15] {
+                let same = vec![c; n];
+                assert_eq!(planes(&same), naive(&same), "{n} x {c}");
+            }
+            let mixed: Vec<u8> = (0..n).map(|i| (i * 7 % 10) as u8).collect();
+            assert_eq!(planes(&mixed), naive(&mixed), "{n} mixed");
+        }
     }
 }

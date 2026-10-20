@@ -191,7 +191,9 @@ impl Db {
         // port or generic of the same name hides it inside the architecture (12.3).
         // ponytail: skipped instead of declared further out; `arch.x` expanded names then
         // fail only when a port has the architecture's name.
-        let hidden = matches!(ast.unit, L::Architecture(_))
+        // The same holds for a package body and an item of its package with the package's name
+        // (#471).
+        let hidden = matches!(ast.unit, L::Architecture(_) | L::PackageBody(_))
             && parent.is_some_and(|e| self.scopes[e].names.contains_key(&name.key));
         if !hidden {
             self.declare(context, decl);

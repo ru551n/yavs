@@ -633,3 +633,87 @@ fn a_local_array_lives_in_the_frames_temporary_memory() {
         assert_eq!(count(&code, is_new), 1);
     }
 }
+
+/// A pointer written to slot 0, which a root map covers as an address, and read twice. Returns
+/// the stores left to the root slot (none when it is promoted). The register type of the stored value decides: a `Ptr` register is a root
+/// of the collector as the slot is, an integer one is not.
+fn root_slot_stores(handle: bool, ty: RegTy) -> usize {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(32, 8);
+    fb.root(
+        0,
+        if handle {
+            RootKind::Handle
+        } else {
+            RootKind::Addr
+        },
+    );
+    fb.stmt(StmtKind::VarAssign, sp());
+    let n = fb.int(8);
+    let v = fb.reg(ty);
+    if ty == RegTy::Handle {
+        let z = fb.int(0);
+        fb.emit(Inst::Move { dst: v, src: z });
+    } else {
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: p, size: n });
+        fb.emit(Inst::Move { dst: v, src: p });
+    }
+    let a = fb.addr(AddrSpace::Frame, 0);
+    fb.emit(Inst::Store {
+        addr: a,
+        src: v,
+        w: Width::B8,
+    });
+    fb.stmt(StmtKind::Return, sp());
+    // Two reads of the slot, each kept in a slot of its own.
+    for to in [16, 24] {
+        let a = fb.addr(AddrSpace::Frame, 0);
+        let x = fb.reg(ty);
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: a,
+            w: Width::B8,
+        });
+        let t = fb.addr(AddrSpace::Frame, to);
+        fb.emit(Inst::Store {
+            addr: t,
+            src: x,
+            w: Width::B8,
+        });
+    }
+    let zero = fb.int(0);
+    fb.emit(Inst::Ret { v: Some(zero) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let code = &p.func(f).expect("f").code;
+    let slot0: Vec<Reg> = code
+        .iter()
+        .filter_map(|i| match *i {
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                off: 0,
+            } => Some(dst),
+            _ => None,
+        })
+        .collect();
+    count(
+        code,
+        |i| matches!(i, Inst::Store { addr, .. } if slot0.contains(addr)),
+    )
+}
+
+#[test]
+fn a_written_root_slot_lives_in_a_register_of_the_roots_type() {
+    if !on() {
+        return;
+    }
+    // A pointer into an address slot: promoted. A handle slot is promoted for a handle.
+    assert_eq!(root_slot_stores(false, RegTy::Ptr), 0);
+    assert_eq!(root_slot_stores(true, RegTy::Handle), 0);
+    // An integer register is not a root: the value stays where the collector looks.
+    assert_eq!(root_slot_stores(false, RegTy::I64), 1);
+}

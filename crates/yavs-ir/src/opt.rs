@@ -2016,6 +2016,8 @@ impl<'a> Opt<'a> {
             ty: Option<RegTy>,
             stored: bool,
             ok: bool,
+            /// The register types of the accesses, each once.
+            kinds: Vec<Option<RegTy>>,
             stores: usize,
             sites: Vec<usize>,
         }
@@ -2040,9 +2042,13 @@ impl<'a> Opt<'a> {
                 ty,
                 stored: i_is_store,
                 ok: true,
+                kinds: Vec::new(),
                 stores: 0,
                 sites: Vec::new(),
             });
+            if !a.kinds.contains(&ty) {
+                a.kinds.push(ty);
+            }
             a.stores += usize::from(i_is_store);
             if a.w != w || !same_class(a.ty, ty) {
                 a.ok = false;
@@ -2099,12 +2105,16 @@ impl<'a> Opt<'a> {
             {
                 continue;
             }
-            // A slot a root map covers keeps its value for the collector: only a slot the
-            // function never writes (a parameter) may also be read from a register.
-            if roots
-                .iter()
-                .any(|&(s, z, comp)| o < s + z && s < o + 8 && (comp || a.stores > 0))
-            {
+            // A slot a root map covers keeps its value for the collector. A slot the function
+            // never writes (a parameter) may also be read from a register. A written one may
+            // live in a register only when that register is a root as well: a `Handle` one
+            // for a handle slot, a `Ptr` one for an address slot (the collector finds the live
+            // ones of each frame, `roots::live_refs`), and every access has exactly that type.
+            if roots.iter().any(|&(s, z, comp)| {
+                o < s + z
+                    && s < o + 8
+                    && (comp || (a.stores > 0 && !self.register_root(&a.kinds, ty, f, s)))
+            }) {
                 continue;
             }
             if let Some(l) = f
@@ -2182,6 +2192,20 @@ impl<'a> Opt<'a> {
         self.promote_cleanup(&pregs.iter().map(|x| x.0).collect::<Vec<_>>());
         self.changed = true;
         Some(inited)
+    }
+
+    /// Is a promoted register of type `ty`, the only type accessing the root slot at `s`, a
+    /// root of the same kind as the slot?
+    fn register_root(&self, kinds: &[Option<RegTy>], ty: RegTy, f: &crate::Func, s: i64) -> bool {
+        kinds.len() == 1
+            && f.roots.iter().any(|&(o, k)| {
+                i64::from(o) == s
+                    && match k {
+                        crate::RootKind::Handle => ty == RegTy::Handle,
+                        crate::RootKind::Addr => ty == RegTy::Ptr,
+                        crate::RootKind::Composite(_) => false,
+                    }
+            })
     }
 
     /// Recompute what `analyse` found, after the code changed.

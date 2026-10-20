@@ -2447,3 +2447,17 @@ user's performance priority:
   (a suspended frame keeps its temporaries, but the rule is kept simple) and allocators
   (`new`), which stay heap objects.
 
+## Written root slots may live in registers (yavs-ir `opt.rs`, #444)
+
+- **What:** a frame slot that a root map covers as a handle or an address, and that the function
+  writes, is promoted to a register (`Opt::promote`) when every access has exactly the register
+  type of the root: `Handle` for a handle slot, `Ptr` for an address slot. Before, only slots
+  the function never wrote (parameters) were read from registers.
+- **Why:** the collector finds the `Handle` and `Ptr` registers live at each safepoint of a frame
+  (`roots::live_refs`), so a live register of that type is a root as the slot is, and a register
+  that is no longer live keeps nothing alive that nothing reads. The pointer to an aliased
+  parameter and the access variables that walk a linked list were loaded from their slot on every
+  iteration (12 and 5 million loads in the queue/scoreboard testbench).
+- **Not changed:** slots under a composite root, slots with an integer-typed access (the
+  collector would not see the register), everything while a debugger runs.
+

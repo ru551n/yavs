@@ -838,6 +838,14 @@ pub fn run(
             return out.finish(2);
         }
     };
+    // Ctrl-C or SIGTERM without a recorder ends the run at once: write out the reports that
+    // wait in the output buffer first.
+    if recorder.is_none() && crate::stdout::is_on() {
+        let _ = yavs_wave::interrupt::install(|| {
+            crate::stdout::flush();
+            std::process::exit(130);
+        });
+    }
     // Nothing below reads the elaborated model but its IR (run-time diagnostics) unless a
     // plugin, the waveform recorder or coverage does (#421).
     if a.vhpi.is_empty() && a.wave.is_none() && a.cov.is_none() {
@@ -1019,10 +1027,13 @@ fn observers(
                     sim.subscribe(Box::new(rec.clone()));
                     // Ctrl-C ends the run between cycles so the file is finished (rule 11).
                     let (stop, flag) = (sim.interrupt(), interrupted.clone());
-                    if let Err(err) = yavs_wave::interrupt::install(move || {
-                        flag.store(true, Ordering::Relaxed);
-                        stop.stop();
-                    }) {
+                    if let Err(err) = yavs_wave::interrupt::install_with(
+                        move || {
+                            flag.store(true, Ordering::Relaxed);
+                            stop.stop();
+                        },
+                        crate::stdout::flush,
+                    ) {
                         return Err(Box::new(
                             Diagnostic::error("E0803", "cannot install the Ctrl-C handler")
                                 .with_note(err.to_string()),

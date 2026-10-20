@@ -54,6 +54,11 @@ pub fn buffer() {
     }
 }
 
+/// Whether output is being collected.
+pub fn is_on() -> bool {
+    ON.load(Ordering::Relaxed)
+}
+
 /// Write `bytes` to standard output (flushed at once unless [`buffer`] is on).
 pub fn write(bytes: &[u8]) {
     if ON.load(Ordering::Relaxed) {

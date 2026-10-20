@@ -451,7 +451,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   one message per line group. On a terminal each message is written at once. On a pipe or
   file, without a plugin (`--vhpi`), a `--load` library or a foreign subprogram, messages are
   collected and written in blocks: at the latest 100 ms after they were produced, before
-  anything yavs writes to stderr, and at the end of the run, so that the test runner's live
+  anything yavs writes to stderr, at the end of the run, and when Ctrl-C or SIGTERM ends it (exit status 130; SIGKILL cannot be caught and loses at most the last 100 ms or 64 KiB), so that the test runner's live
   output and timeouts work and the order of the two streams is the order of the events. `--color=always` forces ANSI
   colour on a pipe (the test runner passes it when it wants colour); without it yavs
   follows the TTY/`NO_COLOR` rules of plan `yavs-diag`.

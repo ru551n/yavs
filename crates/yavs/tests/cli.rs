@@ -337,6 +337,45 @@ fn output_order_on_one_pipe() {
     assert!(text.contains("line 2000\n"));
 }
 
+/// SIGINT and SIGTERM write out the reports that are still waiting in the output buffer before
+/// the run ends (#428).
+#[cfg(unix)]
+#[test]
+fn signal_keeps_reports() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("signal_flush");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", &lib, "signal_flush.vhd"])
+        .current_dir(&dir)
+        .status()
+        .expect("run");
+    assert!(a.success());
+    for sig in ["INT", "TERM"] {
+        let ready = tmp.join(format!("ready-{sig}"));
+        let out = tmp.join(format!("out-{sig}"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["run", &lib, &format!("-gready={}", ready.display())])
+            .arg("signal_flush")
+            .current_dir(&dir)
+            .stdout(std::fs::File::create(&out).expect("out"))
+            .spawn()
+            .expect("spawn");
+        let t0 = std::time::Instant::now();
+        while !ready.exists() {
+            assert!(t0.elapsed().as_secs() < 60, "the run never got going");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let pid = child.id().to_string();
+        let k = Command::new("kill").args([&format!("-{sig}"), &pid]).status();
+        assert!(k.expect("kill").success());
+        assert!(!child.wait().expect("wait").success());
+        let text = std::fs::read_to_string(&out).expect("read");
+        assert!(text.contains("before signal"), "{sig}: {text:?}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// `to_string`, `'image` and `to_hstring` of vectors, strings, records and arrays of enumerations
 /// give the text the LRM says (#428); the expected lines are `tests/cli/image_text.stdout`.
 #[test]

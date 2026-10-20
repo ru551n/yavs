@@ -1793,6 +1793,22 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   edge end one clock period later than all of them (`process/process_order_resumed`). The
   first resumption after initialisation, timeouts and concurrent procedure calls keep the
   rule above (there the references are split or agree with it). Kernel: `ProcMeta::resumed`.
+- **Later resumptions, refined (#462, #469; rule 15):** the processes of the previous rule
+  (the "settled" ones) run after the concurrent procedure calls and in the order deeper
+  instances first, then elaboration order. Why: the first form put them ahead of everything with
+  several waits, which broke two shapes of the external runner's own suites that pass in all four
+  reference simulators: a protocol checker written as a concurrent procedure call (declared
+  before the testbench process) and a checker process inside an instance declared after the
+  testbench process must both report on a clock edge before the testbench process that reads
+  their log on that edge (`check` suite `tb_check_stable`, seven `verification_components`
+  tests). Reduced cases, all four references: a concurrent call that loops on a nested wait
+  before a testbench process that drives a signal: the call first in all four; the same with an
+  inline wait, no drive: first in two, varying in one, last in one; an instance process declared
+  after the testbench process: first in the three references with a fixed order (the fourth
+  alternates), the instance processes before the parent's own in all three. Processes of the
+  same instance level keep declaration order (`process/process_order_resumed`); the concurrent
+  call and instance shapes are `process/process_order_call` and `process/process_order_instance`.
+  Kernel: `ProcMeta::depth` (colons in the path name).
 - Corpus tests whose processes report in one cycle and whose order the reference simulator does
   not share carry `ignore=order`; `process/process_order` is `ref=hand`.
 - **Formals with open dimensions and constrained elements** (`Fx::param_dope`, #257): the

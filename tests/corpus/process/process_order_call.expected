@@ -1,0 +1,13 @@
+exit	0
+diag	note	5000000	0	:process_order_call:c0	checker
+diag	note	15000000	0	:process_order_call:c0	checker
+diag	note	15000000	0	:process_order_call:main	main
+diag	note	25000000	0	:process_order_call:c0	checker
+diag	note	25000000	0	:process_order_call:main	main
+diag	note	35000000	0	:process_order_call:c0	checker
+diag	note	35000000	0	:process_order_call:main	main
+diag	note	45000000	0	:process_order_call:c0	checker
+diag	note	45000000	0	:process_order_call:main	main
+diag	note	55000000	0	:process_order_call:c0	checker
+diag	note	55000000	0	:process_order_call:main	main
+diag	finish	55000000	0	-	0

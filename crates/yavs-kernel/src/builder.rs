@@ -563,8 +563,10 @@ impl Builder {
                 st,
                 result: Ok(()),
             }));
+            let depth = p.name.trim_matches(':').matches(':').count() as u32;
             names.push(p.name);
             procs.push(ProcMeta {
+                depth,
                 flags: p.flags,
                 generation: 0,
                 ready: false,

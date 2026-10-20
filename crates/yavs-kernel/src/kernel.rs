@@ -379,6 +379,8 @@ pub(crate) struct ProcMeta {
     pub by_timeout: bool,
     /// Has been resumed since initialisation (`SimControl::order`).
     pub resumed: bool,
+    /// Instance nesting of the process (colons in its path name; `SimControl::order`).
+    pub depth: u32,
     /// Resumes for an event only on this edge (`Builder::edge_trigger`).
     pub trigger: Option<crate::EdgeTrigger>,
 }
@@ -1602,20 +1604,26 @@ impl SimControl {
             return;
         }
         // One packed word per process, looked up once (not per comparison): the flags in the
-        // high bits, the elaboration index (reversed for several-wait processes) in the low 32.
+        // high bits, then the hierarchy depth (settled processes), the elaboration index
+        // (reversed for several-wait processes except the settled ones) in the low 32.
+        const SETTLED: u64 = 1;
         let key = |p: u32| {
             let m = &self.procs[p as usize];
-            // A process resumed by a signal after earlier resumptions runs in elaboration
-            // order like a one-wait process (#417).
-            let settled = m.resumed && !m.by_timeout && !m.flags.concurrent_call;
-            if m.flags.several_waits && !settled {
-                1 << 34
-                    | u64::from(m.by_timeout) << 33
-                    | u64::from(!m.flags.concurrent_call) << 32
-                    | u64::from(!p)
-            } else {
-                u64::from(p)
+            if !m.flags.several_waits {
+                return u64::from(p);
             }
+            // A process resumed by a signal after earlier resumptions runs in elaboration
+            // order (#417), after the concurrent procedure calls (#281, #462) and with the
+            // processes of deeper instances first (#469).
+            let settled = m.resumed && !m.by_timeout && !m.flags.concurrent_call;
+            let (rank, depth, idx) = if m.flags.concurrent_call {
+                (0, 0, !p)
+            } else if settled {
+                (SETTLED, 0xffff - u64::from(m.depth).min(0xffff), p)
+            } else {
+                (2, 0, !p)
+            };
+            1 << 51 | u64::from(m.by_timeout) << 50 | rank << 48 | depth << 32 | u64::from(idx)
         };
         if pids.is_sorted_by_key(|&p| key(p)) {
             return;
@@ -1624,7 +1632,11 @@ impl SimControl {
         // Stable sort: it follows the sorted runs a batch mostly consists of.
         keyed.sort();
         for (p, k) in pids.iter_mut().zip(keyed) {
-            *p = if k >> 34 != 0 { !(k as u32) } else { k as u32 };
+            *p = if k >> 51 != 0 && (k >> 48) & 3 != SETTLED {
+                !(k as u32)
+            } else {
+                k as u32
+            };
         }
     }
 

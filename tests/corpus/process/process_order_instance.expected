@@ -1,0 +1,26 @@
+exit	0
+diag	note	15000000	0	:process_order_instance:i0:p	instance before main
+diag	note	15000000	0	:process_order_instance:i1:p	instance after main
+diag	note	15000000	0	:process_order_instance:m0	monitor before main
+diag	note	15000000	0	:process_order_instance:m1	monitor after main
+diag	note	25000000	0	:process_order_instance:i0:p	instance before main
+diag	note	25000000	0	:process_order_instance:i1:p	instance after main
+diag	note	25000000	0	:process_order_instance:m0	monitor before main
+diag	note	25000000	0	:process_order_instance:main	main
+diag	note	25000000	0	:process_order_instance:m1	monitor after main
+diag	note	35000000	0	:process_order_instance:i0:p	instance before main
+diag	note	35000000	0	:process_order_instance:i1:p	instance after main
+diag	note	35000000	0	:process_order_instance:m0	monitor before main
+diag	note	35000000	0	:process_order_instance:main	main
+diag	note	35000000	0	:process_order_instance:m1	monitor after main
+diag	note	45000000	0	:process_order_instance:i0:p	instance before main
+diag	note	45000000	0	:process_order_instance:i1:p	instance after main
+diag	note	45000000	0	:process_order_instance:m0	monitor before main
+diag	note	45000000	0	:process_order_instance:main	main
+diag	note	45000000	0	:process_order_instance:m1	monitor after main
+diag	note	55000000	0	:process_order_instance:i0:p	instance before main
+diag	note	55000000	0	:process_order_instance:i1:p	instance after main
+diag	note	55000000	0	:process_order_instance:m0	monitor before main
+diag	note	55000000	0	:process_order_instance:main	main
+diag	note	55000000	0	:process_order_instance:m1	monitor after main
+diag	finish	56000000	0	-	0

@@ -1,0 +1,5 @@
+# sim1: OK* (:pkginstname(test):nm[return string]:), sim2: OK* (:work:g:nm[ return string]:), sim3: OK* (:work:g:nm[return string]:), sim4: OK* (:work:local:nm[return string]:); the constant's path agrees in all four
+sim1 2008 OK*
+sim2 2008 OK*
+sim3 2008 OK*
+sim4 2008 OK*

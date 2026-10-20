@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:pkg_instance_names:_p0	lib nm=:work:lib_inst:nm[return string]:
+diag	note	0	0	:pkg_instance_names:_p0	lib pn=:work:lib_inst:pn[return string]:
+diag	note	0	0	:pkg_instance_names:_p0	local nm=:pkg_instance_names(t):local:nm[return string]:
+diag	note	0	0	:pkg_instance_names:_p0	local pn=:pkg_instance_names:local:pn[return string]:
+diag	note	0	0	:pkg_instance_names:_p0	local c=:pkg_instance_names(t):local:c | :pkg_instance_names:local:c
+diag	note	0	0	:pkg_instance_names:_p0	plain=:work:plain:nm[return string]:|:work:plain:nm[return string]:

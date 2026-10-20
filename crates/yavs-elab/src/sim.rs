@@ -460,11 +460,18 @@ impl Elaborated {
                     DeclKind::Subprogram(_) => format!("{}:", subprogram_element(db, d)),
                     _ => name,
                 };
-                let local = if declared.is_none() {
+                // An item of a package or package instance is named by its package (16.2.5):
+                // `:lib:pkg:` for a library unit, else the declaring region plus the instance.
+                let (pkg, lib) = package_prefix(db, db.decls[d].scope);
+                if let Some(lib) = lib {
+                    return format!("{lib}{pkg}{own}");
+                }
+                let local = if declared.is_none() || !pkg.is_empty() {
                     local_prefix(db, db.decls[d].scope)
                 } else {
                     String::new()
                 };
+                let local = if pkg.is_empty() { local } else { pkg };
                 format!("{}{local}{own}", text(declared.unwrap_or(region)))
             }
         }
@@ -1426,6 +1433,50 @@ fn subprogram_element(db: &Db, d: yavs_sem::DeclId) -> String {
         sig += &format!("return {}", ty(r));
     }
     format!("{}[{sig}]", decl.name.to_string().to_ascii_lowercase())
+}
+
+/// The path elements of the subprograms and local package (instance) an item declared in
+/// `scope` sits in, outermost first, each with its colon, when it sits in a package; the
+/// second value is `:lib:pkg:` when that package is a library unit (then the elements start
+/// below it). Empty and `None` for an item outside any package.
+fn package_prefix(db: &Db, scope: yavs_sem::ScopeId) -> (String, Option<String>) {
+    use yavs_sem::scope::ScopeKind as S;
+    let mut parts = Vec::new();
+    let mut sc = Some(scope);
+    while let Some(s) = sc {
+        let sd = &db.scopes[s];
+        match (sd.kind, sd.owner) {
+            (S::Subprogram, Some(o)) => parts.push(format!("{}:", subprogram_element(db, o))),
+            (S::Loop | S::SeqBlock | S::PackageBody, _) => {}
+            (S::Package, _) => {
+                if let Some(u) = db.units.iter().map(|(_, u)| u).find(|u| u.scope == s) {
+                    let lib = db.libs[u.lib].name.key.to_string();
+                    let lib = format!(":{lib}:{}:", u.name.key);
+                    return (parts.iter().rev().map(String::as_str).collect(), Some(lib));
+                }
+                parts.push(format!(
+                    "{}:",
+                    sd.owner.map_or(String::new(), |o| db.decls[o]
+                        .name
+                        .to_string()
+                        .to_ascii_lowercase())
+                ));
+                return (parts.iter().rev().map(String::as_str).collect(), None);
+            }
+            (S::Instance, Some(o))
+                if matches!(db.decls[o].kind, yavs_sem::decl::DeclKind::PackageInst(_)) =>
+            {
+                parts.push(format!(
+                    "{}:",
+                    db.decls[o].name.to_string().to_ascii_lowercase()
+                ));
+                return (parts.iter().rev().map(String::as_str).collect(), None);
+            }
+            _ => break,
+        }
+        sc = sd.parent;
+    }
+    (String::new(), None)
 }
 
 /// The path elements between a region and an object declared in `scope` inside a process or

@@ -1,0 +1,3 @@
+== 2008
+note: RES function :pkginstname(test):local:nm[return string]:
+note: RES constant :pkginstname:local:c

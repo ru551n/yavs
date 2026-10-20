@@ -1111,7 +1111,14 @@ impl SimControl {
                 self.cfg.edge_triggers
                     && procs[w.proc as usize]
                         .trigger
-                        .is_some_and(|t| !fires(signals, t, self.cycle))
+                        .is_some_and(|t| match memo.get() {
+                            Some((m, held)) if m == t => held,
+                            _ => {
+                                let held = !fires(signals, t, self.cycle);
+                                memo.set(Some((t, held)));
+                                held
+                            }
+                        })
             };
             waiters.take_woken(&runs, live, hold, &mut woken);
             let sig = &mut self.signals[s as usize];
@@ -1131,6 +1138,7 @@ impl SimControl {
         self.phase(Phase::StartOfProcesses);
         self.run_batch(ready, false, false)?;
         self.phase(Phase::EndOfProcesses);
+        let memo = std::cell::Cell::new(None);
 
         self.last_delta()
     }
@@ -1139,6 +1147,7 @@ impl SimControl {
     /// when no delta follows at time 0, so read-write and read-only observers see time 0 (#347).
     fn last_delta(&mut self) -> Result<(), SimError> {
         if self.next_time() != Some(self.now) {
+            // The processes of one clock share a trigger: its answer is computed once.
             self.phase(Phase::LastKnownDelta);
             if self.next_time() != Some(self.now) {
                 let postponed = std::mem::take(&mut self.postponed);

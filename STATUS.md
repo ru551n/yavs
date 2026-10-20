@@ -904,6 +904,20 @@ The difftest corpus (360 with the new `process/call_frames`) passes at 1 and 4 t
 (`--tier=llvm`, `--tier=auto`); the external runner's `check` (257) and `verification_components` suites pass;
 the verification-library suite gives 78 pass, 33 fail, 26 skipped as before.
 
+### Interpreter, clocked processes (#443)
+
+Instruction counts of one process activation (deterministic, stepping the process closure): a process that only waits 769 to 646, `fan` 1194 to 1095. Round 5 changes: the scalar `std_logic` natives, a signal element read, the edge test, a wait on one element and `Drive` are ops of the loop; a process of the same function as the last one on the thread skips the register refill; the activation outcome travels as a one-byte value (a copied result struct stalled on store forwarding). CPU seconds, min of 3 at similar load, before and after, and against the reference simulator (same host, load about 5):
+
+| Design | before | now | now / before | reference | now / reference |
+|---|---|---|---|---|---|
+| ff | 3.49 | 3.00 | 0.86 | 0.52 | 5.8 |
+| lfsr | 2.10 | 2.06 | 0.98 | 0.16 | 12.9 |
+| chain | 1.01 | 1.00 | 0.99 | 0.14 | 7.1 |
+| fan | 3.24 | 2.54 | 0.78 | 0.99 | 2.6 |
+| bus | 0.81 | 0.65 | 0.80 | 0.68 | 1.0 |
+
+What the instruction profile shows next (ff, about 5000 instructions per activation): the kernel assignment behind `Drive` is 1250, op fetch and register indexing about 20 per op, a vector element read about 500 (index arithmetic), the process exit path 330 and entry 250. These belong to the kernel work (scalar assignment, element read and edge entry points) and to fusing the index arithmetic of a signal element read.
+
 ### Interpreter dispatch, round 4 (#443)
 
 Two measurements pick the work (scratch builds, not in the repository): a dynamic histogram of the ops

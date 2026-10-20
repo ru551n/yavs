@@ -210,7 +210,9 @@ impl DebugSession {
 
     /// Stop the running process at its next statement.
     pub fn request_pause(&self) {
-        self.pause.store(true, Ordering::Relaxed);
+        // Release/acquire with `take_pause`: what the requester wrote first is visible to the
+        // process that takes the pause (#441).
+        self.pause.store(true, Ordering::Release);
     }
 
     /// Withdraw a pause request no process has taken (the simulation paused between cycles
@@ -220,7 +222,7 @@ impl DebugSession {
     }
 
     pub(crate) fn take_pause(&self) -> bool {
-        self.pause.swap(false, Ordering::Relaxed)
+        self.pause.swap(false, Ordering::Acquire)
     }
 
     pub(crate) fn pause_pending(&self) -> bool {

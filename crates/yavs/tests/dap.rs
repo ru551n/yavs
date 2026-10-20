@@ -49,6 +49,29 @@ fn spawn(dir: &Path, top: &str, extra: &[&str]) -> Child {
         .expect("yavs")
 }
 
+/// Kills the process `pid` unless dropped within `secs`: a session that is stuck fails its test
+/// (end of input on its stdout) instead of hanging CI (#441).
+struct Watchdog(std::sync::mpsc::Sender<()>);
+
+impl Watchdog {
+    fn new(pid: u32, secs: u64) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if rx.recv_timeout(std::time::Duration::from_secs(secs))
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                let (tool, args): (_, &[&str]) = if cfg!(windows) {
+                    ("taskkill", &["/F", "/PID"])
+                } else {
+                    ("kill", &[])
+                };
+                let _ = Command::new(tool).args(args).arg(pid.to_string()).status();
+            }
+        });
+        Self(tx)
+    }
+}
+
 fn read(r: &mut impl BufRead) -> Option<Value> {
     let mut len = None;
     loop {
@@ -258,11 +281,13 @@ fn live_waves() {
     script_case("waves_composite", &[]);
 }
 
-/// Pause a simulation that would run forever, then read a signal and disconnect.
+/// Pause a simulation that would run forever, then read a signal and disconnect. The response
+/// to `pause` comes before the stop, which may follow it at once (#441).
 #[test]
 fn pause() {
     let dir = setup("pause");
     let mut child = spawn(&dir, "spin", &["--dap=stdio", "--threads=4"]);
+    let _watchdog = Watchdog::new(child.id(), 120);
     let mut c = stdio_client(&mut child);
     c.request("initialize", json!({"adapterID": "yavs"}));
     c.request("launch", json!({}));

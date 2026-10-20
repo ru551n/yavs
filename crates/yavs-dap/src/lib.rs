@@ -1342,12 +1342,14 @@ fn handle(sh: &Shared, tx: &Sender<Msg>, req: Json) {
             sh.respond(&req, json!({"threads": threads}));
         }
         "pause" => {
+            // The response first: the stop it causes may otherwise reach the client before it
+            // (#441), and a client waiting for the stop after the response would wait forever.
+            sh.respond(&req, json!({}));
             sh.pause_req.store(true, Ordering::Relaxed);
             sh.session().request_pause();
             if let Some(i) = sh.interrupt.get() {
                 i.pause();
             }
-            sh.respond(&req, json!({}));
         }
         "disconnect" | "terminate" => {
             sh.terminating.store(true, Ordering::Relaxed);

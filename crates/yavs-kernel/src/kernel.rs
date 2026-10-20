@@ -333,11 +333,11 @@ impl Interrupt {
     const STOP: u8 = 2;
 
     pub fn pause(&self) {
-        self.0.fetch_or(Self::PAUSE, Ordering::Relaxed);
+        self.0.fetch_or(Self::PAUSE, Ordering::AcqRel);
     }
 
     pub fn stop(&self) {
-        self.0.fetch_or(Self::STOP, Ordering::Relaxed);
+        self.0.fetch_or(Self::STOP, Ordering::AcqRel);
     }
 }
 
@@ -965,7 +965,7 @@ impl SimControl {
 
     /// Ended (firing `EndOfSim` once) or a pause request.
     fn poll_end(&mut self) -> Result<Option<RunStatus>, SimError> {
-        let flags = self.interrupt.0.swap(0, Ordering::Relaxed);
+        let flags = self.interrupt.0.swap(0, Ordering::AcqRel);
         if flags & Interrupt::STOP != 0 {
             self.end.get_or_insert(EndReason::Requested);
         }

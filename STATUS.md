@@ -415,6 +415,48 @@ wall off the 22 but no CPU, so it does not help a suite that already fills the h
 times slower and doubled the baseline RSS, so it is not adopted; lazily decoded arenas would save CPU but
 change `Arena` in the analysis hot path.
 
+### Elaborate phase of library testbenches (#425)
+
+Profile of `yavs run --time-report` elaborate with a sampling debugger (hardware counters are not
+available on the shared host): for testbenches of the verification libraries the design walk is
+small (about a fifth of the phase); the rest is the elaboration-time session. The first call that
+needs package state lowers the run-time packages (36 for a verification component testbench) and
+runs their initialisers (one interpreted pass that allocates and copies a few megabytes of pointer
+storage), then each new function is added to the session program. Cuts: a logic array constant of
+one value (an all-zero 2**19 bit default of a command record, 33 uses in one testbench) is built
+in whole words instead of bit by bit; the session program moves between the runtime and the
+lowering instead of being copied, numbered and verified again for every function added (about
+2 ms each, 12 per testbench); the source files' line starts come from the source map, shared by
+the runtimes; no scan of every package subprogram for external names when no loaded unit has one;
+the run-time package list is found again only when the design database has grown.
+
+Release builds, `--compare` of main (06dc880e) with this work, 5 runs, median CPU seconds
+(`tools/bench/run.py`, own cache):
+
+| Benchmark | elaborate before / after | total CPU before / after |
+|---|---|---|
+| `vunit_vc30` | 1.95 / 1.49 | 5.65 / 4.97 |
+| `uvvm_axistream_vvc_tb` | 0.13 / 0.10 | 4.02 / 3.94 |
+| `osvvm_axistream` | 0.06 / 0.05 | 1.92 / 1.96 (noise) |
+| `uvvm_util_rand_tb` | 0.05 / 0.04 | 5.11 / 4.73 (simulate) |
+| `elab_heavy` | 0.16 / 0.15 | 0.52 / 0.50 |
+
+Elaborate wall time (minimum of 15 to 25 interleaved runs, ms), one run of the testbench: the
+verification component testbenches `tb_axi_lite_master` 55 / 41, `tb_axi_stream` 185 / 149, the
+`uvvm_axistream_vvc_tb` stream testbench (`--stop-time=1fs`) 124 / 87, `elab_heavy` 150 / 146. Checks: difftest corpus
+at 1 and 4 threads, interpreter and LLVM tier, and with `--no-collapse-ports` (354 of 354); the
+external runner's 11 suites (1357 tests) pass; the `.pro` regression (`tools/suites/pro.py`, 521 files) and 12 components of
+`tools/suites/uvvm.py` (28 of 30 runs) give results identical to main's; the output of
+`uvvm_axistream_vvc_tb` up to 10 us is byte-identical.
+
+What is left, per call of a verification component testbench (about 40 ms of a 45 ms elaboration):
+the initialisers of the run-time packages, 15 to 20 ms, are interpreted work (a `new` of an array
+fills a temporary, copies it into the heap object, and the library's storage grows by 2**16 entries
+at its first use: 8 to 10 MB of memory traffic, an interpreter and lowering matter); lowering the
+36 packages, 7 to 10 ms; verifying that program, 3 ms. Caching the lowered program and the package
+state after initialisation across runs (compilation cache stage 2) would remove all three; the
+IR and the heap are not serialisable yet.
+
 ### Waveform recording cost (#410)
 
 `YAVS_BENCH_RUN_FLAGS="--wave={out}"` (and `--wave-variables`) runs any benchmark with waves; the report adds the

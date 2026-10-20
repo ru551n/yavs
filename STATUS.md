@@ -117,8 +117,7 @@ read of bits with spaces, real image format of the second suite, environment and
 ICE on arrays with element constraints, #380 (3); binary files of records and arrays of composites (3); guarded assignments with a false
 guard, #373 (2); access to protected types, #377 (2); predefined operations on arrays of
 composites (2); aggregate longer than a non-static constant subtype is an ICE, #378 (2); failed
-textio READ stops the run, #381 (1); a repeated force in one cycle, #382 (1); sensitivity of
-aggregate choices, #374 (1); files of subprograms not closed on return, #375 (1); and single
+textio READ stops the run, #381 (1); a repeated force in one cycle, #382 (1); files of subprograms not closed on return, #375 (1); and single
 tests (alias and partially constrained record bounds, `hread` digit count, an impure function in
 a type evaluated twice, `log2` precision, 2019 mode view parameters). Analysis and elaboration
 failures (about 160) are mostly "not lowered yet" (`E2001`) features and VHDL-93 code read as

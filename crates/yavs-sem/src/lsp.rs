@@ -609,6 +609,17 @@ impl Db {
             }
             ExprKind::Aggregate { assocs, .. } => {
                 for a in assocs.iter() {
+                    // Choices are read too (10.2): `(1 to i => '1')` is sensitive to `i`.
+                    for c in a.choices.iter() {
+                        match c {
+                            Choice::Expr(e) => self.reads(*e, out),
+                            Choice::Range(RangeC::Explicit { left, right, .. }) => {
+                                self.reads(*left, out);
+                                self.reads(*right, out);
+                            }
+                            _ => {}
+                        }
+                    }
                     self.reads(a.value, out);
                 }
             }

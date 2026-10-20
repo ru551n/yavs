@@ -242,32 +242,6 @@ fn open(path: &Path) -> Result<libloading::Library, libloading::Error> {
     unsafe { libloading::Library::new(path) }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn spec(s: &str) -> (String, Option<String>) {
-        let p = s.parse::<PluginSpec>().unwrap();
-        (p.path.to_string_lossy().into_owned(), p.entry)
-    }
-
-    #[test]
-    fn parses_lib_and_entry() {
-        assert_eq!(spec("lib.so"), ("lib.so".into(), None));
-        assert_eq!(
-            spec("/a/lib.so:boot_1"),
-            ("/a/lib.so".into(), Some("boot_1".into()))
-        );
-        assert_eq!(spec(r"C:\x\lib.dll"), (r"C:\x\lib.dll".into(), None));
-        assert_eq!(
-            spec(r"C:\x\lib.dll:entry"),
-            (r"C:\x\lib.dll".into(), Some("entry".into()))
-        );
-        assert_eq!(spec(":entry"), (":entry".into(), None));
-        assert_eq!(spec("lib.so:"), ("lib.so:".into(), None));
-    }
-}
-
 /// Give the caller a private duplicate of standard output and point file descriptor 1 (the C
 /// runtime's `stdout`, which plugins and `vhpi_printf` write to) at standard error, so a
 /// plugin's prints cannot corrupt a protocol stream on standard output (#389).
@@ -310,4 +284,30 @@ pub fn divert_stdout() -> std::io::Result<std::fs::File> {
         own
     };
     Ok(own.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(s: &str) -> (String, Option<String>) {
+        let p = s.parse::<PluginSpec>().unwrap();
+        (p.path.to_string_lossy().into_owned(), p.entry)
+    }
+
+    #[test]
+    fn parses_lib_and_entry() {
+        assert_eq!(spec("lib.so"), ("lib.so".into(), None));
+        assert_eq!(
+            spec("/a/lib.so:boot_1"),
+            ("/a/lib.so".into(), Some("boot_1".into()))
+        );
+        assert_eq!(spec(r"C:\x\lib.dll"), (r"C:\x\lib.dll".into(), None));
+        assert_eq!(
+            spec(r"C:\x\lib.dll:entry"),
+            (r"C:\x\lib.dll".into(), Some("entry".into()))
+        );
+        assert_eq!(spec(":entry"), (":entry".into(), None));
+        assert_eq!(spec("lib.so:"), ("lib.so:".into(), None));
+    }
 }

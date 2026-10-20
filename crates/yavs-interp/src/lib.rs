@@ -1030,6 +1030,25 @@ impl Process for InterpProcess {
         if let Err(e) = self.m.borrow_scratch() {
             return Err(self.m.error(e, Some(ctx)));
         }
+        if self.shared.is_none() && self.m.can_run_quick() {
+            self.execs += 1;
+            return match self.m.run_quick(&mut Some(&mut *ctx)) {
+                exec::Quick::Suspended => {
+                    self.m.after_suspend();
+                    self.m.release_scratch();
+                    Ok(())
+                }
+                exec::Quick::Returned => {
+                    self.done = true;
+                    self.m.terminated();
+                    Ok(())
+                }
+                exec::Quick::Fault => {
+                    let e = self.m.take_quick_fault();
+                    Err(self.m.error(e, Some(ctx)))
+                }
+            };
+        }
         let r = self.exec(Some(&mut *ctx));
         match r {
             Ok(Outcome::Suspended) => {

@@ -52,6 +52,15 @@ impl From<SimError> for Fault {
     }
 }
 
+/// The outcome of `Machine::run_quick`, small enough to travel in a register: the result
+/// struct of `exec_fast` copied through `exec_in` and `exec` cost a store-forwarding stall
+/// per activation. A fault waits in `Machine::quick_fault`.
+pub(crate) enum Quick {
+    Suspended,
+    Returned,
+    Fault,
+}
+
 pub(crate) enum Outcome {
     Suspended,
     Returned(Option<u64>),
@@ -357,6 +366,8 @@ pub(crate) struct Machine {
     /// `regs` and `temp` went to the thread's scratch at the last suspension
     /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
     released: bool,
+    /// The fault of the last `run_quick`.
+    quick_fault: Option<Fault>,
 }
 
 /// The working vectors of the process running on this thread: registers and temporaries. A suspended process owns none of them (no register or temporary is
@@ -690,6 +701,7 @@ impl Machine {
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
+            quick_fault: None,
         }
     }
 
@@ -923,6 +935,40 @@ impl Machine {
         } else {
             self.exec::<false>(&mut ctx, base)
         }
+    }
+
+    /// Whether `run_quick` applies (no debugger).
+    pub(crate) fn can_run_quick(&self) -> bool {
+        self.dbg.is_none()
+    }
+
+    /// `run` without a debugger and with base 0, the outcome as a `Quick`.
+    pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Quick {
+        let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
+        let r = match rt.tier.get() {
+            Some(tier) => {
+                let r = self.exec_fast::<true>(&rt, Some(&**tier), ctx, 0);
+                // Nothing interpreted on this thread until the next run.
+                crate::slot().store(0, Ordering::Relaxed);
+                r
+            }
+            None => self.exec_fast::<false>(&rt, None, ctx, 0),
+        };
+        self.rt_run = Some(rt);
+        match r {
+            Ok(Outcome::Suspended) => Quick::Suspended,
+            Ok(Outcome::Returned(_)) => Quick::Returned,
+            Err(e) => {
+                self.quick_fault = Some(e);
+                Quick::Fault
+            }
+        }
+    }
+
+    pub(crate) fn take_quick_fault(&mut self) -> Fault {
+        self.quick_fault
+            .take()
+            .unwrap_or_else(|| ice("a fault without a fault"))
     }
 
     /// GC of the private heap and the debug process table, after a suspension.
@@ -2656,6 +2702,7 @@ impl Machine {
     /// The dispatch loop on predecoded code (`pre::Code`, #431), without a debugger or a
     /// compiled tier: the top frame's function runs from its ops until a call, a return or a
     /// suspension, which are handled here as in `exec_in`.
+    #[inline(always)]
     fn exec_fast<const TIER: bool>(
         &mut self,
         rt: &Runtime,

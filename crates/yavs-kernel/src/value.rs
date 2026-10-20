@@ -251,8 +251,8 @@ impl Buf {
         match self {
             Buf::Bytes { es, data } => data[i * es],
             Buf::Planes { b, .. } => {
-                let blk = get_block(b, i, 1);
-                (0..4).fold(0u8, |c, k| c | ((blk[k] & 1) as u8) << k)
+                let (blk, s) = (&b[i / 64], i % 64);
+                (0..4).fold(0u8, |c, k| c | ((blk[k] >> s & 1) as u8) << k)
             }
         }
     }

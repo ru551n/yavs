@@ -289,21 +289,10 @@ fn edge<const RISING: bool>(
     let Some(c) = ctx.as_deref_mut() else {
         return rt_err("signal read during elaboration");
     };
-    if !c.event(sr)? {
-        return Ok(Some(0));
-    }
-    let (Some(new), Some(old)) = (c.first_code(sr, false)?, c.first_code(sr, true)?) else {
+    let Some(hit) = c.edge(sr, RISING)? else {
         return Err(ice("edge of a null signal range"));
     };
-    let (want_new, want_old) = if RISING {
-        (StdULogic::One, StdULogic::Zero)
-    } else {
-        (StdULogic::Zero, StdULogic::One)
-    };
-    Ok(Some(u64::from(
-        StdULogic::from_code_pub(new).to_x01() == want_new
-            && StdULogic::from_code_pub(old).to_x01() == want_old,
-    )))
+    Ok(Some(u64::from(hit)))
 }
 
 // ---- math_real ----

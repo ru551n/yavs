@@ -6,6 +6,7 @@ use crate::signal::{
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
+use yavs_logic::StdULogic;
 
 /// Stable id of a process: its index in elaboration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -267,6 +268,35 @@ impl Ctx<'_> {
                 s.name
             )))),
         }
+    }
+
+    /// `rising_edge` / `falling_edge` of the first element of a logic signal range: an event
+    /// in this cycle, `To_X01` of the current value the new level and `To_X01` of the
+    /// `'last_value` the old one; `None` for a null range. One reference check instead of
+    /// the three of `event` and two `first_code`.
+    pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
+        let (s, r) = self.sig(r)?;
+        if r.len == 0 {
+            return Ok(None);
+        }
+        let i = r.offset as usize;
+        if !s.event_in(Range::new(r.offset, 1), self.sh.cycle) {
+            return Ok(Some(false));
+        }
+        if matches!(s.cur, Buf::Bytes { .. }) {
+            return Err(self.error(ErrorKind::BadRef(format!(
+                "{} holds bytes, read it with value()",
+                s.name
+            ))));
+        }
+        let x01 = |c: u8| match c {
+            c if c == StdULogic::One as u8 || c == StdULogic::H as u8 => Some(true),
+            c if c == StdULogic::Zero as u8 || c == StdULogic::L as u8 => Some(false),
+            _ => None,
+        };
+        Ok(Some(
+            x01(s.cur.code(i)) == Some(rising) && x01(s.last_value.code(i)) == Some(!rising),
+        ))
     }
 
     fn own(&self, d: DriverId) -> Result<&DriverInfo, SimError> {

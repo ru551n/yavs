@@ -1821,10 +1821,10 @@ impl Machine {
                 let Some(r) = sr.range.filter(|r| r.len > 0) else {
                     return Err(ice("scalar read of a null signal range"));
                 };
-                // The first element in one block: its code is bit 0 of each plane.
-                let mut b = [0u8; 32];
-                c.read_into(sr.signal.slice(r.offset, 1), &mut b)?;
-                (0..4).fold(0, |v, p| v | u64::from(b[p * 8] & 1) << p)
+                match c.first_code(sr.signal.slice(r.offset, 1), false)? {
+                    Some(code) => u64::from(code),
+                    None => return Err(ice("scalar read of a null signal range")),
+                }
             }
             Elem::Bytes(es) => {
                 return Err(ice(format!("scalar read of a {es}-byte element")));

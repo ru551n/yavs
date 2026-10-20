@@ -405,6 +405,9 @@ impl Ctx<'_> {
         code: u8,
         mode: DelayMode,
     ) -> Result<(), SimError> {
+        if self.assign_code_fast(d, target, delay, code, mode) {
+            return Ok(());
+        }
         let mut one = self
             .st
             .one
@@ -414,6 +417,61 @@ impl Ctx<'_> {
         let r = self.assign(d, target, &[(delay, &one)], mode);
         self.st.one = Some(one);
         r
+    }
+
+    /// The common scalar case of `assign_code` in one pass: a zero-delay assignment of one
+    /// element to a driver with nothing pending (and nothing skipped) has nothing to preempt,
+    /// so the transaction is appended as it is. False when the general path must run (it also
+    /// produces every error).
+    #[inline]
+    fn assign_code_fast(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        code: u8,
+        mode: DelayMode,
+    ) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let r = target.unwrap_or(info.range);
+        let now_mode = delay == Time::ZERO
+            && match mode {
+                DelayMode::Transport => true,
+                DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
+            };
+        if !now_mode || code >= 9 || info.owner != self.pid || r.len != 1 || !info.range.contains(r)
+        {
+            return false;
+        }
+        let w = &mut self.st.waveforms[info.local as usize];
+        if !w.pending.is_empty() || !w.phantom.is_empty() {
+            return false;
+        }
+        let s = &self.sh.signals[info.signal.0 as usize];
+        if !matches!(s.ty.elem, crate::value::Elem::Logic) {
+            return false;
+        }
+        let ds = &s.drivers[info.slot as usize];
+        let rel = (r.offset - ds.range.offset) as usize;
+        if s.skip_ok
+            && ds.value.code(rel) == code
+            && s.cur.code(r.offset as usize) == code
+            && s.sole(r)
+        {
+            w.phantom.push(r);
+            self.st.phantoms.push(info.local);
+            return true;
+        }
+        let now = self.sh.now;
+        w.pending.push(Txn {
+            time: now,
+            range: r,
+            value: Some(Buf::one_code(code)),
+        });
+        self.st.scheduled.push((now, d));
+        true
     }
 
     /// Whether a zero-delay assignment of `v` to `r` of driver `d` would change nothing: the

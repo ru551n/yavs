@@ -209,6 +209,16 @@ impl Buf {
         Ok(())
     }
 
+    /// One logic element with `std_ulogic` code `c` (below 9).
+    #[inline]
+    pub fn one_code(c: u8) -> Buf {
+        let p = |k: u8| u64::from(c >> k & 1);
+        Buf::Planes {
+            len: 1,
+            b: smallvec![[p(0), p(1), p(2), p(3)]],
+        }
+    }
+
     /// Element `i` as one byte: its first byte, or its logic code.
     #[inline]
     pub fn code(&self, i: usize) -> u8 {

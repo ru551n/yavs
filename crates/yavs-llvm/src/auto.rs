@@ -5,7 +5,9 @@
 //! The thread samples what the simulation threads interpret (`Runtime::sampler`) every
 //! [`Heat::period`] microseconds and compiles a function once it was seen for about as long
 //! as compiling it takes ([`Heat`]); the function is compiled in a module of its own and
-//! published through a `OnceLock`. The interpreter asks the tier on entry and now and then at
+//! published through an atomic entry. A function then seen running its compiled code ten
+//! times as long is compiled again at O2 ([`Heat::o2_threshold`]) and its entry replaced (#432).
+//! The interpreter asks the tier on entry and now and then at
 //! jumps, so the swap-in happens there in any frame of that function: compiled code runs on
 //! the interpreter frame's registers and enters at any pc (an instruction that is not an entry
 //! point is left to the interpreter), so output is identical whenever compilation finishes
@@ -13,13 +15,13 @@
 //! the CLI then ends the process with [`exit_now`].
 
 use std::panic::resume_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use yavs_interp::{Runtime, Tier, TierFrame, TierHost};
+use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
 use crate::lower::{RunFn, compile_one, enter, new_jit, too_big};
@@ -52,19 +54,82 @@ impl Heat {
         u64::from(self.base).saturating_add(u64::from(self.per_instr).saturating_mul(n) / 1000)
     }
 
+    /// The time `f` must be seen running its first-tier code before it is compiled again at
+    /// O2: `O2_AFTER` times `threshold`, about three times its O2 compile time (O2 costs
+    /// about seven times O0).
+    pub fn o2_threshold(self, f: &yavs_ir::Func) -> u64 {
+        self.threshold(f).saturating_mul(O2_AFTER)
+    }
+
     /// Whether every function is compiled when the interpreter enters it.
     pub fn eager(self) -> bool {
         self.period == 0
     }
 }
 
-/// What happened to a hot function: compiled (with the time it took), or why it stays
-/// interpreted.
-pub type Note = Box<dyn FnMut(FuncId, Result<std::time::Duration, String>) + Send>;
+/// Below this many IR instructions a function without a loop stays interpreted (`too_short`).
+const SHORT: usize = 64;
+
+/// Why `f` stays interpreted although hot: shorter than `SHORT` IR instructions and without a
+/// jump back, so each entry into compiled code from the interpreter (the frame view, the
+/// entry switch, the way back) would cost about what interpreting its body costs: the small
+/// helpers a testbench calls millions of times ran slower compiled (#432).
+fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
+    use yavs_ir::Inst;
+    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
+    let back = f.code.iter().enumerate().any(|(pc, i)| match i {
+        Inst::Br { to } => start(*to) <= pc,
+        Inst::CondBr { t, f: e, .. } => start(*t) <= pc || start(*e) <= pc,
+        Inst::Case { table, .. } => prog
+            .cases
+            .get(*table)
+            .is_some_and(|t| start(t.default) <= pc || t.arms.iter().any(|a| start(a.2) <= pc)),
+        _ => false,
+    });
+    (!back && f.code.len() < SHORT).then(|| {
+        format!(
+            "{} IR instructions without a loop: entering compiled code would cost about as much",
+            f.code.len()
+        )
+    })
+}
+
+/// See `Heat::o2_threshold`.
+const O2_AFTER: u64 = 10;
+
+/// What happened to a hot function: compiled at that level (with the time it took), or why
+/// it stays interpreted (or at its first level).
+pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
+
+/// The compiled code of a function: its entry (0 while it has none) and register count. The
+/// O2 recompile replaces the entry; code once published stays valid as long as the tier.
+#[derive(Default)]
+struct Entry {
+    run: AtomicUsize,
+    nregs: AtomicUsize,
+}
+
+impl Entry {
+    fn get(&self) -> Option<(RunFn, usize)> {
+        let run = self.run.load(Ordering::Acquire);
+        // SAFETY: a nonzero `run` was stored by `set` from a `RunFn`.
+        (run != 0).then(|| unsafe {
+            (
+                std::mem::transmute::<usize, RunFn>(run),
+                self.nregs.load(Ordering::Relaxed),
+            )
+        })
+    }
+
+    fn set(&self, (run, nregs): (RunFn, usize)) {
+        self.nregs.store(nregs, Ordering::Relaxed);
+        self.run.store(run as usize, Ordering::Release);
+    }
+}
 
 /// Hot functions compiled on a background thread; see the module docs.
 pub struct AutoTier {
-    funcs: Arc<[OnceLock<(RunFn, usize)>]>,
+    funcs: Arc<[Entry]>,
     /// Functions `hot` sent to the thread already.
     queued: Box<[AtomicBool]>,
     queue: Mutex<Option<Sender<FuncId>>>,
@@ -79,14 +144,16 @@ struct Shared {
     halt: AtomicBool,
     /// The thread is compiling a function (or about to look at `halt` before it does).
     busy: AtomicBool,
-    /// The JIT once the thread has ended: compiled code lives as long as the tier.
-    jit: Mutex<Option<Jit>>,
+    /// The JITs once the thread has ended: compiled code lives as long as the tier.
+    jit: Mutex<Vec<Jit>>,
 }
 
 impl AutoTier {
     /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
-    /// compiling the functions `heat` finds hot; functions over `max_size` IR instructions stay
-    /// interpreted. `note` is called on the compile thread for every hot function.
+    /// compiling the functions `heat` finds hot at `opt`, and those that stay hot compiled
+    /// again at O2 (`Heat::o2_threshold`; at once with an eager `heat`); functions over
+    /// `max_size` IR instructions stay interpreted. `note` is called on the compile thread for
+    /// every compile.
     pub fn start(
         rt: &Runtime,
         opt: OptLevel,
@@ -95,8 +162,7 @@ impl AutoTier {
         mut note: Note,
     ) -> Result<Arc<AutoTier>, Error> {
         let prog = rt.prog.clone();
-        let funcs: Arc<[OnceLock<(RunFn, usize)>]> =
-            (0..prog.funcs.len()).map(|_| OnceLock::new()).collect();
+        let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();
         let shared = Arc::new(Shared::default());
         let (table, sh) = (funcs.clone(), shared.clone());
@@ -109,63 +175,80 @@ impl AutoTier {
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
             .spawn(move || {
-                // Made with the first hot function: a run that never gets hot pays nothing.
-                let mut jit: Option<Jit> = None;
-                let mut seen = vec![false; prog.funcs.len()];
-                // Microseconds each function was seen in the interpreter.
-                let mut time = vec![0u64; prog.funcs.len()];
+                // Made with the first function compiled at their level: a run that never gets
+                // hot pays nothing.
+                let (mut jit, mut jit2): (Option<Jit>, Option<Jit>) = (None, None);
+                // Per function: compiled at the first level, at O2.
+                let mut done = vec![[false; 2]; prog.funcs.len()];
+                // Microseconds each function was seen interpreted, and running compiled.
+                let mut time = vec![[0u64; 2]; prog.funcs.len()];
                 let mut running = Vec::new();
-                let mut hot = Vec::new();
+                // Functions to compile, whether at O2, and whether the sampler found them (a
+                // short one then stays interpreted; one eager `Tier::hot` asks for is compiled).
+                let mut hot: Vec<(FuncId, bool, bool)> = Vec::new();
+                let upgrade = opt != OptLevel::O2;
                 loop {
                     match rx.recv_timeout(period) {
-                        Ok(id) => hot.push(id),
+                        Ok(id) => hot.push((id, false, false)),
                         Err(RecvTimeoutError::Timeout) => {
                             running.clear();
                             sample(&mut running);
-                            for &id in &running {
+                            for &(id, compiled) in &running {
                                 let (Some(t), Some(f)) =
                                     (time.get_mut(id.0 as usize), prog.func(id))
                                 else {
                                     continue;
                                 };
+                                let t = &mut t[usize::from(compiled)];
                                 let was = *t;
                                 *t += u64::from(heat.period);
-                                let at = heat.threshold(f);
-                                if was < at && *t >= at {
-                                    hot.push(id);
+                                let at = if compiled {
+                                    heat.o2_threshold(f)
+                                } else {
+                                    heat.threshold(f)
+                                };
+                                if was < at && *t >= at && (!compiled || upgrade) {
+                                    hot.push((id, compiled, true));
                                 }
                             }
                         }
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
-                    for id in hot.drain(..) {
+                    while let Some((id, o2, sampled)) = hot.pop() {
                         // `busy` before `halt` here and `halt` before `busy` in `stop` (both
                         // SeqCst): either this thread sees the halt or `stop` sees it busy.
                         sh.busy.store(true, Ordering::SeqCst);
                         if sh.halt.load(Ordering::SeqCst) {
                             break;
                         }
-                        // Elaboration code never runs again.
-                        let first = seen
+                        // Each level once; elaboration code never runs again.
+                        let first = done
                             .get_mut(id.0 as usize)
-                            .is_some_and(|s| !std::mem::replace(s, true));
+                            .is_some_and(|d| !std::mem::replace(&mut d[usize::from(o2)], true));
                         let todo = prog.func(id).filter(|f| first && f.kind != FuncKind::Elab);
                         if let Some(f) = todo {
+                            let level = if o2 { OptLevel::O2 } else { opt };
+                            let j = if o2 { &mut jit2 } else { &mut jit };
                             let t0 = std::time::Instant::now();
-                            let r = match (too_big(f, max_size), &mut jit) {
+                            let short = (sampled && !o2).then(|| too_short(&prog, f)).flatten();
+                            let r = match (too_big(f, max_size).or(short), j) {
                                 (Some(why), _) => Err(why),
-                                (None, Some(j)) => compile_one(j, &prog, id, f, opt),
-                                (None, j @ None) => match new_jit(opt) {
-                                    Ok(n) => compile_one(j.insert(n), &prog, id, f, opt),
+                                (None, Some(j)) => compile_one(j, &prog, id, f, level),
+                                (None, j @ None) => match new_jit(level) {
+                                    Ok(n) => compile_one(j.insert(n), &prog, id, f, level),
                                     Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
                                 },
                             };
                             match r {
                                 Ok(entry) => {
-                                    let _ = table[id.0 as usize].set(entry);
-                                    note(id, Ok(t0.elapsed()));
+                                    table[id.0 as usize].set(entry);
+                                    note(id, level, Ok(t0.elapsed()));
+                                    // Eager (tests): swap the O2 code in during the run too.
+                                    if heat.eager() && upgrade && !o2 {
+                                        hot.push((id, true, false));
+                                    }
                                 }
-                                Err(why) => note(id, Err(why)),
+                                Err(why) => note(id, level, Err(why)),
                             }
                         }
                         sh.busy.store(false, Ordering::SeqCst);
@@ -174,7 +257,8 @@ impl AutoTier {
                         break;
                     }
                 }
-                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = jit;
+                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
+                    jit.into_iter().chain(jit2).collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
@@ -255,22 +339,16 @@ pub fn exit_now(code: u8) -> ! {
 }
 
 impl Tier for AutoTier {
-    fn run(
-        &self,
-        func: FuncId,
-        pc: u32,
-        fr: &mut TierFrame,
-        host: &mut dyn TierHost,
-    ) -> Option<u32> {
-        let &(f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
-        let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get().copied();
-        enter(f, nregs, pc, fr, host, &lookup)
+    fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
+        let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
+        let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
+        enter(f, nregs, pc, host, &lookup)
     }
 
     fn ready(&self, func: FuncId) -> bool {
         self.funcs
             .get(func.0 as usize)
-            .is_some_and(|f| f.get().is_some())
+            .is_some_and(|f| f.run.load(Ordering::Relaxed) != 0)
     }
 
     fn hot(&self, func: FuncId) {

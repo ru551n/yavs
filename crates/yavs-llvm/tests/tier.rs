@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use yavs_diag::{FileId, Span};
-use yavs_interp::{Bindings, InstData, Runtime, Tier, TierFrame, TierHost};
+use yavs_interp::{Bindings, InstData, Runtime, Tier, TierHost};
 use yavs_ir::*;
 use yavs_llvm::{AutoTier, Heat, LlvmTier, Note, OptLevel};
 
@@ -14,14 +14,8 @@ use yavs_llvm::{AutoTier, Heat, LlvmTier, Note, OptLevel};
 struct Counting(LlvmTier, AtomicUsize);
 
 impl Tier for Counting {
-    fn run(
-        &self,
-        func: FuncId,
-        pc: u32,
-        fr: &mut TierFrame,
-        host: &mut dyn TierHost,
-    ) -> Option<u32> {
-        let r = self.0.run(func, pc, fr, host);
+    fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
+        let r = self.0.run(func, pc, host);
         if r.is_some() {
             self.1.fetch_add(1, Ordering::Relaxed);
         }
@@ -182,7 +176,7 @@ fn auto_tier_compiles_hot_functions() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
-    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
+    let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
     let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     // The loop runs until the sampler has seen it and its code is compiled.
@@ -198,6 +192,29 @@ fn auto_tier_compiles_hot_functions() {
     assert!(notes[0].0 == f && notes[0].1.is_ok(), "{notes:?}");
 }
 
+/// A function compiled at O0 that stays hot in its compiled code is compiled again at O2 and
+/// swapped in; the results never change.
+#[test]
+fn auto_tier_recompiles_hot_compiled_code_at_o2() {
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let seen = notes.clone();
+    let note: Note = Box::new(move |f, level, why| seen.lock().unwrap().push((f, level, why)));
+    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
+    let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+    let t0 = Instant::now();
+    while notes.lock().unwrap().len() < 2 {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never recompiled");
+        assert_eq!(call().unwrap(), Some(5_000_050_000));
+    }
+    assert_eq!(call().unwrap(), Some(5_000_050_000));
+    tier.stop(true);
+    let notes = notes.lock().unwrap();
+    let levels: Vec<_> = notes.iter().map(|n| (n.0, n.1, n.2.is_ok())).collect();
+    assert_eq!(levels, [(f, OptLevel::O0, true), (f, OptLevel::O2, true)]);
+}
+
 /// A hot function over `--tier-max-size` stays interpreted, with a note.
 #[test]
 fn auto_tier_skips_functions_over_the_size_cap() {
@@ -205,7 +222,7 @@ fn auto_tier_skips_functions_over_the_size_cap() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
-    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
+    let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
     let tier = AutoTier::start(&rt, OptLevel::O2, 3, HOT, note).unwrap();
     let t0 = Instant::now();
     while notes.lock().unwrap().is_empty() {
@@ -658,6 +675,55 @@ fn logic_elements_match_the_interpreter() {
         dst
     });
     check(prog, f, &["LGet", "LSet"], &[0, 1, 5, 63, 64, 127, 128, -1]);
+}
+
+/// The scalar `std_ulogic` natives compiled code looks up in a table give what the natives
+/// give for all nine codes of each operand, and the native's error beyond them.
+#[test]
+fn std_ulogic_natives_match_the_interpreter() {
+    let gates = ["and", "nand", "or", "nor", "xor", "xnor"].map(|g| {
+        (
+            format!("yavs.ieee.std_logic_1164.\"{g}\"(std_ulogic,std_ulogic)std_ulogic"),
+            2,
+        )
+    });
+    let ones = ["not", "to_x01", "to_x01z", "to_ux01"].map(|n| {
+        (
+            format!("yavs.ieee.std_logic_1164.\"{n}\"(std_ulogic)std_ulogic"),
+            1,
+        )
+    });
+    let truthy = (
+        "yavs.ieee.std_logic_1164.\"??\"(std_ulogic)boolean".to_string(),
+        1,
+    );
+    for (sym, n) in gates.into_iter().chain(ones).chain([truthy]) {
+        assert!(yavs_interp::code_table(&sym).is_some(), "{sym}");
+        let mut pb = ProgramBuilder::new();
+        let native = pb.native(&sym, None);
+        let f = pb.declare("f", FuncKind::Function, None);
+        let mut fb = pb.define(f);
+        let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+        let (a, b) = (load(&mut fb, pa, Width::B8), load(&mut fb, pbr, Width::B8));
+        let args = fb.regs(&[a, b][..n]);
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::CallNative {
+            native,
+            args,
+            dst: Some(dst),
+        });
+        fb.emit(Inst::Ret { v: Some(dst) });
+        fb.finish();
+        check(
+            pb.finish().unwrap(),
+            f,
+            &["CallNative"],
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1],
+        );
+    }
 }
 
 #[path = "../../yavs-interp/tests/common/gc_roots.rs"]

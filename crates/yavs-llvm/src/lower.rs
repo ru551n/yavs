@@ -32,6 +32,7 @@ use crate::{Error, Jit, Module, OptLevel};
 
 const STEP: &str = "yavs_rt_step";
 const HOST: &str = "yavs_rt_host";
+const SIGNAL: &str = "yavs_rt_signal";
 
 pub(crate) type RunFn = unsafe extern "C" fn(*mut c_void, *mut u64, *mut Mem, u32) -> u32;
 
@@ -95,6 +96,8 @@ const MEM_TEMP_BASE: u64 = std::mem::offset_of!(Mem, fr.temp_base) as u64;
 const MEM_UP: u64 = std::mem::offset_of!(Mem, fr.up) as u64;
 const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
+const MEM_INST: u64 = std::mem::offset_of!(Mem, fr.inst) as u64;
+const MEM_INST_LEN: u64 = std::mem::offset_of!(Mem, fr.inst_len) as u64;
 
 impl Mem {
     fn of(fr: TierFrame) -> Mem {
@@ -174,6 +177,40 @@ extern "C" fn yavs_rt_step(env: *mut c_void, _regs: *mut u64, mem: *mut Mem, pc:
         mem.forget();
     }
     r
+}
+
+/// Executes the signal instruction at `pc` in the interpreter (`TierHost::signal`; `edge` 1 or 2
+/// for a `rising_edge` / `falling_edge` native) and returns `GO`, or the pc after a fault. The
+/// objects `Mem` found stay valid: these instructions free nothing.
+extern "C" fn yavs_rt_signal(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    edge: u32,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.signal(&mut (*mem).fr, pc, edge)
+    }));
+    let mem = unsafe { &mut *mem };
+    mem.temp_seen = mem.fr.temp_len;
+    match r {
+        Ok(Stepped::Next) => GO,
+        Ok(Stepped::Fault) => pc,
+        Ok(Stepped::Suspend) => TIER_SUSPEND,
+        // Only where `signal` stepped another instruction (never for those `Gen` sends).
+        Ok(Stepped::Call(_)) => {
+            mem.forget();
+            TIER_UNWIND
+        }
+        Err(p) => {
+            unsafe { (*envp).panic = Some(p) };
+            pc
+        }
+    }
 }
 
 /// The body of `yavs_rt_step`.
@@ -308,16 +345,10 @@ pub struct LlvmTier {
 }
 
 impl Tier for LlvmTier {
-    fn run(
-        &self,
-        func: FuncId,
-        pc: u32,
-        fr: &mut TierFrame,
-        host: &mut dyn TierHost,
-    ) -> Option<u32> {
+    fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(f, nregs, pc, fr, host, &lookup)
+        enter(f, nregs, pc, host, &lookup)
     }
 
     fn ready(&self, func: FuncId) -> bool {
@@ -331,15 +362,16 @@ pub(crate) fn enter(
     f: RunFn,
     nregs: usize,
     pc: u32,
-    fr: &mut TierFrame,
     host: &mut dyn TierHost,
     lookup: Lookup<'_>,
 ) -> Option<u32> {
+    let mut mem = Mem::of(TierFrame::default());
+    host.view(&mut mem.fr);
+    mem.temp_seen = mem.fr.temp_len;
     // A frame index beyond the address format is the interpreter's error.
-    if fr.nregs != nregs as u64 || fr.frame >= 1 << 29 {
+    if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
         return None;
     }
-    let mut mem = Mem::of(*fr);
     let mut env = Env {
         host,
         lookup,
@@ -358,7 +390,6 @@ pub(crate) fn enter(
         )
     };
     mem.sync(env.host);
-    *fr = mem.fr;
     if let Some(p) = env.panic {
         resume_unwind(p);
     }
@@ -372,6 +403,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
         &[
             (STEP, yavs_rt_step as *const () as usize),
             (HOST, yavs_rt_host as *const () as usize),
+            (SIGNAL, yavs_rt_signal as *const () as usize),
         ],
     )
 }
@@ -549,10 +581,45 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
     }
 }
 
+/// How compiled code runs a native call it does not step.
+enum NativeKind {
+    /// A function of `std_ulogic` codes (`yavs_interp::code_table`): the results by code, the
+    /// operand registers and the result register.
+    Table(Vec<u8>, Vec<Reg>, Reg),
+    /// `rising_edge` (true) or `falling_edge` through `TierHost::signal`.
+    Edge(bool),
+}
+
+fn native_kind(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+    dst: Option<Reg>,
+) -> Option<NativeKind> {
+    let sym = &prog.natives.get(native)?.symbol;
+    let (rs, d) = (f.regs(args)?, dst?);
+    let nregs = f.reg_ty.len() as u32;
+    if let Some(t) = yavs_interp::code_table(sym) {
+        // One operand register per `std_ulogic` (no signal operand), all in the frame.
+        let fits = t.len() == 9usize.pow(rs.len() as u32)
+            && rs.iter().chain([&d]).all(|r| r.0 < nregs)
+            && rs
+                .iter()
+                .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig));
+        return fits.then(|| NativeKind::Table(t, rs.to_vec(), d));
+    }
+    yavs_interp::edge_native(sym).map(NativeKind::Edge)
+}
+
 /// Instructions the compiled code executes itself on its fast path (keep in step with
 /// `Gen::func`).
 fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     match i {
+        Inst::CallNative { native, args, dst } => matches!(
+            native_kind(prog, f, *native, *args, *dst),
+            Some(NativeKind::Table(..))
+        ),
         Inst::LayoutOf { ty, .. } => static_layout(prog, *ty).is_some(),
         Inst::Bin { op, .. } | Inst::BinRange { op, .. } => *op != IntOp::Pow,
         Inst::FBin { op, .. } => !matches!(op, FOp::Pow | FOp::PowI),
@@ -784,6 +851,9 @@ struct Gen {
     /// `yavs_rt_host(env, mem, addr, extra, n, write) -> ptr`, null for the slow path.
     host_ty: LLVMTypeRef,
     host: LLVMValueRef,
+    /// `yavs_rt_signal(env, regs, mem, pc, edge) -> u32`, as `step`.
+    signal_ty: LLVMTypeRef,
+    signal: LLVMValueRef,
     sadd: (LLVMTypeRef, LLVMValueRef),
     ssub: (LLVMTypeRef, LLVMValueRef),
     smul: (LLVMTypeRef, LLVMValueRef),
@@ -829,6 +899,9 @@ impl Gen {
             let host_name = CString::new(HOST).expect("no NUL");
             let mut hparams = [ptr, ptr, i64, i64, i64, i32];
             let host_ty = LLVMFunctionType(ptr, hparams.as_mut_ptr(), 6, 0);
+            let signal_name = CString::new(SIGNAL).expect("no NUL");
+            let mut sparams = [ptr, ptr, ptr, i32, i32];
+            let signal_ty = LLVMFunctionType(i32, sparams.as_mut_ptr(), 5, 0);
             Gen {
                 ctx,
                 module,
@@ -842,6 +915,8 @@ impl Gen {
                 step: LLVMAddFunction(module, step_name.as_ptr(), fn_ty),
                 host_ty,
                 host: LLVMAddFunction(module, host_name.as_ptr(), host_ty),
+                signal_ty,
+                signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 sadd: intrinsic(c"llvm.sadd.with.overflow"),
                 ssub: intrinsic(c"llvm.ssub.with.overflow"),
                 smul: intrinsic(c"llvm.smul.with.overflow"),
@@ -1101,9 +1176,9 @@ impl Gen {
                     LLVMPositionBuilderAtEnd(self.b, bb);
                     open = true;
                 }
-                // The interpreter returns (`TierHost::ret` for a frame compiled code pushed) and
-                // suspends: compiled code leaves the process to it there.
-                if let Inst::Ret { .. } | Inst::Suspend { .. } = inst {
+                // The interpreter returns (`TierHost::ret` for a frame compiled code pushed):
+                // compiled code leaves the frame to it there.
+                if let Inst::Ret { .. } = inst {
                     self.leave(&c, self.c32(pc));
                     open = false;
                     continue;
@@ -1586,6 +1661,32 @@ impl Gen {
                         LLVMBuildBr(self.b, block_bb(t.default)?);
                         open = false;
                     }
+                    Inst::SigReadScalar { .. }
+                    | Inst::WaitOn { .. }
+                    | Inst::Drive { .. }
+                    | Inst::Suspend { .. } => self.signal(&c, pc, 0),
+                    Inst::CallNative { native, args, dst } => {
+                        match native_kind(prog, f, native, args, dst) {
+                            Some(NativeKind::Table(t, rs, d)) => {
+                                let (slow, join) = self.slow_path(&c, pc, &inst);
+                                let mut idx = self.c64(0);
+                                for r in rs {
+                                    // A code beyond the nine is the native's error.
+                                    let x = self.ld(&c, r);
+                                    self.guard(&c, self.icmp(IP::LLVMIntULE, x, self.c64(8)), slow);
+                                    let i9 = LLVMBuildMul(self.b, idx, self.c64(9), c"".as_ptr());
+                                    idx = LLVMBuildAdd(self.b, i9, x, c"".as_ptr());
+                                }
+                                let p = self.gep(self.table(&t), idx);
+                                self.st(&c, d, self.zext8(self.load(self.i8, p)));
+                                self.join(join);
+                            }
+                            Some(NativeKind::Edge(rising)) => {
+                                self.signal(&c, pc, if rising { 1 } else { 2 })
+                            }
+                            None => self.step(&c, pc, &inst),
+                        }
+                    }
                     _ => self.step(&c, pc, &inst),
                 }
             }
@@ -1604,16 +1705,35 @@ impl Gen {
     /// Execute the instruction `i` at `pc` in the interpreter; return what `yavs_rt_step`
     /// returns unless it is `GO`.
     unsafe fn step(&self, c: &Cur, pc: u32, i: &Inst) {
-        // SAFETY: `step` has the run-function signature; well-formed blocks of c.f.
+        let at = if keeps_objects(i) { pc | KEEP } else { pc };
+        // SAFETY: `step` has the run-function signature.
         unsafe {
-            let at = if keeps_objects(i) { pc | KEEP } else { pc };
-            let mut args = [c.env, c.regs, c.mem, self.c32(at)];
-            let r = LLVMBuildCall2(
-                self.b,
+            self.call_go(
+                c,
                 self.fn_ty,
                 self.step,
+                &mut [c.env, c.regs, c.mem, self.c32(at)],
+            )
+        }
+    }
+
+    /// The signal instruction at `pc` through `yavs_rt_signal` (`edge`: `TierHost::signal`).
+    unsafe fn signal(&self, c: &Cur, pc: u32, edge: u32) {
+        let mut args = [c.env, c.regs, c.mem, self.c32(pc), self.c32(edge)];
+        // SAFETY: the arguments match `signal_ty`.
+        unsafe { self.call_go(c, self.signal_ty, self.signal, &mut args) }
+    }
+
+    /// Call a callback that returns `GO` or what the compiled function returns at once.
+    unsafe fn call_go(&self, c: &Cur, ty: LLVMTypeRef, f: LLVMValueRef, args: &mut [LLVMValueRef]) {
+        // SAFETY: `args` match `ty`; well-formed blocks of c.f.
+        unsafe {
+            let r = LLVMBuildCall2(
+                self.b,
+                ty,
+                f,
                 args.as_mut_ptr(),
-                4,
+                args.len() as u32,
                 c"".as_ptr(),
             );
             let cont = self.block(c);
@@ -1683,6 +1803,31 @@ impl Gen {
             LLVMBuildBr(self.b, join);
             LLVMPositionBuilderAtEnd(self.b, join);
         }
+    }
+
+    /// A private constant array of bytes.
+    unsafe fn table(&self, t: &[u8]) -> LLVMValueRef {
+        // SAFETY: a global of our module with a matching initialiser.
+        unsafe {
+            let mut vals: Vec<LLVMValueRef> = t
+                .iter()
+                .map(|&b| LLVMConstInt(self.i8, u64::from(b), 0))
+                .collect();
+            let ty = LLVMArrayType2(self.i8, t.len() as u64);
+            let g = LLVMAddGlobal(self.module, ty, c"".as_ptr());
+            LLVMSetInitializer(
+                g,
+                LLVMConstArray2(self.i8, vals.as_mut_ptr(), t.len() as u64),
+            );
+            LLVMSetGlobalConstant(g, 1);
+            LLVMSetLinkage(g, llvm_sys::LLVMLinkage::LLVMPrivateLinkage);
+            g
+        }
+    }
+
+    unsafe fn zext8(&self, v: LLVMValueRef) -> LLVMValueRef {
+        // SAFETY: v is an i8.
+        unsafe { LLVMBuildZExt(self.b, v, self.i64, c"".as_ptr()) }
     }
 
     unsafe fn mem_ptr(&self, c: &Cur, field: u64) -> LLVMValueRef {
@@ -1776,8 +1921,65 @@ impl Gen {
                 self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
                 return self.gep(self.mem_ld(c, MEM_SLOTS, self.ptr), o);
             }
+            // `Mem::find` for the frame's slots, the temporary area and (reading) the
+            // instance data inline; other memory through `yavs_rt_host`.
+            let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
+            let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+            let off = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+            let is_f = self.icmp(IP::LLVMIntEQ, hi, self.mem_ld(c, MEM_FRAME, self.i64));
+            let temp_hi = self.c64(i64::from(space::TEMP) << 29);
+            let is_t = self.icmp(IP::LLVMIntEQ, hi, temp_hi);
+            let sel = |a, b, x| LLVMBuildSelect(self.b, a, b, x, c"".as_ptr());
+            let (base, len, mut known) = if write {
+                (
+                    sel(
+                        is_f,
+                        self.mem_ld(c, MEM_SLOTS, self.ptr),
+                        self.mem_ld(c, MEM_TEMP, self.ptr),
+                    ),
+                    sel(
+                        is_f,
+                        self.mem_ld(c, MEM_SLOTS_LEN, self.i64),
+                        self.mem_ld(c, MEM_TEMP_LEN, self.i64),
+                    ),
+                    self.or(is_f, is_t),
+                )
+            } else {
+                let inst_hi = self.c64(i64::from(space::INST) << 29);
+                let is_i = self.icmp(IP::LLVMIntEQ, hi, inst_hi);
+                let b = sel(
+                    is_t,
+                    self.mem_ld(c, MEM_TEMP, self.ptr),
+                    self.mem_ld(c, MEM_INST, self.ptr),
+                );
+                let l = sel(
+                    is_t,
+                    self.mem_ld(c, MEM_TEMP_LEN, self.i64),
+                    self.mem_ld(c, MEM_INST_LEN, self.i64),
+                );
+                (
+                    sel(is_f, self.mem_ld(c, MEM_SLOTS, self.ptr), b),
+                    sel(is_f, self.mem_ld(c, MEM_SLOTS_LEN, self.i64), l),
+                    self.or(self.or(is_f, is_t), is_i),
+                )
+            };
+            let fits = self.icmp(IP::LLVMIntULE, n, len);
+            let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+            let inside = self.icmp(IP::LLVMIntULE, off, rest);
+            known = LLVMBuildAnd(
+                self.b,
+                known,
+                LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let (fast, call, done) = (self.block(c), self.block(c), self.block(c));
+            LLVMBuildCondBr(self.b, known, fast, call);
+            LLVMPositionBuilderAtEnd(self.b, fast);
+            let p1 = self.gep(base, off);
+            LLVMBuildBr(self.b, done);
+            LLVMPositionBuilderAtEnd(self.b, call);
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
-            let p = LLVMBuildCall2(
+            let p2 = LLVMBuildCall2(
                 self.b,
                 self.host_ty,
                 self.host,
@@ -1785,6 +1987,12 @@ impl Gen {
                 6,
                 c"".as_ptr(),
             );
+            LLVMBuildBr(self.b, done);
+            LLVMPositionBuilderAtEnd(self.b, done);
+            let p = LLVMBuildPhi(self.b, self.ptr, c"".as_ptr());
+            let mut vals = [p1, p2];
+            let mut from = [fast, call];
+            LLVMAddIncoming(p, vals.as_mut_ptr(), from.as_mut_ptr(), 2);
             self.guard(c, LLVMBuildIsNotNull(self.b, p, c"".as_ptr()), slow);
             p
         }

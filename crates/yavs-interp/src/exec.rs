@@ -155,6 +155,10 @@ pub(crate) fn add_addr(a: u64, delta: u64) -> R<u64> {
     }
 }
 
+/// `Machine::tier_go`: frames compiled code left (`Flow::Call`), a suspension.
+const TIER_GO_CALL: u64 = u64::MAX;
+const TIER_GO_SUSPEND: u64 = u64::MAX - 1;
+
 /// Jumps of an interpreted function without compiled code until the fast loop asks the tier
 /// again (`run_ops`).
 const RECHECK: u32 = 256;
@@ -2673,9 +2677,9 @@ impl Machine {
                 tier.is_some_and(|t| t.ready(func))
             };
         }
-        // `TIER`: this thread's sampling slot names the function being interpreted
-        // (`Runtime::sampler`); compiled code entered from it keeps the slot naming the
-        // interpreted caller, which compiled would call it in place.
+        // `TIER`: this thread's sampling slot names the function being run, and whether it runs
+        // compiled (`Runtime::sampler`); compiled code entered from compiled code keeps the
+        // slot naming its caller, which calls it in place.
         let slot = if TIER { Some(crate::slot()) } else { None };
         // Whether the function has compiled code to run (asked on entry, then every
         // `RECHECK` jumps while it has none: it may be compiled while its loop runs).
@@ -2691,9 +2695,9 @@ impl Machine {
                         t.hot(func);
                     }
                     native = ready!();
-                    if !native && let Some(s) = slot {
+                    if let Some(s) = slot {
                         s.store(
-                            u64::from(rt.id) << 32 | u64::from(func.0),
+                            u64::from(rt.id) << 32 | u64::from(native) << 31 | u64::from(func.0),
                             Ordering::Relaxed,
                         );
                     }
@@ -2713,11 +2717,12 @@ impl Machine {
                     && let Some(tier) = tier
                 {
                     match self.tier_go(tier, prog, func, f, code, top, k, ctx)? {
-                        Ok((to, go_on)) => {
-                            k = to;
-                            native = go_on;
+                        TIER_GO_CALL => return Ok(Flow::Call),
+                        TIER_GO_SUSPEND => return Ok(Flow::Suspend),
+                        go => {
+                            k = (go >> 1) as usize;
+                            native = go & 1 != 0;
                         }
-                        Err(flow) => return Ok(flow),
                     }
                 }
             };
@@ -3418,7 +3423,9 @@ impl Machine {
 
     /// Run the compiled code of frame `top` (`func`, `f`) from op `k` (`run_ops`, kept out of
     /// its loop): the op to go on at and whether compiled code may run again before the next
-    /// jump, or the flow the run ends with (frames compiled code left, a suspension).
+    /// jump (`k << 1 | again`), or the flow the run ends with (frames compiled code left,
+    /// `TIER_GO_CALL`; a suspension, `TIER_GO_SUSPEND`). One word, not nested enums: copying
+    /// those out of the return slot stalled on the callee's narrower stores.
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     fn tier_go(
@@ -3431,23 +3438,25 @@ impl Machine {
         top: usize,
         k: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
-    ) -> R<Result<(usize, bool), Flow>> {
+    ) -> R<u64> {
         let pc = code.at.get(k).copied().unwrap_or(0) as usize;
         let (next, ran) = self.run_tier(tier, prog, f, pc, ctx)?;
         // Frames compiled code pushed and did not finish: the interpreter goes on with the
         // top one.
         if next == crate::TIER_UNWIND as usize {
-            return Ok(Err(Flow::Call));
+            return Ok(TIER_GO_CALL);
         }
         if next == crate::TIER_SUSPEND as usize {
-            return Ok(Err(Flow::Suspend));
+            return Ok(TIER_GO_SUSPEND);
         }
         // No progress: `pc` is no entry of the compiled code; interpret to the next jump.
         let native = ran && next != pc;
         Ok(match self.op_at(prog, f, code, top, next, ctx)? {
-            Ok((to, true)) => Ok((to, tier.ready(func))),
-            Ok((to, false)) => Ok((to, native)),
-            Err(flow) => Err(flow),
+            Ok((to, true)) => (to as u64) << 1 | u64::from(tier.ready(func)),
+            Ok((to, false)) => (to as u64) << 1 | u64::from(native),
+            Err(Flow::Call) => TIER_GO_CALL,
+            Err(Flow::Suspend) => TIER_GO_SUSPEND,
+            Err(_) => return Err(ice("compiled code left a jump or a return to step")),
         })
     }
 
@@ -3504,8 +3513,6 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<(usize, bool)> {
         let func = self.top().func;
-        let mut tf = crate::TierFrame::default();
-        self.tier_view(&mut tf);
         let mut host = Host {
             m: self,
             prog,
@@ -3514,10 +3521,13 @@ impl Machine {
             ctx,
             fault: None,
         };
-        let ran = tier.run(func, pc as u32, &mut tf, &mut host);
+        let ran = tier.run(func, pc as u32, &mut host);
         let fault = host.fault;
         let pc = match ran {
             Some(p) if p == crate::TIER_UNWIND || p == crate::TIER_SUSPEND => p as usize,
+            // A fault leaves the pc where it was recorded (`TierHost::signal` may record it at
+            // the instruction after the one compiled code called it for).
+            Some(p) if fault.is_some() => p as usize,
             Some(p) => {
                 self.top().pc = p;
                 p as usize
@@ -4933,6 +4943,10 @@ struct Host<'a, 'c, 'x> {
 }
 
 impl crate::TierHost for Host<'_, '_, '_> {
+    fn view(&mut self, tf: &mut crate::TierFrame) {
+        self.m.tier_view(tf);
+    }
+
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
         use crate::Stepped;
         let (m, f) = (&mut *self.m, self.f);
@@ -5019,6 +5033,63 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn temp(&mut self) -> &mut Vec<u8> {
         &mut self.m.temp
+    }
+
+    fn signal(&mut self, tf: &mut crate::TierFrame, at: u32, edge: u32) -> crate::Stepped {
+        let (m, f) = (&mut *self.m, self.f);
+        let r = match f.code.get(at as usize) {
+            Some(&Inst::SigReadScalar { dst, sig }) => {
+                m.sig_read_scalar(sig, self.ctx).map(|v| m.set(dst, v))
+            }
+            Some(&Inst::Drive {
+                driver,
+                target,
+                wave,
+                n,
+                mode,
+                reject,
+            }) if !target.is_some_and(|t| m.is_multi(t)) => m
+                .driver(driver)
+                .and_then(|d| m.drive(self.ctx, d, target, wave, n, mode, reject)),
+            // A `wait on` and the suspension after it (a process with a sensitivity list) in
+            // one call.
+            Some(&Inst::WaitOn { sig }) => match m.wait_on(sig, self.ctx) {
+                Ok(()) if matches!(f.code.get(at as usize + 1), Some(Inst::Suspend { .. })) => {
+                    return self.signal(tf, at + 1, 0);
+                }
+                r => r,
+            },
+            Some(&Inst::Suspend { .. }) => match m.suspend(self.prog, f, self.ctx) {
+                Ok(()) => {
+                    m.top().pc = at;
+                    return crate::Stepped::Suspend;
+                }
+                Err(e) => Err(e),
+            },
+            // `call_native` of the edge native, without the collection point (it allocates
+            // nothing).
+            Some(&Inst::CallNative {
+                args,
+                dst: Some(dst),
+                ..
+            }) if edge != 0 => match f.regs(args) {
+                Some(&[s]) if f.reg_ty.get(s.0 as usize) == Some(&yavs_ir::RegTy::Sig) => {
+                    let (c0, c1) = (m.r(s), m.r(Reg(s.0 + 1)));
+                    crate::ieee::edge_of(m, self.ctx, c0, c1, edge == 1)
+                        .map(|v| m.set(dst, u64::from(v)))
+                }
+                _ => return self.step(tf, at),
+            },
+            _ => return self.step(tf, at),
+        };
+        match r {
+            Ok(()) => crate::Stepped::Next,
+            Err(e) => {
+                m.top().pc = at;
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
     }
 
     fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)> {

@@ -546,7 +546,7 @@ fn use_tier(
                 });
             let prog = rt.prog.clone();
             let verbose = a.verbose;
-            let note: yavs_llvm::Note = Box::new(move |f, why| {
+            let note: yavs_llvm::Note = Box::new(move |f, level, why| {
                 if !verbose {
                     return;
                 }
@@ -554,7 +554,7 @@ fn use_tier(
                 let n = prog.func(f).map_or(0, |f| f.code.len());
                 match why {
                     Ok(t) => eprintln!(
-                        "note: `{name}` ({f}, {n} IR instructions) is hot: compiled by --tier=auto in {} ms",
+                        "note: `{name}` ({f}, {n} IR instructions) is hot: compiled by --tier=auto at {level:?} in {} ms",
                         t.as_millis()
                     ),
                     Err(why) => {

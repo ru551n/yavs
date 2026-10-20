@@ -247,7 +247,7 @@ milestone users care about works.
   compiled code entered from an interpreted function counts for that caller, which compiled
   would call it in place. ONE background compile thread (single-threaded LLVM, one module per
   function, O0, the JIT made with the first hot function); the entry is published through a
-  per-function `OnceLock`, which the interpreter asks for on entry and every 256 jumps while a
+  per-function atomic entry, which the interpreter asks for on entry and every 256 jumps while a
   function has none. Why sampling: the per-op counting it replaces cost 12% to 25% of CPU on
   the call-heavy benchmarks when nothing compiled (it was in every jump, call and return of the
   predecoded loop); a sample costs the compile thread microseconds. O0 stays: O2 codegen costs
@@ -262,6 +262,36 @@ milestone users care about works.
   (hidden, for tests and tuning): microseconds, nanoseconds per IR instruction, sampling period
   in microseconds; PERIOD 0 compiles every function the interpreter enters. The LLVM agent,
   2026-10-20.
+- **Signal operations as direct calls (#339, 2026-10-20):** compiled code runs `SigReadScalar`,
+  `Drive`, `WaitOn`, `Suspend` and the `rising_edge`/`falling_edge` natives through
+  `TierHost::signal` (`yavs_rt_signal`), which calls the interpreter's own functions for them
+  (`sig_read_scalar`, `drive`, `wait_on`, `suspend`, the native's `edge_of`, so the kernel's
+  `Ctx::first_code`, `Ctx::edge` and `Ctx::assign_code` paths) without the generic step; a
+  `wait on` followed by the suspension is one call, and a suspension no longer returns to the
+  interpreter's loop (`TIER_SUSPEND`, the frame's pc at the `Suspend`). An error is recorded with
+  the pc of the instruction that failed, as a step records it. The natives of one or two
+  `std_ulogic` operands (the `std_logic_1164` gates, `not`, `to_x01`, `to_x01z`, `to_ux01`, `??`)
+  are table lookups: `yavs_interp::code_table` computes the table with the natives' own
+  functions, and an operand beyond the nine codes steps the call (the native's error). These calls
+  skip the collection point a native call is (they allocate nothing; the next `new`, call or
+  other native collects). Why: on clocked RTL every activation is a few signal operations, and the
+  generic step cost more than the work. `Tier::run` fills compiled code's frame view in place
+  (`TierHost::view`) and `tier_go` returns one word: copies of structs the callee had just written
+  in narrower pieces stalled on store forwarding. The LLVM agent, 2026-10-20.
+- **O2 recompile (#432, 2026-10-20):** the sampling slot also names compiled functions (bit 31);
+  a function seen running its first-tier code for ten times its `Heat` (about three times its
+  O2 compile time) is compiled again at O2 on the same thread, in a second JIT made at O2, and its
+  entry (an atomic word per function, code never freed) is replaced; frames running the O0 code
+  finish in it. With `--tier-heat=..,..,0` the O2 recompile follows the first compile at once, so
+  the tests swap both in mid-run. The LLVM agent, 2026-10-20.
+- **Short functions stay interpreted (#432, 2026-10-20):** a function the sampler finds hot that
+  has fewer than 64 IR instructions and no jump back is not compiled (`--verbose` says why):
+  entering compiled code from the interpreter (frame view, entry switch, the way back) costs
+  about what interpreting such a body costs, and the helpers a verification library calls
+  millions of times ran slower compiled (`vai_window_gen` 0.93x, `calls` 0.82x of the CPU with
+  them compiled). Processes always loop. Eager tier-up (`--tier-heat=..,..,0`, the tests) still
+  compiles everything. Compiling such a callee whenever compiled code calls it was measured
+  too and lost (`vai_window_gen` 1.18x). The LLVM agent, 2026-10-20.
 - **Default:** `--tier=interp`, also in a yavs built with the `llvm` feature. After #336, #337
   and the sampling tier-up, `--tier=auto` is 0.77x to 1.36x the interpreter's CPU on the shared
   benchmarks (geometric mean 1.016, STATUS.md "llvm"): it wins on compute and verification

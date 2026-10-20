@@ -44,6 +44,7 @@ pub use debug::{
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
 pub use heap::Heap;
+pub use ieee::{code_table, edge_native};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
 pub use yavs_ir::opt::keep_variables;
@@ -266,16 +267,10 @@ impl Default for Bindings {
 /// A call `step` made may run on in compiled code without returning to the interpreter
 /// (`TierHost::ret` pops it). The interpreter stays the semantic reference (rule 5).
 pub trait Tier: Send + Sync {
-    /// Run `func` from instruction `pc` until an instruction the interpreter must execute
-    /// and return its index, or [`TIER_UNWIND`] or [`TIER_SUSPEND`]; `None` when `func` is
-    /// not compiled.
-    fn run(
-        &self,
-        func: FuncId,
-        pc: u32,
-        fr: &mut TierFrame,
-        host: &mut dyn TierHost,
-    ) -> Option<u32>;
+    /// Run `func` from instruction `pc` of the top frame (whose view [`TierHost::view`]
+    /// gives) until an instruction the interpreter must execute and return its index, or
+    /// [`TIER_UNWIND`] or [`TIER_SUSPEND`]; `None` when `func` is not compiled.
+    fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32>;
 
     /// Whether `func` has compiled code now: the interpreter calls `run` only then.
     fn ready(&self, _func: FuncId) -> bool {
@@ -312,6 +307,10 @@ pub enum Stepped {
 
 /// The interpreter's side of [`Tier::run`].
 pub trait TierHost {
+    /// Fill `fr` with the top frame's view: compiled code's own copy, filled in place (a copy
+    /// of a view just written in pieces would wait for the stores).
+    fn view(&mut self, fr: &mut TierFrame);
+
     /// Execute the instruction at `pc` of the top frame; `fr` is the top frame's view after.
     fn step(&mut self, fr: &mut TierFrame, pc: u32) -> Stepped;
 
@@ -328,6 +327,13 @@ pub trait TierHost {
 
     /// The temporary area, to give it the length compiled code left it ([`TierFrame`]).
     fn temp(&mut self) -> &mut Vec<u8>;
+
+    /// Execute the signal instruction at `pc` of the top frame as `step` does, through the
+    /// same interpreter functions without its generic dispatch: `SigReadScalar`, `Drive`,
+    /// `WaitOn`, `Suspend`, and (`edge` 1 rising, 2 falling) a `CallNative` of `rising_edge` /
+    /// `falling_edge` ([`edge_native`]); any other instruction is stepped. These run no VHDL
+    /// code and move no stack: the [`TierFrame`] stays valid.
+    fn signal(&mut self, fr: &mut TierFrame, pc: u32, edge: u32) -> Stepped;
 }
 
 /// What compiled code reads and writes itself (ir.md 5): a view of the top frame's
@@ -634,8 +640,9 @@ impl Runtime {
     }
 
     /// What a compiled tier calls to sample where the time goes (`yavs run --tier=auto`): it
-    /// appends the functions the simulation threads interpret at that moment.
-    pub fn sampler(&self) -> impl Fn(&mut Vec<FuncId>) + Send + 'static {
+    /// appends the functions the simulation threads run at that moment, and whether they run
+    /// compiled code.
+    pub fn sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
         let id = u64::from(self.id);
         move |out| {
             for s in SLOTS
@@ -645,7 +652,7 @@ impl Runtime {
             {
                 let v = s.load(Ordering::Relaxed);
                 if v >> 32 == id {
-                    out.push(FuncId(v as u32));
+                    out.push((FuncId(v as u32 & !(1 << 31)), v & 1 << 31 != 0));
                 }
             }
         }

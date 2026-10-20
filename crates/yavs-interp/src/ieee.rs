@@ -242,12 +242,46 @@ fn conv<const K: u8, const VEC: bool>(
         };
         return put(m, &Vh::up1(v));
     }
-    let s = sul(a, 0)?;
-    Ok(Some(match K {
+    Ok(Some(conv_of(K, sul(a, 0)?) as u64))
+}
+
+/// `to_x01`, `to_x01z` or `to_ux01` (`k` 0, 1, 2) of one `std_ulogic`.
+fn conv_of(k: u8, s: StdULogic) -> StdULogic {
+    match k {
         0 => s.to_x01(),
         1 => s.to_x01z(),
         _ => s.to_ux01(),
-    } as u64))
+    }
+}
+
+/// The results of the native of `symbol` when it is a function of one or two `std_ulogic`
+/// operands (`std_logic_1164` gates, `not`, `to_x01`/`to_x01z`/`to_ux01`, `??`), by operand
+/// code (`a * 9 + b` for two), as the native computes them; `None` for any other native. For
+/// compiled code (a table lookup instead of the call); an operand beyond the nine codes is
+/// still the native's error.
+pub fn code_table(symbol: &str) -> Option<Vec<u8>> {
+    let key = symbol.strip_prefix("yavs.ieee.")?;
+    let op = yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))?;
+    let all = || (0..9).map(StdULogic::from_code_pub);
+    Some(match op {
+        Op::Gate(g) => all()
+            .flat_map(|x| all().map(move |y| gate_of(g, x, y) as u8))
+            .collect(),
+        Op::Not => all().map(|x| x.not() as u8).collect(),
+        Op::Conv(k, false) => all().map(|x| conv_of(k, x) as u8).collect(),
+        Op::Truthy => all().map(|x| u8::from(x.is_true())).collect(),
+        _ => return None,
+    })
+}
+
+/// Whether the native of `symbol` is `rising_edge` (`Some(true)`) or `falling_edge` of a
+/// `std_ulogic` signal (`TierHost::edge`).
+pub fn edge_native(symbol: &str) -> Option<bool> {
+    let key = symbol.strip_prefix("yavs.ieee.")?;
+    match yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))? {
+        Op::Edge(rising) => Some(rising),
+        _ => None,
+    }
 }
 
 /// `TO_01` of a vector: every element `0 1 L H` gives the 0/1 vector, any other the whole
@@ -278,7 +312,17 @@ fn edge<const RISING: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
-    let (c0, c1) = (arg(a, 0)?, arg(a, 1)?);
+    Ok(Some(u64::from(edge_of(
+        m,
+        ctx,
+        arg(a, 0)?,
+        arg(a, 1)?,
+        RISING,
+    )?)))
+}
+
+/// `rising_edge` / `falling_edge` of the signal in cells `c0`, `c1` (`edge`).
+pub(crate) fn edge_of(m: &Machine, ctx: Cx<'_, '_, '_>, c0: u64, c1: u64, rising: bool) -> R<bool> {
     let s = m
         .inst
         .sigs
@@ -289,10 +333,8 @@ fn edge<const RISING: bool>(
     let Some(c) = ctx.as_deref_mut() else {
         return rt_err("signal read during elaboration");
     };
-    let Some(hit) = c.edge(sr, RISING)? else {
-        return Err(ice("edge of a null signal range"));
-    };
-    Ok(Some(u64::from(hit)))
+    c.edge(sr, rising)?
+        .ok_or_else(|| ice("edge of a null signal range"))
 }
 
 // ---- math_real ----

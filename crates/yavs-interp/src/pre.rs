@@ -111,6 +111,11 @@ impl Pre {
                     }
                     a.is_some()
                 }
+                // A jump forward to where execution goes on anyway (the blocks between are
+                // dead or empty after the optimiser) is no operation.
+                Inst::Br { to } if f.body != Some(to) => f.blocks.get(to).is_some_and(|b| {
+                    b.start as usize > pc && next[b.start as usize] == next[pc + 1]
+                }),
                 _ => false,
             };
             next[pc] = if hit { next[pc + 1] } else { pc as u32 };

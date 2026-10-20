@@ -634,6 +634,174 @@ fn a_local_array_lives_in_the_frames_temporary_memory() {
     }
 }
 
+/// A byte read from frame slot 0 (any value 0 to 255), and `pin` so that it stays a load.
+fn byte(fb: &mut FuncBuilder<'_>) -> Reg {
+    let a = fb.addr(AddrSpace::Frame, 0);
+    pin(fb, 0);
+    let d = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: d,
+        addr: a,
+        w: Width::B1,
+    });
+    d
+}
+
+fn check(fb: &mut FuncBuilder<'_>, v: Reg, lo: i64, hi: i64) {
+    let what = fb.program().check_msg("range", Dir::To);
+    let (lo, hi) = (fb.int(lo), fb.int(hi));
+    fb.emit(Inst::Check {
+        kind: CheckKind::Range,
+        v,
+        lo,
+        hi,
+        what,
+    });
+}
+
+#[test]
+fn a_check_the_value_range_proves_goes() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(32, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let v = byte(fb);
+        // A byte is 0 to 255: the first check passes, the second may fail.
+        check(fb, v, 0, 255);
+        check(fb, v, 0, 100);
+        fb.emit(Inst::Ret { v: Some(v) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Check { .. })),
+        1,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_range_checked_sum_that_cannot_leave_its_range_is_plain() {
+    if !on() {
+        return;
+    }
+    let sums = |hi: i64| {
+        let code = build(FuncKind::Function, |fb| {
+            fb.slot(32, 8);
+            fb.stmt(StmtKind::Return, sp());
+            let v = byte(fb);
+            let one = fb.int(1);
+            let (l, h) = (fb.int(0), fb.int(hi));
+            let what = fb.program().check_msg("range", Dir::To);
+            let d = fb.reg(RegTy::I64);
+            fb.emit(Inst::BinRange {
+                op: IntOp::Add,
+                dst: d,
+                a: v,
+                b: one,
+                lo: l,
+                hi: h,
+                what,
+            });
+            fb.emit(Inst::Ret { v: Some(d) });
+        });
+        count(&code, |i| matches!(i, Inst::BinRange { .. }))
+    };
+    assert_eq!(sums(256), 0);
+    assert_eq!(sums(255), 1);
+}
+
+#[test]
+fn a_length_plus_one_is_not_zero() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(32, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let d = fb.addr(AddrSpace::Frame, 0);
+        pin(fb, 0);
+        let len = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: len,
+            dope: d,
+            dim: 0,
+        });
+        let one = fb.int(1);
+        let n = bin(fb, IntOp::Add, len, one);
+        let zero = fb.int(0);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: n,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        fb.emit(Inst::Ret { v: Some(zero) });
+        fb.at(e);
+        fb.emit(Inst::Ret { v: Some(n) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Cmp { .. })),
+        0,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_branch_narrows_the_compared_value_on_each_edge() {
+    if !on() {
+        return;
+    }
+    // x is any 64-bit value; `if x < 10 then check x <= 9` passes, the same check in the
+    // else branch may fail.
+    let checks = |in_then: bool| {
+        let code = build(FuncKind::Function, |fb| {
+            fb.slot(32, 8);
+            fb.stmt(StmtKind::Return, sp());
+            let a = fb.addr(AddrSpace::Frame, 0);
+            pin(fb, 0);
+            let x = fb.reg(RegTy::I64);
+            fb.emit(Inst::Load {
+                dst: x,
+                addr: a,
+                w: Width::B8,
+            });
+            let ten = fb.int(10);
+            let c = fb.reg(RegTy::I64);
+            fb.emit(Inst::Cmp {
+                op: CmpOp::Lt,
+                dst: c,
+                a: x,
+                b: ten,
+            });
+            let (t, e) = (fb.block(), fb.block());
+            fb.emit(Inst::CondBr { c, t, f: e });
+            fb.at(t);
+            if in_then {
+                check(fb, x, i64::MIN, 9);
+            }
+            fb.emit(Inst::Ret { v: Some(x) });
+            fb.at(e);
+            if !in_then {
+                check(fb, x, i64::MIN, 9);
+            }
+            fb.emit(Inst::Ret { v: Some(x) });
+        });
+        count(&code, |i| matches!(i, Inst::Check { .. }))
+    };
+    assert_eq!(checks(true), 0);
+    assert_eq!(checks(false), 1);
+}
+
 /// A pointer written to slot 0, which a root map covers as an address, and read twice. Returns
 /// the stores left to the root slot (none when it is promoted). The register type of the stored value decides: a `Ptr` register is a root
 /// of the collector as the slot is, an integer one is not.

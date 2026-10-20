@@ -40,6 +40,7 @@ textual dump.
 
 ## Changes
 
+- Optimiser (#444): interval analysis, branch threading and dead-definition removal (`opt/range.rs`, `opt/live.rs`); unreachable blocks now end in a jump to the next block, which the predecoder of yavs-interp runs as no operation. No instruction changes.
 - `Inst::NewFrame` (#444): made only by the optimiser. An object `[descriptor][value]` (the
   operands of `NewFill`) in the frame's temporary memory, whose address is the result; the
   frame's temporary base moves over it, so its `Stmt` markers keep it and the caller's next

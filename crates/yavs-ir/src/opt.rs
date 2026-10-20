@@ -32,6 +32,9 @@
 //! `Elab` and `Thunk` run once per instance and are left alone. `YAVS_NO_IROPT=1` turns the
 //! pass off (differential testing).
 
+mod live;
+mod range;
+
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::OnceLock;
@@ -839,7 +842,23 @@ impl<'a> Opt<'a> {
             self.hide_inits(inited);
             self.pass();
         }
+        // The analysis wants the renames applied and the tables rebuilt.
+        self.dce();
+        self.reanalyse();
+        if let Some(inited) = &promoted {
+            self.hide_inits(inited);
+        }
+        if self.ranges() {
+            // Decided tests and dropped checks make more constants and fewer branches.
+            self.dce();
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
+            self.pass();
+        }
         self.kill_unreachable();
+        self.dead_defs();
         self.drop_statements();
         self.merge_consts();
         self.dce();
@@ -1209,6 +1228,19 @@ impl<'a> Opt<'a> {
                     self.code[pc] = dead();
                     self.changed = true;
                 }
+            }
+            // What is left of the block jumps to the block after it, which the interpreter
+            // runs through without a jump (`pre.rs`), so the live jumps over it vanish too.
+            if rg.end > rg.start
+                && b + 1 < self.blocks.len()
+                && !is_dead(&self.code[last])
+                && self.code[last].is_terminator()
+                && !matches!(self.code[last], Inst::Br { to } if to.0 as usize == b + 1)
+            {
+                self.code[last] = Inst::Br {
+                    to: BlockId(b as u32 + 1),
+                };
+                self.changed = true;
             }
         }
     }

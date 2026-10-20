@@ -2461,3 +2461,24 @@ user's performance priority:
 - **Not changed:** slots under a composite root, slots with an integer-typed access (the
   collector would not see the register), everything while a debugger runs.
 
+## Interval analysis, jump threading and dead register definitions (yavs-ir `opt/range.rs`, `opt/live.rs`, yavs-interp `pre.rs`, #444)
+
+- **What:** in a subprogram that cannot suspend, the optimiser finds an interval for every integer
+  register at every instruction (forward dataflow over the blocks, hull at joins, widening after
+  three visits, the compared registers narrowed on each edge of a branch on a comparison) and
+  uses it to drop a `Check` it proves, turn a `BinRange` that cannot leave its range or overflow
+  into a `Bin`, replace a `Cmp` it decides by a constant, fold a `CondBr` on a decided condition,
+  and send an edge to a block that is only a `CondBr` straight to the successor the interval picks.
+  A liveness pass then removes pure definitions of registers defined on several paths that no path
+  reads (never of a register defined once: a frame starts with the value of a register defined
+  once by a constant or an address, and merged constants rely on it). What is left of an
+  unreachable block jumps to the block after it, and the predecoder (`pre.rs`) runs a forward
+  `Br` to where execution goes on anyway as no operation.
+- **Why:** lowering checks every subtype conversion and incremented counter and selects on
+  `n = 0` for every concatenation, all decided by "a length is not negative, a checked counter
+  stays in range". Arithmetic overflow is a runtime error, so the continuing path only holds
+  results inside `i64`; that is what makes the intervals sound. Executed instructions of the
+  queue/scoreboard testbench fell by 13 percent.
+- **Not changed:** processes and anything that may suspend, functions over a size budget
+  (registers times blocks above 2^20), every check whose interval does not prove it.
+

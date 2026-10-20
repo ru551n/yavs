@@ -1,0 +1,1 @@
+Range checks, length tests and boolean merges that cannot fail or whose outcome is known from earlier tests are removed when a subprogram is first used, so string handling in testbenches runs faster; runtime errors and their texts are unchanged.

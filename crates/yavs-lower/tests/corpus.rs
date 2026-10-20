@@ -206,6 +206,7 @@ const PASS: &[&str] = &[
     "hierarchy/port_modes_conversion",
     "hierarchy/record_port_parts_nested",
     "hierarchy/record_port_parts_open",
+    "hierarchy/use_work_all",
     "ieee/fixed_pkg_ops",
     "ieee/fixed_pkg_ops_2019",
     "ieee/float_pkg_ops",

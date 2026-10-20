@@ -625,9 +625,12 @@ impl Db {
 
     /// The `DeclKind::Unit` of primary unit `key` in `lib`, loading it (for `use lib.all`).
     fn library_unit_decl(&mut self, lib: LibId, key: Symbol) -> Option<DeclId> {
-        let u = self
-            .load_unit(lib, crate::loader::UnitKey::Primary(key), None)
-            .ok()?;
+        let unit = crate::loader::UnitKey::Primary(key);
+        // Most names are no unit of the library: that is no error (10.4).
+        if !self.libs[lib].units.contains_key(&unit) && self.locate(lib, unit).is_none() {
+            return None;
+        }
+        let u = self.load_unit(lib, unit, None).ok()?;
         Some(self.units[u].decl)
     }
 

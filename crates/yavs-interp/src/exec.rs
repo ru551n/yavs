@@ -2805,10 +2805,15 @@ impl Machine {
                 c.read_into(sr, self.wr(self.r(dst), n)?)?;
             }
             Inst::SigReadScalar { dst, sig } => {
-                if self.is_multi(sig) {
-                    return Err(ice("scalar read of a reference of several parts"));
-                }
-                let (sr, ty) = self.sigref(sig)?;
+                // A table of one part (an association of one element) reads like a single range.
+                let (sr, ty) = if self.is_multi(sig) {
+                    match self.sigparts(sig)?.as_slice() {
+                        [(sr, ty, _)] => (*sr, *ty),
+                        _ => return Err(ice("scalar read of a reference of several parts")),
+                    }
+                } else {
+                    self.sigref(sig)?
+                };
                 let c = kc!();
                 let v = match ty.elem {
                     Elem::Bytes(es) if es <= 8 => {

@@ -1346,7 +1346,9 @@ impl Db {
             crate::types::Constraint::Array { elem, .. } => elem.clone(),
             _ => Box::new(crate::types::Constraint::None),
         };
-        let stat = self.exprs[p].stat.min(Staticness::Globally);
+        let stat = self.exprs[p]
+            .stat
+            .min(crate::expr::aggregate::range_stat(self, &range));
         let subtype = self.subtypes.push(crate::types::SubtypeDef {
             base: t,
             name: None,
@@ -1358,13 +1360,17 @@ impl Db {
             resolution: self.subtypes[pst].resolution.clone(),
             span,
         });
-        self.add_expr(Expr {
+        let id = self.add_expr(Expr {
             kind: ExprKind::Slice { prefix: p, range },
             subtype,
             span,
             stat,
             value: None,
-        })
+        });
+        if stat == Staticness::Locally {
+            self.fold_into(id);
+        }
+        id
     }
 
     /// The element subtype of an array subtype, with its element constraint applied.

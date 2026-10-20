@@ -90,7 +90,7 @@ impl StaticRange {
     }
 
     /// Offset of index value `v` from the left end.
-    fn offset(&self, v: i64) -> u64 {
+    pub(crate) fn offset(&self, v: i64) -> u64 {
         match self.dir {
             Direction::To => (i128::from(v) - i128::from(self.left)) as u64,
             Direction::Downto => (i128::from(self.left) - i128::from(v)) as u64,
@@ -459,7 +459,7 @@ fn choice_span(db: &Db, c: &Choice, fallback: Span) -> Span {
     }
 }
 
-fn range_stat(db: &Db, r: &RangeC) -> Staticness {
+pub(crate) fn range_stat(db: &Db, r: &RangeC) -> Staticness {
     match r {
         RangeC::Explicit { left, right, .. } => db.exprs[*left].stat.min(db.exprs[*right].stat),
         RangeC::Attr { .. } => {

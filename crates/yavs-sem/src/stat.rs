@@ -244,6 +244,47 @@ impl Db {
                     _ => Err(Fold::No),
                 }
             }
+            // 8.5: a slice of a folded array under a folded range of the prefix's direction.
+            ExprKind::Slice { prefix, range } => {
+                use crate::expr::aggregate::{StaticRange, array_const, elem_runs, range_value};
+                let Some(ConstValue::Array(a)) = operand(*prefix) else {
+                    return Err(Fold::No);
+                };
+                let [(l0, d0, r0)] = a.bounds[..] else {
+                    return Err(Fold::No);
+                };
+                let want = match range {
+                    crate::types::RangeC::Explicit { left, dir, right } => StaticRange::new(
+                        operand(*left).and_then(|v| v.as_int()).ok_or(Fold::No)?,
+                        *dir,
+                        operand(*right).and_then(|v| v.as_int()).ok_or(Fold::No)?,
+                    ),
+                    r => range_value(self, r).ok_or(Fold::No)?,
+                };
+                let have = StaticRange::new(l0, d0, r0);
+                let TypeKind::Array { elem, .. } = &self.types[self.base(e.subtype)].kind else {
+                    return Err(Fold::No);
+                };
+                if want.is_null() {
+                    return Ok(ConstValue::Array(array_const(self, self.base(*elem), vec![want], Vec::new())));
+                }
+                // Anything else is the run-time check's.
+                if want.dir != d0 || !have.contains(want.left) || !have.contains(want.right) {
+                    return Err(Fold::No);
+                }
+                let (mut skip, mut take) = (have.offset(want.left), want.len() as u64);
+                let mut runs = Vec::new();
+                for (n, v) in elem_runs(&a) {
+                    let drop = skip.min(n);
+                    skip -= drop;
+                    let k = (n - drop).min(take);
+                    if k > 0 {
+                        runs.push((k, v));
+                        take -= k;
+                    }
+                }
+                Ok(ConstValue::Array(array_const(self, self.base(*elem), vec![want], runs)))
+            }
             ExprKind::Conv { operand: inner, .. }
             | ExprKind::ImplicitConv { operand: inner }
             | ExprKind::Qualified { operand: inner, .. } => {

@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:case_slice_choice:_p0	high nibble
+diag	note	0	0	:case_slice_choice:_p0	low nibble
+diag	note	0	0	:case_slice_choice:_p0	other
+diag	note	0	0	:case_slice_choice:_p0	match

@@ -99,6 +99,7 @@ impl AutoTier {
         let halt = Arc::new(AtomicBool::new(false));
         let (table, stop) = (funcs.clone(), halt.clone());
         let sample = rt.sampler();
+        let native = rt.native_flags();
         let period = Duration::from_micros(if heat.eager() {
             1 << 20
         } else {
@@ -177,6 +178,7 @@ impl AutoTier {
                         match r {
                             Ok(entry) => {
                                 table[id.0 as usize].set(entry);
+                                native.set(id);
                                 note(id, Ok(t0.elapsed()));
                             }
                             Err(why) => note(id, Err(why)),

@@ -34,6 +34,7 @@ Spike for #481 item 1; measurements in `STATUS.md` "clift", decision in `docs/de
 | Registers stay in the frame's register array; a per-block cache of SSA values avoids reloads, and is dropped at every block start, join and callback | Callbacks and the interpreter read and write the array; no SSA promotion across blocks | `src/lower.rs` |
 | Slow paths (step the instruction in the interpreter) are emitted after the body and rejoin the fast path | Keeps the hot path straight; a stepped instruction may write any register | `src/lower.rs` |
 | Not lowered inline (stepped): calls, natives other than the `std_ulogic` tables and edges, `LayoutOf`, `Deref`, `New`, reports, `**`, signal operations other than the four that use `yavs_rt_signal` | Same list as the LLVM tier minus `LayoutOf` | `src/lower.rs` |
+| `AutoTier` calls `NativeFlags::set` (`Runtime::native_flags`) after publishing an entry | The interpreter's fast loop asks only those flags; without it translated code is never entered | `src/auto.rs`, `yavs-interp` |
 | Measurement knobs `YAVS_CLIFT_OPT` (`none`, `speed`), `YAVS_CLIFT_VERIFY` (`1` default), `YAVS_CLIFT_RA` | Spike measurement only | `src/lower.rs` |
 
 ## 4. Invariants and pitfalls

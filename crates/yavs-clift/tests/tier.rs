@@ -654,6 +654,76 @@ fn logic_elements_match_the_interpreter() {
     check(prog, f, &["LGet", "LSet"], &[0, 1, 5, 63, 64, 127, 128, -1]);
 }
 
+/// `LCopy` of `n` plane elements from offset `b` to offset `a` within ten blocks of temporary
+/// memory (overlapping) or from a constant into them, at every edge of a block and beyond
+/// the eight blocks compiled code copies itself: the same bytes (a weighted sum of all 32-bit
+/// words) or the same error text.
+#[test]
+fn logic_copies_match_the_interpreter() {
+    const LEN: usize = 320;
+    let pattern: Vec<u8> = (0..LEN)
+        .map(|i| (i as u32).wrapping_mul(2_654_435_761).to_le_bytes()[3])
+        .collect();
+    for n in [0, 1, 7, 63, 64, 65, 128, 190, 300, 449, 500] {
+        for from_const in [false, true] {
+            let mut pb = ProgramBuilder::new();
+            let k = pb.konst(ConstData::Bytes(pattern.clone()));
+            let f = pb.declare("f", FuncKind::Function, None);
+            let mut fb = pb.define(f);
+            let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+            let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb);
+            let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+            let (a, b) = (load(&mut fb, pa, Width::B8), load(&mut fb, pbr, Width::B8));
+            let c = fb.addr(AddrSpace::Const(k), 0);
+            let size = fb.int(LEN as i64);
+            let t = alloc(&mut fb, size);
+            fb.emit(Inst::Copy {
+                dst: t,
+                src: c,
+                bytes: size,
+            });
+            let n = fb.int(n);
+            fb.emit(Inst::LCopy {
+                dst: t,
+                dst_off: a,
+                src: if from_const { c } else { t },
+                src_off: b,
+                n,
+            });
+            let mut acc = fb.int(0);
+            for w in 0..LEN / 4 {
+                let at = fb.int(w as i64 * 4);
+                let p = index(&mut fb, t, at);
+                let v = load(&mut fb, p, Width::B4);
+                let m = fb.int(w as i64 + 1);
+                let (x, sum) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+                fb.emit(Inst::Bin {
+                    op: IntOp::Mul,
+                    dst: x,
+                    a: v,
+                    b: m,
+                });
+                fb.emit(Inst::Bin {
+                    op: IntOp::Add,
+                    dst: sum,
+                    a: acc,
+                    b: x,
+                });
+                acc = sum;
+            }
+            fb.emit(Inst::Ret { v: Some(acc) });
+            fb.finish();
+            check(
+                pb.finish().unwrap(),
+                f,
+                &["LCopy"],
+                &[0, 1, 5, 63, 64, 65, 127, 128, 200, 639, -1, 1 << 40],
+            );
+        }
+    }
+}
+
 /// The scalar `std_ulogic` natives compiled code looks up in a table give what the natives
 /// give for all nine codes of each operand, and the native's error beyond them.
 #[test]

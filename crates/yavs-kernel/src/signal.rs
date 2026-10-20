@@ -107,11 +107,14 @@ pub enum GuardKind {
 }
 
 /// Force mode (LRM 10.5.2.1): `force in` overrides the effective value, `force out` the
-/// driving value.
+/// driving value. `Default` (no mode written, the target found only at run time, an external
+/// name) is `Driving` for the formal of a port of mode out, inout or buffer and `Effective`
+/// otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ForceMode {
     Effective,
     Driving,
+    Default,
 }
 
 /// An override layer over a whole signal: elements whose mask bit is set take `value`.
@@ -280,6 +283,8 @@ pub(crate) struct Signal {
     pub guard: Option<GuardKind>,
     /// The resolution function touches shared state: the signal is never updated in parallel.
     pub serial_res: bool,
+    /// The formal of a port of mode out, inout or buffer (the default force mode is `out`).
+    pub out_port: bool,
     /// Indices into the kernel's composite groups covering this signal: resolved together
     /// with parts of other leaves.
     pub groups: Vec<u32>,
@@ -333,6 +338,7 @@ impl Signal {
             resolution,
             guard: None,
             serial_res: false,
+            out_port: false,
             groups: Vec::new(),
             disconnect: Time::ZERO,
             force_eff: None,

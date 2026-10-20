@@ -529,7 +529,7 @@ impl SimControl {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         cfg: Config,
-        signals: Vec<Signal>,
+        mut signals: Vec<Signal>,
         drivers: Vec<DriverInfo>,
         ports: Vec<PortEdge>,
         implicits: Vec<Implicit>,
@@ -562,6 +562,7 @@ impl SimControl {
             let i = i as u32;
             for &(f, _) in &p.formal {
                 independent[f.0 as usize] = false;
+                signals[f.0 as usize].out_port |= p.mode != PortMode::In;
                 let up = &mut ports_up[f.0 as usize];
                 if !p.slots.is_empty() && up.last() != Some(&i) {
                     up.push(i);
@@ -1805,6 +1806,7 @@ fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) -> Result<()
             let slot = match m {
                 ForceMode::Effective => &mut sig.force_eff,
                 ForceMode::Driving => &mut sig.force_drv,
+                ForceMode::Default => unreachable!("make_op resolves the default mode"),
             };
             let l = Signal::layer(slot, &sig.cur);
             fill_bits(&mut l.mask, off, n, true);
@@ -1814,6 +1816,7 @@ fn apply_op(sig: &mut Signal, op: &SignalOp, now: Time, cycle: u64) -> Result<()
             let slot = match m {
                 ForceMode::Effective => &mut sig.force_eff,
                 ForceMode::Driving => &mut sig.force_drv,
+                ForceMode::Default => unreachable!("make_op resolves the default mode"),
             };
             if let Some(l) = slot {
                 fill_bits(&mut l.mask, off, n, false);

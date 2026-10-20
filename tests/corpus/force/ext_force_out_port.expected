@@ -1,0 +1,4 @@
+exit	0
+diag	note	11000000	0	:ext_force_out_port:_p1	q='1' ev=101
+diag	note	12000000	0	:ext_force_out_port:_p1	qv=1111 ev=111
+diag	note	13000000	0	:ext_force_out_port:_p1	rel q='0' qv=0000 ev=211

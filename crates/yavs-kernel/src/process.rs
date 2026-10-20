@@ -624,6 +624,16 @@ pub(crate) fn make_op(
     value: Option<ValueRef<'_>>,
 ) -> Result<SignalOp, ErrorKind> {
     let (s, range) = check_ref(signals, r)?;
+    let by_port = |m: ForceMode| match m {
+        ForceMode::Default if s.out_port => ForceMode::Driving,
+        ForceMode::Default => ForceMode::Effective,
+        m => m,
+    };
+    let mode = match mode {
+        OpMode::Force(m) => OpMode::Force(by_port(m)),
+        OpMode::Release(m) => OpMode::Release(by_port(m)),
+        m => m,
+    };
     let value = match (mode, value) {
         (OpMode::Release(_), None) => None,
         (OpMode::Force(_) | OpMode::Deposit, Some(v)) => Some(

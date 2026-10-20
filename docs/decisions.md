@@ -2218,6 +2218,14 @@ user's performance priority:
   in signal order at any `--threads`. Composites resolved as a whole were already updated
   serially.
 
+## Default force mode of an external name (yavs-lower, yavs-kernel, #391, 2026-10-20)
+
+- `force`/`release` without a mode through an external name: the mode depends on the named
+  signal, which is known only at elaboration. Lowering emits `ForceKind::Default` and the
+  kernel takes `out` for the formal of a port of mode out, inout or buffer and `in` otherwise
+  (LRM 10.5.2.1, as for a port named directly). Without it the force was an `in` force of the
+  child's port and never reached the connected net. The four reference simulators agree.
+
 ## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
 
 - A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or

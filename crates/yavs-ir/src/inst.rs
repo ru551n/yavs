@@ -205,6 +205,9 @@ pub enum ForceKind {
     In,
     /// `force out`: the driving value.
     Out,
+    /// No mode written and the target an external name: `out` for the formal of a port of
+    /// mode out, inout or buffer, else `in`; the kernel decides.
+    Default,
 }
 
 /// Elaboration-only operations (yavs-elab defines their operands). The verifier rejects

@@ -4166,6 +4166,7 @@ fn force_mode(k: ForceKind) -> ForceMode {
     match k {
         ForceKind::In => ForceMode::Effective,
         ForceKind::Out => ForceMode::Driving,
+        ForceKind::Default => ForceMode::Default,
     }
 }
 

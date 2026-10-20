@@ -21,6 +21,14 @@ impl Fx<'_, '_> {
             Some(ForceMode::In) => ForceKind::In,
             Some(ForceMode::Out) => ForceKind::Out,
             None => {
+                // An external name: the kernel knows whether it names the formal of an out port.
+                if target
+                    .lsps
+                    .iter()
+                    .any(|l| matches!(l.root, ObjRoot::External(_)))
+                {
+                    return ForceKind::Default;
+                }
                 let out = target.lsps.iter().any(|l| match l.root {
                     ObjRoot::Decl(d) => matches!(
                         &self.db.decls[d].kind,

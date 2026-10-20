@@ -578,11 +578,11 @@ Stage 2, step 2 (#407): the package state after initialisation is cached (`init-
 restored instead of running the initialisers; an initialiser's reports are recorded and printed and counted again,
 file operations, environment and clock reads and foreign calls keep the state from being stored (reason with
 `YAVS_LOG=debug`). A restore of the 36 packages of a verification-component testbench takes 5 ms (3 MB image) against
-17 to 25 ms of initialisation. Release build, `--compare` of main (746a4dca) with this work, 7 runs, median CPU
-seconds, runs pinned to one performance core (`vunit_vc30` elaborate 1.79 / 1.48, total 3.58 / 3.32; the other
-benchmarks within noise: `osvvm_axistream` elaborate 0.06 / 0.05, `uvvm_axistream_vvc_tb` 0.07 / 0.06,
-`uvvm_util_rand_tb` and `elab_heavy` unchanged). One process of a short test, min of 25 interleaved runs, wall ms:
-`tb_axi_stream` 204 / 192, `tb_axi_lite_master` 113 / 98, UVVM AXI-stream elaboration 139 / 132, others within noise.
+17 to 25 ms of initialisation. Release build, `--compare` of main (4d0c9ae9) with this work, 7 runs, median CPU
+seconds, pinned to one performance core: `vunit_vc30` elaborate 1.82 / 1.45, total 3.05 / 2.63; `osvvm_axistream`
+total 0.69 / 0.68, `uvvm_axistream_vvc_tb` 0.47 / 0.44, `uvvm_util_rand_tb` and `elab_heavy` unchanged (their
+packages initialise in a few ms). One process of a short test, min of 25 interleaved runs, wall ms: `tb_axi_stream`
+163 / 151, `tb_axi_lite_master` 88 / 73, UVVM AXI-stream elaboration 92 / 89, OSVVM AXI-stream 573 / 555.
 Checks: difftest corpus (410) at 4 threads (which also runs 1), 4 shuffled, with every `run` executed twice so the second is warm,
 on the interpreter, `--tier=llvm` and `--tier=auto` and a `gc-stress` build (all pass; the one exception under the
 twice-run wrapper is `textio/file_append_2019`, which appends to a file); the external runner's 11 suites (1344 tests) pass; the `.pro` regression passes 314/314 under 2008

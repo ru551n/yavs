@@ -4608,7 +4608,23 @@ impl<'a> Fx<'a, '_> {
             }
             return Ok(v);
         }
+        if matches!(db.types[tt].kind, TypeKind::Record { .. }) {
+            return self.conv_record(to, operand, span);
+        }
         let v = self.scalar_expr(operand)?;
+        Ok(V::S(self.conv_scalar(v, from, to, span)?))
+    }
+
+    /// Scalar `v` of subtype `from` converted to subtype `to` (LRM 9.3.6).
+    pub(crate) fn conv_scalar(
+        &mut self,
+        v: Reg,
+        from: SubtypeId,
+        to: SubtypeId,
+        span: Span,
+    ) -> R<Reg> {
+        let db = self.db;
+        let (ft, tt) = (db.base(from), db.base(to));
         let name = ty::subtype_name(db, to);
         let r = match (ty::is_real(db, ft), ty::is_real(db, tt)) {
             (true, false) => {
@@ -4637,7 +4653,7 @@ impl<'a> Fx<'a, '_> {
                 v
             }
         };
-        Ok(V::S(r))
+        Ok(r)
     }
 
     fn conditional(

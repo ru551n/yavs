@@ -1831,6 +1831,20 @@ impl Fx<'_, '_> {
             }
             evs.push(fv);
         }
+        self.record_value(t, tid, evs, st, span)
+    }
+
+    /// A record of type `t` from the value of each field, in field order (the context
+    /// subtype `st` gives the descriptor, else the field values do).
+    pub(crate) fn record_value(
+        &mut self,
+        t: TypeId,
+        tid: TyId,
+        evs: Vec<V>,
+        st: SubtypeId,
+        span: Span,
+    ) -> R<V> {
+        let db = self.db;
         let Some(Ty::Record { fields }) = self.fb.program().types().get(tid).cloned() else {
             return Err(self.cx.ice(span, "record aggregate of a non-record"));
         };
@@ -1872,6 +1886,62 @@ impl Fx<'_, '_> {
             self.store_at(f.ty, a, v, span)?;
         }
         Ok(V::A(data, desc))
+    }
+
+    /// Conversion between record types with the same element names (2019 9.3.6, LCS-2016-075):
+    /// each element is converted like a conversion to its type.
+    pub(crate) fn conv_record(&mut self, to: SubtypeId, operand: ExprId, span: Span) -> R<V> {
+        let from = self.db.exprs[operand].subtype;
+        let v = self.expr(operand)?;
+        self.conv_record_val(v, from, to, span)
+    }
+
+    fn conv_record_val(&mut self, v: V, from: SubtypeId, to: SubtypeId, span: Span) -> R<V> {
+        let db = self.db;
+        let (ft, tt) = (db.base(from), db.base(to));
+        let (fid, tid) = (self.ty(ft, span)?, self.ty(tt, span)?);
+        let (sdata, sdesc) = self.arr(v, span)?;
+        let (TypeKind::Record { elems: fe }, TypeKind::Record { elems: te }) =
+            (&db.types[ft].kind, &db.types[tt].kind)
+        else {
+            return Err(self.cx.ice(span, "record conversion of a non-record"));
+        };
+        let mut evs = Vec::with_capacity(te.len());
+        for t in te.iter() {
+            let Some(m) = fe.iter().position(|f| f.name.key == t.name.key) else {
+                return Err(self
+                    .cx
+                    .ice(span, "record conversion without a matching element"));
+            };
+            let (a, d) = self.field_addr(fid, sdata, sdesc, m as u32, span)?;
+            let fv = self.value_at(fe[m].subtype, a, d, span)?;
+            evs.push(self.conv_value(fv, fe[m].subtype, t.subtype, span)?);
+        }
+        self.record_value(tt, tid, evs, to, span)
+    }
+
+    /// Value `v` of subtype `from` converted to subtype `to` (an element of a converted record).
+    fn conv_value(&mut self, v: V, from: SubtypeId, to: SubtypeId, span: Span) -> R<V> {
+        let db = self.db;
+        let (ft, tt) = (db.base(from), db.base(to));
+        if ft == tt {
+            if let V::S(r) = v {
+                self.check_scalar(r, Some(from), to, "", span)?;
+            }
+            return Ok(v);
+        }
+        match (&db.types[ft].kind, &db.types[tt].kind) {
+            (TypeKind::Record { .. }, TypeKind::Record { .. }) => {
+                self.conv_record_val(v, from, to, span)
+            }
+            _ => match v {
+                V::S(r) => Ok(V::S(self.conv_scalar(r, from, to, span)?)),
+                V::A(..) => Err(self.cx.unsupported(
+                    span,
+                    "a record conversion with an array element of another type",
+                )),
+            },
+        }
     }
 
     // ---- constants ----

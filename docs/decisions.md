@@ -193,71 +193,82 @@ milestone users care about works.
 
 ## LLVM tier: side exits to the interpreter (yavs-llvm, yavs-interp)
 
-- **Shape:** one LLVM function per IR function, `fn(env, regs, pc) -> u32`, running on the
+- **Shape:** one LLVM function per IR function, `fn(env, regs, mem, pc) -> u32`, running on the
   registers of the interpreter's own frame. It enters at `pc` (block starts and the instruction
-  after each exit), executes register arithmetic, compares, checks, address arithmetic and
-  branches itself, executes any other instruction that always continues with the next one
-  through the `yavs_rt_step` callback (the interpreter's `step`), and returns the index of the
-  instruction the interpreter executes next: calls, returns, waits, reports, natives, and the
-  slow or error path of an inline instruction. `yavs_interp::Tier` is the seam; the interpreter
-  calls it from its fast loop only, so a debugger keeps a process interpreted.
-- **Why:** rule 5 by construction. An error path re-executes the instruction in the
-  interpreter, so every message is the interpreter's; frames, the heap, temporaries and traces
-  stay one implementation, and calls between compiled and interpreted functions need nothing
-  special. Instructions move from the callback to native code one kind at a time, each checked
-  against the interpreter (`crates/yavs-llvm/tests/tier.rs`, the difftest `yavs-llvm`
-  candidate). This replaces the frame-only entry `fn(frame, inst, rt, resume)` of ir.md 5 for
-  now; the suspension invariant still allows that form later.
-- **Memory (#334, #335):** `Tier::run` gets a `TierFrame` (the top frame's registers and slots,
-  the temporary area, the instance data), taken out of the machine for the run and put back
-  around every step, and a `TierHost` (`step`, and `object`: the interpreter's own lookup of the
-  object an address points into). Compiled code loads, stores, copies, allocates temporaries,
-  resets them at `Stmt`, reads descriptors (`DopeLen`, `Pos`, `SubtypeCheck`, `Field`), writes
-  them (`MakeDope`), builds layouts whose element layout is static (`LayoutOf`) and reads and
-  writes logic elements (`LGet`, `LSet`) itself when the bytes lie in the frame, the temporary
-  area, the instance data or an object `object` returned (a small cache, emptied at every step;
-  constants stay); every other address, every bounds failure and every error steps the whole
-  instruction in the interpreter, so messages stay identical. Frame addresses the generator can
-  see within a block are checked against the slot length only.
+  after each call or suspension), executes register arithmetic, compares, checks, address and
+  signal-reference arithmetic, memory accesses and branches itself, and executes every other
+  instruction in place through the `yavs_rt_step` callback (`TierHost::step`, the interpreter's
+  `step`): calls, natives, foreign calls, reports, signal operations, waits and the slow paths.
+  It returns only at `Ret`, at `Suspend` and at an inline instruction that fails (the
+  interpreter executes those). `yavs_interp::Tier` is the seam; the interpreter calls it from
+  its fast loop only, so a debugger keeps a process interpreted.
+- **Self-contained (user decision, 2026-10-20; #336, #337):** compiled code no longer returns to
+  the interpreter at calls, natives, reports, signal reads and waits. A call the callback
+  executes pushes the callee's frame with the interpreter's own code (`call_regs`, `push_frame`:
+  static link, depth limit, temporary base, register prefill, arguments); when the callee has
+  compiled code (the per-function slot table, `Tier::run`'s lookup) the callback runs it
+  directly on that frame, and when it returns the callback pops the frame and writes the result
+  (`TierHost::ret`, as `exec_fast` returns) and the caller goes on. Anything else (a callee
+  without compiled code, a callee that stops elsewhere, a register stack that moved, more than
+  256 KiB of native stack in nested calls) leaves the frames to the interpreter: compiled code
+  returns `TIER_UNWIND` through every compiled caller, every frame's pc is the instruction it is
+  at, and the interpreter goes on with the top frame (stepping up to the next op when the pc lies
+  inside a fused op). A stepped instruction that suspends the process returns `TIER_SUSPEND`.
+  Why: the frames stay one implementation and are always materialised, so traces, root maps
+  (#422), debugging and errors are unchanged, while a call between compiled functions costs one
+  callback instead of two exits and two entries. The frame push itself stays the interpreter's:
+  compiled code writing the machine's `Frame` vector would duplicate `push_frame` in LLVM IR.
+- **Memory (#334, #335):** `Tier::run` gets a `TierFrame`, a `#[repr(C)]` view of the top frame
+  (pointers to its registers and slots, the temporary area with its length and capacity, the
+  instance data, the frames one and two static links up, the number of instance signals): the
+  machine keeps its stacks and refreshes the view after every step and return (#336 measured
+  the swap of the old owned vectors as the largest share of a call). Compiled code keeps the
+  temporary area's length in the view and hands it back (`TierHost::temp`) before a step and at
+  the end. It loads, stores, copies, allocates temporaries, resets them at `Stmt` (stepped while
+  temporaries are recorded for the GC, #422), reads descriptors (`DopeLen`, `Pos`,
+  `SubtypeCheck`, `Field`), writes them (`MakeDope`), builds layouts whose element layout is
+  static (`LayoutOf`), reads and writes logic elements (`LGet`, `LSet`), takes addresses one
+  and two static links up and builds signal references (`SigVal`) itself when the bytes lie in
+  the frame, the temporary area, the instance data or an object `TierHost::object` returned (a
+  small cache, emptied at every step that may free or resize an object and before a compiled
+  callee runs; constants stay); every other address, every bounds failure and every error steps
+  the whole instruction in the interpreter, so messages stay identical. A frame access the
+  generator can prove within the function's frame size has no check at all.
   Why: the interpreter keeps the one implementation of address spaces, heaps and errors; the
   common accesses cost a compare instead of a callback. Decided by the M6 agent, 2026-10-19.
 - **Tiers:** `yavs run --tier=llvm` compiles every non-elaboration function at O2 before time 0;
   `--tier=auto` compiles hot functions on a background thread (below). Both compiling tiers
   leave functions over `--tier-max-size` (default 50000 IR instructions) interpreted (user,
   2026-10-19, #126).
-- **Tier-up (`--tier=auto`, #125):** the interpreter estimates per function what compiled code
-  would save (`Runtime::set_heat`): its predecoded loop (#431) adds the ops it runs between jumps
-  and takes 12 off at every op compiled code would leave to the interpreter (call, return,
-  native, signal read, wait, generic step), since leaving and re-entering compiled code costs
-  about 15 ns. The run keeps this in a local and writes the shared counter only when it may cross
-  the threshold or the run ends (counting costs 2% to 9% of CPU when nothing compiles). At
-  `Heat::DEFAULT` (1M plus 20k per IR instruction of the function, about its O0 compile time of
-  2 ms plus 40 us per IR instruction in interpreted ops) it calls `Tier::hot` once, which queues
-  the function for ONE background compile thread (single-threaded LLVM, one module per function,
-  O0, the JIT made with the first hot function). Other pass pipelines do not pay: O1 codegen
-  costs 10x O0, and IR passes before O0 codegen (instcombine, early CSE, CFG simplification)
-  shrink neither the compile time nor the machine code. The thread publishes the entry through a
-  per-function `OnceLock` (the slot later direct calls can load, #336). The predecoded loop asks
-  the tier (`Tier::ready`) on entry and at every jump of a function that reached its threshold;
-  with compiled code it runs that from the op's IR pc and goes on at the op of the IR pc it
-  returns (`Code::entry`; inside a fused op it steps the IR instructions up to the next op), and
-  enters again after every op compiled code left to it. The simulation never waits for
-  compilation, and output does not depend on when it finishes (rule 5). At the end of the run the
-  queue is dropped and the files the design left open are closed (`Runtime::close_files`); if a
-  function is still being compiled, the CLI flushes the standard streams and ends the process at
-  once without exit handlers (`exit_now`): LLVM's static destructors must not run under the
-  compile thread, and waiting would cost up to one compilation. With `--load` or `--vhpi`
-  libraries the end of the run waits for the compilation instead, so their exit handlers run.
-  The counters are racy on purpose (a lost update delays tier-up; the thread ignores a function
-  it has seen). `--tier-heat=BASE,PER_INSTR,COOL` (hidden, for tests and tuning) sets the threshold.
-  The M6 agent, 2026-10-20.
-- **Default:** `--tier=interp`, also in a yavs built with the `llvm` feature. With the old
-  dispatch loop `--tier=auto` was at most 1.01x and down to 0.89x the interpreter's CPU on the
-  shared benchmarks, but the predecoded interpreter (#431) outruns compiled code wherever it
-  leaves to the interpreter often (`compute_loop`: 0.18 s interpreted, 0.24 s all compiled at
-  O2): `--tier=auto` is 1.02x to 1.34x on most benchmarks and 0.93x to 0.95x on two (geometric
-  mean 1.045, STATUS.md "llvm"). It becomes the default again only when measured never slower,
-  after #336, #337 and #432. The M6 agent, 2026-10-20, under the rule the user set for #125.
+- **Tier-up (`--tier=auto`, #125, #432):** the compile thread samples, every millisecond, which
+  function each simulation thread interprets (one relaxed store per function the fast loop
+  enters into a per-thread slot, `Runtime::sampler`) and compiles a function once it was seen
+  for its `Heat` (2 ms plus 40 us per IR instruction, about twice its O0 compile time). Time in
+  compiled code entered from an interpreted function counts for that caller, which compiled
+  would call it in place. ONE background compile thread (single-threaded LLVM, one module per
+  function, O0, the JIT made with the first hot function); the entry is published through a
+  per-function `OnceLock`, which the interpreter asks for on entry and every 256 jumps while a
+  function has none. Why sampling: the per-op counting it replaces cost 12% to 25% of CPU on
+  the call-heavy benchmarks when nothing compiled (it was in every jump, call and return of the
+  predecoded loop); a sample costs the compile thread microseconds. O0 stays: O2 codegen costs
+  about 7x (75 ms for a 188-instruction process at O2, 9 ms at O0), and IR passes before O0
+  codegen gain little. The simulation never waits for compilation, and output does not depend
+  on when it finishes (rule 5). At the end of the run the queue is dropped and the files the
+  design left open are closed (`Runtime::close_files`); if a function is still being compiled,
+  the CLI flushes the standard streams and ends the process at once without exit handlers
+  (`exit_now`): LLVM's static destructors must not run under the compile thread, and waiting
+  would cost up to one compilation. With `--load` or `--vhpi` libraries the end of the run waits
+  for the compilation instead, so their exit handlers run. `--tier-heat=BASE,PER_INSTR,PERIOD`
+  (hidden, for tests and tuning): microseconds, nanoseconds per IR instruction, sampling period
+  in microseconds; PERIOD 0 compiles every function the interpreter enters. The LLVM agent,
+  2026-10-20.
+- **Default:** `--tier=interp`, also in a yavs built with the `llvm` feature. After #336, #337
+  and the sampling tier-up, `--tier=auto` is 0.77x to 1.36x the interpreter's CPU on the shared
+  benchmarks (geometric mean 1.016, STATUS.md "llvm"): it wins on compute and verification
+  component code (`uvvm_axistream_vvc_tb` 0.77x, `compute_loop` 0.82x) and loses where compiled
+  code steps often or only compile time is added (`vai_window_gen` 1.36x, `ff_rtl` 1.10x, the
+  RTL designs of many short process activations). It becomes the default only when measured
+  never slower (the rule the user set for #125). The LLVM agent, 2026-10-20.
 - Decided by the M6 agent, 2026-10-19; **accepted by the user (user, 2026-10-19)**: compiled
   code runs native operations and hands slow or erroring instructions back to the interpreter.
 

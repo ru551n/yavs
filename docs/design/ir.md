@@ -642,15 +642,18 @@ What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
 
 **As implemented (M6, `docs/decisions.md` "LLVM tier: side exits to the interpreter", accepted
 by the user, 2026-10-19):**
-compiled code runs on the interpreter frame's registers, slots and temporary area (`TierFrame`)
-and returns to the interpreter at every call, return, wait, report and slow path; memory
-instructions reach other objects through the interpreter's own lookup (`TierHost::object`);
-other instructions it does not lower go through a `yavs_rt_step` callback. `--tier=llvm` compiles everything before time 0. `--tier=auto` (#125) is the tier-up protocol
-above with these differences: the counter estimates what compiled code would save (instructions
-interpreted, less a share for each instruction that would leave compiled code), the side table is a
-per-function `OnceLock` in the tier, and the swap happens at the next jump, call or return rather
-than only at entries and resumptions (safe because both tiers share the frame and compiled code
-enters at any pc). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
+compiled code runs on the interpreter frame's registers, slots and temporary area (`TierFrame`,
+a view of the machine's stacks) and executes the instructions it does not lower in place through
+a `yavs_rt_step` callback, calls and natives included: a callee with compiled code runs directly
+on the frame the interpreter pushed (#336). It returns to the interpreter at returns,
+suspensions, failing inline instructions and calls of functions without compiled code
+(`TIER_UNWIND`: the frames are the interpreter's from there); memory instructions reach other
+objects through the interpreter's own lookup (`TierHost::object`). `--tier=llvm` compiles
+everything before time 0. `--tier=auto` (#125) is the tier-up protocol above with these
+differences: hotness is the interpreted time the compile thread samples per function (#432), the
+side table is a per-function `OnceLock` in the tier, and the swap happens at the next call,
+return or (every 256) jumps rather than only at entries and resumptions (safe because both tiers
+share the frame and compiled code enters at any pc). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
 (user, 2026-10-19, #126).
 
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group
@@ -715,7 +718,7 @@ range, division by zero and the delta limit.
 | Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
 | Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
 | Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `yavs-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
-| Q6 | Tier-up threshold | About the compile time in interpreted ops: 1M plus 20k per IR instruction of the function, each op compiled code would leave counting -12 (`--tier=auto`, #125; hidden `--tier-heat` for tests). |
+| Q6 | Tier-up threshold | Sampled interpreted time of about twice the O0 compile time: 2 ms plus 40 us per IR instruction of the function, one sample a millisecond (`--tier=auto`, #125, #432; hidden `--tier-heat` for tests). |
 | Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |
 
 ## 9. Implementation notes and deviations (yavs-ir, yavs-interp)

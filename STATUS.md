@@ -1276,25 +1276,84 @@ still leaves compiled code on that testbench, per 10 us: 0.9 M entries into comp
 call or return (#336), 1.5 M stepped instructions (`LCopy`, `LayoutOf` of records and nested
 arrays, `Deref`, `New`, `SigSlice`, `CopyConst`, signal reads), 1.5 M object lookups.
 
-Tier-up (`--tier=auto`, #125; `docs/decisions.md`
-"LLVM tier: side exits"): the interpreter keeps a tier-up count per function while a compiled tier
-is set: the predecoded loop adds the ops it runs between jumps, and every op compiled code
-would leave to the interpreter (call, return, native, signal read, wait, generic step) takes 12
-off, kept in a local and written to the shared counter only when it may cross the threshold or
-the run ends. At 1M plus 20k per IR instruction of the function (about its O0 compile time in interpreted
-instructions; the hidden `--tier-heat=BASE,PER_INSTR,COOL` sets it) the function is queued for one
-background compile thread (O0, one module per function, the JIT made with the first hot function)
-and swapped in at the next jump, call or return; the run never waits for compilation. Functions
-over `--tier-max-size` (default 50000 IR instructions, user, 2026-10-19, #126) stay interpreted
-in both compiling tiers. Compiled code enters at the IR pc of the op where the interpreter is and
-returns the IR pc it goes on at, mapped back to an op (`Code::entry`; inside a fused op the
-interpreter steps IR instructions up to the next op). Output is byte-identical to the
-interpreter: difftest `--candidate yavs-auto --threads 4` 361/361 (1 and 4 threads), and with
-every function compiled from its first call or jump (`--tier-heat=1,0,0`) 361/361 at 1 and 4
-threads, at 4 threads shuffled (seeds 7 and
-3, the latter at `--tier-heat=300,2,12`); `native_matches_bodies_2008` (debug build) takes 45 s with
-`YAVS_IEEE_TIER=auto` against 43 s interpreted, and 169 s with `llvm` (it did not finish in 25
-minutes before the size cap).
+Tier-up (`--tier=auto`, #125, #432; `docs/decisions.md` "LLVM tier: side exits"): the compile
+thread samples every millisecond which function each simulation thread interprets (the fast loop
+stores it in a per-thread slot when it enters a function without compiled code; time in compiled
+code entered from interpreted code counts for the caller) and compiles a function once it was
+seen for 2 ms plus 40 us per IR instruction (about twice its O0 compile time; the hidden
+`--tier-heat=BASE,PER_INSTR,PERIOD` sets it, PERIOD 0 compiles every function the interpreter
+enters). One background compile thread (O0, one module per function, the JIT made with the first
+hot function); the interpreter swaps compiled code in on entry and within 256 jumps; the run never
+waits for compilation. Functions over `--tier-max-size` (default 50000 IR instructions, user,
+2026-10-19, #126) stay interpreted in both compiling tiers. The per-op counting this replaces
+cost 12% to 25% of CPU on `calls` and `compute_loop` with nothing compiled.
+
+Self-contained compiled code (#336, #337, user decision 2026-10-20): compiled code runs every
+instruction it does not lower in place through `yavs_rt_step` (calls, natives, foreign calls,
+reports, signal operations, waits) instead of returning to the interpreter; a call whose callee
+has compiled code runs it directly on the frame the interpreter pushed and pops it on return
+(`TierHost::ret`). It returns only at returns, suspensions, failing inline instructions and
+frames it cannot finish (a callee without compiled code, more than 256 KiB of nested native
+stack: `TIER_UNWIND`). `TierFrame` is a view of the machine's stacks, refreshed after steps,
+instead of owned vectors swapped out and in at every step. Also inline now: `AddrOf` one and two
+static links up, `SigVal`, frame accesses without a check where they lie within the frame size,
+known constants as immediates, one exit block per function; the address lookup of other memory
+is a Rust function (`yavs_rt_host`) instead of two generated functions per module. Output is
+byte-identical: difftest 385/385 for `--candidate yavs-llvm` and `yavs-auto` with every function
+compiled from its first entry (`--tier-heat=1,0,0`) at 1 and 4 threads; before the last rebase
+362/362 for `yavs-auto` at the default heat, eager and shuffled (seed 7) and at a 20 us sampling
+period shuffled (seed 3); a `gc-stress` build passes `yavs-llvm` and eager `yavs-auto` except
+the two `synopsys/` tests that exceed the harness timeout under it.
+
+Compile cost at O0 after these changes (release, `uvvm_util_rand_tb` with every function
+compiled, 60 functions): about 20 us per IR instruction and well under 1 ms for small functions
+(13 functions of about 30 IR instructions: 0.4 ms each; about 380: 6.8 ms; about 1440: 29 ms),
+down from 2 ms plus 40 us. O2 costs about 7x O0 (a 188-instruction process: 73 ms against 9 ms),
+O2 IR passes before O0 codegen gain little at run time, so O0 stays.
+
+Measurements (2026-10-20, release build with the `llvm` feature, `--threads 1`, shared 24-core
+host, `tools/bench/run.py --compare` of one binary with `--tier=interp` (A) and `--tier=auto` (B),
+median of 3 runs, total CPU seconds, compile thread included):
+
+| Benchmark | interp | auto | auto / interp | peak RSS MiB interp / auto |
+|---|---:|---:|---:|---:|
+| `compute_loop` | 0.18 | 0.15 | 0.82 | 59 / 69 |
+| `ff_rtl` | 0.04 | 0.04 | 1.10 | 61 / 69 |
+| `resolved_bus` | 0.26 | 0.27 | 1.04 | 60 / 70 |
+| `delta_chain` | 0.16 | 0.17 | 1.05 | 59 / 69 |
+| `textio_heavy` | 0.33 | 0.35 | 1.07 | 59 / 70 |
+| `protected_scoreboard` | 0.12 | 0.13 | 1.06 | 59 / 69 |
+| `calls` | 0.17 | 0.18 | 1.07 | 59 / 69 |
+| `strings_heavy` | 0.28 | 0.25 | 0.89 | 60 / 73 |
+| `access_heavy` | 0.14 | 0.13 | 0.93 | 59 / 71 |
+| `report_heavy` | 0.27 | 0.26 | 0.95 | 59 / 71 |
+| `file_io` | 0.25 | 0.26 | 1.05 | 59 / 69 |
+| `elab_heavy` | 0.36 | 0.38 | 1.05 | 213 / 213 |
+| `vunit_vc30` (30 runs) | 3.76 | 3.78 | 1.00 | 116 / 116 |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 2.69 | 2.07 | 0.77 | 140 / 165 |
+| `uvvm_util_rand_tb` | 2.93 | 2.98 | 1.02 | 93 / 117 |
+| `osvvm_axistream` | 1.15 | 1.25 | 1.09 | 98 / 113 |
+| `vai_pe_array` | 0.16 | 0.18 | 1.11 | 95 / 95 |
+| `vai_window_gen` | 0.84 | 1.14 | 1.36 | 96 / 111 |
+| geometric mean | | | 1.016 | |
+
+The kernel RTL designs (median simulate CPU of 3 interleaved runs, interp / auto): `ff` 5.53 /
+5.98 s (1.08), `lfsr` 4.61 / 2.98 s (0.65), `chain` 1.40 / 1.56 s (1.11), `fan` 4.60 / 5.45 s
+(1.18). Simulate phase with everything compiled at O2 before time 0 (`--tier=llvm`, compile time
+excluded) against the interpreter: `compute_loop` 0.11 / 0.19 s, `strings_heavy` 0.16 / 0.29 s,
+`access_heavy` 0.09 / 0.15 s, `uvvm_util_rand_tb` 2.08 / 3.52 s, `calls` 0.18 / 0.18 s. The
+interpreter alone (`--tier=interp`) is unchanged by this work (geometric mean 0.97 of the same
+binary before and after, within noise).
+
+Where `--tier=auto` still loses: compiled code at O0 runs a lowered instruction little faster than
+the predecoded interpreter, and an instruction it steps costs the callback (about the cost of an
+interpreted step plus a few ns); short process activations pay the entry into compiled code each
+time (the RTL designs with thousands of one-statement processes), and in `vai_window_gen` the
+sampled functions run no faster compiled while their compilation adds CPU. Next: an O2 recompile
+of the hottest functions, inline signal reads and edges (#339), `Deref` (#340), and natives
+without the generic step (#337).
+
+The measurements before this work, for reference:
 
 Compile cost at O0 (release, per function, compile thread): about 2 ms plus 40 us per IR
 instruction, nearly all of it codegen (37 IR instructions 3.6 ms, 1323 61 ms, 4169 243 ms, 20755

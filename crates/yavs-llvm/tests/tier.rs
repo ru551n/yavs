@@ -165,11 +165,11 @@ fn loop_runs_compiled() {
     assert_eq!(n, 1);
 }
 
-/// A threshold the loops of these tests pass early.
+/// A threshold the loops of these tests pass early: seen in one sample of the interpreter.
 const HOT: Heat = Heat {
-    base: 100,
-    per_instr: 10,
-    cool: 0,
+    base: 1,
+    per_instr: 0,
+    period: 100,
 };
 
 /// `--tier=auto`: the loop becomes hot while it runs in the interpreter, is compiled on the
@@ -183,12 +183,11 @@ fn auto_tier_compiles_hot_functions() {
     let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
     let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
-    // 100k iterations, far over the threshold: compilation starts during the first call.
-    assert_eq!(call().unwrap(), Some(5_000_050_000));
+    // The loop runs until the sampler has seen it and its code is compiled.
     let t0 = Instant::now();
     while tier.compiled() == 0 {
         assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
-        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(call().unwrap(), Some(5_000_050_000));
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
     tier.stop(true);
@@ -206,12 +205,11 @@ fn auto_tier_skips_functions_over_the_size_cap() {
     let seen = notes.clone();
     let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
     let tier = AutoTier::start(&rt, OptLevel::O2, 3, HOT, note).unwrap();
-    let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
-    assert_eq!(r.unwrap(), Some(5_000_050_000));
     let t0 = Instant::now();
     while notes.lock().unwrap().is_empty() {
         assert!(t0.elapsed() < Duration::from_secs(60), "no note");
-        std::thread::sleep(Duration::from_millis(5));
+        let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+        assert_eq!(r.unwrap(), Some(5_000_050_000));
     }
     tier.stop(true);
     assert_eq!(tier.compiled(), 0);
@@ -680,4 +678,231 @@ fn precise_roots_under_compiled_code() {
     let e = r.unwrap_err();
     assert!(e.to_string().contains("deallocated"), "{e}");
     assert!(slots < 200, "{slots} slots");
+}
+
+/// `inc(a) = a + 1` (range checked up to 1_000_000), `run(n)` calling it `n` times in a loop,
+/// and `depth(n) = if n = 0 then 0 else depth(n - 1) + 1`.
+fn calls() -> (Program, FuncId, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let msg = pb.check_msg("result", Dir::To);
+    let inc = pb.declare("inc", FuncKind::Function, None);
+    let run = pb.declare("run", FuncKind::Function, None);
+    let depth = pb.declare("depth", FuncKind::Function, None);
+    let arg = |fb: &mut FuncBuilder<'_>| {
+        let s = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(fb);
+        let p = fb.addr(AddrSpace::Frame, s);
+        load(fb, p, Width::B8)
+    };
+    {
+        let mut fb = pb.define(inc);
+        let a = arg(&mut fb);
+        let (one, lo, hi) = (fb.int(1), fb.int(0), fb.int(1_000_000));
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::BinRange {
+            op: IntOp::Add,
+            dst,
+            a,
+            b: one,
+            lo,
+            hi,
+            what: msg,
+        });
+        fb.emit(Inst::Ret { v: Some(dst) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(run);
+        let n = arg(&mut fb);
+        let (head, body, done) = (fb.block(), fb.block(), fb.block());
+        let (i, acc, one) = (fb.int(0), fb.int(0), fb.int(1));
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: i,
+            b: n,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        stmt(&mut fb);
+        let args = fb.regs(&[acc]);
+        fb.emit(Inst::Call {
+            func: inc,
+            args,
+            dst: Some(acc),
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: i,
+            a: i,
+            b: one,
+        });
+        fb.emit(Inst::Br { to: head });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(acc) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(depth);
+        let n = arg(&mut fb);
+        let (base, rec) = (fb.block(), fb.block());
+        let (zero, one) = (fb.int(0), fb.int(1));
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: n,
+            b: zero,
+        });
+        fb.emit(Inst::CondBr { c, t: base, f: rec });
+        fb.at(base);
+        fb.emit(Inst::Ret { v: Some(zero) });
+        fb.at(rec);
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Sub,
+            dst: m,
+            a: n,
+            b: one,
+        });
+        let args = fb.regs(&[m]);
+        let d = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: depth,
+            args,
+            dst: Some(d),
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: d,
+            a: d,
+            b: one,
+        });
+        fb.emit(Inst::Ret { v: Some(d) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), run, depth)
+}
+
+/// `boxed(a)` returns the address of a temporary holding `a + 1`; `sum(n)` adds the values of
+/// `n` such calls, one statement each (the caller's temporaries end before every call).
+fn temp_calls() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let boxed = pb.declare("boxed", FuncKind::Function, None);
+    let run = pb.declare("sum", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(boxed);
+        let s = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let p = fb.addr(AddrSpace::Frame, s);
+        let a = load(&mut fb, p, Width::B8);
+        let one = fb.int(1);
+        let v = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: v,
+            a,
+            b: one,
+        });
+        let n = fb.int(8);
+        let t = alloc(&mut fb, n);
+        fb.emit(Inst::Store {
+            addr: t,
+            src: v,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: Some(t) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(run);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let p = fb.addr(AddrSpace::Frame, s);
+        let n = load(&mut fb, p, Width::B8);
+        let (head, body, done) = (fb.block(), fb.block(), fb.block());
+        let (i, acc, one) = (fb.int(0), fb.int(0), fb.int(1));
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: i,
+            b: n,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        stmt(&mut fb);
+        let args = fb.regs(&[i]);
+        let t = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Call {
+            func: boxed,
+            args,
+            dst: Some(t),
+        });
+        let v = load(&mut fb, t, Width::B8);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: acc,
+            a: acc,
+            b: v,
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: i,
+            a: i,
+            b: one,
+        });
+        fb.emit(Inst::Br { to: head });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(acc) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), run)
+}
+
+/// A compiled callee returns a temporary of its own to a compiled caller whose statements
+/// end their temporaries in compiled code: the interpreter sees the length compiled code left.
+#[test]
+fn temporaries_across_compiled_calls() {
+    let (prog, run) = temp_calls();
+    let p = Both::new(prog);
+    let (a, b, _) = p.both(run, &[1000]);
+    assert_eq!(a, Ok(500_500));
+    assert_eq!(a, b);
+}
+
+/// Compiled code calls compiled code without returning to the interpreter (#336); an error in
+/// the callee, a recursion deeper than the native stack allowance and the results are the
+/// interpreter's.
+#[test]
+fn calls_between_compiled_functions() {
+    let (prog, run, depth) = calls();
+    let p = Both::new(prog);
+    let (a, b, n) = p.both(run, &[100_000]);
+    assert_eq!(a, Ok(100_000));
+    assert_eq!(a, b);
+    // The loop and the calls of `inc` run compiled: a few entries (the first calls may move
+    // the register stack, which leaves the call to the interpreter), not one per call.
+    assert!(n <= 3, "{n} entries");
+    // `inc` fails in its 1_000_001st call, inside the compiled caller.
+    let (a, b, _) = p.both(run, &[2_000_000]);
+    assert!(a.as_ref().is_err_and(|e| e.contains("result")), "{a:?}");
+    assert_eq!(a, b);
+    let (a, b, n) = p.both(depth, &[5000]);
+    assert_eq!(a, Ok(5000));
+    assert_eq!(a, b);
+    assert!(n > 1, "{n} entries: no recursion left to the interpreter");
 }

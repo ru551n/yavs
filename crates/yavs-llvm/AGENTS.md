@@ -12,20 +12,24 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   --tier=llvm` sets it on the runtime. Design: `docs/decisions.md` "LLVM tier: side exits to the
   interpreter".
 - Compiled code runs on the interpreter frame's registers, slots and temporary area
-  (`yavs_interp::TierFrame`). Inline: `Const`, `ConstF`, `Move`, `Bin`/`BinRange` (not `**`),
-  `Un`, `FBin` (not `**`), `FUn`, `IToF`, `Cmp`, `FCmp`, `Bool`, `Check`, `FCheck`, `Index`,
-  `Br`, `CondBr`, `Case`, and with a slow path that steps the instruction: `AddrOf` (not `Up`),
-  `Load`, `Store`, `Copy`, `Alloc`, `Stmt`, `MakeDope`, `DopeLen`, `Pos`, `SubtypeCheck`,
-  `Field`, `LayoutOf` (types whose element layout is static), `LGet`, `LSet`. Memory is
-  reached through `Mem` (host pointers of the frame's slots, the temporary area, the instance
-  data and a small cache of objects `yavs_rt_obj` asked `TierHost::object` for). Exits to the
-  interpreter: `Ret`, the calls, `CallNative`, `Report`, `Suspend`, `Unreachable`, `Elab`, and
-  every guard failure (overflow, check, zero divisor, non-finite real, address over 4 GiB),
-  which the interpreter re-executes for the identical error. Everything else goes through the
-  `yavs_rt_step` callback. The open native lowerings are issues (section 6).
-- `AutoTier::start` (`yavs run --tier=auto`) compiles the functions the interpreter reports hot
-  (`Heat`), one at a time on one background thread; `AutoTier::stop` ends that at the end of
-  the run. The
+  (`yavs_interp::TierFrame`, a `#[repr(C)]` view of the machine's stacks the interpreter keeps
+  current). Inline: `Const`, `ConstF`, `Move`, `Bin`/`BinRange` (not `**`), `Un`, `FBin` (not
+  `**`), `FUn`, `IToF`, `Cmp`, `FCmp`, `Bool`, `Check`, `FCheck`, `Index`, `Br`, `CondBr`,
+  `Case`, and with a slow path that steps the instruction: `AddrOf` (`Up` one or two levels
+  through the view), `Load`, `Store`, `Copy`, `Alloc`, `Stmt`, `MakeDope`, `DopeLen`, `Pos`,
+  `SubtypeCheck`, `Field`, `LayoutOf` (types whose element layout is static), `LGet`, `LSet`,
+  `SigVal`. Memory is reached through `Mem` (the view plus a small cache of objects
+  `yavs_rt_host` asked `TierHost::object` for). Every other instruction runs in place through the
+  `yavs_rt_step` callback (`TierHost::step`): calls, natives, foreign calls, reports, signal
+  operations, waits; a frame a call pushed runs its compiled code directly from the callback and
+  is popped by `TierHost::ret` (#336). Compiled code returns to the interpreter at `Ret`,
+  `Suspend`, every guard failure (overflow, check, zero divisor, non-finite real, address over
+  4 GiB, re-executed by the interpreter for the identical error), and with `TIER_UNWIND` /
+  `TIER_SUSPEND` when frames it pushed are left to the interpreter or a stepped instruction
+  suspended. The open native lowerings are issues (section 6).
+- `AutoTier::start` (`yavs run --tier=auto`) compiles the functions where the sampled
+  interpreter time reaches their `Heat`, one at a time on one background thread;
+  `AutoTier::stop` ends that at the end of the run. The
   spike (`spike.rs`) stays as the JIT smoke test.
 - Everything is behind the `llvm` feature (off by default), so the workspace builds without
   LLVM 21.
@@ -37,11 +41,11 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Feature gate, crate-root `#![allow(unsafe_code)]` with its comment, re-exports |
-| `src/lower.rs` | `compile`, `compile_one` (one function in a module of its own), `too_big` (size cap), `enter`, `new_jit`, `LlvmTier` (`Tier` impl, `notes` of functions left interpreted, inline/interpreted counts), `Mem` (what compiled code reads and writes, field offsets `MEM_*`), `Gen` (IR to LLVM per function, entry switch, guard exits, slow paths, `host`: an address to a host pointer, inline for frame addresses known in the block, else the internal `yavs_host_r`/`yavs_host_w`), `static_layout`, `yavs_rt_step` and `yavs_rt_obj` trampolines (panics carried over the JIT frames) |
-| `src/auto.rs` | `AutoTier` (`--tier=auto`): compile thread fed by `Tier::hot` (the JIT made with the first hot function), per-function `OnceLock` entries (`Tier::ready`), `Heat` threshold, `Note` callback, `stop`, `exit_now` |
+| `src/lower.rs` | `compile`, `compile_one` (one function in a module of its own), `too_big` (size cap), `enter` (with the `Lookup` of compiled callees), `new_jit`, `LlvmTier` (`Tier` impl, `notes` of functions left interpreted, inline/interpreted counts), `Mem` (the `TierFrame` view, the object cache, field offsets `MEM_*`), `Gen` (IR to LLVM per function, entry switch, one exit block, known constants (`Known`), guard exits, slow paths, `host`: an address to a host pointer, inline for frame addresses known in the block (no check within the frame size), else `yavs_rt_host`), `keeps_objects` (steps after which the object cache stays), `static_layout`, the `yavs_rt_step` trampoline (`step_in`: steps, runs a pushed compiled callee, `NEST_STACK`) and `yavs_rt_host` (panics carried over the JIT frames) |
+| `src/auto.rs` | `AutoTier` (`--tier=auto`): compile thread that samples `Runtime::sampler` every `Heat::period` and compiles what passes `Heat::threshold` (also fed by `Tier::hot` for `--tier-heat=..,..,0`; the JIT made with the first hot function), per-function `OnceLock` entries (`Tier::ready`), `Note` callback, `stop`, `exit_now` |
 | `src/jit.rs` | `Jit` (LLJIT, absolute symbols, lookup), `Module` (own `LLVMContext` per module), `OptLevel`, `portable_cpu`, `Error` |
 | `src/spike.rs` | Generated test functions (checked sum, `#[repr(C)]` process state, 10k-instruction body) |
-| `tests/tier.rs` | Tier against the interpreter: every integer op and range-checked op, loads and stores of every width in every reachable space, temporaries, copies, descriptors, layouts and logic elements, all on edge values (results and error texts), a loop that runs entirely compiled, `AutoTier` compiling a hot loop and skipping one over the size cap |
+| `tests/tier.rs` | Tier against the interpreter: every integer op and range-checked op, loads and stores of every width in every reachable space, temporaries, copies, descriptors, layouts and logic elements, all on edge values (results and error texts), a loop that runs entirely compiled, calls between compiled functions (an error in the callee, recursion past the native stack allowance, temporaries a callee returns), precise GC roots, `AutoTier` compiling a sampled hot loop and skipping one over the size cap |
 | `tests/jit.rs` | Spike tests: overflow trap into Rust, struct state, reference semantics, unresolved symbol by name, background compile and swap |
 | `examples/measure.rs` | JIT cost per function size (table in STATUS.md) |
 | `WINDOWS.md` | Where LLVM 21 comes from on Windows, llvm-sys static linking, ORC on COFF, CI recipe |
@@ -58,12 +62,12 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | One `LLVMContext` per module (`LLVMOrcCreateNewThreadSafeContextFromLLVMContext`) | LLVM 21 removed `ThreadSafeContextGetContext` | same |
 | Runtime errors call a Rust `extern "C"` callback and return a status; no unwinding through JIT frames | Win64 has no unwind info for them | same; WINDOWS.md |
 | Shared `libLLVM-21.so` on Linux; static libs from the release tarball on Windows | Link memory; llvm-sys refuses dynamic on Windows | same |
-| Side exits: compiled code works on the interpreter frame, returns to the interpreter at calls, waits, reports and every slow or error path, steps other instructions through `yavs_rt_step` | Rule 5 by construction; one implementation of frames, heap and traces | `docs/decisions.md` "LLVM tier: side exits" |
+| Self-contained compiled code on interpreter frames: every instruction it does not lower runs in place through `yavs_rt_step` (calls and natives included); a pushed callee with compiled code runs directly and `TierHost::ret` pops it; it returns to the interpreter only at `Ret`, `Suspend`, failing inline instructions and frames it cannot finish (`TIER_UNWIND`) | Rule 5 by construction; one implementation of frames, heap and traces; no exit per call (user decision, 2026-10-20) | `docs/decisions.md` "LLVM tier: side exits", #336, #337 |
 | Memory instructions run natively only where the bytes lie in memory `Mem` reaches and no error is possible; anything else steps the whole instruction, before any side effect | Rule 5: one implementation of address spaces and errors | `docs/decisions.md` "LLVM tier: side exits" (Memory) |
-| GC roots: `New`, `Free` and `TempRoot` are stepped and natives and calls are exits, so a collection inside an activation sees the registers, slots and temporaries in the machine; `Stmt` steps while `Mem::temp_roots` (`TierFrame::temp_roots`) is non-zero so the interpreter drops the ending statement's recorded temporaries | Precise roots in both tiers (#422) | `docs/decisions.md` "Shared heap collection" |
+| GC roots: `New`, `Free`, `TempRoot`, natives and calls are stepped with the registers, slots and temporaries in the machine (compiled code stores every register at once and hands the temporary length back before a step), so a collection inside an activation sees them; frames compiled code called through wait at their call's pc; `Stmt` steps while `Mem::temp_roots` (`TierFrame::temp_roots`) is non-zero so the interpreter drops the ending statement's recorded temporaries | Precise roots in both tiers (#422) | `docs/decisions.md` "Shared heap collection" |
 | A function whose generated LLVM does not verify, or that names a register beyond its frame, stays interpreted with a note (`--verbose`); never a guess | Fail clearly, per function | `src/lower.rs` `compile` |
 | Size cap: a function of more than 50k yavs IR instructions stays interpreted unless `--tier-max-size` raises it (both tiers); `--tier=auto` compiles only hot functions | Superlinear codegen time (user, 2026-10-19) | `docs/decisions.md` "LLVM bindings"; #126 |
-| `--tier=auto` (opt-in, default `interp`): the interpreter's estimate of what compiled code saves (ops run in its predecoded loop, minus 12 per op compiled code leaves) calls `Tier::hot` at `Heat::DEFAULT` (1M plus 20k per IR instruction, about the compile time at O0); ONE compile thread, one module per function at O0 (the CLI picks it: O1 codegen costs 10x, IR passes before O0 codegen do not shrink it); entries published through `OnceLock`, swapped in on entry and at the next jump; `stop(false)` drops the queue and joins an idle thread, and when it is busy the CLI closes the design's open files (`Runtime::close_files`) and ends the process with `exit_now` (`_exit` after flushing) | The simulation and the exit never wait for compilation; output independent of compile timing (rule 5); LLVM static destructors never run under the compile thread; not the default while compiled code is slower than the predecoded interpreter (STATUS.md "llvm") | `docs/decisions.md` "LLVM tier: side exits", #125 |
+| `--tier=auto` (opt-in, default `interp`): the compile thread samples which function each simulation thread interprets (`Runtime::sampler`, every `Heat::period`, 1 ms) and compiles one once seen for `Heat::DEFAULT` (2 ms plus 40 us per IR instruction, about twice its O0 compile time); time in compiled code entered from interpreted code counts for the caller; ONE compile thread, one module per function at O0 (the CLI picks it: O2 codegen costs about 7x); entries published through `OnceLock`, swapped in on entry and within 256 jumps; `stop(false)` drops the queue and joins an idle thread, and when it is busy the CLI closes the design's open files (`Runtime::close_files`) and ends the process with `exit_now` (`_exit` after flushing) | The simulation and the exit never wait for compilation; output independent of compile timing (rule 5); LLVM static destructors never run under the compile thread; sampling costs the simulation one store per function entered, the per-op counting it replaced 12% to 25%; not the default while it is slower than the predecoded interpreter anywhere (STATUS.md "llvm") | `docs/decisions.md` "LLVM tier: side exits", #125, #432 |
 | Time resolution and integer semantics identical in every tier (checked i64) | Rule 7 | `docs/plan.md` rule 7 |
 | `unsafe` denied in `Cargo.toml`, allowed at the crate root only; raw handles never leave `jit`/`lower`/`spike` (`auto` only declares `fflush` and `_exit` for `exit_now`) | Root `AGENTS.md` rule 11 | `src/lib.rs`, `Cargo.toml` |
 
@@ -101,11 +105,13 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
   `yavs run --tier=llvm --verbose` for what each design leaves to the interpreter.
 
 - `--candidate yavs-auto` runs the corpus with `--tier=auto` (also must equal `yavs`);
-  `YAVS_RUN_FLAGS=--tier-heat=1,0,0` compiles every function from its first call or jump, so the
+  `YAVS_RUN_FLAGS=--tier-heat=1,0,0` (period 0) compiles every function from its first call or jump, so the
   swap-ins happen in the middle of each test.
 
-- Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
-  LLVM tier milestone (tier-up done; open until the M2 to M5 suites pass LLVM-only); native lowering
-  still to do, by IR construct: #336 calls between compiled functions, #337 natives, foreign calls and reports, #338 logic
-  arrays (`LGet`/`LSet` done),
-  #339 signals and waits, #340 heap, #341 real conversions and powers. Epic: #144 (M6).
+- Open issues (snapshot 2026-10-20, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
+  LLVM tier milestone (tier-up done; open until the M2 to M5 suites pass LLVM-only); #336 (calls
+  between compiled functions) is done through `TierHost::step`/`ret`; native lowering still to
+  do, by IR construct: #337 natives, foreign calls and reports (run in place through the
+  callback, no exit; inline lowering open), #338 logic arrays (`LGet`/`LSet` done), #339 signals
+  and waits (`SigVal` inline, reads and waits stepped), #340 heap (`Deref` stepped), #341 real
+  conversions and powers; #432 compile and step cost. Epic: #144 (M6).

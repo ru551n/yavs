@@ -149,10 +149,11 @@ pub struct RunArgs {
     /// interpreted (compile time grows faster than their size).
     #[arg(long, value_name = "N", default_value = "50000")]
     tier_max_size: usize,
-    /// With `--tier=auto`: compile a function once the interpreter has run BASE of its ops plus
-    /// PER_INSTR per IR instruction it has, less COOL per op compiled code would leave (for
-    /// tests and tuning).
-    #[arg(long, value_name = "BASE,PER_INSTR,COOL", value_parser = heat, hide = true)]
+    /// With `--tier=auto`: compile a function once the sampler (one sample every PERIOD
+    /// microseconds) has seen the interpreter in it for BASE microseconds plus PER_INSTR
+    /// nanoseconds per IR instruction it has; PERIOD 0: compile every function the interpreter
+    /// enters (for tests and tuning).
+    #[arg(long, value_name = "BASE,PER_INSTR,PERIOD", value_parser = heat, hide = true)]
     tier_heat: Option<[u32; 3]>,
     /// Print notes on how the run is set up (functions the LLVM tier leaves interpreted or
     /// compiles).
@@ -177,7 +178,7 @@ fn heat(s: &str) -> Result<[u32; 3], String> {
         .map(|v| v.trim().parse::<u32>().map_err(|e| format!("`{v}`: {e}")))
         .collect::<Result<_, _>>()?;
     v.try_into()
-        .map_err(|_| format!("expected BASE,PER_INSTR,COOL, found `{s}`"))
+        .map_err(|_| format!("expected BASE,PER_INSTR,PERIOD, found `{s}`"))
 }
 
 fn plusarg(s: &str) -> Result<String, String> {
@@ -536,11 +537,11 @@ fn use_tier(
         TierArg::Auto => {
             let heat = a
                 .tier_heat
-                .map_or(yavs_llvm::Heat::DEFAULT, |[base, per_instr, cool]| {
+                .map_or(yavs_llvm::Heat::DEFAULT, |[base, per_instr, period]| {
                     yavs_llvm::Heat {
                         base,
                         per_instr,
-                        cool,
+                        period,
                     }
                 });
             let prog = rt.prog.clone();

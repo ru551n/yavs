@@ -400,10 +400,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   that compilation so their exit handlers run. Elaboration-time
   code (package and instance initialisation) runs interpreted either way, and so does a run
   under `--dap`. `--tier-max-size=N` (default 50000): with `llvm` or `auto`, a function of more
-  than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR,COOL`
-  (hidden, for tests and tuning): with `auto`, a function is hot once the interpreter has run
-  BASE ops plus PER_INSTR per IR instruction of it, less COOL per op compiled code would leave
-  (`1,0,0`: from its first call or jump). Both tiers need a yavs
+  than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR,PERIOD`
+  (hidden, for tests and tuning): with `auto`, a function is hot once a sample every PERIOD
+  microseconds has seen the interpreter in it for BASE microseconds plus PER_INSTR nanoseconds
+  per IR instruction of it (PERIOD `0`, as in `1,0,0`: from its first call or jump). Both tiers need a yavs
   built with the `llvm` cargo feature (LLVM 21): otherwise asking for them is error `E0120` (exit 2); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
   bug in yavs). `--verbose` prints, on stderr, a note per function left to the

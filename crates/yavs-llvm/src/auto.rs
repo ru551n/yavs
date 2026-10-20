@@ -1,20 +1,23 @@
-//! `--tier=auto`: compile the functions that become hot, one at a time on one background
-//! thread, while the simulation keeps running them in the interpreter (#125).
+//! `--tier=auto`: compile the functions where the interpreter spends its time, one at a time
+//! on one background thread, while the simulation keeps running them in the interpreter
+//! (#125).
 //!
-//! The interpreter counts the ops it runs per function (`Runtime::set_heat`) and
-//! calls [`Tier::hot`] once a function reaches its [`Heat`] threshold; the function is queued,
-//! compiled in a module of its own and published through a `OnceLock`. The interpreter asks
-//! the tier on entry and at every jump once the threshold is reached, so the swap-in happens
-//! there in any frame of that function: compiled code runs on the interpreter frame's registers and enters at any
-//! pc (an instruction that is not an entry point is left to the interpreter), so output is
-//! identical whenever compilation finishes (rule 5). At the end of a run `stop(false)` does
-//! not wait for a function being compiled; the CLI then ends the process with [`exit_now`].
+//! The thread samples what the simulation threads interpret (`Runtime::sampler`) every
+//! [`Heat::period`] microseconds and compiles a function once it was seen for about as long
+//! as compiling it takes ([`Heat`]); the function is compiled in a module of its own and
+//! published through a `OnceLock`. The interpreter asks the tier on entry and now and then at
+//! jumps, so the swap-in happens there in any frame of that function: compiled code runs on
+//! the interpreter frame's registers and enters at any pc (an instruction that is not an entry
+//! point is left to the interpreter), so output is identical whenever compilation finishes
+//! (rule 5). At the end of a run `stop(false)` does not wait for a function being compiled;
+//! the CLI then ends the process with [`exit_now`].
 
 use std::panic::resume_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use yavs_interp::{Runtime, Tier, TierFrame, TierHost};
 use yavs_ir::{FuncId, FuncKind};
@@ -22,32 +25,36 @@ use yavs_ir::{FuncId, FuncKind};
 use crate::lower::{RunFn, compile_one, enter, new_jit, too_big};
 use crate::{Error, Jit, OptLevel};
 
-/// When a function is hot: once the interpreter has run `base` of its ops plus `per_instr` per
-/// IR instruction the function has, less `cool` per op compiled code would leave
-/// (`Runtime::set_heat` counts them).
+/// When a function is hot: once the sampler has seen the interpreter in it for `base`
+/// microseconds plus `per_instr` nanoseconds per IR instruction of the function (about the
+/// time compiling it takes), sampling every `period` microseconds. `period` 0: no sampling,
+/// every function the interpreter enters is compiled at once (tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Heat {
     pub base: u32,
     pub per_instr: u32,
-    /// Taken off the count at every op compiled code would leave to the interpreter: leaving
-    /// and entering it again (about 15 ns) costs what the interpreter spends on that many ops.
-    pub cool: u32,
+    pub period: u32,
 }
 
 impl Heat {
     /// Compiling a function costs about 2 ms plus 40 us per IR instruction at O0 (codegen
-    /// nearly all of it), the time the predecoded interpreter needs for about 1M and 20k ops:
-    /// a function is compiled once its interpreted run time has reached its compile time.
+    /// nearly all of it): a function is compiled once the interpreter has spent that long in
+    /// it. One sample a millisecond costs the compile thread a few microseconds.
     pub const DEFAULT: Heat = Heat {
-        base: 1_000_000,
-        per_instr: 20_000,
-        cool: 12,
+        base: 2_000,
+        per_instr: 40_000,
+        period: 1_000,
     };
 
-    /// The threshold of `f`, saturating.
-    pub fn threshold(self, f: &yavs_ir::Func) -> u32 {
-        let n = u32::try_from(f.code.len()).unwrap_or(u32::MAX);
-        self.base.saturating_add(self.per_instr.saturating_mul(n))
+    /// The time `f` must be seen for, in microseconds, saturating.
+    pub fn threshold(self, f: &yavs_ir::Func) -> u64 {
+        let n = f.code.len() as u64;
+        u64::from(self.base).saturating_add(u64::from(self.per_instr).saturating_mul(n) / 1000)
+    }
+
+    /// Whether every function is compiled when the interpreter enters it.
+    pub fn eager(self) -> bool {
+        self.period == 0
     }
 }
 
@@ -58,6 +65,8 @@ pub type Note = Box<dyn FnMut(FuncId, Result<std::time::Duration, String>) + Sen
 /// Hot functions compiled on a background thread; see the module docs.
 pub struct AutoTier {
     funcs: Arc<[OnceLock<(RunFn, usize)>]>,
+    /// Functions `hot` sent to the thread already.
+    queued: Box<[AtomicBool]>,
     queue: Mutex<Option<Sender<FuncId>>>,
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -75,9 +84,9 @@ struct Shared {
 }
 
 impl AutoTier {
-    /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`) with
-    /// hotness counting at `heat`; functions over `max_size` IR instructions stay interpreted.
-    /// `note` is called on the compile thread for every hot function.
+    /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
+    /// compiling the functions `heat` finds hot; functions over `max_size` IR instructions stay
+    /// interpreted. `note` is called on the compile thread for every hot function.
     pub fn start(
         rt: &Runtime,
         opt: OptLevel,
@@ -91,60 +100,99 @@ impl AutoTier {
         let (tx, rx) = channel::<FuncId>();
         let shared = Arc::new(Shared::default());
         let (table, sh) = (funcs.clone(), shared.clone());
+        let sample = rt.sampler();
+        let period = Duration::from_micros(if heat.eager() {
+            1 << 20
+        } else {
+            heat.period.into()
+        });
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
             .spawn(move || {
                 // Made with the first hot function: a run that never gets hot pays nothing.
                 let mut jit: Option<Jit> = None;
                 let mut seen = vec![false; prog.funcs.len()];
-                // `busy` before `halt` here and `halt` before `busy` in `stop` (both SeqCst):
-                // either this thread sees the halt or `stop` sees it busy.
-                while let Ok(id) = rx.recv() {
-                    sh.busy.store(true, Ordering::SeqCst);
+                // Microseconds each function was seen in the interpreter.
+                let mut time = vec![0u64; prog.funcs.len()];
+                let mut running = Vec::new();
+                let mut hot = Vec::new();
+                loop {
+                    match rx.recv_timeout(period) {
+                        Ok(id) => hot.push(id),
+                        Err(RecvTimeoutError::Timeout) => {
+                            running.clear();
+                            sample(&mut running);
+                            for &id in &running {
+                                let (Some(t), Some(f)) =
+                                    (time.get_mut(id.0 as usize), prog.func(id))
+                                else {
+                                    continue;
+                                };
+                                let was = *t;
+                                *t += u64::from(heat.period);
+                                let at = heat.threshold(f);
+                                if was < at && *t >= at {
+                                    hot.push(id);
+                                }
+                            }
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                    for id in hot.drain(..) {
+                        // `busy` before `halt` here and `halt` before `busy` in `stop` (both
+                        // SeqCst): either this thread sees the halt or `stop` sees it busy.
+                        sh.busy.store(true, Ordering::SeqCst);
+                        if sh.halt.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        // Elaboration code never runs again.
+                        let first = seen
+                            .get_mut(id.0 as usize)
+                            .is_some_and(|s| !std::mem::replace(s, true));
+                        let todo = prog.func(id).filter(|f| first && f.kind != FuncKind::Elab);
+                        if let Some(f) = todo {
+                            let t0 = std::time::Instant::now();
+                            let r = match (too_big(f, max_size), &mut jit) {
+                                (Some(why), _) => Err(why),
+                                (None, Some(j)) => compile_one(j, &prog, id, f, opt),
+                                (None, j @ None) => match new_jit(opt) {
+                                    Ok(n) => compile_one(j.insert(n), &prog, id, f, opt),
+                                    Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
+                                },
+                            };
+                            match r {
+                                Ok(entry) => {
+                                    let _ = table[id.0 as usize].set(entry);
+                                    note(id, Ok(t0.elapsed()));
+                                }
+                                Err(why) => note(id, Err(why)),
+                            }
+                        }
+                        sh.busy.store(false, Ordering::SeqCst);
+                    }
                     if sh.halt.load(Ordering::SeqCst) {
                         break;
                     }
-                    // Racy counters may report a function twice; elaboration code never
-                    // runs again.
-                    let first = seen
-                        .get_mut(id.0 as usize)
-                        .is_some_and(|s| !std::mem::replace(s, true));
-                    let todo = prog.func(id).filter(|f| first && f.kind != FuncKind::Elab);
-                    if let Some(f) = todo {
-                        let t0 = std::time::Instant::now();
-                        let r = match (too_big(f, max_size), &mut jit) {
-                            (Some(why), _) => Err(why),
-                            (None, Some(j)) => compile_one(j, &prog, id, f, opt),
-                            (None, j @ None) => match new_jit(opt) {
-                                Ok(n) => compile_one(j.insert(n), &prog, id, f, opt),
-                                Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
-                            },
-                        };
-                        match r {
-                            Ok(entry) => {
-                                let _ = table[id.0 as usize].set(entry);
-                                note(id, Ok(t0.elapsed()));
-                            }
-                            Err(why) => note(id, Err(why)),
-                        }
-                    }
-                    sh.busy.store(false, Ordering::SeqCst);
                 }
                 *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = jit;
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
         let tier = Arc::new(AutoTier {
+            queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
             queue: Mutex::new(Some(tx)),
             shared,
             worker: Mutex::new(Some(worker)),
         });
-        if !rt.set_tier(tier.clone()) || !rt.set_heat(|f| heat.threshold(f), heat.cool) {
+        if !rt.set_tier(tier.clone()) {
             tier.stop(true);
             return Err(Error(
                 "the runtime has a tier already (a bug in yavs)".into(),
             ));
+        }
+        if heat.eager() {
+            rt.set_eager();
         }
         Ok(tier)
     }
@@ -215,7 +263,8 @@ impl Tier for AutoTier {
         host: &mut dyn TierHost,
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
-        enter(f, nregs, pc, fr, host)
+        let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get().copied();
+        enter(f, nregs, pc, fr, host, &lookup)
     }
 
     fn ready(&self, func: FuncId) -> bool {
@@ -225,6 +274,13 @@ impl Tier for AutoTier {
     }
 
     fn hot(&self, func: FuncId) {
+        if self
+            .queued
+            .get(func.0 as usize)
+            .is_none_or(|q| q.swap(true, Ordering::Relaxed))
+        {
+            return;
+        }
         if let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner) {
             // The worker is gone only after `stop`: nothing to compile any more.
             let _ = q.send(func);

@@ -155,6 +155,10 @@ pub(crate) fn add_addr(a: u64, delta: u64) -> R<u64> {
     }
 }
 
+/// Jumps of an interpreted function without compiled code until the fast loop asks the tier
+/// again (`run_ops`).
+const RECHECK: u32 = 256;
+
 pub(crate) struct Frame {
     pub func: FuncId,
     pub pc: u32,
@@ -737,17 +741,24 @@ impl Machine {
 
     /// Pop the top frame; the caller's registers become current.
     pub(crate) fn pop_frame(&mut self) -> Option<Frame> {
+        let fr = self.pop_frame_in_place()?;
+        // Back at the root: a deep recursion does not keep its stack.
+        if self.frames.len() == 1 && self.sstack.capacity() > 1 << 16 {
+            self.sstack.shrink_to(1 << 12);
+            self.regs.v.shrink_to(1 << 10);
+        }
+        Some(fr)
+    }
+
+    /// `pop_frame` without giving memory back: the stacks do not move (compiled code of the
+    /// caller holds a pointer to its registers, `TierHost::ret`).
+    fn pop_frame_in_place(&mut self) -> Option<Frame> {
         let fr = self.frames.pop()?;
         self.regs.v.truncate(fr.rbase);
         match self.frames.last() {
             Some(top) => {
                 self.regs.base = top.rbase;
                 self.sstack.truncate(fr.sbase);
-                // Back at the root: a deep recursion does not keep its stack.
-                if self.frames.len() == 1 && self.sstack.capacity() > 1 << 16 {
-                    self.sstack.shrink_to(1 << 12);
-                    self.regs.v.shrink_to(1 << 10);
-                }
             }
             None => {
                 self.regs.base = 0;
@@ -1970,7 +1981,12 @@ impl Machine {
         let prog = &rt.prog;
         if !DEBUG {
             return match rt.tier.get() {
-                Some(tier) => self.exec_fast::<true>(rt, Some(&**tier), ctx, base),
+                Some(tier) => {
+                    let r = self.exec_fast::<true>(rt, Some(&**tier), ctx, base);
+                    // Nothing interpreted on this thread until the next run.
+                    crate::slot().store(0, Ordering::Relaxed);
+                    r
+                }
                 None => self.exec_fast::<false>(rt, None, ctx, base),
             };
         }
@@ -2247,11 +2263,11 @@ impl Machine {
     /// suspension (`Flow::Suspend`) or a pause (`Flow::Next`), with the frame's pc the IR pc
     /// of the instruction; on a fault the frame's pc is the failing op's IR pc.
     ///
-    /// With `TIER` (a compiled tier is set, `--tier=llvm|auto`): the function's tier-up count
-    /// grows by the ops run between jumps and shrinks at every op compiled code would leave
-    /// to the interpreter (`Runtime::set_heat`); on entry and after every jump, if the
-    /// function has compiled code, that runs from the op's IR pc, and the interpreter goes
-    /// on at the op of the IR pc it returns (stepping IR instructions inside a fused op).
+    /// With `TIER` (a compiled tier is set, `--tier=llvm|auto`): the thread's sampling slot
+    /// names the function being interpreted (`Runtime::sampler`); on entry and after every
+    /// jump, if the function has compiled code, that runs from the op's IR pc, and the
+    /// interpreter goes on at the op of the IR pc it returns (stepping IR instructions inside
+    /// a fused op).
     #[allow(clippy::too_many_arguments)]
     fn run_ops<const TIER: bool>(
         &mut self,
@@ -2275,24 +2291,50 @@ impl Machine {
                     .ok_or_else(|| ice(format!("pc {pc} of `{}` inside a fused operation", f.name)))
             }};
         }
-        let mut k = entry!(self.frames[top].pc)? as usize;
         let prog = &*rt.prog;
-        let count = if TIER { rt.count(func) } else { None };
-        let cool = if TIER { rt.cool() } else { 0 };
+        // A frame compiled code left inside a fused op (`TIER_UNWIND`) steps up to the next op.
+        let pc = self.frames[top].pc as usize;
+        let mut k = match code.entry.get(pc) {
+            Some(&k) if k != pre::NONE => k as usize,
+            _ => match self.op_at(prog, f, code, top, pc, ctx)? {
+                Ok((k, _)) => k,
+                Err(flow) => return Ok(flow),
+            },
+        };
         // Whether compiled code can run now.
         macro_rules! ready {
             () => {
                 tier.is_some_and(|t| t.ready(func))
             };
         }
-        // What the count still lacks (at most 0: reached, or no counting, `--tier=llvm`) and
-        // what this run added since it was last written (kept local: the atomic counter is
-        // touched only when the threshold may be reached and when the run ends).
-        let mut left = count.map_or(0, Runtime::left);
-        let mut spent: i64 = 0;
-        let mut native = TIER && left <= 0 && ready!();
-        // The op the run since the last jump started at.
-        let mut since = k;
+        // `TIER`: this thread's sampling slot names the function being interpreted
+        // (`Runtime::sampler`); compiled code entered from it keeps the slot naming the
+        // interpreted caller, which compiled would call it in place.
+        let slot = if TIER { Some(crate::slot()) } else { None };
+        // Whether the function has compiled code to run (asked on entry, then every
+        // `RECHECK` jumps while it has none: it may be compiled while its loop runs).
+        let mut native = false;
+        let mut recheck = RECHECK;
+        // The function is entered: mark it, look for its compiled code.
+        macro_rules! bind {
+            () => {
+                if TIER {
+                    if rt.eager.load(Ordering::Relaxed)
+                        && let Some(t) = tier
+                    {
+                        t.hot(func);
+                    }
+                    native = ready!();
+                    if !native && let Some(s) = slot {
+                        s.store(
+                            u64::from(rt.id) << 32 | u64::from(func.0),
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+            };
+        }
+        bind!();
         // Run compiled code from op `k` when the function has some (`native`): at the start,
         // after a jump and after an op compiled code leaves to the interpreter.
         macro_rules! enter {
@@ -2304,77 +2346,36 @@ impl Machine {
                     && self.pause.is_none()
                     && let Some(tier) = tier
                 {
-                    let pc = code.at.get(k).copied().unwrap_or(0) as usize;
-                    let (mut next, ran) = self.run_tier(tier, prog, f, pc, ctx)?;
-                    // No progress: `pc` is no entry of the compiled code; interpret to the next jump.
-                    native = ran && next != pc;
-                    // An IR pc inside a fused op: step its instructions up to the next op.
-                    while code.entry.get(next).is_some_and(|&o| o == pre::NONE) {
-                        let inst = *f
-                            .code
-                            .get(next)
-                            .ok_or_else(|| ice(format!("pc {next} beyond `{}`", f.name)))?;
-                        self.frames[top].pc = next as u32;
-                        match self.step_out(prog, f, inst, ctx)? {
-                            Flow::Next => next += 1,
-                            Flow::Jump(b) => {
-                                next = f
-                                    .blocks
-                                    .get(b)
-                                    .ok_or_else(|| ice(format!("no block {b}")))?
-                                    .start as usize;
-                                native = ready!();
-                            }
-                            flow => return Ok(flow),
+                    match self.tier_go(tier, prog, func, f, code, top, k, ctx)? {
+                        Ok((to, go_on)) => {
+                            k = to;
+                            native = go_on;
                         }
+                        Err(flow) => return Ok(flow),
                     }
-                    k = entry!(next as u32)? as usize;
-                    since = k;
                 }
+            };
+        }
+        // The function changed (a call or a return in this loop).
+        macro_rules! rebind {
+            () => {
+                bind!();
+                enter!();
             };
         }
         // A jump to op `to`.
         macro_rules! go {
             ($to:expr) => {{
-                let to = $to as usize;
-                if TIER {
-                    if left > 0 {
-                        spent += (k + 1).saturating_sub(since) as i64;
-                        if spent >= left
-                            && let Some(c) = count
-                        {
-                            left = rt.heat(func, c, spent);
-                            spent = 0;
-                            native = left <= 0 && ready!();
-                        }
-                    } else {
+                if TIER && !native {
+                    recheck -= 1;
+                    if recheck == 0 {
+                        recheck = RECHECK;
                         native = ready!();
                     }
-                    since = to;
                 }
-                k = to;
+                k = $to as usize;
                 enter!();
             }};
-        }
-        // An op compiled code leaves to the interpreter.
-        macro_rules! slow {
-            () => {
-                if TIER && left > 0 {
-                    spent -= cool;
-                }
-            };
-        }
-        // The end of the run.
-        macro_rules! leave {
-            () => {
-                if TIER
-                    && left > 0
-                    && let Some(c) = count
-                {
-                    spent += (k + 1).saturating_sub(since) as i64;
-                    rt.heat(func, c, spent);
-                }
-            };
         }
         // A fault leaves the IR pc of the op that failed in the frame.
         macro_rules! t {
@@ -2392,7 +2393,6 @@ impl Machine {
         loop {
             match code.ops[k] {
                 Op::Step(pc) => {
-                    slow!();
                     let inst = *f
                         .code
                         .get(pc as usize)
@@ -2415,7 +2415,6 @@ impl Machine {
                             go!(entry!(blk.start)?);
                         }
                         flow => {
-                            leave!();
                             return Ok(flow);
                         }
                     }
@@ -2619,7 +2618,6 @@ impl Machine {
                     offset,
                     len,
                 } => {
-                    slow!();
                     let (a, b) = t!(self.sig_val(
                         sig,
                         self.regs[offset as usize] as i64,
@@ -2640,15 +2638,10 @@ impl Machine {
                     len,
                     dst,
                 } => {
-                    slow!();
-                    leave!();
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     self.call_regs(prog, f, FuncId(callee), args, dst)?;
-                    if TIER {
-                        return Ok(Flow::Call);
-                    }
                     // The callee's ops go on in this loop.
                     top += 1;
                     func = FuncId(callee);
@@ -2660,13 +2653,12 @@ impl Machine {
                         .ok_or_else(|| ice(format!("no function {func}")))?
                         .code;
                     k = entry!(0)? as usize;
+                    rebind!();
                 }
                 Op::Ret { v } => {
-                    slow!();
-                    leave!();
                     let v = (v != pre::NONE).then(|| self.regs[v as usize]);
                     // Back into the caller, unless this activation began here.
-                    if TIER || top <= base {
+                    if top <= base {
                         return Ok(Flow::Ret(v));
                     }
                     let done = self
@@ -2689,22 +2681,19 @@ impl Machine {
                         .ok_or_else(|| ice(format!("no function {func}")))?
                         .code;
                     k = entry!(pc)? as usize;
+                    rebind!();
                 }
                 Op::SigReadScalar { dst, sig } => {
-                    slow!();
                     self.regs[dst as usize] = t!(self.sig_read_scalar(Reg(sig), ctx));
                     k += 1;
                     enter!();
                 }
                 Op::WaitOn { sig } => {
-                    slow!();
                     t!(self.wait_on(Reg(sig), ctx));
                     k += 1;
                     enter!();
                 }
                 Op::Suspend => {
-                    slow!();
-                    leave!();
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     self.suspend(prog, f, ctx)?;
                     return Ok(Flow::Suspend);
@@ -2715,7 +2704,6 @@ impl Machine {
                     len,
                     dst,
                 } => {
-                    slow!();
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
@@ -2725,7 +2713,6 @@ impl Machine {
                             enter!();
                         }
                         flow => {
-                            leave!();
                             return Ok(flow);
                         }
                     }
@@ -2741,9 +2728,85 @@ impl Machine {
         }
     }
 
+    /// Run the compiled code of frame `top` (`func`, `f`) from op `k` (`run_ops`, kept out of
+    /// its loop): the op to go on at and whether compiled code may run again before the next
+    /// jump, or the flow the run ends with (frames compiled code left, a suspension).
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn tier_go(
+        &mut self,
+        tier: &dyn crate::Tier,
+        prog: &Program,
+        func: FuncId,
+        f: &Func,
+        code: &pre::Code,
+        top: usize,
+        k: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Result<(usize, bool), Flow>> {
+        let pc = code.at.get(k).copied().unwrap_or(0) as usize;
+        let (next, ran) = self.run_tier(tier, prog, f, pc, ctx)?;
+        // Frames compiled code pushed and did not finish: the interpreter goes on with the
+        // top one.
+        if next == crate::TIER_UNWIND as usize {
+            return Ok(Err(Flow::Call));
+        }
+        if next == crate::TIER_SUSPEND as usize {
+            return Ok(Err(Flow::Suspend));
+        }
+        // No progress: `pc` is no entry of the compiled code; interpret to the next jump.
+        let native = ran && next != pc;
+        Ok(match self.op_at(prog, f, code, top, next, ctx)? {
+            Ok((to, true)) => Ok((to, tier.ready(func))),
+            Ok((to, false)) => Ok((to, native)),
+            Err(flow) => Err(flow),
+        })
+    }
+
+    /// The op of `code` (function `f`, frame `top`) that starts at IR pc `pc`, after stepping
+    /// the IR instructions from `pc` up to the next op when `pc` lies inside a fused op
+    /// (compiled code stopped there), and whether a jump was taken on the way; or the flow an
+    /// instruction ended the run with.
+    #[allow(clippy::too_many_arguments)]
+    fn op_at(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        code: &pre::Code,
+        top: usize,
+        mut pc: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Result<(usize, bool), Flow>> {
+        let mut jumped = false;
+        while code.entry.get(pc).is_some_and(|&o| o == pre::NONE) {
+            let inst = *f
+                .code
+                .get(pc)
+                .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
+            self.frames[top].pc = pc as u32;
+            match self.step_out(prog, f, inst, ctx)? {
+                Flow::Next => pc += 1,
+                Flow::Jump(b) => {
+                    pc = f
+                        .blocks
+                        .get(b)
+                        .ok_or_else(|| ice(format!("no block {b}")))?
+                        .start as usize;
+                    jumped = true;
+                }
+                flow => return Ok(Err(flow)),
+            }
+        }
+        match code.entry.get(pc) {
+            Some(&k) if k != pre::NONE => Ok(Ok((k as usize, jumped))),
+            _ => Err(ice(format!("pc {pc} of `{}` beyond its code", f.name))),
+        }
+    }
+
     /// Run compiled code of the top frame from `pc` (ir.md 5): the index of the instruction
-    /// the interpreter executes next, and whether the function has compiled code. Compiled
-    /// code steps other instructions through `step`, which never changes the frame stack.
+    /// the interpreter executes next (or `TIER_UNWIND`, `TIER_SUSPEND`, frames' pcs set), and
+    /// whether the function has compiled code. Compiled code steps other instructions through
+    /// `TierHost::step`; the frames those push it runs on or leaves to the interpreter.
     fn run_tier(
         &mut self,
         tier: &dyn crate::Tier,
@@ -2752,54 +2815,78 @@ impl Machine {
         pc: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<(usize, bool)> {
-        let top = self.frames.len() - 1;
-        let fr = &self.frames[top];
-        let (func, temp_base, slots_at, slots_len) = (fr.func, fr.temp_base, fr.sbase, fr.slen);
-        let mut tf = crate::TierFrame {
-            regs: std::mem::take(&mut self.regs.v),
-            regs_at: self.regs.base,
-            slots: std::mem::take(if top == 0 {
-                &mut self.root
-            } else {
-                &mut self.sstack
-            }),
-            slots_at,
-            slots_len,
-            frame: top as u32,
-            temp: std::mem::take(&mut self.temp),
-            temp_base,
-            temp_roots: self.troots.len(),
-            inst: &self.inst.data[..] as *const [u8],
-        };
+        let func = self.top().func;
+        let mut tf = crate::TierFrame::default();
+        self.tier_view(&mut tf);
         let mut host = Host {
             m: self,
             prog,
             f,
+            up: Vec::new(),
             ctx,
             fault: None,
         };
         let ran = tier.run(func, pc as u32, &mut tf, &mut host);
         let fault = host.fault;
-        self.swap_tier(&mut tf);
-        let pc = ran.map_or(pc, |p| p as usize);
-        self.top().pc = pc as u32;
+        let pc = match ran {
+            Some(p) if p == crate::TIER_UNWIND || p == crate::TIER_SUSPEND => p as usize,
+            Some(p) => {
+                self.top().pc = p;
+                p as usize
+            }
+            None => pc,
+        };
         match fault {
             Some(e) => Err(e),
             None => Ok((pc, ran.is_some())),
         }
     }
 
-    /// Exchange the top frame's registers and slots and the temporary area with `tf`.
-    fn swap_tier(&mut self, tf: &mut crate::TierFrame) {
-        std::mem::swap(&mut self.regs.v, &mut tf.regs);
+    /// The top frame's slots (`TierFrame::slots`).
+    fn slots_ptr(&mut self) -> *mut u8 {
         let top = self.frames.len() - 1;
+        let sbase = self.frames[top].sbase;
         let slots = if top == 0 {
             &mut self.root
         } else {
             &mut self.sstack
         };
-        std::mem::swap(slots, &mut tf.slots);
-        std::mem::swap(&mut self.temp, &mut tf.temp);
+        slots.as_mut_ptr().wrapping_add(sbase)
+    }
+
+    /// Make `tf` the top frame's view (`TierFrame`).
+    fn tier_view(&mut self, tf: &mut crate::TierFrame) {
+        let top = self.frames.len() - 1;
+        let fr = &self.frames[top];
+        let (rbase, slen, temp_base) = (fr.rbase, fr.slen, fr.temp_base);
+        tf.slots = self.slots_ptr();
+        tf.slots_len = slen as u64;
+        tf.frame = top as u64;
+        tf.frame_hi = u64::from(FRAME) << 29 | top as u64;
+        tf.temp = self.temp.as_mut_ptr();
+        tf.temp_len = self.temp.len() as u64;
+        tf.temp_cap = self.temp.capacity() as u64;
+        tf.temp_base = temp_base as u64;
+        tf.temp_roots = self.troots.len() as u64;
+        tf.inst = self.inst.data.as_ptr();
+        tf.inst_len = self.inst.data.len() as u64;
+        tf.nsigs = self.inst.sigs.len() as u64;
+        tf.regs = self.regs.v.as_mut_ptr().wrapping_add(rbase);
+        tf.nregs = (self.regs.v.len() - rbase) as u64;
+        tf.stack = self.regs.v.as_ptr();
+        let mut link = self.frames[top].link;
+        for u in &mut tf.up {
+            *u = match link {
+                Some(i) if i < 1 << 29 => {
+                    link = self.frames.get(i as usize).and_then(|f| f.link);
+                    u64::from(FRAME) << 29 | u64::from(i)
+                }
+                _ => {
+                    link = None;
+                    u64::MAX
+                }
+            };
+        }
     }
 
     fn debug_tick(
@@ -4135,46 +4222,106 @@ impl Machine {
 struct Host<'a, 'c, 'x> {
     m: &'a mut Machine,
     prog: &'a Program,
+    /// The top frame's function; `up` those of the frames below it that compiled code
+    /// pushed through `step`.
     f: &'a Func,
+    up: Vec<&'a Func>,
     ctx: &'a mut Option<&'c mut Ctx<'x>>,
     fault: Option<Fault>,
 }
 
 impl crate::TierHost for Host<'_, '_, '_> {
-    fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> bool {
+    fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
+        use crate::Stepped;
         let (m, f) = (&mut *self.m, self.f);
-        m.swap_tier(tf);
         m.top().pc = at;
         let r = match f.code.get(at as usize) {
+            // As the fast loop calls (`Op::Call`).
+            Some(&Inst::Call { func, args, dst }) => m.call_regs(self.prog, f, func, args, dst),
             Some(&inst) => m.step(self.prog, f, inst, self.ctx),
             None => Err(ice(format!(
                 "compiled code stepped pc {at} beyond `{}`",
                 f.name
             ))),
         };
-        m.swap_tier(tf);
-        tf.temp_roots = m.troots.len();
+        // Without a new frame only the temporary area changes, unless the instruction ran
+        // VHDL code (a native calling back) and moved the stacks.
         match r {
-            Ok(Flow::Next) => true,
+            Ok(Flow::Next) if m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots => {
+                tf.temp = m.temp.as_mut_ptr();
+                tf.temp_len = m.temp.len() as u64;
+                tf.temp_cap = m.temp.capacity() as u64;
+                tf.temp_roots = m.troots.len() as u64;
+            }
+            _ => m.tier_view(tf),
+        }
+        match r {
+            Ok(Flow::Next) => Stepped::Next,
+            Ok(Flow::Call) => {
+                let func = m.frames[m.frames.len() - 1].func;
+                match self.prog.func(func) {
+                    Some(g) => {
+                        self.up.push(std::mem::replace(&mut self.f, g));
+                        Stepped::Call(func)
+                    }
+                    None => {
+                        self.fault = Some(ice(format!("no function {func}")));
+                        Stepped::Fault
+                    }
+                }
+            }
+            Ok(Flow::Suspend) => Stepped::Suspend,
             Ok(_) => {
                 self.fault = Some(ice(format!(
                     "compiled code stepped a control instruction at pc {at} of `{}`",
                     f.name
                 )));
-                false
+                Stepped::Fault
             }
             Err(e) => {
                 self.fault = Some(e);
-                false
+                Stepped::Fault
             }
         }
     }
 
+    fn ret(&mut self, tf: &mut crate::TierFrame, pc: u32) -> bool {
+        let m = &mut *self.m;
+        let top = m.frames.len() - 1;
+        let v = match self.f.code.get(pc as usize) {
+            Some(&Inst::Ret { v })
+                if self.fault.is_none()
+                    && top > 0
+                    && (v.is_some() || m.frames[top].ret.is_none()) =>
+            {
+                v.map(|r| m.regs[r.0 as usize])
+            }
+            // Anything else (an error the interpreter reports) is the interpreter's.
+            _ => {
+                m.frames[top].pc = pc;
+                return false;
+            }
+        };
+        // As `exec_fast` returns, without moving the stacks.
+        let done = m.pop_frame_in_place();
+        if let (Some(d), Some(v)) = (done.and_then(|fr| fr.ret), v) {
+            m.regs[d.0 as usize] = v;
+        }
+        m.tier_view(tf);
+        if let Some(g) = self.up.pop() {
+            self.f = g;
+        }
+        true
+    }
+
+    fn temp(&mut self) -> &mut Vec<u8> {
+        &mut self.m.temp
+    }
+
     fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)> {
         let (sp, idx, _) = split(addr);
-        // The top frame's slots and the temporary area are in the `TierFrame`, and with them
-        // the slot stack of the frames above frame 0 (compiled code steps an access to those).
-        if sp == TEMP || sp == FRAME && (idx as usize + 1 == self.m.frames.len() || idx != 0) {
+        // The top frame's slots and the temporary area are in the `TierFrame`.
+        if sp == TEMP || sp == FRAME && idx as usize + 1 == self.m.frames.len() {
             return None;
         }
         if write {

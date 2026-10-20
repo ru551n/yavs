@@ -259,12 +259,14 @@ impl Default for Bindings {
 ///
 /// Compiled code runs a function on the registers of its interpreter frame and leaves
 /// everything it does not lower itself to the interpreter: it calls `step` to execute one
-/// instruction in place (the instructions that always continue with the next one) and
-/// returns at the others (calls, returns, waits, reports, slow and error paths), which the
-/// interpreter then executes. The interpreter stays the semantic reference (rule 5).
+/// instruction in place (calls, natives, reports, waits, signal operations, the slow paths)
+/// and returns at the others (returns, error paths), which the interpreter then executes.
+/// A call `step` made may run on in compiled code without returning to the interpreter
+/// (`TierHost::ret` pops it). The interpreter stays the semantic reference (rule 5).
 pub trait Tier: Send + Sync {
     /// Run `func` from instruction `pc` until an instruction the interpreter must execute
-    /// and return its index; `None` when `func` is not compiled.
+    /// and return its index, or [`TIER_UNWIND`] or [`TIER_SUSPEND`]; `None` when `func` is
+    /// not compiled.
     fn run(
         &self,
         func: FuncId,
@@ -278,60 +280,118 @@ pub trait Tier: Send + Sync {
         true
     }
 
-    /// `func` reached its threshold (`Runtime::set_heat`): compile it. Called from
+    /// Compile `func` (`Runtime::set_eager`: the fast loop entered it). Called from
     /// simulation threads, so it must not block.
     fn hot(&self, _func: FuncId) {}
 }
 
+/// [`Tier::run`] returns it when frames were pushed (calls `step` made that compiled code
+/// did not finish): every frame's pc is the instruction it is at, and the interpreter goes
+/// on with the top frame.
+pub const TIER_UNWIND: u32 = u32::MAX - 1;
+
+/// [`Tier::run`] returns it when a stepped instruction suspended the process (`wait`, a
+/// report or native at the stop severity): the top frame's pc is that instruction's.
+pub const TIER_SUSPEND: u32 = u32::MAX - 2;
+
+/// What [`TierHost::step`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stepped {
+    /// Go on with the next instruction.
+    Next,
+    /// A fault: compiled code returns the instruction's pc at once.
+    Fault,
+    /// A frame for this function was pushed (a call, a native handing its call to the VHDL
+    /// body); the [`TierFrame`] now is that frame's.
+    Call(FuncId),
+    /// The process suspends ([`TIER_SUSPEND`]).
+    Suspend,
+}
+
 /// The interpreter's side of [`Tier::run`].
 pub trait TierHost {
-    /// Execute the instruction at `pc` on `fr`; `false` on a fault, after which `run`
-    /// returns `pc` at once.
-    fn step(&mut self, fr: &mut TierFrame, pc: u32) -> bool;
+    /// Execute the instruction at `pc` of the top frame; `fr` is the top frame's view after.
+    fn step(&mut self, fr: &mut TierFrame, pc: u32) -> Stepped;
+
+    /// Compiled code of a frame `step` pushed stopped at `pc`: if that is its return (and
+    /// no fault is pending), pop the frame, give the caller the result and make `fr` the
+    /// caller's again (`true`); else leave the frame at `pc` for the interpreter (`false`).
+    fn ret(&mut self, fr: &mut TierFrame, pc: u32) -> bool;
 
     /// The memory object `addr` points into, as its start and length, writable when
     /// `write`: `None` for the memory in the [`TierFrame`] and wherever the interpreter's
     /// access would fail (compiled code then steps the instruction). Valid until the next
     /// `step`.
     fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)>;
+
+    /// The temporary area, to give it the length compiled code left it ([`TierFrame`]).
+    fn temp(&mut self) -> &mut Vec<u8>;
 }
 
-/// What compiled code reads and writes itself (ir.md 5): the top frame's registers and
-/// slots and the temporary area, taken out of the machine for [`Tier::run`] and put back
-/// around every `step`. Every other address goes through `step`.
+/// What compiled code reads and writes itself (ir.md 5): a view of the top frame's
+/// registers and slots, the temporary area and the instance data, as pointers into the
+/// machine's own stacks. The machine fills it in for [`Tier::run`] and again after every
+/// [`TierHost::step`] and [`TierHost::ret`] (the frame may change, the stacks may move); every
+/// other address goes through `step`. Only the compiled tier dereferences the pointers, while
+/// the interpreter is not running.
 ///
-/// The registers and slots of all frames live in two stacks (#438): `regs` is the register
-/// stack, the frame's registers start at `regs_at`; `slots` is the stack the frame's slots
-/// are in (the process's own variables for frame 0), they start at `slots_at` and are
-/// `slots_len` bytes. Use [`TierFrame::regs_mut`] and [`TierFrame::slots_mut`].
+/// Compiled code may shrink the temporary area or grow it within its capacity (zeroing the
+/// new bytes); it hands the length back through [`TierHost::temp`] before every `step` and
+/// at the end of `run`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct TierFrame {
-    pub regs: Vec<u64>,
-    pub regs_at: usize,
-    /// The slots of the frame, reached by addresses `[space::FRAME, frame, offset]`.
-    pub slots: Vec<u8>,
-    pub slots_at: usize,
-    pub slots_len: usize,
-    pub frame: u32,
+    /// The frame's slots, reached by addresses `[space::FRAME, frame, offset]`.
+    pub slots: *mut u8,
+    pub slots_len: u64,
+    /// The high half of the frame's addresses: `space::FRAME << 29 | frame`.
+    pub frame_hi: u64,
     /// The temporary area, `[space::TEMP, 0, offset]`; `Inst::Stmt` truncates it to
     /// `temp_base`.
-    pub temp: Vec<u8>,
-    pub temp_base: usize,
+    pub temp: *mut u8,
+    pub temp_len: u64,
+    pub temp_cap: u64,
+    pub temp_base: u64,
     /// Temporaries recorded for the GC (`Inst::TempRoot`): while there are any, compiled
     /// code steps `Inst::Stmt`, whose interpreter form drops those of the ending statement.
-    pub temp_roots: usize,
-    /// The instance data (read only), `[space::INST, 0, offset]`. It outlives the run.
-    pub inst: *const [u8],
+    pub temp_roots: u64,
+    /// The instance data (read only), `[space::INST, 0, offset]`.
+    pub inst: *const u8,
+    pub inst_len: u64,
+    /// The number of instance signals (`Inst::SigVal`).
+    pub nsigs: u64,
+    /// The frame's registers, `nregs` of them (the top of the register stack).
+    pub regs: *mut u64,
+    pub nregs: u64,
+    /// The frame's index.
+    pub frame: u64,
+    /// The start of the register stack: it moved when this changes.
+    pub stack: *const u64,
+    /// The high halves of the addresses of the frames one and two static links up
+    /// (`AddrOf` of `Up(1)`, `Up(2)`); `u64::MAX` where there is none.
+    pub up: [u64; 2],
 }
 
-impl TierFrame {
-    /// The registers of the frame.
-    pub fn regs_mut(&mut self) -> &mut [u64] {
-        &mut self.regs[self.regs_at..]
-    }
-
-    /// The slots of the frame.
-    pub fn slots_mut(&mut self) -> &mut [u8] {
-        &mut self.slots[self.slots_at..self.slots_at + self.slots_len]
+impl Default for TierFrame {
+    fn default() -> TierFrame {
+        TierFrame {
+            slots: std::ptr::null_mut(),
+            slots_len: 0,
+            frame_hi: 0,
+            temp: std::ptr::null_mut(),
+            temp_len: 0,
+            temp_cap: 0,
+            temp_base: 0,
+            temp_roots: 0,
+            inst: std::ptr::null(),
+            inst_len: 0,
+            nsigs: 0,
+            regs: std::ptr::null_mut(),
+            nregs: 0,
+            frame: 0,
+            stack: std::ptr::null(),
+            up: [u64::MAX; 2],
+        }
     }
 }
 
@@ -367,14 +427,31 @@ pub struct Runtime {
     /// Calls run again for their side effects (`set_replay`): their reports without a
     /// kernel were printed and counted the first time.
     pub(crate) replay: std::sync::atomic::AtomicBool,
-    /// Per function: the tier-up count and its threshold (`set_heat`).
-    heat: std::sync::OnceLock<(Box<[Count]>, i64)>,
+    /// This runtime's mark in the sampling slots (`sampler`).
+    pub(crate) id: u32,
+    /// `set_eager`: the fast loop asks the tier to compile every function it enters.
+    pub(crate) eager: std::sync::atomic::AtomicBool,
     /// Live registers at the safepoints of each function a collection met (`roots`).
     live: Vec<std::sync::OnceLock<roots::LiveRefs>>,
 }
 
-/// A function's tier-up count and its threshold (`Runtime::set_heat`).
-pub(crate) type Count = (std::sync::atomic::AtomicU32, u32);
+/// What each simulation thread interprets, for the sampler of a compiled tier
+/// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
+/// slot per thread that ever ran the fast loop with a tier set, never freed (8 bytes).
+static SLOTS: Mutex<Vec<&'static std::sync::atomic::AtomicU64>> = Mutex::new(Vec::new());
+
+thread_local! {
+    static SLOT: &'static std::sync::atomic::AtomicU64 = {
+        let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
+        SLOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(s);
+        s
+    };
+}
+
+/// This thread's sampling slot.
+pub(crate) fn slot() -> &'static std::sync::atomic::AtomicU64 {
+    SLOT.with(|s| *s)
+}
 
 fn usage(m: String) -> SimError {
     SimError::new(ErrorKind::Usage(m))
@@ -437,7 +514,11 @@ impl Runtime {
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
             replay: Default::default(),
-            heat: Default::default(),
+            id: {
+                static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            },
+            eager: Default::default(),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
         }))
@@ -550,58 +631,28 @@ impl Runtime {
         self.tier.set(tier).is_ok()
     }
 
-    /// Estimate per function what compiled code would save and call `Tier::hot` once a
-    /// function reaches `threshold(function)` (`yavs run --tier=auto`): the predecoded loop
-    /// counts the ops it runs and takes `cool` off at every op compiled code would leave to
-    /// the interpreter (calls, returns, natives, signal reads, waits, generic steps), as leaving
-    /// and entering compiled code costs more than it saves there. Returns `false` if counting
-    /// was set up before.
-    pub fn set_heat(&self, threshold: impl Fn(&yavs_ir::Func) -> u32, cool: u32) -> bool {
-        let counts = self
-            .prog
-            .funcs
-            .iter()
-            .map(|(_, f)| (Default::default(), threshold(f)))
-            .collect();
-        self.heat.set((counts, cool.into())).is_ok()
-    }
-
-    /// The tier-up count of `func` and its threshold, while counting is on (`set_heat`).
-    #[inline]
-    pub(crate) fn count(&self, func: FuncId) -> Option<&Count> {
-        self.heat.get()?.0.get(func.0 as usize)
-    }
-
-    /// What an op compiled code would leave to the interpreter takes off a count (`set_heat`).
-    #[inline]
-    pub(crate) fn cool(&self) -> i64 {
-        self.heat.get().map_or(0, |h| h.1)
-    }
-
-    /// How much `func` (its `count`) still lacks to its threshold: at most 0 once reached.
-    #[inline]
-    pub(crate) fn left((c, hot): &Count) -> i64 {
-        i64::from(*hot) - i64::from(c.load(std::sync::atomic::Ordering::Relaxed))
-    }
-
-    /// Add `d` (ops interpreted, less `cool` per op compiled code would leave) to `func`'s count,
-    /// within 0 and the threshold, and call `Tier::hot` when it reaches it; returns what is
-    /// left (`left`). The counters are racy on purpose (a lost update only delays tier-up;
-    /// `Tier::hot` may see a function twice).
-    pub(crate) fn heat(&self, func: FuncId, (c, hot): &Count, d: i64) -> i64 {
-        use std::sync::atomic::Ordering::Relaxed;
-        let was = c.load(Relaxed);
-        if was >= *hot {
-            return 0;
+    /// What a compiled tier calls to sample where the time goes (`yavs run --tier=auto`): it
+    /// appends the functions the simulation threads interpret at that moment.
+    pub fn sampler(&self) -> impl Fn(&mut Vec<FuncId>) + Send + 'static {
+        let id = u64::from(self.id);
+        move |out| {
+            for s in SLOTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+            {
+                let v = s.load(Ordering::Relaxed);
+                if v >> 32 == id {
+                    out.push(FuncId(v as u32));
+                }
+            }
         }
-        let now = (i64::from(was) + d).clamp(0, i64::from(*hot)) as u32;
-        c.store(now, Relaxed);
-        if now >= *hot
-            && let Some(t) = self.tier.get()
-        {
-            t.hot(func);
-        }
-        i64::from(*hot) - i64::from(now)
+    }
+
+    /// Ask the tier (`Tier::hot`) to compile every function the fast loop enters, from now on
+    /// (tests: compiled code swapped in at the first call or jump).
+    pub fn set_eager(&self) {
+        self.eager.store(true, Ordering::Relaxed);
     }
 
     /// Coverage counter values.

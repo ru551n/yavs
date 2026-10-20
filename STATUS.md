@@ -1028,9 +1028,7 @@ per-suspension address search for shared-heap slots (4% of the VVC testbench, #4
 Tried and not kept (measured, no gain on the real testbenches): routing string `=`/`<` to the native
 `implicit.eq` (a 20-character compare gets 5 times faster, but the testbench compares are 3 to 8
 characters and the native call costs more than the inline loop: `uvvm_util_rand_tb` 1.02); block-buffered
-stdout for reports (the cost is the write system call, 6% in the sampled `osvvm_axistream` run with a stopped
-process, not visible in CPU time of the real run; output ordering against C code in the process and a
-lost tail on a kill are the price).
+stdout for reports (first round; kept in round 2 below, where it is measured on a pipe).
 
 1. A native call takes its argument cells from `Machine::cells` instead of allocating a vector; `WRITE`
    of a string copies it from the memory it is in straight into the line (no temporary string, no
@@ -1051,6 +1049,42 @@ lost tail on a kill are the price).
 
 The four new internal benchmarks (`strings_heavy`, `access_heavy`, `report_heavy`, `file_io`) change the
 benchmark set: earlier JSON files do not contain them.
+
+### Verification-testbench runtime library, round 2 (#428)
+
+Measured with stack sampling on the benchmark designs, then A/B with `tools/bench/run.py --compare`
+(median of 5, total CPU, one performance core, output to a pipe as a test runner reads it). What changed:
+
+| Change | Why it was slow |
+|---|---|
+| `yavs run` writes reports and `OUTPUT` text in blocks (64 KiB, every 100 ms, before any stderr write and at the end) when stdout is a pipe or file and no plugin, `--load` library or foreign subprogram is present | One write system call per report line: 4 times the CPU of a report-heavy run into a pipe (the first round measured into a file, where it is 1.5 times). A terminal keeps line-by-line output |
+| Operand type lookups of the implicit operations borrow the type | An enumeration type owns its literal names: each operation cloned all of them (256 strings for CHARACTER) |
+| `to_string`, `'image` of a string-like vector or string are spelled from the element codes; `to_hstring`/`to_ostring` of a `bit_vector` and `integer'image` from a word or stack buffer | A text per element, three vectors per call |
+| textio READ/WRITE/READLINE/WRITELINE edit the line object in its slot (new generation, no quarantine slot), READ parses and consumes in one lookup without building a conversion error, WRITELINE uses the staging buffer, no runtime handle clone per file operation | Free + allocate of a slot per call, the slot quarantine's address search, 100-byte error values moved on every successful READ |
+| `numeric_std`/`std_logic_1164` operators on vectors of 1 to 64 elements without a metavalue: one word in, integer arithmetic, one temporary block out | Four to eight allocations per operation (operand planes, bit vector, extended copies, result planes, three temporary blocks) |
+
+| Benchmark (median total CPU of 5, s, core 2) | before | after | ratio |
+|---|---|---|---|
+| `report_heavy` | 0.30 | 0.11 | 0.36 |
+| `ieee_heavy` (new) | 0.48 | 0.28 | 0.59 |
+| `resolved_bus` | 0.22 | 0.16 | 0.74 |
+| `strings_heavy` | 0.19 | 0.15 | 0.81 |
+| `file_io` | 0.25 | 0.20 | 0.81 |
+| `textio_heavy` | 0.34 | 0.28 | 0.85 |
+| `uvvm_util_rand_tb` | 1.93 | 1.67 | 0.86 |
+| `osvvm_axistream` | 0.74 | 0.64 | 0.87 |
+| `vunit_vc30` | 3.81 | 3.57 | 0.94 |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 0.53 | 0.51 | 0.96 |
+
+Geometric mean over the 17 benchmarks 0.84. The per-operation cost into a pipe: `report_heavy` 3.1 s to 0.6 s for
+600000 iterations. Microbenchmarks (300000 iterations): `to_string(bit_vector)` 0.35 s to 0.11, `to_string(std_logic_vector)`
+0.34 to 0.11, `to_hstring` 0.16 to 0.11. Output identical: difftest corpus at 1 and 4 threads (410 of 410), the
+reference simulators' own tests on their pass lists (857 and 393), 314 + 314 library regression tests and the second
+library's suite (102 pass, 9 fail, 26 not run: the same as before), `ieee_native` against the VHDL bodies.
+
+Not native: the two slow dictionary tests of the data-types suite (4 s for "set and get many keys") spend 95% in
+interpreted library code (string scans and frame copies); natives are 4 of 92 samples. The remaining native cost in
+the real testbenches is 10 to 12% of their time spread over `write` of strings, `to_unsigned`/`+` on vectors and `to_string`.
 
 ### Verification-library testbenches against the reference simulator (#444)
 

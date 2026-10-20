@@ -1188,6 +1188,57 @@ and counts the first frame under `crates/`); no hardware profiler on this host.
 Raw data: median tables above come from 3 interleaved runs per row (suites: 3 runs for the test-runner suites, 1
 run for the two verification-library suites and the difftest corpus numbers are medians of 3).
 
+## performance: floor of a run, 2026-10-20
+
+The per-test floor of the two verification-library suites (gap map rows 1 to 3): one `yavs run` per test, every
+test a new closure. Measured with `--time-report` (`tools/bench`-style, min of 8 to 12 runs, `--tier=interp`,
+`--threads 1`), the floor of a small test of the second library was cold analysis (0.11 to 0.16 s of 0.17 to 0.49 s),
+then elaboration with lowering (0.04 s), package initialisation and the optimiser. The two guesses of the gap map
+are not it: library load is 3 ms, and the four repeated instance warnings cost nothing measurable
+(`-Wno-W1506` changes nothing).
+
+What changed (`docs/decisions.md` "Prefix images and the image on the second analysis", "Floor of a run"):
+
+- Closures that miss continue from a cached prefix of their files (`pre` entries in the cache of the last library of the
+  prefix), so a new test case analyzes only its own files; settle finds its facts incrementally and the bodies of
+  `ieee` and of the instances whose generic body is analyzed are loaded in the prefix.
+- The analysis image and the lowered packages of a closure are made on its second run, not its first (a test case of a
+  suite runs once: the serialisation was a fifth of its run). A closure run twice or more is unchanged from the third run.
+- The analysis arenas are freed on a thread of its own (`release_analysis` took a fifth of a short run).
+- The suite drivers analyze consecutive files of a library in one call (521 files: 37 s to 3 s).
+
+Before and after on the same host, back to back (load average 11 to 13, single job; the base is the parent of these
+commits, so both have the optimiser of bb322c79):
+
+| Row | before | after | note |
+|---|---:|---:|---|
+| Second library's `.pro` suite, analysis of 521 files | 37.1 s | 2.9 s | gap map: reference simulator 22.3 s |
+| Same suite, test phase (314 tests, 314 pass) | 150.6 s | 106.0 s | gap map: 106.8 s vs 59.4 s on a quieter host |
+| First library's suite, 138 runs, analysis included | 316.5 s | 245.5 s | 102 pass, 9 fail, 26 skip both ways; gap map: reference simulator 163.1 s |
+| First run of a one-process small test (cold work cache) | 171 ms | 83 ms | analysis 110 to 11 ms |
+| First run of a mid-size AXI test | 489 ms | 369 ms | analysis 156 to 23 ms |
+| Second and later runs | unchanged | unchanged | |
+| Test-runner `check` suite (257 tests, one job) | 17 to 20 s | 18 to 20 s | within noise: the second test of a testbench now pays the analysis once more, the first saves it |
+
+On a quieter host, before the optimiser change below, the test phase of the suite measured 109.8 s before and 76.2 s
+after (the reference simulator: 59.4 s, so 1.8x became 1.3x).
+
+Outputs: difftest 409/409 at 1 and 4 threads, the second library's suite 314/314 under 2008 and 2019, the first
+library's 102/9/26, the three test-runner suites pass, `cargo test --workspace` and the cache tests (a new one
+covers the prefix).
+
+Left in the floor (not changed here, owners named):
+
+1. The optimiser (`yavs-ir` `opt`) is now 45 to 60 percent of a small test: bb322c79 (interval analysis, #444) raised the
+   simulate phase of a one-process small test from 20 to 51 ms (`YAVS_NO_IROPT=1`: 6 ms); `opt/range.rs:ranges` alone
+   is a third of the optimiser. Reported on #444. Most of what is optimised runs once (library initialisation and report
+   code); a call-count tier-up needs the version of a function in the frame (frames find their function by id; `pre` and
+   `live` are cached per id), so it is an interpreter change.
+2. Elaboration lowers every subprogram a testbench reaches from the packages again on each run (about 40 ms: lowering,
+   `emit`, verify 9 ms); only the packages with run-time objects are cached (`low`). Verifying lazily per function
+   would save 9 ms.
+3. Package initialisation (20 to 28 ms for a library with a protected-type logger) waits for #422.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

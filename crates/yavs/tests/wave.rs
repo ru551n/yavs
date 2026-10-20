@@ -750,3 +750,26 @@ fn wave_under_dap() {
     assert_eq!(dump(&dir.join("dap.fst")), dump(&dir.join("plain.fst")));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #433: an enumeration whose literals are all logic characters is a logic scalar for the
+/// writer; the recorder must hand it one position byte.
+#[test]
+fn wave_enum_of_logic_characters() {
+    let d = scratch("logic_chars");
+    let src = d.join("rm3.vhd");
+    std::fs::write(
+        &src,
+        "entity rm3 is end;\narchitecture t of rm3 is\n  type lv is ('X', '0', '1', 'Z');\n  \
+         signal a : lv := 'Z';\nbegin\n  process begin wait for 1 ns; a <= '1'; wait; end process;\nend;\n",
+    )
+    .expect("write");
+    assert!(analyze(&d, &src, "2008"));
+    let fst = d.join("a.fst");
+    let out = run(&d, &[&format!("--wave={}", fst.display()), "rm3"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(changes(&dump(&fst), "rm3.a"), "0=z 1000000=1");
+}

@@ -1153,6 +1153,9 @@ impl Design<'_> {
                     Elem::Logic if Some(t) == wk.boolean => Conv::Bool,
                     Elem::Logic if Some(t) == wk.bit => Conv::Logic { base: 2 },
                     Elem::Logic => Conv::Logic { base: 0 },
+                    // The writer takes an enum of logic characters (`'X' '0' '1' 'Z'`) as a
+                    // logic scalar: one position byte, not the 4 bytes of an enum-table value.
+                    Elem::Bytes(1) if e.logic_chars().is_some() => Conv::Raw,
                     Elem::Bytes(1) => Conv::Enum8,
                     Elem::Bytes(_) => Conv::Raw,
                 };

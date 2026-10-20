@@ -55,7 +55,7 @@ pub fn write_bit_vector(line: &mut Vec<u8>, bits: &[bool], side: Side, field: us
 }
 
 pub fn write_boolean(line: &mut Vec<u8>, v: bool, side: Side, field: usize) {
-    put(line, &image::boolean_image(v), side, field);
+    put(line, if v { b"true" } else { b"false" }, side, field);
 }
 
 pub fn write_character(line: &mut Vec<u8>, c: u8, side: Side, field: usize) {
@@ -63,7 +63,7 @@ pub fn write_character(line: &mut Vec<u8>, c: u8, side: Side, field: usize) {
 }
 
 pub fn write_integer(line: &mut Vec<u8>, v: i64, side: Side, field: usize) {
-    put(line, &image::integer_image(v), side, field);
+    put(line, image::integer_digits(v, &mut [0; 20]), side, field);
 }
 
 /// `write(l, real, justified, field, digits)`: `digits = 0` writes `%e`

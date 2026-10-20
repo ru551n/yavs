@@ -833,8 +833,7 @@ fn to_string(
     t: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    let s = crate::native::text(m, t, arg(a, 0)?, false)?;
-    ret(m, &s)
+    crate::native::text_result(m, t, arg(a, 0)?, false).map(Some)
 }
 
 fn conv(e: yavs_std::error::ConvError) -> Fault {

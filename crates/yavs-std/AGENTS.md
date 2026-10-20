@@ -59,8 +59,8 @@ Module-local decisions go in this section in the same commit; a new the referenc
   `AGENTS.md` rule 15) and review the diff. A deviation needs a reason line.
 - Tests that touch the file system use pid-suffixed temp dirs (`yavs-std-file-<pid>`); env tests
   rely on unset variable names `YAVS_STD_SURELY_UNSET_VARIABLE`/`YAVS_TEXTIO_TEST_UNSET_VARIABLE`.
-- Known perf debt: a textio read is O(len of the line) (one `drain`); the interpreter glue's
-  copy and reallocation per READ/WRITE dominates (#196). Real conversion is exact in every base.
+- Known perf debt: a textio read is O(len of the line) (one `drain`). Real conversion is exact in
+  every base.
 
 ## 5. How to work here
 

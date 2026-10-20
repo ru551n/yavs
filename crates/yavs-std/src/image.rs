@@ -12,7 +12,26 @@ use crate::types::{EnumLit, PhysicalType, character_name, lower};
 
 /// `integer'image`, `to_string(integer)`.
 pub fn integer_image(v: i64) -> Vec<u8> {
-    v.to_string().into_bytes()
+    integer_digits(v, &mut [0; 20]).to_vec()
+}
+
+/// The decimal text of `v` in `buf` (20 bytes hold any `i64`), for callers that copy it on.
+pub fn integer_digits(v: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    let mut n = v.unsigned_abs();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    if v < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    &buf[at..]
 }
 
 /// `real'image` and `to_string(real)`: C `%.15g` (implementation-defined
@@ -208,6 +227,24 @@ pub fn bits_to_ostring(bits: &[bool]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::types::time_type;
+
+    #[test]
+    fn integer_digits_match_to_string() {
+        for v in [
+            0,
+            1,
+            -1,
+            9,
+            10,
+            -10,
+            12345,
+            i64::MAX,
+            i64::MIN,
+            i64::MIN + 1,
+        ] {
+            assert_eq!(integer_image(v), v.to_string().into_bytes(), "{v}");
+        }
+    }
 
     #[test]
     fn word_radix_matches_bits() {

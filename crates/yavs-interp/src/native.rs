@@ -301,8 +301,17 @@ fn image_attr(
     ty: Option<TyId>,
     a: &[u64],
 ) -> R<Option<u64>> {
-    let s = text(m, ty, arg(a, 0)?, true)?;
-    m.ret_string(&s).map(Some)
+    text_result(m, ty, arg(a, 0)?, true).map(Some)
+}
+
+/// [`text`] as a string result (the fat pair in temporary memory); an integer is written from
+/// a stack buffer.
+pub(crate) fn text_result(m: &mut Machine, ty: Option<TyId>, v: u64, image: bool) -> R<u64> {
+    if let Some(Ty::Int { .. }) = ty.and_then(|t| m.rt.prog.types.get(t)) {
+        return m.ret_string(image::integer_digits(v as i64, &mut [0; 20]));
+    }
+    let s = text(m, ty, v, image)?;
+    m.ret_string(&s)
 }
 
 /// `'image` (`image = true`) or `to_string` of any value: scalars by value, arrays and

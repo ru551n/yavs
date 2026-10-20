@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/scalar.rs` | `StdULogic` (`U X 0 1 Z W L H -` = codes 0..8), `ALL`, tables `RESOLVE`, `AND`, `OR`, `XOR`, `MATCH`, `NOT`, `TO_X01`, `TO_X01Z`, `TO_UX01`; scalar ops, `rising_edge`/`falling_edge` |
-| `src/repr.rs` | `Repr` trait (`new`, `len`, `get`, `set`, `bin`, `un`, `to_words01`, `from_words01`), `BinOp`, `UnOp` |
+| `src/repr.rs` | `Repr` trait (`new`, `len`, `get`, `set`, `bin`, `un`, `to_words01`, `from_words01`, `remap`: shifts, slices and resizes; the default goes element by element, `Planes` overrides it with word shifts and masks), `BinOp`, `UnOp` |
 | `src/planes.rs` | `Planes`: `Vec<Block>`, `Block = [u64; 4]` (64 elements, plane k = bit k of the code); `blocks`, `from_blocks`, `resolve_block` (kernel accessors) |
 | `src/nibbles.rs` | `Nibbles`: 4-bit codes, table lookups (behind `--features nibbles` as the default alias) |
 | `src/vec.rs` | `Logic<R>`: the vector API used by the rest of yavs; `LogicVec = Logic<DefaultRepr>` in `lib.rs` |

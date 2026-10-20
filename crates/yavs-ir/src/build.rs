@@ -20,8 +20,8 @@ pub struct ProgramBuilder {
     /// [`ProgramBuilder::snapshot_take`], whose program comes back with
     /// [`ProgramBuilder::restore`].
     processed: usize,
-    /// Functions below this index are optimised (see `snapshot`).
-    optimized: usize,
+    /// Functions below this index are propagated in the program held (see `snapshot`).
+    propagated: usize,
 }
 
 impl ProgramBuilder {
@@ -111,7 +111,7 @@ impl ProgramBuilder {
 
     /// Declare a function so it can be called before it is defined.
     pub fn declare(&mut self, name: &str, kind: FuncKind, parent: Option<FuncId>) -> FuncId {
-        self.prog.funcs.push(Func {
+        let id = self.prog.funcs.push(Func {
             name: name.to_string(),
             kind,
             mangled: name.to_string(),
@@ -130,7 +130,13 @@ impl ProgramBuilder {
             body: None,
             size: 0,
             defined: false,
-        })
+            nested: false,
+            opt: Default::default(),
+        });
+        if let Some(p) = parent.and_then(|p| self.prog.funcs.get_mut(p)) {
+            p.nested = true;
+        }
+        id
     }
 
     /// Start the body of a declared function.
@@ -157,8 +163,7 @@ impl ProgramBuilder {
     pub fn finish(self) -> Result<Program, Vec<VerifyError>> {
         // Functions a snapshot verified already are not verified again (see `snapshot`).
         let (verified, processed) = (self.verified, self.processed);
-        let optimize_from = self.optimized.max(processed);
-        self.finish_from(verified, processed, optimize_from)
+        self.finish_from(verified, processed)
     }
 
     /// [`ProgramBuilder::finish`] on a copy, building goes on. Only the functions added since
@@ -166,11 +171,10 @@ impl ProgramBuilder {
     /// is added later cannot make an earlier one invalid.
     pub fn snapshot(&mut self) -> Result<Program, Vec<VerifyError>> {
         let n = self.prog.funcs.len();
-        // Optimise in place: the next snapshot starts from this builder, not from the copy.
-        propagate(&mut self.prog, self.optimized);
-        crate::opt::optimize(&mut self.prog, self.optimized, n);
-        let p = self.clone().finish_from(self.verified, 0, n)?;
-        (self.verified, self.optimized) = (n, n);
+        // Propagate in place: the next snapshot starts from this builder, not from the copy.
+        propagate(&mut self.prog, self.propagated);
+        let p = self.clone().finish_from(self.verified, 0)?;
+        (self.verified, self.propagated) = (n, n);
         Ok(p)
     }
 
@@ -185,11 +189,10 @@ impl ProgramBuilder {
             errors: self.errors.clone(),
             verified: self.verified,
             processed: self.processed,
-            optimized: self.optimized,
+            propagated: self.propagated,
         };
-        let optimize_from = self.optimized.max(self.processed);
-        let p = b.finish_from(self.verified, self.processed, optimize_from)?;
-        (self.verified, self.processed, self.optimized) = (n, n, n);
+        let p = b.finish_from(self.verified, self.processed)?;
+        (self.verified, self.processed, self.propagated) = (n, n, n);
         Ok(p)
     }
 
@@ -198,12 +201,10 @@ impl ProgramBuilder {
         self.prog = prog;
     }
 
-    /// Functions from `optimize_from` on are optimised; pass the function count for none.
     fn finish_from(
         mut self,
         verified: usize,
         processed: usize,
-        optimize_from: usize,
     ) -> Result<Program, Vec<VerifyError>> {
         let prog = &mut self.prog;
         for (id, f) in prog.funcs.iter() {
@@ -220,8 +221,6 @@ impl ProgramBuilder {
             return Err(self.errors);
         }
         propagate(prog, processed);
-        let n = prog.funcs.len();
-        crate::opt::optimize(prog, optimize_from, n);
         number_resumes(prog, processed);
         let errors = verify(prog, verified);
         if errors.is_empty() {
@@ -347,25 +346,29 @@ fn number_resumes(prog: &mut Program, first: usize) {
         .map(|f| f.flags.contains(FuncFlags::MAY_SUSPEND))
         .collect();
     for i in first..prog.funcs.len() {
-        let Some(f) = prog.funcs.get_mut(FuncId(i as u32)) else {
-            continue;
-        };
-        f.resume.clear();
-        for pc in 0..f.code.len() {
-            let n = f.resume.len() as u32;
-            match &mut f.code[pc] {
-                Inst::Suspend { resume } => {
-                    *resume = n;
-                    f.resume.push(pc as u32 + 1);
-                }
-                Inst::Call { func, .. } if suspending.get(func.0 as usize) == Some(&true) => {
-                    f.resume.push(pc as u32 + 1);
-                }
-                _ => {}
-            }
+        if let Some(f) = prog.funcs.get_mut(FuncId(i as u32)) {
+            number_func(f, |c| suspending.get(c.0 as usize) == Some(&true));
         }
-        f.size = f.code.len() as u32;
     }
+}
+
+/// Number the resume points of one function and set its size.
+pub(crate) fn number_func(f: &mut Func, suspending: impl Fn(FuncId) -> bool) {
+    f.resume.clear();
+    for pc in 0..f.code.len() {
+        let n = f.resume.len() as u32;
+        match &mut f.code[pc] {
+            Inst::Suspend { resume } => {
+                *resume = n;
+                f.resume.push(pc as u32 + 1);
+            }
+            Inst::Call { func, .. } if suspending(*func) => {
+                f.resume.push(pc as u32 + 1);
+            }
+            _ => {}
+        }
+    }
+    f.size = f.code.len() as u32;
 }
 
 /// Builds one function body. Instructions go into the current block and carry the current

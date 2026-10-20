@@ -89,64 +89,54 @@ impl Hasher for Fx {
 
 type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 
-/// Optimise the functions `from .. to` of `prog`. Flags must be propagated already.
-pub(crate) fn optimize(prog: &mut Program, from: usize, to: usize) {
+/// The optimised copy of function `id`, or `None` when the pass is off or leaves it alone.
+/// Reads only what lowering produced of other functions (flags, kinds, types), so the result
+/// does not depend on which function was optimised first.
+pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
     if !enabled() {
-        return;
+        return None;
     }
-    // Nested subprograms are lowered in the same batch as their parent.
-    let (lo, hi) = (from.min(prog.funcs.len()), to.min(prog.funcs.len()));
-    let mut parents: Vec<FuncId> = prog.funcs.values()[lo..hi]
-        .iter()
-        .filter_map(|f| f.parent)
-        .collect();
-    parents.sort_unstable_by_key(|f| f.0);
+    let raw = prog.funcs.get(id)?;
+    if matches!(raw.kind, FuncKind::Elab | FuncKind::Thunk) || raw.code.len() < 2 {
+        return None;
+    }
     let mut layouts = FxMap::default();
-    for i in lo..hi {
-        let id = FuncId(i as u32);
-        // The code is taken out so that it can be rewritten while the rest of the program
-        // is read.
-        let taken = match prog.funcs.get_mut(id) {
-            Some(f) if !matches!(f.kind, FuncKind::Elab | FuncKind::Thunk) && f.code.len() >= 2 => {
-                (
-                    std::mem::take(&mut f.code),
-                    std::mem::take(&mut f.operands),
-                    std::mem::take(&mut f.loc),
-                )
+    let mut o = Opt::new(
+        prog,
+        raw,
+        raw.code.clone(),
+        raw.operands.clone(),
+        raw.nested,
+        &mut layouts,
+    );
+    o.run();
+    let mut loc = raw.loc.clone();
+    let blocks = o.changed.then(|| o.compact(&mut loc));
+    let mut f = raw.shell();
+    if let Some(blocks) = blocks {
+        for (i, nb) in blocks.iter().enumerate() {
+            if let Some(b) = f.blocks.get_mut(BlockId(i as u32)) {
+                b.start = nb.0;
+                b.end = nb.1;
             }
-            _ => continue,
-        };
-        let (code, operands, mut loc) = taken;
-        let ro: &Program = prog;
-        let Some(f) = ro.funcs.get(id) else {
-            continue;
-        };
-        let mut o = Opt::new(
-            ro,
-            f,
-            code,
-            operands,
-            parents.binary_search_by_key(&id.0, |p| p.0).is_ok(),
-            &mut layouts,
-        );
-        o.run();
-        let blocks = o.changed.then(|| o.compact(&mut loc));
-        let (code, operands, new_regs) = (o.code, o.operands, o.new_regs);
-        if let Some(f) = prog.funcs.get_mut(id) {
-            if let Some(blocks) = blocks {
-                for (i, nb) in blocks.iter().enumerate() {
-                    if let Some(b) = f.blocks.get_mut(BlockId(i as u32)) {
-                        b.start = nb.0;
-                        b.end = nb.1;
-                    }
-                }
-            }
-            f.code = code;
-            f.loc = loc;
-            f.operands = operands;
-            f.reg_ty.extend(new_regs);
         }
     }
+    f.code = o.code;
+    f.loc = loc;
+    f.operands = o.operands;
+    f.reg_ty.extend(o.new_regs);
+    crate::build::number_func(&mut f, |c| {
+        prog.funcs
+            .get(c)
+            .is_some_and(|c| c.flags.contains(FuncFlags::MAY_SUSPEND))
+    });
+    #[cfg(debug_assertions)]
+    {
+        let mut errs = Vec::new();
+        crate::verify::verify_func(prog, id, &f, &mut errs);
+        assert!(errs.is_empty(), "optimiser broke {}: {errs:?}", f.name);
+    }
+    Some(Box::new(f))
 }
 
 /// The registers `i` defines: the common instructions directly, the rest through

@@ -40,9 +40,14 @@ textual dump.
 
 ## Changes
 
-- `opt.rs` (#427): `ProgramBuilder::finish`/`snapshot` optimise every process, procedure and
-  function once (not `Elab`/`Thunk`) after flag propagation and before resume numbering and
-  verification: constant folding, identities, branch folding, `Index` of a known address
+- `opt.rs` (#427): `Program::func` returns a function optimised the first time it is asked
+  for (a `OnceLock` in `Func::opt` holds the optimised copy; `Program::funcs` keeps the code as
+  lowering emitted it, with its own pc numbers, blocks and resume points; the copy is numbered
+  and, in debug builds, verified on its own). Every process, procedure and function (not
+  `Elab`/`Thunk`) is optimised, so a function never called costs nothing. Consumers that execute
+  or show code must go through `Program::func`, never `Program::funcs`. The pass sees only
+  what lowering emitted of other functions (flags, kinds, types), so the result does not
+  depend on the order of the first calls. It runs on flag-propagated code: constant folding, identities, branch folding, `Index` of a known address
   becomes `AddrOf`, constant-pool descriptor and scalar reads, `Field` of a record whose
   layout does not depend on a descriptor becomes an `Index` by a constant (the `LayoutOf` goes
   when unread; the pass adds registers and `Const` instructions), available-expression

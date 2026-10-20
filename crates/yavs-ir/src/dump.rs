@@ -8,7 +8,7 @@ impl Program {
     /// The dump of one function.
     pub fn dump_func(&self, id: FuncId) -> String {
         let mut s = String::new();
-        if let Some(f) = self.funcs.get(id) {
+        if let Some(f) = self.func(id) {
             let _ = write_func(&mut s, id, f);
         }
         s
@@ -66,8 +66,10 @@ impl fmt::Display for Program {
                 x.signature()
             )?;
         }
-        for (id, func) in self.funcs.iter() {
-            write_func(f, id, func)?;
+        for (id, _) in self.funcs.iter() {
+            if let Some(func) = self.func(id) {
+                write_func(f, id, func)?;
+            }
         }
         Ok(())
     }

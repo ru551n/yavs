@@ -15,7 +15,7 @@ fn build(kind: FuncKind, body: impl FnOnce(&mut FuncBuilder<'_>)) -> Vec<Inst> {
     body(&mut fb);
     fb.finish();
     let p = pb.finish().expect("optimised code verifies");
-    p.funcs.get(f).expect("f").code.clone()
+    p.func(f).expect("f").code.clone()
 }
 
 fn count(code: &[Inst], pred: impl Fn(&Inst) -> bool) -> usize {
@@ -191,7 +191,7 @@ fn loads_left(named: bool, between: impl FnOnce(&mut FuncBuilder<'_>, FuncId)) -
     fb.emit(Inst::Ret { v: Some(r) });
     fb.finish();
     let p = pb.finish().expect("verifies");
-    let code = &p.funcs.get(f).expect("f").code;
+    let code = &p.func(f).expect("f").code;
     count(code, |i| matches!(i, Inst::Load { .. }))
 }
 
@@ -310,7 +310,7 @@ fn statement_locations_follow_their_instructions() {
     fb.emit(Inst::Ret { v: Some(r) });
     fb.finish();
     let p = pb.finish().expect("verifies");
-    let func = p.funcs.get(f).expect("f");
+    let func = p.func(f).expect("f");
     assert_eq!(func.code.len(), func.loc.len());
     let ret = func
         .code

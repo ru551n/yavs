@@ -290,7 +290,11 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     let mut names = Vec::new();
     {
         let g = Gen::new(&m);
-        for (id, f) in prog.funcs.iter() {
+        for (id, f) in prog
+            .funcs
+            .iter()
+            .filter_map(|(id, _)| prog.func(id).map(|f| (id, f)))
+        {
             // Elaboration code runs before the simulation, in the interpreter.
             if f.kind == FuncKind::Elab {
                 continue;
@@ -326,7 +330,11 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     }
     let mut kinds = std::collections::HashMap::new();
     let mut inline = 0;
-    for (id, f) in prog.funcs.iter() {
+    for (id, f) in prog
+        .funcs
+        .iter()
+        .filter_map(|(id, _)| prog.func(id).map(|f| (id, f)))
+    {
         if funcs[id.0 as usize].is_none() {
             continue;
         }

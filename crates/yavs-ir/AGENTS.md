@@ -26,7 +26,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | `src/ty.rs` | `Ty`, `Layout`/`LayoutError`, `LogicKind`, `Field`, descriptor format (`DOPE_DIM_BYTES` = 24: `[left, right, dir]` i64 per dimension), `dim_len`, `Refl`/`ReflKind` |
 | `src/build.rs` | `ProgramBuilder` (types, constants, natives, `check_msg_for`, `reflect`), `FuncBuilder`; `finish()` propagates flags, numbers resume points, runs the verifier |
 | `src/ieee.rs` | `ieee::parse`/`native_symbol`: which mangled `ieee` subprograms have a native (`yavs.ieee.<key>`); `yavs-lower` emits the call, `yavs-interp` `ieee.rs` implements it |
-| `src/opt.rs` | The optimiser run by `finish`/`snapshot` (folding, sharing, forwarding, dead definitions); `YAVS_NO_IROPT=1` turns it off |
+| `src/opt.rs` | The optimiser, run per function by `Program::func` on first use (folding, sharing, forwarding, dead definitions); `YAVS_NO_IROPT=1` turns it off |
 | `src/verify.rs` | One linear walk; `VerifyError` (an ICE of the producer) |
 | `src/dump.rs` | Text dump (`Program`'s `Display`, `dump_func`) |
 | `tests/verify.rs` | Verifier and layout tests |
@@ -45,6 +45,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | Natives named by `lib/NATIVE.md` symbol; `'image` is `yavs.attr.image` | One symbol table | `docs/decisions.md` "IR and interpreter", `lib/NATIVE.md` |
 | Foreign calls without libffi through `yavs-ffi`; arrays as C-layout copies, records as aligned structs | ir.md 1.7 | `docs/decisions.md` "IR and interpreter" (Foreign arrays) |
 | Verifier checks register liveness across suspension within a block only | Cross-block needs dataflow (JIT tier) | `docs/decisions.md` "IR and interpreter" |
+| The optimiser runs lazily per function on the first `Program::func`; the unoptimised code stays in `Program::funcs`. A function's version is fixed at its first use, because frames find their function by id and a pc must keep its meaning | #427 |
 | The optimiser never removes a store, a `Stmt` or a `Cover`, never lets a register live across a suspension, forgets memory facts at every `Stmt` (a debugger may write a named local) and drops a check only when it provably passes | Stepping, coverage, DAP, identical runtime errors | #427, ir.md 9 |
 | Array elements of an integer type within 32 bits are 4 bytes (`Ty::elem_size`), scalars 8; `Width::B4` loads sign-extend | Memory and cache of integer arrays (R12, #415) | `docs/decisions.md` "Narrow integer storage" |
 | Time resolution is a runtime setting (`Bindings::resolution`), never baked into IR | Rule 7 | `docs/plan.md` rule 7 |

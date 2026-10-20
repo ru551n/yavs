@@ -43,7 +43,9 @@ impl std::error::Error for VerifyError {}
 pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
     let mut errs = Vec::new();
     for (id, _) in prog.funcs.iter().skip(first) {
-        verify_func(prog, id, &mut errs);
+        if let Some(f) = prog.funcs.get(id) {
+            verify_func(prog, id, f, &mut errs);
+        }
     }
     for (id, t) in prog.cases.iter() {
         let sorted = t.arms.windows(2).all(|w| w[0].1 < w[1].0);
@@ -59,8 +61,12 @@ pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
     errs
 }
 
-fn verify_func(prog: &Program, id: FuncId, errs: &mut Vec<VerifyError>) {
-    let Some(f) = prog.funcs.get(id) else { return };
+pub(crate) fn verify_func(
+    prog: &Program,
+    id: FuncId,
+    f: &crate::Func,
+    errs: &mut Vec<VerifyError>,
+) {
     let mut err = |pc: Option<usize>, m: String| {
         errs.push(VerifyError::new(id, &f.name, pc.map(|p| p as u32), m));
     };

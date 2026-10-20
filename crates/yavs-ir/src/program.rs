@@ -29,8 +29,26 @@ pub struct Program {
 }
 
 impl Program {
+    /// The function as it executes: its code optimised (see `opt`), the first time asked for.
+    /// `funcs` holds the code as lowering emitted it. Both are the same function: statements,
+    /// frame, parameters and flags agree, instruction numbers, blocks and resume points do not.
+    #[inline]
     pub fn func(&self, f: FuncId) -> Option<&Func> {
-        self.funcs.get(f)
+        let raw = self.funcs.get(f)?;
+        match raw.opt.get() {
+            Some(Some(o)) => Some(o),
+            Some(None) => Some(raw),
+            None => Some(self.optimized(raw, f)),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
+        raw.opt
+            .get_or_init(|| crate::opt::optimize_func(self, f))
+            .as_deref()
+            .unwrap_or(raw)
     }
 
     /// The process must run serially (ir.md 3.5): it or a subprogram it reaches touches
@@ -45,7 +63,7 @@ impl Program {
     /// procedure (a sensitivity list, or one wait statement). It orders the processes of a
     /// delta (#252, yavs-kernel DESIGN.md "Parallel evaluation").
     pub fn single_suspend(&self, f: FuncId) -> bool {
-        self.funcs.get(f).is_some_and(|f| {
+        self.func(f).is_some_and(|f| {
             f.resume.len() == 1 && f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
         })
     }
@@ -168,9 +186,40 @@ pub struct Func {
     /// Instruction count, for the LLVM size threshold.
     pub size: u32,
     pub defined: bool,
+    /// Another function names this one as its parent (its frame can be reached by `Up`).
+    pub nested: bool,
+    /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
+    /// lowered).
+    pub opt: std::sync::OnceLock<Option<Box<Func>>>,
 }
 
 impl Func {
+    /// A copy without code, locations, operands and optimised copy.
+    pub(crate) fn shell(&self) -> Func {
+        Func {
+            name: self.name.clone(),
+            kind: self.kind,
+            mangled: self.mangled.clone(),
+            parent: self.parent,
+            params: self.params.clone(),
+            locals: self.locals.clone(),
+            frame: self.frame,
+            roots: self.roots.clone(),
+            reg_ty: self.reg_ty.clone(),
+            blocks: self.blocks.clone(),
+            code: Vec::new(),
+            loc: Vec::new(),
+            operands: Vec::new(),
+            resume: Vec::new(),
+            flags: self.flags,
+            body: self.body,
+            size: self.size,
+            defined: self.defined,
+            nested: self.nested,
+            opt: Default::default(),
+        }
+    }
+
     pub fn nregs(&self) -> u32 {
         self.reg_ty.len() as u32
     }

@@ -406,7 +406,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   never waits for the client: when too many batches are queued the newest is merged into the
   last (`merged: true`, only the last change of each value kept). A failure of the live waves
   is `E0702` (the run fails). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
-- `--tier=interp|llvm|auto` (`run`, default `interp`): `llvm` compiles every function of the
+- `--tier=interp|llvm|auto|clift|clift-auto` (`run`, default `interp`): `llvm` compiles every function of the
   design with the LLVM tier before time 0 and runs that code; `auto` starts in the interpreter
   and compiles each function that becomes hot (once the instructions it ran in the interpreter
   would have paid for its compilation) at the cheapest optimisation level on one background
@@ -424,7 +424,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   per IR instruction of it (PERIOD `0`, as in `1,0,0`: from its first call or jump). Both tiers need a yavs
   built with the `llvm` cargo feature (LLVM 21): otherwise asking for them is error `E0120` (exit 2); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
-  bug in yavs). `--verbose` prints, on stderr, a note per function left to the
+  bug in yavs). `clift` and `clift-auto` are `llvm` and `auto` with the Cranelift code generator; they need a yavs built with
+  the `clift` cargo feature (no LLVM needed), otherwise `E0120`, and give the same output. `--verbose` prints, on stderr, a note per function left to the
   interpreter and how many instructions were compiled (`llvm`), or a note per hot function as
   the compile thread takes it (`auto`, so their order and number depend on timing). The test
   runner passes neither; use `yavs.sim_flags`.

@@ -6,7 +6,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'spike/**']
   pull_request:
   workflow_call:
 
@@ -110,6 +110,35 @@ jobs:
           # --tier=auto with every function compiled from its first call or jump: swap-ins in the
           # middle of each test, at 1 and 4 threads.
           YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=1,0,0 python3 tools/difftest/difftest.py --candidate yavs-auto --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
+
+  # The Cranelift tier (`--features clift`, no external dependency) on the same three platforms.
+  clift:
+    name: clift (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clift
+      - run: cargo clippy -p yavs-clift -p yavs --features clift --all-targets --locked -- -D warnings
+      - run: cargo test -p yavs-clift -p yavs --features clift --locked --no-fail-fast
+      - name: Simulation smoke with --tier=clift
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p yavs --features clift
+          YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-clift --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
+          # --tier=clift-auto with every function translated from its first call or jump, at 1 and 4 threads.
+          YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=0,0,0 python3 tools/difftest/difftest.py --candidate yavs-clift-auto --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
 
   # Analysis corpora (tools/corpus): fetched at pinned revisions into the runner cache, never
   # part of the repository. Fails on any difference from the checked-in expected lists, in

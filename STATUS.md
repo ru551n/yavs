@@ -336,6 +336,34 @@ this benchmark. Analysis of `std`/`ieee` units a design uses is 10 to 20 ms, so 
 base was not built. Tests: `crates/yavs/tests/cache.rs`, `crates/yavs-cache`; the difftest corpus (342
 tests at 1 and 4 threads) and the external runner's `check` suite pass with the cache on.
 
+### Per-run overhead (#426)
+
+The fixed cost of one `yavs run`, which a testbench suite pays once per test case. Release builds, the main
+of the day (before) against this work (after), same host at a load average of about 20, so CPU seconds and
+medians. Decisions: `docs/decisions.md` "Per-run overhead".
+
+| Measurement | before | after |
+|---|---|---|
+| `vunit_vc30`, analyze phase (30 runs, 5-run median CPU s) | 1.39 | 0.85 |
+| `vunit_vc30`, total CPU s | 5.77 | 5.22 |
+| one testbench of it (`tb_axi_stream`), CPU ms per run, 20-run loops | 404 | 389 |
+| `elab_heavy` (20000 instances), total CPU s | 0.55 | 0.48 |
+| design with `std_logic_1164`, `numeric_std`, `math_real`, `textio` only, warm run, ms | 6 to 8 | 6 to 8 |
+| trivial testbench, process start to exit (200-run loop), ms | 3.0 | 3.0 |
+
+Where one run of a testbench library of 130 000 expressions spends its analyze phase (ms, wall, warm):
+manifests 6 (parse, twice) to 1 (once, small parser); closure hash of 60 source files 9 to under 1 (size and
+modification time); entry read 14 to 5 (no copy, xxh3 instead of sha256); decode of the image 22 to 28
+(unchanged: serde and postcard, 5.3 MB of arenas and 3.3 MB of source text, a third of it allocation); source
+re-compare 1 to 7 to 0. A cold run (a miss) also encodes the image, 30 ms for the same library
+(about 5 ms less with the dense symbol table).
+
+Not done, with the numbers that decide it: decoding the arenas on several threads would take about 12 ms of
+wall off the 22 but no CPU, so it does not help a suite that already fills the host; a different global allocator
+(a general-purpose one with per-thread heaps) cut the decode by a quarter and a run by 10% but made `elab_heavy` 2.8
+times slower and doubled the baseline RSS, so it is not adopted; lazily decoded arenas would save CPU but
+change `Arena` in the analysis hot path.
+
 ### Waveform recording cost (#410)
 
 `YAVS_BENCH_RUN_FLAGS="--wave={out}"` (and `--wave-variables`) runs any benchmark with waves; the report adds the

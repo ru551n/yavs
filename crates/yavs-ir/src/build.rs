@@ -20,6 +20,8 @@ pub struct ProgramBuilder {
     /// [`ProgramBuilder::snapshot_take`], whose program comes back with
     /// [`ProgramBuilder::restore`].
     processed: usize,
+    /// Functions below this index are optimised (see `snapshot`).
+    optimized: usize,
 }
 
 impl ProgramBuilder {
@@ -155,7 +157,8 @@ impl ProgramBuilder {
     pub fn finish(self) -> Result<Program, Vec<VerifyError>> {
         // Functions a snapshot verified already are not verified again (see `snapshot`).
         let (verified, processed) = (self.verified, self.processed);
-        self.finish_from(verified, processed)
+        let optimize_from = self.optimized.max(processed);
+        self.finish_from(verified, processed, optimize_from)
     }
 
     /// [`ProgramBuilder::finish`] on a copy, building goes on. Only the functions added since
@@ -163,8 +166,11 @@ impl ProgramBuilder {
     /// is added later cannot make an earlier one invalid.
     pub fn snapshot(&mut self) -> Result<Program, Vec<VerifyError>> {
         let n = self.prog.funcs.len();
-        let p = self.clone().finish_from(self.verified, 0)?;
-        self.verified = n;
+        // Optimise in place: the next snapshot starts from this builder, not from the copy.
+        propagate(&mut self.prog, self.optimized);
+        crate::opt::optimize(&mut self.prog, self.optimized, n);
+        let p = self.clone().finish_from(self.verified, 0, n)?;
+        (self.verified, self.optimized) = (n, n);
         Ok(p)
     }
 
@@ -179,9 +185,11 @@ impl ProgramBuilder {
             errors: self.errors.clone(),
             verified: self.verified,
             processed: self.processed,
+            optimized: self.optimized,
         };
-        let p = b.finish_from(self.verified, self.processed)?;
-        (self.verified, self.processed) = (n, n);
+        let optimize_from = self.optimized.max(self.processed);
+        let p = b.finish_from(self.verified, self.processed, optimize_from)?;
+        (self.verified, self.processed, self.optimized) = (n, n, n);
         Ok(p)
     }
 
@@ -190,10 +198,12 @@ impl ProgramBuilder {
         self.prog = prog;
     }
 
+    /// Functions from `optimize_from` on are optimised; pass the function count for none.
     fn finish_from(
         mut self,
         verified: usize,
         processed: usize,
+        optimize_from: usize,
     ) -> Result<Program, Vec<VerifyError>> {
         let prog = &mut self.prog;
         for (id, f) in prog.funcs.iter() {
@@ -210,6 +220,8 @@ impl ProgramBuilder {
             return Err(self.errors);
         }
         propagate(prog, processed);
+        let n = prog.funcs.len();
+        crate::opt::optimize(prog, optimize_from, n);
         number_resumes(prog, processed);
         let errors = verify(prog, verified);
         if errors.is_empty() {

@@ -691,14 +691,20 @@ impl Inst {
     /// Every fixed register operand with its role and expected type (`None`: any cell that
     /// is not a signal). List operands are not included (see [`Inst::list`]).
     pub fn visit(&self, f: &mut dyn FnMut(Reg, Role, Option<RegTy>)) {
+        let mut c = *self;
+        c.visit_mut(&mut |r, role, t| f(*r, role, t));
+    }
+
+    /// [`Inst::visit`] with the operands writable (register renaming by the optimiser).
+    pub fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Reg, Role, Option<RegTy>)) {
         use RegTy::*;
         use Role::*;
         let i = Some(I64);
         let p = Some(Ptr);
         let s = Some(Sig);
         let fl = Some(F64);
-        let mut d = |r: Reg, t: Option<RegTy>| f(r, Def, t);
-        match *self {
+        let mut d = |r: &mut Reg, t: Option<RegTy>| f(r, Def, t);
+        match self {
             Inst::Const { dst, .. } => d(dst, None),
             Inst::ConstF { dst, .. } => d(dst, fl),
             Inst::Move { dst, src } => {
@@ -712,12 +718,12 @@ impl Inst {
                 f(size, Use, i);
             }
             Inst::Load { dst, addr, w } => {
-                d(dst, (w == Width::Sig).then_some(Sig));
+                d(dst, (*w == Width::Sig).then_some(Sig));
                 f(addr, Use, p);
             }
             Inst::Store { addr, src, w } => {
                 f(addr, Use, p);
-                f(src, Use, (w == Width::Sig).then_some(Sig));
+                f(src, Use, (*w == Width::Sig).then_some(Sig));
             }
             Inst::Copy { dst, src, bytes } => {
                 f(dst, Use, p);
@@ -754,7 +760,7 @@ impl Inst {
             Inst::Bool { op, dst, a, b } => {
                 d(dst, i);
                 f(a, Use, i);
-                if op != BoolOp::Not {
+                if *op != BoolOp::Not {
                     f(b, Use, i);
                 }
             }
@@ -765,7 +771,7 @@ impl Inst {
             Inst::FBin { op, dst, a, b } => {
                 d(dst, fl);
                 f(a, Use, fl);
-                f(b, Use, if op == FOp::PowI { i } else { fl });
+                f(b, Use, if *op == FOp::PowI { i } else { fl });
             }
             Inst::FUn { dst, a, .. } => {
                 d(dst, fl);
@@ -864,7 +870,7 @@ impl Inst {
                 v, lo, hi, kind, ..
             } => {
                 f(v, Use, i);
-                if kind != CheckKind::Null {
+                if *kind != CheckKind::Null {
                     f(lo, Use, i);
                 }
                 if matches!(kind, CheckKind::Range | CheckKind::Index) {

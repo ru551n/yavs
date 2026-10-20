@@ -12,6 +12,7 @@ mod build;
 mod dump;
 pub mod ieee;
 mod inst;
+pub mod opt;
 mod program;
 mod ty;
 mod verify;

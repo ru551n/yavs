@@ -334,6 +334,33 @@ every large variable per time step. The FST is read-back identical (hierarchy an
 after, and identical at `--threads 1` and 4; its bytes can differ between runs of a run longer than the 5 s flush
 interval, because a block ends on the wall clock.
 
+### Waveform variable entries (#418)
+
+`--wave --wave-variables` on the AXI-stream verification component testbench (2.07 million variable entries, the
+largest a 7 MB record). Median total CPU seconds of 3 interleaved runs, `--threads 1`, host load about 20, binary
+before this work against after (same work, `yavs run --stop-time=10us`); the no-wave run of that testbench is
+5.9 s, so the ratio went from x5.8 under this load (x3.8 in #410) to x1.6, and x1.4 on a quieter host:
+
+| Benchmark | before | after | ratio |
+|---|---|---|---|
+| `ff_rtl` | 0.07 | 0.07 | 0.99 |
+| `resolved_bus` | 0.58 | 0.58 | 1.01 |
+| `delta_chain` | 0.33 | 0.32 | 0.98 |
+| `vai_window_gen` | 2.98 | 2.83 | 0.95 |
+| `uvvm_axistream_vvc_tb` | 34.4 | 9.3 | 0.27 |
+
+For the last one: init (declaring the entries) 3.5 to 1.1 s, simulate 29.8 to 7.5 s, peak RSS 2970 to 1497 MiB,
+FST 443 to 80 MB. What changed, one commit each: variables compared in place with a heap write count
+(`Heap::stamp`) so an unwritten composite is never touched (the shared 7 MB record was copied and compared at every
+step); entries read from the raw bytes at places found once per variable (`yavs_elab::leaf_locs`) instead of a
+decoded `Val` tree; only entries overlapping a changed 64-byte chunk are read; a flat hierarchy with shared types
+and one declaration plan per type (from about 840 bytes of hierarchy and recorder state per entry to about 70); and
+FST blocks that hold at least two values per signal. What is left is the writer library: about 460 bytes and
+0.4 us per declared entry and 0.1 us per first value. Reading back with the reader library gives the same
+hierarchy, types and every change before and after, at 1 and 4 threads (difftest corpus, 349 designs, FST
+byte-identical); a run of up to 125 000 signals writes the same bytes as before, longer ones differ in block layout
+only. No regression without waves (`vai_window_gen`, `compute_loop`, `protected_scoreboard`, `ff_rtl` within 4%).
+
 ### Simulation kernel (#385, #411)
 
 Kernel and kernel/interpreter boundary costs for signal-heavy designs, one commit each, output byte-identical

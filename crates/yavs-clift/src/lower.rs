@@ -902,7 +902,10 @@ fn gen_func(
                 open = false;
             }
             Inst::SigReadScalar { .. }
+            | Inst::SigRead { .. }
             | Inst::WaitOn { .. }
+            | Inst::WaitFor { .. }
+            | Inst::DriveSlot { .. }
             | Inst::Drive { .. }
             | Inst::Suspend { .. } => g.signal(pc, 0),
             Inst::CallNative { native, args, dst } => {

@@ -631,8 +631,9 @@ fn fill_blocks(bytes: &[u8], out: &mut [[u64; 4]]) {
     }
 }
 
-/// `n` elements of the planes `sw` from element `s0` to those of `dw` from element `d0`.
-fn copy_bits(sw: &[[u64; 4]], dw: &mut [[u64; 4]], s0: u64, d0: u64, n: u64) {
+/// `n` elements of the planes `sw` from element `s0` to those of `dw` from element `d0`
+/// (`Inst::LCopy`; compiled code calls it on the same memory, `yavs-llvm`).
+pub fn copy_bits(sw: &[[u64; 4]], dw: &mut [[u64; 4]], s0: u64, d0: u64, n: u64) {
     // One block on each side: shift and mask the four planes.
     if let ([s], [d]) = (sw, &mut *dw)
         && n <= 64
@@ -1590,8 +1591,12 @@ impl Machine {
         if n == 0 {
             return Ok(());
         }
-        let (sb0, sb1) = (soff / 64, (soff + n - 1) / 64);
-        let (db0, db1) = (doff / 64, (doff + n - 1) / 64);
+        let last = |off: u64| {
+            off.checked_add(n - 1)
+                .ok_or_else(|| ice(format!("logic copy of {n} elements at {off}")))
+        };
+        let (sb0, sb1) = (soff / 64, last(soff)? / 64);
+        let (db0, db1) = (doff / 64, last(doff)? / 64);
         let (sn, dn) = ((sb1 - sb0 + 1) as usize, (db1 - db0 + 1) as usize);
         let da = add_addr(dst, db0 * 32)?;
         let (s0, d0) = (soff - sb0 * 64, doff - db0 * 64);
@@ -2537,6 +2542,19 @@ impl Machine {
             return rt_err("signal or wait operation during elaboration");
         };
         c.wait_on(sr)?;
+        Ok(())
+    }
+
+    /// `Inst::WaitFor`.
+    fn wait_for(&mut self, t: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let t = to_time(self.ri(t))?;
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err("signal or wait operation during elaboration");
+        };
+        c.wait_for(t)?;
+        if self.dbg.is_some() {
+            self.waits.timeout = c.after(t).ok();
+        }
         Ok(())
     }
 
@@ -5580,14 +5598,7 @@ impl Machine {
                 }
             }
             Inst::WaitOn { sig } => self.wait_on(sig, ctx)?,
-            Inst::WaitFor { t } => {
-                let t = to_time(self.ri(t))?;
-                let c = kc!();
-                c.wait_for(t)?;
-                if self.dbg.is_some() {
-                    self.waits.timeout = c.after(t).ok();
-                }
-            }
+            Inst::WaitFor { t } => self.wait_for(t, ctx)?,
             Inst::WaitAt { t } => {
                 let t = to_time(self.ri(t))?;
                 kc!().wait_at(t)?;
@@ -5791,6 +5802,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Some(&Inst::SigReadScalar { dst, sig }) => {
                 m.sig_read_scalar(sig, self.ctx).map(|v| m.set(dst, v))
             }
+            Some(&Inst::SigRead { dst, sig }) if !m.is_multi(sig) => {
+                m.sig_read_vec(dst, sig, self.ctx)
+            }
             Some(&Inst::Drive {
                 driver,
                 target,
@@ -5809,6 +5823,23 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 }
                 r => r,
             },
+            Some(&Inst::WaitFor { t }) => match m.wait_for(t, self.ctx) {
+                Ok(()) if matches!(f.code.get(at as usize + 1), Some(Inst::Suspend { .. })) => {
+                    return self.signal(tf, at + 1, 0);
+                }
+                r => r,
+            },
+            Some(&Inst::DriveSlot {
+                slot,
+                target,
+                wave,
+                n,
+                mode,
+                reject,
+            }) if !m.is_multi(target) => u32::try_from(m.r(slot))
+                .map_err(|_| ice("driver slot out of range"))
+                .and_then(|s| m.driver(s))
+                .and_then(|d| m.drive(self.ctx, d, Some(target), wave, n, mode, reject)),
             Some(&Inst::Suspend { .. }) => match m.suspend(self.prog, f, self.ctx) {
                 Ok(()) => {
                     m.top().pc = at;

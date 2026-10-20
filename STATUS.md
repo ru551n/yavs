@@ -1435,6 +1435,59 @@ time, so CPU is reported). Cells: CPU seconds / peak MiB / collections.
   mark buffer is not reused (a measured gain below noise would not pay for 1 byte per slot kept in every heap).
 - **Default kept at 1 MiB** (`docs/decisions.md`, "Heap collection threshold").
 
+## performance: compiled vector process bodies (#338, #339, #432, 2026-10-20)
+
+The LLVM tier runs process bodies over `std_logic_vector` without leaving compiled code for the
+vector work: `LCopy` inline (the plane blocks through `Gen::host`, copied by
+`yavs_interp::copy_bits`, the interpreter's), constants read from a copy in the module (the object lookup each
+activation was 5% of `rtl2`), and `SigRead`, `DriveSlot` and `WaitFor` as direct calls
+(`TierHost::signal`, the interpreter's bodies of #443).
+`--tier=auto` compiles a hot process without a loop of its own at O2 at once (its O0 code ran
+no faster than the interpreter), keeps a one-statement process interpreted (a process's way
+through its suspension is no loop; loops are now cycles of blocks), and compiles a short hot
+function at O2 once compiled code calls it (`numeric_std`'s `"xor"` in a reduction loop left the
+compiled caller and entered it again on every call). Still stepped: the numeric vector natives
+(arithmetic, shifts, resize, conversions build vectors), forces, multi-part drives and reads.
+
+RTL set, `--threads 1`, median CPU seconds of 5 runs (total without analysis), every run pinned
+to performance cores 2 and 3 (`taskset -c 2,3`: the compile thread of `--tier=auto` gets the
+second). Before = main at `1bea8e40`; after = main at `6dabc9fc`, this work together with the
+interpreter's (#443) and the kernel's (#440) rounds and the block kernels of #199 that landed
+in between, so the interp columns are mostly theirs and auto against interp of the same binary
+is this work's share. sim1 run as `-H 64m -e <top> --no-save --jit -r`, pinned the same way.
+Designs 2a/2b: 64 LFSR processes over `unsigned` (2a with a process XOR-reducing the 64
+registers through `numeric_std`'s `"xor"`, 5000 cycles; 2b without it, 20000 cycles).
+
+| Design | sim1 | interp before | interp after | auto before | auto after | auto after / sim1 | interp after / sim1 | auto before / sim1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2b 64 LFSR x 20000 | 0.14 | 0.94 | 0.75 | 1.06 | 0.75 | 5.4x | 5.4x | 7.6x |
+| `lfsr` (512 x 16 bit x 5000) | 0.17 | 2.03 | 1.69 | 1.97 | 1.47 | 8.6x | 9.9x | 11.6x |
+| `ff` (4096 x 2000) | 0.53 | 2.55 | 1.94 | 2.73 | 2.22 | 4.2x | 3.7x | 5.2x |
+| 2a 64 LFSR x 5000, XOR reduce | 0.10 | 0.42 | 0.33 | 0.51 | 0.46 | 4.6x | 3.3x | 5.1x |
+| `chain` (1000 x 2000) | 0.15 | 0.97 | 0.66 | 0.99 | 0.64 | 4.3x | 4.4x | 6.6x |
+| `fan` (4000 x 5000) | 1.08 | 2.28 | 1.72 | 2.78 | 1.89 | 1.8x | 1.6x | 2.6x |
+| `bus` (32 drivers x 20000) | 0.76 | 0.61 | 0.35 | 0.68 | 0.33 | 0.4x | 0.5x | 0.9x |
+
+2a is short (0.3 s): its `--tier=auto` CPU includes three O2 compiles; its wall time is 0.33 s
+in both tiers. `ff` under `--tier=auto` is now 14% slower than the interpreter: its 96-instruction
+process is compiled at O2, and the interpreter's fused clocked-process ops (#443) run it faster
+than compiled code that calls `TierHost::signal` per signal operation; `fan` stays interpreted
+and pays the tier-mode loop (about 10%, #480).
+
+Interleaved A/B pairs (7 to 9 pairs, median CPU ratio, at lower load): `--tier=auto` against
+`--tier=interp` of the same binary is 0.88 on `lfsr` (wall 0.82), 0.91 wall on 2b and 1.03 wall
+on 2a (the O2 compiles cost 0.2 s of CPU on a 0.3 s run); the interpreter after against before
+is 0.93 (`lfsr`), 0.88 (2a), 0.93 (2b). With everything compiled before time 0 (`--tier=llvm`)
+the simulate phase of 2b is 0.55 s against the interpreter's 0.67 s (O0 code: 0.67 s). Running
+the interpreter with a tier set (`run_ops::<true>`) costs 4 to 13% on `ff`, `chain` and `fan`
+even where nothing is compiled (#480, measured before 4d0c9ae9, which addresses it); that and the kernel (the update phase, `assign`, edge and wait
+bookkeeping: half or more of every row) are what keep `--tier=auto` near the interpreter here.
+Shared benchmarks (`tools/bench/run.py --compare`, `--tier=auto` on both sides, CPU): internal
+group geometric mean 0.948 over 12 (`compute_loop` 0.69, `resolved_bus` 1.18: one O2 compile on
+a 0.3 s run, wall equal), external 1.014 over 5 (`vai_window_gen` 1.08); `--tier=interp`
+internal 0.982. Difftest 409/409 for `yavs`, `yavs-llvm` and `yavs-auto` with
+`--tier-heat=1,0,0` at 1 and 4 threads, also with a `gc-stress` build of the tier.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

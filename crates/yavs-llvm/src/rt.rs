@@ -395,6 +395,13 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         } => vec![dst, base, layout],
         Inst::DopeLen { dst, dope, .. } => vec![dst, dope],
         Inst::LGet { dst, base, idx } => vec![dst, base, idx],
+        Inst::LCopy {
+            dst,
+            dst_off,
+            src,
+            src_off,
+            n,
+        } => vec![dst, dst_off, src, src_off, n],
         Inst::LSet { base, idx, v } => vec![base, idx, v],
         Inst::SigVal {
             dst, offset, len, ..
@@ -617,6 +624,8 @@ pub enum Known {
     Int(i64),
     /// The address of byte `.0` of the frame's slots.
     Frame(u64),
+    /// The address of byte `.1` of constant `.0`.
+    Const(yavs_ir::ConstId, u64),
 }
 
 /// Update `known` for what `i` writes.
@@ -629,6 +638,11 @@ pub fn track(known: &mut [Option<Known>], i: &Inst) {
             space: AddrSpace::Frame,
             off,
         } => Some((dst, Known::Frame(off.into()))),
+        Inst::AddrOf {
+            dst,
+            space: AddrSpace::Const(c),
+            off,
+        } => Some((dst, Known::Const(c, off.into()))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
         Inst::Index {
@@ -636,14 +650,23 @@ pub fn track(known: &mut [Option<Known>], i: &Inst) {
             base,
             pos,
             stride,
-        } => match (get(base), get(pos)) {
-            (Some(Known::Frame(o)), Some(Known::Int(p))) => (p as u64)
-                .checked_mul(stride.into())
-                .and_then(|d| o.checked_add(d))
-                .filter(|&a| a <= u64::from(u32::MAX))
-                .map(|a| (dst, Known::Frame(a))),
-            _ => None,
-        },
+        } => {
+            let at = |o: u64, p: i64| {
+                (p as u64)
+                    .checked_mul(stride.into())
+                    .and_then(|d| o.checked_add(d))
+                    .filter(|&a| a <= u64::from(u32::MAX))
+            };
+            match (get(base), get(pos)) {
+                (Some(Known::Frame(o)), Some(Known::Int(p))) => {
+                    at(o, p).map(|a| (dst, Known::Frame(a)))
+                }
+                (Some(Known::Const(c, o)), Some(Known::Int(p))) => {
+                    at(o, p).map(|a| (dst, Known::Const(c, a)))
+                }
+                _ => None,
+            }
+        }
         _ => None,
     };
     i.visit(&mut |r, role, _| {
@@ -666,24 +689,79 @@ pub fn track(known: &mut [Option<Known>], i: &Inst) {
 pub const SHORT: usize = 64;
 
 /// Why `f` stays interpreted although hot: shorter than `SHORT` IR instructions and without a
-/// jump back, so each entry into compiled code from the interpreter (the frame view, the
+/// loop (`loops`), so each entry into compiled code from the interpreter (the frame view, the
 /// entry switch, the way back) would cost about what interpreting its body costs: the small
-/// helpers a testbench calls millions of times ran slower compiled (#432).
+/// helpers a testbench calls millions of times ran slower compiled (#432), and so did the
+/// one-statement processes of the kernel design `fan`.
 pub fn too_short(prog: &Program, f: &Func) -> Option<String> {
-    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
-    let back = f.code.iter().enumerate().any(|(pc, i)| match i {
-        Inst::Br { to } => start(*to) <= pc,
-        Inst::CondBr { t, f: e, .. } => start(*t) <= pc || start(*e) <= pc,
-        Inst::Case { table, .. } => prog
-            .cases
-            .get(*table)
-            .is_some_and(|t| start(t.default) <= pc || t.arms.iter().any(|a| start(a.2) <= pc)),
-        _ => false,
-    });
-    (!back && f.code.len() < SHORT).then(|| {
+    (!loops(prog, f) && f.code.len() < SHORT).then(|| {
         format!(
             "{} IR instructions without a loop: entering compiled code would cost about as much",
             f.code.len()
         )
     })
+}
+
+/// Whether the blocks of `f` form a cycle, not counting a process's way through its
+/// suspension (each activation runs its body once).
+pub fn loops(prog: &Program, f: &Func) -> bool {
+    let blocks: Vec<&[Inst]> = f
+        .blocks
+        .iter()
+        .map(|(_, b)| f.code.get(b.start as usize..b.end as usize).unwrap_or(&[]))
+        .collect();
+    let waits: Vec<bool> = blocks
+        .iter()
+        .map(|c| {
+            f.kind == yavs_ir::FuncKind::Process
+                && c.iter().any(|i| matches!(i, Inst::Suspend { .. }))
+        })
+        .collect();
+    let succ = |b: usize| -> Vec<usize> {
+        let mut to = Vec::new();
+        for i in blocks[b] {
+            match i {
+                Inst::Br { to: t } => to.push(t.0 as usize),
+                Inst::CondBr { t, f: e, .. } => to.extend([t.0 as usize, e.0 as usize]),
+                Inst::Case { table, .. } => {
+                    if let Some(t) = prog.cases.get(*table) {
+                        to.push(t.default.0 as usize);
+                        to.extend(t.arms.iter().map(|a| a.2.0 as usize));
+                    }
+                }
+                _ => {}
+            }
+        }
+        to.retain(|&t| t < blocks.len() && !waits[b] && !waits[t]);
+        to
+    };
+    // Depth-first search for an edge back to a block on the current path.
+    let mut state = vec![0u8; blocks.len()]; // 0 new, 1 on the path, 2 done
+    for root in 0..blocks.len() {
+        if state[root] != 0 {
+            continue;
+        }
+        let mut stack = vec![(root, succ(root), 0)];
+        state[root] = 1;
+        while let Some((b, next, k)) = stack.last_mut() {
+            match next.get(*k).copied() {
+                Some(t) => {
+                    *k += 1;
+                    match state[t] {
+                        1 => return true,
+                        0 => {
+                            state[t] = 1;
+                            stack.push((t, succ(t), 0));
+                        }
+                        _ => {}
+                    }
+                }
+                None => {
+                    state[*b] = 2;
+                    stack.pop();
+                }
+            }
+        }
+    }
+    false
 }

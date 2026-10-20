@@ -215,6 +215,41 @@ fn auto_tier_recompiles_hot_compiled_code_at_o2() {
     assert_eq!(levels, [(f, OptLevel::O0, true), (f, OptLevel::O2, true)]);
 }
 
+/// A short function without a loop stays interpreted while only interpreted code calls it,
+/// and is compiled (at O2) once a compiled loop calls it: each call would otherwise leave the
+/// compiled caller and enter it again.
+#[test]
+fn auto_tier_compiles_short_callees_of_compiled_code() {
+    let (prog, run, _) = calls();
+    let inc = prog
+        .funcs
+        .iter()
+        .map(|(id, _)| id)
+        .find(|&id| id != run)
+        .unwrap();
+    assert_eq!(prog.func(inc).unwrap().name, "inc");
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let seen = notes.clone();
+    let note: Note = Box::new(move |f, level, why| seen.lock().unwrap().push((f, level, why)));
+    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
+    let call = || yavs_interp::call(rt.clone(), run, Arc::new(InstData::default()), &[10_000]);
+    let t0 = Instant::now();
+    let done = || {
+        notes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n.0 == inc && n.1 == OptLevel::O2 && n.2.is_ok())
+    };
+    while !done() {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
+        assert_eq!(call().unwrap(), Some(10_000));
+    }
+    assert_eq!(call().unwrap(), Some(10_000));
+    tier.stop(true);
+}
+
 /// A hot function over `--tier-max-size` stays interpreted, with a note.
 #[test]
 fn auto_tier_skips_functions_over_the_size_cap() {
@@ -675,6 +710,76 @@ fn logic_elements_match_the_interpreter() {
         dst
     });
     check(prog, f, &["LGet", "LSet"], &[0, 1, 5, 63, 64, 127, 128, -1]);
+}
+
+/// `LCopy` of `n` plane elements from offset `b` to offset `a` within ten blocks of temporary
+/// memory (overlapping) or from a constant into them, at every edge of a block and beyond
+/// the eight blocks compiled code copies itself: the same bytes (a weighted sum of all 32-bit
+/// words) or the same error text.
+#[test]
+fn logic_copies_match_the_interpreter() {
+    const LEN: usize = 320;
+    let pattern: Vec<u8> = (0..LEN)
+        .map(|i| (i as u32).wrapping_mul(2_654_435_761).to_le_bytes()[3])
+        .collect();
+    for n in [0, 1, 7, 63, 64, 65, 128, 190, 300, 449, 500] {
+        for from_const in [false, true] {
+            let mut pb = ProgramBuilder::new();
+            let k = pb.konst(ConstData::Bytes(pattern.clone()));
+            let f = pb.declare("f", FuncKind::Function, None);
+            let mut fb = pb.define(f);
+            let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+            let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+            stmt(&mut fb);
+            let (pa, pbr) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+            let (a, b) = (load(&mut fb, pa, Width::B8), load(&mut fb, pbr, Width::B8));
+            let c = fb.addr(AddrSpace::Const(k), 0);
+            let size = fb.int(LEN as i64);
+            let t = alloc(&mut fb, size);
+            fb.emit(Inst::Copy {
+                dst: t,
+                src: c,
+                bytes: size,
+            });
+            let n = fb.int(n);
+            fb.emit(Inst::LCopy {
+                dst: t,
+                dst_off: a,
+                src: if from_const { c } else { t },
+                src_off: b,
+                n,
+            });
+            let mut acc = fb.int(0);
+            for w in 0..LEN / 4 {
+                let at = fb.int(w as i64 * 4);
+                let p = index(&mut fb, t, at);
+                let v = load(&mut fb, p, Width::B4);
+                let m = fb.int(w as i64 + 1);
+                let (x, sum) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+                fb.emit(Inst::Bin {
+                    op: IntOp::Mul,
+                    dst: x,
+                    a: v,
+                    b: m,
+                });
+                fb.emit(Inst::Bin {
+                    op: IntOp::Add,
+                    dst: sum,
+                    a: acc,
+                    b: x,
+                });
+                acc = sum;
+            }
+            fb.emit(Inst::Ret { v: Some(acc) });
+            fb.finish();
+            check(
+                pb.finish().unwrap(),
+                f,
+                &["LCopy"],
+                &[0, 1, 5, 63, 64, 65, 127, 128, 200, 639, -1, 1 << 40],
+            );
+        }
+    }
 }
 
 /// The scalar `std_ulogic` natives compiled code looks up in a table give what the natives

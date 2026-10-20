@@ -13,7 +13,7 @@ use yavs_sem::{Db, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 use crate::composite::scalar_w;
 use crate::expr::V;
 use crate::func::{Fx, func_of};
-use crate::{Obj, R, Space, ty};
+use crate::{Obj, R, Space};
 
 /// The protected type whose method `d` is: declared in the protected type declaration
 /// (`Db::method_of`) or only in its body (a private method, which also sees the object).
@@ -77,6 +77,7 @@ impl Fx<'_, '_> {
                 let off = self
                     .fb
                     .param("self", Width::B8, ParamClass::Value, Mode::In, None);
+                self.fb.root(off, RootKind::Handle);
                 self.cx.method_self.insert(scope, (t, depth, off));
                 (t, depth, off)
             }
@@ -100,7 +101,7 @@ impl Fx<'_, '_> {
     /// The state address of the object whose handle is in frame slot `(depth, off)`.
     fn deref_self(&mut self, depth: u8, off: u32) -> Reg {
         let s = self.addr(Space::Frame(depth), off);
-        let h = self.load(s, Width::B8, RegTy::I64);
+        let h = self.load(s, Width::B8, RegTy::Handle);
         let what = self.msg("protected object", Dir::To);
         let p = self.reg(RegTy::Ptr);
         self.emit(Inst::Deref {
@@ -172,7 +173,7 @@ impl Fx<'_, '_> {
         let ds = self.desc_size(state);
         let base = self.offset(p, ds);
         let (a, _) = self.field_addr(state, base, p, n as u32, span)?;
-        Ok(V::S(self.load(a, Width::B8, RegTy::I64)))
+        Ok(V::S(self.load(a, Width::B8, RegTy::Handle)))
     }
 
     /// A call of method `callee` on `obj` (or, inside a method, on `self`).
@@ -204,7 +205,7 @@ impl Fx<'_, '_> {
                     ));
                 };
                 let a = self.addr(Space::Frame(depth), off);
-                self.load(a, Width::B8, RegTy::I64)
+                self.load(a, Width::B8, RegTy::Handle)
             }
         };
         let mut cells = self.cells(sp, args, span, false)?;
@@ -222,13 +223,7 @@ impl Fx<'_, '_> {
         };
         let t = db.base(ret);
         let comp = self.is_comp(t);
-        let rt = if comp {
-            RegTy::Ptr
-        } else if ty::is_real(db, t) {
-            RegTy::F64
-        } else {
-            RegTy::I64
-        };
+        let rt = if comp { RegTy::Ptr } else { self.rt_of(t) };
         let dst = self.reg(rt);
         self.emit(Inst::CallProt {
             func: f,
@@ -303,6 +298,7 @@ impl Fx<'_, '_> {
             bytes: dsr,
         });
         let base = self.offset(buf, ds);
+        self.temp_root(base, state, Some(buf));
         let mut late = Vec::new();
         for (n, (&v, init)) in vars.iter().zip(early).enumerate() {
             let (a, fd) = self.field_addr(state, base, buf, n as u32, span)?;
@@ -323,7 +319,7 @@ impl Fx<'_, '_> {
                 }
             }
         }
-        let h = self.reg(RegTy::I64);
+        let h = self.reg(RegTy::Handle);
         self.emit(Inst::New {
             dst: h,
             ty: state,
@@ -331,7 +327,9 @@ impl Fx<'_, '_> {
             size: total,
             shared,
         });
+        // The object's only reference while its initialisers run (rule 6).
         let so = self.fb.slot(8, 8);
+        self.fb.root(so, RootKind::Handle);
         let sa = self.addr(Space::Frame(self.depth), so);
         self.store(sa, h, Width::B8);
         self.prot_self = Some((self.depth, so));
@@ -470,7 +468,7 @@ pub(crate) fn shared_var(
             let (shape, tid) = fx.shared_shape(d, t, span)?;
             let buf = fx.alloc_n(shape.size());
             let size = fx.int(i64::from(shape.size()));
-            let h = fx.reg(yavs_ir::RegTy::I64);
+            let h = fx.reg(yavs_ir::RegTy::Handle);
             fx.emit(yavs_ir::Inst::New {
                 dst: h,
                 ty: tid,

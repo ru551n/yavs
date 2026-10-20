@@ -166,6 +166,7 @@ pub(crate) fn verify_func(
                     None => false,
                     Some(&t) => match want {
                         Some(RegTy::Sig) => t == RegTy::Sig && (r.0 as usize + 1) < nregs,
+                        Some(RegTy::I64) => t == RegTy::I64 || t == RegTy::Handle,
                         Some(w) => t == w,
                         None => t != RegTy::Sig,
                     },

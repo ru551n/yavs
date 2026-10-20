@@ -24,6 +24,7 @@ mod ieee;
 mod implicit;
 mod native;
 mod reflect;
+mod roots;
 mod textio;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -83,19 +84,20 @@ pub struct SharedState {
     pub vars: Vec<u8>,
     /// Boxed: a process that never allocates in it carries only the pointer.
     pub(crate) heap: Option<Box<Heap>>,
-    /// The shared-heap roots of every serial process that ran, as of its last suspension.
-    pub(crate) procs: Vec<ProcRoots>,
+    /// The shared-heap roots of every serial process that ran, as of its last suspension
+    /// (`None`: one could not be located).
+    pub(crate) procs: Vec<Option<ProcRoots>>,
     /// The simulation has started ([`SharedGc`] saw the start): until then, code run for
     /// elaboration holds handles that no root map names, so nothing is collected inside an
     /// activation.
     pub(crate) started: bool,
 }
 
-/// A serial process's shared-heap roots: handles from its frames' root maps (`None`: one
-/// could not be located) and the slots addresses in its frames and temporaries reach.
+/// A serial process's shared-heap roots: the handles its frames' root maps and recorded
+/// temporaries hold, and the slots the addresses there point into (#422).
 #[derive(Clone, Default)]
 pub(crate) struct ProcRoots {
-    pub handles: Option<Vec<u64>>,
+    pub handles: Vec<u64>,
     pub pinned: Vec<u32>,
 }
 
@@ -109,12 +111,16 @@ impl SharedState {
         }
     }
 
-    /// Shared-heap slots that some serial process's frames address, sorted.
-    pub(crate) fn pinned(&self) -> Vec<u32> {
-        let mut v: Vec<u32> = self.procs.iter().flat_map(|p| p.pinned.clone()).collect();
+    /// Shared-heap slots that some serial process's frames address, sorted; `None` when a
+    /// process's roots could not be located.
+    pub(crate) fn pinned(&self) -> Option<Vec<u32>> {
+        let mut v = Vec::new();
+        for p in &self.procs {
+            v.extend(&p.as_ref()?.pinned);
+        }
         v.sort_unstable();
         v.dedup();
-        v
+        Some(v)
     }
 
     /// Collect the shared heap. Call only at a serial safepoint, when no process runs: roots
@@ -122,20 +128,22 @@ impl SharedState {
     /// each serial process published at its last suspension. False (nothing freed) when a
     /// root's handles cannot be located.
     pub fn collect(&mut self, prog: &Program) -> bool {
-        let mut roots = Vec::new();
+        let mut roots = heap::Refs::default();
         if !heap::slot_roots(prog, &prog.shared_roots, &self.vars, &mut roots) {
             return false;
         }
         for p in &self.procs {
-            match &p.handles {
-                Some(h) => roots.extend(h),
+            match p {
+                Some(p) => roots.handles.extend(&p.handles),
                 None => return false,
             }
         }
-        let pinned = self.pinned();
+        let Some(pinned) = self.pinned() else {
+            return false;
+        };
         self.heap
             .as_mut()
-            .is_none_or(|h| h.collect(prog, &roots, &pinned))
+            .is_none_or(|h| h.collect(prog, &roots.handles, &pinned))
     }
 
     /// Objects alive in the shared heap (for tests and statistics).
@@ -297,6 +305,9 @@ pub struct TierFrame {
     /// `temp_base`.
     pub temp: Vec<u8>,
     pub temp_base: usize,
+    /// Temporaries recorded for the GC (`Inst::TempRoot`): while there are any, compiled
+    /// code steps `Inst::Stmt`, whose interpreter form drops those of the ending statement.
+    pub temp_roots: usize,
     /// The instance data (read only), `[space::INST, 0, offset]`. It outlives the run.
     pub inst: *const [u8],
 }
@@ -347,6 +358,8 @@ pub struct Runtime {
     pub(crate) replay: std::sync::atomic::AtomicBool,
     /// Per function: the tier-up count and its threshold (`set_heat`).
     heat: std::sync::OnceLock<(Box<[Count]>, i64)>,
+    /// Live registers at the safepoints of each function a collection met (`roots`).
+    live: Vec<std::sync::OnceLock<roots::LiveRefs>>,
 }
 
 /// A function's tier-up count and its threshold (`Runtime::set_heat`).
@@ -414,6 +427,7 @@ impl Runtime {
             tier: Default::default(),
             replay: Default::default(),
             heat: Default::default(),
+            live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
         }))
     }
@@ -455,6 +469,7 @@ impl Runtime {
         self.expanded
             .resize_with(prog.consts.len(), Default::default);
         self.pre.resize_with(prog.funcs.len(), Default::default);
+        self.live.resize_with(prog.funcs.len(), Default::default);
         self.sources.add_from(&prog, first, map);
         self.prog = prog;
         Ok(())
@@ -466,6 +481,17 @@ impl Runtime {
             self.pre
                 .get(id.0 as usize)?
                 .get_or_init(|| pre::Pre::new(f)),
+        )
+    }
+
+    /// The `Handle` and `Ptr` registers live at each safepoint of `id`, computed when first
+    /// asked for (`roots::live_refs`).
+    pub(crate) fn live_refs(&self, id: FuncId) -> Option<&roots::LiveRefs> {
+        let f = self.prog.func(id)?;
+        Some(
+            self.live
+                .get(id.0 as usize)?
+                .get_or_init(|| roots::live_refs(&self.prog, f, heap::STRESS)),
         )
     }
 

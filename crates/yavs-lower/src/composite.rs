@@ -554,11 +554,7 @@ impl Fx<'_, '_> {
         let tid = self.ty(t, span)?;
         match scalar_w(self.fb.program(), tid) {
             Some(w) => {
-                let rt = if ty::is_real(db, t) {
-                    RegTy::F64
-                } else {
-                    RegTy::I64
-                };
+                let rt = self.rt_of(t);
                 Ok(V::S(self.load(addr, w, rt)))
             }
             None => Ok(V::A(addr, desc)),
@@ -1200,7 +1196,7 @@ impl Fx<'_, '_> {
             Some(w) => self.int(i64::from(w.bytes())),
             None => self.size_of(tid, desc),
         };
-        let h = self.reg(RegTy::I64);
+        let h = self.reg(RegTy::Handle);
         // The object is built in place by the allocation, not in a temporary copied from.
         let direct = match v {
             Some(V::A(d, vd)) if !self.logic(tid) && scalar_w(self.fb.program(), tid).is_none() => {
@@ -1231,6 +1227,7 @@ impl Fx<'_, '_> {
             bytes: dsr,
         });
         let vat = self.offset(buf, ds);
+        self.temp_root(vat, tid, Some(buf));
         match v {
             Some(V::A(d, _)) if self.logic(tid) && scalar_w(self.fb.program(), tid).is_none() => {
                 let count = self.layout_count(tid, desc);
@@ -1412,7 +1409,7 @@ impl Fx<'_, '_> {
             None => self.agg_desc(t, tid, assocs, bounds, dims, span)?,
         };
         let size = self.size_of(tid, desc);
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, tid, Some(desc));
         self.agg_fill(t, tid, assocs, 0, dims, data, desc, None, span)?;
         Ok(V::A(data, desc))
     }
@@ -1853,7 +1850,7 @@ impl Fx<'_, '_> {
             }
         };
         let size = self.size_of(tid, desc);
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, tid, Some(desc));
         for (n, (f, v)) in fields.iter().zip(evs).enumerate() {
             let (a, fd) = self.field_addr(tid, data, desc, n as u32, span)?;
             if let V::A(_, vd) = v {

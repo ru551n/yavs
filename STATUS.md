@@ -199,6 +199,22 @@ after is main at `47407de9` (the CPU difference is noise plus other agents' comm
 | `osvvm_axistream` | 60 | 53 | 2.01 | 2.04 |
 | `ff_rtl` | 20 | 14 | 0.07 | 0.05 |
 
+Precise roots (#422, user decision 2026-10-19): the collection inside an activation no longer scans frames,
+registers and temporaries for words that look like handles or addresses. Roots are the frames' root maps, the
+temporaries `Inst::TempRoot` recorded and the `Handle`/`Ptr` registers live at each frame's safepoint
+(`yavs_interp::roots`, a liveness analysis per function computed when a collection first meets it: about 4 ms
+for the largest function of `uvvm_util_rand_tb`, 46k instructions); a suspension no longer searches every word
+of the frames (`Machine::pinned`, about 4.5% of `uvvm_axistream_vvc_tb`). Verified with the `gc-stress` build
+(collection at every safepoint after an allocation, no slot
+reuse, a panic for a live handle in a register of another type): the differential corpus at both tiers
+(361 of 363, the two `synopsys/arith` tests exceed the 300 s harness timeout under stress and pass when run
+directly, also with collection at every safepoint), 212 of the 314 library `.pro` tests (all pass, the rest
+not reached within the time cap) and the external test runner's `check` suite (these two on the tree before #438). Median of 9, release, A = main
+at `4d7b56bb`, B = this change, total CPU B/A: `uvvm_util_rand_tb` 0.92, `protected_scoreboard` 1.00,
+`osvvm_axistream` 1.05, `vunit_vc30` 1.03, `uvvm_axistream_vvc_tb` 0.96, `compute_loop` 0.99, `strings_heavy`
+1.01, `access_heavy` 1.03 (geometric mean 0.998, busy host: single ratios move by about 5% between runs);
+peak RSS equal or up to 3% lower.
+
 Where the rest is: a project testbench peaks at the end of elaboration with the analysis results (about 29 MB,
 restored from the compilation cache: 128 B per declaration, 56 B per expression, 152 B per statement), the
 lowered IR (about 11 MB) and the package state; the run itself adds little. A design of 20000 small

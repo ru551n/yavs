@@ -76,7 +76,7 @@ impl Fx<'_, '_> {
                 };
                 let tid = self.ty(db.base(p.subtype), span)?;
                 let size = self.size_of(tid, dope);
-                let tmp = self.alloc(size);
+                let tmp = self.alloc_val(size, tid, Some(dope));
                 // The fat pair lives in a frame slot: no register lives across the call.
                 let slot = self.fb.slot(16, 8);
                 let a = self.addr(Space::Frame(self.depth), slot);
@@ -166,7 +166,7 @@ impl Fx<'_, '_> {
                 };
                 let tid = self.ty(db.base(st), span)?;
                 let size = self.size_of(tid, dope);
-                let tmp = self.alloc(size);
+                let tmp = self.alloc_val(size, tid, Some(dope));
                 let slot = self.fb.slot(16, 8);
                 let a = self.addr(Space::Frame(self.depth), slot);
                 self.store(a, tmp, Width::B8);

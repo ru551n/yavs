@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:gc_random:serial	serial: total 4573414
+diag	note	0	0	:gc_random:serial	stack 8002000 8002
+diag	note	1000000	0	:gc_random:private	private: total 4447928

@@ -152,6 +152,9 @@ pub enum RootKind {
     Handle,
     /// A value of this type at the slot (handles found through its layout).
     Composite(TyId),
+    /// An 8-byte address (a parameter passed by reference, the data or descriptor of an
+    /// array parameter): the heap object it points into stays.
+    Addr,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

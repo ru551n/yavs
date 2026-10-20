@@ -7,10 +7,11 @@
 //!
 //! An *address* into an object (from `Deref`) carries no generation, so a deallocated slot is
 //! not reused at once: it waits in quarantine until the owner suspends (registers are dead
-//! then) and [`Heap::recycle`] finds no address to it in the frames (#81). An access through
-//! a stale address therefore always meets the freed slot, a clean runtime error. A process
-//! that runs long without a wait also recycles inside its activation, between instructions,
-//! once [`Heap::reclaim_due`]; its registers then count as addresses too (#355).
+//! then) and [`Heap::recycle`] finds no address to it among the owner's precise roots (#81,
+//! #422). An access through a stale address therefore always meets the freed slot, a clean
+//! runtime error. A process that runs long without a wait also recycles and collects inside
+//! its activation, between instructions; its live `Ptr` registers then count as addresses
+//! and its live `Handle` registers as roots (#355, #409, #422).
 //!
 //! The shared heap is collected the same way, at a serial safepoint between cycles
 //! (`crate::SharedGc`): roots are the shared variables area, the objects that existed when
@@ -28,6 +29,11 @@ const MAX_INDEX: u32 = (1 << 24) - 1;
 
 /// Quarantined slots that make an in-activation [`Heap::recycle`] due, at least.
 const RECLAIM_MIN: usize = 4096;
+
+/// The `gc-stress` feature (test builds): every safepoint after an allocation collects, every
+/// one recycles, no slot is reused, and roots that cannot be located are a panic, so a missed
+/// root shows (#422).
+pub(crate) const STRESS: bool = cfg!(feature = "gc-stress");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeapError {
@@ -118,7 +124,8 @@ impl Heap {
     /// Allocate the object `data[start..]`.
     pub fn alloc_from(&mut self, ty: Obj, data: Vec<u8>, start: usize) -> Result<u64, HeapError> {
         self.since_gc = self.since_gc.saturating_add(data.len() as u64 + 32);
-        let index = match self.free.pop() {
+        // Stress builds never reuse a slot: an access to a wrongly freed object stays an error.
+        let index = match self.free.pop().filter(|_| !STRESS) {
             Some(i) => i,
             None => {
                 let i = self.slots.len() as u32;
@@ -204,7 +211,7 @@ impl Heap {
     /// process with megabytes of frame data still searches once per few thousand frees; a
     /// bound proportional to the frame size if that shows in a profile.
     pub fn reclaim_due(&self) -> bool {
-        self.quarantine.len() >= self.reclaim_at
+        self.quarantine.len() >= self.reclaim_at || STRESS && !self.quarantine.is_empty()
     }
 
     pub fn data(&self, index: u32) -> Option<&[u8]> {
@@ -250,7 +257,12 @@ impl Heap {
     /// Whether a collection is due: more allocated since the last one than both `threshold`
     /// and what survived it, so the work stays proportional to the allocation.
     pub fn gc_due(&self, threshold: u64) -> bool {
-        self.since_gc > threshold.max(self.live_bytes)
+        let at = if STRESS {
+            0
+        } else {
+            threshold.max(self.live_bytes)
+        };
+        self.since_gc > at
     }
 
     /// Mark from `roots` and from the objects in `pinned` (sorted slot indices that addresses
@@ -318,21 +330,51 @@ fn read_u64(b: &[u8], at: u64) -> Option<u64> {
     Some(u64::from_le_bytes(a))
 }
 
-/// Handles in the slots of `mem` that root map `map` names (a frame, the shared variables
-/// area). False when one cannot be located.
+/// What a precise scan finds (plan rule 6, #422): handles that are roots, and addresses whose
+/// heap objects stay (an address carries no handle, so its object is pinned).
+#[derive(Default)]
+pub struct Refs {
+    pub handles: Vec<u64>,
+    pub addrs: Vec<u64>,
+}
+
+impl Refs {
+    /// Slot indices of heap address space `space` that the addresses point into, sorted.
+    pub fn pinned(&self, space: u8) -> Vec<u32> {
+        let mut v: Vec<u32> = self
+            .addrs
+            .iter()
+            .map(|&a| crate::exec::split(a))
+            .filter(|&(sp, _, _)| sp == space)
+            .map(|(_, i, _)| i)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+}
+
+/// Handles and addresses in the slots of `mem` that root map `map` names (a frame, the
+/// shared variables area). False when one cannot be located.
 pub fn slot_roots(
     prog: &Program,
     map: &[(u32, yavs_ir::RootKind)],
     mem: &[u8],
-    out: &mut Vec<u64>,
+    out: &mut Refs,
 ) -> bool {
     map.iter()
         .all(|&(off, kind)| match (mem.get(off as usize..), kind) {
             (Some(d), yavs_ir::RootKind::Handle) => {
-                value_handles_raw(d, out);
+                value_handles_raw(d, &mut out.handles);
                 true
             }
-            (Some(d), yavs_ir::RootKind::Composite(t)) => value_handles(prog, t, d, out),
+            (Some(d), yavs_ir::RootKind::Addr) => {
+                value_handles_raw(d, &mut out.addrs);
+                true
+            }
+            (Some(d), yavs_ir::RootKind::Composite(t)) => {
+                value_handles(prog, t, d, &mut out.handles)
+            }
             (None, _) => false,
         })
 }
@@ -346,19 +388,7 @@ pub fn value_handles_raw(data: &[u8], out: &mut Vec<u64>) {
 
 /// Whether values of `ty` can contain handles.
 pub fn has_handles(prog: &Program, ty: TyId) -> bool {
-    fn go(prog: &Program, ty: TyId, depth: u32) -> bool {
-        if depth > 64 {
-            return true;
-        }
-        match prog.types.get(ty) {
-            Some(Ty::Access { .. } | Ty::Protected { .. }) => true,
-            Some(Ty::Array { elem, .. }) => go(prog, *elem, depth + 1),
-            Some(Ty::Record { fields }) => fields.iter().any(|f| go(prog, f.ty, depth + 1)),
-            Some(_) => false,
-            None => true,
-        }
-    }
-    go(prog, ty, 0)
+    Ty::has_handles(&prog.types, ty)
 }
 
 /// Handles inside a heap object of `ty`: `[descriptor][value]`, the descriptor empty when
@@ -384,7 +414,13 @@ pub fn value_handles(prog: &Program, ty: TyId, data: &[u8], out: &mut Vec<u64>) 
 
 /// Handles inside a value of `ty` constrained by `desc` (the descriptor format of
 /// `yavs_ir::ty`) at the start of `data`. False when the layout cannot be computed.
-fn handles_in(prog: &Program, ty: TyId, desc: &[u8], data: &[u8], out: &mut Vec<u64>) -> bool {
+pub(crate) fn handles_in(
+    prog: &Program,
+    ty: TyId,
+    desc: &[u8],
+    data: &[u8],
+    out: &mut Vec<u64>,
+) -> bool {
     if !has_handles(prog, ty) {
         return true;
     }

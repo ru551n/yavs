@@ -103,6 +103,18 @@ pub fn load(fb: &mut FuncBuilder<'_>, space: AddrSpace, off: u32, w: Width) -> R
     dst
 }
 
+/// An access handle at `off` of `space`.
+pub fn load_handle(fb: &mut FuncBuilder<'_>, space: AddrSpace, off: u32) -> Reg {
+    let a = fb.addr(space, off);
+    let dst = fb.reg(RegTy::Handle);
+    fb.emit(Inst::Load {
+        dst,
+        addr: a,
+        w: Width::B8,
+    });
+    dst
+}
+
 pub fn store(fb: &mut FuncBuilder<'_>, space: AddrSpace, off: u32, v: Reg, w: Width) {
     let a = fb.addr(space, off);
     fb.emit(Inst::Store { addr: a, src: v, w });

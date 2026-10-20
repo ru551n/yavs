@@ -267,7 +267,7 @@ fn access_values() {
     stmt(&mut fb, StmtKind::Return);
     let init = alloc(&mut fb, 8);
     let eight = fb.int(8);
-    let h = fb.reg(RegTy::I64);
+    let h = fb.reg(RegTy::Handle);
     fb.emit(Inst::New {
         dst: h,
         ty: int,

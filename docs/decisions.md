@@ -660,15 +660,16 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Heap addresses carry no generation; deallocated slots are quarantined instead** (#81,
   yavs-interp). The address format has no room for a generation next to a 24-bit slot index
   and a 32-bit offset, so a deallocated slot is not reused until its process suspends
-  (registers are dead then) and no aligned word in the process's frames or temporaries decodes
-  to an address of it. The same address search keeps such objects alive across a collection
-  (a by-reference parameter of a waiting procedure). An access through a stale address
+  (registers are dead then) and no address in the process's `RootKind::Addr` slots and
+  recorded temporaries points into it (precise since #422; before, any aligned word of the
+  frames and temporaries that decoded to an address counted). The same addresses keep such
+  objects alive across a collection (a by-reference parameter of a waiting procedure). An access through a stale address
   therefore always meets the freed slot and is the runtime error `access to a deallocated
   object`. For the shared heap the addresses of every serial process's frames count, as each
   published them at its last suspension (#303). A process that runs long without a wait
   also recycles inside its activation (#355): before a native call or a `deallocate`, once
-  at least 4096 slots (and twice what the last recycle kept) wait, with the same search over
-  its frames, temporaries and, live between instructions, its registers. Rationale: a loop
+  at least 4096 slots (and twice what the last recycle kept) wait, with the same addresses
+  plus, live between instructions, its `Ptr` registers (#422). Rationale: a loop
   that writes millions of textio lines kept every freed slot until it ended. Deterministic:
   it depends only on the process's own instruction stream (the shared heap's other users,
   serial processes, are suspended then).
@@ -1308,15 +1309,53 @@ which tools/difftest parses.
   - Trigger: once more was allocated since the last collection than both `Limits::gc_threshold`
     and what the last collection kept, so the work stays proportional to the allocation
     (ponytail: a fixed rule, no tuning by pause time). Output identical at any `--threads`
-    and with `--shuffle`. Between cycles at the safepoint, and (#409, agent decision, awaiting
-    the user's confirmation of this extension) also inside the activation of a serial process
-    that allocates or calls a native (`Machine::gc_inline`, same trigger, once the simulation
-    has started): a testbench whose main process never waits runs in one cycle and would keep
-    every object it drops (a 400 MB run became 54 MB). The other serial processes are
-    suspended, so what they published is current; the running process's roots are its frames'
-    root maps plus every aligned word of its frames, registers and temporaries that looks
-    like a handle or an address (a false hit only keeps an object). Private heaps are
-    collected the same way. Code run for elaboration is never collected.
+    and with `--shuffle`. Between cycles at the safepoint, and also inside the activation of a
+    serial process before a `new`, a `deallocate` or a native call (`Machine::gc_inline`, same
+    trigger, once the simulation has started; elaboration code is never collected): a
+    testbench whose main process never waits runs in one cycle and would keep every object it
+    drops (a 400 MB run became 54 MB, #409). Private heaps are collected the same way.
+  - **Collection inside an activation is kept, with precise roots** (user, 2026-10-19, #422):
+    the running process's roots are its frames' root maps, the temporaries recorded by
+    `Inst::TempRoot` and the `Handle` registers live at the safepoint each of its frames is at
+    (the top frame's `new`/`deallocate`/native call, the call each caller waits in), from a
+    per-function liveness analysis over the register types (`yavs_interp::roots`, computed
+    when a collection first meets the function and kept per runtime). Live `Ptr` registers,
+    `RootKind::Addr` slots (parameters passed by reference, array parameters, aliases) and
+    recorded fat pairs keep the heap objects they point into. Nothing is scanned
+    conservatively (plan rule 6 holds again); the earlier version scanned every aligned word
+    of the frames, registers and temporaries. Rationale: a word that only looks like a handle
+    kept garbage, and plan rule 6 asks for precise roots. The other serial processes are
+    suspended, so what they published is current.
+  - Why it is safe under `--threads N`: collection inside an activation only runs while the
+    running process is the only one that can touch the heap it collects. The shared heap is
+    reachable only from serial processes (touching shared state makes a process serial,
+    `proc_flags`, and a serial process allocates everything there); the kernel runs the serial
+    processes of a batch one after another on one thread once the parallel ones are done, and
+    a serial process holds the shared state, taken from its mutex, for its whole activation
+    (`InterpProcess::exec`). The other serial processes are suspended, with their roots
+    published at their last suspension. A private heap belongs to one non-serial process: its
+    handles cannot reach shared state, signals or another process, so only its own process
+    ever collects it. What is collected depends only on the process's own instruction stream
+    and the published roots, so the output is identical at any thread count.
+  - Contract for the dispatch loop and compiled code: when a collection runs, every frame's
+    `pc` is the IR pc of its safepoint (the top frame's `new`, `deallocate` or native call,
+    the call instruction each caller waits in) and the frame's registers, slots and the
+    temporary area are in the machine. A frame at any other pc has no root map entry
+    (`LiveRefs::get`), so the collection is skipped, never unsound. Only registers live at
+    the safepoint are read: the verifier proves every register written before it is read
+    (#430), so a live register has been written there and a stale value is never a root
+    (frames still start with zeroed registers, `pre.rs`).
+  - Testing: the `gc-stress` feature of yavs-interp (`yavs` forwards it) collects at every
+    safepoint after an allocation, never reuses a slot and panics when roots cannot be located or a live register
+    that is not a `Handle` holds a live handle (a lowering that types a handle wrongly); the
+    differential corpus, the library suites and the external test runner suites run with it
+    (`crates/yavs-interp/AGENTS.md`).
+  - Compiled code (LLVM tier) reaches `new` and `deallocate` only through `TierHost::step`
+    (they are not inlined), with the top frame's registers, slots and temporaries swapped
+    back into the machine and the register file written before the call; natives and calls
+    are exits. So a collection there sees the same precise roots. Compiled `Inst::Stmt` steps
+    while temporaries are recorded (`TierFrame::temp_roots`), so the interpreter drops the
+    ending statement's records.
   - Ceiling (ponytail in `Heap::seal`): garbage made during elaboration is kept with the sealed
     objects; root maps for package and instance data would let it go.
 - **Record signals** have one `SignalIr` per leaf (`SignalIr::path`, field indices), mapped by

@@ -318,6 +318,40 @@ impl<'a, 'b> Fx<'a, 'b> {
         self.alloc(s)
     }
 
+    /// `size` bytes of temporary memory for a value of `tid` constrained by the descriptor
+    /// at `desc`, recorded for the GC when such a value can hold handles ([`Fx::temp_root`]).
+    pub fn alloc_val(&mut self, size: Reg, tid: TyId, desc: Option<Reg>) -> Reg {
+        let dst = self.alloc(size);
+        self.temp_root(dst, tid, desc);
+        dst
+    }
+
+    /// Record the temporary value of `tid` at `addr` (descriptor at `desc`, which must be
+    /// filled already) for the GC when values of `tid` can hold handles: the handles in it
+    /// are roots until the statement ends (rule 6, #422).
+    pub fn temp_root(&mut self, addr: Reg, tid: TyId, desc: Option<Reg>) {
+        let types = self.fb.program().types();
+        if Ty::has_handles(types, tid) {
+            let ds = Ty::desc_size(types, tid);
+            let desc = desc.filter(|_| ds.is_some_and(|n| n > 0));
+            self.emit(Inst::TempRoot {
+                addr,
+                desc,
+                ty: Some(tid),
+            });
+        }
+    }
+
+    /// A fat pair `[data, desc]` in temporary memory with its words stored: the heap objects
+    /// they point into stay until the statement ends (rule 6, #422).
+    pub fn fat_root(&mut self, fat: Reg) {
+        self.emit(Inst::TempRoot {
+            addr: fat,
+            desc: None,
+            ty: None,
+        });
+    }
+
     pub fn msg(&mut self, what: &str, dir: yavs_ir::Dir) -> yavs_ir::CheckMsgId {
         self.fb.program().check_msg(what, dir)
     }
@@ -334,12 +368,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             Some(t) if t.scalar_size().is_some() => ty::width(t),
             _ => return Err(self.cx.unsupported(span, "composite values here")),
         };
-        let rt = if ty::is_real(self.db, t) {
-            RegTy::F64
-        } else {
-            RegTy::I64
-        };
-        Ok((id, rt, w))
+        Ok((id, self.rt_of(t), w))
     }
 
     /// [`Fx::scalar`] for an array element of subtype `st`: its width is the element width
@@ -472,6 +501,7 @@ impl<'a, 'b> Fx<'a, 'b> {
         match self.place(target)? {
             Place::Scalar { addr, w, .. } => {
                 let off = self.fb.slot(8, 8);
+                self.fb.root(off, RootKind::Addr);
                 let a = self.addr(Space::Frame(self.depth), off);
                 self.store(a, addr, Width::B8);
                 self.cx.objs.insert(
@@ -506,6 +536,7 @@ impl<'a, 'b> Fx<'a, 'b> {
                 // dimensions (#315).
                 let bytes = self.desc_size(tid);
                 let off = self.fb.local(&name, tid, 24 + bytes, 8);
+                self.fb.root(off, RootKind::Addr);
                 let slot = self.addr(Space::Frame(self.depth), off);
                 self.store(slot, data, Width::B8);
                 let dslot = self.offset(slot, 24);
@@ -670,7 +701,7 @@ impl<'a, 'b> Fx<'a, 'b> {
                     }
                 };
                 let (size, count) = self.layout(tid, dope);
-                let h = self.reg(RegTy::I64);
+                let h = self.reg(RegTy::Handle);
                 if init.is_none() && self.zero_default(o.subtype, tid, decl.span)? {
                     // All-zero default: allocated in place, no temporary to copy from.
                     let z = self.bytes_addr(vec![0]);
@@ -687,7 +718,9 @@ impl<'a, 'b> Fx<'a, 'b> {
                 } else {
                     let data = match init {
                         Some((data, _)) => data,
-                        None => self.default_array(o.subtype, size, count, decl.span)?,
+                        None => {
+                            self.default_array(o.subtype, (tid, dope), size, count, decl.span)?
+                        }
                     };
                     self.emit(Inst::New {
                         dst: h,
@@ -751,10 +784,17 @@ impl<'a, 'b> Fx<'a, 'b> {
     }
 
     /// `size` bytes of `count` elements, each the element subtype's left bound.
-    fn default_array(&mut self, st: SubtypeId, size: Reg, count: Reg, span: Span) -> R<Reg> {
+    fn default_array(
+        &mut self,
+        st: SubtypeId,
+        (tid, dope): (TyId, Reg),
+        size: Reg,
+        count: Reg,
+        span: Span,
+    ) -> R<Reg> {
         let db = self.db;
         let (elem, _) = ty::array_of(db, db.base(st)).ok_or(Failed)?;
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, tid, Some(dope));
         // 2019 arrays of a protected type: one new object per element (LCS-2016-014).
         let pt = db.base(elem);
         if matches!(
@@ -932,6 +972,9 @@ pub(crate) fn subprogram(
                 let off = fx
                     .fb
                     .param(&name, Width::B8, ParamClass::Value, mode, Some(t));
+                if fx.rt_of(db.base(p.subtype)) == RegTy::Handle {
+                    fx.fb.root(off, RootKind::Handle);
+                }
                 Obj::Scalar {
                     space: Space::Frame(depth),
                     off,
@@ -941,6 +984,7 @@ pub(crate) fn subprogram(
             Shape::Ref => {
                 let (_, _, w) = fx.scalar(p.subtype, decl.span)?;
                 let off = fx.fb.param(&name, Width::B8, ParamClass::Value, mode, None);
+                fx.fb.root(off, RootKind::Addr);
                 Obj::ScalarRef {
                     space: Space::Frame(depth),
                     off,
@@ -1042,6 +1086,8 @@ pub(crate) fn subprogram(
                 if dope != off + 8 {
                     return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
                 }
+                fx.fb.root(off, RootKind::Addr);
+                fx.fb.root(dope, RootKind::Addr);
                 Obj::Array {
                     space: Space::Frame(depth),
                     off,
@@ -1579,6 +1625,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                         fx.store(fat, data, Width::B8);
                         let dp = fx.offset(fat, 8);
                         fx.store(dp, desc, Width::B8);
+                        fx.fat_root(fat);
                         Ok(fat)
                     })?;
                     ir.consts.push(InstConst {

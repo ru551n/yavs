@@ -95,8 +95,9 @@ to span, statement kind and enclosing subprogram without any other table.
   entry (in a process: from the last `Suspend`), except the registers defined once by a
   constant or an address, which a frame starts with (`yavs-interp` `pre.rs`). The verifier
   checks it by dataflow in debug builds and tests (`verify::undefined_uses`, #430), so a frame
-  may start with stale registers; the interpreter still zeroes them until its collection scan
-  of registers is precise (#422).
+  may start with stale registers; the interpreter zeroes them anyway (appending the table to
+  the register stack costs the same), and its collection reads only registers live at a
+  safepoint (#422).
 - Every pass is one walk over blocks in order: verifier (types, invariant above, every instruction
   has a `StmtId`), `MAY_SUSPEND` and `TOUCHES_SHARED` propagation (worklist over the reverse call
   graph, each edge visited once), coverage numbering. No pass is quadratic; a unit over the LLVM
@@ -173,9 +174,14 @@ pub enum Space { Frame, Up /* via static link */, Inst, Pkg, Const, Heap, Temp }
 - Large locals and temporaries are in `slots` or `Temp` (a per-process bump area reset per
   statement), never on the Rust stack (rule 6). Recursion depth is bounded by a setting with a
   clear runtime error, not by the native stack.
-- `FrameLayout.roots: Vec<(offset, RootKind)>` lists every slot that holds a `Handle` or a fat
-  pointer into the heap, with `RootKind::{Handle, Fat, Composite(TyId)}`; together with
-  `reg_ty == Ptr` at suspension points (none, by the invariant) this gives precise roots (rule 6).
+- `FrameLayout.roots: Vec<(offset, RootKind)>` lists every slot that holds a `Handle` or an
+  address into the heap, with `RootKind::{Handle, Composite(TyId), Addr}` (`Addr`: a parameter
+  passed by reference, the data or descriptor of an array parameter, an alias). Registers have
+  types (`RegTy::{I64, F64, Ptr, Sig, Handle}`: access and protected values are `Handle`), and a
+  temporary that holds handles or heap addresses is recorded by `TempRoot` until its statement
+  ends. Together these give precise roots (rule 6, #422): at a suspension the frames' root maps
+  and the recorded temporaries (no register is live there, by the invariant); between
+  instructions also the `Handle` and `Ptr` registers live where each frame is (1.6).
 
 ### 1.5 Instructions
 
@@ -193,7 +199,7 @@ has a `StmtId` in `Func.loc`.
 | subtypes | `MakeDope{dst, dims...}`, `DopeLen{dst, dope, dim}`, `LayoutOf{dst, desc}`, `SubtypeCheck{value, desc}` (composite conversion and constraint checks) |
 | control | `Br{blk}`, `CondBr{c, t, f}`, `Case{v, table: CaseTableId, default}` (ranges and choices as sorted table), `Ret`, `Unreachable` |
 | calls | `Call{func, args}` (VHDL), `CallNative{id, args}` (NATIVE.md symbols and implicit families), `CallForeign{id, args}` (VHPIDIRECT, 1.7), `CallIndirect{func_reg, args}` (subprogram generics), `CallProt{func, obj, args}` (protected method: takes the instance lock, 3.5) |
-| heap | `New{dst, ty, init}`, `NewFill{dst, ty, desc, dsize, data, size, fill}` (descriptor bytes then a copy of `data`, or with `fill` > 0 that element repeated: no temporary to build and copy, #427), `Free{handle}` (`deallocate`), `Deref{dst, handle}` (null check included) |
+| heap | `New{dst, ty, init}`, `NewFill{dst, ty, desc, dsize, data, size, fill}` (descriptor bytes then a copy of `data`, or with `fill` > 0 that element repeated: no temporary to build and copy, #427), `Free{handle}` (`deallocate`), `Deref{dst, handle}` (null check included); the handle operands are `Handle` registers. `TempRoot{addr, desc, ty}`: the temporary at `addr` holds a value of `ty` (constrained by `desc`) whose handles are roots, or with `ty` `None` a fat pair whose addresses keep their heap objects, until the statement ends (#422) |
 | signal read | `SigVal{dst, inst_sig, offset, len}` builds a signal reference; `SigParts{dst, parts, n}` one of several parts and `SigSlice{dst, sig, offset, len}` a slice of either form (1.8); `SigRead{dst_addr, sig}` (effective value), `SigReadScalar{dst, sig}`, `SigDriving{dst_addr, driver_slot}` (`'driving_value`, out-port read) |
 | attributes | `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
 | signal write | `Drive{driver_slot, target: Option<sig>, waveform: Addr, n, mode: Transport\|Inertial{reject: Option<Reg>}}` (waveform = `n` `(time, value)` pairs in a temp, ascending); `Force{sig, mode: In\|Out, value}`, `Release{sig, mode}`; `Disconnect{driver_slot}` (null transaction, guarded, M3) |
@@ -222,13 +228,22 @@ Lowering of the main statement forms:
   protected instance live in the **shared heap**, used only by serial processes in M2/M3 (3.5).
   The `heap` tag in every handle lets the interpreter check this; a cross-heap handle is an ICE.
 - **GC:** a process heap is collected when its process suspends and allocation since the last
-  collection exceeds a threshold; roots are that process's frames (root maps). The shared heap is
-  collected at the start of a cycle, when no process runs; serial processes allocate there, and
-  its roots are the shared variables area, the objects elaboration made and the frames each
-  serial process published at its last suspension (#303). Deallocated slots wait in
-  quarantine until a suspension, or, in a long activation, until a recycle between
-  instructions (registers count as addresses then, #355). No GC ever waits for another thread
-  (the deadlock class seen in other simulators cannot happen).
+  collection exceeds a threshold; roots are that process's frames (root maps) and recorded
+  temporaries. The shared heap is collected at the start of a cycle, when no process runs;
+  serial processes allocate there, and its roots are the shared variables area, the objects
+  elaboration made and the roots each serial process published at its last suspension (#303).
+  A process that runs long without a wait also collects inside its activation, before a `new`,
+  a `deallocate` or a native call (user, 2026-10-19, #409, #422): its roots are then its
+  frames' root maps, its recorded temporaries and the `Handle` registers live at the
+  safepoint each frame is at (the top frame's instruction, the call every caller waits in),
+  from a liveness analysis of the function computed when a collection first meets it; live
+  `Ptr` registers and `Addr` slots keep the heap objects they point into. Nothing is scanned
+  conservatively (rule 6). Deallocated slots wait in quarantine until a suspension, or, in a
+  long activation, until a recycle between instructions, finds no address to them in the same
+  precise set (#81, #355). No GC ever waits for another thread (the deadlock class seen in
+  other simulators cannot happen): a process's private heap is collected only by its process,
+  and the shared heap only by the one serial process that holds the shared state, while the
+  other serial processes are suspended.
 - **Protected:** an instance is a heap object holding its private variables; methods are `Func`s
   with `self` as the first parameter. `CallProt` takes the instance's lock (3.5).
 - **Files:** `FileId` indexes the owner's file table (process or shared). Reads are immediate;
@@ -723,7 +738,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 | real ops | `FBin {Add, Sub, Mul, Div, PowI, Pow}`, `Phys {MulReal, DivReal}`; a non-finite result or a division by zero is a runtime error |
 | natives | `NativeRef {symbol, ty}`: implicit families carry their type; `yavs.attr.image` (added, `'image`). Strings return the address of a fat pair `[data, dope]` (dope `1 to len`). An unknown symbol fails `Runtime::new`; a known but unimplemented one is a runtime error naming it |
 | foreign | `ForeignRef {name, symbol, args: Vec<ForeignArg>, ret, model: Option<VhpiModel>}` (`model` set for `"VHPI library model"` subprograms: library, model, parameter names, modes and types; the call goes to the plugin's model, not a C function) with `ForeignArg::{Value(CType), ScalarRef(CType, Width), Array {ty, lengths, copy_back}, Record {ty, copy_back}, Access}`. Arrays: the register is a fat-pair address (constrained arrays too); C gets a C-layout copy left to right (logic elements as one code byte, BIT/BOOLEAN as 0/1) and `lengths` `int64_t` lengths. Records of scalars: a naturally aligned C struct. Access: a pointer to the object's data in VHDL layout (after the descriptor of an array object), NULL for null. Copy-back range-checks what C wrote. The elaborator binds pointers through `Bindings.foreign`; `Runtime::new` fails on unbound or mismatched signatures |
-| heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation; a deallocated slot is quarantined until a suspension finds no address to it in the owner's frames and temporaries (or, once 4096 wait, a recycle before a native call or `deallocate` that also searches the registers, #355), so a stale address always meets the freed slot (runtime error, #81). Handles are found through each object's descriptor (#80). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated; objects that addresses in the frames reach are kept; an object whose handles cannot be located from its type skips the collection (never unsound). The shared heap is collected at the start of a cycle by `SharedGc` (#303, docs/decisions.md "Shared heap collection") |
+| heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation; a deallocated slot is quarantined until a suspension finds no address to it in the owner's `Addr` slots and recorded temporaries (or, once 4096 wait, a recycle before a native call, `new` or `deallocate` that also counts the live `Ptr` registers, #355, #422), so a stale address always meets the freed slot (runtime error, #81). Handles are found through each object's descriptor (#80). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated, and inside a long activation (#409); roots are precise (1.4, 1.6, #422); objects that those addresses reach are kept; an object whose handles cannot be located from its type skips the collection (never unsound). The shared heap is collected at the start of a cycle by `SharedGc` (#303, docs/decisions.md "Shared heap collection"). `RegTy::Handle` (added, #422) types the registers that hold handles; the verifier wants one for `New`, `Deref` and `CallProt` and takes it wherever an `I64` goes |
 | std.env 2019 | call paths from the frame stack and `Bindings::sources`; the VHDL assert state is per-cycle snapshots plus each process's own changes, merged in process order (deterministic at any thread count); records go to natives as fat pairs (docs/decisions.md, #99) |
 | verifier | the "no register live across a suspension" check is intra-block only; the "written before read" dataflow check (debug builds, #430) covers cross-block liveness across a `Suspend` of a process for registers that are not constants |
 | serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}` and `CallNative` of a file or directory native (#82); `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |

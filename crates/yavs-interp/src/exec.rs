@@ -239,6 +239,9 @@ pub(crate) struct Machine {
     sstack: Vec<u8>,
     pub heap: Heap,
     pub temp: Vec<u8>,
+    /// Temporaries that hold handles or heap addresses (`Inst::TempRoot`), until the
+    /// statement that made them ends (`Inst::Stmt` drops those at or above its frame's base).
+    troots: Vec<TempRoot>,
     pub sh: Option<SharedState>,
     /// The package being initialised (`init_package`): its index and writable data.
     pub pkg_init: Option<(u32, Vec<u8>)>,
@@ -275,6 +278,14 @@ struct Scratch {
 
 thread_local! {
     static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
+/// A recorded temporary (`Inst::TempRoot`): a value of `ty` constrained by `desc` at offset
+/// `off` of the temporary area, or with `ty` `None` a fat pair `[data, desc]`.
+struct TempRoot {
+    off: u32,
+    ty: Option<yavs_ir::TyId>,
+    desc: Box<[u8]>,
 }
 
 struct LayoutMemo {
@@ -569,6 +580,7 @@ impl Machine {
             sstack: Vec::new(),
             heap: Heap::new(heap::PRIVATE),
             temp: Vec::new(),
+            troots: Vec::new(),
             sh: None,
             pkg_init: None,
             entry,
@@ -611,6 +623,7 @@ impl Machine {
             None => self.regs.v.clear(),
         }
         self.temp.clear();
+        self.troots.clear();
         Ok(())
     }
 
@@ -622,6 +635,7 @@ impl Machine {
             return;
         }
         self.released = true;
+        self.troots.clear();
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
             s.regs = std::mem::take(&mut self.regs.v);
@@ -824,11 +838,14 @@ impl Machine {
 
     /// GC of the private heap and the debug process table, after a suspension.
     pub(crate) fn after_suspend(&mut self) {
-        if self.heap.since_gc > self.rt.limits.gc_threshold {
+        if self.heap.since_gc > self.rt.limits.gc_threshold
+            || heap::STRESS && self.heap.since_gc > 0
+        {
             self.collect();
-        } else if self.heap.has_quarantine() {
-            let pinned = self.pinned(HEAP, false);
-            self.heap.recycle(&pinned);
+        } else if self.heap.has_quarantine()
+            && let Some(r) = self.refs(false)
+        {
+            self.heap.recycle(&r.pinned(HEAP));
         }
         if let Some(d) = &self.dbg {
             let w = std::mem::take(&mut self.waits);
@@ -851,51 +868,73 @@ impl Machine {
         }
     }
 
-    /// Handles in the frames' root maps (registers are dead at a suspension point, ir.md
-    /// 1.2); `None` when one cannot be located.
-    fn frame_roots(&self) -> Option<Vec<u64>> {
+    /// The precise roots of this process (plan rule 6, #422): the frames' root maps, the
+    /// temporaries recorded by `Inst::TempRoot` and, with `regs` (between instructions), the
+    /// `Handle` and `Ptr` registers live where each frame is (`roots::live_refs`). Registers
+    /// are dead at a suspension (ir.md 1.2). `None` when a root cannot be located.
+    fn refs(&self, regs: bool) -> Option<heap::Refs> {
+        let r = self.refs_in(regs);
+        if heap::STRESS && r.is_none() && self.dbg.is_none() {
+            panic!("gc-stress: the roots of a process cannot be located");
+        }
+        r
+    }
+
+    fn refs_in(&self, regs: bool) -> Option<heap::Refs> {
         let prog = &self.rt.prog;
-        let mut roots = Vec::new();
-        for (i, fr) in self.frames.iter().enumerate() {
+        let mut r = heap::Refs::default();
+        for (k, fr) in self.frames.iter().enumerate() {
             let f = prog.func(fr.func)?;
-            if !heap::slot_roots(prog, &f.roots, self.fslots(i)?, &mut roots) {
+            if !heap::slot_roots(prog, &f.roots, self.fslots(k)?, &mut r) {
                 return None;
             }
+            if regs {
+                let live = self.rt.live_refs(fr.func)?;
+                for &reg in live.get(fr.pc)? {
+                    let v = *self.regs.v.get(fr.rbase + reg.0 as usize)?;
+                    match f.reg_ty.get(reg.0 as usize)? {
+                        yavs_ir::RegTy::Handle => r.handles.push(v),
+                        yavs_ir::RegTy::Ptr => r.addrs.push(v),
+                        _ if heap::STRESS && self.is_live_handle(v) => panic!(
+                            "gc-stress: register {reg:?} of `{}` holds a handle at pc {} but is not a `Handle` register",
+                            f.name, fr.pc
+                        ),
+                        _ => {}
+                    }
+                }
+            }
         }
-        Some(roots)
+        for t in &self.troots {
+            let data = self.temp.get(t.off as usize..)?;
+            match t.ty {
+                Some(ty) => {
+                    if !heap::handles_in(prog, ty, &t.desc, data, &mut r.handles) {
+                        return None;
+                    }
+                }
+                None => {
+                    let (a, d) = (data.get(..8)?, data.get(8..16)?);
+                    r.addrs.push(u64::from_le_bytes(a.try_into().ok()?));
+                    r.addrs.push(u64::from_le_bytes(d.try_into().ok()?));
+                }
+            }
+        }
+        Some(r)
     }
 
-    /// Collect the private heap from the frames' root maps.
+    /// Whether `v` is the handle of a live object in this process's heaps (`gc-stress`).
+    fn is_live_handle(&self, v: u64) -> bool {
+        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_ref());
+        self.heap.resolve(v).is_ok() || shared.is_some_and(|h| h.resolve(v).is_ok())
+    }
+
+    /// Collect the private heap from this suspended process's roots.
     pub(crate) fn collect(&mut self) -> bool {
-        let Some(roots) = self.frame_roots() else {
+        let Some(r) = self.refs(false) else {
             return false;
         };
-        let pinned = self.pinned(HEAP, false);
-        self.heap.collect(&self.rt.prog, &roots, &pinned)
-    }
-
-    /// Slot indices of `space` (a heap) that addresses in this process's frames and
-    /// temporaries, and with `regs` its registers, may reach, sorted. Any aligned word that
-    /// decodes to such an address counts: a false hit only delays reuse or collection of one
-    /// object. Registers are dead at a suspension, live between instructions.
-    pub(crate) fn pinned(&self, space: u8, regs: bool) -> Vec<u32> {
-        let words = self
-            .root
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .chain(self.sstack.as_chunks::<8>().0)
-            .chain(self.temp.as_chunks::<8>().0)
-            .map(|w| u64::from_le_bytes(*w))
-            .chain(self.regs.v.iter().copied().filter(|_| regs));
-        let mut v: Vec<u32> = words
-            .map(split)
-            .filter(|&(sp, _, _)| sp == space)
-            .map(|(_, i, _)| i)
-            .collect();
-        v.sort_unstable();
-        v.dedup();
-        v
+        self.heap
+            .collect(&self.rt.prog, &r.handles, &r.pinned(HEAP))
     }
 
     /// At a suspension or the end of this (serial) process: publish its shared-heap roots as
@@ -909,80 +948,75 @@ impl Machine {
         }
         #[cfg(test)]
         ROOT_BUILDS.with(|c| c.set(c.get() + 1));
-        let handles = self.frame_roots().map(|mut v| {
-            v.retain(|&h| heap::tag_of(h) == heap::SHARED);
-            v
+        let mine = self.refs(false).map(|r| ProcRoots {
+            pinned: r.pinned(SHARED_HEAP),
+            handles: r
+                .handles
+                .into_iter()
+                .filter(|&h| heap::tag_of(h) == heap::SHARED)
+                .collect(),
         });
-        let pinned = self.pinned(SHARED_HEAP, false);
         let Some(sh) = self.sh.as_mut() else {
             return;
         };
         let i = *slot.get_or_insert_with(|| {
-            sh.procs.push(ProcRoots::default());
+            sh.procs.push(None);
             sh.procs.len() - 1
         });
-        sh.procs[i] = ProcRoots { handles, pinned };
-        if sh.heap.as_deref().is_some_and(Heap::has_quarantine) {
-            let pinned = sh.pinned();
+        sh.procs[i] = mine;
+        if sh.heap.as_deref().is_some_and(Heap::has_quarantine)
+            && let Some(pinned) = sh.pinned()
+            && let Some(h) = sh.heap.as_mut()
+        {
+            h.recycle(&pinned);
+        }
+    }
+
+    /// Recycle deallocated slots inside an activation once enough wait (#355), so a loop
+    /// without a wait does not keep every slot it frees. Call only between instructions
+    /// (before a native call, a `new` or a `deallocate`): every address the process holds is
+    /// then in its frames' root maps, live registers or recorded temporaries. Other serial
+    /// processes are suspended, so their published addresses are current for the shared heap.
+    fn reclaim(&mut self, sim: bool) {
+        // Code run for elaboration is neither collected nor recycled here: its temporaries
+        // also come from Rust, which records none.
+        if !sim {
+            return;
+        }
+        self.gc_inline();
+        let shared_due = self
+            .sh
+            .as_ref()
+            .and_then(|sh| sh.heap.as_deref())
+            .is_some_and(Heap::reclaim_due);
+        if !(self.heap.reclaim_due() || shared_due) {
+            return;
+        }
+        let Some(r) = self.refs(true) else {
+            return;
+        };
+        if self.heap.reclaim_due() {
+            self.heap.recycle(&r.pinned(HEAP));
+        }
+        if shared_due && let Some(sh) = self.sh.as_mut() {
+            let Some(mut pinned) = sh.pinned() else {
+                return;
+            };
+            pinned.extend(r.pinned(SHARED_HEAP));
+            pinned.sort_unstable();
+            pinned.dedup();
             if let Some(h) = sh.heap.as_mut() {
                 h.recycle(&pinned);
             }
         }
     }
 
-    /// Recycle deallocated slots inside an activation once enough wait (#355), so a loop
-    /// without a wait does not keep every slot it frees. Call only between instructions
-    /// (before a native call or a `deallocate`): every address the process holds is then in
-    /// its frames, registers or temporaries. Other serial processes are suspended, so their
-    /// published addresses are current for the shared heap.
-    fn reclaim(&mut self) {
-        self.gc_inline();
-        if self.heap.reclaim_due() {
-            let pinned = self.pinned(HEAP, true);
-            self.heap.recycle(&pinned);
-        }
-        let due = self
-            .sh
-            .as_ref()
-            .and_then(|sh| sh.heap.as_deref())
-            .is_some_and(Heap::reclaim_due);
-        if due {
-            let mut pinned = self.pinned(SHARED_HEAP, true);
-            if let Some(sh) = self.sh.as_mut() {
-                pinned.extend(sh.pinned());
-                pinned.sort_unstable();
-                pinned.dedup();
-                if let Some(h) = sh.heap.as_mut() {
-                    h.recycle(&pinned);
-                }
-            }
-        }
-    }
-
-    /// Every aligned word of the frames, registers and temporaries that has the tag of an
-    /// access handle: roots for a collection inside an activation, where a handle may sit in a
-    /// register or a temporary that no root map names. A false hit only keeps an object.
-    fn handle_words(&self) -> Vec<u64> {
-        let tags = [heap::PRIVATE, heap::SHARED];
-        let words = self
-            .root
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .chain(self.sstack.as_chunks::<8>().0)
-            .chain(self.temp.as_chunks::<8>().0)
-            .map(|w| u64::from_le_bytes(*w))
-            .chain(self.regs.v.iter().copied());
-        words
-            .filter(|&w| w != 0 && tags.contains(&heap::tag_of(w)))
-            .collect()
-    }
-
     /// Collect a heap that grew past its threshold inside an activation, so a process that
     /// never waits (a testbench main loop) does not keep every object it drops until the next
-    /// delta cycle (memory grew without bound). Call only between instructions, as
-    /// [`Machine::reclaim`]. Other serial processes are suspended, so what they published is
-    /// current. Nothing is freed when a root cannot be located.
+    /// delta cycle (memory grew without bound, #409; kept with precise roots, user,
+    /// 2026-10-19, #422). Call only between instructions, as [`Machine::reclaim`]. Other
+    /// serial processes are suspended, so what they published is current. Nothing is freed
+    /// when a root cannot be located.
     fn gc_inline(&mut self) {
         if self.sh.as_ref().is_some_and(|sh| !sh.started) {
             return;
@@ -997,32 +1031,32 @@ impl Machine {
         if !(private || shared) {
             return;
         }
-        let Some(mut roots) = self.frame_roots() else {
+        let Some(mut r) = self.refs(true) else {
             return;
         };
-        roots.extend(self.handle_words());
         if private {
-            let pinned = self.pinned(HEAP, true);
-            self.heap.collect(&self.rt.prog, &roots, &pinned);
+            self.heap
+                .collect(&self.rt.prog, &r.handles, &r.pinned(HEAP));
         }
         if shared {
-            let mut pinned = self.pinned(SHARED_HEAP, true);
+            let mut pinned = r.pinned(SHARED_HEAP);
             let prog = self.rt.prog.clone();
             let Some(sh) = self.sh.as_mut() else { return };
-            if !heap::slot_roots(&prog, &prog.shared_roots, &sh.vars, &mut roots) {
+            if !heap::slot_roots(&prog, &prog.shared_roots, &sh.vars, &mut r) {
                 return;
             }
             for p in &sh.procs {
-                match &p.handles {
-                    Some(h) => roots.extend(h),
+                match p {
+                    Some(p) => r.handles.extend(&p.handles),
                     None => return,
                 }
             }
-            pinned.extend(sh.pinned());
+            let Some(more) = sh.pinned() else { return };
+            pinned.extend(more);
             pinned.sort_unstable();
             pinned.dedup();
             if let Some(h) = sh.heap.as_mut() {
-                h.collect(&prog, &roots, &pinned);
+                h.collect(&prog, &r.handles, &pinned);
             }
         }
     }
@@ -1228,6 +1262,36 @@ impl Machine {
         let mut x = [0u8; 8];
         put_le(&mut x[..n], v);
         self.put(a, &x[..n])
+    }
+
+    /// `Inst::TempRoot` of the fat pair `[data, desc]` at `a`: recorded only when a word
+    /// points into a heap (most point into temporaries or constants).
+    fn fat_root(&mut self, a: u64) -> R<()> {
+        let (sp, _, off) = split(a);
+        let w = self
+            .temp
+            .get(off as usize..off as usize + 16)
+            .filter(|_| sp == TEMP)
+            .ok_or_else(|| ice("a recorded fat pair outside the temporary area"))?;
+        let heap_at = |k: usize| {
+            let mut b = [0; 8];
+            b.copy_from_slice(&w[k..k + 8]);
+            matches!(split(u64::from_le_bytes(b)).0, HEAP | SHARED_HEAP)
+        };
+        if heap_at(0) || heap_at(8) {
+            self.temp_root(a, None, Box::default());
+        }
+        Ok(())
+    }
+
+    /// Record the temporary at `a` for the GC until its statement ends (`Inst::TempRoot`).
+    pub(crate) fn temp_root(&mut self, a: u64, ty: Option<yavs_ir::TyId>, desc: Box<[u8]>) {
+        let (_, _, off) = split(a);
+        self.troots.push(TempRoot {
+            off: off as u32,
+            ty,
+            desc,
+        });
     }
 
     pub(crate) fn temp_alloc(&mut self, n: u64) -> R<u64> {
@@ -1823,7 +1887,7 @@ impl Machine {
         dst: Option<Reg>,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
-        self.reclaim();
+        self.reclaim(ctx.is_some());
         let n = prog
             .natives
             .get(native)
@@ -1875,6 +1939,9 @@ impl Machine {
     fn end_stmt(&mut self) {
         let base = self.top().temp_base;
         self.temp.truncate(base);
+        if !self.troots.is_empty() {
+            self.troots.retain(|t| (t.off as usize) < base);
+        }
     }
 
     fn exec_in<const DEBUG: bool>(
@@ -1953,6 +2020,11 @@ impl Machine {
                     Inst::Move { dst, src } => {
                         let v = self.r(src);
                         self.set(dst, v);
+                        pc += 1;
+                        continue;
+                    }
+                    Inst::TempRoot { addr, ty: None, .. } => {
+                        self.fat_root(self.r(addr))?;
                         pc += 1;
                         continue;
                     }
@@ -2679,6 +2751,7 @@ impl Machine {
             frame: top as u32,
             temp: std::mem::take(&mut self.temp),
             temp_base,
+            temp_roots: self.troots.len(),
             inst: &self.inst.data[..] as *const [u8],
         };
         let mut host = Host {
@@ -3236,6 +3309,29 @@ impl Machine {
                 let a = self.temp_alloc(self.r(size))?;
                 self.set(dst, a);
             }
+            Inst::TempRoot { addr, ty: None, .. } => self.fat_root(self.r(addr))?,
+            Inst::TempRoot {
+                addr,
+                desc,
+                ty: Some(t),
+            } => {
+                let a = self.r(addr);
+                if split(a).0 != TEMP {
+                    return Err(ice("a recorded temporary outside the temporary area"));
+                }
+                let n = Ty::desc_size(&prog.types, t)
+                    .ok_or_else(|| ice(format!("no descriptor size of {t}")))?;
+                let desc = match desc {
+                    Some(d) if n > 0 => self.rd(self.r(d), n)?.into(),
+                    None if n > 0 => {
+                        return Err(ice(format!(
+                            "recorded temporary of {t} without its descriptor"
+                        )));
+                    }
+                    _ => Box::default(),
+                };
+                self.temp_root(a, Some(t), desc);
+            }
             Inst::PkgAlloc { dst, size } => {
                 let n = self.r(size);
                 let Some((p, data)) = self.pkg_init.as_mut() else {
@@ -3619,7 +3715,7 @@ impl Machine {
                 size,
                 shared,
             } => {
-                self.reclaim();
+                self.reclaim(ctx.is_some());
                 let data = self.rd(self.r(init), self.r(size))?.to_vec();
                 let r = self.alloc_heap(shared)?.alloc(heap::Obj::Typed(ty), data);
                 let h = r.map_err(|_| {
@@ -3637,7 +3733,7 @@ impl Machine {
                 fill,
                 shared,
             } => {
-                self.reclaim();
+                self.reclaim(ctx.is_some());
                 let size = self.r(size);
                 if size > 1 << 32 {
                     return Err(Fault::Runtime("object larger than 4 GiB".into()));
@@ -3674,7 +3770,7 @@ impl Machine {
                 self.set(dst, h);
             }
             Inst::Free { ptr } => {
-                self.reclaim();
+                self.reclaim(ctx.is_some());
                 self.deallocate(self.r(ptr))?;
             }
             Inst::Deref { dst, handle, what } => {
@@ -4032,6 +4128,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
             ))),
         };
         m.swap_tier(tf);
+        tf.temp_roots = m.troots.len();
         match r {
             Ok(Flow::Next) => true,
             Ok(_) => {
@@ -4186,28 +4283,5 @@ mod tests {
         m.sh = Some(SharedState::new(vec![]));
         m.publish_shared(&mut slot);
         assert_eq!((ROOT_BUILDS.get(), slot), (1, Some(0)));
-    }
-
-    /// Between instructions the registers hold addresses too: the in-activation recycle
-    /// counts them, the one at a suspension does not (#355).
-    #[test]
-    fn registers_pin_between_instructions() {
-        let rt = Runtime::new(Arc::new(Program::default()), crate::Bindings::default()).unwrap();
-        let mut m = Machine::new(rt, Arc::default(), vec![], FuncId(0));
-        m.frames.push(Frame {
-            func: FuncId(0),
-            pc: 0,
-            rbase: 0,
-            sbase: 0,
-            slen: 8,
-            link: None,
-            ret: None,
-            temp_base: 0,
-            shared_alloc: false,
-        });
-        m.root = mk_addr(HEAP, 3, 8).unwrap().to_le_bytes().to_vec();
-        m.regs.v = vec![mk_addr(HEAP, 5, 0).unwrap(), 7];
-        assert_eq!(m.pinned(HEAP, false), [3]);
-        assert_eq!(m.pinned(HEAP, true), [3, 5]);
     }
 }

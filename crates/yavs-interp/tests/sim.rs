@@ -577,7 +577,7 @@ fn access_types_and_stale_handle() {
             src: v41,
             w: Width::B8,
         });
-        let h = fb.reg(RegTy::I64);
+        let h = fb.reg(RegTy::Handle);
         fb.emit(Inst::New {
             dst: h,
             ty: int,
@@ -587,7 +587,7 @@ fn access_types_and_stale_handle() {
         });
         store(&mut fb, AddrSpace::Frame, ps, h, Width::B8);
         stmt(&mut fb, StmtKind::VarAssign);
-        let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, ps);
         let obj = fb.reg(RegTy::Ptr);
         fb.emit(Inst::Deref {
             dst: obj,
@@ -608,7 +608,7 @@ fn access_types_and_stale_handle() {
             w: Width::B8,
         });
         stmt(&mut fb, StmtKind::Report);
-        let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, ps);
         let obj = fb.reg(RegTy::Ptr);
         fb.emit(Inst::Deref {
             dst: obj,
@@ -632,7 +632,7 @@ fn access_types_and_stale_handle() {
         let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
         report_image(&mut fb, "p after deallocate = ", int, h);
         s_stale = stmt(&mut fb, StmtKind::Report);
-        let h = load(&mut fb, AddrSpace::Frame, qs, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, qs);
         let obj = fb.reg(RegTy::Ptr);
         fb.emit(Inst::Deref {
             dst: obj,
@@ -672,7 +672,7 @@ fn new_int(fb: &mut FuncBuilder<'_>, int: TyId, v: i64) -> Reg {
         src: vr,
         w: Width::B8,
     });
-    let h = fb.reg(RegTy::I64);
+    let h = fb.reg(RegTy::Handle);
     fb.emit(Inst::New {
         dst: h,
         ty: int,
@@ -713,7 +713,7 @@ fn freed_slot_not_reused_within_a_statement() {
         let h = new_int(&mut fb, int, 41);
         store(&mut fb, AddrSpace::Frame, ps, h, Width::B8);
         s = stmt(&mut fb, StmtKind::VarAssign);
-        let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, ps);
         let obj = deref(&mut fb, h, what);
         let pa = fb.addr(AddrSpace::Frame, ps);
         fb.emit(Inst::Free { ptr: pa });
@@ -743,8 +743,9 @@ fn freed_slot_not_reused_within_a_statement() {
     assert_eq!(e.trace, [s]);
 }
 
-/// An object reached only through an address in a frame slot survives a collection at a
-/// wait (a by-reference parameter of a procedure that waits keeps such an address).
+/// An object reached only through an address in a frame slot (`RootKind::Addr`) survives a
+/// collection at a wait (a by-reference parameter of a procedure that waits keeps such an
+/// address).
 #[test]
 fn gc_keeps_objects_reached_by_address() {
     let mut pb = ProgramBuilder::new();
@@ -757,6 +758,7 @@ fn gc_keeps_objects_reached_by_address() {
         let ps = fb.local("p", acc, 8, 8);
         let addr = fb.local("a", int, 8, 8);
         fb.root(ps, RootKind::Handle);
+        fb.root(addr, RootKind::Addr);
         stmt(&mut fb, StmtKind::VarAssign);
         let h = new_int(&mut fb, int, 41);
         let obj = deref(&mut fb, h, what);
@@ -845,7 +847,7 @@ fn gc_keeps_roots_run(waits: bool) {
                 src: vr,
                 w: Width::B8,
             });
-            let h = fb.reg(RegTy::I64);
+            let h = fb.reg(RegTy::Handle);
             fb.emit(Inst::New {
                 dst: h,
                 ty: int,
@@ -885,7 +887,7 @@ fn gc_keeps_roots_run(waits: bool) {
         fb.emit(Inst::Br { to: lp });
         fb.at(done);
         stmt(&mut fb, StmtKind::Report);
-        let h = load(&mut fb, AddrSpace::Frame, keep, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, keep);
         let obj = fb.reg(RegTy::Ptr);
         fb.emit(Inst::Deref {
             dst: obj,
@@ -983,7 +985,7 @@ fn shared_heap_collected_at_safepoints() {
             (AddrSpace::Frame, mine, "mine.all = "),
         ] {
             stmt(&mut fb, StmtKind::Report);
-            let h = load(&mut fb, space, off, Width::B8);
+            let h = load_handle(&mut fb, space, off);
             let obj = deref(&mut fb, h, what);
             let v = fb.reg(RegTy::I64);
             fb.emit(Inst::Load {
@@ -1085,7 +1087,7 @@ fn freed_slots_recycled_within_an_activation() {
         store(&mut fb, AddrSpace::Shared, 0, zero, Width::B8);
         let h = new_int(&mut fb, int, 41);
         store(&mut fb, AddrSpace::Frame, ps, h, Width::B8);
-        let h = load(&mut fb, AddrSpace::Frame, ps, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, ps);
         let obj = deref(&mut fb, h, what);
         let pa = fb.addr(AddrSpace::Frame, ps);
         fb.emit(Inst::Free { ptr: pa });
@@ -1495,7 +1497,7 @@ fn protected_counter() {
             dst: init,
             size: eight,
         });
-        let h = fb.reg(RegTy::I64);
+        let h = fb.reg(RegTy::Handle);
         fb.emit(Inst::New {
             dst: h,
             ty: pt,
@@ -1511,7 +1513,7 @@ fn protected_counter() {
         let mut fb = pb.define(f);
         let me = fb.param("self", Width::B8, ParamClass::Value, Mode::In, None);
         stmt(&mut fb, StmtKind::VarAssign);
-        let h = load(&mut fb, AddrSpace::Frame, me, Width::B8);
+        let h = load_handle(&mut fb, AddrSpace::Frame, me);
         let obj = fb.reg(RegTy::Ptr);
         fb.emit(Inst::Deref {
             dst: obj,
@@ -1541,7 +1543,7 @@ fn protected_counter() {
     for f in [p, q] {
         let mut fb = pb.define(f);
         stmt(&mut fb, StmtKind::Call);
-        let obj = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        let obj = load_handle(&mut fb, AddrSpace::Shared, 0);
         let args = fb.regs(&[]);
         fb.emit(Inst::CallProt {
             func: incr,
@@ -1550,7 +1552,7 @@ fn protected_counter() {
             dst: None,
         });
         stmt(&mut fb, StmtKind::Report);
-        let obj = load(&mut fb, AddrSpace::Shared, 0, Width::B8);
+        let obj = load_handle(&mut fb, AddrSpace::Shared, 0);
         let args = fb.regs(&[]);
         let v = fb.reg(RegTy::I64);
         fb.emit(Inst::CallProt {
@@ -1838,4 +1840,30 @@ fn load_at(fb: &mut FuncBuilder<'_>, base: Reg, off: i64) -> Reg {
         w: Width::B8,
     });
     v
+}
+
+#[path = "common/gc_roots.rs"]
+mod gc_roots;
+
+/// Collections inside an activation use precise roots (#422): objects whose handles live
+/// only in a register (of the top frame and of a caller), a temporary, a caller's frame
+/// slot, a record in the frame and an array object, and one reached only through an
+/// address in a register, survive; an object that only an
+/// unrooted integer slot names is collected (no conservative retention). Same at 1 and 4
+/// threads.
+#[test]
+fn precise_roots_inside_an_activation() {
+    let (prog, p) = gc_roots::program();
+    let prog = std::sync::Arc::new(prog);
+    for threads in [1, 4] {
+        let (r, vals, slots) = gc_roots::run(prog.clone(), p, None, threads);
+        assert_eq!(vals, gc_roots::WANT, "{threads} threads {r:?}");
+        let e = r.unwrap_err();
+        assert!(
+            matches!(&e.kind, ErrorKind::Runtime(m) if m.contains("deallocated")),
+            "{e:?}"
+        );
+        // One slot per object without collections inside the activation.
+        assert!(slots < 200, "{slots} slots at {threads} threads");
+    }
 }

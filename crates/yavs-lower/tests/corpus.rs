@@ -19,6 +19,7 @@ use yavs_sem::{Db, LangRev, Options};
 /// Corpus files whose output matches NVC's exactly.
 const PASS: &[&str] = &[
     "access/access_string_array",
+    "access/gc_random",
     "access/linked_list",
     "access/null_deref",
     "access/package_alloc",

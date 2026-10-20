@@ -65,7 +65,7 @@ fn fill_copy_and_zero() {
         let zero = buf(&mut fb, &[0]);
         let mk = |fb: &mut FuncBuilder<'_>, data: Reg, size: i64, fill: u32| {
             let size = fb.int(size);
-            let h = fb.reg(RegTy::I64);
+            let h = fb.reg(RegTy::Handle);
             fb.emit(Inst::NewFill {
                 dst: h,
                 ty: int,

@@ -53,6 +53,9 @@ pub(crate) struct Mem {
     /// replaces next.
     objs: [Obj; OBJS],
     obj_next: u64,
+    /// `TierFrame::temp_roots`: while non-zero, `Inst::Stmt` steps (the interpreter drops
+    /// the ending statement's recorded temporaries).
+    temp_roots: u64,
 }
 
 /// An object in `Mem::objs`: the high half of its addresses (`u64::MAX`: none), start,
@@ -79,6 +82,8 @@ const MEM_INST: u64 = 56;
 const MEM_INST_LEN: u64 = 64;
 /// `Mem::objs[k]` is at `MEM_OBJS + 32 * k`, its fields at 0, 8, 16, 24.
 const MEM_OBJS: u64 = 72;
+const MEM_TEMP_ROOTS: u64 = MEM_OBJS + 32 * OBJS as u64 + 8;
+const _: () = assert!(std::mem::offset_of!(Mem, temp_roots) as u64 == MEM_TEMP_ROOTS);
 
 impl Mem {
     fn of(fr: &mut TierFrame) -> Mem {
@@ -99,6 +104,7 @@ impl Mem {
                 w: 0,
             }; OBJS],
             obj_next: 0,
+            temp_roots: fr.temp_roots as u64,
         }
     }
 
@@ -1127,11 +1133,15 @@ impl Gen {
                         None => self.step(&c, pc),
                     },
                     Inst::Stmt => {
+                        let (slow, join) = self.slow_path(&c, pc);
+                        let roots = self.mem_ld(&c, MEM_TEMP_ROOTS, self.i64);
+                        self.guard(&c, self.icmp(IP::LLVMIntEQ, roots, self.c64(0)), slow);
                         let len = self.mem_ld(&c, MEM_TEMP_LEN, self.i64);
                         let base = self.mem_ld(&c, MEM_TEMP_BASE, self.i64);
                         let lt = self.icmp(IP::LLVMIntULT, base, len);
                         let v = LLVMBuildSelect(self.b, lt, base, len, c"".as_ptr());
                         self.mem_st(&c, MEM_TEMP_LEN, v);
+                        self.join(join);
                     }
                     Inst::Alloc { dst, size } => {
                         let (slow, join) = self.slow_path(&c, pc);

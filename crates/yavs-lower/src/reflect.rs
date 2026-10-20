@@ -54,7 +54,7 @@ impl Fx<'_, '_> {
         let ranges = self.dyn_ranges(st, span)?;
         let id = self.int(i64::from(id.0));
         let is_value = self.int(i64::from(value));
-        let dst = self.reg(RegTy::I64);
+        let dst = self.reg(RegTy::Handle);
         let native = self.fb.program().native("yavs.attr.reflect", None);
         let args = self.fb.regs(&[id, is_value, v, ranges]);
         self.emit(Inst::CallNative {

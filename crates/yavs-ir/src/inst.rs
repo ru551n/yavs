@@ -40,7 +40,7 @@ impl fmt::Debug for Regs {
 /// What a register holds, for the verifier and the LLVM tier.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RegTy {
-    /// Integers, physical values, enums, booleans, handles.
+    /// Integers, physical values, enums, booleans.
     I64,
     F64,
     /// An address (`Addr`).
@@ -48,6 +48,8 @@ pub enum RegTy {
     /// A signal reference in two registers: `{base, offset}` and `len` (one range of one
     /// instance signal), or a reference of several parts (`Inst::SigParts`).
     Sig,
+    /// An access handle (ir.md 1.6): an `I64` the GC treats as a root while it is live.
+    Handle,
 }
 
 /// Memory access width. `B1` loads zero-extend, `B4` loads sign-extend (a 4-byte cell holds a
@@ -245,6 +247,15 @@ pub enum Inst {
     Alloc {
         dst: Reg,
         size: Reg,
+    },
+    /// The temporary memory at `addr` holds, until the end of the statement, a value of `ty`
+    /// (constrained by the descriptor at `desc`) whose handles are GC roots, or with `ty`
+    /// `None` a fat pair `[data, desc]` whose addresses keep the heap objects they point
+    /// into (ir.md 1.6).
+    TempRoot {
+        addr: Reg,
+        desc: Option<Reg>,
+        ty: Option<TyId>,
     },
     /// `size` bytes of zeroed memory appended to the data of the package being initialised,
     /// live as long as the package (package initialisation thunks only): constants whose
@@ -706,7 +717,7 @@ impl Inst {
     }
 
     /// Every fixed register operand with its role and expected type (`None`: any cell that
-    /// is not a signal). List operands are not included (see [`Inst::list`]).
+    /// is not a signal; a `Handle` register is also an `I64`). List operands are not included (see [`Inst::list`]).
     pub fn visit(&self, f: &mut dyn FnMut(Reg, Role, Option<RegTy>)) {
         let mut c = *self;
         c.visit_mut(&mut |r, role, t| f(*r, role, t));
@@ -720,6 +731,7 @@ impl Inst {
         let p = Some(Ptr);
         let s = Some(Sig);
         let fl = Some(F64);
+        let h = Some(Handle);
         let mut d = |r: &mut Reg, t: Option<RegTy>| f(r, Def, t);
         match self {
             Inst::Const { dst, .. } => d(dst, None),
@@ -733,6 +745,12 @@ impl Inst {
             Inst::Alloc { dst, size } | Inst::PkgAlloc { dst, size } => {
                 d(dst, p);
                 f(size, Use, i);
+            }
+            Inst::TempRoot { addr, desc, .. } => {
+                f(addr, Use, p);
+                if let Some(r) = desc {
+                    f(r, Use, p);
+                }
             }
             Inst::Load { dst, addr, w } => {
                 d(dst, (*w == Width::Sig).then_some(Sig));
@@ -930,7 +948,7 @@ impl Inst {
                 }
             }
             Inst::CallProt { obj, dst, .. } => {
-                f(obj, Use, i);
+                f(obj, Use, h);
                 if let Some(r) = dst {
                     f(r, Def, None);
                 }
@@ -938,7 +956,7 @@ impl Inst {
             Inst::New {
                 dst, init, size, ..
             } => {
-                d(dst, i);
+                d(dst, h);
                 f(init, Use, p);
                 f(size, Use, i);
             }
@@ -949,7 +967,7 @@ impl Inst {
                 size,
                 ..
             } => {
-                d(dst, i);
+                d(dst, h);
                 f(desc, Use, p);
                 f(data, Use, p);
                 f(size, Use, i);
@@ -957,7 +975,7 @@ impl Inst {
             Inst::Free { ptr } => f(ptr, Use, p),
             Inst::Deref { dst, handle, .. } => {
                 d(dst, p);
-                f(handle, Use, i);
+                f(handle, Use, h);
             }
             Inst::SigVal {
                 dst, offset, len, ..

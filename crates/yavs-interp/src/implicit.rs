@@ -326,6 +326,9 @@ fn write_arr(m: &mut Machine, t: TyId, a: &Arr) -> R<u64> {
         .collect();
     let dope = m.temp_alloc(dope_bytes.len() as u64)?;
     m.put(dope, &dope_bytes)?;
+    if Ty::has_handles(&m.rt.prog.types, t) {
+        m.temp_root(data, Some(t), dope_bytes.into());
+    }
     let fat = m.temp_alloc(16)?;
     m.store(fat, Width::B8, data)?;
     m.store(add_addr(fat, 8)?, Width::B8, dope)?;

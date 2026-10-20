@@ -164,9 +164,16 @@ impl<'a> Fx<'a, '_> {
         Ty::logic_leaf(self.fb.program().types(), tid).is_some()
     }
 
+    /// The register type of a scalar of base type `t`: access and protected values are
+    /// handles, GC roots while live (rule 6).
     pub(crate) fn rt_of(&self, t: TypeId) -> RegTy {
         if ty::is_real(self.db, t) {
             RegTy::F64
+        } else if matches!(
+            self.db.types[t].kind,
+            TypeKind::Access { .. } | TypeKind::Protected { .. }
+        ) {
+            RegTy::Handle
         } else {
             RegTy::I64
         }
@@ -368,6 +375,7 @@ impl<'a> Fx<'a, '_> {
                 self.store(fat, data, Width::B8);
                 let dp = self.offset(fat, 8);
                 self.store(dp, desc, Width::B8);
+                self.fat_root(fat);
                 Ok(fat)
             }
         }
@@ -1590,11 +1598,7 @@ impl<'a> Fx<'a, '_> {
                         let dope = self.dope_of(*e)?;
                         // A scalar named return value's range (`Db::scalar_range`): the
                         // bounds of a floating point type are its values' bits.
-                        let t = if ty::is_real(self.db, self.db.base(self.db.exprs[*e].subtype)) {
-                            RegTy::F64
-                        } else {
-                            RegTy::I64
-                        };
+                        let t = self.rt_of(self.db.base(self.db.exprs[*e].subtype));
                         self.dope_range(dope, dim.saturating_sub(1) as u8, t)
                     }
                     AttrPrefix::Entity(_) => {
@@ -1859,7 +1863,7 @@ impl<'a> Fx<'a, '_> {
         let (tid, logic, w) = self.elem_facts(t, span)?;
         let bias = self.code_bias(tid);
         let (size, count) = self.layout(tid, dope);
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, tid, Some(dope));
         let set = |fx: &mut Self, pos: Reg, v: Reg| {
             if logic {
                 let v = fx.enc(v, bias);
@@ -2429,6 +2433,7 @@ impl<'a> Fx<'a, '_> {
         self.store(fat, data, Width::B8);
         let d = self.offset(fat, 8);
         self.store(d, dope, Width::B8);
+        self.fat_root(fat);
         fat
     }
 
@@ -3250,7 +3255,7 @@ impl<'a> Fx<'a, '_> {
             }
         };
         let size = self.size_of(tid, dope);
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, tid, Some(dope));
         let bias = self.code_bias(tid);
         let pieces: Vec<_> = ops.iter().map(|o| (o.0, o.1)).collect();
         self.put_pieces(data, n, logic, (bias, w), m, &pieces);
@@ -3532,7 +3537,7 @@ impl<'a> Fx<'a, '_> {
             });
         }
         let size = self.size_of(tid, dope);
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, tid, Some(dope));
         let count = self.dope_len(dope);
         let bw = (self.code_bias(etid), w);
         if assocs.iter().all(|a| a.choices.is_empty()) {
@@ -4555,7 +4560,7 @@ impl<'a> Fx<'a, '_> {
             None => sp,
         };
         let (size, count) = self.layout(ttid, dope);
-        let data = self.alloc(size);
+        let data = self.alloc_val(size, ttid, Some(dope));
         let (sb, tb) = (self.code_bias(stid), self.code_bias(ttid));
         let (sreal, treal) = (ty::is_real(db, db.base(fe)), ty::is_real(db, db.base(te)));
         let name = ty::subtype_name(db, te);

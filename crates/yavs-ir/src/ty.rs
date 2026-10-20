@@ -274,6 +274,24 @@ impl Ty {
         go(types, ty, 0)
     }
 
+    /// Whether values of `ty` can contain access handles (the GC follows them); a missing
+    /// or too deeply nested type counts as one.
+    pub fn has_handles(types: &Types, ty: TyId) -> bool {
+        fn go(types: &Types, ty: TyId, depth: u32) -> bool {
+            if depth > 64 {
+                return true;
+            }
+            match types.get(ty) {
+                Some(Ty::Access { .. } | Ty::Protected { .. }) => true,
+                Some(Ty::Array { elem, .. }) => go(types, *elem, depth + 1),
+                Some(Ty::Record { fields }) => fields.iter().any(|f| go(types, f.ty, depth + 1)),
+                Some(_) => false,
+                None => true,
+            }
+        }
+        go(types, ty, 0)
+    }
+
     /// Whether values of `ty` need a runtime descriptor (arrays, records with such fields).
     pub fn needs_desc(types: &Types, ty: TyId) -> bool {
         match types.get(ty) {

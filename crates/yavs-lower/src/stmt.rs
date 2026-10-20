@@ -591,11 +591,7 @@ impl Fx<'_, '_> {
                     // Bounds from the instance's generics: `[left, right, dir]` in instance
                     // data, written by the elaborator.
                     (Some(f), Some(off)) => {
-                        let rt = if ty::is_real(db, db.base(f)) {
-                            RegTy::F64
-                        } else {
-                            RegTy::I64
-                        };
+                        let rt = self.rt_of(db.base(f));
                         let a = self.addr(Space::Inst, off);
                         let left = self.load(a, Width::B8, rt);
                         let a = self.offset(a, 8);
@@ -2351,6 +2347,7 @@ impl Fx<'_, '_> {
                 self.store(fat, data, Width::B8);
                 let d = self.offset(fat, 8);
                 self.store(d, nd, Width::B8);
+                self.fat_root(fat);
                 self.term(Inst::Ret { v: Some(fat) });
             }
             crate::expr::V::A(data, mut dope) => {
@@ -2378,6 +2375,7 @@ impl Fx<'_, '_> {
                 self.store(fat, data, Width::B8);
                 let d = self.offset(fat, 8);
                 self.store(d, nd, Width::B8);
+                self.fat_root(fat);
                 self.term(Inst::Ret { v: Some(fat) });
             }
         }

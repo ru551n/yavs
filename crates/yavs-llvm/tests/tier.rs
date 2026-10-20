@@ -659,3 +659,25 @@ fn logic_elements_match_the_interpreter() {
     });
     check(prog, f, &["LGet", "LSet"], &[0, 1, 5, 63, 64, 127, 128, -1]);
 }
+
+#[path = "../../yavs-interp/tests/common/gc_roots.rs"]
+mod gc_roots;
+
+/// Compiled code reaches `new` through `TierHost::step` with the registers, frame slots and
+/// temporaries in the machine, so a collection there sees the precise roots the interpreter
+/// sees (#422): the same objects survive and the unrooted one is collected.
+#[test]
+fn precise_roots_under_compiled_code() {
+    let (prog, p) = gc_roots::program();
+    let both = Both::new(prog);
+    let tier: Arc<dyn Tier> = both.tier.clone();
+    let (r, vals, slots) = gc_roots::run(both.prog.clone(), p, Some(tier), 1);
+    assert!(
+        both.tier.1.load(Ordering::Relaxed) > 0,
+        "compiled code never ran"
+    );
+    assert_eq!(vals, gc_roots::WANT, "{r:?}");
+    let e = r.unwrap_err();
+    assert!(e.to_string().contains("deallocated"), "{e}");
+    assert!(slots < 200, "{slots} slots");
+}

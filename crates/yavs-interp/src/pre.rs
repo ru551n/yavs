@@ -36,12 +36,8 @@ pub(crate) struct Pre {
 impl Pre {
     /// Append the registers of a frame at index `idx` to `stack`: the preloaded registers have
     /// their values, the others are zero.
-    ///
-    /// ponytail: zeroing is not needed for correctness (#430: the verifier proves every other
-    /// register is written before it is read; a sparse fill must list preloaded zeros too),
-    /// but the collection scans registers conservatively and stale ones kept garbage alive
-    /// (+25% run time, +31% peak memory on a long testbench). Leave them stale once the scan
-    /// is precise (#422).
+    /// The collection reads only registers live at a safepoint (#422), so zeros are not
+    /// needed for it; appending the table costs what appending stale words would.
     pub(crate) fn fill(&self, stack: &mut Vec<u64>, idx: u32) -> R<()> {
         let at = stack.len();
         stack.extend_from_slice(&self.init);

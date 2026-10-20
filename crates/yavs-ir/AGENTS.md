@@ -69,6 +69,14 @@ the same commit (root `AGENTS.md` rule 24).
   `NetGraph::select`.
 - Heap addresses carry no generation; the interpreter quarantines deallocated slots instead
   (#81, `docs/decisions.md`).
+- Precise roots (plan rule 6, #422): a register holding an access or protected handle is
+  `RegTy::Handle` (the verifier wants one for `New`, `Deref`, `CallProt`; an `I64` operand
+  takes it too), a frame slot holding a handle or a heap address is in `Func::roots`
+  (`RootKind::Handle`, `Composite`, `Addr`), and a temporary that holds handles or heap
+  addresses is recorded by `Inst::TempRoot`. An emitter that keeps a handle anywhere else
+  makes the collection inside an activation free a live object. The optimiser (`opt.rs`)
+  never replaces a `Handle` register by another register (`Opt::single` takes `I64` and
+  `Ptr` only); replacing one by an `I64` would hide a root.
 
 ## 5. How to work here
 

@@ -1870,7 +1870,7 @@ impl Db {
         let DeclKind::Component(c) = &self.decls[comp].kind else {
             return Err(Reported);
         };
-        let (cscope, locals_g, locals_p) = (c.scope, c.generics.clone(), c.ports.clone());
+        let (comp_scope, locals_g, locals_p) = (c.scope, c.generics.clone(), c.ports.clone());
         let Some(e) = entity else {
             if b.generic_map.is_some() || b.port_map.is_some() {
                 if matches!(aspect, Some(EntityAspect::Open)) {
@@ -1921,6 +1921,15 @@ impl Db {
                 _ => None,
             })
             .collect();
+        // The actuals see what is visible at the binding, with the component's own generics
+        // and ports in front (7.3.2.2, #468).
+        let cscope = self.add_scope(ScopeKind::Configuration, Some(scope), None);
+        let (names, uses) = (
+            self.scopes[comp_scope].names.clone(),
+            self.scopes[comp_scope].uses.clone(),
+        );
+        self.scopes[cscope].names = names;
+        self.scopes[cscope].uses = uses;
         let generic_map = match &b.generic_map {
             Some(m) => errs.keep(self.assoc_list(cscope, &eg, m, b.span)),
             None => errs.keep(self.default_map(&locals_g, &eg, e, &types, at)),

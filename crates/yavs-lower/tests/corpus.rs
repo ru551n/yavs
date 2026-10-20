@@ -154,6 +154,7 @@ const PASS: &[&str] = &[
     "hierarchy/entity_statements",
     "hierarchy/label_path_name",
     "hierarchy/component_binding",
+    "hierarchy/binding_actual_names",
     "hierarchy/config_generate_index",
     "hierarchy/config_port_expr",
     "hierarchy/use_type_operations",

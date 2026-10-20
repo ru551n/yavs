@@ -300,6 +300,10 @@ fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
 /// A package declaration naming the hierarchy (not another package's object) is an error:
 /// packages are elaborated before the design hierarchy (LRM 14.4.1, 8.7).
 fn package_externals(db: &mut Db) -> Result<Vec<(UnitId, DeclId)>, Vec<Diagnostic>> {
+    // No external name in any loaded unit: nothing to find in every subprogram body.
+    if db.externals.is_empty() {
+        return Ok(Vec::new());
+    }
     let units: Vec<UnitId> = db
         .units
         .iter()

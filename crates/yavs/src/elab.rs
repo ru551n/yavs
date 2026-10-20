@@ -627,6 +627,11 @@ pub fn run(
     if a.time_report {
         crate::timing::enable();
     }
+    // A debugger reads and writes the variables of subprograms in their frame slots: keep them
+    // there, before any function is optimised.
+    if a.dap.is_some() {
+        yavs_interp::keep_variables();
+    }
     // Before any plugin or foreign library loads: their prints must not reach the protocol.
     if a.dap == Some(yavs_dap::Transport::Stdio) {
         match yavs_vhpi::divert_stdout() {

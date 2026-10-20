@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:slot_promotion:_p0	x 4 false
+diag	note	0	0	:slot_promotion:_p0	x 6 false
+diag	note	0	0	:slot_promotion:_p0	x 9 false
+diag	note	0	0	:slot_promotion:_p0	x 13 true
+diag	note	0	0	:slot_promotion:_p0	done

@@ -37,6 +37,7 @@ const PASS: &[&str] = &[
     "composite/static_slice_choice",
     "composite/narrow_int_storage",
     "composite/layout_memo_lengths",
+    "scalar/slot_promotion",
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/case_slice_choice",

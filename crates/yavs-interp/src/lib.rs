@@ -45,6 +45,8 @@ pub use debug::{
 };
 pub use heap::Heap;
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
+/// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
+pub use yavs_ir::opt::keep_variables;
 
 use exec::{Fault, Machine, Outcome};
 

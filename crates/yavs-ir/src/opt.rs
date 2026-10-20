@@ -14,14 +14,20 @@
 //! - removes an instruction that repeats an earlier one (same operands, same result),
 //!   including checks that cannot fail a second time,
 //! - forwards a stored value to a later load of the same address,
-//! - drops pure definitions nobody reads.
+//! - drops pure definitions nobody reads,
+//! - keeps scalar frame slots that only direct loads and stores reach in registers
+//!   (`Opt::promote`, then the walk runs again over the result),
+//! - and, last, empties the blocks no branch reaches, drops the `Stmt` markers of statements
+//!   that allocate no temporary memory, merges registers holding the same constant or address,
+//!   and gives the registers in use consecutive numbers.
 //!
 //! Invariants it keeps (ir.md 1.2): no register becomes live across a suspension (a
 //! register is replaced by another only when the other is defined since the last
 //! suspension on the path, or the function never suspends; every table is dropped at a
 //! suspension), every surviving instruction keeps its statement, `Stmt` and `Cover` are
-//! never touched, a check is removed only when it provably passes, and stores are never
-//! removed (debuggers read frame slots). Memory facts are dropped at calls, at writes
+//! never touched (but see `drop_statements`), a check is removed only when it provably passes, and stores are never
+//! removed (debuggers read frame slots), except those of slots promoted to registers, which no
+//! debugger reads (see [`keep_variables`]). Memory facts are dropped at calls, at writes
 //! through pointers and, for what a debugger may write, at every `Stmt`. Functions of kind
 //! `Elab` and `Thunk` run once per instance and are left alone. `YAVS_NO_IROPT=1` turns the
 //! pass off (differential testing).
@@ -32,7 +38,7 @@ use std::sync::OnceLock;
 
 use crate::{
     AddrSpace, BlockId, BoolOp, CheckKind, CheckMsgId, CmpOp, FuncFlags, FuncId, FuncKind, Inst,
-    IntOp, IntUnOp, Program, Reg, RegTy, Role, StmtId, Ty, TyId, Width, dim_len,
+    IntOp, IntUnOp, LOp, Program, Reg, RegTy, Role, StmtId, Ty, TyId, Width, dim_len,
 };
 
 /// Is the pass enabled? `YAVS_NO_IROPT` set to anything but `0` or the empty string turns
@@ -44,6 +50,15 @@ pub fn enabled() -> bool {
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     })
+}
+
+static KEEP_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep the variables of subprograms in their frame slots, where a debugger reads and writes
+/// them (promotion to registers is off). Call it before the first function is asked for,
+/// i.e. before elaboration, when a debugger will attach.
+pub fn keep_variables() {
+    KEEP_VARS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Field offsets of the static record layouts met by the optimiser, kept in the program so
@@ -140,6 +155,7 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     f.loc = loc;
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
+    renumber(&mut f);
     crate::build::number_func(&mut f, |c| {
         prog.funcs
             .get(c)
@@ -152,6 +168,97 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
         assert!(errs.is_empty(), "optimiser broke {}: {errs:?}", f.name);
     }
     Some(Box::new(f))
+}
+
+/// Give the registers the code uses consecutive numbers: lowering and the passes leave gaps
+/// (registers nobody uses any more), and every call copies a frame template with one cell
+/// per register. A signal reference takes two cells, the second of which keeps its place
+/// behind the first.
+fn renumber(f: &mut crate::Func) {
+    let n = f.reg_ty.len();
+    let mut used = vec![false; n];
+    for i in &f.code {
+        i.visit(&mut |r, _, _| {
+            if let Some(u) = used.get_mut(r.0 as usize) {
+                *u = true;
+            }
+        });
+        if let Some(l) = i.list() {
+            for r in f
+                .operands
+                .get(l.start as usize..(l.start + l.len) as usize)
+                .unwrap_or(&[])
+            {
+                if let Some(u) = used.get_mut(r.0 as usize) {
+                    *u = true;
+                }
+            }
+        }
+    }
+    for r in 0..n.saturating_sub(1) {
+        if f.reg_ty[r] == RegTy::Sig && (used[r] || used[r + 1]) {
+            used[r] = true;
+            used[r + 1] = true;
+        }
+    }
+    if used.iter().all(|&u| u) {
+        return;
+    }
+    let mut map = vec![0u32; n];
+    let mut ty = Vec::with_capacity(n);
+    for r in 0..n {
+        if used[r] {
+            map[r] = ty.len() as u32;
+            ty.push(f.reg_ty[r]);
+        }
+    }
+    let rn = |r: &mut Reg| r.0 = map.get(r.0 as usize).copied().unwrap_or(0);
+    for i in &mut f.code {
+        i.visit_mut(&mut |r, _, _| rn(r));
+        // Operands an instruction does not use are not visited (and not renamed), but the
+        // interpreter reads their cells: point them at a register that exists.
+        match i {
+            Inst::Bool {
+                op: BoolOp::Not,
+                a,
+                b,
+                ..
+            } => *b = *a,
+            Inst::LogicOp {
+                op: LOp::Not | LOp::ToX01 | LOp::ToX01Z | LOp::ToUx01,
+                a,
+                b,
+                ..
+            } => *b = *a,
+            Inst::Check {
+                kind, v, lo, hi, ..
+            } => {
+                if *kind == CheckKind::Null {
+                    *lo = *v;
+                }
+                if !matches!(kind, CheckKind::Range | CheckKind::Index) {
+                    *hi = *v;
+                }
+            }
+            _ => {}
+        }
+    }
+    let lists: Vec<(usize, usize)> = f
+        .code
+        .iter()
+        .filter_map(|i| i.list())
+        .map(|l| (l.start as usize, (l.start + l.len) as usize))
+        .collect();
+    let mut done = vec![false; f.operands.len()];
+    for (a, b) in lists {
+        for k in a..b.min(done.len()) {
+            if !done[k] {
+                done[k] = true;
+                rn(&mut f.operands[k]);
+            }
+        }
+    }
+    f.reg_ty = ty;
 }
 
 /// The registers `i` defines: the common instructions directly, the rest through
@@ -422,6 +529,8 @@ struct Opt<'a> {
     layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
     /// Readers per register, as left by the dead-code sweep.
     uses: Vec<u32>,
+    /// The blocks some path from the entry reaches; definitions in the others do not count.
+    reach: Vec<bool>,
     changed: bool,
 }
 
@@ -475,6 +584,7 @@ impl<'a> Opt<'a> {
             slay: FxMap::default(),
             layouts,
             uses: Vec::new(),
+            reach: Vec::new(),
             changed: false,
         }
     }
@@ -577,6 +687,15 @@ impl<'a> Opt<'a> {
                 {
                     self.nosusp = false;
                 }
+            }
+        }
+        self.reach = self.reachable();
+        for b in 0..self.blocks.len() {
+            if !self.reach[b] {
+                continue;
+            }
+            for pc in self.range(b) {
+                let i = &self.code[pc];
                 let (defs, blk, at) = (&mut self.defs, &mut self.def_blk, &mut self.def_pc);
                 for_defs(i, |r| {
                     if let Some(d) = defs.get_mut(r.0 as usize) {
@@ -587,42 +706,69 @@ impl<'a> Opt<'a> {
                 });
             }
         }
-        for pc in 0..self.code.len() {
-            match self.code[pc] {
-                Inst::Const { dst, v } if self.single(dst) => {
-                    self.kc[dst.0 as usize] = Some(v);
-                }
-                Inst::AddrOf { dst, space, off } if self.single(dst) => {
-                    self.ka[dst.0 as usize] = Some((space, off));
-                    self.set_cls(dst, Cls::Space(space));
-                }
-                Inst::Deref { dst, .. } if self.single(dst) => self.set_cls(dst, Cls::Heap),
-                Inst::LayoutOf { dst, ty, .. }
-                    if self.single(dst) && Ty::desc_size(&self.prog.types, ty) == Some(0) =>
-                {
-                    self.set_cls(dst, Cls::Temp);
-                    self.slay.insert(dst, ty);
-                }
-                Inst::Alloc { dst, .. } | Inst::LayoutOf { dst, .. } if self.single(dst) => {
-                    self.set_cls(dst, Cls::Temp);
-                }
-                Inst::Index { dst, base, pos, .. } if self.single(dst) => {
-                    if self.fold_index(pc) {
-                        continue;
+        for b in 0..self.blocks.len() {
+            if !self.reach[b] {
+                continue;
+            }
+            for pc in self.range(b) {
+                match self.code[pc] {
+                    Inst::Const { dst, v } if self.single(dst) => {
+                        self.kc[dst.0 as usize] = Some(v);
                     }
-                    if let Some(c) = self.cls_of(Opn::R(base)) {
-                        self.set_cls(dst, c);
+                    Inst::AddrOf { dst, space, off } if self.single(dst) => {
+                        self.ka[dst.0 as usize] = Some((space, off));
+                        self.set_cls(dst, Cls::Space(space));
                     }
-                    let _ = pos;
-                }
-                Inst::Field { dst, base, .. } if self.single(dst) => {
-                    if let Some(c) = self.cls_of(Opn::R(base)) {
-                        self.set_cls(dst, c);
+                    Inst::Deref { dst, .. } if self.single(dst) => self.set_cls(dst, Cls::Heap),
+                    Inst::LayoutOf { dst, ty, .. }
+                        if self.single(dst) && Ty::desc_size(&self.prog.types, ty) == Some(0) =>
+                    {
+                        self.set_cls(dst, Cls::Temp);
+                        self.slay.insert(dst, ty);
                     }
+                    Inst::Alloc { dst, .. } | Inst::LayoutOf { dst, .. } if self.single(dst) => {
+                        self.set_cls(dst, Cls::Temp);
+                    }
+                    Inst::Index { dst, base, pos, .. } if self.single(dst) => {
+                        if self.fold_index(pc) {
+                            continue;
+                        }
+                        if let Some(c) = self.cls_of(Opn::R(base)) {
+                            self.set_cls(dst, c);
+                        }
+                        let _ = pos;
+                    }
+                    Inst::Field { dst, base, .. } if self.single(dst) => {
+                        if let Some(c) = self.cls_of(Opn::R(base)) {
+                            self.set_cls(dst, c);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
+    }
+
+    /// The blocks some path from the entry reaches.
+    fn reachable(&self) -> Vec<bool> {
+        // Code that suspends resumes at points no branch leads to: every block counts.
+        if !self.nosusp || self.f.body.is_some() || self.f.flags.contains(FuncFlags::MAY_SUSPEND) {
+            return vec![true; self.blocks.len()];
+        }
+        let mut seen = vec![false; self.blocks.len()];
+        let mut work = vec![0usize];
+        while let Some(b) = work.pop() {
+            if seen.get(b) != Some(&false) {
+                continue;
+            }
+            seen[b] = true;
+            let mut k = 0;
+            while let Some(s) = self.succ(b, k) {
+                work.push(s);
+                k += 1;
+            }
+        }
+        seen
     }
 
     /// `Index` of a known address by a known position becomes an `AddrOf`.
@@ -676,6 +822,226 @@ impl<'a> Opt<'a> {
 
     fn run(&mut self) {
         self.analyse();
+        let promoted = self.promote();
+        if let Some(inited) = &promoted {
+            self.reanalyse();
+            self.hide_inits(inited);
+        }
+        self.pass();
+        if let Some(inited) = &promoted {
+            // What the first pass folded makes more of the function constant and drops
+            // branches: apply its renames and run over the result again.
+            self.dce();
+            self.reanalyse();
+            self.hide_inits(inited);
+            self.pass();
+        }
+        self.kill_unreachable();
+        self.drop_statements();
+        self.merge_consts();
+        self.dce();
+    }
+
+    /// Drop the `Stmt` markers whose statement allocates no temporary memory: at run time a
+    /// marker only frees the temporaries of the statement before it, and nothing needs freeing
+    /// when that statement made none. Only in subprograms while no debugger runs (it stops at
+    /// markers).
+    fn drop_statements(&mut self) {
+        if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+            || self.f.body.is_some()
+            || !self.nosusp
+            || !matches!(self.f.kind, FuncKind::Function | FuncKind::Procedure)
+        {
+            return;
+        }
+        // What running from the start of a block (or just after a marker) up to the next
+        // marker does: reaches it first, allocates first, or runs to the end of the block.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Run {
+            Marker,
+            Alloc,
+            Falls,
+        }
+        let scan = |code: &[Inst], rg: std::ops::Range<usize>| {
+            for pc in rg {
+                match &code[pc] {
+                    Inst::Stmt => return Run::Marker,
+                    i if may_allocate(i) => return Run::Alloc,
+                    _ => {}
+                }
+            }
+            Run::Falls
+        };
+        let nb = self.blocks.len();
+        let local: Vec<Run> = (0..nb).map(|b| scan(&self.code, self.range(b))).collect();
+        // Does some path from the start of the block allocate before the next marker?
+        let mut allocs: Vec<bool> = local.iter().map(|&r| r == Run::Alloc).collect();
+        loop {
+            let mut moved = false;
+            for b in 0..nb {
+                if allocs[b] || local[b] != Run::Falls {
+                    continue;
+                }
+                let mut k = 0;
+                while let Some(s) = self.succ(b, k) {
+                    k += 1;
+                    if allocs[s] {
+                        allocs[b] = true;
+                        moved = true;
+                        break;
+                    }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        for b in 0..nb {
+            for pc in self.range(b) {
+                if self.code[pc] != Inst::Stmt {
+                    continue;
+                }
+                let free = match scan(&self.code, pc + 1..self.blocks[b].1 as usize) {
+                    Run::Marker => true,
+                    Run::Alloc => false,
+                    Run::Falls => {
+                        let mut k = 0;
+                        let mut free = true;
+                        while let Some(s) = self.succ(b, k) {
+                            k += 1;
+                            free &= !allocs[s];
+                        }
+                        free
+                    }
+                };
+                if free {
+                    self.code[pc] = dead();
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    /// Registers defined once by the same constant (or address) become one register: each
+    /// call copies a frame template with a cell for every register.
+    fn merge_consts(&mut self) {
+        // (A register must not be live across a suspension: not in code that suspends.)
+        if !self.nosusp || self.f.body.is_some() || self.f.flags.contains(FuncFlags::MAY_SUSPEND) {
+            return;
+        }
+        let n = self.defs.len();
+        let mut ndefs = vec![0u8; n];
+        for i in &self.code {
+            if !is_dead(i) {
+                for_defs(i, |r| {
+                    if let Some(d) = ndefs.get_mut(r.0 as usize) {
+                        *d = d.saturating_add(1);
+                    }
+                });
+            }
+        }
+        // Registers that must stay apart: a promotion's entry initialisation is a second
+        // definition the code does not show.
+        #[derive(PartialEq, Eq, Hash)]
+        enum K {
+            I(i64),
+            F(u64),
+            A(AddrSpace, u32),
+        }
+        let mut first: FxMap<(K, Option<RegTy>), Reg> = FxMap::default();
+        let mut to: Vec<u32> = (0..n as u32).collect();
+        let mut any = false;
+        for pc in 0..self.code.len() {
+            let (dst, k) = match self.code[pc] {
+                Inst::Const { dst, v } => (dst, K::I(v)),
+                Inst::ConstF { dst, v } => (dst, K::F(v.to_bits())),
+                // Only the addresses a frame starts with (the interpreter preloads them).
+                Inst::AddrOf {
+                    dst,
+                    space: space @ (AddrSpace::Frame | AddrSpace::Inst | AddrSpace::Const(_)),
+                    off,
+                } => (dst, K::A(space, off)),
+                _ => continue,
+            };
+            // (A handle register is never shared: the collector tracks each by its definition.)
+            if ndefs.get(dst.0 as usize) != Some(&1) || self.rty(dst) == Some(RegTy::Handle) {
+                continue;
+            }
+            match first.entry((k, self.rty(dst))) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    to[dst.0 as usize] = e.get().0;
+                    self.code[pc] = dead();
+                    any = true;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(dst);
+                }
+            }
+        }
+        if !any {
+            return;
+        }
+        self.changed = true;
+        for i in &mut self.code {
+            if !is_dead(i) {
+                i.visit_mut(&mut |r, role, _| {
+                    if role == Role::Use {
+                        *r = Reg(to[r.0 as usize]);
+                    }
+                });
+            }
+        }
+        let lists: Vec<(usize, usize)> = self
+            .code
+            .iter()
+            .filter(|i| !is_dead(i))
+            .filter_map(|i| i.list())
+            .map(|l| (l.start as usize, (l.start + l.len) as usize))
+            .collect();
+        for (a, b) in lists {
+            for r in self.operands.get_mut(a..b).unwrap_or(&mut []) {
+                *r = Reg(to[r.0 as usize]);
+            }
+        }
+    }
+
+    /// Empty the blocks no path reaches (all but their last instruction): their definitions
+    /// would keep registers from counting as defined once. Only in subprograms, where every
+    /// entry to a block is a branch.
+    fn kill_unreachable(&mut self) {
+        if self.f.body.is_some() || !matches!(self.f.kind, FuncKind::Function | FuncKind::Procedure)
+        {
+            return;
+        }
+        let reach = self.reachable();
+        for (b, &r) in reach.iter().enumerate() {
+            if r {
+                continue;
+            }
+            let rg = self.range(b);
+            let last = rg.end.saturating_sub(1);
+            for pc in rg.start..last {
+                if !is_dead(&self.code[pc]) {
+                    self.code[pc] = dead();
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    /// The initialisations promotion inserts at the entry are definitions the tables cannot
+    /// see.
+    fn hide_inits(&mut self, inited: &[Reg]) {
+        for r in inited {
+            let i = r.0 as usize;
+            self.defs[i] = self.defs[i].saturating_add(1);
+            self.kc[i] = None;
+            self.ka[i] = None;
+        }
+    }
+
+    /// One walk over the extended basic blocks.
+    fn pass(&mut self) {
         let n = self.blocks.len();
         // Block structure: predecessor counts, the reverse post-order for the walk, and
         // the blocks only one block reaches (as lists through `child`).
@@ -683,6 +1049,9 @@ impl<'a> Opt<'a> {
         let mut preds = vec![0u32; n];
         let mut first = vec![NONE; n];
         for b in 0..n {
+            if !self.reach[b] {
+                continue;
+            }
             let mut k = 0;
             while let Some(t) = self.succ(b, k) {
                 preds[t] += 1;
@@ -729,7 +1098,7 @@ impl<'a> Opt<'a> {
         // The declarative part of a process runs once: its blocks come before the body.
         let cold = self.f.body.map_or(0, |b| b.0 as usize);
         for r in order.iter().copied().chain(0..n) {
-            if !is_root[r] || visited[r] || r < cold {
+            if !is_root[r] || visited[r] || r < cold || !self.reach[r] {
                 continue;
             }
             self.susp_depth = 0;
@@ -762,7 +1131,6 @@ impl<'a> Opt<'a> {
                 }
             }
         }
-        self.dce();
     }
 
     fn range(&self, b: usize) -> std::ops::Range<usize> {
@@ -1412,6 +1780,536 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// Scalar frame slots that are only loaded and stored directly live in registers.
+    ///
+    /// Lowering keeps every variable, parameter and loop bound in a frame slot, so a loop
+    /// loads and stores the same few slots on every pass. A slot whose address never leaves
+    /// direct loads and stores (the `escapes` of the walk), that no nested subprogram, root
+    /// map or debugger reaches, becomes a register: its loads are moves from it, its stores
+    /// moves into it, and the moves fold into the instructions around them. Only functions
+    /// that cannot suspend qualify (a register is not live across a suspension), and slots of
+    /// named variables only while no debugger runs ([`keep_variables`]).
+    fn promote(&mut self) -> Option<Vec<Reg>> {
+        let f = self.f;
+        if !matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+            || f.flags.contains(FuncFlags::MAY_SUSPEND)
+            || f.body.is_some()
+            || !self.nosusp
+            || self.nested
+        {
+            return None;
+        }
+        let n = self.defs.len();
+        let mut ndefs = vec![0u8; n];
+        for i in &self.code {
+            if !is_dead(i) {
+                for_defs(i, |r| {
+                    if let Some(d) = ndefs.get_mut(r.0 as usize) {
+                        *d = d.saturating_add(1);
+                    }
+                });
+            }
+        }
+        // Registers holding the address of a frame slot (all defined once, or give up).
+        let mut faddr: FxMap<u32, u32> = FxMap::default();
+        for i in &self.code {
+            if let Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                off,
+            } = *i
+            {
+                if ndefs.get(dst.0 as usize) != Some(&1) {
+                    return None;
+                }
+                faddr.insert(dst.0, off);
+            }
+        }
+        struct Acc {
+            w: Width,
+            /// The type of the first stored value, else of the first load.
+            ty: Option<RegTy>,
+            stored: bool,
+            ok: bool,
+            stores: usize,
+            sites: Vec<usize>,
+        }
+        let mut acc: std::collections::BTreeMap<u32, Acc> = std::collections::BTreeMap::new();
+        // Frame ranges read or written as signal references (two registers).
+        let mut wide: Vec<(i64, i64)> = Vec::new();
+        for (pc, i) in self.code.iter().enumerate() {
+            let (addr, w, ty, i_is_store) = match *i {
+                Inst::Load { dst, addr, w } => (addr, w, self.rty(dst), false),
+                Inst::Store { addr, src, w } => (addr, w, self.rty(src), true),
+                _ => continue,
+            };
+            let Some(&off) = faddr.get(&addr.0) else {
+                continue;
+            };
+            if w == Width::Sig {
+                wide.push((i64::from(off), 16));
+                continue;
+            }
+            let a = acc.entry(off).or_insert(Acc {
+                w,
+                ty,
+                stored: i_is_store,
+                ok: true,
+                stores: 0,
+                sites: Vec::new(),
+            });
+            a.stores += usize::from(i_is_store);
+            if a.w != w || !same_class(a.ty, ty) {
+                a.ok = false;
+            }
+            if i_is_store && !a.stored {
+                a.ty = ty;
+                a.stored = true;
+            }
+            a.sites.push(pc);
+        }
+        if acc.is_empty() {
+            return None;
+        }
+        self.esc = None;
+        self.ensure_esc();
+        let esc = self.esc.clone().unwrap_or_default();
+        let keep_vars = KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed);
+        // Frame ranges the precise collector scans.
+        let roots: Vec<(i64, i64, bool)> = f
+            .roots
+            .iter()
+            .map(|&(s, k)| {
+                let s = i64::from(s);
+                let z = match k {
+                    crate::RootKind::Handle | crate::RootKind::Addr => 8,
+                    crate::RootKind::Composite(_) => f
+                        .locals
+                        .iter()
+                        .find(|l| i64::from(l.slot) == s)
+                        .map_or(i64::MAX / 4, |l| i64::from(l.size)),
+                };
+                (s, z, matches!(k, crate::RootKind::Composite(_)))
+            })
+            .collect();
+        let mut cands: Vec<(u32, Reg, RegTy, bool)> = Vec::new();
+        let mut prev_end = i64::MIN;
+        let offs: Vec<u32> = acc.keys().copied().collect();
+        for (k, &off) in offs.iter().enumerate() {
+            let a = &acc[&off];
+            let o = i64::from(off);
+            let end = o + i64::from(a.w.bytes());
+            let next = offs.get(k + 1).map_or(i64::MAX, |&x| i64::from(x));
+            let overlap = o < prev_end || end > next;
+            prev_end = prev_end.max(end);
+            let Some(ty) = a.ty else {
+                continue;
+            };
+            if overlap
+                || !a.ok
+                || a.w != Width::B8
+                || ty == RegTy::Sig
+                || !clear_of(&esc, o, 8)
+                || !clear_of(&wide, o, 8)
+            {
+                continue;
+            }
+            // A slot a root map covers keeps its value for the collector: only a slot the
+            // function never writes (a parameter) may also be read from a register.
+            if roots
+                .iter()
+                .any(|&(s, z, comp)| o < s + z && s < o + 8 && (comp || a.stores > 0))
+            {
+                continue;
+            }
+            if let Some(l) = f
+                .locals
+                .iter()
+                .find(|l| i64::from(l.slot) <= o && o < i64::from(l.slot) + i64::from(l.size))
+            {
+                let scalar = self
+                    .prog
+                    .types
+                    .get(l.ty)
+                    .is_some_and(|t| t.scalar_size().is_some());
+                if keep_vars || (scalar && (i64::from(l.slot) != o || l.size != 8)) {
+                    continue;
+                }
+            }
+            let is_param = f.params.iter().any(|p| p.slot == off);
+            cands.push((off, Reg(0), ty, is_param));
+        }
+        if cands.is_empty() {
+            return None;
+        }
+        for c in &mut cands {
+            c.1 = self.fresh(c.2, 2);
+        }
+        let mut pregs = Vec::with_capacity(cands.len());
+        for &(off, p, _, is_param) in &cands {
+            for &pc in &acc[&off].sites {
+                self.code[pc] = match self.code[pc] {
+                    Inst::Load { dst, .. } => Inst::Move { dst, src: p },
+                    Inst::Store { src, .. } => Inst::Move { dst: p, src },
+                    i => i,
+                };
+            }
+            pregs.push((p, is_param));
+        }
+        // Registers that must hold a value at the start: parameters (from their slots), and
+        // locals some path reads before writing (zero, like the slot).
+        let first = self.blocks[0].0 as usize;
+        let undefined = self.undefined_promoted(&pregs);
+        let mut inited = Vec::new();
+        for (k, &(off, p, ty, is_param)) in cands.iter().enumerate() {
+            if is_param || undefined[k] {
+                inited.push(p);
+            }
+            if is_param {
+                let a = self.fresh(RegTy::Ptr, 1);
+                self.defs[a.0 as usize] = 1;
+                self.inserts.push((
+                    first,
+                    Inst::AddrOf {
+                        dst: a,
+                        space: AddrSpace::Frame,
+                        off,
+                    },
+                ));
+                self.inserts.push((
+                    first,
+                    Inst::Load {
+                        dst: p,
+                        addr: a,
+                        w: Width::B8,
+                    },
+                ));
+            } else if undefined[k] {
+                self.inserts.push((
+                    first,
+                    match ty {
+                        RegTy::F64 => Inst::ConstF { dst: p, v: 0.0 },
+                        _ => Inst::Const { dst: p, v: 0 },
+                    },
+                ));
+            }
+        }
+        self.promote_cleanup(&pregs.iter().map(|x| x.0).collect::<Vec<_>>());
+        self.changed = true;
+        Some(inited)
+    }
+
+    /// Recompute what `analyse` found, after the code changed.
+    fn reanalyse(&mut self) {
+        self.defs.fill(0);
+        self.kc.fill(None);
+        self.ka.fill(None);
+        self.cls.fill(None);
+        for (i, r) in self.rep.iter_mut().enumerate() {
+            *r = i as u32;
+        }
+        self.nrep = 0;
+        self.slay.clear();
+        self.esc = None;
+        self.analyse();
+    }
+
+    /// A new register of type `ty`, defined more than once.
+    fn fresh(&mut self, ty: RegTy, defs: u8) -> Reg {
+        let r = Reg(self.defs.len() as u32);
+        self.new_regs.push(ty);
+        self.defs.push(defs);
+        self.kc.push(None);
+        self.ka.push(None);
+        self.cls.push(None);
+        self.rep.push(r.0);
+        self.def_blk.push(0);
+        self.def_pc.push(0);
+        r
+    }
+
+    /// Per promoted register: is it read on some path before it is written (parameters
+    /// count as written)?
+    fn undefined_promoted(&self, pregs: &[(Reg, bool)]) -> Vec<bool> {
+        let m = pregs.len();
+        let w = m.div_ceil(64).max(1);
+        let idx: FxMap<u32, usize> = pregs.iter().enumerate().map(|(k, x)| (x.0.0, k)).collect();
+        let nb = self.blocks.len();
+        let mut gen_ = vec![vec![0u64; w]; nb];
+        let mut exposed = vec![vec![0u64; w]; nb];
+        for b in 0..nb {
+            for pc in self.range(b) {
+                let i = &self.code[pc];
+                if is_dead(i) {
+                    continue;
+                }
+                let mut uses = Vec::new();
+                i.visit(&mut |r, role, _| {
+                    if role == Role::Use {
+                        uses.push(r);
+                    }
+                });
+                if let Some(l) = i.list() {
+                    uses.extend(
+                        self.operands
+                            .get(l.start as usize..(l.start + l.len) as usize)
+                            .unwrap_or(&[]),
+                    );
+                }
+                for r in uses {
+                    if let Some(&k) = idx.get(&r.0)
+                        && gen_[b][k / 64] >> (k % 64) & 1 == 0
+                    {
+                        exposed[b][k / 64] |= 1 << (k % 64);
+                    }
+                }
+                for_defs(i, |r| {
+                    if let Some(&k) = idx.get(&r.0) {
+                        gen_[b][k / 64] |= 1 << (k % 64);
+                    }
+                });
+            }
+        }
+        let mut entry = vec![0u64; w];
+        for (k, x) in pregs.iter().enumerate() {
+            if x.1 {
+                entry[k / 64] |= 1 << (k % 64);
+            }
+        }
+        let mut input: Vec<Vec<u64>> = vec![vec![!0; w]; nb];
+        input[0] = entry;
+        let mut work: Vec<usize> = vec![0];
+        while let Some(b) = work.pop() {
+            let out: Vec<u64> = input[b].iter().zip(&gen_[b]).map(|(a, g)| a | g).collect();
+            let mut k = 0;
+            while let Some(s) = self.succ(b, k) {
+                k += 1;
+                let new: Vec<u64> = input[s].iter().zip(&out).map(|(a, o)| a & o).collect();
+                if new != input[s] {
+                    input[s] = new;
+                    work.push(s);
+                }
+            }
+        }
+        (0..m)
+            .map(|k| {
+                (0..nb).any(|b| {
+                    exposed[b][k / 64] >> (k % 64) & 1 == 1 && input[b][k / 64] >> (k % 64) & 1 == 0
+                })
+            })
+            .collect()
+    }
+
+    /// Fold the moves a promotion left: the copy of a promoted register that a load made is
+    /// replaced by the register wherever the copy is still equal to it (on every path from
+    /// the load), and a store's move is dropped by letting the instruction that computed the
+    /// stored value write the register itself.
+    fn promote_cleanup(&mut self, pregs: &[Reg]) {
+        let n = self.defs.len();
+        let mut ndefs = vec![0u8; n];
+        let mut uses = vec![0u32; n];
+        for i in &self.code {
+            if is_dead(i) {
+                continue;
+            }
+            for_defs(i, |r| {
+                if let Some(d) = ndefs.get_mut(r.0 as usize) {
+                    *d = d.saturating_add(1);
+                }
+            });
+            i.visit(&mut |r, role, _| {
+                if role == Role::Use
+                    && let Some(u) = uses.get_mut(r.0 as usize)
+                {
+                    *u += 1;
+                }
+            });
+            if let Some(l) = i.list() {
+                for r in self
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)
+                    .unwrap_or(&[])
+                {
+                    if let Some(u) = uses.get_mut(r.0 as usize) {
+                        *u += 1;
+                    }
+                }
+            }
+        }
+        let is_p: std::collections::HashSet<u32> = pregs.iter().map(|r| r.0).collect();
+        let ptype: FxMap<u32, Option<RegTy>> = pregs.iter().map(|r| (r.0, self.rty(*r))).collect();
+        let rtys: Vec<Option<RegTy>> = (0..n as u32).map(|r| self.rty(Reg(r))).collect();
+        let nb = self.blocks.len();
+        let reach = self.reachable();
+        // The copies: `d := p` with `d` defined once and `p` promoted.
+        let mut copies: Vec<(u32, u32)> = Vec::new();
+        let mut copy_of: FxMap<u32, usize> = FxMap::default();
+        let mut by_p: FxMap<u32, Vec<usize>> = FxMap::default();
+        for (b, &r) in reach.iter().enumerate() {
+            if !r {
+                continue;
+            }
+            for pc in self.range(b) {
+                if let Inst::Move { dst: d, src: p } = self.code[pc]
+                    && is_p.contains(&p.0)
+                    && !is_p.contains(&d.0)
+                    && ndefs[d.0 as usize] == 1
+                    && !copy_of.contains_key(&d.0)
+                {
+                    copy_of.insert(d.0, copies.len());
+                    by_p.entry(p.0).or_default().push(copies.len());
+                    copies.push((d.0, p.0));
+                }
+            }
+        }
+        let w = copies.len().div_ceil(64).max(1);
+        // The copies available after instruction `i`, given those before it.
+        let step = |avail: &mut Vec<u64>, i: &Inst| {
+            for_defs(i, |r| {
+                if let Some(ks) = by_p.get(&r.0) {
+                    for &k in ks {
+                        avail[k / 64] &= !(1 << (k % 64));
+                    }
+                }
+            });
+            if let Inst::Move { dst: d, src: p } = *i
+                && let Some(&k) = copy_of.get(&d.0)
+                && copies[k].1 == p.0
+            {
+                avail[k / 64] |= 1 << (k % 64);
+            }
+        };
+        let mut input: Vec<Vec<u64>> = vec![vec![!0; w]; nb];
+        input[0] = vec![0; w];
+        if !copies.is_empty() {
+            let mut work: Vec<usize> = vec![0];
+            while let Some(b) = work.pop() {
+                let mut out = input[b].clone();
+                for pc in self.range(b) {
+                    if !is_dead(&self.code[pc]) {
+                        step(&mut out, &self.code[pc]);
+                    }
+                }
+                let mut k = 0;
+                while let Some(s) = self.succ(b, k) {
+                    k += 1;
+                    let new: Vec<u64> = input[s].iter().zip(&out).map(|(a, o)| a & o).collect();
+                    if new != input[s] {
+                        input[s] = new;
+                        work.push(s);
+                    }
+                }
+            }
+        }
+        for b in 0..nb {
+            if !reach[b] {
+                continue;
+            }
+            let mut avail = input[b].clone();
+            let mut def_at: FxMap<u32, usize> = FxMap::default();
+            let mut touched: FxMap<u32, usize> = FxMap::default();
+            for pc in self.range(b) {
+                if is_dead(&self.code[pc]) {
+                    continue;
+                }
+                let mut i = self.code[pc];
+                if !copies.is_empty() {
+                    let copy = |r: u32| -> Option<u32> {
+                        let k = *copy_of.get(&r)?;
+                        (avail[k / 64] >> (k % 64) & 1 == 1).then(|| copies[k].1)
+                    };
+                    i.visit_mut(&mut |r, role, t| {
+                        if role == Role::Use
+                            && let Some(p) = copy(r.0)
+                            && fits(t, ptype[&p])
+                        {
+                            uses[r.0 as usize] -= 1;
+                            uses[p as usize] += 1;
+                            *r = Reg(p);
+                        }
+                    });
+                    if let Some(l) = i.list() {
+                        for r in self
+                            .operands
+                            .get_mut(l.start as usize..(l.start + l.len) as usize)
+                            .unwrap_or(&mut [])
+                        {
+                            if let Some(p) = copy(r.0)
+                                && (rtys[r.0 as usize] == ptype[&p]
+                                    || (rtys[r.0 as usize] == Some(RegTy::I64)
+                                        && ptype[&p] == Some(RegTy::Handle)))
+                            {
+                                uses[r.0 as usize] -= 1;
+                                uses[p as usize] += 1;
+                                *r = Reg(p);
+                            }
+                        }
+                    }
+                    self.code[pc] = i;
+                }
+                // A store's move: let the defining instruction write the register.
+                if let Inst::Move { dst: p, src: s } = i
+                    && is_p.contains(&p.0)
+                    && !is_p.contains(&s.0)
+                    && ndefs[s.0 as usize] == 1
+                    && uses[s.0 as usize] == 1
+                    && let Some(&pd) = def_at.get(&s.0)
+                    && touched.get(&p.0).is_none_or(|&t| t <= pd)
+                    && retargetable(&self.code[pd])
+                    && {
+                        let mut ok = true;
+                        self.code[pd].visit(&mut |r, role, t| {
+                            if role == Role::Def && r == s {
+                                ok = t.is_none() || t == ptype[&p.0];
+                            }
+                        });
+                        ok
+                    }
+                {
+                    let mut d = self.code[pd];
+                    d.visit_mut(&mut |r, role, _| {
+                        if role == Role::Def && *r == s {
+                            *r = p;
+                        }
+                    });
+                    self.code[pd] = d;
+                    self.code[pc] = dead();
+                    uses[s.0 as usize] = 0;
+                    if let Some(ks) = by_p.get(&p.0) {
+                        for &k in ks {
+                            avail[k / 64] &= !(1 << (k % 64));
+                        }
+                    }
+                    touched.insert(p.0, pc);
+                    continue;
+                }
+                // Reads and writes of promoted registers, and the definitions of this block.
+                i.visit(&mut |r, _, _| {
+                    if is_p.contains(&r.0) {
+                        touched.insert(r.0, pc);
+                    }
+                });
+                if let Some(l) = i.list() {
+                    for r in self
+                        .operands
+                        .get(l.start as usize..(l.start + l.len) as usize)
+                        .unwrap_or(&[])
+                    {
+                        if is_p.contains(&r.0) {
+                            touched.insert(r.0, pc);
+                        }
+                    }
+                }
+                for_defs(&i, |r| {
+                    if ndefs[r.0 as usize] == 1 {
+                        def_at.insert(r.0, pc);
+                    }
+                });
+                step(&mut avail, &i);
+            }
+        }
+    }
+
     /// Remove pure definitions nobody reads.
     fn dce(&mut self) {
         let mut uses = vec![0u32; self.defs.len()];
@@ -1514,6 +2412,88 @@ impl<'a> Opt<'a> {
         self.code = code;
         *loc = locs;
         blocks
+    }
+}
+
+/// May a register of type `have` be used where an operand of type `want` is expected (the
+/// verifier takes a `Handle` register for an `I64` one)?
+fn fits(want: Option<RegTy>, have: Option<RegTy>) -> bool {
+    want.is_none() || want == have || (want == Some(RegTy::I64) && have == Some(RegTy::Handle))
+}
+
+/// Do two register types hold the same kind of value (integers and addresses, or reals)?
+fn same_class(a: Option<RegTy>, b: Option<RegTy>) -> bool {
+    let class = |t| match t {
+        Some(RegTy::I64 | RegTy::Ptr) => 1,
+        Some(RegTy::F64) => 2,
+        Some(RegTy::Handle) => 3,
+        _ => 0,
+    };
+    class(a) != 0 && class(a) == class(b)
+}
+
+/// May the instruction allocate temporary memory (or call something that does: results of
+/// callees stay in the caller's temporaries)? The listed ones never do.
+fn may_allocate(i: &Inst) -> bool {
+    !matches!(
+        i,
+        Inst::Const { .. }
+            | Inst::ConstF { .. }
+            | Inst::Move { .. }
+            | Inst::AddrOf { .. }
+            | Inst::Load { .. }
+            | Inst::Store { .. }
+            | Inst::Copy { .. }
+            | Inst::Fill { .. }
+            | Inst::Pos { .. }
+            | Inst::Index { .. }
+            | Inst::Field { .. }
+            | Inst::Bin { .. }
+            | Inst::BinRange { .. }
+            | Inst::Un { .. }
+            | Inst::FBin { .. }
+            | Inst::FUn { .. }
+            | Inst::IToF { .. }
+            | Inst::FToI { .. }
+            | Inst::Cmp { .. }
+            | Inst::FCmp { .. }
+            | Inst::Bool { .. }
+            | Inst::LGet { .. }
+            | Inst::LSet { .. }
+            | Inst::LCopy { .. }
+            | Inst::LEq { .. }
+            | Inst::Check { .. }
+            | Inst::FCheck { .. }
+            | Inst::DopeLen { .. }
+            | Inst::SubtypeCheck { .. }
+            | Inst::MakeDope { .. }
+            | Inst::Br { .. }
+            | Inst::CondBr { .. }
+            | Inst::Case { .. }
+            | Inst::Ret { .. }
+            | Inst::Unreachable { .. }
+            | Inst::Deref { .. }
+            | Inst::Cover { .. }
+    ) && !is_dead(i)
+}
+
+/// An instruction whose one result register can be renamed: no other effect on registers.
+fn retargetable(i: &Inst) -> bool {
+    match *i {
+        Inst::Load { w, .. } => w != Width::Sig,
+        Inst::Bin { .. }
+        | Inst::BinRange { .. }
+        | Inst::Un { .. }
+        | Inst::Cmp { .. }
+        | Inst::Bool { .. }
+        | Inst::Index { .. }
+        | Inst::Pos { .. }
+        | Inst::DopeLen { .. }
+        | Inst::Field { .. }
+        | Inst::FBin { .. }
+        | Inst::FUn { .. }
+        | Inst::IToF { .. } => true,
+        _ => false,
     }
 }
 

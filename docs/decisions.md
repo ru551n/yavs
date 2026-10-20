@@ -2337,3 +2337,25 @@ user's performance priority:
 - **Not done (step 2):** 1- and 2-byte elements from narrower subtype ranges need the element
   subtype in lowering (elements are lowered from the base type today) and would clash with
   1-byte enumerations in the kernel; only if step 1 measures worthwhile.
+
+## Variables in registers; a debugger keeps them in memory (yavs-ir `opt.rs`, yavs-interp, CLI, #444)
+
+- **What:** the optimiser keeps a scalar frame slot of a function or procedure that cannot
+  suspend in a register when only direct loads and stores reach it (`Opt::promote`). It also
+  drops `Stmt` markers of statements that allocate no temporary memory, merges registers
+  holding one constant, and renumbers the registers densely. A slot inside a named variable is
+  promoted only while no debugger runs: `yavs_ir::opt::keep_variables` (called by the CLI for
+  `--dap`, and by `DebugSession::new`) turns off the promotion of named variables and the
+  dropping of markers, before any function is optimised.
+- **Why:** the loops of verification libraries loaded and stored the same slots on every pass
+  and executed a marker per statement (a quarter and a ninth of the executed instructions of
+  the scoreboard testbench). A debugger reads and writes variables in their slots and stops at
+  markers, so it needs them; nothing else reads a subprogram's slots (VHPI, waves and coverage
+  see processes, signals and counters).
+- **Not promoted:** processes and anything that may suspend (a register is not live across a
+  suspension), functions with nested subprograms (they reach the frame through static links),
+  slots whose address is passed, indexed or copied, slots covered by a composite root map or
+  written while a root map covers them. A slot a root map covers that the function never writes
+  (a parameter) is read from a register and keeps its value in memory for the collector.
+- **For a future cache of optimised code:** the key must include whether `keep_variables` was
+  called; today only unoptimised IR is cached.

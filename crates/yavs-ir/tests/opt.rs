@@ -37,6 +37,18 @@ fn load(fb: &mut FuncBuilder<'_>, off: u32) -> Reg {
     d
 }
 
+/// Store the address of slot `off` into the slot after it, so that the slot is not promoted
+/// to a register: the tests of load sharing need the loads to stay.
+fn pin(fb: &mut FuncBuilder<'_>, off: u32) {
+    let a = fb.addr(AddrSpace::Frame, off);
+    let b = fb.addr(AddrSpace::Frame, off + 8);
+    fb.emit(Inst::Store {
+        addr: b,
+        src: a,
+        w: Width::B8,
+    });
+}
+
 fn bin(fb: &mut FuncBuilder<'_>, op: IntOp, a: Reg, b: Reg) -> Reg {
     let dst = fb.reg(RegTy::I64);
     fb.emit(Inst::Bin { op, dst, a, b });
@@ -113,6 +125,7 @@ fn identities_use_the_operand() {
     let code = build(FuncKind::Function, |fb| {
         fb.slot(16, 8);
         fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
         let x = load(fb, 0);
         let one = fb.int(1);
         let zero = fb.int(0);
@@ -139,6 +152,7 @@ fn repeated_computations_and_loads_are_shared() {
     let code = build(FuncKind::Function, |fb| {
         fb.slot(32, 8);
         fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
         let x = load(fb, 0);
         let y = load(fb, 0);
         let s = bin(fb, IntOp::Add, x, y);
@@ -219,13 +233,15 @@ fn a_call_or_a_statement_stops_what_a_debugger_or_callee_may_change() {
     if !on() {
         return;
     }
-    // A scalar local can be written by a debugger at any statement or while a callee runs.
-    assert_eq!(loads_left(true, call), 1);
+    // A scalar local whose address is taken can be written by a callee, and a debugger may
+    // write it at any statement: its loads stay. (Without a debugger the unreachable ones
+    // live in registers, see `a_variable_nobody_can_reach_lives_in_a_register`.)
+    assert_eq!(loads_left(true, call), 0);
     assert_eq!(
         loads_left(true, |fb, _| {
             fb.stmt(StmtKind::Null, sp());
         }),
-        1
+        0
     );
 }
 
@@ -328,6 +344,7 @@ fn facts_do_not_leak_between_sibling_branches_or_into_a_join() {
     let code = build(FuncKind::Function, |fb| {
         fb.slot(16, 8);
         fb.stmt(StmtKind::If, sp());
+        pin(fb, 0);
         let x = load(fb, 0);
         let zero = fb.int(0);
         let c = fb.reg(RegTy::I64);
@@ -366,4 +383,162 @@ fn facts_do_not_leak_between_sibling_branches_or_into_a_join() {
         2,
         "{code:?}"
     );
+}
+
+/// A function with one loop: `x := 0; while x < 10 loop x := x + 1; end loop; return x`, the
+/// variable in frame slot 0 (a named local or an anonymous slot).
+fn counter_loop(named: bool, escape: bool) -> (usize, usize) {
+    let mut pb = ProgramBuilder::new();
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    let mut gb = pb.define(g);
+    gb.stmt(StmtKind::Return, sp());
+    gb.emit(Inst::Ret { v: None });
+    gb.finish();
+    let int = pb.ty(Ty::Int { lo: 0, hi: 99 });
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    if named {
+        fb.local("x", int, 8, 8);
+    } else {
+        fb.slot(16, 8);
+    }
+    let (head, body, done) = (fb.block(), fb.block(), fb.block());
+    fb.stmt(StmtKind::VarAssign, sp());
+    let a = fb.addr(AddrSpace::Frame, 0);
+    let zero = fb.int(0);
+    fb.emit(Inst::Store {
+        addr: a,
+        src: zero,
+        w: Width::B8,
+    });
+    if escape {
+        pin(&mut fb, 0);
+    }
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    fb.stmt(StmtKind::If, sp());
+    let x = load(&mut fb, 0);
+    let ten = fb.int(10);
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Lt,
+        dst: c,
+        a: x,
+        b: ten,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: body,
+        f: done,
+    });
+    fb.at(body);
+    fb.stmt(StmtKind::VarAssign, sp());
+    let x = load(&mut fb, 0);
+    let one = fb.int(1);
+    let y = bin(&mut fb, IntOp::Add, x, one);
+    let a = fb.addr(AddrSpace::Frame, 0);
+    fb.emit(Inst::Store {
+        addr: a,
+        src: y,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.at(done);
+    fb.stmt(StmtKind::Return, sp());
+    let r = load(&mut fb, 0);
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let code = &p.func(f).expect("f").code;
+    (
+        count(code, |i| matches!(i, Inst::Load { .. })),
+        count(code, |i| matches!(i, Inst::Store { .. })),
+    )
+}
+
+#[test]
+fn a_variable_nobody_can_reach_lives_in_a_register() {
+    if !on() {
+        return;
+    }
+    // Anonymous slot or named variable: no load or store is left.
+    assert_eq!(counter_loop(false, false), (0, 0));
+    assert_eq!(counter_loop(true, false), (0, 0));
+}
+
+#[test]
+fn a_slot_whose_address_is_passed_stays_in_memory() {
+    if !on() {
+        return;
+    }
+    let (loads, stores) = counter_loop(false, true);
+    assert!(loads >= 1 && stores >= 3, "{loads} loads {stores} stores");
+}
+
+#[test]
+fn a_marker_survives_only_for_a_statement_with_temporaries() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::VarAssign, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let one = fb.int(1);
+        let y = bin(fb, IntOp::Add, x, one);
+        // The second statement allocates a temporary: its marker frees the first one's.
+        fb.stmt(StmtKind::VarAssign, sp());
+        let n = fb.int(8);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: a, size: n });
+        fb.emit(Inst::Store {
+            addr: a,
+            src: y,
+            w: Width::B8,
+        });
+        fb.stmt(StmtKind::Return, sp());
+        let z = bin(fb, IntOp::Add, y, one);
+        fb.emit(Inst::Ret { v: Some(z) });
+    });
+    assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
+    let alloc = code
+        .iter()
+        .position(|i| matches!(i, Inst::Alloc { .. }))
+        .expect("alloc");
+    assert!(
+        code[..alloc].iter().any(|i| matches!(i, Inst::Stmt)),
+        "{code:?}"
+    );
+}
+
+#[test]
+fn equal_constants_share_a_register_and_unused_registers_go() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Return, sp());
+    pin(&mut fb, 0);
+    for _ in 0..20 {
+        fb.reg(RegTy::I64);
+    }
+    let x = load(&mut fb, 0);
+    let (a, b) = (fb.int(7), fb.int(7));
+    let s = bin(&mut fb, IntOp::Sub, a, x);
+    let t = bin(&mut fb, IntOp::Sub, b, s);
+    fb.emit(Inst::Ret { v: Some(t) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let func = p.func(f).expect("f");
+    assert_eq!(
+        count(&func.code, |i| matches!(i, Inst::Const { v: 7, .. })),
+        1,
+        "{:?}",
+        func.code
+    );
+    assert!(func.reg_ty.len() < 12, "{} registers", func.reg_ty.len());
 }

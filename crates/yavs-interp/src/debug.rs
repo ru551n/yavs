@@ -155,6 +155,9 @@ pub struct DebugSession {
 
 impl DebugSession {
     pub fn new(prog: &Program, front: Box<dyn Debugger>) -> Arc<DebugSession> {
+        // Idempotent: the command line sets it before elaboration; for other users of the
+        // library this is the earliest point (functions already optimised keep their registers).
+        yavs_ir::opt::keep_variables();
         Arc::new(DebugSession {
             front,
             bits: (0..prog.stmts.len().div_ceil(64))

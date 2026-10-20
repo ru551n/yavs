@@ -32,10 +32,12 @@ pub struct Program {
     /// Functions from this id on were not verified when the program was built: [`Program::func`]
     /// verifies each when it hands it out first (`None`: all were, or a stored program).
     #[serde(skip)]
-    pub(crate) lazy_verify: Option<u32>,
+    #[doc(hidden)]
+    pub lazy_verify: Option<u32>,
     /// Optimised copies an earlier run of this program made ([`Program::load_optimized`]).
     #[serde(skip)]
-    stored_opt: StoredOpt,
+    #[doc(hidden)]
+    pub stored_opt: StoredOpt,
 }
 
 /// An optimised copy of a function, serialised (see [`Program::export_optimized`]).
@@ -49,7 +51,7 @@ pub struct OptCopy {
 /// Serialised optimised copies by function id, used instead of running the optimiser. A copy
 /// of the program starts without them.
 #[derive(Default, Debug)]
-struct StoredOpt(std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>);
+pub struct StoredOpt(std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>);
 
 impl Clone for StoredOpt {
     fn clone(&self) -> Self {

@@ -173,9 +173,9 @@ def script(sim, t):
                 run = f"ghdl --elab-run --workdir=lib {' '.join(map(q, t['ghdl_std']))} {top} {o}"
             else:
                 flags = f"--std={std} --work=work:lib {'--relaxed ' if rel else ''}{'--psl ' if t['psl'] else ''}"
-                lines.append(f"{yavs} elab {flags}{top} >/dev/null 2>e.txt || {{ cat e.txt >&2; exit 98; }}")
                 rest = " ".join(q(x) for x in opts if not x.startswith("-g"))
                 gens = " ".join(q(x) for x in opts if x.startswith("-g"))
+                lines.append(f"{yavs} elab {flags}{gens} {top} >/dev/null 2>e.txt || {{ cat e.txt >&2; exit 98; }}")
                 run = f"{yavs} run {flags}{rest} --threads=${{YAVS_THREADS:-1}} {top} {gens}"
             lines.append(f"{run} >r{i}.out 2>r{i}.err; echo $? >r{i}.rc")
             i += 1

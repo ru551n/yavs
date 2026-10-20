@@ -1531,17 +1531,30 @@ impl SimControl {
             pids.sort_unstable();
             return;
         }
-        pids.sort_unstable_by_key(|&p| {
+        // One packed word per process, looked up once (not per comparison): the flags in the
+        // high bits, the elaboration index (reversed for several-wait processes) in the low 32.
+        let key = |p: u32| {
             let m = &self.procs[p as usize];
             // A process resumed by a signal after earlier resumptions runs in elaboration
             // order like a one-wait process (#417).
             let settled = m.resumed && !m.by_timeout && !m.flags.concurrent_call;
             if m.flags.several_waits && !settled {
-                (true, m.by_timeout, !m.flags.concurrent_call, Reverse(p))
+                1 << 34
+                    | u64::from(m.by_timeout) << 33
+                    | u64::from(!m.flags.concurrent_call) << 32
+                    | u64::from(!p)
             } else {
-                (false, false, false, Reverse(u32::MAX - p))
+                u64::from(p)
             }
-        });
+        };
+        if pids.is_sorted_by_key(|&p| key(p)) {
+            return;
+        }
+        let mut keyed: Vec<u64> = pids.iter().map(|&p| key(p)).collect();
+        keyed.sort_unstable();
+        for (p, k) in pids.iter_mut().zip(keyed) {
+            *p = if k >> 34 != 0 { !(k as u32) } else { k as u32 };
+        }
     }
 
     /// Run `pids` (in parallel where allowed), then commit their effects and waits in
@@ -1610,7 +1623,10 @@ impl SimControl {
             }
         }
         self.stats.process_runs += pids.len() as u64;
-        self.order(&mut pids, init);
+        // The batch is in commit order already unless it was shuffled to run.
+        if self.rng.is_some() {
+            self.order(&mut pids, init);
+        }
         if !init {
             for &p in &pids {
                 self.procs[p as usize].resumed = true;

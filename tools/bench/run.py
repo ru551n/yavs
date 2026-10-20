@@ -36,6 +36,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "run":
 os.execv(os.environ["YAVS_BENCH_REAL"], [os.environ["YAVS_BENCH_REAL"]] + sys.argv[1:])
 """
 TR = re.compile(r"^time-report: (\w+) wall=([\d.]+) cpu=([\d.]+|n/a)$", re.M)
+GC = re.compile(r"^time-report: gc collections=(\d+)$", re.M)
 
 
 class Skip(Exception):
@@ -171,6 +172,8 @@ def registry():
     r["vunit_vc30"] = ("external", prep_vunit_vc)
     r["uvvm_axistream_vvc_tb"] = ("external", lambda Y, k: prep_uvvm("bitvis_vip_axistream", "axistream_vvc_tb", Y, k, "10us"))
     r["uvvm_util_rand_tb"] = ("external", lambda Y, k: prep_uvvm("uvvm_util", "rand_tb", Y, k))
+    r["uvvm_util_queue_tb"] = ("external", lambda Y, k: prep_uvvm("uvvm_util", "generic_queue_tb", Y, k))
+    r["uvvm_sb_slv_tb"] = ("external", lambda Y, k: prep_uvvm("bitvis_vip_scoreboard", "generic_sb_slv_tb", Y, k))
     r["osvvm_axistream"] = ("external", lambda Y, k: prep_osvvm("AxiStream/TbStream_AxiSendGetRandomParam2", Y, k))
     for tb in VAI_TBS:
         r["vai_" + tb.removeprefix("tb_cnn_accel_")] = ("external", lambda Y, k, tb=tb: prep_vai(tb, Y, k))
@@ -205,7 +208,7 @@ def run_ru(argv, cwd):
 
 def measure(cmds, Y, tr):
     """One iteration of a benchmark: its commands in order; sums of wall, cpu and phases."""
-    wall = cpu = rss = fst = 0.0
+    wall = cpu = rss = fst = gcs = 0.0
     ph = {}
     rc, tail = 0, ""
     for argv, cwd in cmds:
@@ -228,12 +231,13 @@ def measure(cmds, Y, tr):
             OUT.unlink()
         if p.returncode and not rc:
             rc, tail = p.returncode, (p.stderr or p.stdout).strip()[-300:]
+        gcs += sum(int(x) for x in GC.findall(p.stderr))
         for n, w, c in TR.findall(p.stderr):
             if n != "total":
                 d = ph.setdefault(n, {"wall": 0.0, "cpu": 0.0})
                 d["wall"] += float(w)
                 d["cpu"] += float(c) if c != "n/a" else 0.0
-    return {"rc": rc, "wall": wall, "cpu": cpu, "rss": rss, "fst_bytes": fst, "phases": ph, "error": tail}
+    return {"rc": rc, "wall": wall, "cpu": cpu, "rss": rss, "fst_bytes": fst, "gc": gcs, "phases": ph, "error": tail}
 
 
 def measure_sim(tpl, sub):
@@ -253,7 +257,7 @@ def summarize(samples):
     ok = [s for s in samples if s["rc"] == 0]
     out = {"ok": len(ok), "runs": len(samples), "rc": next((s["rc"] for s in samples if s["rc"]), 0),
            "error": next((s.get("error", "") for s in samples if s["rc"]), ""),
-           "rss": med([s.get("rss", 0) for s in ok]), "fst_bytes": med([s.get("fst_bytes", 0) for s in ok]), "cpu": med([s["cpu"] for s in ok]), "wall": med([s["wall"] for s in ok]), "phases": {}}
+           "rss": med([s.get("rss", 0) for s in ok]), "gc": med([s.get("gc", 0) for s in ok]), "fst_bytes": med([s.get("fst_bytes", 0) for s in ok]), "cpu": med([s["cpu"] for s in ok]), "wall": med([s["wall"] for s in ok]), "phases": {}}
     for p in PHASES:
         v = [s["phases"][p] for s in ok if p in s["phases"]]
         if v:
@@ -289,6 +293,8 @@ def report(names, labels, summ, thr, sims, simsumm):
         rows = [(p, [x["phases"].get(p, {}).get("cpu") for x in s], [x["phases"].get(p, {}).get("wall") for x in s]) for p in PHASES]
         rows.append(("total", [x["cpu"] for x in s], [x["wall"] for x in s]))
         rows.append(("peak MiB", [x.get("rss") for x in s], [None] * len(s)))
+        if any(x.get("gc") for x in s):
+            rows.append(("collections", [x["gc"] for x in s], [None] * len(s)))
         if any(x.get("fst_bytes") for x in s):
             rows.append(("FST MiB", [x["fst_bytes"] / 1048576 for x in s], [None] * len(s)))
         for p, c, w in rows:

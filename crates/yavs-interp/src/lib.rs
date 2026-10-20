@@ -44,7 +44,7 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
-pub use heap::Heap;
+pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use state::restore_state;
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
@@ -228,11 +228,23 @@ pub struct Limits {
     pub gc_threshold: u64,
 }
 
+/// The built-in value of [`Limits::gc_threshold`], in bytes.
+pub const DEFAULT_GC_THRESHOLD: u64 = 1 << 20;
+
+static GC_THRESHOLD: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_GC_THRESHOLD);
+
+/// Sets the `gc_threshold` that [`Limits::default`] gives from now on, for the whole process
+/// (`yavs run --gc-threshold`): elaboration-time evaluation and the simulation both use it.
+pub fn set_default_gc_threshold(bytes: u64) {
+    GC_THRESHOLD.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl Default for Limits {
     fn default() -> Limits {
         Limits {
             max_depth: 10_000,
-            gc_threshold: 1 << 20,
+            gc_threshold: GC_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 }

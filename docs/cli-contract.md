@@ -321,7 +321,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   CPU seconds of each phase to standard error, one line per phase and a total:
   `time-report: PHASE wall=S cpu=S`, with PHASE one of `analyze` (library loading, parsing and
   analysis of the design closure), `elaborate` (elaboration and lowering), `init` (package and
-  instance initialisation, plugin and waveform setup) and `simulate`, then `total`. CPU is the
+  instance initialisation, plugin and waveform setup) and `simulate`, then `time-report: gc collections=N` (heap collections of the whole run) and `total`. CPU is the
   whole process (all threads) in 10 ms steps and `n/a` where the platform does not tell (read
   from `/proc` on Linux). Off by default and then free. Standard output and exit status do not
   change; a run that fails before the simulation starts prints nothing.
@@ -432,6 +432,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with
   `yavs.sim_flags`, e.g. `["--threads=4"]`.
+- Garbage collection: `--gc-threshold=SIZE` (bytes, or a `k`, `m`, `g` suffix; default
+  `1m`) sets how much access-value memory is allocated before the heap is collected. The
+  test runner never passes it; a user who wants fewer collections opts in with
+  `yavs.sim_flags`, e.g. `["--gc-threshold=16m"]`. The output does not depend on it.
 - Exit codes:
   - 0: simulation ended without failure: event starvation, `std.env.finish`
     or `std.env.stop` with no status or status 0, or `--stop-time` reached.

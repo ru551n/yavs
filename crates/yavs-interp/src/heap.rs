@@ -18,7 +18,15 @@
 //! the simulation started ([`Heap::seal`]) and the frames every serial process published at
 //! its last suspension (#303).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use yavs_ir::{Program, Ty, TyId};
+
+static COLLECTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Collections finished by all heaps of this process so far (`--time-report`).
+pub fn collections() -> u64 {
+    COLLECTIONS.load(Ordering::Relaxed)
+}
 
 /// Handle tag of a process heap.
 pub const PRIVATE: u8 = 1;
@@ -373,6 +381,7 @@ impl Heap {
         self.recycle(pinned);
         self.since_gc = 0;
         self.live_bytes = live;
+        COLLECTIONS.fetch_add(1, Ordering::Relaxed);
         true
     }
 }

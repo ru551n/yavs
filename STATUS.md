@@ -1394,6 +1394,46 @@ stored). Small library testbench, second run onwards, pinned to one performance 
 (min of 15): total 191 to 111 ms (elaborate 110 to 72, init 21 to 3, simulate 35 to 7). Left: the
 elaboration walk and session (about 40 ms) and a prefix-keyed form for closures that run once.
 
+### Heap collection threshold (`--gc-threshold`)
+
+`yavs run --gc-threshold SIZE` sets `Limits::gc_threshold` (default 1 MiB): the heap is collected once more was
+allocated since the last collection than both the threshold and what that collection kept. It also applies to
+elaboration-time evaluation. A sweep of 1, 4, 16, 64 and 256 MiB with the shared harness (`tools/bench`, which now
+also reports the collections of a run as `collections` and has two scoreboard and queue testbenches,
+`uvvm_util_queue_tb` and `uvvm_sb_slv_tb`). Median of 3 rounds, one run per round, each round going through all
+thresholds in turn, pinned to performance core 6 of a host with load average about 21 (wall time was twice the CPU
+time, so CPU is reported). Cells: CPU seconds / peak MiB / collections.
+
+| Benchmark | 1 MiB (default) | 4 MiB | 16 MiB | 64 MiB | 256 MiB |
+|---|---|---|---|---|---|
+| `access_heavy` | 0.07 / 11 / 11 | 0.07 / 12 / 2 | 0.07 / 12 / 0 | 0.07 / 12 / 0 | 0.07 / 12 / 0 |
+| `protected_scoreboard` | 0.06 / 11 / 0 | 0.05 / 11 / 0 | 0.05 / 11 / 0 | 0.05 / 11 / 0 | 0.06 / 11 / 0 |
+| `uvvm_util_rand_tb` | 1.63 / 38 / 372 | 1.63 / 38 / 93 | 1.56 / 38 / 23 | 1.58 / 38 / 5 | 1.62 / 38 / 1 |
+| `osvvm_axistream` | 0.59 / 46 / 11 | 0.58 / 46 / 2 | 0.58 / 46 / 0 | 0.58 / 46 / 0 | 0.59 / 46 / 0 |
+| `uvvm_util_queue_tb` | 0.11 / 25 / 1 | 0.11 / 24 / 0 | 0.10 / 25 / 0 | 0.11 / 24 / 0 | 0.11 / 25 / 0 |
+| `uvvm_sb_slv_tb` | 2.21 / 32 / 27 | 2.23 / 32 / 8 | 2.19 / 32 / 2 | 2.21 / 33 / 0 | 2.22 / 32 / 0 |
+| `vunit_vc30` (30 runs) | 2.72 / 57 / 30 | 2.70 / 58 / 30 | 2.68 / 57 / 0 | 2.64 / 57 / 0 | 2.62 / 57 / 0 |
+| `access/gc_random` (corpus, median of 5) | 0.09 / 14 / 13 | 0.09 / 24 / 2 | 0.09 / 33 / 0 | 0.09 / 33 / 0 | 0.09 / 33 / 0 |
+
+`access/gc_random` at 1 KiB: 0.11 s CPU, 773 collections, 12 MiB. The rest of the garbage-collection corpus groups
+(`access`, `shared`, `protected`: 27 testbenches) run in 0.0 to 0.01 s each.
+
+- **The threshold does not move run time.** Differences between columns are inside the run-to-run noise (about 3%);
+  64 times fewer collections (`uvvm_util_rand_tb`: 372 to 5) change nothing measurable. A perf profile of
+  `access/gc_random` (13 collections) and of `uvvm_sb_slv_tb` puts `Heap::collect` at 0.8% and below 0.1% of the
+  samples; at 773 collections the whole run costs 0.02 s more. The 196 ms against 25 ms of the head-to-head
+  testbench is not collection: it is the interpreter (`Machine::run_ops` 41%, `load` 7%, `layout_words` 5%) plus the
+  process start.
+- **Peak memory only grows for designs that allocate a lot of garbage** (`gc_random`: 14 MiB at 1 MiB, 24 at 4 MiB,
+  33 MiB at 16 MiB and up, its whole allocation); the library testbenches do not allocate enough for it to show up
+  to 256 MiB. The threshold is per heap, and every process has its own, so a design with N allocating processes can
+  hold N times the threshold of garbage.
+- **Cost of one collection** (profile): the mark array (`vec![false; slots.len()]`, a zeroed allocation), the root
+  scan (frames of the process, `live_refs` cached per function) and the sweep over all slots, live or free; about
+  13 microseconds per collection in `gc_random` at 1 KiB. Nothing of it shows in a profile at the default, so the
+  mark buffer is not reused (a measured gain below noise would not pay for 1 byte per slot kept in every heap).
+- **Default kept at 1 MiB** (`docs/decisions.md`, "Heap collection threshold").
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

@@ -47,6 +47,12 @@ otherwise.
   steps, and is shown as ``n/a`` on platforms that do not report it.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--gc-threshold SIZE`` sets how much memory access values may allocate (plain bytes, or a
+  ``k``, ``m`` or ``g`` suffix; at least 1) before the heap is collected, during elaboration
+  and in the simulation. A collection also waits until as much was allocated as the last one
+  kept, so its cost stays proportional to the allocation. A larger value collects less often
+  and uses more memory on designs that allocate heavily; the default is ``1m``. The output is
+  the same for any value. There is no way to switch collection off.
 * ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code;
   ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
   simulation runs in the interpreter. The output is the same as with ``--tier=interp``. Both

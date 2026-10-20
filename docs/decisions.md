@@ -2670,3 +2670,17 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
   mutex and no hook per delta cycle.
 - **The wake scan asks interned trigger ids stored in the waiters**, not the process table, and a signal
   whose waiters all share one edge trigger that holds skips the per-waiter question.
+
+## Heap collection threshold (yavs-interp, CLI, user request 2026-10-20)
+
+- `yavs run --gc-threshold SIZE` (plain bytes or a `k`, `m`, `g` suffix of powers of 1024, at least 1; zero and
+  anything else is a usage error) sets `Limits::gc_threshold` for the elaboration-time evaluation and the
+  simulation. It is a process-wide setting (`yavs_interp::set_default_gc_threshold`) read by `Limits::default`,
+  so no entry point takes a new argument. Test runners pass it in their simulator flags.
+- There is still no off switch: memory stays bounded (#409, #422).
+- **The default stays 1 MiB.** A sweep of 1 to 256 MiB (`STATUS.md`, "Heap collection threshold") shows no run
+  time difference beyond noise on the library testbenches and the corpus, and 64 times fewer collections. Peak
+  memory is the same for the library testbenches and grows with the threshold for designs that allocate heavily.
+  The threshold applies to each process heap, so a larger default would multiply the worst case by the number of
+  allocating processes for no measured gain. Collection is not why the tiny access test is slower than in the
+  reference simulator (the interpreter is).

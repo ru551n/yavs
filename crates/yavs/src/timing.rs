@@ -54,7 +54,7 @@ pub fn mark(name: &'static str) {
     }
 }
 
-/// Prints one `time-report: PHASE wall=S cpu=S` line per phase and a `total` line.
+/// Prints one `time-report: PHASE wall=S cpu=S` line per phase, a `time-report: gc collections=N` line and a `total` line.
 pub fn report() {
     if !ON.load(Ordering::Relaxed) {
         return;
@@ -69,6 +69,10 @@ pub fn report() {
     for (n, w, c) in &s.rows {
         line(n, *w, *c);
     }
+    eprintln!(
+        "time-report: gc collections={}",
+        yavs_interp::gc_collections()
+    );
     let now = (Instant::now(), cpu());
     line(
         "total",

@@ -31,6 +31,7 @@ Benchmarks (`run.py --list`):
 | `vunit_vc30` | external | 30 fixed test cases of the external test runner's verification components, one `yavs run` each (summed per iteration) |
 | `uvvm_axistream_vvc_tb` | external | The AXI-stream verification component testbench, first generic set, capped with `--stop-time=10us` (it runs far over 5 minutes in full) |
 | `uvvm_util_rand_tb` | external | The utility library's random testbench (`rand_basic`) |
+| `uvvm_util_queue_tb`, `uvvm_sb_slv_tb` | external | The utility library's generic queue testbench and the scoreboard library's `generic_sb_slv_tb` (the queue and scoreboard maintenance testbenches) |
 | `osvvm_axistream` | external | One AXI-stream testbench (`TbStream_AxiSendGetRandomParam2`) of the other verification library's `.pro` scripts |
 | `vai_pe_array`, `vai_window_gen` | external | Two long testbenches of a local, read-only testbench repository; needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset |
 

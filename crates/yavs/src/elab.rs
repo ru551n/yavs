@@ -108,6 +108,11 @@ pub struct RunArgs {
     /// Worker threads for process evaluation.
     #[arg(long, default_value = "1")]
     threads: usize,
+    /// Collect the heap of access values once this much was allocated since the last
+    /// collection (and as much as that collection kept): plain bytes or a `k`, `m` or `g`
+    /// suffix (powers of 1024), at least 1. Default 1m.
+    #[arg(long, value_name = "SIZE", value_parser = parse_size)]
+    gc_threshold: Option<u64>,
     /// Randomize process execution order, with an optional seed.
     #[arg(long, value_name = "SEED", num_args = 0..=1, require_equals = true, default_missing_value = "1")]
     shuffle: Option<u64>,
@@ -170,6 +175,31 @@ pub struct RunArgs {
     /// Plusargs `+NAME[=VALUE]` after the top level, seen by VHPI plugins as tool arguments.
     #[arg(value_name = "+NAME[=VALUE]", value_parser = plusarg)]
     plusargs: Vec<String>,
+}
+
+/// `4194304`, `4m`, `64K`, `1g`: a byte count of at least 1.
+fn parse_size(s: &str) -> Result<u64, String> {
+    let t = s.trim();
+    let (digits, mul) = match t.char_indices().last() {
+        Some((i, c)) if c.is_ascii_alphabetic() => (
+            &t[..i],
+            match c.to_ascii_lowercase() {
+                'k' => 1u64 << 10,
+                'm' => 1 << 20,
+                'g' => 1 << 30,
+                _ => return Err(format!("`{s}`: unknown suffix `{c}`, expected k, m or g")),
+            },
+        ),
+        _ => (t, 1),
+    };
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("`{s}` is not a size: expected bytes with an optional k, m or g"))?;
+    match n.checked_mul(mul) {
+        Some(0) => Err("the threshold must be at least 1 byte".into()),
+        Some(b) => Ok(b),
+        None => Err(format!("`{s}` is too large")),
+    }
 }
 
 fn heat(s: &str) -> Result<[u32; 3], String> {
@@ -626,6 +656,10 @@ pub fn run(
 ) -> ExitCode {
     if a.time_report {
         crate::timing::enable();
+    }
+    // Before elaboration: its constant evaluation collects with the same threshold.
+    if let Some(b) = a.gc_threshold {
+        yavs_interp::set_default_gc_threshold(b);
     }
     // A debugger reads and writes the variables of subprograms in their frame slots: keep them
     // there, before any function is optimised.
@@ -1131,4 +1165,25 @@ fn default_test_names() {
 fn parse_time(t: &str) -> Result<yavs_kernel::Time, String> {
     let fs = yavs_std::value::time_literal(t).map_err(|e| e.to_string())?;
     yavs_kernel::Time::from_vhdl(fs).map_err(|e| e.to_string())
+}
+
+#[test]
+fn gc_threshold_sizes() {
+    assert_eq!(parse_size("4096"), Ok(4096));
+    assert_eq!(parse_size("64k"), Ok(64 << 10));
+    assert_eq!(parse_size("16M"), Ok(16 << 20));
+    assert_eq!(parse_size("1g"), Ok(1 << 30));
+    for bad in [
+        "0",
+        "0m",
+        "",
+        "m",
+        "-1",
+        "1.5m",
+        "4x",
+        "99999999999g",
+        "1 m",
+    ] {
+        assert!(parse_size(bad).is_err(), "{bad}");
+    }
 }

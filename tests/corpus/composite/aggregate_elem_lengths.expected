@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:aggregate_elem_lengths:_p0	onetwo
+diag	note	0	0	:aggregate_elem_lengths:_p0	cd
+diag	fatal	0	0	:aggregate_elem_lengths:_p0	choice length 5 does not match expected length 3

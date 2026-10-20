@@ -1406,7 +1406,7 @@ impl Fx<'_, '_> {
         };
         let desc = match desc {
             Some(d) => d,
-            None => self.agg_desc(t, tid, assocs, bounds, dims, span)?,
+            None => self.agg_desc(t, tid, st, assocs, bounds, dims, span)?,
         };
         if matches!(bounds, AggBounds::Context) {
             let len = self.dope_len(desc);
@@ -1459,6 +1459,7 @@ impl Fx<'_, '_> {
         &mut self,
         t: TypeId,
         tid: TyId,
+        st: SubtypeId,
         assocs: &[AggAssoc],
         bounds: &AggBounds,
         dims: u8,
@@ -1480,9 +1481,16 @@ impl Fx<'_, '_> {
                     .ice(span, "multi-dimensional aggregate without rows"));
             };
             let (l, r, d) = if matches!(b, AggBounds::Context) {
-                return Err(self
-                    .cx
-                    .unsupported(span, "`others` in a row of an unconstrained aggregate"));
+                // A context whose index ranges are given and whose elements are open
+                // (`strings(0 to 2)`): the ranges come from the context subtype.
+                let Constraint::Array { dims: Some(ds), .. } = &db.subtypes[st].constraint else {
+                    return Err(self
+                        .cx
+                        .unsupported(span, "`others` in a row of an unconstrained aggregate"));
+                };
+                let r = self.range(&ds[k], span)?;
+                let d = self.dir_reg(r.dir);
+                (r.left, r.right, d)
             } else {
                 self.level_range(b, indexes[k], span)?
             };

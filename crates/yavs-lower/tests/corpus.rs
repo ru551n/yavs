@@ -37,6 +37,7 @@ const PASS: &[&str] = &[
     "composite/layout_memo_lengths",
     "composite/alias_constant",
     "composite/record_aggregate_target",
+    "composite/aggregate_elem_lengths_const",
     "composite/aggregate_target_logic_fields",
     "composite/aggregate_target_matrix",
     "composite/aggregate_target_matrix_cover",

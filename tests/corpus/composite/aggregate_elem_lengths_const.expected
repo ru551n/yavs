@@ -1,0 +1,2 @@
+exit	2
+diag	fatal	0	0	-	value length 5 does not match aggregate element length 3

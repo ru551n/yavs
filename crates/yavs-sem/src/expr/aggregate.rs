@@ -1935,10 +1935,12 @@ fn array_agg(
         _ => None,
     };
 
-    // Fold (rule 12).
+    // Fold (rule 12). Elements of an unconstrained composite subtype must all have the same
+    // shape (9.3.3.3): a folded value could not say otherwise, so the run-time check decides.
     let runs = if stat == Staticness::Locally {
         match (&dims, &named_items) {
-            (Some(d), Some(items)) => fold_runs(db, &vals, &choices, items, d[0], has_others),
+            (Some(d), Some(items)) => fold_runs(db, &vals, &choices, items, d[0], has_others)
+                .filter(|runs| runs.windows(2).all(|w| same_shape(&w[0].1, &w[1].1))),
             _ => None,
         }
     } else {
@@ -1988,6 +1990,38 @@ fn array_agg(
         value,
     );
     Ok(Built { expr, dims, runs })
+}
+
+/// Whether two element values have the same lengths in every array they contain (an inner
+/// array is uniform: it folded under the same rule).
+fn same_shape(a: &ConstValue, b: &ConstValue) -> bool {
+    let lens = |bs: &[(i64, Direction, i64)]| {
+        bs.iter()
+            .map(|&(l, d, r)| StaticRange::new(l, d, r).len())
+            .collect::<Vec<_>>()
+    };
+    match (a, b) {
+        (ConstValue::Array(x), ConstValue::Array(y)) => {
+            lens(&x.bounds) == lens(&y.bounds)
+                && match (elem_at(x), elem_at(y)) {
+                    (Some(p), Some(q)) => same_shape(&p, &q),
+                    _ => true,
+                }
+        }
+        (ConstValue::Record(x), ConstValue::Record(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| same_shape(p, q))
+        }
+        _ => true,
+    }
+}
+
+/// The first element of an array constant, when it is composite.
+fn elem_at(a: &ArrayConst) -> Option<ConstValue> {
+    let v = match &a.elems {
+        Elems::Runs(rs) => rs.first()?.1.clone(),
+        Elems::Bytes(_) => return None,
+    };
+    matches!(v, ConstValue::Array(_) | ConstValue::Record(_)).then_some(v)
 }
 
 fn mixed(db: &mut Db, span: Span) -> Reported {

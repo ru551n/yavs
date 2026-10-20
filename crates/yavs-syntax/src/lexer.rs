@@ -452,22 +452,21 @@ impl Lexer<'_> {
         self.pos = p;
         // The longest reserved word is 17 bytes; the longest bit string base 2.
         let mut buf = [0u8; 24];
-        let lower = match buf.get_mut(..p - start) {
-            Some(dst) => {
-                dst.copy_from_slice(&self.b[start..p]);
-                dst.make_ascii_lowercase();
-                std::str::from_utf8(dst).ok()
-            }
-            None => None,
-        };
+        let lower = buf.get_mut(..p - start).map(|dst| {
+            dst.copy_from_slice(&self.b[start..p]);
+            dst.make_ascii_lowercase();
+            &*dst
+        });
         let q = self.peek(0);
-        if matches!(q, b'"' | b'%') && lower.is_some_and(|l| BASES.contains(&l)) {
+        if matches!(q, b'"' | b'%')
+            && lower.is_some_and(|l| BASES.iter().any(|b| b.as_bytes() == l))
+        {
             self.string(q);
             self.push(Tok::BitStr, start);
             self.check_latin1(start, self.pos, "bit string literal");
             return true;
         }
-        let kind = match lower.and_then(|l| Kw::lookup(l, self.std)) {
+        let kind = match lower.and_then(|l| Kw::lookup_bytes(l, self.std)) {
             Some(kw) => Tok::Kw(kw),
             None => Tok::Ident,
         };

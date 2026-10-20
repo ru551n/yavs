@@ -30,14 +30,14 @@ impl Parser<'_> {
 
     /// Statements up to `end`, `else`, `elsif`, `when` or end of file.
     pub(super) fn seq_stmts(&mut self) -> Vec<SeqStmt> {
-        let mut v = Vec::new();
+        let mark = self.sc.stmts.len();
         while !matches!(
             self.peek(),
             Tok::Kw(Kw::End | Kw::Else | Kw::Elsif | Kw::When) | Tok::Eof
         ) {
             let before = self.pos;
             match self.seq_stmt() {
-                Ok(s) => v.push(s),
+                Ok(s) => self.sc.stmts.push(s),
                 Err(Recover) => {
                     self.sync();
                     if self.pos == before {
@@ -46,7 +46,7 @@ impl Parser<'_> {
                 }
             }
         }
-        v
+        self.sc.stmts.drain(mark..).collect()
     }
 
     fn seq_stmt(&mut self) -> PResult<SeqStmt> {
@@ -516,14 +516,14 @@ impl Parser<'_> {
 
     /// Statements up to `end`, `elsif`, `else`, `when` or end of file.
     pub(super) fn conc_stmts(&mut self) -> Vec<ConcStmt> {
-        let mut v = Vec::new();
+        let mark = self.sc.conc.len();
         while !matches!(
             self.peek(),
             Tok::Kw(Kw::End | Kw::Elsif | Kw::Else | Kw::When) | Tok::Eof
         ) {
             let before = self.pos;
             match self.conc_stmt() {
-                Ok(Some(s)) => v.push(s),
+                Ok(Some(s)) => self.sc.conc.push(s),
                 Ok(None) => {}
                 Err(Recover) => {
                     self.sync();
@@ -533,7 +533,7 @@ impl Parser<'_> {
                 }
             }
         }
-        v
+        self.sc.conc.drain(mark..).collect()
     }
 
     /// `Ok(None)` for skipped PSL.

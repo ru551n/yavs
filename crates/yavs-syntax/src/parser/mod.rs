@@ -48,6 +48,19 @@ pub(crate) struct Parser<'a> {
     psl_clock: Option<usize>,
     /// Keys of the PSL `property` and `sequence` declarations skipped so far.
     psl_names: Vec<Symbol>,
+    /// Lists under construction, one stack per element type: a list parser pushes its
+    /// elements here and moves them into a vector of exactly their number, so no
+    /// list grows (and copies its large elements) by doubling.
+    sc: Scratch,
+}
+
+#[derive(Default)]
+struct Scratch {
+    stmts: Vec<SeqStmt>,
+    conc: Vec<ConcStmt>,
+    decls: Vec<Decl>,
+    assoc: Vec<AssocElem>,
+    iface: Vec<InterfaceDecl>,
 }
 
 pub(crate) fn parse(
@@ -77,6 +90,7 @@ pub(crate) fn parse(
         psl_warned: false,
         psl_clock: None,
         psl_names: Vec::new(),
+        sc: Scratch::default(),
     };
     p.design_file()
 }

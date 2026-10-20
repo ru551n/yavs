@@ -73,12 +73,12 @@ impl Parser<'_> {
     /// token that cannot start a declaration is an error, unless `lenient`,
     /// when it also ends the part (generate bodies without `begin`).
     pub(super) fn decls(&mut self, lenient: bool) -> Vec<Decl> {
-        let mut v = Vec::new();
+        let mark = self.sc.decls.len();
         loop {
             if self.at_decl_start() {
                 let before = self.pos;
                 match self.decl() {
-                    Ok(Some(d)) => v.push(d),
+                    Ok(Some(d)) => self.sc.decls.push(d),
                     Ok(None) => {}
                     Err(Recover) => {
                         self.sync();
@@ -88,7 +88,7 @@ impl Parser<'_> {
                     }
                 }
             } else if lenient || matches!(self.peek(), Tok::Kw(Kw::Begin | Kw::End) | Tok::Eof) {
-                return v;
+                return self.sc.decls.drain(mark..).collect();
             } else {
                 let _ = self.expected("declaration");
                 let before = self.pos;
@@ -731,10 +731,21 @@ impl Parser<'_> {
 
     /// `( decl ; decl ... )`
     pub(super) fn interface_list(&mut self) -> PResult<Vec<InterfaceDecl>> {
+        let mark = self.sc.iface.len();
+        match self.interface_items(mark) {
+            Ok(()) => Ok(self.sc.iface.drain(mark..).collect()),
+            Err(e) => {
+                self.sc.iface.truncate(mark);
+                Err(e)
+            }
+        }
+    }
+
+    /// The items of an interface list, pushed on the scratch stack above `mark`.
+    fn interface_items(&mut self, mark: usize) -> PResult<()> {
         let open = self.expect(Tok::LParen)?;
-        let mut v = Vec::new();
         loop {
-            if self.at(Tok::RParen) && !v.is_empty() {
+            if self.at(Tok::RParen) && self.sc.iface.len() > mark {
                 let span = self.prev_span();
                 self.require_2019(span, "a trailing `;` in an interface list");
                 break;
@@ -755,7 +766,8 @@ impl Parser<'_> {
                 );
                 return Err(Recover);
             }
-            v.push(self.interface_decl()?);
+            let d = self.interface_decl()?;
+            self.sc.iface.push(d);
             if !self.eat(Tok::Semi) {
                 break;
             }
@@ -774,7 +786,7 @@ impl Parser<'_> {
             return Err(Recover);
         }
         self.bump();
-        Ok(v)
+        Ok(())
     }
 
     fn interface_decl(&mut self) -> PResult<InterfaceDecl> {

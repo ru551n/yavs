@@ -16,14 +16,14 @@ macro_rules! keywords {
 
             /// Reserved words by first letter: most identifiers are rejected after a few
             /// comparisons instead of one per reserved word.
-            fn from_lower(s: &str) -> Option<Kw> {
-                static BY_LETTER: std::sync::LazyLock<[Vec<(&'static str, Kw)>; 26]> =
+            fn from_lower(s: &[u8]) -> Option<Kw> {
+                static BY_LETTER: std::sync::LazyLock<[Vec<(&'static [u8], Kw)>; 26]> =
                     std::sync::LazyLock::new(|| {
-                        let mut t: [Vec<(&'static str, Kw)>; 26] = Default::default();
-                        $(t[($s.as_bytes()[0] - b'a') as usize].push(($s, Kw::$kw));)*
+                        let mut t: [Vec<(&'static [u8], Kw)>; 26] = Default::default();
+                        $(t[($s.as_bytes()[0] - b'a') as usize].push(($s.as_bytes(), Kw::$kw));)*
                         t
                     });
-                let c = *s.as_bytes().first()?;
+                let c = *s.first()?;
                 if !c.is_ascii_lowercase() {
                     return None;
                 }
@@ -69,6 +69,11 @@ keywords! {
 impl Kw {
     /// Look up a reserved word of `std`, given the identifier's lower-case text.
     pub fn lookup(lower: &str, std: Std) -> Option<Kw> {
+        Kw::lookup_bytes(lower.as_bytes(), std)
+    }
+
+    /// [`Kw::lookup`] for the lower-case bytes of an ASCII word.
+    pub fn lookup_bytes(lower: &[u8], std: Std) -> Option<Kw> {
         let kw = Kw::from_lower(lower)?;
         match kw {
             Kw::Private | Kw::View if std < Std::Vhdl2019 => None,

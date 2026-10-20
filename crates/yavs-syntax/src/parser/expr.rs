@@ -814,16 +814,26 @@ impl Parser<'_> {
 
     /// `( [formal =>] actual, ... )`
     pub(super) fn assoc_list(&mut self) -> PResult<Vec<AssocElem>> {
+        let mark = self.sc.assoc.len();
+        match self.assoc_items() {
+            Ok(()) => Ok(self.sc.assoc.drain(mark..).collect()),
+            Err(e) => {
+                self.sc.assoc.truncate(mark);
+                Err(e)
+            }
+        }
+    }
+
+    fn assoc_items(&mut self) -> PResult<()> {
         self.expect(Tok::LParen)?;
-        let mut v = Vec::new();
         loop {
-            v.push(self.assoc_elem()?);
+            let e = self.assoc_elem()?;
+            self.sc.assoc.push(e);
             if !self.eat(Tok::Comma) {
                 break;
             }
         }
-        self.expect(Tok::RParen)?;
-        Ok(v)
+        self.expect(Tok::RParen).map(|_| ())
     }
 
     fn assoc_elem(&mut self) -> PResult<AssocElem> {

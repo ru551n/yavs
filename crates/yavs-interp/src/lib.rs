@@ -44,6 +44,7 @@ pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
 };
+pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use state::restore_state;
@@ -357,10 +358,11 @@ pub trait TierHost {
     fn temp(&mut self) -> &mut Vec<u8>;
 
     /// Execute the signal instruction at `pc` of the top frame as `step` does, through the
-    /// same interpreter functions without its generic dispatch: `SigReadScalar`, `Drive`,
-    /// `WaitOn`, `Suspend`, and (`edge` 1 rising, 2 falling) a `CallNative` of `rising_edge` /
-    /// `falling_edge` ([`edge_native`]); any other instruction is stepped. These run no VHDL
-    /// code and move no stack: the [`TierFrame`] stays valid.
+    /// same interpreter functions without its generic dispatch: `SigReadScalar`, `SigRead`,
+    /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, and (`edge` 1 rising, 2 falling) a `CallNative`
+    /// of `rising_edge` / `falling_edge` ([`edge_native`]); any other instruction is stepped.
+    /// These run no VHDL code, move no stack and free no memory: the [`TierFrame`] stays
+    /// valid.
     fn signal(&mut self, fr: &mut TierFrame, pc: u32, edge: u32) -> Stepped;
 }
 

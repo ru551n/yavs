@@ -1005,6 +1005,61 @@ lost tail on a kill are the price).
 The four new internal benchmarks (`strings_heavy`, `access_heavy`, `report_heavy`, `file_io`) change the
 benchmark set: earlier JSON files do not contain them.
 
+### Verification-library testbenches against the reference simulator (#444)
+
+Why the library testbenches were 3x to 7x slower than the reference simulator's JIT while computation was at parity:
+stack samples with the VHDL call stack (a local instrumented build reads the interpreter's frames from the sampler)
+and, per function, the number of IR instructions executed by kind. For the scoreboard testbench (design 3: 640 million
+instructions in 4 s, 6 ns each) the picture was:
+
+- Six library functions that scan strings character by character (the log message length, identifier matching,
+  `to_string`, line wrapping) executed two thirds of the instructions; one of them (the length of a fixed-size log
+  buffer) alone 35 percent.
+- 23 percent of the instructions were loads and 7 percent stores of frame slots (loop counters, loop bounds,
+  parameters), and a `Stmt` marker per statement was 9 percent.
+- The memo of `LayoutOf` held one descriptor per type, so strings of changing lengths missed on 71 percent of 3.5
+  million layouts and every miss allocated four vectors: 12 percent of the time.
+- Every call copied a frame template with a cell per register: 10 GB per run, 8 percent of the time (call setup);
+  register numbers had gaps and duplicate constants.
+- The AXI-stream VVC testbench spent 95 percent of its instructions in loops that set one `std_logic_vector`
+  element at a time (record defaults, `others` choices): 98 million `LSet`.
+- A verification library's hex formatting compared a 4-element vector with 21 `case` choices element by element, each choice
+  copied into a temporary first.
+- Natives (`to_string`, textio) are 6 percent, heap allocation and collection 7 percent, dispatch itself 11 percent:
+  not where the gap is.
+
+Changes (CPU seconds, minimum of 5 to 7 interleaved runs, release build, interpreter tier, `--threads 1`, host
+load 10 to 30, so read the ratios):
+
+1. `LayoutOf` of arrays of changing length: the memo refills in place and a one-dimensional array of scalars gets its
+   words straight from the bounds (`implicit`/`exec.rs`).
+2. The optimiser keeps scalar frame slots in registers (subprograms that cannot suspend, direct loads and stores
+   only, no debugger for named variables), reruns its walk over the result, empties unreachable blocks, drops `Stmt`
+   markers that free nothing, merges equal constants and renumbers registers densely (`opt.rs`, decisions.md
+   "Variables in registers"). Executed instructions of design 3: 640 million to 391 million.
+3. `LFill` (a run of logic elements set a plane word at a time) for defaults and `others` choices; array equality of
+   logic arrays (`case` choices, `=`) by `LEq`; array literals read in place from the constant pool.
+
+| Benchmark (yavs interp) | main before the changes | after | ratio | reference `--jit` | yavs / reference |
+|---|---|---|---|---|---|
+| design 3 queue/scoreboard testbench | 2.64 | 2.21 | 0.84 | 0.32 (wall, 1.14 CPU) | 8.3x to 6.9x |
+| design 4 AXI-stream testbench | 0.76 | 0.64 | 0.84 | 0.28 (wall, 1.10 CPU) | 2.7x to 2.3x |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 1.68 | 0.47 | 0.28 | | |
+| `uvvm_util_rand_tb` | 2.23 | 1.82 | 0.82 | | |
+| `osvvm_axistream` | 0.85 | 0.70 | 0.82 | | |
+
+Main is `7ca41adc` (with the layout memo change of the first commit of #444 and the dispatch round 4 of #443).
+The reference simulator is run as `-H 64m -e <top> --no-save --jit -r`; its CPU time is higher than its wall time
+because it compiles on other threads.
+
+What is left in these
+testbenches is dispatch (11 percent of the samples in the jump of the predecoded loop), the frame template copy
+(4 percent), `LayoutOf` (3 percent) and collection (4 percent): the library functions run as 6 to 12 interpreted
+instructions per character of every string they touch, which the reference simulator compiles. Findings for other
+areas are on #443 (dispatch, frame templates), #422 (collection) and #338 (inline `LFill`). Not done: promotion
+of process variables between suspensions, temporaries of constant size in frame slots, the dynamic-bound local
+arrays that are heap objects per call (`New` + `Deref` + collection).
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

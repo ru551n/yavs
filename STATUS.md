@@ -1109,12 +1109,34 @@ arrays that are heap objects per call (`New` + `Deref` + collection).
 
 ### Verification-library testbenches, round 2 (#444)
 
-Same method (CPU seconds, minimum of 3 interleaved runs of `--threads 1` release binaries, interpreter tier, host
-load 10 to 30). Every row is one commit; the "before" column is the binary of the previous row.
+CPU seconds, minimum of 9 interleaved runs, `--threads 1`, release binaries, interpreter tier, pinned to one
+performance core (`taskset -c 3`); the reference simulator `-H 64m -e <top> --no-save --jit -r` on cores 2 to 5
+(minimum wall of 3). Before is main at `a3b8e7aa` (end of round 1).
 
-| Change | design 3 before | after | design 4 before | after |
-|---|---|---|---|---|
-| Local composite variables of subprograms that cannot suspend live in the frame's temporary memory (`Inst::NewFrame`, decisions.md "Local composite variables live in the frame's temporary memory") | 1.81 | 1.61 | 0.45 | 0.42 |
+| Change | what it removes |
+|---|---|
+| Local composite variables of subprograms that cannot suspend live in the frame's temporary memory (`Inst::NewFrame`) | 2.5 million heap objects per run of design 3 (allocation, copy, collection) |
+| Written handle and address slots live in registers | 12 and 5 million slot loads in design 3 |
+| Interval analysis, branch threading, dead definitions (loops only, after the first version cost small tests 10 percent) | checks, `n = 0` selects of concatenations, boolean merges; executed instructions 335 to 281 million |
+| `=` and `/=` of integer and enumeration arrays as one byte comparison (`Inst::MemEq`) | the element loop of key lookups: the two slow dictionary tests of the data-types suite 2.5 and 1.3 s to 2.2 and 1.3 s |
+
+| Benchmark | round 1 | now | ratio | reference | now / reference |
+|---|---:|---:|---:|---:|---:|
+| design 3 queue/scoreboard testbench | 2.77 | 2.15 | 0.78 | 0.68 wall (1.2 CPU) | 3.2x (was 4.1x) |
+| design 4 AXI-stream testbench | 0.77 | 0.70 | 0.90 | 0.55 wall (1.1 CPU) | 1.3x (was 1.4x) |
+| `uvvm_util_rand_tb` (harness) | 2.07 | 1.72 | 0.83 | | |
+| `osvvm_axistream` | 0.65 | 0.61 | 0.93 | | |
+| `uvvm_axistream_vvc_tb` | 0.49 | 0.47 | 0.96 | | |
+| `strings_heavy` / `access_heavy` / `protected_scoreboard` | 0.18 / 0.08 / 0.06 | 0.16 / 0.07 / 0.06 | 0.90 / 0.84 / 1.01 | | |
+
+Cost: both new analyses run when a subprogram is first called. A first version ran in every subprogram and cost a
+200 ms verification-component test case 15 ms and a small testbench of the second verification library 25 ms;
+they now run only in subprograms with a loop (and 40 instructions), which leaves +2 and +4 percent on those two
+(pinned, minimum of 25). `vunit_vc30` in the harness shows +8 percent unpinned. Left: concatenation of strings is
+still about 13 instructions per `&` (a fused instruction would remove them), process variables are not promoted
+across suspensions, constant-size temporaries still cost an `Alloc`, the frame template copy per call
+(`Pre::fill`, registers could share cells), and optimising at the first call is the floor of small tests (a cache of
+optimised code would remove it).
 
 ## performance: gap map against the reference simulator (sim1), 2026-10-20
 

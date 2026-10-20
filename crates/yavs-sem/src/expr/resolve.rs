@@ -370,6 +370,7 @@ impl Db {
                     return self.poison_expr();
                 };
                 let op = self.resolve_in(scope, operand, st);
+                self.check_in_subtype(op, st);
                 let (stat, value) = (
                     self.exprs[op].stat.min(self.subtype_staticness(st)),
                     self.exprs[op].value,

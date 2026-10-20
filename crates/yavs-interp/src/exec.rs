@@ -3076,6 +3076,9 @@ impl Machine {
             };
         }
         bind!();
+        if watch && let Some(s) = slot {
+            s.store(tag | u64::from(func.0), Ordering::Relaxed);
+        }
         // Run compiled code from op `k` when the function has some (`native`): at the start,
         // after a jump and after an op compiled code leaves to the interpreter.
         macro_rules! enter {

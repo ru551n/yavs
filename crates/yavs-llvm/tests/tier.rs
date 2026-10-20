@@ -166,6 +166,7 @@ const HOT: Heat = Heat {
     base: 1,
     per_instr: 0,
     period: 100,
+    budget: 0,
 };
 
 /// `--tier=auto`: the loop becomes hot while it runs in the interpreter, is compiled on the
@@ -190,6 +191,30 @@ fn auto_tier_compiles_hot_functions() {
     let notes = notes.lock().unwrap();
     assert_eq!(notes.len(), 1);
     assert!(notes[0].0 == f && notes[0].1.is_ok(), "{notes:?}");
+}
+
+/// With a budget the compile thread waits until compiling costs at most a few percent of the
+/// time it saw the interpreter run, so a short run compiles nothing; a long one does, and the
+/// results never change.
+#[test]
+fn auto_tier_compiles_within_its_budget() {
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let note: Note = Box::new(|_, _, _| {});
+    let heat = Heat { budget: 2, ..HOT };
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+    let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(20) {
+        assert_eq!(call().unwrap(), Some(5_000_050_000));
+    }
+    assert_eq!(tier.compiled(), 0, "compiled within 20 ms");
+    while tier.compiled() == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
+        assert_eq!(call().unwrap(), Some(5_000_050_000));
+    }
+    assert_eq!(call().unwrap(), Some(5_000_050_000));
+    tier.stop(true);
 }
 
 /// A function compiled at O0 that stays hot in its compiled code is compiled again at O2 and

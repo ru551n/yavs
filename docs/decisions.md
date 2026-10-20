@@ -256,6 +256,20 @@ milestone users care about works.
   generator can prove within the function's frame size has no check at all.
   Why: the interpreter keeps the one implementation of address spaces, heaps and errors; the
   common accesses cost a compare instead of a callback. Decided by the M6 agent, 2026-10-19.
+- **Address lookup (llvmtb, 2026-10-21, #432):** an address that is not a known frame offset or
+  a constant compiled code has a copy of goes through one call, `yavs_rt_host`, instead of an
+  inline lookup of the frame, temporary and instance data: the inline form was two thirds of
+  the generated instructions and made compile time twice as long, and the code ran no faster.
+- **Tier-up budget (llvmtb, 2026-10-21, #432):** `--tier=auto` compiles at O2 only (O0 code
+  ran no faster than the interpreter on testbench code), and only while its own compile time
+  stays within `Heat::budget` (2) percent of the interpreter time the sampler saw, twice that
+  for compute loops; a function must also have been seen for four times its estimated compile
+  time (learned per IR instruction), and its small callees compile with it. Why: a compile
+  costs CPU, a hot set of testbench functions gains under 10%, and the requirement is that
+  `--tier=auto` never runs more than 2% longer than `--tier=interp`. With the hidden
+  `--tier-heat` (tests, tuning) there is no budget. Without any compiled code the fast loop
+  samples every 128 events and hands over to the full loop once there is some, so a tier
+  that has not compiled costs about 1%.
 - **Tiers:** `yavs run --tier=llvm` compiles every non-elaboration function at O2 before time 0;
   `--tier=auto` compiles hot functions on a background thread (below). Both compiling tiers
   leave functions over `--tier-max-size` (default 50000 IR instructions) interpreted (user,

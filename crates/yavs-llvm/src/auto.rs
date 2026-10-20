@@ -36,6 +36,10 @@ pub struct Heat {
     pub base: u32,
     pub per_instr: u32,
     pub period: u32,
+    /// The compile thread may spend at most this percent of the time the simulation was seen
+    /// running (0: no limit). With a limit a function is compiled only when it was seen
+    /// interpreted for `PAYBACK` times as long as compiling it takes.
+    pub budget: u32,
 }
 
 impl Heat {
@@ -46,6 +50,7 @@ impl Heat {
         base: 2_000,
         per_instr: 40_000,
         period: 1_000,
+        budget: 2,
     };
 
     /// The time `f` must be seen for, in microseconds, saturating.
@@ -71,17 +76,37 @@ impl Heat {
 const SHORT: usize = 64;
 
 /// Why `f` stays interpreted although hot: shorter than `SHORT` IR instructions and without a
-/// loop (`loops`), so each entry into compiled code from the interpreter (the frame view, the
+/// jump back, so each entry into compiled code from the interpreter (the frame view, the
 /// entry switch, the way back) would cost about what interpreting its body costs: the small
-/// helpers a testbench calls millions of times ran slower compiled (#432), and so did the
-/// one-statement processes of the kernel design `fan`.
+/// helpers a testbench calls millions of times ran slower compiled (#432).
 fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
-    (!loops(prog, f) && f.code.len() < SHORT).then(|| {
+    (f.code.len() < SHORT && !loops(prog, f)).then(|| {
         format!(
             "{} IR instructions without a loop: entering compiled code would cost about as much",
             f.code.len()
         )
     })
+}
+
+/// The backward jumps of `f` as ranges of instructions (a jump back to a block start and the jump).
+fn back_edges(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Vec<std::ops::Range<usize>> {
+    use yavs_ir::Inst;
+    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
+    let mut out = Vec::new();
+    for (pc, i) in f.code.iter().enumerate() {
+        let targets: Vec<usize> = match i {
+            Inst::Br { to } => vec![start(*to)],
+            Inst::CondBr { t, f: e, .. } => vec![start(*t), start(*e)],
+            Inst::Case { table, .. } => prog.cases.get(*table).map_or(Vec::new(), |t| {
+                std::iter::once(start(t.default))
+                    .chain(t.arms.iter().map(|a| start(a.2)))
+                    .collect()
+            }),
+            _ => Vec::new(),
+        };
+        out.extend(targets.into_iter().filter(|&t| t <= pc).map(|t| t..pc + 1));
+    }
+    out
 }
 
 /// Whether the blocks of `f` form a cycle, not counting a process's way through its
@@ -146,25 +171,28 @@ fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     false
 }
 
-/// The functions `f` calls directly.
-fn callees(f: &yavs_ir::Func) -> impl Iterator<Item = FuncId> + '_ {
-    f.code.iter().filter_map(|i| match i {
-        yavs_ir::Inst::Call { func, .. } => Some(*func),
-        _ => None,
-    })
-}
-
-/// The direct callers of every function, by callee.
-fn callers_of(prog: &yavs_ir::Program) -> Vec<Vec<FuncId>> {
-    let mut by = vec![Vec::new(); prog.funcs.len()];
-    for (id, _) in prog.funcs.iter() {
-        for g in prog.func(id).into_iter().flat_map(callees) {
-            if let Some(v) = by.get_mut(g.0 as usize) {
-                v.push(id);
-            }
+/// Whether the loops of `f` are compute: at most one instruction in twenty in them is one the
+/// compiled code leaves to the interpreter (a call, a native, a report). Such a function runs
+/// about 1.3 times faster compiled (the interpreter spends its time dispatching them), so it
+/// is worth compiling earlier than testbench code, whose time goes to what the interpreter's
+/// own functions do (#432).
+fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
+    let mut inside = vec![false; f.code.len()];
+    if loops(prog, f) {
+        for r in back_edges(prog, f) {
+            inside[r].fill(true);
         }
+    } else {
+        return false;
     }
-    by
+    let total = inside.iter().filter(|&&b| b).count();
+    let stepped = f
+        .code
+        .iter()
+        .zip(&inside)
+        .filter(|(i, b)| **b && !crate::lower::is_inline(prog, f, i))
+        .count();
+    stepped * 20 <= total
 }
 
 /// See `Heat::o2_threshold`.
@@ -221,6 +249,183 @@ struct Shared {
     jit: Mutex<Vec<Jit>>,
 }
 
+/// Microseconds of compile time per IR instruction to start with (O2, one function in a
+/// module of its own); the thread replaces it by what it measures.
+const US_PER_INSTR: f64 = 400.0;
+
+/// A function must have been seen interpreted this many times as long as compiling it takes:
+/// its remaining time is expected to be about its past time and compiled code saves about a
+/// quarter of it.
+const PAYBACK: u64 = 4;
+
+/// Callees compiled with a hot function (`Worker::tree`): at most this many IR instructions
+/// each and in all.
+const CALLEE_MAX: usize = 200;
+const TREE_MAX: usize = 1500;
+
+/// The compile thread's state.
+struct Worker {
+    prog: Arc<yavs_ir::Program>,
+    table: Arc<[Entry]>,
+    native: Arc<yavs_interp::NativeFlags>,
+    heat: Heat,
+    opt: OptLevel,
+    max_size: usize,
+    /// Made with the first function compiled at their level: a run that never gets hot pays
+    /// nothing.
+    jit: Option<Jit>,
+    jit2: Option<Jit>,
+    /// Per function: compiled at the first level, at O2.
+    done: Vec<[bool; 2]>,
+    /// Microseconds each function was seen interpreted, and running compiled.
+    time: Vec<[u64; 2]>,
+    /// Microseconds the simulation threads were seen running, and the compile thread spent
+    /// compiling.
+    total: u64,
+    spent: u64,
+    us_per_instr: f64,
+    note: Note,
+}
+
+impl Worker {
+    /// The microseconds of compile time to expect for `f`.
+    fn cost(&self, f: &yavs_ir::Func) -> u64 {
+        (self.us_per_instr * f.code.len() as f64) as u64
+    }
+
+    /// The time `id` must be seen at its level before it is compiled (again).
+    fn threshold(&self, id: FuncId, compiled: bool) -> u64 {
+        let Some(f) = self.prog.func(id) else {
+            return u64::MAX;
+        };
+        if compiled {
+            return self.heat.o2_threshold(f);
+        }
+        let at = self.heat.threshold(f);
+        if self.heat.budget == 0 {
+            at
+        } else {
+            at.max(PAYBACK * self.cost(f))
+        }
+    }
+
+    /// `root` and the functions it calls that compile with it: a call from compiled code to
+    /// one that is not leaves the compiled code (`TIER_UNWIND`).
+    fn tree(&self, root: FuncId) -> Vec<FuncId> {
+        let mut ids = vec![root];
+        let mut size = self.prog.func(root).map_or(0, |f| f.code.len());
+        let mut i = 0;
+        while i < ids.len() && ids.len() < 16 {
+            let Some(f) = self.prog.func(ids[i]) else {
+                break;
+            };
+            i += 1;
+            for inst in &f.code {
+                let (yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. }) =
+                    inst
+                else {
+                    continue;
+                };
+                let Some(g) = self.prog.func(*func) else {
+                    continue;
+                };
+                if !ids.contains(func)
+                    && !self.done[func.0 as usize][0]
+                    && g.kind != FuncKind::Elab
+                    && g.code.len() <= CALLEE_MAX
+                    && size + g.code.len() <= TREE_MAX
+                {
+                    size += g.code.len();
+                    ids.push(*func);
+                }
+            }
+        }
+        ids
+    }
+
+    /// The function to compile next and what goes with it, if the budget has room for it.
+    fn pick(&mut self, cands: &mut Vec<FuncId>) -> Option<Vec<FuncId>> {
+        // The hottest relative to its cost first.
+        let best = (0..cands.len()).max_by_key(|&i| {
+            let id = cands[i];
+            let f = self.prog.func(id);
+            self.time[id.0 as usize][0] * 1000 / f.map_or(1, |f| self.cost(f).max(1))
+        })?;
+        let id = cands[best];
+        let ids = self.tree(id);
+        let cost: u64 = ids
+            .iter()
+            .filter_map(|&i| self.prog.func(i))
+            .map(|f| self.cost(f))
+            .sum();
+        // At most `budget` percent of the time the sampler saw interpreted code goes to
+        // compiling, twice that for compute (`compute`).
+        let budget = u64::from(self.heat.budget)
+            * if self.prog.func(id).is_some_and(|f| compute(&self.prog, f)) {
+                2
+            } else {
+                1
+            };
+        if self.heat.budget != 0 && (self.spent + cost) * 100 > self.total * budget {
+            return None;
+        }
+        cands.swap_remove(best);
+        Some(ids)
+    }
+
+    /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled.
+    fn compile(&mut self, id: FuncId, o2: bool, sampled: bool) -> bool {
+        // Each level once; elaboration code never runs again.
+        let first = self
+            .done
+            .get_mut(id.0 as usize)
+            .is_some_and(|d| !std::mem::replace(&mut d[usize::from(o2)], true));
+        let Some(f) = self
+            .prog
+            .func(id)
+            .filter(|f| first && f.kind != FuncKind::Elab)
+        else {
+            return false;
+        };
+        let level = if o2 { OptLevel::O2 } else { self.opt };
+        let j = if o2 { &mut self.jit2 } else { &mut self.jit };
+        let t0 = std::time::Instant::now();
+        let short = (sampled && !o2).then(|| too_short(&self.prog, f)).flatten();
+        let short_only = short.is_some() && too_big(f, self.max_size).is_none();
+        let r = match (too_big(f, self.max_size).or(short), j) {
+            (Some(why), _) => Err(why),
+            (None, Some(j)) => compile_one(j, &self.prog, id, f, level),
+            (None, j @ None) => match new_jit(level) {
+                Ok(n) => compile_one(j.insert(n), &self.prog, id, f, level),
+                Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
+            },
+        };
+        match r {
+            Ok(entry) => {
+                let took = t0.elapsed();
+                self.spent += u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
+                if level == OptLevel::O2 {
+                    let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
+                    self.us_per_instr = (self.us_per_instr + per) / 2.0;
+                }
+                self.table[id.0 as usize].set(entry);
+                self.native.set(id);
+                (self.note)(id, level, Ok(took));
+                true
+            }
+            Err(why) => {
+                // A short function stays interpreted as long as nothing compiled calls it;
+                // it compiles with a caller (`tree`).
+                if short_only {
+                    self.done[id.0 as usize][0] = false;
+                }
+                (self.note)(id, level, Err(why));
+                false
+            }
+        }
+    }
+}
+
 impl AutoTier {
     /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
     /// compiling the functions `heat` finds hot at `opt`, and those that stay hot compiled
@@ -232,7 +437,7 @@ impl AutoTier {
         opt: OptLevel,
         max_size: usize,
         heat: Heat,
-        mut note: Note,
+        note: Note,
     ) -> Result<Arc<AutoTier>, Error> {
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
@@ -246,50 +451,55 @@ impl AutoTier {
         } else {
             heat.period.into()
         });
+        let mut w = Worker {
+            time: vec![[0; 2]; prog.funcs.len()],
+            done: vec![[false; 2]; prog.funcs.len()],
+            prog,
+            table,
+            native,
+            heat,
+            opt,
+            max_size,
+            jit: None,
+            jit2: None,
+            total: 0,
+            spent: 0,
+            us_per_instr: US_PER_INSTR,
+            note,
+        };
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
             .spawn(move || {
-                // Made with the first function compiled at their level: a run that never gets
-                // hot pays nothing.
-                let (mut jit, mut jit2): (Option<Jit>, Option<Jit>) = (None, None);
-                // Per function: compiled at the first level, at O2.
-                let mut done = vec![[false; 2]; prog.funcs.len()];
-                // Microseconds each function was seen interpreted, and running compiled.
-                let mut time = vec![[0u64; 2]; prog.funcs.len()];
                 let mut running = Vec::new();
-                // Functions to compile at the first level, in order, and whether the sampler
-                // found them (a short one then stays interpreted; one eager `Tier::hot` asks for
-                // is compiled); then those to compile again at O2.
-                let mut hot: std::collections::VecDeque<(FuncId, bool)> = Default::default();
+                let mut last = std::time::Instant::now();
+                // Functions `Tier::hot` asked for (eager), those the sampler found hot, those to
+                // compile again at O2.
+                let mut asked: std::collections::VecDeque<FuncId> = Default::default();
+                let mut cands: Vec<FuncId> = Vec::new();
                 let mut later: Vec<FuncId> = Vec::new();
-                // Functions found hot but left interpreted for being short, and the direct
-                // callers of each function (made when first needed).
-                let mut short_hot = vec![false; prog.funcs.len()];
-                let mut callers: Option<Vec<Vec<FuncId>>> = None;
                 let upgrade = opt != OptLevel::O2;
                 loop {
                     match rx.recv_timeout(period) {
-                        Ok(id) => hot.push_back((id, false)),
+                        Ok(id) => asked.push_back(id),
                         Err(RecvTimeoutError::Timeout) => {
+                            // The time since the last look, whatever the compile thread did.
+                            let now = std::time::Instant::now();
+                            let dt = u64::try_from((now - last).as_micros()).unwrap_or(u64::MAX);
+                            last = now;
                             running.clear();
                             sample(&mut running);
                             for &(id, compiled) in &running {
-                                let (Some(t), Some(f)) =
-                                    (time.get_mut(id.0 as usize), prog.func(id))
-                                else {
+                                let Some(t) = w.time.get_mut(id.0 as usize) else {
                                     continue;
                                 };
                                 let t = &mut t[usize::from(compiled)];
                                 let was = *t;
-                                *t += u64::from(heat.period);
-                                let at = if compiled {
-                                    heat.o2_threshold(f)
-                                } else {
-                                    heat.threshold(f)
-                                };
-                                if was < at && *t >= at {
+                                *t += dt;
+                                w.total += dt;
+                                let (now, at) = (*t, w.threshold(id, compiled));
+                                if was < at && now >= at {
                                     if !compiled {
-                                        hot.push_back((id, true));
+                                        cands.push(id);
                                     } else if upgrade {
                                         later.push(id);
                                     }
@@ -300,12 +510,13 @@ impl AutoTier {
                     }
                     loop {
                         while let Ok(id) = rx.try_recv() {
-                            hot.push_back((id, false));
+                            asked.push_back(id);
                         }
-                        let Some((id, again, sampled)) = hot
+                        let Some((ids, o2, sampled)) = asked
                             .pop_front()
-                            .map(|(id, sampled)| (id, false, sampled))
-                            .or_else(|| later.pop().map(|id| (id, true, false)))
+                            .map(|id| (vec![id], false, false))
+                            .or_else(|| later.pop().map(|id| (vec![id], true, false)))
+                            .or_else(|| w.pick(&mut cands).map(|ids| (ids, false, true)))
                         else {
                             break;
                         };
@@ -315,78 +526,15 @@ impl AutoTier {
                         if sh.halt.load(Ordering::SeqCst) {
                             break;
                         }
-                        // A process without a loop of its own (clocked RTL) at O2 at once: its
-                        // first-level code ran no faster than the interpreter, and it runs for
-                        // the whole simulation. One with loops (a testbench) gains at O0 already.
-                        let rtl = prog
-                            .func(id)
-                            .is_some_and(|f| f.kind == FuncKind::Process && !loops(&prog, f));
-                        let o2 = again || rtl && upgrade;
-                        // Each level once; elaboration code never runs again.
-                        let first = done.get_mut(id.0 as usize).is_some_and(|d| {
-                            let first = !std::mem::replace(&mut d[usize::from(again)], true);
-                            d[1] |= o2;
-                            first
-                        });
-                        let todo = prog.func(id).filter(|f| first && f.kind != FuncKind::Elab);
-                        if let Some(f) = todo {
-                            let level = if o2 { OptLevel::O2 } else { opt };
-                            let j = if o2 { &mut jit2 } else { &mut jit };
-                            let t0 = std::time::Instant::now();
-                            let short = (sampled && !again).then(|| too_short(&prog, f)).flatten();
-                            let big = too_big(f, max_size);
-                            let short_now = big.is_none() && short.is_some();
-                            let r = match (big.or(short), j) {
-                                (Some(why), _) => Err(why),
-                                (None, Some(j)) => compile_one(j, &prog, id, f, level),
-                                (None, j @ None) => match new_jit(level) {
-                                    Ok(n) => compile_one(j.insert(n), &prog, id, f, level),
-                                    Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
-                                },
-                            };
-                            match r {
-                                Ok(entry) => {
-                                    table[id.0 as usize].set(entry);
-                                    native.set(id);
-                                    note(id, level, Ok(t0.elapsed()));
-                                    // The hot short functions it calls: called from
-                                    // compiled code they cost no entry from the interpreter.
-                                    for g in callees(f) {
-                                        if short_hot.get(g.0 as usize).is_some_and(|s| *s)
-                                            && table
-                                                .get(g.0 as usize)
-                                                .is_some_and(|e| e.get().is_none())
-                                        {
-                                            later.push(g);
-                                        }
-                                    }
-                                    // Eager (tests): swap the O2 code in during the run too.
-                                    if heat.eager() && upgrade && !o2 {
-                                        later.push(id);
-                                    }
-                                }
-                                Err(why) => {
-                                    // A short function stays interpreted while no compiled
-                                    // function calls it (each call from compiled code would
-                                    // leave that code and enter it again).
-                                    let mut called = false;
-                                    if short_now {
-                                        short_hot[id.0 as usize] = true;
-                                        done[id.0 as usize][0] = false;
-                                        let callers =
-                                            callers.get_or_insert_with(|| callers_of(&prog));
-                                        called = callers[id.0 as usize].iter().any(|c| {
-                                            table
-                                                .get(c.0 as usize)
-                                                .is_some_and(|e| e.get().is_some())
-                                        });
-                                    }
-                                    if called {
-                                        later.push(id);
-                                    } else {
-                                        note(id, level, Err(why));
-                                    }
-                                }
+                        for (i, id) in ids.into_iter().enumerate() {
+                            let done = w.compile(id, o2, sampled && i == 0);
+                            // Its callees compile for its sake only.
+                            if !done && i == 0 {
+                                break;
+                            }
+                            // Eager (tests): swap the O2 code in during the run too.
+                            if done && heat.eager() && upgrade && !o2 {
+                                later.push(id);
                             }
                         }
                         sh.busy.store(false, Ordering::SeqCst);
@@ -396,7 +544,7 @@ impl AutoTier {
                     }
                 }
                 *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
-                    jit.into_iter().chain(jit2).collect();
+                    w.jit.into_iter().chain(w.jit2).collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;

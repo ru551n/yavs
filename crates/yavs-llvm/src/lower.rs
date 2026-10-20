@@ -34,6 +34,11 @@ const STEP: &str = "yavs_rt_step";
 const HOST: &str = "yavs_rt_host";
 const SIGNAL: &str = "yavs_rt_signal";
 const LCOPY: &str = "yavs_rt_lcopy";
+const LAYOUT: &str = "yavs_rt_layout";
+const FAST: &str = "yavs_rt_fast";
+const FAST_ALLOC: u32 = 0;
+const FAST_DOPE_LEN: u32 = 1;
+const FAST_SUBTYPE: u32 = 2;
 
 /// The most plane blocks an inline `LCopy` reads or writes (`yavs_rt_lcopy`'s stack copy).
 const LCOPY_BLOCKS: u64 = 8;
@@ -100,8 +105,6 @@ const MEM_TEMP_BASE: u64 = std::mem::offset_of!(Mem, fr.temp_base) as u64;
 const MEM_UP: u64 = std::mem::offset_of!(Mem, fr.up) as u64;
 const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
-const MEM_INST: u64 = std::mem::offset_of!(Mem, fr.inst) as u64;
-const MEM_INST_LEN: u64 = std::mem::offset_of!(Mem, fr.inst_len) as u64;
 
 impl Mem {
     fn of(fr: TierFrame) -> Mem {
@@ -353,6 +356,149 @@ extern "C" fn yavs_rt_host(
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// `Inst::LayoutOf` of an array whose element layout is fixed (`StaticLayout::Array`): reads
+/// the `dims` dimensions of the descriptor at `desc`, builds the four layout words in temporary
+/// memory and puts its address in register `dst`; 1 when done, 0 where `Ty::layout` or the
+/// temporary area would fail (the interpreter then executes the instruction, with its error).
+extern "C" fn yavs_rt_layout(
+    env: *mut c_void,
+    regs: *mut u64,
+    mem: *mut Mem,
+    desc: u64,
+    dst: u32,
+    dims: u32,
+    stride: u64,
+    align: u64,
+    el_count: u64,
+    logic: u32,
+) -> u32 {
+    let p = yavs_rt_host(env, mem, desc, 0, u64::from(dims) * 24, 0);
+    if p.is_null() {
+        return 0;
+    }
+    let word = |k: usize| -> i64 {
+        // SAFETY: `yavs_rt_host` checked `dims * 24` readable bytes at `p`.
+        unsafe { std::ptr::read_unaligned(p.add(k * 8).cast::<i64>()) }
+    };
+    let mut count: u64 = 1;
+    for k in 0..dims as usize {
+        let (l, r, dir) = (word(k * 3), word(k * 3 + 1), word(k * 3 + 2));
+        if dir as u64 > 1 {
+            return 0;
+        }
+        let (lo, hi) = if dir == 1 { (r, l) } else { (l, r) };
+        let n = hi.wrapping_sub(lo).wrapping_add(1) as u64;
+        let len = if hi < lo {
+            0
+        } else if n == 0 {
+            return 0;
+        } else {
+            n
+        };
+        let Some(c) = count.checked_mul(len) else {
+            return 0;
+        };
+        count = c;
+    }
+    let words = if logic != 0 {
+        let Some(n) = count.checked_mul(el_count) else {
+            return 0;
+        };
+        [n.div_ceil(64) * 32, 8, 0, n]
+    } else {
+        let Some(size) = stride.checked_mul(count) else {
+            return 0;
+        };
+        [size, align, stride, count]
+    };
+    // SAFETY: as in `yavs_rt_step`; the bytes written lie within the temporary area's capacity.
+    let m = unsafe { &mut *mem };
+    let len = m.fr.temp_len;
+    let off = (len + 7) & !7;
+    let end = off + 32;
+    if end > 0xffff_ffff || end > m.fr.temp_cap {
+        return 0;
+    }
+    // SAFETY: `temp` has `temp_cap >= end` bytes; `regs` has the function's registers
+    // (`bad_reg` checked `dst`).
+    unsafe {
+        std::ptr::write_bytes(m.fr.temp.add(len as usize), 0, (end - len) as usize);
+        for (k, w) in words.iter().enumerate() {
+            std::ptr::write_unaligned(m.fr.temp.add(off as usize + k * 8).cast::<u64>(), *w);
+        }
+        *regs.add(dst as usize) = u64::from(space::TEMP) << 61 | off;
+    }
+    m.fr.temp_len = end;
+    1
+}
+
+/// The length of dimension `k` of the descriptor at `dope` as `yavs_ir::dim_len`, `None`
+/// where that is not defined or the memory is the interpreter's.
+fn dim_at(env: *mut c_void, mem: *mut Mem, dope: u64, k: u64) -> Option<u64> {
+    let p = yavs_rt_host(env, mem, dope, k.checked_mul(24)?, 24, 0);
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: `yavs_rt_host` checked 24 readable bytes at `p`.
+    let w = |i: usize| unsafe { std::ptr::read_unaligned(p.add(i * 8).cast::<i64>()) };
+    yavs_ir::dim_len(w(0), w(1), w(2) == 1)
+}
+
+/// Instructions whose inline form was large and no faster than this call: `FAST_ALLOC`
+/// (`dst` = `Alloc`'s result register, `a` the size), `FAST_DOPE_LEN` (`dope` `a`, dimension
+/// `b`, result register `dst`), `FAST_SUBTYPE` (`dst` dimensions of `a` against `b`). 1 when
+/// done, 0 where the interpreter must execute the instruction (its error, its memory).
+extern "C" fn yavs_rt_fast(
+    env: *mut c_void,
+    regs: *mut u64,
+    mem: *mut Mem,
+    op: u32,
+    dst: u32,
+    a: u64,
+    b: u64,
+) -> u32 {
+    match op {
+        FAST_ALLOC => {
+            // SAFETY: as in `yavs_rt_step`.
+            let m = unsafe { &mut *mem };
+            let len = m.fr.temp_len;
+            let off = (len + 7) & !7;
+            let Some(end) = off.checked_add(a) else {
+                return 0;
+            };
+            if end > 0xffff_ffff || end > m.fr.temp_cap {
+                return 0;
+            }
+            // SAFETY: `temp` has `temp_cap >= end` bytes; `regs` holds register `dst`.
+            unsafe {
+                std::ptr::write_bytes(m.fr.temp.add(len as usize), 0, (end - len) as usize);
+                *regs.add(dst as usize) = u64::from(space::TEMP) << 61 | off;
+            }
+            m.fr.temp_len = end;
+            1
+        }
+        FAST_DOPE_LEN => match dim_at(env, mem, a, b) {
+            // Lengths above i64::MAX are the interpreter's error.
+            Some(n) if n <= i64::MAX as u64 => {
+                // SAFETY: `regs` holds register `dst`.
+                unsafe { *regs.add(dst as usize) = n };
+                1
+            }
+            _ => 0,
+        },
+        FAST_SUBTYPE => {
+            for k in 0..u64::from(dst) {
+                match (dim_at(env, mem, a, k), dim_at(env, mem, b, k)) {
+                    (Some(x), Some(y)) if x == y => {}
+                    _ => return 0,
+                }
+            }
+            1
+        }
+        _ => 0,
+    }
+}
+
 /// Finds the object `addr` points into for `Mem::find`: 1 when found, 0 when the access is
 /// the interpreter's (stepped).
 fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32) -> u32 {
@@ -452,6 +598,8 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (HOST, yavs_rt_host as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (LCOPY, yavs_rt_lcopy as *const () as usize),
+            (LAYOUT, yavs_rt_layout as *const () as usize),
+            (FAST, yavs_rt_fast as *const () as usize),
         ],
     )
 }
@@ -592,6 +740,7 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
     match *i {
         Inst::AddrOf { dst, .. } => vec![dst],
         Inst::Alloc { dst, size } => vec![dst, size],
+        Inst::LayoutOf { dst, desc, .. } => vec![dst, desc],
         Inst::Load { dst, addr, w } => [vec![addr], pair(dst, w)].concat(),
         Inst::Store { addr, src, w } => [vec![addr], pair(src, w)].concat(),
         Inst::Copy { dst, src, bytes } => vec![dst, src, bytes],
@@ -669,7 +818,7 @@ fn native_kind(
 
 /// Instructions the compiled code executes itself on its fast path (keep in step with
 /// `Gen::func`).
-fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
+pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     match i {
         Inst::CallNative { native, args, dst } => matches!(
             native_kind(prog, f, *native, *args, *dst),
@@ -929,6 +1078,12 @@ struct Gen {
     /// `yavs_rt_lcopy(dst, nd, d0, src, ns, s0, n)`.
     lcopy_ty: LLVMTypeRef,
     lcopy: LLVMValueRef,
+    /// `yavs_rt_layout(env, regs, mem, desc, dst, dims, stride, align, el_count, logic) -> u32`.
+    layout_ty: LLVMTypeRef,
+    layout: LLVMValueRef,
+    /// `yavs_rt_fast(env, regs, mem, op, dst, a, b) -> u32`.
+    fast_ty: LLVMTypeRef,
+    fast: LLVMValueRef,
     sadd: (LLVMTypeRef, LLVMValueRef),
     ssub: (LLVMTypeRef, LLVMValueRef),
     smul: (LLVMTypeRef, LLVMValueRef),
@@ -983,6 +1138,12 @@ impl Gen {
             let lcopy_name = CString::new(LCOPY).expect("no NUL");
             let mut lparams = [ptr, i64, i64, ptr, i64, i64, i64];
             let lcopy_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), lparams.as_mut_ptr(), 7, 0);
+            let fast_name = CString::new(FAST).expect("no NUL");
+            let mut fparams = [ptr, ptr, ptr, i32, i32, i64, i64];
+            let fast_ty = LLVMFunctionType(i32, fparams.as_mut_ptr(), 7, 0);
+            let layout_name = CString::new(LAYOUT).expect("no NUL");
+            let mut yparams = [ptr, ptr, ptr, i64, i32, i32, i64, i64, i64, i32];
+            let layout_ty = LLVMFunctionType(i32, yparams.as_mut_ptr(), 10, 0);
             Gen {
                 ctx,
                 module,
@@ -1000,6 +1161,10 @@ impl Gen {
                 signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 lcopy_ty,
                 lcopy: LLVMAddFunction(module, lcopy_name.as_ptr(), lcopy_ty),
+                layout_ty,
+                layout: LLVMAddFunction(module, layout_name.as_ptr(), layout_ty),
+                fast_ty,
+                fast: LLVMAddFunction(module, fast_name.as_ptr(), fast_ty),
                 sadd: intrinsic(c"llvm.sadd.with.overflow"),
                 ssub: intrinsic(c"llvm.ssub.with.overflow"),
                 smul: intrinsic(c"llvm.smul.with.overflow"),
@@ -1479,11 +1644,37 @@ impl Gen {
                     }
                     Inst::Alloc { dst, size } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
-                        let (a, _) = self.temp_alloc(&c, self.ld(&c, size), slow);
-                        self.st(&c, dst, a);
+                        self.fast_op(&c, FAST_ALLOC, dst.0, self.ld(&c, size), self.c64(0), slow);
                         self.join(join);
                     }
                     Inst::LayoutOf { dst, ty, desc } => match static_layout(prog, ty) {
+                        Some(StaticLayout::Array { dims, elem, logic }) => {
+                            // `yavs_rt_layout` does what `Ty::layout` would; 0 is the interpreter's.
+                            let (slow, join) = self.slow_path(&c, pc, &inst);
+                            let stride = elem.size.next_multiple_of(elem.align.max(1));
+                            let mut args = [
+                                c.env,
+                                c.regs,
+                                c.mem,
+                                self.ld(&c, desc),
+                                self.c32(dst.0),
+                                self.c32(u32::from(dims)),
+                                self.c64(stride as i64),
+                                self.c64(elem.align as i64),
+                                self.c64(elem.count as i64),
+                                self.c32(u32::from(logic)),
+                            ];
+                            let ok = LLVMBuildCall2(
+                                self.b,
+                                self.layout_ty,
+                                self.layout,
+                                args.as_mut_ptr(),
+                                10,
+                                c"".as_ptr(),
+                            );
+                            self.guard(&c, self.icmp(IP::LLVMIntNE, ok, self.c32(0)), slow);
+                            self.join(join);
+                        }
                         Some(sl) => {
                             let (slow, join) = self.slow_path(&c, pc, &inst);
                             let words = self.layout_words(&c, &sl, desc, fk(desc), slow);
@@ -1567,17 +1758,8 @@ impl Gen {
                     }
                     Inst::DopeLen { dst, dope, dim } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
-                        let d = self.ld(&c, dope);
-                        let (n, ok) = self.dim_len(&c, d, fk(dope), u64::from(dim) * 24, slow);
-                        // Lengths above i64::MAX are the interpreter's error.
-                        let ok = LLVMBuildAnd(
-                            self.b,
-                            ok,
-                            self.icmp(IP::LLVMIntSGE, n, self.c64(0)),
-                            c"".as_ptr(),
-                        );
-                        self.guard(&c, ok, slow);
-                        self.st(&c, dst, n);
+                        let (d, k) = (self.ld(&c, dope), self.c64(i64::from(dim)));
+                        self.fast_op(&c, FAST_DOPE_LEN, dst.0, d, k, slow);
                         self.join(join);
                     }
                     Inst::SubtypeCheck {
@@ -1585,13 +1767,7 @@ impl Gen {
                     } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
                         let (d, w) = (self.ld(&c, dope), self.ld(&c, want));
-                        for k in 0..u64::from(dims) {
-                            let (a, oka) = self.dim_len(&c, d, fk(dope), k * 24, slow);
-                            let (b, okb) = self.dim_len(&c, w, fk(want), k * 24, slow);
-                            let eq = self.icmp(IP::LLVMIntEQ, a, b);
-                            let ok = LLVMBuildAnd(self.b, oka, okb, c"".as_ptr());
-                            self.guard(&c, LLVMBuildAnd(self.b, ok, eq, c"".as_ptr()), slow);
-                        }
+                        self.fast_op(&c, FAST_SUBTYPE, u32::from(dims), d, w, slow);
                         self.join(join);
                     }
                     Inst::Pos {
@@ -1875,6 +2051,32 @@ impl Gen {
         unsafe { self.call_go(c, self.signal_ty, self.signal, &mut args) }
     }
 
+    /// `yavs_rt_fast` operation `op` on `a` and `b` (result register or count `dst`), taking
+    /// `slow` when it returns 0: the interpreter then executes the instruction.
+    unsafe fn fast_op(
+        &self,
+        c: &Cur,
+        op: u32,
+        dst: u32,
+        a: LLVMValueRef,
+        b: LLVMValueRef,
+        slow: LLVMBasicBlockRef,
+    ) {
+        // SAFETY: the arguments match `fast_ty`; well-formed blocks of c.f.
+        unsafe {
+            let mut args = [c.env, c.regs, c.mem, self.c32(op), self.c32(dst), a, b];
+            let ok = LLVMBuildCall2(
+                self.b,
+                self.fast_ty,
+                self.fast,
+                args.as_mut_ptr(),
+                7,
+                c"".as_ptr(),
+            );
+            self.guard(c, self.icmp(IP::LLVMIntNE, ok, self.c32(0)), slow);
+        }
+    }
+
     /// Call a callback that returns `GO` or what the compiled function returns at once.
     unsafe fn call_go(&self, c: &Cur, ty: LLVMTypeRef, f: LLVMValueRef, args: &mut [LLVMValueRef]) {
         // SAFETY: `args` match `ty`; well-formed blocks of c.f.
@@ -2049,9 +2251,9 @@ impl Gen {
     }
 
     /// The host pointer to `n` bytes at address `a` plus `extra`, taking `slow` unless they
-    /// lie in the frame's slots, the temporary area, (reading) the instance data, or the
-    /// object `yavs_rt_obj` finds: what the interpreter's `rd`/`wr` would find there
-    /// without an error. `at` is what the generator knows about `a`: an offset in the
+    /// lie in the frame's slots (inline when the generator knows the address), a constant it
+    /// has a copy of, or memory `yavs_rt_host` finds: what the interpreter's `rd`/`wr` would
+    /// find there without an error. `at` is what the generator knows about `a`: an offset in the
     /// frame's slots, or in a constant, whose bytes compiled code then reads from a copy of
     /// its own (constants never change).
     #[allow(clippy::too_many_arguments)]
@@ -2103,65 +2305,12 @@ impl Gen {
                 self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
                 return self.gep(self.mem_ld(c, MEM_SLOTS, self.ptr), o);
             }
-            // `Mem::find` for the frame's slots, the temporary area and (reading) the
-            // instance data inline; other memory through `yavs_rt_host`.
-            let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
-            let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
-            let off = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-            let is_f = self.icmp(IP::LLVMIntEQ, hi, self.mem_ld(c, MEM_FRAME, self.i64));
-            let temp_hi = self.c64(i64::from(space::TEMP) << 29);
-            let is_t = self.icmp(IP::LLVMIntEQ, hi, temp_hi);
-            let sel = |a, b, x| LLVMBuildSelect(self.b, a, b, x, c"".as_ptr());
-            let (base, len, mut known) = if write {
-                (
-                    sel(
-                        is_f,
-                        self.mem_ld(c, MEM_SLOTS, self.ptr),
-                        self.mem_ld(c, MEM_TEMP, self.ptr),
-                    ),
-                    sel(
-                        is_f,
-                        self.mem_ld(c, MEM_SLOTS_LEN, self.i64),
-                        self.mem_ld(c, MEM_TEMP_LEN, self.i64),
-                    ),
-                    self.or(is_f, is_t),
-                )
-            } else {
-                let inst_hi = self.c64(i64::from(space::INST) << 29);
-                let is_i = self.icmp(IP::LLVMIntEQ, hi, inst_hi);
-                let b = sel(
-                    is_t,
-                    self.mem_ld(c, MEM_TEMP, self.ptr),
-                    self.mem_ld(c, MEM_INST, self.ptr),
-                );
-                let l = sel(
-                    is_t,
-                    self.mem_ld(c, MEM_TEMP_LEN, self.i64),
-                    self.mem_ld(c, MEM_INST_LEN, self.i64),
-                );
-                (
-                    sel(is_f, self.mem_ld(c, MEM_SLOTS, self.ptr), b),
-                    sel(is_f, self.mem_ld(c, MEM_SLOTS_LEN, self.i64), l),
-                    self.or(self.or(is_f, is_t), is_i),
-                )
-            };
-            let fits = self.icmp(IP::LLVMIntULE, n, len);
-            let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
-            let inside = self.icmp(IP::LLVMIntULE, off, rest);
-            known = LLVMBuildAnd(
-                self.b,
-                known,
-                LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
-                c"".as_ptr(),
-            );
-            let (fast, call, done) = (self.block(c), self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, known, fast, call);
-            LLVMPositionBuilderAtEnd(self.b, fast);
-            let p1 = self.gep(base, off);
-            LLVMBuildBr(self.b, done);
-            LLVMPositionBuilderAtEnd(self.b, call);
+            // Other memory through `yavs_rt_host` (`Mem::find`, then the objects the interpreter
+            // is asked for): a call costs about what the interpreter's own address lookup
+            // does, and generating the lookup inline made the code two thirds larger and
+            // twice as slow to compile for no faster run.
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
-            let p2 = LLVMBuildCall2(
+            let p = LLVMBuildCall2(
                 self.b,
                 self.host_ty,
                 self.host,
@@ -2169,12 +2318,6 @@ impl Gen {
                 6,
                 c"".as_ptr(),
             );
-            LLVMBuildBr(self.b, done);
-            LLVMPositionBuilderAtEnd(self.b, done);
-            let p = LLVMBuildPhi(self.b, self.ptr, c"".as_ptr());
-            let mut vals = [p1, p2];
-            let mut from = [fast, call];
-            LLVMAddIncoming(p, vals.as_mut_ptr(), from.as_mut_ptr(), 2);
             self.guard(c, LLVMBuildIsNotNull(self.b, p, c"".as_ptr()), slow);
             p
         }
@@ -2330,24 +2473,6 @@ impl Gen {
                 self.load(self.i64, self.gep(p, self.c64(8))),
                 self.load(self.i64, self.gep(p, self.c64(16))),
             )
-        }
-    }
-
-    /// The length of the descriptor dimension at `dope + off` as `yavs_ir::dim_len`, and
-    /// whether it fits a u64 (`dim_len` is not `None`).
-    unsafe fn dim_len(
-        &self,
-        c: &Cur,
-        dope: LLVMValueRef,
-        at: Option<Known>,
-        off: u64,
-        slow: LLVMBasicBlockRef,
-    ) -> (LLVMValueRef, LLVMValueRef) {
-        // SAFETY: integer arithmetic on loaded words.
-        unsafe {
-            let p = self.host(c, dope, at, self.c64(off as i64), self.c64(24), false, slow);
-            let (l, r, dir) = self.dope_words(p);
-            self.len_of(l, r, dir)
         }
     }
 

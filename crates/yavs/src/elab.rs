@@ -572,6 +572,7 @@ fn use_tier(
                         base,
                         per_instr,
                         period,
+                        budget: 0,
                     }
                 });
             let prog = rt.prog.clone();
@@ -594,7 +595,12 @@ fn use_tier(
             });
             let t = yavs_llvm::AutoTier::start(
                 rt,
-                yavs_llvm::OptLevel::O0,
+                // The hidden `--tier-heat` is for tests and tuning: O0 first, O2 for the hot ones.
+                if a.tier_heat.is_some() {
+                    yavs_llvm::OptLevel::O0
+                } else {
+                    yavs_llvm::OptLevel::O2
+                },
                 a.tier_max_size,
                 heat,
                 note,

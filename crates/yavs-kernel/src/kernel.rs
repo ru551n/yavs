@@ -1154,7 +1154,16 @@ impl SimControl {
                             }
                         })
             };
-            waiters.take_woken(&runs, live, hold, &mut woken);
+            // All waiters share one edge trigger that does not hold: none wakes.
+            let held = self.cfg.edge_triggers
+                && waiters
+                    .uniform_trigger()
+                    .is_some_and(|t| !fires(signals, t, self.cycle));
+            if held {
+                woken.clear();
+            } else {
+                waiters.take_woken(&runs, live, hold, &mut woken);
+            }
             let sig = &mut self.signals[s as usize];
             sig.waiters = waiters;
             runs.clear();
@@ -1694,11 +1703,13 @@ impl SimControl {
             }
             for (s, range) in st.sens.drain(..) {
                 let procs = &self.procs;
-                self.signals[s.0 as usize]
-                    .waiters
-                    .add(p, range, generation, |w| {
-                        procs[w.proc as usize].generation == w.generation
-                    });
+                self.signals[s.0 as usize].waiters.add(
+                    p,
+                    range,
+                    generation,
+                    procs[p as usize].trigger,
+                    |w| procs[w.proc as usize].generation == w.generation,
+                );
             }
             let result = std::mem::replace(&mut slot.result, Ok(()));
             if bad {

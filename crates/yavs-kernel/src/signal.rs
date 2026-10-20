@@ -165,6 +165,17 @@ pub(crate) struct Waiters {
     /// Elements of the signal, and log2 of the chunk size.
     len: u32,
     shift: u32,
+    /// The edge trigger every waiter ever added shares (see `uniform_trigger`).
+    trig: Trig,
+}
+
+/// What the waiters of a signal have in common: no waiter, all the same edge trigger, or not.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Trig {
+    #[default]
+    Empty,
+    Same(crate::EdgeTrigger),
+    Mixed,
 }
 
 impl Waiters {
@@ -175,6 +186,17 @@ impl Waiters {
             next: 0,
             len,
             shift,
+            trig: Trig::Empty,
+        }
+    }
+
+    /// The edge trigger of every waiter, when the signal has one list of waiters and they all
+    /// have the same: when it does not hold, no event of this cycle wakes any of them, and the
+    /// list need not be scanned. Stale waiters have the trigger of their process, too.
+    pub fn uniform_trigger(&self) -> Option<crate::EdgeTrigger> {
+        match self.trig {
+            Trig::Same(t) if self.lists.len() == 1 => Some(t),
+            _ => None,
         }
     }
 
@@ -205,11 +227,17 @@ impl Waiters {
         proc: u32,
         range: Range,
         generation: u64,
+        trigger: Option<crate::EdgeTrigger>,
         live: impl Fn(&Waiter) -> bool,
     ) {
         if self.lists.is_empty() {
             self.init();
         }
+        self.trig = match (self.trig, trigger) {
+            (Trig::Empty, Some(t)) => Trig::Same(t),
+            (Trig::Same(u), Some(t)) if u == t => Trig::Same(u),
+            _ => Trig::Mixed,
+        };
         let seq = self.next;
         self.next += 1;
         for i in self.lists_of(range) {
@@ -280,6 +308,9 @@ impl Waiters {
                 true
             });
             *n = l.len();
+        }
+        if self.lists.len() == 1 && self.lists[0].0.is_empty() {
+            self.trig = Trig::Empty;
         }
         if scanned > 1 {
             out.sort_unstable();
@@ -1041,11 +1072,11 @@ mod tests {
         let all = |_: &Waiter| true;
         let none = |_: &Waiter| false;
         let mut w = Waiters::new(300);
-        w.add(1, Range::new(200, 1), 0, all); // chunk 3
-        w.add(2, Range::new(0, 300), 0, all); // five chunks: the wide list
-        w.add(3, Range::new(60, 10), 0, all); // chunks 0 and 1
-        w.add(4, Range::new(100, 1), 0, all); // chunk 1
-        w.add(5, Range::new(0, 0), 0, all); // null: never woken
+        w.add(1, Range::new(200, 1), 0, None, all); // chunk 3
+        w.add(2, Range::new(0, 300), 0, None, all); // five chunks: the wide list
+        w.add(3, Range::new(60, 10), 0, None, all); // chunks 0 and 1
+        w.add(4, Range::new(100, 1), 0, None, all); // chunk 1
+        w.add(5, Range::new(0, 0), 0, None, all); // null: never woken
         let mut out = Vec::new();
         let procs = |o: &[(u64, u32)]| o.iter().map(|x| x.1).collect::<Vec<_>>();
         w.take_woken(
@@ -1059,7 +1090,7 @@ mod tests {
         let live = |w: &Waiter| w.proc > 4;
         w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert!(out.is_empty());
-        w.add(6, Range::new(299, 1), 0, all);
+        w.add(6, Range::new(299, 1), 0, None, all);
         w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert_eq!(procs(&out), [6]);
     }
@@ -1069,10 +1100,10 @@ mod tests {
         let all = |_: &Waiter| true;
         let mut w = Waiters::new(8);
         assert!(w.lists.is_empty());
-        w.add(1, Range::new(6, 1), 0, all);
+        w.add(1, Range::new(6, 1), 0, None, all);
         assert_eq!(w.lists.len(), 1);
-        w.add(2, Range::new(0, 8), 0, all);
-        w.add(3, Range::new(5, 0), 0, all); // null: never woken
+        w.add(2, Range::new(0, 8), 0, None, all);
+        w.add(3, Range::new(5, 0), 0, None, all); // null: never woken
         let mut out = Vec::new();
         w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);

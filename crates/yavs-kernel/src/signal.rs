@@ -145,8 +145,21 @@ pub(crate) struct Waiter {
     pub generation: u64,
     /// Resident waiter (`ProcMeta::perm`): its epoch, 0 for a plain one.
     pub perm: u64,
+    /// The edge trigger of its process (`ProcMeta::tid`).
+    pub tid: u32,
     /// Registration number on its signal: the order in which waiters wake.
     seq: u64,
+}
+
+/// What a waiter takes from its process when it is registered.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Reg {
+    pub generation: u64,
+    /// Epoch of a resident waiter, 0 for a plain one (`ProcMeta::perm`).
+    pub perm: u64,
+    pub trigger: Option<crate::EdgeTrigger>,
+    /// `ProcMeta::tid`.
+    pub tid: u32,
 }
 
 /// The most buckets a waiter is copied into before it goes to the wide list instead.
@@ -224,15 +237,13 @@ impl Waiters {
         a as usize..b as usize + 1
     }
 
-    pub fn add(
-        &mut self,
-        proc: u32,
-        range: Range,
-        generation: u64,
-        perm: u64,
-        trigger: Option<crate::EdgeTrigger>,
-        live: impl Fn(&Waiter) -> bool,
-    ) {
+    pub fn add(&mut self, proc: u32, range: Range, reg: Reg, live: impl Fn(&Waiter) -> bool) {
+        let Reg {
+            generation,
+            perm,
+            trigger,
+            tid,
+        } = reg;
         if self.lists.is_empty() {
             self.init();
         }
@@ -254,6 +265,7 @@ impl Waiters {
                 range,
                 generation,
                 perm,
+                tid,
                 seq,
             });
         }
@@ -294,8 +306,11 @@ impl Waiters {
                 continue;
             }
             last = i;
-            scanned += 1;
             let (l, n) = &mut self.lists[i];
+            if l.is_empty() {
+                continue;
+            }
+            scanned += 1;
             // The cheap range test first: a stale waiter off the events stays until `add`
             // compacts the list, and the process table is not touched for it.
             l.retain(|w| {
@@ -316,7 +331,7 @@ impl Waiters {
         if self.lists.len() == 1 && self.lists[0].0.is_empty() {
             self.trig = Trig::Empty;
         }
-        if scanned > 1 {
+        if scanned > 1 && out.len() > 1 {
             out.sort_unstable();
             out.dedup_by_key(|w| w.0);
         }
@@ -1084,11 +1099,11 @@ mod tests {
         let all = |_: &Waiter| true;
         let none = |_: &Waiter| false;
         let mut w = Waiters::new(300);
-        w.add(1, Range::new(200, 1), 0, 0, None, all); // chunk 3
-        w.add(2, Range::new(0, 300), 0, 0, None, all); // five chunks: the wide list
-        w.add(3, Range::new(60, 10), 0, 0, None, all); // chunks 0 and 1
-        w.add(4, Range::new(100, 1), 0, 0, None, all); // chunk 1
-        w.add(5, Range::new(0, 0), 0, 0, None, all); // null: never woken
+        w.add(1, Range::new(200, 1), Reg::default(), all); // chunk 3
+        w.add(2, Range::new(0, 300), Reg::default(), all); // five chunks: the wide list
+        w.add(3, Range::new(60, 10), Reg::default(), all); // chunks 0 and 1
+        w.add(4, Range::new(100, 1), Reg::default(), all); // chunk 1
+        w.add(5, Range::new(0, 0), Reg::default(), all); // null: never woken
         let mut out = Vec::new();
         let procs = |o: &[(u64, u32)]| o.iter().map(|x| x.1).collect::<Vec<_>>();
         w.take_woken(
@@ -1102,7 +1117,7 @@ mod tests {
         let live = |w: &Waiter| w.proc > 4;
         w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert!(out.is_empty());
-        w.add(6, Range::new(299, 1), 0, 0, None, all);
+        w.add(6, Range::new(299, 1), Reg::default(), all);
         w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert_eq!(procs(&out), [6]);
     }
@@ -1111,8 +1126,16 @@ mod tests {
     fn resident_waiters_stay_after_waking() {
         let all = |_: &Waiter| true;
         let mut w = Waiters::new(8);
-        w.add(1, Range::new(0, 1), 0, 7, None, all); // resident
-        w.add(2, Range::new(0, 1), 0, 0, None, all);
+        w.add(
+            1,
+            Range::new(0, 1),
+            Reg {
+                perm: 7,
+                ..Reg::default()
+            },
+            all,
+        ); // resident
+        w.add(2, Range::new(0, 1), Reg::default(), all);
         let mut out = Vec::new();
         for want in [vec![1, 2], vec![1]] {
             w.take_woken(&[Range::new(0, 1)], all, |_| false, &mut out);
@@ -1133,10 +1156,10 @@ mod tests {
         let all = |_: &Waiter| true;
         let mut w = Waiters::new(8);
         assert!(w.lists.is_empty());
-        w.add(1, Range::new(6, 1), 0, 0, None, all);
+        w.add(1, Range::new(6, 1), Reg::default(), all);
         assert_eq!(w.lists.len(), 1);
-        w.add(2, Range::new(0, 8), 0, 0, None, all);
-        w.add(3, Range::new(5, 0), 0, 0, None, all); // null: never woken
+        w.add(2, Range::new(0, 8), Reg::default(), all);
+        w.add(3, Range::new(5, 0), Reg::default(), all); // null: never woken
         let mut out = Vec::new();
         w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);

@@ -574,6 +574,7 @@ impl Builder {
                 resumed: false,
                 trigger: p.trigger,
                 perm: 0,
+                tid: 0,
             });
         }
         SimControl::new(

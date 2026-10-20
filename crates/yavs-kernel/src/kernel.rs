@@ -14,7 +14,7 @@ use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
     check_ref, make_op,
 };
-use crate::signal::{DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Waiter};
+use crate::signal::{DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter};
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
@@ -333,6 +333,12 @@ pub trait Observer: Send {
     fn wants_value_changes(&self) -> bool {
         true
     }
+    /// Whether `phase` matters to this observer only in a cycle after which a serial process
+    /// ran (`ProcFlags::serial`, `Process::serial`): state only serial processes change, such
+    /// as the shared heap. The kernel skips its `phase` call otherwise (the default is no).
+    fn phase_after_serial(&self, _phase: Phase) -> bool {
+        false
+    }
     fn phase(&mut self, _hook: &mut Hook<'_>, _phase: Phase) {}
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
@@ -387,6 +393,8 @@ pub(crate) struct ProcMeta {
     /// twice in a row without a timeout, so its waiters stay in their lists across wake-ups
     /// instead of being removed and added again (`SimControl::run_batch`).
     pub perm: u64,
+    /// 1 + index in `SimControl::triggers` of `trigger` (0: none).
+    pub tid: u32,
 }
 
 /// Whether a waiter still stands for its process: a resident one while its process keeps
@@ -506,6 +514,10 @@ pub struct SimControl {
     observers: Vec<Box<dyn Observer>>,
     /// The phases some observer wants (bit `Phase as u32`), and whether one wants value changes.
     phase_mask: u16,
+    /// Per observer: the phases it wants, and those it wants only after a serial process ran.
+    obs_phases: Vec<(u16, u16)>,
+    /// A serial process ran since the last `NextCycle` (true before the first one).
+    serial_ran: bool,
     watch_changes: bool,
     wakes: Wakes,
     pool: Option<rayon::ThreadPool>,
@@ -521,6 +533,11 @@ pub struct SimControl {
     empty_delta: bool,
     /// Last epoch given to resident waiters (`ProcMeta::perm`).
     perm_epoch: u64,
+    /// Scratch lists of the cycle, kept to save their allocations.
+    woken_buf: Vec<(u64, u32)>,
+    indep_buf: Vec<(u32, u32)>,
+    /// The distinct edge triggers of the processes (`ProcMeta::tid`).
+    triggers: Vec<crate::EdgeTrigger>,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -580,9 +597,19 @@ impl SimControl {
         implicits: Vec<Implicit>,
         groups: Vec<Group>,
         slots: Vec<Mutex<Slot>>,
-        procs: Vec<ProcMeta>,
+        mut procs: Vec<ProcMeta>,
         names: Vec<String>,
     ) -> Result<SimControl, SimError> {
+        let mut triggers = Vec::new();
+        let mut ids = std::collections::HashMap::new();
+        for m in &mut procs {
+            if let Some(t) = m.trigger {
+                m.tid = *ids.entry(t).or_insert_with(|| {
+                    triggers.push(t);
+                    triggers.len() as u32
+                });
+            }
+        }
         let pool = match cfg.threads {
             0 => {
                 return Err(SimError::new(ErrorKind::Usage(
@@ -651,6 +678,8 @@ impl SimControl {
             failed: None,
             observers: Vec::new(),
             phase_mask: 0,
+            obs_phases: Vec::new(),
+            serial_ran: true,
             watch_changes: false,
             wakes: Wakes::default(),
             pool,
@@ -660,6 +689,9 @@ impl SimControl {
             callouts: Vec::new(),
             empty_delta: false,
             perm_epoch: 0,
+            woken_buf: Vec::new(),
+            indep_buf: Vec::new(),
+            triggers,
         };
         sim.settle().map_err(SimError::new)?;
         sim.live = true;
@@ -906,6 +938,20 @@ impl SimControl {
             .filter(|&&p| self.observers.iter().any(|o| o.wants_phase(p)))
             .fold(0, |m, &p| m | 1 << p as u32);
         self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
+        let bits = |o: &dyn Observer, f: &dyn Fn(&dyn Observer, Phase) -> bool| {
+            ALL_PHASES
+                .iter()
+                .filter(|&&p| f(o, p))
+                .fold(0, |m, &p| m | 1 << p as u32)
+        };
+        self.obs_phases = (self.observers.iter())
+            .map(|o| {
+                (
+                    bits(o.as_ref(), &|o, p| o.wants_phase(p)),
+                    bits(o.as_ref(), &|o, p| o.phase_after_serial(p)),
+                )
+            })
+            .collect();
     }
 
     pub fn interrupt(&self) -> Interrupt {
@@ -968,7 +1014,7 @@ impl SimControl {
                         }
                         return Ok(RunStatus::Paused);
                     }
-                    Some(_) => sim.cycle()?,
+                    Some(t) => sim.cycle(t)?,
                 }
             }
         })
@@ -982,7 +1028,7 @@ impl SimControl {
             }
             match sim.next_time() {
                 None => sim.end = Some(EndReason::Idle),
-                Some(_) => sim.cycle()?,
+                Some(t) => sim.cycle(t)?,
             }
             Ok(sim.poll_end()?.unwrap_or(RunStatus::Paused))
         })
@@ -1002,7 +1048,7 @@ impl SimControl {
                 if sim.next_time() != Some(sim.now) {
                     return Ok(RunStatus::Paused);
                 }
-                sim.cycle()?;
+                sim.cycle(sim.now)?;
             }
         })
     }
@@ -1109,18 +1155,17 @@ impl SimControl {
         }
     }
 
-    fn cycle(&mut self) -> Result<(), SimError> {
-        let Some(next) = self.next_time() else {
-            return Err(self.err(ErrorKind::Internal("cycle without pending activity".into())));
-        };
+    /// One cycle at `next`, the time `next_time` just returned.
+    fn cycle(&mut self, next: Time) -> Result<(), SimError> {
         if next > self.now {
             self.now = next;
             self.delta = 0;
             self.phase(Phase::NextTimeStep);
         } else {
             if self.delta >= self.cfg.max_deltas {
-                let processes = self
-                    .last_ran
+                let mut ran = self.last_ran.clone();
+                ran.sort_unstable();
+                let processes = ran
                     .iter()
                     .map(|&p| self.names[p as usize].clone())
                     .collect();
@@ -1151,8 +1196,8 @@ impl SimControl {
                 }
             }
         }
-        let mut woken = Vec::new();
-        let memo = std::cell::Cell::new(None);
+        let mut woken = std::mem::take(&mut self.woken_buf);
+        let memo = std::cell::Cell::new((0u32, false));
         for &s in &changed {
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64;
@@ -1161,29 +1206,32 @@ impl SimControl {
             let mut waiters = std::mem::take(&mut sig.waiters);
             let (procs, signals) = (&self.procs, &self.signals);
             let live = |w: &Waiter| alive(procs, w);
-            // The processes of one clock share a trigger: its answer is computed once.
+            // All waiters share one edge trigger: it holds for all or for none of them.
+            let uniform = if self.cfg.edge_triggers {
+                waiters
+                    .uniform_trigger()
+                    .map(|t| fires(signals, t, self.cycle))
+            } else {
+                None
+            };
+            // Otherwise the processes of one clock share a trigger: its answer is computed once.
             let hold = |w: &Waiter| {
                 self.cfg.edge_triggers
-                    && procs[w.proc as usize]
-                        .trigger
-                        .is_some_and(|t| match memo.get() {
-                            Some((m, held)) if m == t => held,
-                            _ => {
-                                let held = !fires(signals, t, self.cycle);
-                                memo.set(Some((t, held)));
-                                held
-                            }
-                        })
+                    && w.tid != 0
+                    && match memo.get() {
+                        (m, held) if m == w.tid => held,
+                        _ => {
+                            let t = self.triggers[w.tid as usize - 1];
+                            let held = !fires(signals, t, self.cycle);
+                            memo.set((w.tid, held));
+                            held
+                        }
+                    }
             };
-            // All waiters share one edge trigger that does not hold: none wakes.
-            let held = self.cfg.edge_triggers
-                && waiters
-                    .uniform_trigger()
-                    .is_some_and(|t| !fires(signals, t, self.cycle));
-            if held {
-                woken.clear();
-            } else {
-                waiters.take_woken(&runs, live, hold, &mut woken);
+            match uniform {
+                Some(false) => woken.clear(),
+                Some(true) => waiters.take_woken(&runs, live, |_| false, &mut woken),
+                None => waiters.take_woken(&runs, live, hold, &mut woken),
             }
             let sig = &mut self.signals[s as usize];
             sig.waiters = waiters;
@@ -1196,6 +1244,7 @@ impl SimControl {
 
         changed.clear();
         self.changed_sigs = changed;
+        self.woken_buf = woken;
 
         // e: run the resumed non-postponed processes.
         let ready = std::mem::take(&mut self.ready);
@@ -1244,7 +1293,7 @@ impl SimControl {
         }
         // Matured drivers of independent signals without forces or deposits, as
         // (signal, driver) in queue order.
-        let mut indep: Vec<(u32, u32)> = Vec::new();
+        let mut indep = std::mem::take(&mut self.indep_buf);
         // Everything due now, in (time, entry) order: the heap pops in order and holds nothing
         // before `now` (time only advances to its first entry), as the delta list.
         let mut entries = std::mem::take(&mut self.queue.next_delta);
@@ -1295,7 +1344,10 @@ impl SimControl {
         }
         entries.clear();
         self.queue.next_delta = entries;
-        self.update_independent(indep)?;
+        let r = self.update_independent(&mut indep);
+        indep.clear();
+        self.indep_buf = indep;
+        r?;
 
         // Driving values bottom-up: formals before the actuals they feed.
         while let Some((_, Reverse(s))) = up.pop() {
@@ -1352,12 +1404,34 @@ impl SimControl {
     /// waveforms, so they are updated in parallel, one signal per task, each applying its
     /// drivers' transactions in queue order. Errors are taken in signal id order, so the
     /// result does not depend on the thread count.
-    fn update_independent(&mut self, mut due: Vec<(u32, u32)>) -> Result<(), ErrorKind> {
+    fn update_independent(&mut self, due: &mut [(u32, u32)]) -> Result<(), ErrorKind> {
         if due.is_empty() {
             return Ok(());
         }
         let (now, cycle) = (self.now, self.cycle);
         due.sort_by_key(|&(s, _)| s);
+        // The usual clocked case, every driver on one signal: no job list, no pool.
+        if due.first().map(|d| d.0) == due.last().map(|d| d.0) {
+            let s = due[0].0 as usize;
+            let sig = self
+                .signals
+                .get_mut(s)
+                .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+            for &(_, d) in due.iter() {
+                let info = &self.drivers[d as usize];
+                let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+                sig.apply_driver(
+                    &mut slot.st.waveforms[info.local as usize],
+                    info.slot,
+                    now,
+                    cycle,
+                );
+            }
+            if finish_signal(sig, now, cycle)? {
+                self.changed_sigs.push(s as u32);
+            }
+            return Ok(());
+        }
         let mut jobs = Vec::new();
         let mut it = self.signals.iter_mut();
         let mut next = 0;
@@ -1370,20 +1444,6 @@ impl SimControl {
             jobs.push((sig, run));
         }
         let drivers = &self.drivers;
-        // The matured transactions of one driver into its signal (`Signal::apply_driver`),
-        // then the driving and effective values of what became dirty.
-        fn finish(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
-            let mut dirty = std::mem::take(&mut sig.dirty);
-            for &r in &dirty {
-                sig.compute_driving(r)?;
-            }
-            let mut changed = false;
-            for r in dirty.drain(..) {
-                changed |= sig.update_effective(r, now, cycle);
-            }
-            sig.dirty = dirty;
-            Ok(changed)
-        }
         // ponytail: fixed cut-off below which a parallel split costs more than it saves.
         let results: Vec<Result<bool, ErrorKind>> = match &self.pool {
             Some(pool) if jobs.len() >= 256 => {
@@ -1399,7 +1459,7 @@ impl SimControl {
                             cycle,
                         );
                     }
-                    finish(sig, now, cycle)
+                    finish_signal(sig, now, cycle)
                 };
                 pool.install(|| jobs.par_iter_mut().map(job).collect())
             }
@@ -1418,7 +1478,7 @@ impl SimControl {
                                 cycle,
                             );
                         }
-                        finish(sig, now, cycle)
+                        finish_signal(sig, now, cycle)
                     })
                     .collect()
             }
@@ -1729,14 +1789,12 @@ impl SimControl {
         if self.rng.is_some() {
             self.order(&mut pids, init);
         }
-        if !init {
-            for &p in &pids {
-                self.procs[p as usize].resumed = true;
-            }
-        }
         let mut first_err = None;
         for &p in &pids {
-            self.procs[p as usize].ready = false;
+            let meta = &mut self.procs[p as usize];
+            meta.ready = false;
+            meta.resumed |= !init;
+            self.serial_ran |= meta.flags.serial;
             let generation = self.procs[p as usize].generation;
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
@@ -1778,9 +1836,12 @@ impl SimControl {
                 self.signals[s.0 as usize].waiters.add(
                     p,
                     range,
-                    generation,
-                    perm,
-                    procs[p as usize].trigger,
+                    Reg {
+                        generation,
+                        perm,
+                        trigger: procs[p as usize].trigger,
+                        tid: procs[p as usize].tid,
+                    },
                     |w| alive(procs, w),
                 );
             }
@@ -1790,7 +1851,9 @@ impl SimControl {
                 e.process = Some((ProcId(p), self.names[p as usize].clone()));
                 first_err = Some(e);
             }
-            self.commit(ProcId(p), effects);
+            if !effects.is_empty() {
+                self.commit(ProcId(p), effects);
+            }
             if let Err(e) = result {
                 first_err.get_or_insert(e);
             }
@@ -1798,7 +1861,6 @@ impl SimControl {
                 break;
             }
         }
-        pids.sort_unstable();
         self.last_ran = pids;
         first_err.map_or(Ok(()), Err)
     }
@@ -1806,7 +1868,9 @@ impl SimControl {
     /// Report what resolution functions and port conversions reported in the update phase, in
     /// signal order after the port conversions (so `--threads` does not matter).
     fn commit_callouts(&mut self) {
-        if crate::callout::PENDING.swap(false, Ordering::Relaxed) {
+        if crate::callout::PENDING.load(Ordering::Relaxed)
+            && crate::callout::PENDING.swap(false, Ordering::Relaxed)
+        {
             for s in &mut self.signals {
                 let ctx = format!("resolution of {}", s.name);
                 (self.callouts).extend(s.callouts.drain(..).map(|(v, m)| (v, m, ctx.clone())));
@@ -1869,17 +1933,38 @@ impl SimControl {
     }
 
     fn phase(&mut self, phase: Phase) {
-        if self.phase_mask >> phase as u32 & 1 == 0 {
+        let bit = 1u16 << phase as u32;
+        if self.phase_mask & bit == 0 {
             return;
         }
-        self.notify(|o, h| {
+        let serial = if phase == Phase::NextCycle {
+            std::mem::replace(&mut self.serial_ran, false)
+        } else {
+            true
+        };
+        // ponytail: a set of 64 observers; more are called on every phase they want.
+        let which = (self.obs_phases.iter().take(64).enumerate()).fold(0u64, |m, (i, &(w, s))| {
+            if w & bit != 0 && (serial || s & bit == 0) {
+                m | 1 << i
+            } else {
+                m
+            }
+        });
+        if which == 0 && self.obs_phases.len() <= 64 {
+            return;
+        }
+        self.notify_which(which, |o, h| {
             if o.wants_phase(phase) {
                 o.phase(h, phase)
             }
         });
     }
 
-    fn notify(&mut self, mut f: impl FnMut(&mut dyn Observer, &mut Hook<'_>)) {
+    fn notify(&mut self, f: impl FnMut(&mut dyn Observer, &mut Hook<'_>)) {
+        self.notify_which(!0, f)
+    }
+
+    fn notify_which(&mut self, which: u64, mut f: impl FnMut(&mut dyn Observer, &mut Hook<'_>)) {
         let mut observers = std::mem::take(&mut self.observers);
         let mut hook = Hook {
             now: self.now,
@@ -1898,11 +1983,28 @@ impl SimControl {
             observer: 0,
         };
         for (i, o) in observers.iter_mut().enumerate() {
+            if i < 64 && which >> i & 1 == 0 {
+                continue;
+            }
             hook.observer = i;
             f(o.as_mut(), &mut hook);
         }
         self.observers = observers;
     }
+}
+
+/// The driving and effective values of what the matured transactions of a signal made dirty.
+fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
+    let mut dirty = std::mem::take(&mut sig.dirty);
+    for &r in &dirty {
+        sig.compute_driving(r)?;
+    }
+    let mut changed = false;
+    for r in dirty.drain(..) {
+        changed |= sig.update_effective(r, now, cycle);
+    }
+    sig.dirty = dirty;
+    Ok(changed)
 }
 
 /// Whether the process of trigger `t` must run in this cycle: its edge, or its reset level.

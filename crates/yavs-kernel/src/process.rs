@@ -6,6 +6,7 @@ use crate::signal::{
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
+use smallvec::SmallVec;
 use yavs_logic::StdULogic;
 
 /// Stable id of a process: its index in elaboration order.
@@ -95,15 +96,15 @@ pub(crate) enum OpMode {
 /// Per-process state the process mutates while it runs.
 #[derive(Default)]
 pub(crate) struct ProcState {
-    pub waveforms: Vec<Waveform>,
+    pub waveforms: SmallVec<[Waveform; 1]>,
     pub effects: Vec<Effect>,
-    pub sens: Vec<(SignalId, Range)>,
+    pub sens: SmallVec<[(SignalId, Range); 2]>,
     /// The sensitivity the last commit registered, when that wait had no timeout.
-    pub sens_prev: Vec<(SignalId, Range)>,
+    pub sens_prev: SmallVec<[(SignalId, Range); 2]>,
     pub deadline: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
-    pub scheduled: Vec<(Time, DriverId)>,
+    pub scheduled: SmallVec<[(Time, DriverId); 2]>,
     /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
     /// this run.
     pub phantoms: Vec<u32>,

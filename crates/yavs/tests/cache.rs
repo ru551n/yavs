@@ -344,6 +344,42 @@ fn lowered_packages_are_cached() {
     assert_eq!(e.entry_files("low").len(), 1);
 }
 
+/// A package whose function holds a periodic composite constant of several megabytes once
+/// written out: the pool keeps it compact (#446), so the lowering is cached, and a warm run
+/// reads the same constant.
+const BIG: &str = "package bigp is\n  impure function probe(i : integer) return integer;\n  signal sg : integer := 3;\nend;\n\
+package body bigp is\n  type rec_t is record\n    n : integer;\n    v : bit_vector(524287 downto 0);\n  end record;\n\
+  type rec_a is array (0 to 9) of rec_t;\n\
+  type holder_t is protected\n    impure function get(i : integer) return integer;\n  end protected;\n\
+  type holder_t is protected body\n    impure function get(i : integer) return integer is\n\
+      constant e : rec_t := (7, (others => '1'));\n      constant r : rec_a := (others => e);\n    begin\n\
+      if r(i).v(i * 1000) = '1' then return r(i).n + i; end if;\n      return -1;\n    end;\n  end protected body;\n\
+  shared variable h : holder_t;\n  impure function probe(i : integer) return integer is begin return h.get(i); end;\n  constant boot : integer := probe(1);\nend;\n";
+
+const BIGTB: &str = "use work.bigp.all;\nentity bigtb is end;\narchitecture a of bigtb is\n  constant k : integer := probe(2);\nbegin\n  process\n  begin\n\
+    report \"probe \" & integer'image(k) & \" sg \" & integer'image(sg);\n    wait;\n  end process;\nend;\n";
+
+#[test]
+fn periodic_constant_does_not_block_the_lowering_cache() {
+    let e = Env::new("big");
+    for (f, t) in [("big.vhd", BIG), ("bigtb.vhd", BIGTB)] {
+        std::fs::write(e.tmp.join(f), t).expect("write");
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let plain = e.run_top("bigtb", &["--no-cache"]);
+    assert_eq!(plain.code, 0, "{plain:?}");
+    assert!(plain.stdout.contains("probe 9 sg 3"), "{plain:?}");
+    let cold = e.run_top("bigtb", &[]);
+    assert!(note(&cold, "store low"), "{cold:?}");
+    let image = e.entry_files("low");
+    assert_eq!(image.len(), 1);
+    assert!(std::fs::metadata(&image[0]).expect("image").len() < 1 << 16);
+    let warm = e.run_top("bigtb", &[]);
+    assert!(note(&warm, "hit low"), "{warm:?}");
+    assert_eq!(visible(&plain), visible(&cold));
+    assert_eq!(visible(&plain), visible(&warm));
+}
+
 #[test]
 fn editing_a_package_replaces_its_lowering() {
     let e = Env::new("lowedit");

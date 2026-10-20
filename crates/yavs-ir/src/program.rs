@@ -311,6 +311,45 @@ pub enum ConstData {
     Logic(Vec<(u64, u8)>),
 }
 
+impl ConstData {
+    /// The bytes `off..off + out.len()` of the constant as expanded, without expanding it
+    /// (`false` when out of range or for `Logic`, whose bytes are bit-planes). The way for
+    /// code that reads pool bytes at compile time (the optimiser) to see a compact constant.
+    pub fn read(&self, off: usize, out: &mut [u8]) -> bool {
+        let end = off.saturating_add(out.len());
+        match self {
+            ConstData::Bytes(b) => b.get(off..end).map(|s| out.copy_from_slice(s)).is_some(),
+            ConstData::Repeat { elem, n } => {
+                let total = (elem.len() as u64).saturating_mul(*n);
+                if elem.is_empty() || end as u64 > total {
+                    return false;
+                }
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o = elem[(off + i) % elem.len()];
+                }
+                true
+            }
+            ConstData::Runs(runs) => {
+                let mut start = 0u64;
+                let mut at = off as u64;
+                let mut i = 0;
+                for (n, e) in runs {
+                    let len = n.saturating_mul(e.len() as u64);
+                    // Bytes still wanted from this run, if `at` falls inside it.
+                    while i < out.len() && at >= start && at < start + len {
+                        out[i] = e[((at - start) % e.len() as u64) as usize];
+                        i += 1;
+                        at += 1;
+                    }
+                    start += len;
+                }
+                i == out.len()
+            }
+            ConstData::Logic(_) => false,
+        }
+    }
+}
+
 /// A native subprogram: a `lib/NATIVE.md` symbol. Implicit-family natives
 /// (`yavs.implicit.<family>.<type>`) and attribute natives (`yavs.attr.<name>`) also name the
 /// type they operate on.
@@ -470,4 +509,33 @@ pub struct CheckMsg {
 pub struct CaseTable {
     pub arms: Vec<(i64, i64, BlockId)>,
     pub default: BlockId,
+}
+
+#[cfg(test)]
+mod const_tests {
+    use super::ConstData;
+
+    fn read(c: &ConstData, off: usize, n: usize) -> Option<Vec<u8>> {
+        let mut out = vec![0; n];
+        c.read(off, &mut out).then_some(out)
+    }
+
+    #[test]
+    fn compact_constants_read_in_place() {
+        let rep = ConstData::Repeat {
+            elem: vec![1, 2, 3],
+            n: 4,
+        };
+        assert_eq!(read(&rep, 2, 5), Some(vec![3, 1, 2, 3, 1]));
+        assert_eq!(read(&rep, 10, 2), Some(vec![2, 3]));
+        assert_eq!(read(&rep, 11, 2), None);
+        let runs = ConstData::Runs(vec![(2, vec![9]), (3, vec![1, 2]), (1, vec![7, 8])]);
+        // 9 9 1 2 1 2 1 2 7 8
+        assert_eq!(read(&runs, 0, 10), Some(vec![9, 9, 1, 2, 1, 2, 1, 2, 7, 8]));
+        assert_eq!(read(&runs, 1, 4), Some(vec![9, 1, 2, 1]));
+        assert_eq!(read(&runs, 7, 3), Some(vec![2, 7, 8]));
+        assert_eq!(read(&runs, 8, 3), None);
+        assert_eq!(read(&ConstData::Bytes(vec![5, 6]), 1, 1), Some(vec![6]));
+        assert_eq!(read(&ConstData::Logic(vec![(4, 3)]), 0, 1), None);
+    }
 }

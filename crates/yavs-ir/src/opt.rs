@@ -31,8 +31,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::OnceLock;
 
 use crate::{
-    AddrSpace, BlockId, BoolOp, CheckKind, CheckMsgId, CmpOp, ConstData, FuncFlags, FuncId,
-    FuncKind, Inst, IntOp, IntUnOp, Program, Reg, RegTy, Role, StmtId, Ty, TyId, Width, dim_len,
+    AddrSpace, BlockId, BoolOp, CheckKind, CheckMsgId, CmpOp, FuncFlags, FuncId, FuncKind, Inst,
+    IntOp, IntUnOp, Program, Reg, RegTy, Role, StmtId, Ty, TyId, Width, dim_len,
 };
 
 /// Is the pass enabled? `YAVS_NO_IROPT` set to anything but `0` or the empty string turns
@@ -1142,20 +1142,24 @@ impl<'a> Opt<'a> {
             .copied()
     }
 
-    fn const_bytes(&self, a: Opn, len: usize) -> Option<&[u8]> {
+    /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded).
+    fn const_read(&self, a: Opn, out: &mut [u8]) -> bool {
         let Opn::A(AddrSpace::Const(c), o) = a else {
-            return None;
+            return false;
         };
-        match self.prog.consts.get(c)? {
-            ConstData::Bytes(b) => b.get(o as usize..o as usize + len),
-            _ => None,
-        }
+        self.prog
+            .consts
+            .get(c)
+            .is_some_and(|d| d.read(o as usize, out))
     }
 
     /// `(left, right, direction)` of dimension `dim` of a descriptor in the constant pool.
     fn const_dim(&self, dope: Opn, dim: u8) -> Option<(i64, i64, u64)> {
         let Opn::A(sp, o) = dope else { return None };
-        let b = self.const_bytes(Opn::A(sp, o + 24 * u32::from(dim)), 24)?;
+        let mut b = [0u8; 24];
+        if !self.const_read(Opn::A(sp, o + 24 * u32::from(dim)), &mut b) {
+            return None;
+        }
         let w = |k: usize| u64::from_le_bytes(b[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
         Some((w(0) as i64, w(1) as i64, w(2)))
     }
@@ -1326,9 +1330,8 @@ impl<'a> Opt<'a> {
             Inst::Load { dst, addr, w } if w != Width::Sig => {
                 let a = self.opn(addr);
                 let n = w.bytes() as usize;
-                if let Some(b) = self.const_bytes(a, n) {
-                    let mut x = [0u8; 8];
-                    x[..n].copy_from_slice(b);
+                let mut x = [0u8; 8];
+                if self.const_read(a, &mut x[..n]) {
                     // A 4-byte load sign-extends (narrow integer elements, #415).
                     let v = if n == 4 {
                         i64::from(i32::from_le_bytes([x[0], x[1], x[2], x[3]]))

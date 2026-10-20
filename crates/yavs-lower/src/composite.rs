@@ -1874,33 +1874,29 @@ impl Fx<'_, '_> {
         let t = db.base(st);
         let tid = self.ty(t, span)?;
         let mut desc = Vec::new();
-        let Some(bytes) = self.encode(t, tid, v, &mut desc) else {
+        let Some(runs) = self.encode(t, tid, v, &mut desc) else {
             return Err(self.cx.unsupported(span, "this composite constant"));
         };
         let d = self.bytes_addr(desc);
-        let a = self.bytes_addr(bytes);
+        let c = self.fb.program().konst(compact_runs(runs));
+        let a = self.const_addr(c);
         Ok(V::A(a, d))
     }
 
-    /// Value bytes of constant `v` of type `t`; its descriptor bytes are appended to `desc`.
-    fn encode(
-        &mut self,
-        t: TypeId,
-        tid: TyId,
-        v: &ConstValue,
-        desc: &mut Vec<u8>,
-    ) -> Option<Vec<u8>> {
+    /// Value bytes of constant `v` of type `t` as `(count, bytes)` runs, so a periodic
+    /// constant is never written out (#446); its descriptor bytes are appended to `desc`.
+    fn encode(&mut self, t: TypeId, tid: TyId, v: &ConstValue, desc: &mut Vec<u8>) -> Option<Runs> {
         let db = self.db;
         if let Some(w) = scalar_w(self.fb.program(), tid) {
             let c = ty::cell(v)?;
-            return Some(c.to_le_bytes()[..w.bytes() as usize].to_vec());
+            return Some(vec![(1, c.to_le_bytes()[..w.bytes() as usize].to_vec())]);
         }
         match (self.fb.program().types().get(tid).cloned()?, v) {
             (Ty::Record { fields }, ConstValue::Record(vs)) => {
                 let TypeKind::Record { elems } = &db.types[t].kind else {
                     return None;
                 };
-                let mut fbytes = Vec::new();
+                let mut fruns = Vec::new();
                 let mut own = Vec::new();
                 for (i, f) in fields.iter().enumerate() {
                     let mut fd = Vec::new();
@@ -1908,14 +1904,27 @@ impl Fx<'_, '_> {
                     if f.desc.is_none() {
                         own.extend(fd);
                     }
-                    fbytes.push(b);
+                    fruns.push(b);
                 }
                 let (l, _) = self.fb.program().layout(tid, &own).ok()?;
-                let mut out = vec![0u8; l.size as usize];
-                for (b, off) in fbytes.iter().zip(&l.offsets) {
-                    let off = *off as usize;
-                    out.get_mut(off..off + b.len())?.copy_from_slice(b);
+                // Fields at their offsets, zero padding between and after.
+                let mut out = Runs::new();
+                let mut at = 0u64;
+                for (b, off) in fruns.into_iter().zip(&l.offsets) {
+                    let off = *off;
+                    if off < at {
+                        return None;
+                    }
+                    push_run(&mut out, 1, vec![0; (off - at) as usize]);
+                    at = off + runs_len(&b);
+                    for (n, e) in b {
+                        push_run(&mut out, n, e);
+                    }
                 }
+                if at > l.size {
+                    return None;
+                }
+                push_run(&mut out, 1, vec![0; (l.size - at) as usize]);
                 desc.extend(own);
                 Some(out)
             }
@@ -1941,27 +1950,39 @@ impl Fx<'_, '_> {
                         own.extend(ed);
                     }
                     desc.extend(own);
-                    return Some(planes(&codes));
+                    return Some(plane_runs(&codes));
                 }
-                let mut out = Vec::new();
+                let mut out = Runs::new();
                 let mut ed = Vec::new();
                 let mut push =
                     |fx: &mut Self, n: u64, c: &ConstValue, ed: &mut Vec<u8>| -> Option<()> {
                         let mut d = Vec::new();
-                        let b = fx.encode(et, elem, c, &mut d)?;
+                        let mut ep = fx.encode(et, elem, c, &mut d)?;
                         if ed.is_empty() {
                             *ed = d;
                         }
                         let (l, _) = fx.fb.program().layout(elem, ed).ok()?;
-                        let mut b = b;
                         // A scalar element has the element size (`Ty::elem_size`).
                         let es = fx.fb.program().types().get(elem).and_then(Ty::elem_size);
-                        b.resize(
-                            es.unwrap_or(l.size.next_multiple_of(l.align.max(1))) as usize,
-                            0,
-                        );
-                        for _ in 0..n {
-                            out.extend_from_slice(&b);
+                        let want = es.unwrap_or(l.size.next_multiple_of(l.align.max(1)));
+                        let have = runs_len(&ep);
+                        if want >= have {
+                            push_run(&mut ep, 1, vec![0; (want - have) as usize]);
+                        } else {
+                            let mut b = flat(&ep);
+                            b.truncate(want as usize);
+                            ep = vec![(1, b)];
+                        }
+                        // An element of several large runs is repeated as its runs, not
+                        // written out (a record holding a periodic array, #446).
+                        if ep.len() > 1 && want > 256 && n.saturating_mul(ep.len() as u64) <= 4096 {
+                            for _ in 0..n {
+                                for (m, e) in &ep {
+                                    push_run(&mut out, *m, e.clone());
+                                }
+                            }
+                        } else {
+                            push_run(&mut out, n, flat(&ep));
                         }
                         Some(())
                     };
@@ -2050,6 +2071,61 @@ impl Fx<'_, '_> {
         }
         Some(())
     }
+}
+
+/// Constant bytes as `(count, bytes)` runs.
+type Runs = Vec<(u64, Vec<u8>)>;
+
+/// Append a run, joining it to an equal last one; empty runs are dropped.
+fn push_run(out: &mut Runs, n: u64, b: Vec<u8>) {
+    if n == 0 || b.is_empty() {
+        return;
+    }
+    match out.last_mut() {
+        Some((m, last)) if *last == b => *m += n,
+        _ => out.push((n, b)),
+    }
+}
+
+fn runs_len(r: &Runs) -> u64 {
+    r.iter().map(|(n, b)| n * b.len() as u64).sum()
+}
+
+fn flat(r: &Runs) -> Vec<u8> {
+    let mut out = Vec::with_capacity(runs_len(r) as usize);
+    for (n, b) in r {
+        for _ in 0..*n {
+            out.extend_from_slice(b);
+        }
+    }
+    out
+}
+
+/// Pool data for `runs`: the runs themselves when they are at least four times smaller than
+/// the bytes, else the bytes (#446).
+fn compact_runs(mut runs: Runs) -> ConstData {
+    let kept: u64 = runs.iter().map(|(_, b)| b.len() as u64 + 32).sum();
+    if runs.is_empty() || runs_len(&runs) < 4 * kept {
+        ConstData::Bytes(flat(&runs))
+    } else if runs.len() == 1 {
+        let (n, elem) = runs.remove(0);
+        ConstData::Repeat { elem, n }
+    } else {
+        ConstData::Runs(runs)
+    }
+}
+
+/// [`planes`] as runs: a constant of one value is one run of its 64-element word.
+fn plane_runs(codes: &[u8]) -> Runs {
+    let mut out = Runs::new();
+    let whole = codes.len() / 64 * 64;
+    if whole > 0 && codes.iter().all(|&x| x == codes[0]) {
+        push_run(&mut out, (whole / 64) as u64, planes(&codes[..64]));
+        push_run(&mut out, 1, planes(&codes[whole..]));
+    } else {
+        push_run(&mut out, 1, planes(codes));
+    }
+    out
 }
 
 /// Bit-planes of `codes` (left first): element 0 of the planes is the rightmost.

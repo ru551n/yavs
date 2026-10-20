@@ -2035,9 +2035,19 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     `yavs_sem::StageCache` through the `Db` (`Db::set_stages`); a run without a store (`--no-cache`,
     custom std/ieee tree) is unchanged.
   - *When not:* with coverage counters; when the images would be under 256 bytes (packages with only
-    constants); when the constant pool holds over 1 MiB of byte strings (one testbench library lowers
-    a 6.9 MB array constant as a byte string; reading that back cost more than lowering the packages, so
-    nothing is stored; the fix is a repeated-element constant in lowering, #446, which would make it cacheable).
+    constants); when the constant pool holds over 1 MiB of byte strings (reading that back costs more
+    than lowering the packages, so nothing is stored). A periodic constant no longer counts: see
+    "Compact composite constants" below (#446).
+  - *Compact composite constants (#446):* a folded record or array-of-composites constant
+    (`Fx::konst_comp`) is encoded as `(count, bytes)` runs, never written out: an array's repeated
+    elements are one run, a record is its fields' runs with zero padding, a logic array of one value
+    is one run of its 64-element plane word, and an element of several large runs repeats as those
+    runs. The pool gets `ConstData::Repeat` or `Runs` when that is at least four times smaller than
+    the bytes (`compact_runs`), else `Bytes`. One testbench library's 6.9 MB constant is now about
+    12 KB, so its packages are cacheable. Readers: the interpreter expands a compact constant once per
+    runtime on first address use (`const_bytes`), but `CopyConst` writes it straight to the copy;
+    code that reads pool bytes at compile time uses `ConstData::read` (the optimiser's load folding),
+    never the raw `Bytes`. Descriptors stay `Bytes`.
   - *Cold and warm take the same path:* the cold run verifies and numbers the packages' program before
     it stores, so a cold and a warm run lower everything after the packages from the same state.
   - *Step 2 (package state after initialisation: heap and package data) is not done.* The initialisers

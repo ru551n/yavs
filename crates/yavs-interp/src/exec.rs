@@ -3320,7 +3320,15 @@ impl Machine {
             Inst::CopyConst { dst, c } => {
                 let rt = self.rt.clone();
                 let a = self.r(dst);
-                self.put(a, const_bytes(&rt, c)?)?;
+                match rt.prog.consts.get(c) {
+                    // A compact constant is written straight to its copy, never expanded
+                    // and kept in the runtime (#446).
+                    Some(d @ (ConstData::Repeat { .. } | ConstData::Runs(_))) => {
+                        let n = compact_len(d)?;
+                        fill_compact(d, self.wr(a, n)?);
+                    }
+                    _ => self.put(a, const_bytes(&rt, c)?)?,
+                }
             }
             Inst::Alloc { dst, size } => {
                 let a = self.temp_alloc(self.r(size))?;
@@ -4227,30 +4235,47 @@ fn store_cells(slots: &mut [u8], slot: u32, w: Width, cells: &[u64]) -> R<()> {
     Ok(())
 }
 
+/// The size of a `Repeat` or `Runs` constant once expanded.
+fn compact_len(c: &ConstData) -> R<u64> {
+    let too_big = || Fault::Runtime("constant larger than 4 GiB".into());
+    let total = match c {
+        ConstData::Repeat { elem, n } => (elem.len() as u64).checked_mul(*n),
+        ConstData::Runs(runs) => runs.iter().try_fold(0u64, |t, (n, e)| {
+            t.checked_add((e.len() as u64).checked_mul(*n)?)
+        }),
+        _ => Some(0),
+    }
+    .ok_or_else(too_big)?;
+    if total > u64::from(u32::MAX) {
+        return Err(too_big());
+    }
+    Ok(total)
+}
+
+/// Write a `Repeat` or `Runs` constant to `out`, which is [`compact_len`] bytes.
+fn fill_compact(c: &ConstData, out: &mut [u8]) {
+    let mut at = 0;
+    let mut run = |n: u64, e: &[u8]| {
+        for _ in 0..n {
+            out[at..at + e.len()].copy_from_slice(e);
+            at += e.len();
+        }
+    };
+    match c {
+        ConstData::Repeat { elem, n } => run(*n, elem),
+        ConstData::Runs(runs) => runs.iter().for_each(|(n, e)| run(*n, e)),
+        _ => {}
+    }
+}
+
 /// Expand compact constant data (rule 12) into bytes.
 fn expand_const(c: &ConstData) -> R<Vec<u8>> {
     let too_big = || Fault::Runtime("constant larger than 4 GiB".into());
     Ok(match c {
         ConstData::Bytes(b) => b.clone(),
-        ConstData::Repeat { elem, n } => {
-            let total = (elem.len() as u64).checked_mul(*n).ok_or_else(too_big)?;
-            if total > u64::from(u32::MAX) {
-                return Err(too_big());
-            }
-            elem.repeat(*n as usize)
-        }
-        ConstData::Runs(runs) => {
-            let mut out = Vec::new();
-            for (n, e) in runs {
-                if (out.len() as u64).saturating_add(n.saturating_mul(e.len() as u64))
-                    > u64::from(u32::MAX)
-                {
-                    return Err(too_big());
-                }
-                for _ in 0..*n {
-                    out.extend_from_slice(e);
-                }
-            }
+        ConstData::Repeat { .. } | ConstData::Runs(_) => {
+            let mut out = vec![0; compact_len(c)? as usize];
+            fill_compact(c, &mut out);
             out
         }
         ConstData::Logic(runs) => {

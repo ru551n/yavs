@@ -47,6 +47,7 @@ const PASS: &[&str] = &[
     "composite/aggregate_piece_direction",
     "composite/aggregate_open_elements",
     "composite/aggregate_fill",
+    "composite/periodic_const",
     "composite/element_attr_open",
     "composite/element_depth",
     "composite/element_open_formal",
@@ -734,4 +735,51 @@ fn static_array_bounds_are_constant() {
     for d in pos {
         assert!(konst.contains(&d), "{}", p.dump_func(funcs[0]));
     }
+}
+
+/// A periodic composite constant (an array of records holding long logic vectors and arrays of
+/// one record) is a compact pool constant, not its written-out bytes (#446).
+#[test]
+fn periodic_constant_is_compact() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg_periodic_const.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let dir = std::env::temp_dir().join(format!("yavs-lower-periodic-{}", std::process::id()));
+    opts.libraries
+        .add_spec(&format!("work:{}", dir.display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let body = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
+        .map(|(id, _)| id)
+        .unwrap();
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    let funcs = l.subprograms_of(body).unwrap();
+    let p = l.finish().unwrap().program;
+    let big = p
+        .consts
+        .values()
+        .iter()
+        .filter(|c| matches!(c, yavs_ir::ConstData::Bytes(b) if b.len() > 4096))
+        .count();
+    assert_eq!(big, 0, "written-out bytes in the pool");
+    let compact = p
+        .consts
+        .values()
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                yavs_ir::ConstData::Repeat { .. } | yavs_ir::ConstData::Runs(_)
+            )
+        })
+        .count();
+    assert!(compact > 0, "{}", p.dump_func(funcs[0]));
 }

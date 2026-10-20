@@ -179,7 +179,7 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   file is parsed once and sees the units of the files before it, even before the
   manifest is read again. The work library's exclusive lock is held for the
   whole call, and each successful file is recorded (atomic manifest rename) as
-  soon as it is done, so concurrent calls into the same library serialize per
+  soon as it is done (visible to readers at once; synced to disk when the call ends), so concurrent calls into the same library serialize per
   call and never lose each other's files.
 - Exit 0: every file was analyzed and recorded in the work library. Warnings go
   to stderr/stdout and do not change the exit code (unless `-Werror`).

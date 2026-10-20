@@ -1,0 +1,1 @@
+A `yavs analyze` of many files no longer waits for the disk after every file: it keeps the library manifest in memory and syncs it once at the end, so a batch of files costs a fraction of the same files one call each.

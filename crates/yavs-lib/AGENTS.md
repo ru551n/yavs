@@ -32,6 +32,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | The manifest is never a cache of analysis; analysis is on demand over the closure only (the closure's analysis may be read from the compilation cache directory `yavs-cache/` of the work library, written by the CLI, not by this crate) | Keeps UNISIM-size libraries cheap; the cache lifts the earlier no-cache rule (user, 2026-10-19) | `docs/decisions.md` "Compilation cache", `docs/plan.md` architecture table |
 | `_YAVS_LIB` locked with `std::fs::File::lock`/`lock_shared` (flock / LockFileEx) | Parallel `yavs analyze` into one library is safe | `docs/plan.md` rule 14 |
 | `analyze` takes the exclusive lock while updating; each write is temp file plus atomic rename | Readers never see a half-written manifest | rule 14 |
+| A `Session` keeps the parsed manifest in memory and syncs to disk once, when it drops (each `record` is still a temp file plus rename, without a sync) | A batch of 60 files re-read, re-parsed and synced the manifest 60 times; the lock excludes other writers, and a power loss can only lose the files of the last call | Measured through an external test runner |
 | `elab`/`run` take the shared lock only while reading; `run` never writes into library dirs | A long simulation never blocks compilation | rule 14 |
 | Read-only libraries never fail: lock opened read-only, or no locking at all if it cannot be opened | Sandboxed build systems | rule 14 |
 | A lock wait longer than a few seconds prints a note naming the library | User feedback | rule 14 |

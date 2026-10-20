@@ -445,3 +445,27 @@ fn fresh_files_are_always_hashed() {
     std::fs::write(&a, "bbbb").unwrap();
     assert!(closure(&libs, &top).is_err());
 }
+
+#[test]
+fn session_records_every_file_as_it_goes() {
+    let (t, _, work, _) = setup();
+    let session = work.session().unwrap();
+    for (i, name) in ["a", "b", "c"].into_iter().enumerate() {
+        let p = t.path().join(format!("{name}.vhd"));
+        std::fs::write(&p, name).unwrap();
+        session
+            .record(STD, &p, &hash_content(name.as_bytes()), vec![pkg(name)])
+            .unwrap();
+        // Each record is published at once, before the session ends.
+        assert_eq!(work.read().unwrap().files.len(), i + 1);
+    }
+    // Re-recording a file moves it to the end, from the manifest the session kept.
+    let a = t.path().join("a.vhd");
+    session
+        .record(STD, &a, &hash_content(b"a2"), vec![pkg("a")])
+        .unwrap();
+    drop(session);
+    let m = work.read().unwrap();
+    assert_eq!(m.files.len(), 3);
+    assert_eq!(m.files.last().unwrap().hash, hash_content(b"a2"));
+}

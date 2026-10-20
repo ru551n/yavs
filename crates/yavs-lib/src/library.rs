@@ -2,7 +2,6 @@ use crate::Result;
 use crate::error::{debug, err, io, note};
 use crate::manifest::{LOCK_FILE, MANIFEST_FILE, Manifest, Stamp, UnitRecord};
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -184,6 +183,7 @@ impl Library {
             lib: self.clone(),
             _lock: lock,
             key,
+            state: Mutex::default(),
         })
     }
 }
@@ -196,10 +196,29 @@ pub struct Session {
     lib: Library,
     _lock: File,
     key: PathBuf,
+    state: Mutex<SessionState>,
+}
+
+/// What a session keeps between records: the manifest (nobody else can write it while the
+/// exclusive lock is held, so it is read and parsed once, not once per file) and whether the
+/// last published manifest still has to be synced to disk.
+#[derive(Default)]
+struct SessionState {
+    manifest: Option<Manifest>,
+    unsynced: bool,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // Records are renamed into place without a sync each (the rename keeps readers safe;
+        // a sync per file made a batch of 60 files spend most of its time waiting for the disk).
+        // The last manifest is the only one that has to survive a power loss.
+        if self.state.get_mut().is_ok_and(|s| s.unsynced) {
+            let _ = OpenOptions::new()
+                .write(true)
+                .open(self.lib.manifest_path())
+                .and_then(|f| f.sync_all());
+        }
         let mut h = HELD.lock().unwrap();
         if let Some(i) = h.iter().position(|k| *k == self.key) {
             h.remove(i);
@@ -231,32 +250,34 @@ impl Session {
     ) -> Result<()> {
         let path = std::path::absolute(path).map_err(|e| io("L0002", "resolve", path, &e))?;
         let mp = self.lib.manifest_path();
-        let mut m = match fs::read_to_string(&mp) {
-            Ok(t) => Manifest::parse(&t, &mp)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.lib.reject_old_manifest()?;
-                Manifest::new(&self.lib.name)
-            }
-            Err(e) => return Err(io("L0002", "read", &mp, &e)),
-        };
+        let mut st = self.state.lock().unwrap();
+        if st.manifest.is_none() {
+            st.manifest = Some(match fs::read_to_string(&mp) {
+                Ok(t) => Manifest::parse(&t, &mp)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.lib.reject_old_manifest()?;
+                    Manifest::new(&self.lib.name)
+                }
+                Err(e) => return Err(io("L0002", "read", &mp, &e)),
+            });
+        }
+        let m = st.manifest.as_mut().unwrap();
         m.replace_file(path, hash.to_string(), stamp, standard.to_string(), units);
 
         let tmp = self
             .lib
             .dir
             .join(format!("{MANIFEST_FILE}.{}.tmp", std::process::id()));
-        // Synced through the writing handle: Windows refuses FlushFileBuffers on a read-only one.
-        let r = File::create(&tmp)
-            .and_then(|mut f| {
-                f.write_all(m.to_text().as_bytes())?;
-                f.sync_all()
-            })
+        let r = fs::write(&tmp, m.to_text())
             // std::fs::rename replaces an existing target on Windows too (MOVEFILE_REPLACE_EXISTING).
             .and_then(|()| fs::rename(&tmp, &mp));
         if let Err(e) = r {
             let _ = fs::remove_file(&tmp);
+            // The in-memory manifest has the file now; the next record must start from the disk.
+            st.manifest = None;
             return Err(io("L0002", "write", &mp, &e));
         }
+        st.unsynced = true;
         Ok(())
     }
 }

@@ -99,7 +99,9 @@ fn put(m: &mut Machine, o: &Vh) -> Ret {
     let b = m.wr(fat, 16 + DOPE_DIM_BYTES + size)?;
     let head = [data, dope, o.left as u64, o.right as u64, u64::from(o.down)];
     for (d, w) in b
-        .chunks_exact_mut(8)
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
         .zip(head.iter().chain(blocks.as_flattened()))
     {
         d.copy_from_slice(&w.to_le_bytes());
@@ -175,7 +177,7 @@ fn put_small(m: &mut Machine, n: usize, bits: u64, left: i64, right: i64, down: 
         0,
         0,
     ];
-    for (d, w) in b.chunks_exact_mut(8).zip(words) {
+    for (d, w) in b.as_chunks_mut::<8>().0.iter_mut().zip(words) {
         d.copy_from_slice(&w.to_le_bytes());
     }
     Ok(fat)

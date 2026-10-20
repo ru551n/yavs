@@ -542,3 +542,94 @@ fn equal_constants_share_a_register_and_unused_registers_go() {
     );
     assert!(func.reg_ty.len() < 12, "{} registers", func.reg_ty.len());
 }
+
+/// A subprogram with a local array `[data, dope, handle, descriptor]` (slot 0): the object
+/// is made by `New`, its handle stored at slot 16 and dereferenced; `leak` also passes the
+/// handle to a call. Returns the code of the function.
+fn local_array(leak: bool, shared: bool, kind: FuncKind) -> Vec<Inst> {
+    let mut pb = ProgramBuilder::new();
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    let mut gb = pb.define(g);
+    gb.param("h", Width::B8, ParamClass::Value, Mode::In, None);
+    gb.stmt(StmtKind::Return, sp());
+    gb.emit(Inst::Ret { v: None });
+    gb.finish();
+    let elem = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let arr = pb.ty(Ty::Array {
+        elem,
+        elem_desc: None,
+        dims: 1,
+    });
+    let what = pb.check_msg("object", Dir::To);
+    let f = pb.declare("f", kind, None);
+    let mut fb = pb.define(f);
+    let off = fb.local("v", arr, 56, 8);
+    fb.root(off + 16, RootKind::Handle);
+    fb.stmt(StmtKind::Decl, sp());
+    let n = fb.int(32);
+    let buf = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: buf, size: n });
+    let h = fb.reg(RegTy::Handle);
+    fb.emit(Inst::New {
+        dst: h,
+        ty: arr,
+        init: buf,
+        size: n,
+        shared,
+    });
+    let hs = fb.addr(AddrSpace::Frame, off + 16);
+    fb.emit(Inst::Store {
+        addr: hs,
+        src: h,
+        w: Width::B8,
+    });
+    let p = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Deref {
+        dst: p,
+        handle: h,
+        what,
+    });
+    let ds = fb.addr(AddrSpace::Frame, off);
+    fb.emit(Inst::Store {
+        addr: ds,
+        src: p,
+        w: Width::B8,
+    });
+    if leak {
+        let args = fb.regs(&[h]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+    }
+    fb.stmt(StmtKind::Return, sp());
+    fb.emit(Inst::Ret {
+        v: (kind == FuncKind::Function).then_some(n),
+    });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    p.func(f).expect("f").code.clone()
+}
+
+#[test]
+fn a_local_array_lives_in_the_frames_temporary_memory() {
+    if !on() {
+        return;
+    }
+    let is_new = |i: &Inst| matches!(i, Inst::New { .. } | Inst::NewFill { .. });
+    let frame = |i: &Inst| matches!(i, Inst::NewFrame { .. });
+    let code = local_array(false, false, FuncKind::Function);
+    assert_eq!(count(&code, is_new), 0);
+    assert_eq!(count(&code, frame), 1);
+    assert_eq!(count(&code, |i| matches!(i, Inst::Deref { .. })), 0);
+    // A handle somebody else gets, a shared heap and a process keep the heap object.
+    for code in [
+        local_array(true, false, FuncKind::Function),
+        local_array(false, true, FuncKind::Function),
+        local_array(false, false, FuncKind::Process),
+    ] {
+        assert_eq!(count(&code, frame), 0);
+        assert_eq!(count(&code, is_new), 1);
+    }
+}

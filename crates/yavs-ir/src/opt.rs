@@ -822,6 +822,9 @@ impl<'a> Opt<'a> {
 
     fn run(&mut self) {
         self.analyse();
+        if self.frame_objects() {
+            self.reanalyse();
+        }
         let promoted = self.promote();
         if let Some(inited) = &promoted {
             self.reanalyse();
@@ -840,6 +843,187 @@ impl<'a> Opt<'a> {
         self.drop_statements();
         self.merge_consts();
         self.dce();
+    }
+
+    /// The storage of a local composite variable (`[data, dope, handle, ...]` slot, object
+    /// `[descriptor][value]`) of a subprogram that cannot suspend lives in the frame's
+    /// pinned temporary memory (`Inst::NewFrame`) instead of a heap object: no allocation
+    /// table entry, no collection. Like the temporaries a callee returns, the memory is freed
+    /// by the caller's next statement, so a result that points into the variable stays valid
+    /// as long as any result does. Only for types without handles (nothing for the collector
+    /// to find in it), objects made once per call (not in a loop), and handles used by
+    /// nothing but `Deref` and the store into the variable's handle slot (which stays null).
+    fn frame_objects(&mut self) -> bool {
+        let types = &self.prog.types;
+        if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+            || !matches!(self.f.kind, FuncKind::Function | FuncKind::Procedure)
+            || self.f.flags.contains(FuncFlags::MAY_SUSPEND)
+            || self.f.body.is_some()
+            || !self.nosusp
+        {
+            return false;
+        }
+        fn plain(types: &crate::IdVec<TyId, Ty>, ty: TyId, depth: u32) -> bool {
+            depth < 32
+                && match types.get(ty) {
+                    Some(Ty::Int { .. } | Ty::Physical { .. } | Ty::Enum { .. } | Ty::Real) => true,
+                    Some(Ty::Array { elem, .. }) => plain(types, *elem, depth + 1),
+                    Some(Ty::Record { fields }) => {
+                        fields.iter().all(|f| plain(types, f.ty, depth + 1))
+                    }
+                    _ => false,
+                }
+        }
+        // Handle slots of composite variables.
+        let hslots: Vec<i64> = self
+            .f
+            .locals
+            .iter()
+            .filter(|l| matches!(types.get(l.ty), Some(Ty::Array { .. } | Ty::Record { .. })))
+            .map(|l| i64::from(l.slot) + 16)
+            .collect();
+        if hslots.is_empty() {
+            return false;
+        }
+        let mut cands: FxMap<u32, usize> = FxMap::default();
+        for b in 0..self.blocks.len() {
+            if !self.reach[b] {
+                continue;
+            }
+            for pc in self.range(b) {
+                let (dst, ty, shared) = match self.code[pc] {
+                    Inst::New {
+                        dst, ty, shared, ..
+                    }
+                    | Inst::NewFill {
+                        dst, ty, shared, ..
+                    } => (dst, ty, shared),
+                    _ => continue,
+                };
+                if !shared
+                    && self.defs.get(dst.0 as usize) == Some(&1)
+                    && plain(types, ty, 0)
+                    && !self.in_cycle(b)
+                {
+                    cands.insert(dst.0, pc);
+                }
+            }
+        }
+        if cands.is_empty() {
+            return false;
+        }
+        // The uses of the handles.
+        let mut derefs: FxMap<u32, Vec<usize>> = FxMap::default();
+        let mut stores: FxMap<u32, Vec<usize>> = FxMap::default();
+        for pc in 0..self.code.len() {
+            let i = self.code[pc];
+            if is_dead(&i) {
+                continue;
+            }
+            match i {
+                Inst::Deref { handle, .. } if cands.contains_key(&handle.0) => {
+                    derefs.entry(handle.0).or_default().push(pc);
+                    continue;
+                }
+                Inst::Store { addr, src, w } if cands.contains_key(&src.0) => {
+                    let slot = match self.opn(addr) {
+                        Opn::A(AddrSpace::Frame, o) => Some(i64::from(o)),
+                        _ => None,
+                    };
+                    if w == Width::B8 && slot.is_some_and(|o| hslots.contains(&o)) {
+                        stores.entry(src.0).or_default().push(pc);
+                    } else {
+                        cands.remove(&src.0);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            i.visit(&mut |r, role, _| {
+                if role == Role::Use {
+                    cands.remove(&r.0);
+                }
+            });
+            if let Some(l) = i.list() {
+                for r in self
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)
+                    .unwrap_or(&[])
+                {
+                    cands.remove(&r.0);
+                }
+            }
+        }
+        let mut done = false;
+        let mut cs: Vec<(u32, usize)> = cands.into_iter().collect();
+        cs.sort_by_key(|c| c.1);
+        for (h, pc) in cs {
+            let q = self.fresh(RegTy::Ptr, 1);
+            self.code[pc] = match self.code[pc] {
+                Inst::New { init, size, .. } => Inst::NewFrame {
+                    dst: q,
+                    desc: init,
+                    dsize: 0,
+                    data: init,
+                    size,
+                    fill: 0,
+                },
+                Inst::NewFill {
+                    desc,
+                    dsize,
+                    data,
+                    size,
+                    fill,
+                    ..
+                } => Inst::NewFrame {
+                    dst: q,
+                    desc,
+                    dsize,
+                    data,
+                    size,
+                    fill,
+                },
+                i => i,
+            };
+            for &d in derefs.get(&h).map_or(&[][..], |v| &v[..]) {
+                if let Inst::Deref { dst, .. } = self.code[d] {
+                    self.code[d] = Inst::Move { dst, src: q };
+                }
+            }
+            for &st in stores.get(&h).map_or(&[][..], |v| &v[..]) {
+                self.code[st] = dead();
+            }
+            done = true;
+        }
+        if done {
+            self.changed = true;
+        }
+        done
+    }
+
+    /// Is block `b` on a cycle of the control flow graph?
+    fn in_cycle(&self, b: usize) -> bool {
+        let mut seen = vec![false; self.blocks.len()];
+        let mut work = Vec::new();
+        let mut k = 0;
+        while let Some(s) = self.succ(b, k) {
+            work.push(s);
+            k += 1;
+        }
+        while let Some(x) = work.pop() {
+            if x == b {
+                return true;
+            }
+            if std::mem::replace(&mut seen[x], true) {
+                continue;
+            }
+            let mut k = 0;
+            while let Some(s) = self.succ(x, k) {
+                work.push(s);
+                k += 1;
+            }
+        }
+        false
     }
 
     /// Drop the `Stmt` markers whose statement allocates no temporary memory: at run time a
@@ -1377,6 +1561,7 @@ impl<'a> Opt<'a> {
             | Inst::Deref { .. }
             | Inst::New { .. }
             | Inst::NewFill { .. }
+            | Inst::NewFrame { .. }
             | Inst::SigVal { .. }
             | Inst::SigParts { .. }
             | Inst::SigSlice { .. }

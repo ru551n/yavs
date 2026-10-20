@@ -40,6 +40,12 @@ textual dump.
 
 ## Changes
 
+- `Inst::NewFrame` (#444): made only by the optimiser. An object `[descriptor][value]` (the
+  operands of `NewFill`) in the frame's temporary memory, whose address is the result; the
+  frame's temporary base moves over it, so its `Stmt` markers keep it and the caller's next
+  `Stmt` frees it. Replaces the `New`/`NewFill` and `Deref` of a local composite variable of a
+  subprogram that cannot suspend (`Opt::frame_objects`). Producers never emit it; consumers that
+  step instructions (the LLVM tier leaves it to the interpreter) need the arm.
 - `Inst::NewFill` (#427): a heap object from descriptor bytes plus a copy of a value, or a repeated
   element (an all-zero default is one `fill: 1` zero byte), so allocators and array variables with an
   all-zero default no longer build a temporary and copy it. The interpreter implements it next to

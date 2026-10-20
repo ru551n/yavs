@@ -4512,6 +4512,47 @@ impl Machine {
                 })?;
                 self.set(dst, h);
             }
+            Inst::NewFrame {
+                dst,
+                desc,
+                dsize,
+                data,
+                size,
+                fill,
+            } => {
+                let size = self.r(size);
+                if size > 1 << 32 {
+                    return Err(Fault::Runtime("object larger than 4 GiB".into()));
+                }
+                if fill != 0 && !size.is_multiple_of(u64::from(fill)) {
+                    return Err(ice("NewFrame size is not a multiple of its element"));
+                }
+                let ds = u64::from(dsize);
+                let at = self.temp_alloc(ds + size)?;
+                if ds != 0 {
+                    self.copy_mem(at, self.r(desc), ds)?;
+                }
+                let val = add_addr(at, ds)?;
+                if fill == 0 {
+                    self.copy_mem(val, self.r(data), size)?;
+                } else if size != 0 {
+                    // A pattern of `fill` bytes: the first copy, then doubling; all zero
+                    // needs nothing (the allocation is zeroed).
+                    let src = self.rd(self.r(data), u64::from(fill))?;
+                    if src.iter().any(|&b| b != 0) {
+                        let src = src.to_vec();
+                        let out = self.wr(val, size)?;
+                        for c in out.chunks_exact_mut(fill as usize) {
+                            c.copy_from_slice(&src);
+                        }
+                    }
+                }
+                // The frame's own statements must not free the object.
+                let end = u32::try_from(self.temp.len())
+                    .map_err(|_| Fault::Runtime("temporary memory exceeds 4 GiB".into()))?;
+                self.top().temp_base = end;
+                self.set(dst, at);
+            }
             Inst::NewFill {
                 dst,
                 ty,
@@ -4913,6 +4954,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 tf.temp_len = m.temp.len() as u64;
                 tf.temp_cap = m.temp.capacity() as u64;
                 tf.temp_roots = m.troots.len() as u64;
+                tf.temp_base = u64::from(m.frames[m.frames.len() - 1].temp_base);
             }
             _ => m.tier_view(tf),
         }

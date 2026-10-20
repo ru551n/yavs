@@ -548,6 +548,21 @@ pub enum Inst {
         fill: u32,
         shared: bool,
     },
+    /// A `NewFill` whose object lives in the frame's temporary memory instead of a heap: the
+    /// bytes are allocated there and the frame's temporary base is raised over them, so the
+    /// frame's own `Stmt` markers keep them and the caller's next `Stmt` frees them (as it
+    /// frees what the frame returned in temporaries). `dst` is the address of the object (what
+    /// `Deref` of the heap handle would give). Made only by the optimiser, for the storage of
+    /// a local composite variable of a subprogram that cannot suspend, of a type without
+    /// handles.
+    NewFrame {
+        dst: Reg,
+        desc: Reg,
+        dsize: u32,
+        data: Reg,
+        size: Reg,
+        fill: u32,
+    },
     /// `deallocate`: frees the object the access variable at `ptr` designates and sets the
     /// variable to null; null is a no-op.
     Free {
@@ -984,6 +999,18 @@ impl Inst {
                 ..
             } => {
                 d(dst, h);
+                f(desc, Use, p);
+                f(data, Use, p);
+                f(size, Use, i);
+            }
+            Inst::NewFrame {
+                dst,
+                desc,
+                data,
+                size,
+                ..
+            } => {
+                d(dst, p);
                 f(desc, Use, p);
                 f(data, Use, p);
                 f(size, Use, i);

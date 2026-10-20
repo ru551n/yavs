@@ -1066,6 +1066,15 @@ areas are on #443 (dispatch, frame templates), #422 (collection) and #338 (inlin
 of process variables between suspensions, temporaries of constant size in frame slots, the dynamic-bound local
 arrays that are heap objects per call (`New` + `Deref` + collection).
 
+### Verification-library testbenches, round 2 (#444)
+
+Same method (CPU seconds, minimum of 3 interleaved runs of `--threads 1` release binaries, interpreter tier, host
+load 10 to 30). Every row is one commit; the "before" column is the binary of the previous row.
+
+| Change | design 3 before | after | design 4 before | after |
+|---|---|---|---|---|
+| Local composite variables of subprograms that cannot suspend live in the frame's temporary memory (`Inst::NewFrame`, decisions.md "Local composite variables live in the frame's temporary memory") | 1.81 | 1.61 | 0.45 | 0.42 |
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

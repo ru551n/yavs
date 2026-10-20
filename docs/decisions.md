@@ -2396,3 +2396,24 @@ user's performance priority:
   instructions per default value and per choice.
 - **For a future cache of optimised code:** the key must include whether `keep_variables` was
   called; today only unoptimised IR is cached.
+
+## Local composite variables live in the frame's temporary memory (yavs-ir `opt.rs`, yavs-interp, #444)
+
+- **What:** the storage of a local array or record variable (the `[data, dope, handle, descriptor]`
+  slot over a heap object) of a function or procedure that cannot suspend becomes `Inst::NewFrame`:
+  the object `[descriptor][value]` is allocated in the machine's temporary memory and the frame's
+  temporary base is raised over it, so the frame's own `Stmt` markers keep it. The handle slot
+  stays null. Only the optimiser makes it (`Opt::frame_objects`), only for objects made once per
+  call (not on a cycle of the flow graph), of types without handles, whose handle nothing uses
+  but the `Deref` and the store into the variable's handle slot, never while `opt::keep_variables`
+  is set (a debugger).
+- **Why:** such a variable cost a heap allocation, a copy, a table entry and a share of every
+  collection per call (2.5 million objects, 12 percent of the queue/scoreboard testbench).
+  Nothing can outlive the call that holds a pointer into the memory except a result, and a
+  result in temporary memory (a concatenation, a string returned by a native) already lives only
+  until the caller's next statement; a callee's frame leaves its temporary memory in place on
+  return, so a returned pointer into the variable is valid exactly as long as the other results.
+- **Not changed:** objects of a process, of a shared variable, of a subprogram that may wait
+  (a suspended frame keeps its temporaries, but the rule is kept simple) and allocators
+  (`new`), which stay heap objects.
+

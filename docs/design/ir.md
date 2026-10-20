@@ -609,12 +609,12 @@ What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
 | Runtime functions are absolute symbols | `CallNative`, signal ops and checked helpers lower to calls of the same `yavs-rt` functions the interpreter calls; no semantics are re-implemented in LLVM IR beyond i64/f64 arithmetic |
 | A `#[repr(C)]` state pointer per process | frame slots and instance data have one byte layout (`FrameLayout`, `Layout`) used by both tiers |
 | Background compile thread, atomic function pointer swap | `Func.native: AtomicPtr` (in a side table, `Program` stays immutable) |
-| O2 time grows superlinearly: 0.15 s at 10k, 0.8 s at 40k, 3.8 s at 100k instructions | **threshold: `Func.size <= 40_000` IR instructions is compiled at O2, larger stays interpreted** (rule 5); an O0 band (40k to 300k) is an M6 option |
+| O2 time grows superlinearly: 0.15 s at 10k, 0.8 s at 40k, 3.8 s at 100k instructions | **threshold: `Func.size <= 50_000` IR instructions is compiled at O2, larger stays interpreted** unless `--tier-max-size` raises it (user, 2026-10-19, #126); an O0 band above it is an M6 option |
 
 **Tier-up protocol.**
 
 1. Each `Func` has an entry counter in a side table. When a process `Func` reaches N resumptions
-   (default 1000) or a subprogram N calls, and `size <= 40k`, it is queued for compilation.
+   (default 1000) or a subprogram N calls, and `size <= 50k`, it is queued for compilation.
 2. The compiled entry is `fn(frame: *mut u8, inst: *const u8, rt: *mut RtCtx, resume: u32) -> u32`;
    it switches on `resume` to the state after the matching `Suspend` (the suspension invariant
    makes the frame bytes the whole state). Return: `Done | Suspended(resume) | Error | CallInterp(func)`.
@@ -624,12 +624,18 @@ What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
 4. The debug loop never runs JIT code: attaching a debugger with breakpoints pins processes to the
    interpreter.
 
-**As implemented (M6, `docs/decisions.md` "LLVM tier: side exits to the interpreter"):**
+**As implemented (M6, `docs/decisions.md` "LLVM tier: side exits to the interpreter", accepted
+by the user, 2026-10-19):**
 compiled code runs on the interpreter frame's registers, slots and temporary area (`TierFrame`)
 and returns to the interpreter at every call, return, wait, report and slow path; memory
 instructions reach other objects through the interpreter's own lookup (`TierHost::object`);
-other instructions it does not lower go through a `yavs_rt_step` callback. `--tier=llvm` compiles everything before time 0; the tier-up counters
-and background compilation above are not built yet (#125).
+other instructions it does not lower go through a `yavs_rt_step` callback. `--tier=llvm` compiles everything before time 0. `--tier=auto` (#125) is the tier-up protocol
+above with these differences: the counter estimates what compiled code would save (instructions
+interpreted, less a share for each instruction that would leave compiled code), the side table is a
+per-function `OnceLock` in the tier, and the swap happens at the next jump, call or return rather
+than only at entries and resumptions (safe because both tiers share the frame and compiled code
+enters at any pc). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
+(user, 2026-10-19, #126).
 
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group
 `--tier interp` and `--tier llvm` (everything compiled, threshold ignored except over-size) and
@@ -693,7 +699,7 @@ range, division by zero and the delta limit.
 | Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
 | Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
 | Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `yavs-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
-| Q6 | Tier-up threshold | After 1000 resumptions/calls, `--jit-threshold`. |
+| Q6 | Tier-up threshold | About the compile time in interpreted instructions: 500k plus 10k per IR instruction of the function, each instruction off the interpreter's fast path counting -4 (`--tier=auto`, #125; hidden `--tier-heat` for tests). |
 | Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |
 
 ## 9. Implementation notes and deviations (yavs-ir, yavs-interp)

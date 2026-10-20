@@ -382,15 +382,28 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   never waits for the client: when too many batches are queued the newest is merged into the
   last (`merged: true`, only the last change of each value kept). A failure of the live waves
   is `E0702` (the run fails). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
-- `--tier=interp|llvm` (`run`, default `interp`): `llvm` compiles every function of the design
-  with the LLVM tier before time 0 and runs that code; the output is identical to `interp` (the
-  interpreter is the reference). Elaboration-time code (package and instance initialisation)
-  runs interpreted either way, and so does a run under `--dap`. It needs a yavs built with the
-  `llvm` cargo feature (LLVM 21):
-  otherwise `--tier=llvm` is error `E0120` (exit 2); a design the tier cannot compile is `E0121`
-  (exit 3, a bug in yavs). `--verbose` prints, on stderr, a note per function left to the
-  interpreter and how many instructions were compiled. The test runner passes neither; use
-  `yavs.sim_flags`.
+- `--tier=interp|llvm|auto` (`run`, default `auto` in a yavs built with the `llvm` cargo
+  feature, else `interp`): `llvm` compiles every function of the
+  design with the LLVM tier before time 0 and runs that code; `auto` starts in the interpreter
+  and compiles each function that becomes hot (once the instructions it ran in the interpreter
+  would have paid for its compilation) at the cheapest optimisation level on one background
+  thread, swapping the code in while the simulation runs, which never waits for it.
+  The output is identical to `interp` whatever the tier and whenever compilation finishes (the
+  interpreter is the reference). At the end of an `auto` run, functions still queued are
+  dropped; if one is still being compiled, yavs flushes its output and exits at once without
+  running exit handlers, unless `--load` or `--vhpi` libraries are loaded: then it waits for
+  that compilation so their exit handlers run. Elaboration-time
+  code (package and instance initialisation) runs interpreted either way, and so does a run
+  under `--dap`. `--tier-max-size=N` (default 50000): with `llvm` or `auto`, a function of more
+  than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR`
+  (hidden, for tests and tuning): with `auto`, a function is hot once the interpreter has run
+  BASE plus PER_INSTR per IR instruction of it (`1,0`: from its first call or jump). Both tiers need a yavs
+  built with the `llvm` cargo feature (LLVM 21): otherwise asking for them is error `E0120` (exit 2); a
+  design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
+  bug in yavs). `--verbose` prints, on stderr, a note per function left to the
+  interpreter and how many instructions were compiled (`llvm`), or a note per hot function as
+  the compile thread takes it (`auto`, so their order and number depend on timing). The test
+  runner passes neither; use `yavs.sim_flags`.
 - Threads: yavs defaults to `--threads=1`. The test runner already runs `-p N`
   simulations in parallel and never passes a thread count; a user who wants
   parallel process evaluation inside one simulation opts in with

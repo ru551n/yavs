@@ -140,11 +140,22 @@ pub struct RunArgs {
     /// Load a VHPI plugin, `LIB[:ENTRY]`.
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
-    /// Execution tier: `interp`, or `llvm` to compile every function with LLVM before time 0
-    /// (needs a yavs built with the `llvm` feature).
-    #[arg(long, value_enum, default_value = "interp")]
+    /// Execution tier: `interp`; `llvm` to compile every function with LLVM before time 0; or
+    /// `auto` to compile the functions that become hot on a background thread while the
+    /// simulation runs (both need a yavs built with the `llvm` feature). Default: `auto` in a
+    /// yavs built with the LLVM tier, else `interp`.
+    #[arg(long, value_enum, default_value = DEFAULT_TIER)]
     tier: TierArg,
-    /// Print notes on how the run is set up (functions the LLVM tier leaves interpreted).
+    /// With `--tier=llvm` or `auto`: functions of more than N IR instructions stay
+    /// interpreted (compile time grows faster than their size).
+    #[arg(long, value_name = "N", default_value = "50000")]
+    tier_max_size: usize,
+    /// With `--tier=auto`: compile a function once the interpreter has run BASE of its
+    /// instructions plus PER_INSTR per IR instruction it has (for tests and tuning).
+    #[arg(long, value_name = "BASE,PER_INSTR", value_parser = heat, hide = true)]
+    tier_heat: Option<(u32, u32)>,
+    /// Print notes on how the run is set up (functions the LLVM tier leaves interpreted or
+    /// compiles).
     #[arg(long)]
     verbose: bool,
     /// Run under a Debug Adapter Protocol client: on 127.0.0.1:PORT (0 picks a free port) or
@@ -160,6 +171,14 @@ pub struct RunArgs {
     plusargs: Vec<String>,
 }
 
+fn heat(s: &str) -> Result<(u32, u32), String> {
+    let n = |v: &str| v.trim().parse::<u32>().map_err(|e| format!("`{v}`: {e}"));
+    let (b, k) = s
+        .split_once(',')
+        .ok_or_else(|| format!("expected BASE,PER_INSTR, found `{s}`"))?;
+    Ok((n(b)?, n(k)?))
+}
+
 fn plusarg(s: &str) -> Result<String, String> {
     if s.starts_with('+') && s.len() > 1 {
         Ok(s.to_string())
@@ -168,10 +187,19 @@ fn plusarg(s: &str) -> Result<String, String> {
     }
 }
 
+/// `auto` where the LLVM tier is built in: its CPU is at most 1.01x the interpreter's on the
+/// shared benchmarks and down to 0.89x (STATUS.md "llvm", docs/decisions.md "LLVM tier").
+const DEFAULT_TIER: &str = if cfg!(feature = "llvm") {
+    "auto"
+} else {
+    "interp"
+};
+
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TierArg {
     Interp,
     Llvm,
+    Auto,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -455,20 +483,103 @@ pub fn elab(
     }
 }
 
-/// Compile the program with the LLVM tier and run it from now on (`--tier=llvm`); the error.
+/// Ends tier-up when the run is over (`AutoTier::stop`): `end` at the normal end, without
+/// waiting for a function still compiling; on any other return the drop waits for it.
 #[cfg(feature = "llvm")]
-fn use_llvm(rt: Option<&yavs_interp::Runtime>, verbose: bool) -> Option<Diagnostic> {
-    let rt = rt?;
-    let tier = match yavs_llvm::compile(&rt.prog, yavs_llvm::OptLevel::O2) {
-        Ok(t) => t,
-        Err(e) => {
-            return Some(
-                Diagnostic::error("E0121", "the LLVM tier cannot compile the design")
-                    .with_note(e.to_string())
-                    .with_note("this is a bug in yavs"),
-            );
+struct StopTierUp(std::sync::Arc<yavs_llvm::AutoTier>);
+
+#[cfg(feature = "llvm")]
+impl StopTierUp {
+    /// Exit with `code` at once if the compile thread is still busy, so the run never waits
+    /// for compilation; with `keep_exit` (foreign libraries or VHPI plugins loaded, whose exit
+    /// handlers must run) wait for it instead.
+    fn end(self, code: u8, keep_exit: bool) {
+        if !self.0.stop(keep_exit) {
+            yavs_llvm::exit_now(code);
         }
+    }
+}
+
+#[cfg(feature = "llvm")]
+impl Drop for StopTierUp {
+    fn drop(&mut self) {
+        self.0.stop(true);
+    }
+}
+
+#[cfg(not(feature = "llvm"))]
+struct StopTierUp;
+
+#[cfg(not(feature = "llvm"))]
+impl StopTierUp {
+    fn end(self, _: u8, _: bool) {}
+}
+
+/// Set up `--tier=llvm` (compile the program now) or `--tier=auto` (start tier-up, stopped
+/// when the returned guard drops).
+#[cfg(feature = "llvm")]
+fn use_tier(
+    rt: Option<&yavs_interp::Runtime>,
+    a: &RunArgs,
+) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    let Some(rt) = rt else {
+        return Ok(None);
     };
+    let bug = |e: yavs_llvm::Error| {
+        Box::new(
+            Diagnostic::error("E0121", "the LLVM tier cannot compile the design")
+                .with_note(e.to_string())
+                .with_note("this is a bug in yavs"),
+        )
+    };
+    let opt = yavs_llvm::OptLevel::O2;
+    match a.tier {
+        TierArg::Interp => Ok(None),
+        TierArg::Llvm => {
+            let tier = yavs_llvm::compile(&rt.prog, opt, a.tier_max_size).map_err(bug)?;
+            use_llvm(rt, tier, a.verbose);
+            Ok(None)
+        }
+        TierArg::Auto => {
+            let heat = a
+                .tier_heat
+                .map_or(yavs_llvm::Heat::DEFAULT, |(base, per_instr)| {
+                    yavs_llvm::Heat { base, per_instr }
+                });
+            let prog = rt.prog.clone();
+            let verbose = a.verbose;
+            let note: yavs_llvm::Note = Box::new(move |f, why| {
+                if !verbose {
+                    return;
+                }
+                let name = prog.func(f).map_or("?", |f| f.name.as_str());
+                let n = prog.func(f).map_or(0, |f| f.code.len());
+                match why {
+                    Ok(t) => eprintln!(
+                        "note: `{name}` ({f}, {n} IR instructions) is hot: compiled by --tier=auto in {} ms",
+                        t.as_millis()
+                    ),
+                    Err(why) => {
+                        eprintln!("note: `{name}` ({f}) is hot but stays interpreted: {why}")
+                    }
+                }
+            });
+            let t = yavs_llvm::AutoTier::start(
+                rt,
+                yavs_llvm::OptLevel::O0,
+                a.tier_max_size,
+                heat,
+                note,
+            )
+            .map_err(bug)?;
+            Ok(Some(StopTierUp(t)))
+        }
+    }
+}
+
+/// Run the compiled program from now on (`--tier=llvm`).
+#[cfg(feature = "llvm")]
+fn use_llvm(rt: &yavs_interp::Runtime, tier: yavs_llvm::LlvmTier, verbose: bool) {
     if verbose {
         for (f, why) in &tier.notes {
             let name = rt.prog.func(*f).map_or("?", |f| f.name.as_str());
@@ -487,19 +598,26 @@ fn use_llvm(rt: Option<&yavs_interp::Runtime>, verbose: bool) -> Option<Diagnost
         );
     }
     rt.set_tier(std::sync::Arc::new(tier));
-    None
 }
 
 #[cfg(not(feature = "llvm"))]
-fn use_llvm(_: Option<&yavs_interp::Runtime>, _: bool) -> Option<Diagnostic> {
-    Some(
+fn use_tier(
+    _: Option<&yavs_interp::Runtime>,
+    a: &RunArgs,
+) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    let name = match a.tier {
+        TierArg::Interp => return Ok(None),
+        TierArg::Llvm => "llvm",
+        TierArg::Auto => "auto",
+    };
+    Err(Box::new(
         Diagnostic::error(
             "E0120",
-            "`--tier=llvm` needs a yavs built with the LLVM tier",
+            format!("`--tier={name}` needs a yavs built with the LLVM tier"),
         )
         .with_note("this yavs was built without the `llvm` cargo feature")
         .with_help("use `--tier=interp`, or build yavs with `--features llvm` (needs LLVM 21)"),
-    )
+    ))
 }
 
 pub fn run(
@@ -654,13 +772,15 @@ pub fn run(
             return out.finish(if err.exit_status() == 101 { 3 } else { 2 });
         }
     };
-    if a.tier == TierArg::Llvm
-        && let Some(d) = use_llvm(built.as_ref().map(|b| &*b.rt), a.verbose)
-    {
-        let code = if d.code == "E0120" { 2 } else { 3 };
-        out.emit(&none, &d);
-        return out.finish(code);
-    }
+    // Held to the end of the run: `end` or a drop ends tier-up.
+    let tier_up = match use_tier(built.as_ref().map(|b| &*b.rt), &a) {
+        Ok(g) => g,
+        Err(d) => {
+            let code = if d.code == "E0120" { 2 } else { 3 };
+            out.emit(&none, &d);
+            return out.finish(code);
+        }
+    };
     sim.subscribe(Box::new(Printer));
     let rt = built.as_ref().map(|b| b.rt.clone());
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
@@ -794,6 +914,14 @@ pub fn run(
     }
     let code = if out.errors > 0 { code.max(1) } else { code };
     let done = out.finish(code);
+    if let Some(t) = tier_up {
+        // `end` may end the process at once, without destructors: the files the design left
+        // open are written out and closed first.
+        if let Some(rt) = &rt {
+            rt.close_files();
+        }
+        t.end(code, !a.load.is_empty() || !a.vhpi.is_empty());
+    }
     // The process ends now: freeing the design and the runtime piece by piece only hands memory
     // back to an operating system that takes it anyway (a tenth of the run for a large design).
     // Runs with a waveform file or a plugin keep their orderly teardown. The files the design

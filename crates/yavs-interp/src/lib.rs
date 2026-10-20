@@ -253,6 +253,15 @@ pub trait Tier: Send + Sync {
         fr: &mut TierFrame,
         host: &mut dyn TierHost,
     ) -> Option<u32>;
+
+    /// Whether `func` has compiled code now: the interpreter calls `run` only then.
+    fn ready(&self, _func: FuncId) -> bool {
+        true
+    }
+
+    /// `func` reached its threshold (`Runtime::set_heat`): compile it. Called from
+    /// simulation threads, so it must not block.
+    fn hot(&self, _func: FuncId) {}
 }
 
 /// The interpreter's side of [`Tier::run`].
@@ -289,6 +298,12 @@ pub mod space {
     pub use crate::exec::{CONST, FRAME, INST, PKG, SHARED, TEMP};
 }
 
+/// What an instruction off the interpreter's fast path takes off a function's tier-up count
+/// (`Runtime::set_heat`): leaving compiled code and entering it again costs about as much as
+/// compiled code saves on that many interpreted instructions (measured, #125).
+#[cfg(feature = "tier")]
+const COOL: u32 = 4;
+
 /// A program bound for execution, shared by all processes of a simulation.
 pub struct Runtime {
     pub prog: Arc<Program>,
@@ -316,7 +331,14 @@ pub struct Runtime {
     /// Calls run again for their side effects (`set_replay`): their reports without a
     /// kernel were printed and counted the first time.
     pub(crate) replay: std::sync::atomic::AtomicBool,
+    /// Per function: the tier-up count and its threshold (`set_heat`).
+    #[cfg(feature = "tier")]
+    heat: std::sync::OnceLock<Box<[Count]>>,
 }
+
+/// A function's tier-up count and its threshold (`Runtime::set_heat`).
+#[cfg(feature = "tier")]
+pub(crate) type Count = (std::sync::atomic::AtomicU32, u32);
 
 fn usage(m: String) -> SimError {
     SimError::new(ErrorKind::Usage(m))
@@ -379,6 +401,8 @@ impl Runtime {
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
             replay: Default::default(),
+            #[cfg(feature = "tier")]
+            heat: Default::default(),
             prog,
         }))
     }
@@ -476,6 +500,69 @@ impl Runtime {
     /// process interpreted. Returns `false` if a tier was set before.
     pub fn set_tier(&self, tier: Arc<dyn Tier>) -> bool {
         self.tier.set(tier).is_ok()
+    }
+
+    /// Estimate per function what compiled code would save and call `Tier::hot` once a
+    /// function reaches `threshold(function)` (`yavs run --tier=auto`). Every call counts the
+    /// length of the entry block and every jump the length of the block it goes to, so the
+    /// count follows the instructions interpreted (up to unconditional jumps, which the
+    /// dispatch loop skips); every instruction off the interpreter's fast path (calls,
+    /// natives, signal operations, ...) takes [`COOL`] off again, as compiled code returns to
+    /// the interpreter there and costs more than it saves. Returns `false` if counting was
+    /// set up before.
+    #[cfg(feature = "tier")]
+    pub fn set_heat(&self, threshold: impl Fn(&yavs_ir::Func) -> u32) -> bool {
+        let counts = self
+            .prog
+            .funcs
+            .iter()
+            .map(|(_, f)| (Default::default(), threshold(f)))
+            .collect();
+        self.heat.set(counts).is_ok()
+    }
+
+    /// The tier-up count of `func` and its threshold, while counting is on (`set_heat`).
+    #[cfg(feature = "tier")]
+    #[inline]
+    pub(crate) fn count(&self, func: FuncId) -> Option<&Count> {
+        self.heat.get()?.get(func.0 as usize)
+    }
+
+    /// `n` more instructions of `func` (its `count`) interpreted. The counters are racy on
+    /// purpose (a lost count only delays tier-up; `Tier::hot` may see a function twice) and
+    /// stop at the threshold.
+    #[cfg(feature = "tier")]
+    #[inline]
+    pub(crate) fn heat(&self, func: FuncId, (c, hot): &Count, n: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let was = c.load(Relaxed);
+        if was < *hot {
+            let now = was.saturating_add(n);
+            c.store(now, Relaxed);
+            if now >= *hot
+                && let Some(t) = self.tier.get()
+            {
+                t.hot(func);
+            }
+        }
+    }
+
+    /// One instruction off the fast path (`set_heat`).
+    #[cfg(feature = "tier")]
+    #[inline]
+    pub(crate) fn cool((c, hot): &Count) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let was = c.load(Relaxed);
+        if was < *hot {
+            c.store(was.saturating_sub(COOL), Relaxed);
+        }
+    }
+
+    /// Whether a function reached its threshold: only then can it have compiled code.
+    #[cfg(feature = "tier")]
+    #[inline]
+    pub(crate) fn reached((c, hot): &Count) -> bool {
+        c.load(std::sync::atomic::Ordering::Relaxed) >= *hot
     }
 
     /// Coverage counter values.

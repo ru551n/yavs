@@ -9,6 +9,7 @@ Python 3 stdlib only.
     tools/difftest/difftest.py --candidate ghdl     # report where the second reference simulator differs
     tools/difftest/difftest.py --candidate yavs     # the real thing (M2 onwards)
     tools/difftest/difftest.py --candidate yavs-llvm  # yavs with `--tier=llvm` (a yavs built with `--features llvm`)
+    tools/difftest/difftest.py --candidate yavs-auto  # yavs with `--tier=auto` (the same build)
     tools/difftest/difftest.py --bless              # regenerate .expected from the reference simulator
     tools/difftest/difftest.py --filter 'report/|env/' --jobs 4 -v
 

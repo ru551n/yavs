@@ -1503,9 +1503,33 @@ impl Machine {
                 .pre(fr.func, f)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
             let mut pc = fr.pc as usize;
+            let func = fr.func;
+            // The tier-up count (`--tier=auto`); a call counts the entry block.
+            #[cfg(feature = "tier")]
+            let count = if DEBUG { None } else { rt.count(func) };
+            #[cfg(feature = "tier")]
+            if let Some(c) = count
+                && pc == 0
+            {
+                rt.heat(func, c, pre.entry);
+            }
+            // Whether to ask the tier at this instruction: after entering the frame, a jump,
+            // a call or a return, and as long as the function runs compiled (`run_tier`).
+            // Interpreted code pays nothing per instruction; new compiled code is taken at the
+            // next jump.
+            let mut native = true;
             loop {
-                if let Some(tier) = tier {
-                    pc = self.run_tier(&**tier, prog, f, pc, ctx)?;
+                if native && let Some(tier) = tier {
+                    // A function still counting towards tier-up has no compiled code.
+                    #[cfg(feature = "tier")]
+                    let maybe = count.is_none_or(Runtime::reached);
+                    #[cfg(not(feature = "tier"))]
+                    let maybe = true;
+                    if maybe && tier.ready(func) {
+                        (pc, native) = self.run_tier(&**tier, prog, f, pc, ctx)?;
+                    } else {
+                        native = false;
+                    }
                 }
                 // Skip the definitions the frame started with (`pre.rs`).
                 pc = *pre
@@ -1529,6 +1553,13 @@ impl Machine {
                             .blocks
                             .get(b)
                             .ok_or_else(|| ice(format!("no block {b}")))?;
+                        // The block counts towards tier-up (`--tier=auto`), and a jump is
+                        // where compiled code is taken.
+                        #[cfg(feature = "tier")]
+                        if let Some(c) = count {
+                            rt.heat(func, c, blk.end - blk.start);
+                        }
+                        native = true;
                         pc = blk.start as usize;
                         if self.pause == Some(b) && self.frames.len() == 1 {
                             self.pause = None;
@@ -1672,6 +1703,12 @@ impl Machine {
                     }
                     _ => {}
                 }
+                // An instruction off the fast path: a call, a native, a signal operation, ...,
+                // where compiled code would mostly leave to the interpreter again.
+                #[cfg(feature = "tier")]
+                if !native && let Some(c) = count {
+                    Runtime::cool(c);
+                }
                 match self.step(prog, f, *inst, ctx)? {
                     Flow::Next => pc += 1,
                     Flow::Jump(b) => {
@@ -1679,6 +1716,13 @@ impl Machine {
                             .blocks
                             .get(b)
                             .ok_or_else(|| ice(format!("no block {b}")))?;
+                        // The block counts towards tier-up (`--tier=auto`), and a jump is
+                        // where compiled code is taken.
+                        #[cfg(feature = "tier")]
+                        if let Some(c) = count {
+                            rt.heat(func, c, blk.end - blk.start);
+                        }
+                        native = true;
                         pc = blk.start as usize;
                         if self.pause == Some(b) && self.frames.len() == 1 {
                             self.pause = None;
@@ -1713,8 +1757,8 @@ impl Machine {
     }
 
     /// Run compiled code of the top frame from `pc` (ir.md 5): the index of the instruction
-    /// the interpreter executes next. Compiled code steps other instructions through
-    /// `step`, which never changes the frame stack.
+    /// the interpreter executes next, and whether the function has compiled code. Compiled
+    /// code steps other instructions through `step`, which never changes the frame stack.
     fn run_tier(
         &mut self,
         tier: &dyn crate::Tier,
@@ -1722,7 +1766,7 @@ impl Machine {
         f: &Func,
         pc: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
-    ) -> R<usize> {
+    ) -> R<(usize, bool)> {
         let top = self.frames.len() - 1;
         let fr = &mut self.frames[top];
         let func = fr.func;
@@ -1748,7 +1792,7 @@ impl Machine {
         self.top().pc = pc as u32;
         match fault {
             Some(e) => Err(e),
-            None => Ok(pc),
+            None => Ok((pc, ran.is_some())),
         }
     }
 

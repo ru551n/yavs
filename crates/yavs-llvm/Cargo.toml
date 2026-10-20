@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 # LLVM is optional so `cargo build --workspace` works on machines without it.
 # Test with: cargo test -p yavs-llvm --features llvm
-llvm = ["dep:llvm-sys", "dep:yavs-interp", "dep:yavs-ir"]
+llvm = ["dep:llvm-sys", "dep:yavs-interp", "dep:yavs-ir", "yavs-interp/tier"]
 
 [dependencies]
 # Pinned to LLVM 21.1 (design rule 5). Dynamic linking keeps link memory low;

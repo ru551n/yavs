@@ -1,13 +1,14 @@
 //! The LLVM tier against the interpreter (rule 5): hand-written IR run both ways.
 #![cfg(feature = "llvm")]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime, Tier, TierFrame, TierHost};
 use yavs_ir::*;
-use yavs_llvm::{LlvmTier, OptLevel};
+use yavs_llvm::{AutoTier, Heat, LlvmTier, Note, OptLevel};
 
 /// Counts the entries into compiled code.
 struct Counting(LlvmTier, AtomicUsize);
@@ -37,7 +38,7 @@ struct Both {
 
 impl Both {
     fn new(prog: Program) -> Both {
-        let tier = yavs_llvm::compile(&prog, OptLevel::O2).unwrap();
+        let tier = yavs_llvm::compile(&prog, OptLevel::O2, usize::MAX).unwrap();
         assert!(tier.notes.is_empty(), "{:?}", tier.notes);
         Both {
             prog: Arc::new(prog),
@@ -155,7 +156,75 @@ fn integer_ops_match_the_interpreter() {
 
 #[test]
 fn loop_runs_compiled() {
-    // sum := 0; for i in 0 to n loop sum := sum + i; end loop; return sum;
+    let (prog, f) = sum();
+    let p = Both::new(prog);
+    let (a, b, n) = p.both(f, &[100_000]);
+    assert_eq!(a, Ok(5_000_050_000));
+    assert_eq!(a, b);
+    // One entry: the whole loop runs in compiled code, the interpreter only executes `Ret`.
+    assert_eq!(n, 1);
+}
+
+/// A threshold the loops of these tests pass early.
+const HOT: Heat = Heat {
+    base: 100,
+    per_instr: 10,
+};
+
+/// `--tier=auto`: the loop becomes hot while it runs in the interpreter, is compiled on the
+/// background thread and swapped in; the results never change (rule 5).
+#[test]
+fn auto_tier_compiles_hot_functions() {
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let seen = notes.clone();
+    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+    // 100k iterations, far over the threshold: compilation starts during the first call.
+    assert_eq!(call().unwrap(), Some(5_000_050_000));
+    let t0 = Instant::now();
+    while tier.compiled() == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(call().unwrap(), Some(5_000_050_000));
+    tier.stop(true);
+    let notes = notes.lock().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].0 == f && notes[0].1.is_ok(), "{notes:?}");
+}
+
+/// A hot function over `--tier-max-size` stays interpreted, with a note.
+#[test]
+fn auto_tier_skips_functions_over_the_size_cap() {
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let seen = notes.clone();
+    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
+    let tier = AutoTier::start(&rt, OptLevel::O2, 3, HOT, note).unwrap();
+    let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
+    assert_eq!(r.unwrap(), Some(5_000_050_000));
+    let t0 = Instant::now();
+    while notes.lock().unwrap().is_empty() {
+        assert!(t0.elapsed() < Duration::from_secs(60), "no note");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    tier.stop(true);
+    assert_eq!(tier.compiled(), 0);
+    let notes = notes.lock().unwrap();
+    assert_eq!(notes.len(), 1);
+    let why = notes[0].1.as_ref().unwrap_err();
+    assert!(
+        why.contains("over the size cap of 3 (--tier-max-size)"),
+        "{why}"
+    );
+}
+
+/// sum := 0; for i in 0 to n loop sum := sum + i; end loop; return sum;
+fn sum() -> (Program, FuncId) {
     let mut pb = ProgramBuilder::new();
     let f = pb.declare("sum", FuncKind::Function, None);
     let mut fb = pb.define(f);
@@ -201,12 +270,7 @@ fn loop_runs_compiled() {
     fb.at(done);
     fb.emit(Inst::Ret { v: Some(acc) });
     fb.finish();
-    let p = Both::new(pb.finish().unwrap());
-    let (a, b, n) = p.both(f, &[100_000]);
-    assert_eq!(a, Ok(5_000_050_000));
-    assert_eq!(a, b);
-    // One entry: the whole loop runs in compiled code, the interpreter only executes `Ret`.
-    assert_eq!(n, 1);
+    (pb.finish().unwrap(), f)
 }
 
 /// `function f(a, b) return <body>` where `body` builds the result from the two argument

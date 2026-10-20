@@ -6,7 +6,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 
 ## 1. Purpose and boundaries
 
-- The **LLVM tier** (M6): `compile(&Program, OptLevel) -> LlvmTier` lowers every
+- The **LLVM tier** (M6): `compile(&Program, OptLevel, max_size) -> LlvmTier` lowers every
   non-elaboration IR function to LLVM 21 and JITs it through ORC LLJIT (portable CPU, O2, Rust
   runtime callbacks as absolute symbols). `LlvmTier` implements `yavs_interp::Tier`; `yavs run
   --tier=llvm` sets it on the runtime. Design: `docs/decisions.md` "LLVM tier: side exits to the
@@ -23,9 +23,10 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   every guard failure (overflow, check, zero divisor, non-finite real, address over 4 GiB),
   which the interpreter re-executes for the identical error. Everything else goes through the
   `yavs_rt_step` callback. The open native lowerings are issues (section 6).
-- Not yet: tier-up of hot functions on a background thread (`--tier=auto`, #125), the size
-  threshold (#126, the user's), The spike (`spike.rs`) stays as
-  the JIT smoke test.
+- `AutoTier::start` (`yavs run --tier=auto`) compiles the functions the interpreter reports hot
+  (`Heat`), one at a time on one background thread; `AutoTier::stop` ends that at the end of
+  the run. The
+  spike (`spike.rs`) stays as the JIT smoke test.
 - Everything is behind the `llvm` feature (off by default), so the workspace builds without
   LLVM 21.
 - Depends on: `llvm-sys`, `yavs-ir`, `yavs-interp` (all optional, feature `llvm`). Called by: the
@@ -36,10 +37,11 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Feature gate, crate-root `#![allow(unsafe_code)]` with its comment, re-exports |
-| `src/lower.rs` | `compile`, `LlvmTier` (`Tier` impl, `notes` of functions left interpreted, inline/interpreted counts), `Mem` (what compiled code reads and writes, field offsets `MEM_*`), `Gen` (IR to LLVM per function, entry switch, guard exits, slow paths, `host`: an address to a host pointer, inline for frame addresses known in the block, else the internal `yavs_host_r`/`yavs_host_w`), `static_layout`, `yavs_rt_step` and `yavs_rt_obj` trampolines (panics carried over the JIT frames) |
+| `src/lower.rs` | `compile`, `compile_one` (one function in a module of its own), `too_big` (size cap), `enter`, `new_jit`, `LlvmTier` (`Tier` impl, `notes` of functions left interpreted, inline/interpreted counts), `Mem` (what compiled code reads and writes, field offsets `MEM_*`), `Gen` (IR to LLVM per function, entry switch, guard exits, slow paths, `host`: an address to a host pointer, inline for frame addresses known in the block, else the internal `yavs_host_r`/`yavs_host_w`), `static_layout`, `yavs_rt_step` and `yavs_rt_obj` trampolines (panics carried over the JIT frames) |
+| `src/auto.rs` | `AutoTier` (`--tier=auto`): compile thread fed by `Tier::hot` (the JIT made with the first hot function), per-function `OnceLock` entries (`Tier::ready`), `Heat` threshold, `Note` callback, `stop`, `exit_now` |
 | `src/jit.rs` | `Jit` (LLJIT, absolute symbols, lookup), `Module` (own `LLVMContext` per module), `OptLevel`, `portable_cpu`, `Error` |
 | `src/spike.rs` | Generated test functions (checked sum, `#[repr(C)]` process state, 10k-instruction body) |
-| `tests/tier.rs` | Tier against the interpreter: every integer op and range-checked op, loads and stores of every width in every reachable space, temporaries, copies, descriptors, layouts and logic elements, all on edge values (results and error texts), a loop that runs entirely compiled |
+| `tests/tier.rs` | Tier against the interpreter: every integer op and range-checked op, loads and stores of every width in every reachable space, temporaries, copies, descriptors, layouts and logic elements, all on edge values (results and error texts), a loop that runs entirely compiled, `AutoTier` compiling a hot loop and skipping one over the size cap |
 | `tests/jit.rs` | Spike tests: overflow trap into Rust, struct state, reference semantics, unresolved symbol by name, background compile and swap |
 | `examples/measure.rs` | JIT cost per function size (table in STATUS.md) |
 | `WINDOWS.md` | Where LLVM 21 comes from on Windows, llvm-sys static linking, ORC on COFF, CI recipe |
@@ -59,9 +61,10 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | Side exits: compiled code works on the interpreter frame, returns to the interpreter at calls, waits, reports and every slow or error path, steps other instructions through `yavs_rt_step` | Rule 5 by construction; one implementation of frames, heap and traces | `docs/decisions.md` "LLVM tier: side exits" |
 | Memory instructions run natively only where the bytes lie in memory `Mem` reaches and no error is possible; anything else steps the whole instruction, before any side effect | Rule 5: one implementation of address spaces and errors | `docs/decisions.md` "LLVM tier: side exits" (Memory) |
 | A function whose generated LLVM does not verify, or that names a register beyond its frame, stays interpreted with a note (`--verbose`); never a guess | Fail clearly, per function | `src/lower.rs` `compile` |
-| Proposed size threshold: O2 up to 40k IR instructions per function, larger stays interpreted, big processes as several functions | Superlinear codegen time | `docs/decisions.md` "LLVM bindings"; decision issue #126 |
+| Size cap: a function of more than 50k yavs IR instructions stays interpreted unless `--tier-max-size` raises it (both tiers); `--tier=auto` compiles only hot functions | Superlinear codegen time (user, 2026-10-19) | `docs/decisions.md` "LLVM bindings"; #126 |
+| `--tier=auto`: the interpreter's estimate of what compiled code saves (feature `yavs-interp/tier`, on with `llvm`: block lengths at calls and jumps, minus 4 per instruction off its fast path) calls `Tier::hot` at `Heat::DEFAULT` (500k plus 10k per IR instruction, about the compile time at O0); ONE compile thread, one module per function at O0 (the CLI picks it: O1 codegen costs 10x, IR passes before O0 codegen do not shrink it); entries published through `OnceLock`, swapped in at the next jump, call or return; `stop(false)` drops the queue and joins an idle thread, and when it is busy the CLI closes the design's open files (`Runtime::close_files`) and ends the process with `exit_now` (`_exit` after flushing) | The simulation and the exit never wait for compilation; output independent of compile timing (rule 5); LLVM static destructors never run under the compile thread; compile only what pays (CPU of the run never above the interpreter's beyond noise, STATUS.md "llvm") | `docs/decisions.md` "LLVM tier: side exits", #125 |
 | Time resolution and integer semantics identical in every tier (checked i64) | Rule 7 | `docs/plan.md` rule 7 |
-| `unsafe` denied in `Cargo.toml`, allowed at the crate root only; raw handles never leave `jit`/`lower`/`spike` | Root `AGENTS.md` rule 11 | `src/lib.rs`, `Cargo.toml` |
+| `unsafe` denied in `Cargo.toml`, allowed at the crate root only; raw handles never leave `jit`/`lower`/`spike` (`auto` only declares `fflush` and `_exit` for `exit_now`) | Root `AGENTS.md` rule 11 | `src/lib.rs`, `Cargo.toml` |
 
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
@@ -74,7 +77,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 - Codegen cost grows faster than linearly with function size; measure with
   `examples/measure.rs` before changing thresholds, one process per row.
 - CI (`llvm` job in `.github/workflows/ci.yml`, #127, #128) clippys, tests and runs 47 difftest cases
-  with `--tier=llvm` on Linux x86_64, Linux aarch64 (native runner) and Windows x86_64 (tests only,
+  with `--tier=llvm` and with `--tier=auto --tier-heat=1,0` (at 1 and 4 threads) on Linux x86_64, Linux aarch64 (native runner) and Windows x86_64 (tests only,
   the difftest harness needs a POSIX shell). Windows needs the steps in WINDOWS.md section 4: static
   CRT, empty `libxml2s.lib`, SDK import libs copied into the LLVM `lib` dir.
 
@@ -87,7 +90,7 @@ cargo clippy -p yavs-llvm --features llvm --all-targets -- -D warnings
 cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O0|O1|O2]
 ```
 
-- No diagnostic codes of its own: the `yavs` binary reports `--tier=llvm` problems (`E0120`,
+- No diagnostic codes of its own: the `yavs` binary reports `--tier=llvm`/`auto` problems (`E0120`,
   `E0121`); a code of this crate would take a range in `crates/yavs-diag/src/lib.rs`.
 
 ## 6. Coordination
@@ -96,9 +99,12 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
   tools/difftest/difftest.py --candidate yavs-llvm` (must equal `--candidate yavs`), and
   `yavs run --tier=llvm --verbose` for what each design leaves to the interpreter.
 
+- `--candidate yavs-auto` runs the corpus with `--tier=auto` (also must equal `yavs`);
+  `YAVS_RUN_FLAGS=--tier-heat=1,0` compiles every function from its first call or jump, so the
+  swap-ins happen in the middle of each test.
+
 - Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
-  tiering and background compilation (`--tier=auto`); #126 decision: O2 threshold of 40k
-  instructions; native lowering
+  LLVM tier milestone (tier-up done; open until the M2 to M5 suites pass LLVM-only); native lowering
   still to do, by IR construct: #336 calls between compiled functions, #337 natives, foreign calls and reports, #338 logic
   arrays (`LGet`/`LSet` done),
   #339 signals and waits, #340 heap, #341 real conversions and powers. Epic: #144 (M6).

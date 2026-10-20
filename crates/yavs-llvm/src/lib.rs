@@ -14,12 +14,16 @@
 #![allow(unsafe_code)]
 
 #[cfg(feature = "llvm")]
+mod auto;
+#[cfg(feature = "llvm")]
 mod jit;
 #[cfg(feature = "llvm")]
 mod lower;
 #[cfg(feature = "llvm")]
 pub mod spike;
 
+#[cfg(feature = "llvm")]
+pub use auto::{AutoTier, Heat, Note, exit_now};
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
 #[cfg(feature = "llvm")]

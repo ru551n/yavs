@@ -35,12 +35,15 @@ YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} 
 # yavs with every function compiled by the LLVM tier (needs a yavs built with `--features llvm`);
 # compared with the same `.expected`, so it must match the interpreter (rule 5).
 YAVS_LLVM = YAVS.replace("--threads=", "--tier=llvm --threads=")
-TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS, "yavs-llvm": YAVS_LLVM}
+# yavs compiling hot functions in the background (`--tier=auto`): identical output whenever
+# compilation finishes.
+YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
+TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904"}
+RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904"}
 # Fields masked by default per builtin candidate (reference prints them all).
-DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": "", "yavs-llvm": ""}
+DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": "", "yavs-llvm": "", "yavs-auto": ""}
 
 UNITS = {"fs": 1, "ps": 10**3, "ns": 10**6, "us": 10**9, "ms": 10**12, "sec": 10**15, "s": 10**15}
 

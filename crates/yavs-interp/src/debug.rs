@@ -305,8 +305,8 @@ impl<'a> FrameView<'a> {
         f.locals
             .iter()
             .filter_map(|l| {
-                let bytes = fr
-                    .slots
+                let bytes = m
+                    .fslots(i)?
                     .get(l.slot as usize..l.slot as usize + l.size as usize)?;
                 Some(LocalView {
                     name: &l.name,

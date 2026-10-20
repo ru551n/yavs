@@ -158,8 +158,12 @@ pub(crate) fn add_addr(a: u64, delta: u64) -> R<u64> {
 pub(crate) struct Frame {
     pub func: FuncId,
     pub pc: u32,
-    pub slots: Vec<u8>,
-    pub regs: Vec<u64>,
+    /// First register of the frame in `Machine::regs`.
+    pub rbase: usize,
+    /// The frame's slots: all of `Machine::root` for frame 0, else `slen` bytes of
+    /// `Machine::sstack` from `sbase`.
+    pub sbase: usize,
+    pub slen: usize,
     /// Static link: index of the lexically enclosing frame.
     pub link: Option<u32>,
     /// Caller register receiving the result.
@@ -195,6 +199,29 @@ struct Waits {
     stmt: Option<StmtId>,
 }
 
+/// The registers of all frames in one stack; `[]` reaches the top frame's.
+#[derive(Default)]
+pub(crate) struct Regs {
+    pub v: Vec<u64>,
+    /// The top frame's first register.
+    pub base: usize,
+}
+
+impl std::ops::Index<usize> for Regs {
+    type Output = u64;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &u64 {
+        &self.v[self.base + i]
+    }
+}
+
+impl std::ops::IndexMut<usize> for Regs {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut u64 {
+        &mut self.v[self.base + i]
+    }
+}
+
 pub(crate) struct Machine {
     pub rt: Arc<Runtime>,
     /// A second handle on `rt` that `exec` takes while it runs, so an activation does not
@@ -203,9 +230,13 @@ pub(crate) struct Machine {
     pub inst: Arc<InstData>,
     pub drivers: Vec<ProcDriver>,
     pub frames: Vec<Frame>,
-    /// Registers of the top frame, kept out of it for direct access (`push_frame`,
-    /// `pop_frame`); the top frame's own `regs` is empty meanwhile.
-    regs: Vec<u64>,
+    /// The registers of all frames, one stack (`push_frame`, `pop_frame`; never push or pop
+    /// `frames` directly).
+    regs: Regs,
+    /// The slots of frame 0 (a process's variables survive its suspensions).
+    root: Vec<u8>,
+    /// The slots of the other frames, one stack: no per-call allocation.
+    sstack: Vec<u8>,
     pub heap: Heap,
     pub temp: Vec<u8>,
     pub sh: Option<SharedState>,
@@ -224,34 +255,27 @@ pub(crate) struct Machine {
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
-    /// Slot and register vectors of returned frames, reused by the next calls.
-    spare: Vec<(Vec<u8>, Vec<u64>)>,
     /// Argument cells of the call being made (`call_with`).
     cells: Vec<u64>,
     /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
     bytes: Vec<u8>,
-    /// `regs`, `temp` and `spare` went to the thread's scratch at the last suspension
+    /// `regs` and `temp` went to the thread's scratch at the last suspension
     /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
     released: bool,
 }
 
-/// The working vectors of the process running on this thread: registers, temporaries and
-/// spare frame vectors. A suspended process owns none of them (no register or temporary is
+/// The working vectors of the process running on this thread: registers and temporaries. A suspended process owns none of them (no register or temporary is
 /// live across a suspension, ir.md 1.2), so a design of thousands of processes keeps one set
 /// per thread instead of a set each (#409).
 #[derive(Default)]
 struct Scratch {
     regs: Vec<u64>,
     temp: Vec<u8>,
-    spare: Vec<(Vec<u8>, Vec<u64>)>,
 }
 
 thread_local! {
     static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
 }
-
-/// Returned frames whose vectors `Machine::spare` keeps.
-const SPARE_FRAMES: usize = 16;
 
 struct LayoutMemo {
     dsz: u64,
@@ -517,7 +541,9 @@ impl Machine {
             inst,
             drivers,
             frames: Vec::new(),
-            regs: Vec::new(),
+            regs: Regs::default(),
+            root: Vec::new(),
+            sstack: Vec::new(),
             heap: Heap::new(heap::PRIVATE),
             temp: Vec::new(),
             sh: None,
@@ -529,7 +555,6 @@ impl Machine {
             ieee_stop: false,
             ieee_fallback: false,
             layouts: Vec::new(),
-            spare: Vec::new(),
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
@@ -544,9 +569,8 @@ impl Machine {
         self.released = false;
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
-            std::mem::swap(&mut self.regs, &mut s.regs);
+            std::mem::swap(&mut self.regs.v, &mut s.regs);
             std::mem::swap(&mut self.temp, &mut s.temp);
-            std::mem::swap(&mut self.spare, &mut s.spare);
         });
         // Registers are written before they are read: stale values are harmless, except
         // those a frame starts with (`pre.rs`).
@@ -557,9 +581,11 @@ impl Machine {
                 let pre = rt
                     .pre(id, f)
                     .ok_or_else(|| ice(format!("no function {id}")))?;
-                pre.fill(&mut self.regs, 0)?;
+                self.regs.v.clear();
+                self.regs.base = 0;
+                pre.fill(&mut self.regs.v, 0)?;
             }
-            None => self.regs.clear(),
+            None => self.regs.v.clear(),
         }
         self.temp.clear();
         Ok(())
@@ -575,9 +601,8 @@ impl Machine {
         self.released = true;
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
-            s.regs = std::mem::take(&mut self.regs);
+            s.regs = std::mem::take(&mut self.regs.v);
             s.temp = std::mem::take(&mut self.temp);
-            s.spare = std::mem::take(&mut self.spare);
         });
     }
 
@@ -597,40 +622,101 @@ impl Machine {
             .prog
             .func(func)
             .ok_or_else(|| ice(format!("no function {func}")))?;
-        let mut fr = self.frame_for(f, func, None)?;
+        self.push_frame(f, func, None, None)?;
         let mut k = 0;
         for p in &f.params {
             let n = if p.class == ParamClass::Signal { 2 } else { 1 };
             let cells = args
                 .get(k..k + n)
                 .ok_or_else(|| Fault::Runtime(format!("missing argument {}", p.name)))?;
-            store_cells(&mut fr.slots, p.slot, p.width, cells)?;
+            store_cells(self.top_slots(), p.slot, p.width, cells)?;
             k += n;
         }
-        self.push_frame(fr);
         Ok(())
     }
 
-    /// Push `fr` as the new top frame, moving its registers to `Machine::regs`.
-    pub(crate) fn push_frame(&mut self, mut fr: Frame) {
-        let regs = std::mem::take(&mut fr.regs);
-        if let Some(top) = self.frames.last_mut() {
-            top.regs = std::mem::replace(&mut self.regs, regs);
-        } else {
-            self.regs = regs;
+    /// Push a frame for `func` (`f`) on the stacks: its registers (`Pre::fill`) and zeroed
+    /// slots at the top; `ret` is the caller register receiving the result.
+    pub(crate) fn push_frame(
+        &mut self,
+        f: &Func,
+        func: FuncId,
+        link: Option<u32>,
+        ret: Option<Reg>,
+    ) -> R<()> {
+        let idx = self.frames.len();
+        if idx >= self.rt.limits.max_depth as usize {
+            return self.depth_fail(f);
         }
-        self.frames.push(fr);
+        let pre = self
+            .rt
+            .pre(func, f)
+            .ok_or_else(|| ice(format!("no function {func}")))?;
+        let slen = f.frame as usize;
+        let (rbase, sbase) = if idx == 0 {
+            self.regs.v.clear();
+            self.root.clear();
+            self.root.resize(slen, 0);
+            (0, 0)
+        } else {
+            let sbase = self.sstack.len();
+            self.sstack.resize(sbase + slen, 0);
+            (self.regs.v.len(), sbase)
+        };
+        self.regs.base = rbase;
+        pre.fill(&mut self.regs.v, idx as u32)?;
+        // A root frame entered with the shared state attached is elaboration code
+        // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
+        // root frame before it first takes the shared state, and allocates in the shared
+        // heap when it is serial: what it allocates may end up in a shared variable (#303).
+        let shared_alloc = match self.frames.last() {
+            Some(top) => top.shared_alloc,
+            None => {
+                self.sh.is_some() || f.kind == FuncKind::Process && self.rt.prog.is_serial(func)
+            }
+        };
+        self.frames.push(Frame {
+            func,
+            pc: 0,
+            rbase,
+            sbase,
+            slen,
+            link,
+            ret,
+            temp_base: self.temp.len(),
+            shared_alloc,
+        });
+        Ok(())
     }
 
-    /// Pop the top frame with its registers; the caller's registers become current.
+    #[cold]
+    #[inline(never)]
+    fn depth_fail(&self, f: &Func) -> R<()> {
+        rt_err(format!(
+            "call depth limit {} exceeded calling `{}` (unbounded recursion?)",
+            self.rt.limits.max_depth, f.name
+        ))
+    }
+
+    /// Pop the top frame; the caller's registers become current.
     pub(crate) fn pop_frame(&mut self) -> Option<Frame> {
-        let mut fr = self.frames.pop()?;
-        let below = self
-            .frames
-            .last_mut()
-            .map(|top| std::mem::take(&mut top.regs))
-            .unwrap_or_default();
-        fr.regs = std::mem::replace(&mut self.regs, below);
+        let fr = self.frames.pop()?;
+        self.regs.v.truncate(fr.rbase);
+        match self.frames.last() {
+            Some(top) => {
+                self.regs.base = top.rbase;
+                self.sstack.truncate(fr.sbase);
+                // Back at the root: a deep recursion does not keep its stack.
+                if self.frames.len() == 1 && self.sstack.capacity() > 1 << 16 {
+                    self.sstack.shrink_to(1 << 12);
+                    self.regs.v.shrink_to(1 << 10);
+                }
+            }
+            None => {
+                self.regs.base = 0;
+                self.root.clear();
+            }
+        }
         Some(fr)
     }
 
@@ -641,38 +727,35 @@ impl Machine {
         }
     }
 
-    fn frame_for(&mut self, f: &Func, func: FuncId, link: Option<u32>) -> R<Frame> {
-        if self.frames.len() >= self.rt.limits.max_depth as usize {
-            return rt_err(format!(
-                "call depth limit {} exceeded calling `{}` (unbounded recursion?)",
-                self.rt.limits.max_depth, f.name
-            ));
+    /// The slots of frame `i`.
+    #[inline(always)]
+    pub(crate) fn fslots(&self, i: usize) -> Option<&[u8]> {
+        let fr = self.frames.get(i)?;
+        if i == 0 {
+            Some(&self.root)
+        } else {
+            self.sstack.get(fr.sbase..fr.sbase + fr.slen)
         }
-        let (mut slots, mut regs) = self.spare.pop().unwrap_or_default();
-        slots.clear();
-        slots.resize(f.frame as usize, 0);
-        let pre = self
-            .rt
-            .pre(func, f)
-            .ok_or_else(|| ice(format!("no function {func}")))?;
-        pre.fill(&mut regs, self.frames.len() as u32)?;
-        Ok(Frame {
-            func,
-            pc: 0,
-            slots,
-            regs,
-            link,
-            ret: None,
-            temp_base: self.temp.len(),
-            // A root frame entered with the shared state attached is elaboration code
-            // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
-            // root frame before it first takes the shared state, and allocates in the shared
-            // heap when it is serial: what it allocates may end up in a shared variable (#303).
-            shared_alloc: self.frames.last().map_or_else(
-                || self.sh.is_some() || f.kind == FuncKind::Process && self.rt.prog.is_serial(func),
-                |f| f.shared_alloc,
-            ),
-        })
+    }
+
+    #[inline(always)]
+    pub(crate) fn fslots_mut(&mut self, i: usize) -> Option<&mut [u8]> {
+        let fr = self.frames.get(i)?;
+        if i == 0 {
+            Some(&mut self.root)
+        } else {
+            self.sstack.get_mut(fr.sbase..fr.sbase + fr.slen)
+        }
+    }
+
+    /// The slots of the top frame.
+    #[inline(always)]
+    fn top_slots(&mut self) -> &mut [u8] {
+        let i = self.frames.len() - 1;
+        match self.fslots_mut(i) {
+            Some(s) => s,
+            None => &mut [],
+        }
     }
 
     /// The VHDL call stack, innermost first.
@@ -750,9 +833,9 @@ impl Machine {
     fn frame_roots(&self) -> Option<Vec<u64>> {
         let prog = &self.rt.prog;
         let mut roots = Vec::new();
-        for fr in &self.frames {
+        for (i, fr) in self.frames.iter().enumerate() {
             let f = prog.func(fr.func)?;
-            if !heap::slot_roots(prog, &f.roots, &fr.slots, &mut roots) {
+            if !heap::slot_roots(prog, &f.roots, self.fslots(i)?, &mut roots) {
                 return None;
             }
         }
@@ -774,18 +857,14 @@ impl Machine {
     /// object. Registers are dead at a suspension, live between instructions.
     pub(crate) fn pinned(&self, space: u8, regs: bool) -> Vec<u32> {
         let words = self
-            .frames
+            .root
+            .as_chunks::<8>()
+            .0
             .iter()
-            .flat_map(|f| f.slots.as_chunks::<8>().0)
+            .chain(self.sstack.as_chunks::<8>().0)
             .chain(self.temp.as_chunks::<8>().0)
             .map(|w| u64::from_le_bytes(*w))
-            .chain(
-                self.frames
-                    .iter()
-                    .filter(|_| regs)
-                    .flat_map(|f| f.regs.iter().copied())
-                    .chain(self.regs.iter().copied().filter(|_| regs)),
-            );
+            .chain(self.regs.v.iter().copied().filter(|_| regs));
         let mut v: Vec<u32> = words
             .map(split)
             .filter(|&(sp, _, _)| sp == space)
@@ -863,17 +942,14 @@ impl Machine {
     fn handle_words(&self) -> Vec<u64> {
         let tags = [heap::PRIVATE, heap::SHARED];
         let words = self
-            .frames
+            .root
+            .as_chunks::<8>()
+            .0
             .iter()
-            .flat_map(|f| f.slots.as_chunks::<8>().0)
+            .chain(self.sstack.as_chunks::<8>().0)
             .chain(self.temp.as_chunks::<8>().0)
             .map(|w| u64::from_le_bytes(*w))
-            .chain(
-                self.frames
-                    .iter()
-                    .flat_map(|f| f.regs.iter().copied())
-                    .chain(self.regs.iter().copied()),
-            );
+            .chain(self.regs.v.iter().copied());
         words
             .filter(|&w| w != 0 && tags.contains(&heap::tag_of(w)))
             .collect()
@@ -984,13 +1060,9 @@ impl Machine {
     /// The memory object of space `sp` and index `idx`, for reading.
     fn obj(&self, sp: u8, idx: u32) -> R<&[u8]> {
         Ok(match sp {
-            FRAME => {
-                &self
-                    .frames
-                    .get(idx as usize)
-                    .ok_or_else(|| ice(format!("address of dead frame {idx}")))?
-                    .slots
-            }
+            FRAME => self
+                .fslots(idx as usize)
+                .ok_or_else(|| ice(format!("address of dead frame {idx}")))?,
             INST => &self.inst.data,
             PKG => match &self.pkg_init {
                 Some((p, data)) if *p == idx => data,
@@ -1035,13 +1107,9 @@ impl Machine {
     /// The memory object of space `sp` and index `idx`, for writing.
     fn obj_mut(&mut self, sp: u8, idx: u32) -> R<&mut [u8]> {
         Ok(match sp {
-            FRAME => {
-                &mut self
-                    .frames
-                    .get_mut(idx as usize)
-                    .ok_or_else(|| ice(format!("address of dead frame {idx}")))?
-                    .slots
-            }
+            FRAME => self
+                .fslots_mut(idx as usize)
+                .ok_or_else(|| ice(format!("address of dead frame {idx}")))?,
             HEAP => self
                 .heap
                 .data_mut(idx)
@@ -1098,7 +1166,7 @@ impl Machine {
         // instance memory.
         let (sp, idx, off) = split(a);
         let mem: Option<&[u8]> = match sp {
-            FRAME => self.frames.get(idx as usize).map(|f| &f.slots[..]),
+            FRAME => self.fslots(idx as usize),
             TEMP => Some(&self.temp),
             INST => Some(&self.inst.data),
             _ => None,
@@ -1128,9 +1196,8 @@ impl Machine {
         let (sp, idx, off) = split(a);
         if sp == FRAME
             && let Some(b) = self
-                .frames
-                .get_mut(idx as usize)
-                .and_then(|f| f.slots.get_mut(off as usize..off as usize + n))
+                .fslots_mut(idx as usize)
+                .and_then(|s| s.get_mut(off as usize..off as usize + n))
         {
             put_le(b, v);
             return Ok(());
@@ -1973,9 +2040,6 @@ impl Machine {
                                 v.ok_or_else(|| ice("function returned no value"))?;
                         }
                         self.top().pc += 1;
-                        if self.spare.len() < SPARE_FRAMES {
-                            self.spare.push((done.slots, done.regs));
-                        }
                         break;
                     }
                     Flow::Suspend => {
@@ -2011,7 +2075,7 @@ impl Machine {
             let pre = rt
                 .pre(func, f)
                 .ok_or_else(|| ice(format!("no function {func}")))?;
-            match self.run_ops::<TIER>(rt, tier, func, f, &pre.code, top, ctx)? {
+            match self.run_ops::<TIER>(rt, tier, func, f, &pre.code, top, base, ctx)? {
                 Flow::Call => {}
                 Flow::Ret(v) => {
                     let done = self
@@ -2025,9 +2089,6 @@ impl Machine {
                             v.ok_or_else(|| ice("function returned no value"))?;
                     }
                     self.top().pc += 1;
-                    if self.spare.len() < SPARE_FRAMES {
-                        self.spare.push((done.slots, done.regs));
-                    }
                 }
                 Flow::Suspend => {
                     self.top().pc += 1;
@@ -2057,28 +2118,36 @@ impl Machine {
         f: &Func,
         code: &pre::Code,
         top: usize,
+        base: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
-        let ops = &code.ops[..];
-        let entry = |pc: u32| {
-            code.entry
-                .get(pc as usize)
-                .copied()
-                .filter(|&k| k != pre::NONE)
-                .ok_or_else(|| ice(format!("pc {pc} of `{}` inside a fused operation", f.name)))
-        };
-        let mut k = entry(self.frames[top].pc)? as usize;
+        let (mut func, mut f, mut code, mut top) = (func, f, code, top);
+        macro_rules! entry {
+            ($pc:expr) => {{
+                let pc: u32 = $pc;
+                code.entry
+                    .get(pc as usize)
+                    .copied()
+                    .filter(|&k| k != pre::NONE)
+                    .ok_or_else(|| ice(format!("pc {pc} of `{}` inside a fused operation", f.name)))
+            }};
+        }
+        let mut k = entry!(self.frames[top].pc)? as usize;
         let prog = &*rt.prog;
         let count = if TIER { rt.count(func) } else { None };
         let cool = if TIER { rt.cool() } else { 0 };
         // Whether compiled code can run now.
-        let ready = || tier.is_some_and(|t| t.ready(func));
+        macro_rules! ready {
+            () => {
+                tier.is_some_and(|t| t.ready(func))
+            };
+        }
         // What the count still lacks (at most 0: reached, or no counting, `--tier=llvm`) and
         // what this run added since it was last written (kept local: the atomic counter is
         // touched only when the threshold may be reached and when the run ends).
         let mut left = count.map_or(0, Runtime::left);
         let mut spent: i64 = 0;
-        let mut native = TIER && left <= 0 && ready();
+        let mut native = TIER && left <= 0 && ready!();
         // The op the run since the last jump started at.
         let mut since = k;
         // Run compiled code from op `k` when the function has some (`native`): at the start,
@@ -2111,12 +2180,12 @@ impl Machine {
                                     .get(b)
                                     .ok_or_else(|| ice(format!("no block {b}")))?
                                     .start as usize;
-                                native = ready();
+                                native = ready!();
                             }
                             flow => return Ok(flow),
                         }
                     }
-                    k = entry(next as u32)? as usize;
+                    k = entry!(next as u32)? as usize;
                     since = k;
                 }
             };
@@ -2133,10 +2202,10 @@ impl Machine {
                         {
                             left = rt.heat(func, c, spent);
                             spent = 0;
-                            native = left <= 0 && ready();
+                            native = left <= 0 && ready!();
                         }
                     } else {
-                        native = ready();
+                        native = ready!();
                     }
                     since = to;
                 }
@@ -2178,7 +2247,7 @@ impl Machine {
         }
         enter!();
         loop {
-            match ops[k] {
+            match code.ops[k] {
                 Op::Step(pc) => {
                     slow!();
                     let inst = *f
@@ -2200,7 +2269,7 @@ impl Machine {
                                 self.pause = None;
                                 return Ok(Flow::Next);
                             }
-                            go!(entry(blk.start)?);
+                            go!(entry!(blk.start)?);
                         }
                         flow => {
                             leave!();
@@ -2227,7 +2296,7 @@ impl Machine {
                 Op::LoadSlot { dst, off, w } => {
                     let n = w.bytes() as usize;
                     let o = off as usize;
-                    self.regs[dst as usize] = match self.frames[top].slots.get(o..o + n) {
+                    self.regs[dst as usize] = match self.fslots(top).and_then(|s| s.get(o..o + n)) {
                         Some(b) => le_bytes(b),
                         None => t!(
                             mk_addr(FRAME, top as u32, off.into()).and_then(|a| self.load(a, w))
@@ -2239,7 +2308,7 @@ impl Machine {
                     let n = w.bytes() as usize;
                     let o = off as usize;
                     let v = self.regs[src as usize];
-                    match self.frames[top].slots.get_mut(o..o + n) {
+                    match self.fslots_mut(top).and_then(|s| s.get_mut(o..o + n)) {
                         Some(b) => put_le(b, v),
                         None => t!(mk_addr(FRAME, top as u32, off.into())
                             .and_then(|a| self.store(a, w, v))),
@@ -2423,7 +2492,7 @@ impl Machine {
                     k += 1;
                 }
                 Op::Call {
-                    func,
+                    func: callee,
                     start,
                     len,
                     dst,
@@ -2433,13 +2502,50 @@ impl Machine {
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
-                    return self.call_with(prog, f, FuncId(func), None, args, dst);
+                    self.call_regs(prog, f, FuncId(callee), args, dst)?;
+                    if TIER {
+                        return Ok(Flow::Call);
+                    }
+                    // The callee's ops go on in this loop.
+                    top += 1;
+                    func = FuncId(callee);
+                    f = prog
+                        .func(func)
+                        .ok_or_else(|| ice(format!("no function {func}")))?;
+                    code = &rt
+                        .pre(func, f)
+                        .ok_or_else(|| ice(format!("no function {func}")))?
+                        .code;
+                    k = entry!(0)? as usize;
                 }
                 Op::Ret { v } => {
                     slow!();
                     leave!();
                     let v = (v != pre::NONE).then(|| self.regs[v as usize]);
-                    return Ok(Flow::Ret(v));
+                    // Back into the caller, unless this activation began here.
+                    if TIER || top <= base {
+                        return Ok(Flow::Ret(v));
+                    }
+                    let done = self
+                        .pop_frame()
+                        .ok_or_else(|| ice("return without frame"))?;
+                    top -= 1;
+                    if let Some(d) = done.ret {
+                        self.regs[d.0 as usize] =
+                            v.ok_or_else(|| ice("function returned no value"))?;
+                    }
+                    let caller = &mut self.frames[top];
+                    caller.pc += 1;
+                    let pc = caller.pc;
+                    func = caller.func;
+                    f = prog
+                        .func(func)
+                        .ok_or_else(|| ice(format!("no function {func}")))?;
+                    code = &rt
+                        .pre(func, f)
+                        .ok_or_else(|| ice(format!("no function {func}")))?
+                        .code;
+                    k = entry!(pc)? as usize;
                 }
                 Op::SigReadScalar { dst, sig } => {
                     slow!();
@@ -2504,14 +2610,21 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<(usize, bool)> {
         let top = self.frames.len() - 1;
-        let fr = &mut self.frames[top];
-        let func = fr.func;
+        let fr = &self.frames[top];
+        let (func, temp_base, slots_at, slots_len) = (fr.func, fr.temp_base, fr.sbase, fr.slen);
         let mut tf = crate::TierFrame {
-            regs: std::mem::take(&mut self.regs),
-            slots: std::mem::take(&mut fr.slots),
+            regs: std::mem::take(&mut self.regs.v),
+            regs_at: self.regs.base,
+            slots: std::mem::take(if top == 0 {
+                &mut self.root
+            } else {
+                &mut self.sstack
+            }),
+            slots_at,
+            slots_len,
             frame: top as u32,
             temp: std::mem::take(&mut self.temp),
-            temp_base: fr.temp_base,
+            temp_base,
             inst: &self.inst.data[..] as *const [u8],
         };
         let mut host = Host {
@@ -2534,8 +2647,14 @@ impl Machine {
 
     /// Exchange the top frame's registers and slots and the temporary area with `tf`.
     fn swap_tier(&mut self, tf: &mut crate::TierFrame) {
-        std::mem::swap(&mut self.regs, &mut tf.regs);
-        std::mem::swap(&mut self.top().slots, &mut tf.slots);
+        std::mem::swap(&mut self.regs.v, &mut tf.regs);
+        let top = self.frames.len() - 1;
+        let slots = if top == 0 {
+            &mut self.root
+        } else {
+            &mut self.sstack
+        };
+        std::mem::swap(slots, &mut tf.slots);
         std::mem::swap(&mut self.temp, &mut tf.temp);
     }
 
@@ -2624,9 +2743,8 @@ impl Machine {
             .func(c)
             .ok_or_else(|| ice(format!("no condition function {c}")))?;
         let link = self.static_link(f, None)?;
-        let fr = self.frame_for(f, c, link)?;
         let base = self.frames.len();
-        self.push_frame(fr);
+        self.push_frame(f, c, link, None)?;
         let r = self.exec::<false>(ctx, base);
         self.truncate_frames(base);
         match r? {
@@ -2688,18 +2806,66 @@ impl Machine {
             .func(func)
             .ok_or_else(|| ice(format!("call of missing function {func}")))?;
         let link = self.static_link(f, None)?;
-        let mut fr = self.frame_for(f, func, link)?;
-        fr.ret = dst;
+        self.push_frame(f, func, link, dst)?;
         let mut k = 0;
         for p in &f.params {
             let n = if p.width == Width::Sig { 2 } else { 1 };
             let c = cells
                 .get(k..k + n)
                 .ok_or_else(|| ice(format!("missing argument {}", p.name)))?;
-            store_cells(&mut fr.slots, p.slot, p.width, c)?;
+            store_cells(self.top_slots(), p.slot, p.width, c)?;
             k += n;
         }
-        self.push_frame(fr);
+        Ok(Flow::Call)
+    }
+
+    /// `Inst::Call` of a function by its IR id: the arguments go from the caller's registers
+    /// straight into the parameter slots of the new frame, no argument cells in between.
+    fn call_regs(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+    ) -> R<Flow> {
+        let callee = prog
+            .func(func)
+            .ok_or_else(|| ice(format!("call of missing function {func}")))?;
+        let link = if callee.parent.is_none() {
+            None
+        } else {
+            self.static_link(callee, None)?
+        };
+        let caller = self.regs.base;
+        self.push_frame(callee, func, link, dst)?;
+        let fr = &self.frames[self.frames.len() - 1];
+        let (sbase, slen) = (fr.sbase, fr.slen);
+        let regs = f
+            .regs(args)
+            .ok_or_else(|| ice("operand list out of range"))?;
+        let slots = self
+            .sstack
+            .get_mut(sbase..sbase + slen)
+            .ok_or_else(|| ice("frame outside the slot stack"))?;
+        let mut params = callee.params.iter();
+        for &r in regs {
+            let Some(p) = params.next() else { break };
+            let v = self.regs.v[caller + r.0 as usize];
+            let n = p.width.bytes() as usize;
+            let dst = slots
+                .get_mut(p.slot as usize..p.slot as usize + n)
+                .ok_or_else(|| ice(format!("parameter slot {} outside the frame", p.slot)))?;
+            if p.width == Width::Sig {
+                dst[..8].copy_from_slice(&v.to_le_bytes());
+                dst[8..].copy_from_slice(&self.regs.v[caller + r.0 as usize + 1].to_le_bytes());
+            } else {
+                dst.copy_from_slice(&v.to_le_bytes()[..n]);
+            }
+        }
+        if let Some(p) = params.next() {
+            return Err(ice(format!("missing argument {}", p.name)));
+        }
         Ok(Flow::Call)
     }
 
@@ -3830,8 +3996,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)> {
         let (sp, idx, _) = split(addr);
-        // The top frame's slots and the temporary area are in the `TierFrame`.
-        if sp == TEMP || sp == FRAME && idx as usize + 1 == self.m.frames.len() {
+        // The top frame's slots and the temporary area are in the `TierFrame`, and with them
+        // the slot stack of the frames above frame 0 (compiled code steps an access to those).
+        if sp == TEMP || sp == FRAME && (idx as usize + 1 == self.m.frames.len() || idx != 0) {
             return None;
         }
         if write {
@@ -3976,13 +4143,16 @@ mod tests {
         m.frames.push(Frame {
             func: FuncId(0),
             pc: 0,
-            slots: mk_addr(HEAP, 3, 8).unwrap().to_le_bytes().to_vec(),
-            regs: vec![mk_addr(HEAP, 5, 0).unwrap(), 7],
+            rbase: 0,
+            sbase: 0,
+            slen: 8,
             link: None,
             ret: None,
             temp_base: 0,
             shared_alloc: false,
         });
+        m.root = mk_addr(HEAP, 3, 8).unwrap().to_le_bytes().to_vec();
+        m.regs.v = vec![mk_addr(HEAP, 5, 0).unwrap(), 7];
         assert_eq!(m.pinned(HEAP, false), [3]);
         assert_eq!(m.pinned(HEAP, true), [3, 5]);
     }

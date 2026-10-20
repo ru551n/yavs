@@ -83,8 +83,8 @@ const MEM_OBJS: u64 = 72;
 impl Mem {
     fn of(fr: &mut TierFrame) -> Mem {
         Mem {
-            slots: fr.slots.as_mut_ptr(),
-            slots_len: fr.slots.len() as u64,
+            slots: fr.slots_mut().as_mut_ptr(),
+            slots_len: fr.slots_len as u64,
             frame: u64::from(space::FRAME) << 29 | u64::from(fr.frame),
             temp: fr.temp.as_mut_ptr(),
             temp_len: fr.temp.len() as u64,
@@ -211,10 +211,10 @@ pub(crate) fn enter(
 ) -> Option<u32> {
     {
         // A frame index beyond the address format is the interpreter's error.
-        if fr.regs.len() != nregs || fr.frame >= 1 << 29 {
+        if fr.regs_mut().len() != nregs || fr.frame >= 1 << 29 {
             return None;
         }
-        let rp = fr.regs.as_mut_ptr();
+        let rp = fr.regs_mut().as_mut_ptr();
         let mut mem = Mem::of(fr);
         let mut env = Env {
             fr,

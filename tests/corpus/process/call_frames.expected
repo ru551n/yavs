@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:tb_call_frames:main	deep 57
+diag	note	0	0	:tb_call_frames:main	pure calls ok
+diag	note	46000000	0	:tb_call_frames:main	frames ok 58

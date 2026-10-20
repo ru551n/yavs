@@ -25,7 +25,7 @@ RUN_FLAGS = os.environ.get("YAVS_BENCH_RUN_FLAGS", "").split()  # extra `yavs ru
 OUT = CACHE / "bench-out.fst"
 PHASES = ["analyze", "elaborate", "init", "simulate"]
 STD = "2008"
-INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "strings_heavy", "access_heavy", "report_heavy", "file_io", "elab_heavy"]
+INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "elab_heavy"]
 SHIM = """#!/usr/bin/env python3
 import json, os, sys
 if len(sys.argv) > 1 and sys.argv[1] == "run":

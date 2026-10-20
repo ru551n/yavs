@@ -280,10 +280,18 @@ pub trait TierHost {
 /// What compiled code reads and writes itself (ir.md 5): the top frame's registers and
 /// slots and the temporary area, taken out of the machine for [`Tier::run`] and put back
 /// around every `step`. Every other address goes through `step`.
+///
+/// The registers and slots of all frames live in two stacks (#438): `regs` is the register
+/// stack, the frame's registers start at `regs_at`; `slots` is the stack the frame's slots
+/// are in (the process's own variables for frame 0), they start at `slots_at` and are
+/// `slots_len` bytes. Use [`TierFrame::regs_mut`] and [`TierFrame::slots_mut`].
 pub struct TierFrame {
     pub regs: Vec<u64>,
+    pub regs_at: usize,
     /// The slots of the frame, reached by addresses `[space::FRAME, frame, offset]`.
     pub slots: Vec<u8>,
+    pub slots_at: usize,
+    pub slots_len: usize,
     pub frame: u32,
     /// The temporary area, `[space::TEMP, 0, offset]`; `Inst::Stmt` truncates it to
     /// `temp_base`.
@@ -291,6 +299,18 @@ pub struct TierFrame {
     pub temp_base: usize,
     /// The instance data (read only), `[space::INST, 0, offset]`. It outlives the run.
     pub inst: *const [u8],
+}
+
+impl TierFrame {
+    /// The registers of the frame.
+    pub fn regs_mut(&mut self) -> &mut [u64] {
+        &mut self.regs[self.regs_at..]
+    }
+
+    /// The slots of the frame.
+    pub fn slots_mut(&mut self) -> &mut [u8] {
+        &mut self.slots[self.slots_at..self.slots_at + self.slots_len]
+    }
 }
 
 /// Address spaces: the top 3 bits of an address `[space: 3 | index: 29 | offset: 32]`.

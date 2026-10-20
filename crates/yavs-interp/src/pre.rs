@@ -34,18 +34,27 @@ pub(crate) struct Pre {
 }
 
 impl Pre {
-    /// Set `regs` up for a frame at index `idx`: the preloaded registers have their values,
-    /// the others are zero.
+    /// Append the registers of a frame at index `idx` to `stack`: the preloaded registers have
+    /// their values, the others are zero.
     ///
     /// ponytail: zeroing is not needed for correctness (#430: the verifier proves every other
     /// register is written before it is read; a sparse fill must list preloaded zeros too),
     /// but the collection scans registers conservatively and stale ones kept garbage alive
     /// (+25% run time, +31% peak memory on a long testbench). Leave them stale once the scan
     /// is precise (#422).
-    pub(crate) fn fill(&self, regs: &mut Vec<u64>, idx: u32) -> R<()> {
-        regs.clone_from(&self.init);
+    pub(crate) fn fill(&self, stack: &mut Vec<u64>, idx: u32) -> R<()> {
+        let at = stack.len();
+        stack.extend_from_slice(&self.init);
+        if idx >= 1 << 29 {
+            // The error of `mk_addr`.
+            if let Some(&(_, off)) = self.frame.first() {
+                mk_addr(FRAME, idx, off)?;
+            }
+        }
+        // Offsets are `u32`s, so `mk_addr` cannot fail below the index bound.
+        let hi = u64::from(FRAME) << 61 | u64::from(idx) << 32;
         for &(r, off) in &self.frame {
-            regs[r as usize] = mk_addr(FRAME, idx, off)?;
+            stack[at + r as usize] = hi | off;
         }
         Ok(())
     }

@@ -737,13 +737,38 @@ benchmarks; step 3 is within the noise except `osvvm_axistream` (0.82 to 0.77); 
 | `fan` | 6.30 | 5.70 | 0.90 |
 | `calls` | 0.41 | 0.29 | 0.71 |
 
-What is left in these profiles: `lfsr` reads its whole array signal for one element (#436, lowering); a call
-costs about 90 ns (frame vectors and their setup, the frame push and pop), spread over many small parts; `fan` and `ff` are dominated by the kernel and by per-activation work (scratch vectors, the
+What is left in these profiles: `lfsr` reads its whole array signal for one element (#436, lowering); a call costs about 33 ns after #438 ("Interpreter calls"); `fan` and `ff` are dominated by the kernel and by per-activation work (scratch vectors, the
 register fill, native `rising_edge`). The difftest corpus (359) passes at 1 and 4 threads, shuffled, and on
 the LLVM tier; the external runner's `check` and `verification_components` suites pass, and the two external verification libraries' suites (one: 78 pass,
 33 fail, 26 skipped; the other's scripts: 314/314 under 2008 and 2019) give the same verdict per test as main.
 A build with the `llvm` feature runs `--tier=auto` by default, which keeps the IR loop (the tier-up counts live
 there), so it does not use the predecoded code yet.
+
+### Interpreter calls (#438)
+
+Frames are slices of two stacks (all registers; all slots, frame 0's process variables apart) with base
+offsets, not vectors of their own: a call allocates nothing and moves no vector. `Inst::Call` of a function
+copies the arguments from the caller's registers into the callee's slots, builds the frame in place (no
+`Result<Frame>` copy), and the fast loop enters the callee and returns to the caller without leaving
+`run_ops`. `Pre::fill` patches frame addresses without the checked `mk_addr`. The `TierFrame` carries the
+stacks with offsets; frames strictly between the root and the top are stepped by the interpreter in compiled
+code. The root scans read the stacks.
+
+Release builds, min CPU seconds of 7 alternating runs at `--threads 1` (`calls` with N = 4000000, 16 million
+calls), host shared: before 1.23 s (77 ns per call, loop included), after 0.53 s (33 ns).
+
+| Benchmark | before | after | ratio |
+|---|---|---|---|
+| `calls` (harness, 3 million calls) | 0.23 | 0.12 | 0.53 |
+| `protected_scoreboard` | 0.10 | 0.09 | 0.90 |
+| `access_heavy` | 0.11 | 0.11 | 1.05 |
+| `strings_heavy` | 0.21 | 0.21 | 1.02 |
+| `uvvm_util_rand_tb` | 2.24 | 2.15 | 0.96 |
+| `osvvm_axistream` | 0.78 | 0.80 | 1.02 |
+
+The difftest corpus (360 with the new `process/call_frames`) passes at 1 and 4 threads and on the LLVM tier
+(`--tier=llvm`, `--tier=auto`); the external runner's `check` (257) and `verification_components` suites pass;
+the verification-library suite gives 78 pass, 33 fail, 26 skipped as before.
 
 ### Verification-testbench runtime library (#428)
 

@@ -24,6 +24,7 @@ Benchmarks (`run.py --list`):
 | Name | Group | What |
 |---|---|---|
 | `compute_loop`, `ff_rtl`, `resolved_bus`, `delta_chain`, `textio_heavy`, `protected_scoreboard` | internal | Sequential compute, many flip-flops, a resolved bus, a deep delta chain, text I/O, a protected-type scoreboard: each 1 to 4 s |
+| `calls` | internal | 3 million calls of one-line functions (#431): frame entry and exit |
 | `strings_heavy`, `access_heavy`, `report_heavy`, `file_io` | internal | Message strings (`image`, `to_string`, concatenation, search), access types as queues and buffers use them, many `report`/`assert` lines, text and binary file I/O (#428) |
 | `elab_heavy` | internal | 20000 small entity instances: elaboration and initialisation cost |
 | `vunit_vc30` | external | 30 fixed test cases of the external test runner's verification components, one `yavs run` each (summed per iteration) |

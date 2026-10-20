@@ -2052,3 +2052,12 @@ user's performance priority:
   process instances and per-instance values. Process names for reports come from the kernel
   (`Hook::process_name`), stored once. The debugger, plugins, the waveform recorder and coverage
   keep the model.
+- **Small signal and driver data is stored inline** (yavs-kernel, `smallvec` with its `union`
+  feature). A scalar signal took about 25 allocations and 580 bytes of record; buffers of up to 16
+  bytes or one logic block, the per-element stamps (one buffer of four arrays), one waiter, one
+  segment, one pending transaction and the scratch range lists live in the signal or driver, and
+  larger ones spill to the heap unchanged. A resolved unguarded signal resolves its one run
+  without lists, an assignment's scratch list is a local, and the elaborator hands the builder
+  its already boxed process.
+- **The shared heap in `SharedState` is boxed** (yavs-interp): each process carries the
+  shared-state fields it fills in only while it runs; 120 bytes less per process.

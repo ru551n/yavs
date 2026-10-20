@@ -303,6 +303,37 @@ a read-lock interner and a fast hasher for the scope, memo and cache tables, cac
 Still open: parse is about 8% and subprogram bodies of units that are never called about half of the remaining
 analysis; analyzing bodies on demand needs a scope snapshot per body (visibility is positional) and is not done.
 
+Cold analysis, allocation and copying (#424). A cold `yavs analyze` re-reads the source of every unit it
+depends on, so parsing is about half of a library run and the allocator is the next cost (a sampling profile
+of the process showed `malloc` at 15 to 20% of the time). Changes: ASCII identifiers are scanned and
+lower-cased on the stack and keywords are looked up by first letter (no `String` per identifier), source text
+skips the lossy UTF-8 decoder, the symbol table has a per-thread copy (a hit or `as_str` takes no lock),
+list parsers (statements, declarations, interface and association lists) build on a scratch stack and move
+into exact-size vectors (no doubling of 200 to 400 byte elements), the rare large AST variants are boxed
+(association element 432 -> 184 bytes, declaration 560 -> 424, sequential statement 456 -> 344, interface
+declaration 552 -> 416), mangled names are built in one buffer, a visibility lookup keeps its entity and
+shape sets in small vectors and iterates used scopes in place, the lookup cache and interner start
+presized, and `yavs analyze` and `yavs elab` do not free the database at exit. Median of 5 interleaved
+runs, release build, host load about 25, one `yavs analyze` per file as in `tools/corpus/run.py` (the
+manifest's units are re-analyzed per call; sum of user + system CPU, largest peak RSS of any call):
+
+| Library set (files) | CPU before (s) | CPU after (s) | Peak RSS before (MiB) | Peak RSS after (MiB) |
+|---|---|---|---|---|
+| osvvm-2008 (174) | 10.82 | 6.95 (-36%) | 60 | 36 |
+| uvvm-2008 (235) | 14.54 | 9.23 (-37%) | 56 | 33 |
+| open-logic-2008 | 12.24 | 8.41 (-31%) | 48 | 35 |
+| vunit-2008 (143) | 2.65 | 1.81 (-32%) | 39 | 27 |
+| neorv32-2008 (67) | 0.43 | 0.27 (-37%) | 22 | 19 |
+
+`vunit_vc30` with `yavs run --no-cache` (analyze phase, 30 test cases, `tools/bench/run.py --compare`, 5 runs):
+5.49 -> 5.08 s CPU (-7%; 6.23 -> 5.58 and 6.67 -> 5.95 in two earlier runs). That workload is about 75%
+semantic analysis (bodies, visibility lookups: 40% of lookups are uncached, 78% of those first-time keys),
+so the lexer and parser changes help it less. Diagnostics of all analysis corpora (3881 calls) are
+byte-identical before and after, the difftest corpus passes at `--threads 1` and `4`. Left: visibility lookups
+(`Db::lookup_uncached`, about a fifth of the analysis of the `vunit_vc30` case), arena pushes of HIR nodes, and
+the global allocator (a bump or thread-caching allocator gave 8 to 15% more CPU at the cost of 60 to 100%
+more peak RSS; not adopted, user's decision, #424).
+
 ### Native ieee operators (#395, #404)
 
 `std_logic_1164` gates, `not`, conversions and `rising_edge`, and `numeric_std` `+ - *`, relational

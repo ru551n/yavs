@@ -19,7 +19,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | `Std`, `Options` (`std`, `defines`), `Encoding`, `load_source`, `parse_file`, `parse_str`, `Parsed` (`design` only when no error), `codes` |
-| `src/symbol.rs` | `Symbol`: global interner, leaked strings, `as_str() -> &'static str` |
+| `src/symbol.rs` | `Symbol`: global interner behind a lock plus a per-thread copy (hits and `as_str` take no lock), leaked strings, `as_str() -> &'static str` |
 | `src/source.rs` | `Src` (bytes plus Latin-1 flag) |
 | `src/token.rs` | `Tok`, `Kw` (keywords per standard), `Token` |
 | `src/lexer.rs` | `lex`: bytes to tokens, `-- psl` pragmas, `E0001`, `E0009`, `W0003` |
@@ -36,7 +36,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|---|
 | Own parser, 2008 and 2019 in one grammar, gated by `Std` (`E0004` for 2019 syntax in 2008) | Plan decision | `docs/plan.md` "Decisions made with the user" |
 | `Ident` keeps original spelling plus folded key; extended identifiers fold to themselves | VHPI `CaseName`, waves, diagnostics | `docs/plan.md` rule 8 |
-| Global mutex interner, leaked strings | Never contended; symbols valid on runtime threads | `docs/decisions.md` "Parser" |
+| Global interner, leaked strings, per-thread mirror of the table | Symbols valid on runtime threads; a hit or `as_str` takes no lock (#424) | `docs/decisions.md` "Parser" |
+| List parsers (statements, declarations, interface and association lists) push onto a scratch stack in `Parser` and move the elements into an exact-size `Vec`; rare large AST variants (`Actual::Range/Subtype`, `Constraint::Range`, interface type/subprogram/package) are boxed | No doubling of 200 to 400 byte elements, smaller nodes, less copying per parse step | #424 |
 | `parse_file` returns the tree only when there was no error; recovery inside a file lists independent errors; cascades at the same or a lexically bad token are dropped | Fail early, no guessed AST | `docs/decisions.md` "Parser"; error motto |
 | Conditional analysis in 2008 files too; unknown directives warn `W0002`; `TOOL_VENDOR`/`TOOL_NAME` = `yavs` | Harmless, 2008 allows tool directives | `docs/decisions.md` "Parser" |
 | 2019 makes only `end component` optional; other bare `end;` is `E0002` with a help | LRM, matches the reference simulators | `docs/design/lrm-checks.md` P1 |
@@ -61,6 +62,10 @@ Module-local decisions go in this section in the same commit; LRM readings go to
 - Spans are byte offsets into the bytes on disk, never into decoded text.
 - AST shape changes ripple into `yavs-sem` (all of `src/`), `yavs-lower` and `yavs-elab`. Make
   them additive where possible and coordinate via `crates/yavs-sem/CONTRIBUTING.md` Requests.
+- A new list parser uses the scratch stacks of `Parser` (`sc`): note the length, push, and cut back
+  to it on an error path, so no half-built list stays above a caller's mark.
+- Keep AST nodes small: a variant that is large and rare is boxed (check `size_of` of `Decl`,
+  `SeqStmt`, `AssocElem` when adding fields); nodes are moved by value through every parse step.
 - Any change to diagnostic text changes `tests/diag/*.stderr`: bless and review.
 - 2019 protected type instantiation, `type t is new g generic map (...)`, is
   `TypeDef::ProtectedInstance` (#29).

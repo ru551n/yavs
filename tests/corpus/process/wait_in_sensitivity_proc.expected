@@ -1,0 +1,3 @@
+exit	1
+diag	note	1000000	0	:wait_in_sensitivity_proc:ok	ok after pause
+diag	fatal	5000000	0	-	wait statement in a procedure called by a process with a sensitivity list

@@ -165,6 +165,16 @@ pub(crate) fn is_array(db: &Db, t: TypeId) -> bool {
     matches!(db.types[t].kind, TypeKind::Array { .. })
 }
 
+/// Whether subtype `st` or a subtype it is built on has an index constraint.
+pub(crate) fn index_constrained(db: &Db, st: SubtypeId) -> bool {
+    std::iter::successors(Some(st), |&s| db.subtypes[s].parent).any(|s| {
+        matches!(
+            db.subtypes[s].constraint,
+            yavs_sem::types::Constraint::Array { dims: Some(_), .. }
+        )
+    })
+}
+
 /// Element subtype and dimension count of an array type.
 pub(crate) fn array_of(db: &Db, t: TypeId) -> Option<(SubtypeId, u8)> {
     match &db.types[t].kind {

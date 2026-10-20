@@ -590,6 +590,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             yavs_sem::types::TypeKind::Access { .. } => return self.local_access(d),
             _ => {}
         }
+        self.check_subtype_compat(o.subtype, decl.span)?;
         let tid = self.ty(t, decl.span)?;
         let shape = self.var_shape(d)?;
         let off = match shape {
@@ -1820,6 +1821,15 @@ fn process(
     }
     fx.jump(top);
     fx.at(top);
+    if matches!(
+        &st.kind,
+        HStmt::Process {
+            sensitivity: Sensitivity::List(_) | Sensitivity::All,
+            ..
+        }
+    ) {
+        fx.fb.flag(FuncFlags::SENS_LIST);
+    }
     let body = match &st.kind {
         HStmt::Process { body, .. } => fx.stmts(body),
         _ => fx.stmt(s),

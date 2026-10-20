@@ -100,6 +100,9 @@ impl FuncFlags {
     pub const HAS_COVER: FuncFlags = FuncFlags(8);
     /// Set by lowering: an implicit process for a concurrent statement.
     pub const IMPLICIT: FuncFlags = FuncFlags(16);
+    /// Set by lowering: a process with a sensitivity list (`process (all)` too): a `wait`
+    /// executed in a procedure it calls is a run-time error (LRM 11.3).
+    pub const SENS_LIST: FuncFlags = FuncFlags(32);
 
     pub fn contains(self, o: FuncFlags) -> bool {
         self.0 & o.0 == o.0

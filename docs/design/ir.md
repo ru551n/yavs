@@ -214,7 +214,7 @@ Lowering of the main statement forms:
 | VHDL | IR |
 |---|---|
 | `wait on a, b until c for t;` | `deadline := Now + t` into a slot; `L: WaitOn a; WaitOn b; WaitAt deadline; Suspend r; TimedOut -> exit; c -> exit; Br L` (kernel contract: the process re-suspends with the same absolute deadline) |
-| `process (s) ... end process` | body, then `WaitOn s; Suspend` at the end (LRM 11.3) |
+| `process (s) ... end process` | body, then `WaitOn s; Suspend` at the end (LRM 11.3); flag `SENS_LIST`: a `Suspend` executed in a procedure below the process is a run-time error (LRM 11.3) |
 | concurrent assignment / assert / procedure call | an equivalent process (LRM 11.4 to 11.6), sensitivity from H6, `Func.kind = Process`, flag `IMPLICIT` |
 | `s(i) <= x after 5 ns;` (`i` not static) | driver slot = longest static prefix `s`; `target = SigVal(s, offset(i), 1)` computed at run time |
 | `s <= x when c else y;` | branches + one `Drive` per arm into the same driver slot |

@@ -1774,6 +1774,8 @@ impl<'a> Fx<'a, '_> {
             }
         }
         if !stat.is_empty() {
+            // A static index range outside the index subtype fails when it is elaborated.
+            self.check_index_ranges(st, dims, span)?;
             let c = self.fb.program().konst(ConstData::Bytes(stat));
             let dst = self.reg(RegTy::Ptr);
             self.emit(Inst::AddrOf {
@@ -1785,8 +1787,17 @@ impl<'a> Fx<'a, '_> {
         }
         let dims = dims.clone();
         let mut parts = Vec::new();
-        for rc in dims.iter() {
+        let indexes = index_subtypes(db, db.base(st));
+        for (i, rc) in dims.iter().enumerate() {
             let r = self.range(rc, span)?;
+            // LRM 5.3.2.2: the index range lies inside the index subtype.
+            if let (RangeC::Explicit { .. }, Some(&ix)) =
+                (rc, indexes.as_ref().and_then(|v| v.get(i)))
+                && !ty::is_real(db, db.base(ix))
+                && !self.range_within(rc, ix)
+            {
+                self.check_range_in(r, ix, "index constraint", span)?;
+            }
             let d = self.dir_reg(r.dir);
             parts.extend([r.left, r.right, d]);
         }
@@ -2238,6 +2249,94 @@ impl<'a> Fx<'a, '_> {
                 what,
             });
         }
+    }
+
+    /// Both bounds of range `r` belong to scalar subtype `to`, unless `r` is null (LRM 5.2.1,
+    /// 5.3.2.2, 9.3.6); a violation is a run-time error.
+    pub(crate) fn check_range_in(
+        &mut self,
+        r: Rng,
+        to: SubtypeId,
+        what: &str,
+        span: Span,
+    ) -> R<()> {
+        let pr = self.scalar_bounds(to, span)?;
+        let (lo, hi) = self.low_high(r);
+        let nonnull = self.cmp(CmpOp::Le, lo, hi);
+        let (t, j) = (self.block(), self.block());
+        self.branch(nonnull, t, j);
+        self.at(t);
+        self.check_in(lo, pr, to, what);
+        self.check_in(hi, pr, to, what);
+        self.jump(j);
+        self.at(j);
+        Ok(())
+    }
+
+    /// The static index ranges `dims` of `st` that are not inside their index subtypes fail
+    /// when the subtype is elaborated (LRM 5.3.2.2); nothing is emitted for the others.
+    fn check_index_ranges(&mut self, st: SubtypeId, dims: &[RangeC], span: Span) -> R<()> {
+        let db = self.db;
+        let Some(indexes) = index_subtypes(db, db.base(st)) else {
+            return Ok(());
+        };
+        for (rc, &ix) in dims.iter().zip(indexes.iter()) {
+            if matches!(rc, RangeC::Explicit { .. })
+                && !ty::is_real(db, db.base(ix))
+                && !self.range_within(rc, ix)
+            {
+                let r = self.range(rc, span)?;
+                self.check_range_in(r, ix, "index constraint", span)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the explicit range `rc` is null or lies inside `to`, both known at compile time.
+    fn range_within(&self, rc: &RangeC, to: SubtypeId) -> bool {
+        let db = self.db;
+        let (RangeC::Explicit { left, dir, right }, Some((tl, td, tr))) =
+            (rc, db.static_bounds(to))
+        else {
+            return false;
+        };
+        let (Some(l), Some(r), Some(tl), Some(tr)) = (
+            db.value(*left).and_then(ConstValue::as_int),
+            db.value(*right).and_then(ConstValue::as_int),
+            tl.as_int(),
+            tr.as_int(),
+        ) else {
+            return false;
+        };
+        let lh = |l, d, r| if d == Direction::To { (l, r) } else { (r, l) };
+        let ((lo, hi), (tlo, thi)) = (lh(l, *dir, r), lh(tl, td, tr));
+        lo > hi || (tlo <= lo && hi <= thi)
+    }
+
+    /// The range constraints of subtype `st` and of the subtypes it is built on must lie inside
+    /// their type mark's range (LRM 5.2.1, 6.4.2.3). Evaluated where an object is declared;
+    /// nothing is emitted for ranges known to be inside. The index constraints of arrays are
+    /// checked where their descriptor is made (`subtype_dope`).
+    pub fn check_subtype_compat(&mut self, st: SubtypeId, span: Span) -> R<()> {
+        let db = self.db;
+        let mut cur = Some(st);
+        while let Some(s) = cur {
+            let sub = &db.subtypes[s];
+            match &sub.constraint {
+                Constraint::Range(rc @ RangeC::Explicit { .. })
+                    if let Some(p) = sub.parent
+                        && !ty::is_real(db, db.base(s))
+                        && db.types[db.base(s)].kind.is_scalar()
+                        && !self.range_within(rc, p) =>
+                {
+                    let r = self.range(rc, span)?;
+                    self.check_range_in(r, p, "range constraint", span)?;
+                }
+                _ => {}
+            }
+            cur = sub.parent;
+        }
+        Ok(())
     }
 
     /// `(low, high)` of a real range (registers are F64).
@@ -4477,7 +4576,37 @@ impl<'a> Fx<'a, '_> {
             if db.base(fe) != db.base(te) {
                 return self.conv_elements(to, operand, fe, te, span);
             }
-            return self.qualified(to, operand, span);
+            let v = self.qualified(to, operand, span)?;
+            // An unconstrained target takes the operand's bounds, which must belong to its
+            // index subtypes (LRM 9.3.6).
+            if let V::A(_, p) = v
+                && !self.is_general(tt, span)?
+                && !self.is_general(ft, span)?
+                && !ty::index_constrained(db, to)
+                && let (Some(fi), Some(ti)) = (index_subtypes(db, ft), index_subtypes(db, tt))
+            {
+                for (dim, (&f, &t)) in fi.iter().zip(ti.iter()).enumerate() {
+                    let inside = match (db.static_bounds(f), db.static_bounds(t)) {
+                        (Some((fl, fd, fr)), Some((tl, td, tr))) => {
+                            match (fl.as_int(), fr.as_int(), tl.as_int(), tr.as_int()) {
+                                (Some(fl), Some(fr), Some(tl), Some(tr)) => {
+                                    let lh =
+                                        |l, d, r| if d == Direction::To { (l, r) } else { (r, l) };
+                                    let ((flo, fhi), (tlo, thi)) = (lh(fl, fd, fr), lh(tl, td, tr));
+                                    flo > fhi || (tlo <= flo && fhi <= thi)
+                                }
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if f != t && !inside {
+                        let r = self.dope_range(p, dim as u8, RegTy::I64);
+                        self.check_range_in(r, t, "index constraint", span)?;
+                    }
+                }
+            }
+            return Ok(v);
         }
         let v = self.scalar_expr(operand)?;
         let name = ty::subtype_name(db, to);
@@ -4696,4 +4825,12 @@ pub fn deferred_completion(db: &Db, d: DeclId) -> Option<DeclId> {
                     if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some())
             })
     })
+}
+
+/// The index subtypes of array type `t`.
+fn index_subtypes(db: &Db, t: yavs_sem::TypeId) -> Option<Vec<SubtypeId>> {
+    match &db.types[t].kind {
+        TypeKind::Array { indexes, .. } => Some(indexes.to_vec()),
+        _ => None,
+    }
 }

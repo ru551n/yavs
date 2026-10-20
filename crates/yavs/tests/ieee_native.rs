@@ -123,7 +123,8 @@ impl Gen {
                 }
             })
             .collect();
-        let l = self.rng.below(9) as i64 - 3;
+        // Left bounds well above the vector length: the index type is NATURAL.
+        let l = self.rng.below(9) as i64 + 97;
         let asc = self.rng.below(2) == 0;
         (s, format!("{l}, {asc}"))
     }
@@ -152,7 +153,7 @@ impl Gen {
         if s.chars().all(|c| c == '0') && !s.is_empty() {
             s.replace_range(0..1, "1");
         }
-        let (l, asc) = (self.rng.below(9) as i64 - 3, self.rng.below(2) == 0);
+        let (l, asc) = (self.rng.below(9) as i64 + 97, self.rng.below(2) == 0);
         format!("{ty}(\"{s}\", {l}, {asc})")
     }
     fn operand(&mut self, ty: &str) -> String {
@@ -776,8 +777,8 @@ fn native_uniform_and_strings_match_bodies() {
         "ZZZZZ", "Z1", "ZZZ", "LHLH", "UUUU", "1", "ZZZZ0", "0ZZZ", "-W1X",
     ] {
         for f in ["to_hstring", "to_ostring"] {
-            g.case(&format!("sv(\"{lit}\", 3, false)"), f);
-            g.case(&format!("sv(\"{lit}\", 3, true)"), f);
+            g.case(&format!("sv(\"{lit}\", 9, false)"), f);
+            g.case(&format!("sv(\"{lit}\", 9, true)"), f);
         }
     }
     for _ in 0..iters(120) {
@@ -875,7 +876,7 @@ fn native_numeric_bit_matches_bodies() {
                 let s: String = (0..len)
                     .map(|_| b"01"[g.rng.below(2) as usize] as char)
                     .collect();
-                let l = g.rng.below(9) as i64 - 3;
+                let l = g.rng.below(9) as i64 + 97;
                 let asc = g.rng.below(2) == 0;
                 format!("{ty}(\"{s}\", {l}, {asc})")
             };
@@ -932,7 +933,7 @@ fn native_numeric_bit_matches_bodies() {
             let s: String = (0..g.rng.below(31))
                 .map(|_| b"01"[g.rng.below(2) as usize] as char)
                 .collect();
-            g.case(&format!("to_integer({ty}(\"{s}\", 3, false))"), "img");
+            g.case(&format!("to_integer({ty}(\"{s}\", 40, false))"), "img");
         }
     }
     for (ty, v) in [

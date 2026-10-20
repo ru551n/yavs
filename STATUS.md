@@ -111,7 +111,7 @@ Regression guard 2026-10-20, second (4d7b56bb, after the predecoded interpreter 
 Remaining run-time causes, ranked by tests (yavs bugs have issues): reports in resolution and
 conversion functions during the run print `(init)` and bypass the report path, #372 (12);
 unsupported PSL beyond the subset, W0004 (17, plus 4 that differ only in the directive path);
-missing run-time checks, #379 (about 11); PSL-free reference quirks and LRM-unclear cases (about
+missing run-time checks, #463 (about 6: aggregates and case choices against constant bounds, external name subtypes, universal literals in `'image`); PSL-free reference quirks and LRM-unclear cases (about
 15: mirror identity in reflection, null array bounds, `'transaction` start value 2 to 2, textio
 read of bits with spaces, real image format of the second suite, environment and time stamps);
 ICE on arrays with element constraints, #380 (3); binary files of records and arrays of composites (3); access to protected types, #377 (2); predefined operations on arrays of

@@ -1897,6 +1897,16 @@ impl Machine {
         if ctx.is_none() {
             return rt_err("wait statement executed during elaboration");
         }
+        // LRM 11.3: a procedure a process with a sensitivity list calls shall not wait.
+        if self.frames.len() > 1
+            && prog
+                .func(self.entry)
+                .is_some_and(|g| g.flags.contains(yavs_ir::FuncFlags::SENS_LIST))
+        {
+            return rt_err(
+                "wait statement in a procedure called by a process with a sensitivity list",
+            );
+        }
         if self.dbg.is_some() {
             let fr = &self.frames[self.frames.len() - 1];
             self.waits.stmt = f.loc.get(fr.pc as usize).copied();

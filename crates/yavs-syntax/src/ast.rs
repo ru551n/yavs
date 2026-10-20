@@ -355,7 +355,7 @@ pub enum Resolution {
 #[derive(Debug)]
 pub enum Constraint {
     /// `range l to r`
-    Range(Range),
+    Range(Box<Range>),
     /// `(0 to 3)`, `(open)`, optionally followed by an element constraint:
     /// `(0 to 3)(7 downto 0)`. `indexes` is `None` for `open`.
     Array {
@@ -572,9 +572,9 @@ pub struct Signature {
 #[derive(Debug)]
 pub enum InterfaceDecl {
     Object(InterfaceObject),
-    Type(InterfaceType),
-    Subprogram(InterfaceSubprogram),
-    Package(InterfacePackage),
+    Type(Box<InterfaceType>),
+    Subprogram(Box<InterfaceSubprogram>),
+    Package(Box<InterfacePackage>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -689,10 +689,10 @@ pub struct AssocElem {
 pub enum Actual {
     Expr(Expr),
     /// A slice or other range argument: `a(3 downto 0)`.
-    Range(Range),
+    Range(Box<Range>),
     /// A subtype with a constraint: `a(natural range 0 to 3)`, or a
     /// generic type actual `t => integer range 0 to 7`.
-    Subtype(SubtypeIndication),
+    Subtype(Box<SubtypeIndication>),
     Open(Span),
     Inertial(Expr),
 }

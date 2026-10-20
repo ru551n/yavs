@@ -506,7 +506,7 @@ impl Parser<'_> {
                 return Ok(RangeOrExpr::Subtype(SubtypeIndication {
                     resolution: None,
                     type_mark,
-                    constraint: Some(Constraint::Range(r)),
+                    constraint: Some(Constraint::Range(Box::new(r))),
                     span: self.span_from(span),
                 }));
             }
@@ -867,12 +867,12 @@ impl Parser<'_> {
             let res = expr_into_name(self, e, "a name")?;
             let tm = self.type_mark()?;
             let st = self.subtype_rest(Some(Resolution::Function(res)), tm)?;
-            return Ok(Actual::Subtype(st));
+            return Ok(Actual::Subtype(Box::new(st)));
         }
         Ok(match self.range_after(e)? {
             RangeOrExpr::Expr(e) => Actual::Expr(e),
-            RangeOrExpr::Range(r) => Actual::Range(r),
-            RangeOrExpr::Subtype(s) => Actual::Subtype(s),
+            RangeOrExpr::Range(r) => Actual::Range(Box::new(r)),
+            RangeOrExpr::Subtype(s) => Actual::Subtype(Box::new(s)),
         })
     }
 
@@ -942,7 +942,7 @@ impl Parser<'_> {
         match self.peek() {
             Tok::Kw(Kw::Range) => {
                 self.bump();
-                Ok(Some(Constraint::Range(self.range()?)))
+                Ok(Some(Constraint::Range(Box::new(self.range()?))))
             }
             Tok::LParen => Ok(Some(self.paren_constraint()?)),
             _ => Ok(None),

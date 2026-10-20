@@ -256,8 +256,10 @@ fn formal_key(n: &ast::Name) -> Option<(Symbol, Span)> {
 fn actual_span(a: &ast::Actual) -> Span {
     match a {
         ast::Actual::Expr(e) | ast::Actual::Inertial(e) => e.span,
-        ast::Actual::Range(ast::Range::Simple { left, .. }) => left.span,
-        ast::Actual::Range(ast::Range::Name(n)) => n.span,
+        ast::Actual::Range(r) => match &**r {
+            ast::Range::Simple { left, .. } => left.span,
+            ast::Range::Name(n) => n.span,
+        },
         ast::Actual::Subtype(si) => si.span,
         ast::Actual::Open(s) => *s,
     }

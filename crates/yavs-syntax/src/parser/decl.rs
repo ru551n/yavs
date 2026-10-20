@@ -789,11 +789,11 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                Ok(InterfaceDecl::Type(InterfaceType {
+                Ok(InterfaceDecl::Type(Box::new(InterfaceType {
                     name,
                     def,
                     span: self.span_from(start),
-                }))
+                })))
             }
             Tok::Kw(Kw::Function | Kw::Procedure | Kw::Pure | Kw::Impure) => {
                 let spec = self.subprogram_spec()?;
@@ -806,10 +806,10 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                Ok(InterfaceDecl::Subprogram(InterfaceSubprogram {
+                Ok(InterfaceDecl::Subprogram(Box::new(InterfaceSubprogram {
                     spec,
                     default,
-                }))
+                })))
             }
             Tok::Kw(Kw::Package) => {
                 self.bump();
@@ -834,12 +834,12 @@ impl Parser<'_> {
                 } else {
                     InterfacePackageMap::Assoc(self.assoc_list()?)
                 };
-                Ok(InterfaceDecl::Package(InterfacePackage {
+                Ok(InterfaceDecl::Package(Box::new(InterfacePackage {
                     name,
                     package,
                     generic_map,
                     span: self.span_from(start),
-                }))
+                })))
             }
             _ => {
                 let class = match self.peek() {

@@ -25,13 +25,63 @@ use crate::hier::{Bounds, Hierarchy, NetGraph, ObjId, ScopeId, Shape};
 
 pub type Val = yavs_sem::stat::ConstValue;
 
+/// The values of one scope's generics, generate parameters and constants: a few entries,
+/// kept sorted by declaration (a hash map of two entries is five times the size).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScopeVals(Vec<(DeclId, Val)>);
+
+impl ScopeVals {
+    pub fn get(&self, d: &DeclId) -> Option<&Val> {
+        let i = self.0.binary_search_by_key(d, |e| e.0).ok()?;
+        Some(&self.0[i].1)
+    }
+
+    pub fn contains_key(&self, d: &DeclId) -> bool {
+        self.get(d).is_some()
+    }
+
+    pub fn insert(&mut self, d: DeclId, v: Val) {
+        // Declarations are usually set in increasing order: append.
+        match self.0.last() {
+            Some(l) if l.0 >= d => match self.0.binary_search_by_key(&d, |e| e.0) {
+                Ok(i) => self.0[i].1 = v,
+                Err(i) => self.0.insert(i, (d, v)),
+            },
+            _ => {
+                // Exact room while small: most scopes hold one to three values.
+                if self.0.len() == self.0.capacity() {
+                    self.0
+                        .reserve_exact(if self.0.len() < 8 { 1 } else { self.0.len() });
+                }
+                self.0.push((d, v))
+            }
+        }
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Val> {
+        self.0.iter().map(|e| &e.1)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&DeclId, &Val)> {
+        self.0.iter().map(|e| (&e.0, &e.1))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// What evaluation needs besides the HIR: values per elaborated scope and signal objects.
 #[derive(Default)]
 pub struct Model {
     pub hier: Hierarchy,
     pub nets: NetGraph,
     /// Generic, generate parameter and constant values, per scope.
-    pub(crate) vals: Vec<HashMap<DeclId, Val>>,
+    pub(crate) vals: Vec<ScopeVals>,
     /// Signal objects by (scope, declaration).
     pub(crate) sigs: HashMap<(ScopeId, DeclId), ObjId>,
     /// Package constants.
@@ -498,7 +548,7 @@ impl Model {
     pub(crate) fn set(&mut self, scope: ScopeId, d: DeclId, v: Val) {
         let i = scope.index();
         if self.vals.len() <= i {
-            self.vals.resize_with(i + 1, HashMap::new);
+            self.vals.resize_with(i + 1, ScopeVals::default);
         }
         self.vals[i].insert(d, v);
     }

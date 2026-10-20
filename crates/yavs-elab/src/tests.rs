@@ -2022,3 +2022,19 @@ end;
         );
     }
 }
+
+#[test]
+fn scope_vals_keep_entries_sorted_by_declaration() {
+    use yavs_sem::ids::Id;
+    let d = |i| yavs_sem::DeclId::from_index(i);
+    let mut v = crate::ScopeVals::default();
+    for (i, x) in [(5, 50), (2, 20), (9, 90), (2, 21), (7, 70)] {
+        v.insert(d(i), crate::Val::Int(x));
+    }
+    assert_eq!(v.len(), 4);
+    assert_eq!(v.get(&d(2)), Some(&crate::Val::Int(21)));
+    assert_eq!(v.get(&d(7)), Some(&crate::Val::Int(70)));
+    assert!(!v.contains_key(&d(3)));
+    let order: Vec<_> = v.iter().map(|(k, _)| k.index()).collect();
+    assert_eq!(order, [2, 5, 7, 9]);
+}

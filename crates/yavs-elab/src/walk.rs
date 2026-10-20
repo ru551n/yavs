@@ -2684,12 +2684,14 @@ impl Elab<'_> {
             Process(ScopeId),
             Port(ObjId),
         }
-        let mut src: HashMap<LeafId, Vec<(Range, Src)>> = HashMap::new();
+        // Only unresolved leaves can collide: a flat list, in source order within a leaf.
+        let mut src: Vec<(LeafId, Range, Src)> = Vec::new();
+        let unresolved = |l: LeafId| self.m.nets.leaf(l).resolution.is_none();
         for d in &self.m.nets.drivers {
-            let p = &self.procs[d.proc.index()];
-            src.entry(d.leaf)
-                .or_default()
-                .push((d.range, Src::Process(p.scope)));
+            if unresolved(d.leaf) {
+                let p = &self.procs[d.proc.index()];
+                src.push((d.leaf, d.range, Src::Process(p.scope)));
+            }
         }
         let nets = &self.m.nets;
         let edges = nets
@@ -2704,20 +2706,19 @@ impl Elab<'_> {
             if mode != PortMode::In {
                 let f = nets.leaf(formal).obj;
                 for (l, r) in actual {
-                    src.entry(l).or_default().push((r, Src::Port(f)));
+                    if unresolved(l) {
+                        src.push((l, r, Src::Port(f)));
+                    }
                 }
             }
         }
-        let mut leaves: Vec<_> = src.into_iter().collect();
-        leaves.sort_by_key(|(l, _)| *l);
-        for (l, v) in leaves {
-            let leaf = self.m.nets.leaf(l);
-            if leaf.resolution.is_some() {
-                continue;
-            }
+        src.sort_by_key(|e| e.0);
+        for group in src.chunk_by(|a, b| a.0 == b.0) {
+            let leaf = self.m.nets.leaf(group[0].0);
+            let v: Vec<(&Range, &Src)> = group.iter().map(|e| (&e.1, &e.2)).collect();
             for i in 0..v.len() {
                 for j in i + 1..v.len() {
-                    if v[i].0.overlaps(v[j].0) {
+                    if v[i].0.overlaps(*v[j].0) {
                         let o = self.m.nets.obj(leaf.obj);
                         let span = self.db.decls[o.decl].span;
                         let describe = |s: &Src| match s {
@@ -2744,8 +2745,8 @@ impl Elab<'_> {
                                 ),
                             )
                             .with_primary(span, "declared here with an unresolved subtype")
-                            .with_note(describe(&v[i].1))
-                            .with_note(describe(&v[j].1))
+                            .with_note(describe(v[i].1))
+                            .with_note(describe(v[j].1))
                             .with_help("drive it from one process, or use a resolved subtype such as `std_logic`"),
                         );
                         return;

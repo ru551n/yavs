@@ -21,7 +21,7 @@ mod whole;
 #[cfg(test)]
 mod tests;
 
-pub use eval::{Class, ConvFn, Enc, Model, Side, Val, elem_of};
+pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
     ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
@@ -209,7 +209,7 @@ pub struct Elaborated {
     /// caller before building: each owns drivers and runs no code.
     pub ext_procs: Vec<ExtProc>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
-    pub model_vals: Vec<std::collections::HashMap<yavs_sem::DeclId, Val>>,
+    pub model_vals: Vec<ScopeVals>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
     /// The declarative regions (yavs-sem scopes) of each elaborated scope, in elaboration

@@ -786,7 +786,10 @@ impl<'a> Opt<'a> {
     /// block is entered by no branch.
     fn reachable(&self) -> Vec<bool> {
         let mut seen = vec![false; self.blocks.len()];
-        let mut work = vec![0usize];
+        // (The block a process pauses at is entered by the interpreter, not by a branch.)
+        let mut work: Vec<usize> = std::iter::once(0)
+            .chain(self.f.body.map(|b| b.0 as usize))
+            .collect();
         while let Some(b) = work.pop() {
             if seen.get(b) != Some(&false) {
                 continue;
@@ -1304,11 +1307,14 @@ impl<'a> Opt<'a> {
     }
 
     /// Empty the blocks no path reaches (all but their last instruction): their definitions
-    /// would keep registers from counting as defined once. Only in subprograms, where every
-    /// entry to a block is a branch.
+    /// would keep registers from counting as defined once. Every entry to a block is a branch,
+    /// the start of the code, the block a process pauses at, or the resumption of a suspension
+    /// (`reachable`).
     fn kill_unreachable(&mut self) {
-        if self.f.body.is_some() || !matches!(self.f.kind, FuncKind::Function | FuncKind::Procedure)
-        {
+        if !matches!(
+            self.f.kind,
+            FuncKind::Function | FuncKind::Procedure | FuncKind::Process
+        ) {
             return;
         }
         let reach = self.reachable();

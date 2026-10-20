@@ -2545,6 +2545,25 @@ user's performance priority:
   the registers a check, compare or branch depends on, and the liveness pass only registers
   defined on several paths.
 
+## Registers share cells by live range (yavs-ir `opt/share.rs`, #478)
+
+- **What:** the last step of the optimiser (`renumber`) computes the liveness of every register over
+  the finished code, gives each a hull of instruction indices, and hands out frame cells by linear scan,
+  one cell per simultaneously live value. Cells are numbered in order of first use. Never shared: signal
+  references (two adjacent cells), registers a frame starts with (defined once by a constant or an
+  address: the interpreter preloads them and a merged constant is read where its definition has not run),
+  and a compare, index, position, layout or signal-value temporary defined once and read once soon after
+  (the predecoder fuses such pairs by counting the reads of a register; a shared cell would stop it, which
+  made the first version 2 to 5 percent slower). Classes never mix: `I64`, `F64`, `Ptr` and `Handle` cells
+  stay separate, so the collector's register types (#422) and the must-defined check (#430) hold on the
+  result; the verifier runs on it in debug builds. A value defined by a simple one-result instruction may
+  take the cell of a value that instruction reads last; nothing else touches at a point.
+- **Why:** frames of the library testbenches had about 235 cells after dense renumbering, a copy of the
+  frame template per call and a cold stack. Sharing takes the average frame of the verification-library
+  benchmarks down by a fifth to a quarter; what remains is mostly preloaded constants and addresses.
+- **Not changed:** the number of instructions executed; processes and subprograms that may suspend are
+  treated alike (no register is live across a suspension, so their hulls never span one).
+
 ## Equality of arrays of integers and enumerations compares bytes (yavs-lower, yavs-interp, #444)
 
 - **What:** `=` and `/=` of one-dimensional arrays whose elements are integers, physical or

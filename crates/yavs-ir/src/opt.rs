@@ -34,6 +34,7 @@
 
 mod live;
 mod range;
+mod share;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -165,7 +166,7 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     f.loc = loc;
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
-    renumber(&mut f);
+    renumber(prog, &mut f);
     crate::build::number_func(&mut f, |c| {
         prog.funcs
             .get(c)
@@ -184,7 +185,7 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
 /// (registers nobody uses any more), and every call copies a frame template with one cell
 /// per register. A signal reference takes two cells, the second of which keeps its place
 /// behind the first.
-fn renumber(f: &mut crate::Func) {
+fn renumber(prog: &Program, f: &mut crate::Func) {
     let n = f.reg_ty.len();
     let mut used = vec![false; n];
     for i in &f.code {
@@ -211,17 +212,21 @@ fn renumber(f: &mut crate::Func) {
             used[r + 1] = true;
         }
     }
-    if used.iter().all(|&u| u) {
+    let shared = share::plan(prog, f, &used);
+    if shared.is_none() && used.iter().all(|&u| u) {
         return;
     }
-    let mut map = vec![0u32; n];
-    let mut ty = Vec::with_capacity(n);
-    for r in 0..n {
-        if used[r] {
-            map[r] = ty.len() as u32;
-            ty.push(f.reg_ty[r]);
+    let (map, ty) = shared.unwrap_or_else(|| {
+        let mut map = vec![0u32; n];
+        let mut ty = Vec::with_capacity(n);
+        for r in 0..n {
+            if used[r] {
+                map[r] = ty.len() as u32;
+                ty.push(f.reg_ty[r]);
+            }
         }
-    }
+        (map, ty)
+    });
     let rn = |r: &mut Reg| r.0 = map.get(r.0 as usize).copied().unwrap_or(0);
     for i in &mut f.code {
         i.visit_mut(&mut |r, _, _| rn(r));

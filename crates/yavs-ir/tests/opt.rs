@@ -543,6 +543,46 @@ fn equal_constants_share_a_register_and_unused_registers_go() {
     assert!(func.reg_ty.len() < 12, "{} registers", func.reg_ty.len());
 }
 
+#[test]
+fn registers_with_disjoint_lives_share_a_cell() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(16 * 10 + 8, 8);
+    fb.stmt(StmtKind::Return, sp());
+    // Ten sums of two loads, each stored before the next starts: the values of different
+    // rounds are never live together.
+    let mut made = 0;
+    for k in 0..10 {
+        pin(&mut fb, 16 * k);
+        let (x, y) = (load(&mut fb, 16 * k), load(&mut fb, 16 * k + 8));
+        let s = bin(&mut fb, IntOp::Add, x, y);
+        let a = fb.addr(AddrSpace::Frame, 16 * k);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: s,
+            w: Width::B8,
+        });
+        made += 3;
+    }
+    let r = fb.int(0);
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let func = p.func(f).expect("f");
+    assert_eq!(count(&func.code, |i| matches!(i, Inst::Load { .. })), 20);
+    // The addresses are preloaded cells of their own; the loaded values and sums share.
+    let addrs = count(&func.code, |i| matches!(i, Inst::AddrOf { .. }));
+    assert!(
+        func.reg_ty.len() < addrs + made / 2,
+        "{} registers for {made} values and {addrs} addresses",
+        func.reg_ty.len()
+    );
+}
+
 /// A subprogram with a local array `[data, dope, handle, descriptor]` (slot 0): the object
 /// is made by `New`, its handle stored at slot 16 and dereferenced; `leak` also passes the
 /// handle to a call. Returns the code of the function.

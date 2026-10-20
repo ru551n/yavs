@@ -95,6 +95,26 @@ and after #365 to #368 (2026-10-19):
 | second (`external.py ghdl`), before | 504 | 30 | 377 | 0 | 0 | 21 | 16 | 19 | 41 |
 | second, after | 504 | 30 | 381 | 0 | 0 | 21 | 12 | 19 | 41 |
 | second, after #447 to #461 (2026-10-20) | 504 | 30 | 392 | 0 | 0 | 22 | 9 | 15 | 36 |
+| first, after #450 to #476 (2026-10-20) | 1070 | 20 | 839 (+11 `early`) | 57 | 3 | 38 | 48 | 26 | 28 |
+
+Run-time findings of the first suite, fixed on 2026-10-20 (#450 to #476; the pass list grows from 813 to 850 tests):
+`'active` of an element behind a port (#450), `'last_value` of a composite signal as a whole (#451, the first
+reference answers per net; catalogue `last-value-composite`), a use clause naming a type makes its
+explicit operations visible (#452, L106), VHDL-93 shared variables read with `--relaxed` (#454),
+`early` (an LRM error found at analysis or elaboration where the suite has the run fail, #456),
+files declared in an architecture (#466), binding indication actuals see the names of the binding
+(#468), IEEE function calls and slices locally static (#470, L108), a package body naming an item of
+its package (#471), a block configuration seeing the components of its block (#473), a port actual
+whose context subtype names the instance's generics (#475) and 2019 record conversion (#476). Still
+open in the first suite (102 tests): PSL beyond the subset (about 25), mirror identity in reflection
+(4), guarded assignments (6, #373, #352), `T'value` of composites (2019, 4), `'driving` of
+sub-elements and ports (3), aggregate targets that mix scalars and arrays (2), VHDL-93 code that
+declares `integer_vector` or `boolean_vector` read as 2008 (4), external name subtype checks (ename5,
+ename9) and the missing length checks of a case expression (case13) and of an index constraint
+(bounds9), a resolution function that is an alias of an implicit function (wait21), nested
+subprograms of generic subprograms (attr19), partially constrained element subtypes of port actuals
+(issue1253, issue1366, vests37), `'range(n)'low` and `[signature]'instance_name` (attr16, attr21) and
+the rest one by one.
 
 Skipped by the harness: 403 and 647 (other languages, VHPI, coverage, Tcl and shell scripts,
 second-suite scripts with control flow or tool options, negative analysis tests). The passing

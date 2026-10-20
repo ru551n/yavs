@@ -1202,7 +1202,10 @@ impl SimControl {
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64;
             let mut runs = std::mem::take(&mut sig.changed);
-            runs.sort_unstable_by_key(|r| r.offset);
+            // Update order is element order, mostly: sort only when it is not.
+            if !runs.is_sorted_by_key(|r| r.offset) {
+                runs.sort_unstable_by_key(|r| r.offset);
+            }
             let mut waiters = std::mem::take(&mut sig.waiters);
             let (procs, signals) = (&self.procs, &self.signals);
             let live = |w: &Waiter| alive(procs, w);
@@ -1665,7 +1668,16 @@ impl SimControl {
         meta.ready = true;
         meta.by_timeout = by_timeout;
         meta.generation += 1;
-        slot_mut(&mut self.slots[p as usize]).st.timed_out = by_timeout;
+        // A signal resumed a process with an edge trigger: its edge holds (`Ctx::edge`).
+        let known = match self.triggers.get((meta.tid as usize).wrapping_sub(1)) {
+            Some(t) if !by_timeout && self.cfg.edge_triggers && t.reset.is_none() && !t.legacy => {
+                Some((t.signal, t.elem, t.rising))
+            }
+            _ => None,
+        };
+        let st = &mut slot_mut(&mut self.slots[p as usize]).st;
+        st.timed_out = by_timeout;
+        st.known_edge = known;
         if meta.flags.postponed {
             self.postponed.push(p);
         } else {

@@ -1367,6 +1367,69 @@ fn edge_trigger_skips_other_events() {
 }
 
 #[test]
+fn edge_query_is_the_same_with_and_without_triggers() {
+    let run = |triggers: bool, rising: bool| {
+        let mut b = Builder::new();
+        let clk = b.signal(
+            "clk",
+            SignalType::logic(1),
+            &LogicVec::new(1, StdULogic::Zero),
+        );
+        let d = b.driver(clk);
+        let mut step = 0;
+        b.process(
+            "stim",
+            NONE,
+            &[d],
+            p(move |c| {
+                if let Some(ch) = "1H0L1X1L0H".chars().nth(step) {
+                    let l: LogicVec = ch.to_string().parse().unwrap();
+                    c.assign(d, None, &[(Time::ZERO, &l)], DelayMode::INERTIAL)?;
+                    step += 1;
+                    c.wait_for(ns(5))?;
+                }
+                Ok(())
+            }),
+        );
+        let seen = Arc::new(std::sync::Mutex::new(0u32));
+        let out = seen.clone();
+        let reg = b.process(
+            "reg",
+            NONE,
+            &[],
+            p(move |c| {
+                if c.edge(clk.slice(0, 1), rising)? == Some(true) {
+                    *out.lock().unwrap() += 1;
+                }
+                c.wait_on(clk)
+            }),
+        );
+        b.edge_trigger(
+            reg,
+            EdgeTrigger {
+                signal: clk,
+                elem: 0,
+                rising,
+                legacy: false,
+                reset: None,
+            },
+        );
+        let cfg = Config {
+            edge_triggers: triggers,
+            ..Config::default()
+        };
+        let (mut sim, _) = build(b, cfg);
+        sim.run_until(ns(100)).unwrap();
+        *seen.lock().unwrap()
+    };
+    for rising in [true, false] {
+        assert_eq!(run(true, rising), run(false, rising));
+    }
+    assert_eq!(run(true, true), 3);
+    assert_eq!(run(true, false), 2);
+}
+
+#[test]
 fn hook_names_the_reporting_process() {
     struct Names(Arc<std::sync::Mutex<Vec<String>>>);
     impl Observer for Names {

@@ -108,6 +108,9 @@ pub(crate) struct ProcState {
     /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
     /// this run.
     pub phantoms: Vec<u32>,
+    /// The edge the kernel resumed the process for (`Builder::edge_trigger`: signal, element,
+    /// rising): true for the whole activation, so `Ctx::edge` of it need not look.
+    pub known_edge: Option<(SignalId, u32, bool)>,
     /// A one-element logic value kept for `Ctx::assign_code`.
     pub one: Option<LogicVec>,
 }
@@ -286,6 +289,15 @@ impl Ctx<'_> {
     /// the three of `event` and two `first_code`.
     #[inline(always)]
     pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
+        let r = r.into();
+        if let (Some((sig, el, up)), Some(x)) = (self.st.known_edge, r.range)
+            && r.signal == sig
+            && x.offset == el
+            && x.len == 1
+            && up == rising
+        {
+            return Ok(Some(true));
+        }
         let (s, r) = self.sig(r)?;
         if r.len == 0 {
             return Ok(None);

@@ -223,7 +223,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let current = std::cell::Cell::new(0usize);
     let done: std::cell::RefCell<Vec<String>> = Default::default();
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut db = Db::new(opts);
+        // The process exits right after the batch: freeing every AST and HIR node one by one is
+        // pure cost (about a tenth of a cold analysis), so the database is never dropped.
+        let mut db = std::mem::ManuallyDrop::new(Db::new(opts));
         let mut shown = 0;
         for (i, file) in a.files.iter().enumerate() {
             current.set(i);

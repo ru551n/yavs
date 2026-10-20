@@ -681,10 +681,8 @@ impl Signal {
 
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
         let n = self.ty.len as usize;
-        for e in r.elems() {
-            self.stamps[n + e] = cycle;
-            self.stamps[3 * n + e] = now.raw();
-        }
+        self.stamps[n..2 * n][r.elems()].fill(cycle);
+        self.stamps[3 * n..4 * n][r.elems()].fill(now.raw());
     }
 
     /// The elements of `r` that are not active in `cycle`, or `None` when all are (a port

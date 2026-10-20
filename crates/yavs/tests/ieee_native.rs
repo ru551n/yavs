@@ -207,6 +207,7 @@ fn testbench(seed: u64, per_op: usize) -> String {
             g.case(&format!("{f}(std_ulogic'('{a}'))"), "img");
         }
         g.case(&format!("?? std_ulogic'('{a}')"), "img");
+        g.case(&format!("is_x(std_ulogic'('{a}'))"), "img");
     }
     for _ in 0..per_op {
         let sl = ["and", "nand", "or", "nor", "xor", "xnor"];
@@ -224,6 +225,7 @@ fn testbench(seed: u64, per_op: usize) -> String {
         for f in ["to_x01", "to_x01z", "to_ux01"] {
             g.case(&format!("{f}({x})"), "img");
         }
+        g.case(&format!("is_x({x})"), "img");
         let m = sul.chars().nth(g.rng.below(9) as usize).unwrap_or('0');
         g.case(&format!("to_01({x}, '{m}')"), "img");
         for (ty, t) in [("uv", "unsigned"), ("gv", "signed")] {

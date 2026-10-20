@@ -123,6 +123,8 @@ pub enum Op {
     To01,
     /// `"??" (std_ulogic)`.
     Truthy,
+    /// `is_x` of a `std_ulogic_vector` (true) or a `std_ulogic`.
+    IsX(bool),
     /// `rising_edge` (true) or `falling_edge` of a `std_ulogic` signal.
     Edge(bool),
     Add {
@@ -212,6 +214,9 @@ pub fn parse(key: &str) -> Option<Op> {
             Some(Op::To01)
         }
         ("std_logic_1164", "??", ["std_ulogic"], "boolean") => Some(Op::Truthy),
+        ("std_logic_1164", "is_x", [t @ ("std_ulogic" | "std_ulogic_vector")], "boolean") => {
+            Some(Op::IsX(*t == "std_ulogic_vector"))
+        }
         ("std_logic_1164", n @ ("rising_edge" | "falling_edge"), ["std_ulogic"], "boolean") => {
             Some(Op::Edge(n == "rising_edge"))
         }

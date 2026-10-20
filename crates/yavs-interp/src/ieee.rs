@@ -324,6 +324,15 @@ fn to_01_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> 
     put(m, &Vh::down(to_01(&l.v, x)))
 }
 
+/// `is_x` of a vector: any element not `0 1 L H`. A null vector has none.
+fn is_x_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    Ok(Some(u64::from(vh(m, a, 0)?.v.has_x())))
+}
+
+fn is_x_sul(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    Ok(Some(u64::from(sul(a, 0)?.is_x())))
+}
+
 fn truthy(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     Ok(Some(u64::from(sul(a, 0)?.is_true())))
 }
@@ -1236,6 +1245,8 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         Op::Conv(_, true) => conv::<2, true>,
         Op::To01 => to_01_vec,
         Op::Truthy => truthy,
+        Op::IsX(true) => is_x_vec,
+        Op::IsX(false) => is_x_sul,
         Op::Edge(true) => edge::<true>,
         Op::Edge(false) => edge::<false>,
         Op::Add {

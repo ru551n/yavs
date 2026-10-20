@@ -408,9 +408,36 @@ before and after, the difftest corpus passes at `--threads 1` and `4` (378 of 37
 measurable gain): presized arenas and lookup cache (page-touch cost of small runs: +6 MiB peak RSS), a per-list
 operator index, one classification per name node and context, a flag-carrying pass over the use-clause results.
 
+### Bit-plane kernels (#199)
+
+`yavs_logic::wide` (`crates/yavs-logic/src/wide.rs`): word-parallel loops over runs of plane blocks used by the
+kernel's signal buffers (resolution, copies, extraction, value comparison), `Logic` (slice, concat, shifts,
+rotates, `is_x`, `?=`, resolve of N drivers) and the ieee natives (`resize`, shifts, relational operators,
+`is_x`). Resolution folds all sources into class masks and resolves once; whole blocks are processed four at a
+time as portable lane-wise code. No `unsafe`, no `std::arch`: an AVX2 build of the same loops measured no faster
+(`docs/decisions.md` "Wide plane kernels"). Each kernel is checked against a per-element model for random
+planes over all nine values, odd lengths and every offset (`crates/yavs-logic/tests/wide.rs`). Release build,
+host load about 20, best CPU seconds of 3 (A = before, B = after; `cargo bench -p yavs-logic --bench wide` for the kernels):
+
+| Measure | A | B |
+|---|---|---|
+| resolved bus design (32 drivers x 32 elements, 20000 cycles) | 0.61 | 0.41 |
+| 1024-bit bus, 8 drivers, 20000 cycles | 0.67 | 0.32 |
+| `shift_left`, `resize`, `rotate_right` of a 256-bit `unsigned`, 200000 calls | 0.27, 0.28, 0.34 | 0.07, 0.08, 0.07 |
+| `is_x` of a 256-bit vector, 200000 calls (native since this change) | 2.06 | 0.02 |
+| resolve 8 sources x 65536 elements (kernel) | 92.4 us | 30.8 us |
+| copy 65536 elements, unaligned destination (kernel) | 6.8 us | 0.91 us |
+| `resolved_bus` (tools/bench), total CPU | 0.20 | 0.17 |
+
+The clocked-RTL designs (`lfsr`, `ff`), `ff_rtl` and the two external testbenches (`vai_window_gen`,
+`vai_pe_array`) are interpreter-bound and unchanged (ratios 0.96 to 1.02). Regression guard: the differential
+corpus passes 410/410 at 1 and 4 threads and 4 shuffled threads on the interpreter and, at 1 and 4 threads, with
+`--tier=auto` and `--tier=llvm`; the external test runner's 11 suites pass (1344 tests); the `.pro` regression
+passes 314/314 under 2008 and 2019; the verification library suite runs 102 pass, 9 fail, 26 skip (as before).
+
 ### Native ieee operators (#395, #404)
 
-`std_logic_1164` gates, `not`, conversions and `rising_edge`, and `numeric_std` `+ - *`, relational
+`std_logic_1164` gates, `not`, conversions, `is_x` and `rising_edge`, and `numeric_std` `+ - *`, relational
 operators, `to_integer`, `to_unsigned`, `to_signed`, `resize` and the shift helpers, and `math_real` (`sqrt`, `exp`, `log*`, `sin`, `cos`, `**`, rounding functions), run natively
 (`crates/yavs-interp/src/ieee.rs`); the `?=` family, `std_match`, the vector/integer forms of `/` `rem` `mod` and the `std_logic_unsigned`/`numeric_std_unsigned` wrappers still run from VHDL (round 2 below).
 `crates/yavs/tests/ieee_native.rs` compares natives with the bodies (3 + 1 generated seeds, 2008 and

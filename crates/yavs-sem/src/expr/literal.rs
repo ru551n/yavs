@@ -26,7 +26,7 @@ use crate::stat::{ArrayConst, ConstValue, Elems, Staticness};
 use crate::types::{Constraint, RangeC, TypeKind};
 
 /// Longest expanded bit string accepted.
-// ponytail: guards `8_000_000_000X"1"` from allocating gigabytes; lift with run-length elements.
+// ponytail (#42): guards `8_000_000_000X"1"` from allocating gigabytes; lift with run-length elements.
 const MAX_BITSTRING_LEN: u64 = 1 << 26;
 
 // ---------------------------------------------------------------------------

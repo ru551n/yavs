@@ -2431,7 +2431,7 @@ fn result_subtype(
             };
             Some(vec![RangeC::Explicit { left, dir, right }])
         }
-        // ponytail: non-static positional and concatenation bounds stay in
+        // ponytail (#42): non-static positional and concatenation bounds stay in
         // `AggBounds` only; building `S'left + count - 1` needs the resolved
         // `"+"` of the index type.
         _ => None,

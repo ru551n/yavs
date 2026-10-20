@@ -1510,8 +1510,9 @@ impl Db {
                     _ => {}
                 });
             }
-            // ponytail: procedure calls are not followed into the procedure's
+            // ponytail (#42): procedure calls are not followed into the procedure's
             // body; a pure function calling a procedure with side effects passes.
+            // The driver sets of procedure calls are exact (`lsp.rs` `sources`).
             stack.extend(self.stmt_children(s));
         }
         found.sort_by_key(|(s, _)| s.start);

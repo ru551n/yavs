@@ -159,7 +159,7 @@ impl Db {
             RangeC::Explicit { left, right, .. } => {
                 self.exprs[*left].stat.min(self.exprs[*right].stat)
             }
-            // ponytail: `x'range` counts as static; exact only once types say
+            // ponytail (#42): `x'range` counts as static; exact only once types say
             // whether the prefix's subtype is static (S3).
             RangeC::Attr { .. } => Staticness::Globally,
         }
@@ -1120,8 +1120,9 @@ impl Db {
         let mut found = Vec::new();
         for d in roots {
             let idx = &by_root[&d];
-            // ponytail: quadratic in the sources of one signal; group by first
-            // static step if a design has thousands of drivers of one signal.
+            // ponytail (#42): quadratic in the sources of one signal (measured, debug
+            // build: 1000 single-bit drivers 0.2 s, 4000 drivers 2.6 s); group by
+            // first static step if a design has thousands of drivers of one signal.
             'pairs: for (n, &i) in idx.iter().enumerate() {
                 for &j in &idx[..n] {
                     let (a, b) = (&srcs[j], &srcs[i]);

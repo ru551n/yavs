@@ -309,9 +309,33 @@ milestone users care about works.
   entering compiled code from the interpreter (frame view, entry switch, the way back) costs
   about what interpreting such a body costs, and the helpers a verification library calls
   millions of times ran slower compiled (`vai_window_gen` 0.93x, `calls` 0.82x of the CPU with
-  them compiled). Processes always loop. Eager tier-up (`--tier-heat=..,..,0`, the tests) still
+  them compiled). Processes always loop (see "Tier-up of processes" below for the rule now). Eager tier-up (`--tier-heat=..,..,0`, the tests) still
   compiles everything. Compiling such a callee whenever compiled code calls it was measured
   too and lost (`vai_window_gen` 1.18x). The LLVM agent, 2026-10-20.
+- **Vector process bodies (#338, #339, 2026-10-20):** compiled code runs `LCopy` itself (the
+  plane blocks found through `Gen::host`, at most eight each side, copied by `yavs_rt_lcopy`,
+  which calls `yavs_interp::copy_bits`, the function the interpreter's `lcopy` uses; source and
+  destination may be one vector, so both are copied to the stack first), reads constants it knows at
+  generation time from a private copy in the module (only the `Bytes` form, up to 4 KiB: the
+  bytes the interpreter reads; constants never change), and runs `SigRead` and `DriveSlot` of
+  one range and `WaitFor` (with its `Suspend`) through `TierHost::signal` (`sig_read_vec`,
+  `drive`, `wait_for`); the interpreter's own bodies of these do without vectors (#443). Why: on
+  clocked RTL over `std_logic_vector` the per-activation cost was the generic step of these
+  instructions, not the arithmetic; one implementation each keeps rule 5 by construction. The other vector natives (numeric
+  arithmetic, shifts, resize, conversions) still run through the generic step and build
+  vectors. The LLVM agent, 2026-10-20.
+- **Tier-up of processes and short callees (#432, 2026-10-20):** `--tier=auto` compiles a hot
+  process without a loop of its own (clocked RTL) at O2 at once: its O0 code ran no faster than
+  the interpreter, and it runs for the whole simulation, so the second compile is saved; a
+  process with loops (a testbench) still starts at O0, which already gains there. A loop is a
+  cycle of blocks (`loops`, which replaces the test for a jump to an earlier instruction: join
+  blocks laid out before their branches looked like loops), and a process's way through its
+  suspension is none, so a one-statement process stays interpreted under the short-function
+  rule (the kernel designs `fan`, `chain`, where its compiled code was slower); a short hot
+  function stays interpreted only while no compiled function calls it directly: once one does
+  (or one that calls it is compiled later) it is compiled at O2, since each call from compiled
+  code to an interpreted function leaves the caller and enters it again (`"xor"` of
+  `numeric_std` in a reduction loop). The LLVM agent, 2026-10-20.
 - **Default:** `--tier=interp`, also in a yavs built with the `llvm` feature. After #336, #337
   and the sampling tier-up, `--tier=auto` is 0.77x to 1.36x the interpreter's CPU on the shared
   benchmarks (geometric mean 1.016, STATUS.md "llvm"): it wins on compute and verification

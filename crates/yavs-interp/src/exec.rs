@@ -5802,7 +5802,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Some(&Inst::SigReadScalar { dst, sig }) => {
                 m.sig_read_scalar(sig, self.ctx).map(|v| m.set(dst, v))
             }
-            Some(&Inst::SigRead { dst, sig }) if !m.is_multi(sig) => m.sig_read_vec(dst, sig, self.ctx),
+            Some(&Inst::SigRead { dst, sig }) if !m.is_multi(sig) => {
+                m.sig_read_vec(dst, sig, self.ctx)
+            }
             Some(&Inst::Drive {
                 driver,
                 target,

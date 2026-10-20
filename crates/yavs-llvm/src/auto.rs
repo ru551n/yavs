@@ -71,27 +71,100 @@ impl Heat {
 const SHORT: usize = 64;
 
 /// Why `f` stays interpreted although hot: shorter than `SHORT` IR instructions and without a
-/// jump back, so each entry into compiled code from the interpreter (the frame view, the
+/// loop (`loops`), so each entry into compiled code from the interpreter (the frame view, the
 /// entry switch, the way back) would cost about what interpreting its body costs: the small
-/// helpers a testbench calls millions of times ran slower compiled (#432).
+/// helpers a testbench calls millions of times ran slower compiled (#432), and so did the
+/// one-statement processes of the kernel design `fan`.
 fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
-    use yavs_ir::Inst;
-    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
-    let back = f.code.iter().enumerate().any(|(pc, i)| match i {
-        Inst::Br { to } => start(*to) <= pc,
-        Inst::CondBr { t, f: e, .. } => start(*t) <= pc || start(*e) <= pc,
-        Inst::Case { table, .. } => prog
-            .cases
-            .get(*table)
-            .is_some_and(|t| start(t.default) <= pc || t.arms.iter().any(|a| start(a.2) <= pc)),
-        _ => false,
-    });
-    (!back && f.code.len() < SHORT).then(|| {
+    (!loops(prog, f) && f.code.len() < SHORT).then(|| {
         format!(
             "{} IR instructions without a loop: entering compiled code would cost about as much",
             f.code.len()
         )
     })
+}
+
+/// Whether the blocks of `f` form a cycle, not counting a process's way through its
+/// suspension (each activation runs its body once).
+fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
+    use yavs_ir::Inst;
+    let blocks: Vec<&[Inst]> = f
+        .blocks
+        .iter()
+        .map(|(_, b)| f.code.get(b.start as usize..b.end as usize).unwrap_or(&[]))
+        .collect();
+    let waits: Vec<bool> = blocks
+        .iter()
+        .map(|c| f.kind == FuncKind::Process && c.iter().any(|i| matches!(i, Inst::Suspend { .. })))
+        .collect();
+    let succ = |b: usize| -> Vec<usize> {
+        let mut to = Vec::new();
+        for i in blocks[b] {
+            match i {
+                Inst::Br { to: t } => to.push(t.0 as usize),
+                Inst::CondBr { t, f: e, .. } => to.extend([t.0 as usize, e.0 as usize]),
+                Inst::Case { table, .. } => {
+                    if let Some(t) = prog.cases.get(*table) {
+                        to.push(t.default.0 as usize);
+                        to.extend(t.arms.iter().map(|a| a.2.0 as usize));
+                    }
+                }
+                _ => {}
+            }
+        }
+        to.retain(|&t| t < blocks.len() && !waits[b] && !waits[t]);
+        to
+    };
+    // Depth-first search for an edge back to a block on the current path.
+    let mut state = vec![0u8; blocks.len()]; // 0 new, 1 on the path, 2 done
+    for root in 0..blocks.len() {
+        if state[root] != 0 {
+            continue;
+        }
+        let mut stack = vec![(root, succ(root), 0)];
+        state[root] = 1;
+        while let Some((b, next, k)) = stack.last_mut() {
+            match next.get(*k).copied() {
+                Some(t) => {
+                    *k += 1;
+                    match state[t] {
+                        1 => return true,
+                        0 => {
+                            state[t] = 1;
+                            stack.push((t, succ(t), 0));
+                        }
+                        _ => {}
+                    }
+                }
+                None => {
+                    state[*b] = 2;
+                    stack.pop();
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The functions `f` calls directly.
+fn callees(f: &yavs_ir::Func) -> impl Iterator<Item = FuncId> + '_ {
+    f.code.iter().filter_map(|i| match i {
+        yavs_ir::Inst::Call { func, .. } => Some(*func),
+        _ => None,
+    })
+}
+
+/// The direct callers of every function, by callee.
+fn callers_of(prog: &yavs_ir::Program) -> Vec<Vec<FuncId>> {
+    let mut by = vec![Vec::new(); prog.funcs.len()];
+    for (id, _) in prog.funcs.iter() {
+        for g in prog.func(id).into_iter().flat_map(callees) {
+            if let Some(v) = by.get_mut(g.0 as usize) {
+                v.push(id);
+            }
+        }
+    }
+    by
 }
 
 /// See `Heat::o2_threshold`.
@@ -189,6 +262,10 @@ impl AutoTier {
                 // is compiled); then those to compile again at O2.
                 let mut hot: std::collections::VecDeque<(FuncId, bool)> = Default::default();
                 let mut later: Vec<FuncId> = Vec::new();
+                // Functions found hot but left interpreted for being short, and the direct
+                // callers of each function (made when first needed).
+                let mut short_hot = vec![false; prog.funcs.len()];
+                let mut callers: Option<Vec<Vec<FuncId>>> = None;
                 let upgrade = opt != OptLevel::O2;
                 loop {
                     match rx.recv_timeout(period) {
@@ -225,7 +302,7 @@ impl AutoTier {
                         while let Ok(id) = rx.try_recv() {
                             hot.push_back((id, false));
                         }
-                        let Some((id, o2, sampled)) = hot
+                        let Some((id, again, sampled)) = hot
                             .pop_front()
                             .map(|(id, sampled)| (id, false, sampled))
                             .or_else(|| later.pop().map(|id| (id, true, false)))
@@ -238,17 +315,28 @@ impl AutoTier {
                         if sh.halt.load(Ordering::SeqCst) {
                             break;
                         }
+                        // A process without a loop of its own (clocked RTL) at O2 at once: its
+                        // first-level code ran no faster than the interpreter, and it runs for
+                        // the whole simulation. One with loops (a testbench) gains at O0 already.
+                        let rtl = prog
+                            .func(id)
+                            .is_some_and(|f| f.kind == FuncKind::Process && !loops(&prog, f));
+                        let o2 = again || rtl && upgrade;
                         // Each level once; elaboration code never runs again.
-                        let first = done
-                            .get_mut(id.0 as usize)
-                            .is_some_and(|d| !std::mem::replace(&mut d[usize::from(o2)], true));
+                        let first = done.get_mut(id.0 as usize).is_some_and(|d| {
+                            let first = !std::mem::replace(&mut d[usize::from(again)], true);
+                            d[1] |= o2;
+                            first
+                        });
                         let todo = prog.func(id).filter(|f| first && f.kind != FuncKind::Elab);
                         if let Some(f) = todo {
                             let level = if o2 { OptLevel::O2 } else { opt };
                             let j = if o2 { &mut jit2 } else { &mut jit };
                             let t0 = std::time::Instant::now();
-                            let short = (sampled && !o2).then(|| too_short(&prog, f)).flatten();
-                            let r = match (too_big(f, max_size).or(short), j) {
+                            let short = (sampled && !again).then(|| too_short(&prog, f)).flatten();
+                            let big = too_big(f, max_size);
+                            let short_now = big.is_none() && short.is_some();
+                            let r = match (big.or(short), j) {
                                 (Some(why), _) => Err(why),
                                 (None, Some(j)) => compile_one(j, &prog, id, f, level),
                                 (None, j @ None) => match new_jit(level) {
@@ -261,12 +349,44 @@ impl AutoTier {
                                     table[id.0 as usize].set(entry);
                                     native.set(id);
                                     note(id, level, Ok(t0.elapsed()));
+                                    // The hot short functions it calls: called from
+                                    // compiled code they cost no entry from the interpreter.
+                                    for g in callees(f) {
+                                        if short_hot.get(g.0 as usize).is_some_and(|s| *s)
+                                            && table
+                                                .get(g.0 as usize)
+                                                .is_some_and(|e| e.get().is_none())
+                                        {
+                                            later.push(g);
+                                        }
+                                    }
                                     // Eager (tests): swap the O2 code in during the run too.
                                     if heat.eager() && upgrade && !o2 {
                                         later.push(id);
                                     }
                                 }
-                                Err(why) => note(id, level, Err(why)),
+                                Err(why) => {
+                                    // A short function stays interpreted while no compiled
+                                    // function calls it (each call from compiled code would
+                                    // leave that code and enter it again).
+                                    let mut called = false;
+                                    if short_now {
+                                        short_hot[id.0 as usize] = true;
+                                        done[id.0 as usize][0] = false;
+                                        let callers =
+                                            callers.get_or_insert_with(|| callers_of(&prog));
+                                        called = callers[id.0 as usize].iter().any(|c| {
+                                            table
+                                                .get(c.0 as usize)
+                                                .is_some_and(|e| e.get().is_some())
+                                        });
+                                    }
+                                    if called {
+                                        later.push(id);
+                                    } else {
+                                        note(id, level, Err(why));
+                                    }
+                                }
                             }
                         }
                         sh.busy.store(false, Ordering::SeqCst);

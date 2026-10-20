@@ -1434,6 +1434,55 @@ time, so CPU is reported). Cells: CPU seconds / peak MiB / collections.
   mark buffer is not reused (a measured gain below noise would not pay for 1 byte per slot kept in every heap).
 - **Default kept at 1 MiB** (`docs/decisions.md`, "Heap collection threshold").
 
+## performance: compiled vector process bodies (#338, #339, #432, 2026-10-20)
+
+The LLVM tier runs process bodies over `std_logic_vector` without leaving compiled code for the
+vector work: `LCopy` inline (the plane blocks through `Gen::host`, copied by
+`yavs_interp::copy_bits`, the interpreter's), constants read from a copy in the module (the object lookup each
+activation was 5% of `rtl2`), and `SigRead`, `DriveSlot` and `WaitFor` as direct calls
+(`TierHost::signal`, the interpreter's bodies of #443).
+`--tier=auto` compiles a hot process without a loop of its own at O2 at once (its O0 code ran
+no faster than the interpreter), keeps a one-statement process interpreted (a process's way
+through its suspension is no loop; loops are now cycles of blocks), and compiles a short hot
+function at O2 once compiled code calls it (`numeric_std`'s `"xor"` in a reduction loop left the
+compiled caller and entered it again on every call). Still stepped: the numeric vector natives
+(arithmetic, shifts, resize, conversions build vectors), forces, multi-part drives and reads.
+
+RTL set, `--threads 1`, median CPU seconds of 5 runs (total without analysis), every run pinned
+to performance cores 2 and 3 (`taskset -c 2,3`: the compile thread of `--tier=auto` gets the
+second), host load 10 to 20 from other agents. Before = main at `1bea8e40`; after = this work
+on main at `cde6b848`, which also has the block kernels of #199 in between (the `bus` row is
+mostly theirs). sim1 run as `-H 64m -e <top> --no-save --jit -r`, pinned the same way. Designs
+2a/2b: 64 LFSR processes over `unsigned` (2a with a process XOR-reducing the 64 registers
+through `numeric_std`'s `"xor"`, 5000 cycles; 2b without it, 20000 cycles).
+
+| Design | sim1 | interp before | interp after | auto before | auto after | auto after / sim1 | auto before / sim1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2b 64 LFSR x 20000 | 0.14 | 1.16 | 0.99 | 1.19 | 1.01 | 7.2x | 8.5x |
+| `lfsr` (512 x 16 bit x 5000) | 0.17 | 2.15 | 1.87 | 2.18 | 1.80 | 10.6x | 12.8x |
+| `ff` (4096 x 2000) | 0.53 | 3.09 | 3.01 | 3.13 | 2.96 | 5.6x | 5.9x |
+| 2a 64 LFSR x 5000, XOR reduce | 0.10 | 0.46 | 0.44 | 0.61 | 0.60 | 6.0x | 6.1x |
+| `chain` (1000 x 2000) | 0.15 | 1.01 | 0.99 | 1.01 | 1.02 | 6.8x | 6.7x |
+| `fan` (4000 x 5000) | 1.08 | 2.37 | 2.57 | 3.25 | 2.76 | 2.6x | 3.0x |
+| `bus` (32 drivers x 20000) | 0.76 | 0.66 | 0.41 | 0.75 | 0.48 | 0.6x | 1.0x |
+
+2a is short (0.5 s): its `--tier=auto` CPU includes three O2 compiles (0.2 s); its median wall
+went from 0.60 to 0.54 s.
+
+Interleaved A/B pairs (7 to 9 pairs, median CPU ratio, at lower load): `--tier=auto` against
+`--tier=interp` of the same binary is 0.88 on `lfsr` (wall 0.82), 0.91 wall on 2b and 1.03 wall
+on 2a (the O2 compiles cost 0.2 s of CPU on a 0.3 s run); the interpreter after against before
+is 0.93 (`lfsr`), 0.88 (2a), 0.93 (2b). With everything compiled before time 0 (`--tier=llvm`)
+the simulate phase of 2b is 0.55 s against the interpreter's 0.67 s (O0 code: 0.67 s). Running
+the interpreter with a tier set (`run_ops::<true>`) costs 4 to 13% on `ff`, `chain` and `fan`
+even where nothing is compiled (#480, measured before 4d0c9ae9, which addresses it); that and the kernel (the update phase, `assign`, edge and wait
+bookkeeping: half or more of every row) are what keep `--tier=auto` near the interpreter here.
+Shared benchmarks (`tools/bench/run.py --compare`, `--tier=auto` on both sides, CPU): internal
+group geometric mean 0.948 over 12 (`compute_loop` 0.69, `resolved_bus` 1.18: one O2 compile on
+a 0.3 s run, wall equal), external 1.014 over 5 (`vai_window_gen` 1.08); `--tier=interp`
+internal 0.982. Difftest 409/409 for `yavs`, `yavs-llvm` and `yavs-auto` with
+`--tier-heat=1,0,0` at 1 and 4 threads, also with a `gc-stress` build of the tier.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

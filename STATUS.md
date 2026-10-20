@@ -200,9 +200,60 @@ after is main at `47407de9` (the CPU difference is noise plus other agents' comm
 Where the rest is: a project testbench peaks at the end of elaboration with the analysis results (about 29 MB,
 restored from the compilation cache: 128 B per declaration, 56 B per expression, 152 B per statement), the
 lowered IR (about 11 MB) and the package state; the run itself adds little. A design of 20000 small
-instances needs about 17 KB per instance (kernel signals about 1.2 KB each with 25 allocations, the
-elaborated model about 9 KB per instance); the shared heap of a long verification testbench is genuinely
+instances needed about 17 KB per instance (kernel signals about 1.2 KB each with 25 allocations, the
+elaborated model about 9 KB per instance; see "Memory of designs with many instances (#421)" for what is left); the shared heap of a long verification testbench is genuinely
 live data (about 20 MB). A global allocator that keeps freed memory mapped (one was tried) doubled the peak.
+
+### Memory of designs with many instances (#421)
+
+`elab_heavy` (20000 instances: 40002 kernel signals, 40001 processes) peaked at 271 MiB, with 1.82 million live
+allocations at the peak and 7.07 million allocations over the run. Counting heap profile (a counting global
+allocator in a scratch build) showed where it went, and the changes:
+
+- A kernel signal was a 584-byte record with about 25 allocations (three value buffers, four per-element stamp
+  vectors, waiter lists, segments, driver list, scratch range lists). Buffers of up to 16 bytes or one logic block, the
+  four stamp arrays (now one buffer), one waiter, one segment, one pending transaction and the scratch lists are
+  stored inline (`SmallVec` with its `union` feature); the several-sources source map is freed before the
+  simulation state is made; process names are stored once (the printer asks the kernel for them).
+- A resolved signal allocated three lists for every driving value it computed (`resolved_bus` simulate CPU 0.51 s
+  to 0.38 s on its own); an unguarded signal now resolves its one run with an inline list. The elaborator boxed
+  each process twice (a wrapper around the builder's box, and a second virtual call per activation):
+  `Builder::process_boxed`.
+- `yavs run` without a plugin, waveform or coverage frees the elaborated model once the simulation is built
+  (`Elaborated::release_for_run`): the run phase grows about 25 MiB (frames, queues, wait lists of 40000
+  processes) and reuses what the model held. The release itself costs about 0.03 s CPU on this design.
+- Elaboration: path names were built from three allocations per segment (1.3 million allocations), the
+  several-sources check formatted a description of every driver and port (140000 strings) though it needs one only
+  on a collision, per-scope values were hash maps of one to three entries, the port-expression data of a process
+  instance (130 bytes) was inline.
+- The shared-state field of every interpreter process held an empty shared heap (184 bytes): boxed (64).
+
+Median of 5 runs, release build, `--threads 1`, interleaved A/B on a host with a load average near 20 (rows with
+simulate time dominating move by up to 8 percent between repeats; the 9-run interleaved re-check of the three
+simulation-heavy rows is in the last column). Before is main at `8742946a`, after is the series of #421:
+
+| Benchmark | peak MiB before | after | CPU s before | after | CPU, 9 runs before / after |
+|---|---|---|---|---|---|
+| `elab_heavy` | 271.1 | 159.9 | 0.64 | 0.45 | |
+| `vai_pe_array` | 50.5 | 50.1 | 0.26 | 0.25 | |
+| `vai_window_gen` | 53.0 | 51.4 | 1.95 | 2.10 | 1.94 / 1.80 |
+| `ff_rtl` | 14.7 | 13.4 | 0.05 | 0.05 | |
+| `resolved_bus` | 12.0 | 11.5 | 0.37 | 0.39 | 0.36 / 0.36 |
+| `uvvm_axistream_vvc_tb` | 91.6 | 90.4 | 3.72 | 4.01 | 3.58 / 3.53 |
+| `vunit_vc30` | 73.2 | 72.3 | 5.59 | 5.09 | |
+
+`elab_heavy` phases (CPU s, before / after): elaborate 0.18 / 0.14, init 0.20 / 0.16, simulate 0.16 / 0.12; live
+allocations at the peak 1.82 million / 0.74 million, allocations over the run 7.07 million / 3.78 million. The
+memory is first-touch cost too: a third of the elaboration samples sat in the copy that writes a new element of
+the scope, object and leaf vectors into fresh pages.
+
+Where the rest is (20000 instances, resident bytes at the end of the build, before the model is freed): the kernel
+signals (600-byte record, 40000 of them: 24 MiB), the interpreter processes (560 bytes each: 22 MiB), the
+elaborated hierarchy (152-byte scopes, 144-byte objects, 152-byte leaves, 80000 of each: 36 MiB), kernel process
+slots and queues (13 MiB). Not done, and why: the interpreter machine of a process (private heap 128 bytes, layout
+memos, wait list) belongs to the heap work of #422 and the dispatch work of #412, which edit the same lines;
+sharing per-architecture data between instances (shapes, port tables) needs the elaborator to build the
+instance's constants lazily, a larger change.
 
 ### Interpreter run time (#386)
 

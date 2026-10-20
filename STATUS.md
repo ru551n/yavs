@@ -17,8 +17,8 @@
 
 ### External test runner: its own VHDL suites (#112)
 
-`VUNIT_SIMULATOR=yavs`, `-p 2`, release build of main at b9dcddb6 (re-measured 2026-10-19); pass / fail / skipped tests per
-suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. All 11 suites pass: 1357 tests, no failure, no skip (the one failure of the previous measurement, #281, is fixed). Wall time per suite at `-p 2`: check 24 s, com 26 s, data_types 46 s, logging 16 s, string_ops 2 s, the rest under 6 s, verification_components 224 s plus 20 s for its protocol checker configurations (the previous measurement: 671 s at `-p 4`).
+`VUNIT_SIMULATOR=yavs`, `-p 2`, release build of main at f2ab69be (re-measured 2026-10-20); pass / fail / skipped tests per
+suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` with its generic configurations. All 11 suites pass: 1357 tests, no failure, no skip (the one failure of the previous measurement, #281, is fixed). Wall time per suite at `-p 2` (host load average about 20): check 23 s, com 23 s, data_types 38 s, logging 16 s, string_ops 3 s, the rest under 6 s, verification_components 134 s with its protocol checker configurations (238 s at 666f5ee3, 224 s plus 20 s at b9dcddb6) (the previous measurement: 671 s at `-p 4`).
 
 | Suite | Pass | Fail | Skip | Root causes (issues) |
 |---|---|---|---|---|
@@ -38,7 +38,7 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 
 `tools/suites/uvvm.py` (without `--private-copies`), release build of main at 92dfc349 (#328, #329, #303 and the force of composite signals in), `-j 2`; one run per testbench
 entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 76 runs pass (73 at 92dfc349, 45 at ba53e23d); re-measured at b9dcddb6 with `-j 2`, 1560 s wall. Only the first root cause of each run is counted.
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 78 runs pass (76 at 666f5ee3 and b9dcddb6, 73 at 92dfc349, 45 at ba53e23d); re-measured at f2ab69be with `-j 2`, 1240 s wall (2100 s at 666f5ee3 on a more loaded host, 1560 s at b9dcddb6). Only the first root cause of each run is counted.
 No run fails at elaboration on the record-resolution or composite-force cause any more; the remaining failures have four causes (#391 to #394).
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
@@ -67,7 +67,7 @@ No run fails at elaboration on the record-resolution or composite-force cause an
 | bitvis_vip_uart | 1 | 2 | 0 | #392 (1); the unwanted-activity checks of `uart_vvc_tb` see 6 of 7 alerts, probably #391, not reduced separately (1) |
 | bitvis_vip_wishbone | 0 | 2 | 0 | #391 |
 | external_vip_apb | 3 | 3 | 0 | #391 |
-| Total | 76 | 33 | 28 | |
+| Total (f2ab69be) | 78 | 33 | 26 | per-component rows above are from b9dcddb6 |
 
 The generated-VIP tests of the framework component (generator output compiled and simulated) are not run by the driver.
 
@@ -76,8 +76,8 @@ The generated-VIP tests of the framework component (generator output compiled an
 `tools/suites/pro.py` reads the library's build and test scripts (`OsvvmLibraries.pro`, `RunAllTests.pro`) with a Tcl subset, analyzes
 521 files in script order and runs each test (`yavs run`, release build of main, 2 in parallel). Pass = exit 0 and the
 library's own `DONE PASSED` summary line. The script settings package body is generated with the scripts' release as settings
-revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 (re-measured at b9dcddb6, 178 s wall at 2 in parallel) and 2019 (at 8bbefaed):
-all 314 tests pass, the same test for test; 2019 at b9dcddb6 passes 272 of 314, 42 fail with an overflow in the native `to_integer` of 64-bit INTEGERs (#416, introduced by the native ieee operators); the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
+revision, as the scripts do (the transcript layout the tests compare against the validated results follows it). 2008 (re-measured at f2ab69be, 200 s wall at 2 in parallel; 178 s at b9dcddb6) and 2019 (at f2ab69be, 218 s wall):
+all 314 tests pass, the same test for test (2019 passed 272 of 314 at b9dcddb6, the #416 overflow in the native `to_integer`, fixed; it fell to 129 of 314 between fd35a265 and 33e5f57e, #429, fixed); the native co-simulation directories (`CoSim`, `CoSimPCIe`) are skipped, not run.
 Root causes fixed on the way: #291, #292, #294, #295, #296, #304, #311 (= #313), #314, #315 (= #312).
 
 ### Reference simulators' own regression tests, run time (#354)
@@ -102,6 +102,8 @@ against the suites' own verdicts (exit status) without a reference simulator. Ev
 identical output at `--threads 1` and `--threads 4`.
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
+
+Regression guard 2026-10-20 (f2ab69be, release build with the `llvm` feature): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests), the differential corpus passes 354/354 at 1 thread, 4 threads and 4 shuffled threads on the interpreter and, at 1 and 4 threads, with `--tier=llvm`, all 30 analysis corpora match their expected lists, the discrepancy catalogue checks green, the external test runner's 11 suites pass (1344 tests), the second verification library's `.pro` regression passes 314/314 under both 2008 and 2019 and the verification library suite runs 78 pass, 33 fail, 26 skip (no new failure). One regression was found on the way and fixed already: 185 of its 314 tests under 2019 failed between fd35a265 and 33e5f57e (#429).
 
 Remaining run-time causes, ranked by tests (yavs bugs have issues): reports in resolution and
 conversion functions during the run print `(init)` and bypass the report path, #372 (12);
@@ -1256,6 +1258,93 @@ A study of how the reference simulators reach their speed, with ranked recommend
 (native ieee fast paths with fallback, interpreter constant factors, kernel assignment and wake
 fast paths, hot-only tier-up, start-up breakdown), is in `docs/design/performance.md`. No
 recommendation is implemented yet.
+
+## performance against the two reference simulators, interpreter tier, 2026-10-20
+
+Measurement only. yavs at `f2ab69be` (release build, `--tier=interp`) against reference simulator A
+(a 1.23 development build with LLVM 21, JIT based) and B, same method as the section of 2026-10-19
+above: median of 3 runs (5 for designs 4 and 6b in the earlier section, 3 here), tools interleaved, one simulation at a time under a memory cap, analysis not counted, startup
+is `--stop-time 0fs` (yavs, reference A with `--jit`), reference A `-e` (ahead of time) or reference B
+`-r --stop-time=0fs`, simulation is total minus startup, peak RSS of the full run. Host: 24 cores
+shared with about ten other agents, load average 17 to 28 during the runs, so read ratios, not seconds. Reference A is measured
+two ways: the ahead-of-time way of the earlier section (`-e` then `-r`, two commands, the elaboration is
+the startup) and the way the external test runner starts it (`-H 64m -e <top> --no-save --jit -r` in one
+command), which is the reference for test-runner use. The compilation cache is warm (one earlier run
+of each design; the design 3, 4 and 6 libraries were analyzed once and reused). Designs 1 to 6 are those of the section above
+(5: the corpus now holds 354 testbenches; the first 314 rows are those of 2026-10-19, and the 20 new
+`synopsys/` testbenches of the original IEEE arithmetic packages cost yavs 17.8 s of the 21.3 s total
+against 2.4 s in reference A, reference B does not run them). The RTL set (`ff`, `lfsr`, `chain`, `fan`, `bus`) is the
+kernel benchmark set of the kernel rounds. `tools/bench` `vunit_vc30` (30 test cases of the external test
+runner's verification components, one `yavs run` each, warm cache), median CPU seconds of 3 runs: analyze 0.91,
+elaborate 1.87, init 0.19, simulate 1.56, total 5.04 (7.20 at 666f5ee3, 20.9 at the init-phase section above), peak 119 MiB.
+
+| Design | Tool | Startup s | Simulation s | Total s (min-max) | Peak RSS MB | yavs / tool |
+|---|---|---:|---:|---:|---:|---:|
+| 1 compute loop, 20M iterations | yavs interp | 0.01 | 4.50 | 4.51 (4.39-4.67) | 59 |  |
+|  | sim1 `-e`, `-r` | 0.04 | 3.59 | 3.61 (3.28-3.89) | 57 | 1.2x |
+|  | sim1 `--jit` | 0.01 | 3.65 | 3.68 (3.53-3.91) | 57 | 1.2x |
+|  | sim2 | 0.00 | 0.29 | 0.31 (0.29-0.31) | 7 | 14.5x |
+| 2a 64 LFSR x 5000 cycles, XOR-reduced | yavs interp | 0.01 | 1.19 | 1.23 (1.20-1.27) | 62 |  |
+|  | sim1 `-e`, `-r` | 0.04 | 0.03 | 0.07 (0.07-0.07) | 78 | 17.6x |
+|  | sim1 `--jit` | 0.02 | 0.04 | 0.06 (0.05-0.07) | 79 | 20.5x |
+|  | sim2 | 0.03 | 0.19 | 0.22 (0.21-0.22) | 11 | 5.6x |
+| 2b 64 LFSR x 20000 cycles | yavs interp | 0.01 | 2.95 | 2.99 (2.89-3.05) | 61 |  |
+|  | sim1 `-e`, `-r` | 0.04 | 0.07 | 0.11 (0.11-0.12) | 77 | 27.2x |
+|  | sim1 `--jit` | 0.02 | 0.08 | 0.10 (0.10-0.13) | 78 | 29.9x |
+|  | sim2 | 0.03 | 0.50 | 0.53 (0.49-0.54) | 11 | 5.6x |
+| 3 queue/scoreboard testbench | yavs interp | 1.67 | 5.57 | 7.37 (7.05-7.56) | 87 |  |
+|  | sim1 `-e`, `-r` | 0.21 | 0.27 | 0.48 (0.42-0.59) | 144 | 15.4x |
+|  | sim1 `--jit` | 0.25 | 0.26 | 0.51 (0.45-0.79) | 193 | 14.5x |
+|  | sim2 | 0.45 | 0.29 | 0.73 (0.70-0.75) | 50 | 10.1x |
+| 4 AXI-stream testbench | yavs interp | 0.13 | 1.97 | 2.10 (2.06-2.16) | 100 |  |
+|  | sim1 `-e`, `-r` | 0.14 | 0.34 | 0.48 (0.48-0.50) | 159 | 4.4x |
+|  | sim1 `--jit` | 0.08 | 0.36 | 0.44 (0.43-0.51) | 160 | 4.8x |
+|  | sim2 | 0.38 | 0.14 | 0.51 (0.50-0.54) | 47 | 4.1x |
+| 6a window generator (13 tests) | yavs interp | 0.22 | 1.60 | 1.79 (1.71-2.03) | 98 |  |
+|  | sim1 `-e`, `-r` | 0.21 | 0.22 | 0.45 (0.43-0.54) | 137 | 4.0x |
+|  | sim1 `--jit` | 0.15 | 0.19 | 0.33 (0.32-0.36) | 137 | 5.4x |
+|  | sim2 | 0.36 | 0.05 | 0.40 (0.38-0.41) | 42 | 4.5x |
+| 6b bias/requant (14 tests) | yavs interp | 0.21 | 0.02 | 0.22 (0.22-0.23) | 98 |  |
+|  | sim1 `-e`, `-r` | 0.25 | 0.04 | 0.29 (0.25-0.39) | 119 | 0.8x |
+|  | sim1 `--jit` | 0.17 | 0.00 | 0.17 (0.14-0.26) | 120 | 1.3x |
+|  | sim2 | 0.36 | 0.00 | 0.33 (0.32-0.37) | 41 | 0.7x |
+| ff: 4096 flip-flops x 2000 cycles | yavs interp | 0.03 | 11.46 | 11.49 (10.99-12.44) | 68 |  |
+|  | sim1 `-e`, `-r` | 0.51 | 0.37 | 0.88 (0.85-0.90) | 122 | 13.1x |
+|  | sim1 `--jit` | 0.24 | 0.46 | 0.69 (0.65-0.70) | 114 | 16.7x |
+|  | sim2 | 0.03 | 0.75 | 0.78 (0.77-0.78) | 28 | 14.7x |
+| lfsr: 512 x 5000 | yavs interp | 0.01 | 15.44 | 15.46 (13.96-17.21) | 61 |  |
+|  | sim1 `-e`, `-r` | 0.04 | 0.15 | 0.19 (0.19-0.19) | 79 | 81.4x |
+|  | sim1 `--jit` | 0.02 | 0.15 | 0.17 (0.17-0.17) | 78 | 90.9x |
+|  | sim2 | 0.04 | 0.77 | 0.81 (0.81-0.85) | 16 | 19.1x |
+| chain: 1000 stages x 2000 | yavs interp | 0.01 | 2.89 | 2.90 (2.84-2.95) | 61 |  |
+|  | sim1 `-e`, `-r` | 0.07 | 0.11 | 0.18 (0.16-0.19) | 83 | 16.1x |
+|  | sim1 `--jit` | 0.04 | 0.10 | 0.14 (0.13-0.15) | 82 | 20.7x |
+|  | sim2 | 0.02 | 1.41 | 1.43 (1.39-1.45) | 10 | 2.0x |
+| fan: 4000 x 5000 | yavs interp | 0.02 | 7.56 | 7.58 (7.48-7.76) | 67 |  |
+|  | sim1 `-e`, `-r` | 0.37 | 0.98 | 1.35 (1.33-1.39) | 120 | 5.6x |
+|  | sim1 `--jit` | 0.19 | 1.05 | 1.22 (1.21-1.25) | 113 | 6.2x |
+|  | sim2 | 0.01 | 0.46 | 0.47 (0.45-0.47) | 11 | 16.1x |
+| bus: 32 drivers x 20000 | yavs interp | 0.01 | 1.07 | 1.09 (1.06-1.09) | 60 |  |
+|  | sim1 `-e`, `-r` | 0.02 | 1.12 | 1.14 (0.98-1.15) | 75 | 1.0x |
+|  | sim1 `--jit` | 0.01 | 1.04 | 1.05 (0.83-1.12) | 77 | 1.0x |
+|  | sim2 | 0.01 | 0.32 | 0.33 (0.32-0.35) | 9 | 3.3x |
+| 5 corpus, the 314 testbenches of 2026-10-19 | yavs interp | - | - | 3.33 | 74 |  |
+|  | sim1 `-e`, `-r` | - | - | 8.81 | 103 | 0.4x |
+|  | sim1 `--jit` | - | - | 4.14 | 141 | 0.8x |
+|  | sim2 | - | - | 1.32 | 19 | 2.5x |
+| 5 corpus, all 354 | yavs interp | - | - | 21.32 | 74 |  |
+|  | sim1 `-e`, `-r` | - | - | 11.71 | 103 | 1.8x |
+|  | sim1 `--jit` | - | - | 6.53 | 141 | 3.3x |
+|  | sim2 | - | - | 1.35 | 19 | 15.8x |
+
+Reading it, against reference A (`--jit`, the primary reference for test-runner use), total time, yavs / A:
+the compute loop 1.2x (2026-10-19: 6.8x), the clocked RTL designs 17x to 30x (2a, 2b; was 225x and 140x), the
+library testbenches 4x to 15x (3: 15x was 76x; 4: 4.8x was 22x; 6a: 5.4x was 31x), 6b 1.3x (was 8x), the larger RTL set 1x
+(bus) to 91x (lfsr: 512 clocked processes, 15 s against 0.17 s), and the corpus 0.8x on
+the 314 testbenches of the earlier run (yavs 3.3 s, A 4.1 s with `--jit`, 8.8 s ahead of time) but 3.3x with the 20 arithmetic-package testbenches.
+Against reference B the RTL designs are 2x (chain) to 19x (lfsr) and the library testbenches 4x to 10x. Peak memory: yavs 57 to 100 MB on every design, reference A 57 to 193 MB, reference B 7 to 50 MB.
+The remaining gaps are per-activation costs of clocked processes on `std_logic_vector` signals (lfsr, ff, 2a, 2b), library start-up
+(design 3: 1.7 s of 7.4 s) and the interpreted IEEE arithmetic of the original packages (the `synopsys/` testbenches).
 
 ## lib (`crates/yavs-lib`)
 

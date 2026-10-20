@@ -456,7 +456,7 @@ verify and number it) and 2 ms to read and decode the 490 KB image. Release buil
 UVVM, OSVVM and `elab_heavy` totals are within the noise of the host (the same binary twice differs
 by up to 8% there). Findings: a UVVM testbench lowers one 6.9 MB byte-string constant (a repeated
 element written out); reading its 7.7 MB image cost 4 ms more than lowering, so an image is made
-only for a constant pool up to 1 MiB (#407 comment, a lowering issue). Elaboration that instantiates
+only for a constant pool up to 1 MiB (the constant should be a repeated element, #446). Elaboration that instantiates
 generics grows the `Db`, and then the entry is not used. Checks: output of the 30 test cases of
 `vunit_vc30` byte-identical (md5 of stdout, stderr and exit status) with the cache off, cold and warm,
 at `--threads 1` and `4`; the difftest corpus passes (362 of 362, 1 and 4 threads); waveform files of a

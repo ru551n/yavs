@@ -1985,7 +1985,7 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   - *When not:* with coverage counters; when the images would be under 256 bytes (packages with only
     constants); when the constant pool holds over 1 MiB of byte strings (one testbench library lowers
     a 6.9 MB array constant as a byte string; reading that back cost more than lowering the packages, so
-    nothing is stored; the fix is a repeated-element constant in lowering, which would make it cacheable).
+    nothing is stored; the fix is a repeated-element constant in lowering, #446, which would make it cacheable).
   - *Cold and warm take the same path:* the cold run verifies and numbers the packages' program before
     it stores, so a cold and a warm run lower everything after the packages from the same state.
   - *Step 2 (package state after initialisation: heap and package data) is not done.* The initialisers

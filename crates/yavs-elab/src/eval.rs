@@ -1441,9 +1441,9 @@ fn flatten(
 
 /// Initial kernel values of each leaf of `shape`, in leaf order.
 pub fn leaf_values(db: &Db, shape: &Shape, v: Option<&Val>) -> Result<Vec<Value>, String> {
-    let mut flat = Vec::new();
+    let mut flat = Vec::with_capacity(shape.len() as usize);
     flatten(shape, v, &mut flat, &mut Vec::new())?;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(1);
     for (path, leaf, n) in shape.leaves() {
         let Shape::Scalar { elem, ty, .. } = leaf else {
             continue;

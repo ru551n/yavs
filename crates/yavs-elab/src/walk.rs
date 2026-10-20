@@ -2679,13 +2679,17 @@ impl Elab<'_> {
     /// LRM 14.7.2: an unresolved signal has at most one source per element (process drivers
     /// and `out`/`inout`/`buffer` ports).
     fn check_sources(&mut self) {
-        let mut src: HashMap<LeafId, Vec<(Range, String)>> = HashMap::new();
+        // A source is described only when two of them collide.
+        enum Src {
+            Process(ScopeId),
+            Port(ObjId),
+        }
+        let mut src: HashMap<LeafId, Vec<(Range, Src)>> = HashMap::new();
         for d in &self.m.nets.drivers {
             let p = &self.procs[d.proc.index()];
-            src.entry(d.leaf).or_default().push((
-                d.range,
-                format!("process {}", self.m.hier.path_name(p.scope, Case::Original)),
-            ));
+            src.entry(d.leaf)
+                .or_default()
+                .push((d.range, Src::Process(p.scope)));
         }
         let nets = &self.m.nets;
         let edges = nets
@@ -2698,14 +2702,9 @@ impl Elab<'_> {
             .map(|e| (e.mode, e.formal[0].0, e.actual.clone()));
         for (mode, formal, actual) in edges.chain(convs) {
             if mode != PortMode::In {
-                let f = nets.obj(nets.leaf(formal).obj);
-                let name = format!(
-                    "port {}{}",
-                    self.m.hier.path_name(f.scope, Case::Original),
-                    f.name.text
-                );
+                let f = nets.leaf(formal).obj;
                 for (l, r) in actual {
-                    src.entry(l).or_default().push((r, name.clone()));
+                    src.entry(l).or_default().push((r, Src::Port(f)));
                 }
             }
         }
@@ -2721,6 +2720,20 @@ impl Elab<'_> {
                     if v[i].0.overlaps(v[j].0) {
                         let o = self.m.nets.obj(leaf.obj);
                         let span = self.db.decls[o.decl].span;
+                        let describe = |s: &Src| match s {
+                            Src::Process(scope) => format!(
+                                "source: process {}",
+                                self.m.hier.path_name(*scope, Case::Original)
+                            ),
+                            Src::Port(obj) => {
+                                let f = self.m.nets.obj(*obj);
+                                format!(
+                                    "source: port {}{}",
+                                    self.m.hier.path_name(f.scope, Case::Original),
+                                    f.name.text
+                                )
+                            }
+                        };
                         self.errors.push(
                             Diagnostic::error(
                                 codes::MULTIPLE_SOURCES,
@@ -2731,8 +2744,8 @@ impl Elab<'_> {
                                 ),
                             )
                             .with_primary(span, "declared here with an unresolved subtype")
-                            .with_note(format!("source: {}", v[i].1))
-                            .with_note(format!("source: {}", v[j].1))
+                            .with_note(describe(&v[i].1))
+                            .with_note(describe(&v[j].1))
                             .with_help("drive it from one process, or use a resolved subtype such as `std_logic`"),
                         );
                         return;

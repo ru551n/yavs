@@ -136,14 +136,35 @@ impl Hierarchy {
     }
 
     fn label(&self, s: ScopeId, case: Case) -> String {
-        let sc = self.scope(s);
-        let mut n = spell(sc.name, case);
-        if let Some(i) = &sc.index {
-            n.push('(');
-            n.push_str(i);
-            n.push(')');
-        }
+        let mut n = String::new();
+        self.push_label(s, case, &mut n);
         n
+    }
+
+    /// The label of scope `s` appended to `out`: its name and `(index)`.
+    fn push_label(&self, s: ScopeId, case: Case, out: &mut String) {
+        let sc = self.scope(s);
+        out.push_str(match case {
+            Case::Lrm => sc.name.key.as_str(),
+            Case::Original => sc.name.text.as_str(),
+        });
+        if let Some(i) = &sc.index {
+            out.push('(');
+            out.push_str(i);
+            out.push(')');
+        }
+    }
+
+    /// `label:` of each scope from the root to `s`, components left out, appended to `out`.
+    fn push_path(&self, s: ScopeId, case: Case, out: &mut String) {
+        let sc = self.scope(s);
+        if let Some(p) = sc.parent {
+            self.push_path(p, case, out);
+        }
+        if !matches!(sc.kind, ScopeKind::Component { .. }) {
+            self.push_label(s, case, out);
+            out.push(':');
+        }
     }
 
     /// The instance scope a scope belongs to.
@@ -159,11 +180,9 @@ impl Hierarchy {
 
     /// `'path_name` of a scope (LRM 16.2.5), ending in `:`: `:top:u1:g(0):`.
     pub fn path_name(&self, s: ScopeId, case: Case) -> String {
-        let mut out = String::from(":");
-        for c in self.segments(s) {
-            out.push_str(&self.label(c, case));
-            out.push(':');
-        }
+        let mut out = String::with_capacity(48);
+        out.push(':');
+        self.push_path(s, case, &mut out);
         out
     }
 
@@ -287,7 +306,7 @@ impl Shape {
     /// record one leaf per field, an array of records one leaf per field (struct of arrays).
     /// Each is `(field path, scalar shape, element count)`.
     pub fn leaves(&self) -> Vec<(Vec<u32>, &Shape, u64)> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(1);
         self.leaves_into(&mut Vec::new(), 1, &mut out);
         out
     }
@@ -560,7 +579,7 @@ impl NetGraph {
                 _ => return Err("selector does not apply to this subtype".into()),
             }
         }
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(o.leaves.1.0 as usize - o.leaves.0.0 as usize);
         for l in o.leaves.0.0..o.leaves.1.0 {
             let leaf = &self.leaves[l as usize];
             if !leaf.path.starts_with(&path) {

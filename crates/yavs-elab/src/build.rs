@@ -38,11 +38,8 @@ impl Elaborated {
     pub fn leaf_name(&self, l: crate::LeafId) -> String {
         let leaf = self.nets.leaf(l);
         let o = self.nets.obj(leaf.obj);
-        let mut n = format!(
-            "{}{}",
-            self.hier.path_name(o.scope, Case::Original),
-            o.name.text
-        );
+        let mut n = self.hier.path_name(o.scope, Case::Original);
+        n.push_str(o.name.text.as_str());
         let mut shape = &o.shape;
         for &f in &leaf.path {
             loop {

@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:tb_static_slice_choice:_p1	other
+diag	note	1000000	1	:tb_static_slice_choice:_p1	k1
+diag	note	2000000	1	:tb_static_slice_choice:_p1	k2
+diag	note	3000000	0	:tb_static_slice_choice:_p2	o='0'
+diag	note	3000000	1	:tb_static_slice_choice:_p1	other

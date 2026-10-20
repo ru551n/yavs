@@ -1599,7 +1599,7 @@ impl Db {
         // 9.4.3: a pure function call with globally static actuals is globally static
         // (sem folds only the implicit operations, so user calls never become locally static).
         let pure = matches!(s.kind, crate::decl::SubprogramKind::Function { pure: true });
-        let mut stat = if implicit {
+        let mut stat = if implicit || self.in_static_ieee_package(e) {
             Staticness::Locally
         } else if pure {
             Staticness::Globally
@@ -2661,6 +2661,27 @@ impl Db {
             cur = self.scopes[s].parent;
         }
         false
+    }
+
+    /// 9.4.2: a call of a function of `std_logic_1164`, `numeric_bit`, `numeric_std`,
+    /// `numeric_bit_unsigned` or `numeric_std_unsigned` with locally static actuals is
+    /// locally static.
+    fn in_static_ieee_package(&self, f: DeclId) -> bool {
+        let Some(pkg) = self.scopes[self.decls[f].scope].owner else {
+            return false;
+        };
+        let DeclKind::Unit(u) = self.decls[pkg].kind else {
+            return false;
+        };
+        self.libs[self.units[u].lib].name.key.as_str() == "ieee"
+            && matches!(
+                self.decls[pkg].name.key().as_str(),
+                "std_logic_1164"
+                    | "numeric_bit"
+                    | "numeric_std"
+                    | "numeric_bit_unsigned"
+                    | "numeric_std_unsigned"
+            )
     }
 
     /// A subtype is locally static when its range bounds are (9.4.2, scalar case).

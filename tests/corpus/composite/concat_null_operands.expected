@@ -1,0 +1,8 @@
+exit	0
+diag	note	0	0	:concat_null_operands:_p0	[xyz] 1 3 3
+diag	note	0	0	:concat_null_operands:_p0	[xyz] 1 3 3
+diag	note	0	0	:concat_null_operands:_p0	[xyz] 1 3 3
+diag	note	0	0	:concat_null_operands:_p0	[q] 1 1 1
+diag	note	0	0	:concat_null_operands:_p0	[q] 1 1 1
+diag	note	0	0	:concat_null_operands:_p0	0 2 3
+diag	note	0	0	:concat_null_operands:_p0	0 2 3

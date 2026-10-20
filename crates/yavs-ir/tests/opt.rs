@@ -1185,3 +1185,57 @@ fn a_concatenation_keeps_its_block_and_what_it_read() {
         "{code:?}"
     );
 }
+
+#[test]
+fn a_select_on_a_constant_or_of_equal_values_is_a_move() {
+    if !on() {
+        return;
+    }
+    let sel = |fb: &mut FuncBuilder<'_>, c: Reg, a: Reg, b: Reg| {
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::Select { dst, c, a, b });
+        dst
+    };
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(32, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        pin(fb, 16);
+        let (x, y, c) = (load(fb, 0), load(fb, 8), load(fb, 16));
+        let one = fb.int(1);
+        let zero = fb.int(0);
+        let a = sel(fb, one, x, y);
+        let b = sel(fb, zero, x, y);
+        let same = sel(fb, c, x, x);
+        let real = sel(fb, c, a, b);
+        let r = bin(fb, IntOp::Add, same, real);
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Select { .. })),
+        1,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_select_nobody_reads_goes() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(32, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        pin(fb, 16);
+        let (x, y, c) = (load(fb, 0), load(fb, 8), load(fb, 16));
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::Select { dst, c, a: x, b: y });
+        fb.emit(Inst::Ret { v: Some(x) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Select { .. })),
+        0,
+        "{code:?}"
+    );
+}

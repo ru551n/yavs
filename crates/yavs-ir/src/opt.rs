@@ -299,6 +299,7 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
         Inst::Const { dst, .. }
         | Inst::ConstF { dst, .. }
         | Inst::Move { dst, .. }
+        | Inst::Select { dst, .. }
         | Inst::AddrOf { dst, .. }
         | Inst::Load { dst, .. }
         | Inst::Index { dst, .. }
@@ -1685,6 +1686,7 @@ impl<'a> Opt<'a> {
             Inst::Const { .. }
             | Inst::ConstF { .. }
             | Inst::Move { .. }
+            | Inst::Select { .. }
             | Inst::AddrOf { .. }
             | Inst::Load { .. }
             | Inst::Alloc { .. }
@@ -1915,6 +1917,17 @@ impl<'a> Opt<'a> {
                     self.alias_ok(pc, dst, x);
                 }
             },
+            Inst::Select { dst, c, a, b } => {
+                let src = match self.opn(c) {
+                    Opn::K(v) => Some(if v != 0 { a } else { b }),
+                    _ => (self.opn(a) == self.opn(b)).then_some(a),
+                };
+                if let Some(src) = src {
+                    self.code[pc] = Inst::Move { dst, src };
+                    self.changed = true;
+                    self.simplify(pc);
+                }
+            }
             Inst::Bin { op, dst, a, b } => {
                 match simp_bin(op, self.opn(a), self.opn(b)) {
                     Some(Simp::Fold(v)) => return self.make_const(pc, dst, v),
@@ -2931,6 +2944,7 @@ fn may_allocate(i: &Inst) -> bool {
         Inst::Const { .. }
             | Inst::ConstF { .. }
             | Inst::Move { .. }
+            | Inst::Select { .. }
             | Inst::AddrOf { .. }
             | Inst::Load { .. }
             | Inst::Store { .. }
@@ -2980,6 +2994,7 @@ fn retargetable(i: &Inst) -> bool {
         | Inst::Un { .. }
         | Inst::Cmp { .. }
         | Inst::Bool { .. }
+        | Inst::Select { .. }
         | Inst::Index { .. }
         | Inst::Pos { .. }
         | Inst::DopeLen { .. }
@@ -2998,6 +3013,7 @@ fn removable_dst(i: &Inst) -> Option<Reg> {
         Inst::Const { dst, .. }
         | Inst::ConstF { dst, .. }
         | Inst::Move { dst, .. }
+        | Inst::Select { dst, .. }
         | Inst::AddrOf { dst, .. }
         | Inst::Index { dst, .. }
         | Inst::Cmp { dst, .. }

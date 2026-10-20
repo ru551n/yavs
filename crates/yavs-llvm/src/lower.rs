@@ -768,6 +768,7 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         },
         Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => vec![dst],
         Inst::Move { dst, src } | Inst::IToF { dst, src } => vec![dst, src],
+        Inst::Select { dst, c, a, b } => vec![dst, c, a, b],
         Inst::Bin { dst, a, b, .. }
         | Inst::FBin { dst, a, b, .. }
         | Inst::Cmp { dst, a, b, .. }
@@ -856,6 +857,7 @@ fn keeps_objects(i: &Inst) -> bool {
         Inst::Const { .. }
             | Inst::ConstF { .. }
             | Inst::Move { .. }
+            | Inst::Select { .. }
             | Inst::AddrOf { .. }
             | Inst::CopyConst { .. }
             | Inst::Alloc { .. }
@@ -1439,6 +1441,17 @@ impl Gen {
                     Inst::Const { dst, v } => self.st(&c, dst, self.c64(v)),
                     Inst::ConstF { dst, v } => self.st(&c, dst, self.c64(v.to_bits() as i64)),
                     Inst::Move { dst, src } => self.st(&c, dst, self.ld(&c, src)),
+                    Inst::Select { dst, c: cond, a, b } => {
+                        let t = self.icmp(IP::LLVMIntNE, self.ld(&c, cond), self.c64(0));
+                        let v = LLVMBuildSelect(
+                            self.b,
+                            t,
+                            self.ld(&c, a),
+                            self.ld(&c, b),
+                            c"".as_ptr(),
+                        );
+                        self.st(&c, dst, v);
+                    }
                     Inst::Bin { op, dst, a, b } => {
                         let (x, y) = (self.ld(&c, a), self.ld(&c, b));
                         match self.int_op(&c, op, x, y, pc) {

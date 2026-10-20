@@ -242,6 +242,13 @@ pub enum Inst {
         space: AddrSpace,
         off: u32,
     },
+    /// `dst` is `a` when `c` is not zero, else `b` (any class but a signal reference).
+    Select {
+        dst: Reg,
+        c: Reg,
+        a: Reg,
+        b: Reg,
+    },
     CopyConst {
         dst: Reg,
         c: ConstId,
@@ -791,6 +798,12 @@ impl Inst {
                 f(src, Use, None);
             }
             Inst::AddrOf { dst, .. } => d(dst, p),
+            Inst::Select { dst, c, a, b } => {
+                d(dst, None);
+                f(c, Use, i);
+                f(a, Use, None);
+                f(b, Use, None);
+            }
             Inst::CopyConst { dst, .. } => f(dst, Use, p),
             Inst::Alloc { dst, size } | Inst::PkgAlloc { dst, size } => {
                 d(dst, p);

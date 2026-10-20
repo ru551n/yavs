@@ -2171,18 +2171,10 @@ impl<'a> Fx<'a, '_> {
         dst
     }
 
-    /// `c ? a : b`.
+    /// `c ? a : b`; both are already computed.
     pub fn select(&mut self, c: Reg, a: Reg, b: Reg, t: RegTy) -> Reg {
         let dst = self.reg(t);
-        let (bt, bf, j) = (self.block(), self.block(), self.block());
-        self.branch(c, bt, bf);
-        self.at(bt);
-        self.emit(Inst::Move { dst, src: a });
-        self.jump(j);
-        self.at(bf);
-        self.emit(Inst::Move { dst, src: b });
-        self.jump(j);
-        self.at(j);
+        self.emit(Inst::Select { dst, c, a, b });
         dst
     }
 
@@ -3367,8 +3359,7 @@ impl<'a> Fx<'a, '_> {
         let dir = self.dir_reg(s.dir);
         let mut dope = self.one_dope(s.left, right, dir);
         let z = self.int(0);
-        let null = self.cmp(CmpOp::Eq, n, z);
-        let ok = self.not(null);
+        let ok = self.cmp(CmpOp::Ne, n, z);
         let (lo, hi) = self.low_high(s);
         let what = self.msg(
             &format!("the result of `&` ({})", ty::subtype_name(db, index)),
@@ -3443,8 +3434,8 @@ impl<'a> Fx<'a, '_> {
         self.put_pieces(data, n, logic, (bias, w), m, &pieces);
         // Two null operands: the result is the right operand (LRM 9.2.5 a).
         if let (Some((_, false)), Some((rd, false))) = (ops[0].2, ops[1].2) {
-            let data = self.select(null, ops[1].0, data, RegTy::Ptr);
-            let dope = self.select(null, rd, dope, RegTy::Ptr);
+            let data = self.select(ok, data, ops[1].0, RegTy::Ptr);
+            let dope = self.select(ok, dope, rd, RegTy::Ptr);
             return Ok(V::A(data, dope));
         }
         Ok(V::A(data, dope))
@@ -3621,8 +3612,7 @@ impl<'a> Fx<'a, '_> {
             let dir = self.dir_reg(s.dir);
             let dope = self.one_dope(s.left, right, dir);
             let z = self.int(0);
-            let null = self.cmp(CmpOp::Eq, n, z);
-            let ok = self.not(null);
+            let ok = self.cmp(CmpOp::Ne, n, z);
             let (lo, hi) = self.low_high(s);
             let what = self.msg(
                 &format!("the aggregate ({})", ty::subtype_name(db, index)),

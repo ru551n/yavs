@@ -363,6 +363,7 @@ impl Opt<'_> {
                 }
                 let srcs: &[Reg] = &match *i {
                     Inst::Move { dst, src } if rel[dst.0 as usize] => vec![src],
+                    Inst::Select { dst, a, b, .. } if rel[dst.0 as usize] => vec![a, b],
                     Inst::Bin { dst, a, b, .. } if rel[dst.0 as usize] => vec![a, b],
                     Inst::BinRange {
                         dst, a, b, lo, hi, ..
@@ -517,6 +518,10 @@ impl Opt<'_> {
             Inst::Move { dst, src } => {
                 let v = get(st, src);
                 set(st, dst, v);
+            }
+            Inst::Select { dst, a, b, .. } => {
+                let (x, y) = (get(st, a), get(st, b));
+                set(st, dst, (x.0.min(y.0), x.1.max(y.1)));
             }
             Inst::Bin { op, dst, a, b } => {
                 let v = bin_iv(op, get(st, a), get(st, b)).0;

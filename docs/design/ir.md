@@ -190,7 +190,7 @@ has a `StmtId` in `Func.loc`.
 
 | Group | Instructions |
 |---|---|
-| move/const | `Const{dst, i64}`, `ConstF{dst, f64}`, `Move{dst, src}`, `AddrOf{dst, space, slot}`, `CopyConst{dst_addr, const}` |
+| move/const | `Const{dst, i64}`, `ConstF{dst, f64}`, `Move{dst, src}`, `Select{dst, c, a, b}` (`a` if `c` is not zero, else `b`), `AddrOf{dst, space, slot}`, `CopyConst{dst_addr, const}` |
 | memory | `Load{dst, addr, w}`, `Store{addr, src, w}`, `Copy{dst, src, bytes}`, `Fill{dst, elem, n, size}`, `Index{dst, base, dope, idx...}` (bounds-checked), `Field{dst, base, layout, n}` |
 | int (checked, rule 7) | `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Mod`/`Pow`/`Neg`/`Abs` on i64: overflow and zero divisors raise `Runtime` through `yavs_std::arith`; never wrap |
 | real | `FAdd`..`FPow`, `FCmp`, `IToF`, `FToI` (checked round per LRM, `real_to_int`) |

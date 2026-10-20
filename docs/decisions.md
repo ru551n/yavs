@@ -2771,3 +2771,17 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
 - **A slice assignment needs no instruction of its own:** `LCopy` (planes, any alignment) and `Copy` are the
   slice copy, the checks around them are the shared `SubtypeCheck`; what a slice costs is the position arithmetic,
   which the linear runs and the folds above remove.
+
+## Select instruction (yavs-ir, yavs-interp, yavs-lower, yavs-llvm, #443)
+
+- **`Inst::Select { dst, c, a, b }`: `dst` is `a` when `c` is not zero, else `b`**, for any register class but a
+  signal reference. The lowering's `select` helper (28 sites: bounds of a range, the check value and the
+  both-operands-null result of `&`, `minimum`/`maximum`, loop steps, conditional expressions) emitted a diamond
+  of a `CondBr` and two `Move`s with a join block, three dispatches and a branch the interpreter's indirect jump
+  mispredicts; both values are computed before the call, so nothing is lazy. The result is defined once, which
+  also lets the optimiser's common-subexpression pass and the predecoder's linear runs see it.
+- The optimiser folds a `Select` on a constant condition or with equal operands to a `Move`, drops an unread one,
+  and gives it the hull of its operands' intervals (`opt/range.rs`); the interpreter has an op for it; the LLVM
+  tier compiles it to an LLVM `select`.
+- The concatenation lowering tests `n /= 0` directly (one `Cmp` instead of `Cmp` and `Not`) and selects the
+  result of two null operands (LRM 9.2.5) with that.

@@ -275,6 +275,7 @@ pub(super) fn plan(
                 | Inst::Cmp { .. }
                 | Inst::Bool { .. }
                 | Inst::Move { .. }
+                | Inst::Select { .. }
                 | Inst::Load { .. }
                 | Inst::Index { .. }
                 | Inst::Pos { .. }

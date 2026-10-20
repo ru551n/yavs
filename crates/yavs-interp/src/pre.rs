@@ -464,6 +464,13 @@ pub(crate) enum Op {
         a: u32,
         b: u32,
     },
+    /// `Inst::Select`.
+    Select {
+        dst: u32,
+        c: u32,
+        a: u32,
+        b: u32,
+    },
     /// `Inst::Cat` (read from the IR at the op's pc).
     Cat,
     /// `Inst::LCopy`.
@@ -1711,6 +1718,12 @@ impl Code {
                     n: n.0,
                 },
                 Inst::Cat { .. } => Op::Cat,
+                Inst::Select { dst, c, a, b } => Op::Select {
+                    dst: dst.0,
+                    c: c.0,
+                    a: a.0,
+                    b: b.0,
+                },
                 Inst::SigRead { dst, sig } => Op::SigReadVec {
                     dst: dst.0,
                     sig: sig.0,

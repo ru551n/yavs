@@ -1,1 +1,1 @@
-Concatenations of vectors and strings, and reads and writes of slices with constant bounds, take far fewer steps in the interpreter, so shift registers and similar clocked vector designs simulate faster, with identical results and the same error messages.
+Concatenations of vectors and strings, conditional values such as the bounds of a range, and reads and writes of slices with constant bounds take far fewer steps in the interpreter, so shift registers, clocked vector designs and string-heavy testbenches simulate faster, with identical results and the same error messages.

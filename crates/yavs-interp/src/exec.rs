@@ -3366,6 +3366,11 @@ impl Machine {
                     self.regs[dst as usize] = self.regs[src as usize];
                     k += 1;
                 }
+                Op::Select { dst, c, a, b } => {
+                    let from = if self.regs[c as usize] != 0 { a } else { b };
+                    self.regs[dst as usize] = self.regs[from as usize];
+                    k += 1;
+                }
                 Op::Load { dst, addr, w } => {
                     self.regs[dst as usize] = t!(self.load(self.regs[addr as usize], w));
                     k += 1;
@@ -5036,6 +5041,10 @@ impl Machine {
             Inst::ConstF { dst, v } => self.set(dst, v.to_bits()),
             Inst::Move { dst, src } => {
                 let v = self.r(src);
+                self.set(dst, v);
+            }
+            Inst::Select { dst, c, a, b } => {
+                let v = if self.r(c) != 0 { self.r(a) } else { self.r(b) };
                 self.set(dst, v);
             }
             Inst::AddrOf { dst, space, off } => {

@@ -1,0 +1,3 @@
+i=12 rest=[ abc]
+c=a rest=[bc] ok=true
+ok=false rest=[bc]

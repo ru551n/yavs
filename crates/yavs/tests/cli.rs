@@ -337,6 +337,53 @@ fn output_order_on_one_pipe() {
     assert!(text.contains("line 2000\n"));
 }
 
+/// `to_string`, `'image` and `to_hstring` of vectors, strings, records and arrays of enumerations
+/// give the text the LRM says (#428); the expected lines are `tests/cli/image_text.stdout`.
+#[test]
+fn image_text() {
+    run_stdout("image_text", 0);
+}
+
+/// READ and WRITE edit a line in place, but an access value copied before the edit is stale
+/// afterwards: using it is a runtime error (#428).
+#[test]
+fn line_edit_in_place() {
+    run_stdout("line_edit", 1);
+}
+
+/// Analyze `tests/cli/NAME.vhd` (2019), run its entity `NAME`, check the exit code and compare
+/// the notes it reports at time zero with the lines of `NAME.stdout`.
+fn run_stdout(name: &str, code: i32) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir(name);
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("run")
+    };
+    let file = format!("{name}.vhd");
+    assert!(
+        yavs(&["analyze", "--std=2019", &lib, &file])
+            .status
+            .success()
+    );
+    let o = yavs(&["run", &lib, name]);
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert_eq!(o.status.code(), Some(code));
+    let out = String::from_utf8(o.stdout).expect("utf-8");
+    let lines: String = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("** Note: 0fs+0: "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let want = std::fs::read_to_string(dir.join(format!("{name}.stdout"))).expect("expected file");
+    assert_eq!(lines, want);
+}
+
 /// A runtime error while packages are initialised is an elaboration error (exit 2) with the
 /// same diagnostic, not an internal error (#110).
 #[test]

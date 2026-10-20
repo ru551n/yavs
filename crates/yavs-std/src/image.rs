@@ -167,14 +167,21 @@ pub fn bits_to_string(bits: &[bool]) -> Vec<u8> {
 
 fn bits_to_radix(bits: &[bool], width: usize) -> Vec<u8> {
     const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    // The first digit is zero-extended on the left by `pad` bits.
     let pad = (width - bits.len() % width) % width;
-    let padded: Vec<bool> = std::iter::repeat_n(false, pad)
+    let mut out = Vec::with_capacity((bits.len() + pad) / width);
+    let mut acc = 0usize;
+    for (i, b) in std::iter::repeat_n(false, pad)
         .chain(bits.iter().copied())
-        .collect();
-    padded
-        .chunks(width)
-        .map(|c| DIGITS[c.iter().fold(0usize, |a, &b| a * 2 + b as usize)])
-        .collect()
+        .enumerate()
+    {
+        acc = acc * 2 + usize::from(b);
+        if (i + 1) % width == 0 {
+            out.push(DIGITS[acc]);
+            acc = 0;
+        }
+    }
+    out
 }
 
 /// `to_hstring(bit_vector)`: zero-extended on the left to whole digits.

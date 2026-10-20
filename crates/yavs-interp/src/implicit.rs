@@ -116,13 +116,12 @@ fn arg(a: &[u64], i: usize) -> R<u64> {
     crate::textio::arg(a, i)
 }
 
-fn ty_of(m: &Machine, t: Option<TyId>) -> R<(TyId, Ty)> {
+fn ty_of(m: &Machine, t: Option<TyId>) -> R<(TyId, &Ty)> {
     let t = t.ok_or_else(|| ice("implicit native without a type"))?;
     let ty =
         m.rt.prog
             .types
             .get(t)
-            .cloned()
             .ok_or_else(|| ice(format!("no type {t}")))?;
     Ok((t, ty))
 }
@@ -140,11 +139,11 @@ enum Sc {
 }
 
 fn scalar(m: &Machine, t: TyId) -> R<Sc> {
-    Ok(match ty_of(m, Some(t))?.1 {
+    Ok(match *ty_of(m, Some(t))?.1 {
         Ty::Int { lo, hi } => Sc::Int(lo, hi),
         Ty::Physical { lo, hi, .. } => Sc::Phys(lo, hi),
         Ty::Real => Sc::Real,
-        Ty::Enum { lits, logic } => Sc::Enum(lits.len() as u64, logic),
+        Ty::Enum { ref lits, logic } => Sc::Enum(lits.len() as u64, logic),
         Ty::Access { .. } => Sc::Enum(u64::MAX, None),
         _ => {
             return rt_err(format!(
@@ -219,7 +218,7 @@ impl Arr {
 
 /// Element type, its class and the dimension count of the array type `t`.
 fn array_ty(m: &Machine, t: TyId) -> R<(TyId, Sc, u8)> {
-    match ty_of(m, Some(t))?.1 {
+    match *ty_of(m, Some(t))?.1 {
         Ty::Array { elem, dims, .. } => Ok((elem, scalar(m, elem)?, dims)),
         _ => Err(ice(format!("array native on non-array type {t}"))),
     }
@@ -882,8 +881,30 @@ fn to_string_unit(
 
 fn radix(m: &mut Machine, t: Option<TyId>, a: &[u64], f: fn(&[bool]) -> Vec<u8>) -> R<Option<u64>> {
     let (t, _) = ty_of(m, t)?;
-    let p = read_arr(m, t, arg(a, 0)?)?;
-    let bits: Vec<bool> = p.el.iter().map(|&e| e == 1).collect();
+    let (_, sc, nd) = array_ty(m, t)?;
+    let bits: Vec<bool> = match logic_of(sc) {
+        // The usual case: the bits straight from the planes.
+        Some(k) if nd == 1 => {
+            let (data, n) = m.fat1(arg(a, 0)?)?;
+            let v = m.planes(data, n)?;
+            let nn = n as usize;
+            (0..nn)
+                .map(|i| {
+                    let c = v.get(nn - 1 - i) as u64;
+                    Ok(if k == LogicKind::StdULogic {
+                        c
+                    } else {
+                        bit(c)?
+                    } == 1)
+                })
+                .collect::<R<_>>()?
+        }
+        _ => read_arr(m, t, arg(a, 0)?)?
+            .el
+            .iter()
+            .map(|&e| e == 1)
+            .collect(),
+    };
     ret(m, &f(&bits))
 }
 

@@ -317,14 +317,9 @@ pub(crate) fn text(m: &Machine, ty: Option<TyId>, v: u64, image: bool) -> R<Vec<
     let data = m.load(v, Width::B8)?;
     let dp = m.load(crate::exec::add_addr(v, 8)?, Width::B8)?;
     let n = Ty::desc_size(&prog.types, t).ok_or_else(|| ice("descriptor size"))?;
-    let desc = if n == 0 {
-        Vec::new()
-    } else {
-        m.rd(dp, n)?.to_vec()
-    };
-    let (lay, _) = Ty::layout(&prog.types, &prog.consts, t, &desc).map_err(layout_err)?;
-    let val = m.rd(data, lay.size)?.to_vec();
-    composite_text(m, t, &desc, &val, image, false)
+    let desc = if n == 0 { &[] } else { m.rd(dp, n)? };
+    let (lay, _) = Ty::layout(&prog.types, &prog.consts, t, desc).map_err(layout_err)?;
+    composite_text(m, t, desc, m.rd(data, lay.size)?, image, false)
 }
 
 /// Whether arrays of the enumeration `lits` print as a string (`"01"`, `TO_STRING` its
@@ -442,6 +437,40 @@ fn composite_text(
                 _ => None,
             };
             let row = lens.last().copied().unwrap_or(0);
+            // A string-like row of scalars (the usual `to_string` and `'image` of a vector or
+            // a string) is spelled straight from the element codes, with no per-element text.
+            if let (1, Some(lits), true) = (nd, chars, scalar) {
+                let n = et.elem_size().unwrap_or(el.size) as usize;
+                let mut s = Vec::with_capacity(row as usize + 2);
+                if image {
+                    s.push(b'"');
+                }
+                let all = (0..row).all(|k| {
+                    let code = match logic {
+                        Some(kind) => logic_pos(kind, plane_get(val, lay.count - 1 - k)),
+                        None => {
+                            let at = (k * lay.stride) as usize;
+                            val.get(at..at + n).map_or(u64::MAX, crate::exec::cell)
+                        }
+                    };
+                    match lits.get(code as usize).map(|l| lit(l)) {
+                        Some(EnumLit::Char(c)) => {
+                            s.push(c);
+                            if image && c == b'"' {
+                                s.push(c);
+                            }
+                            true
+                        }
+                        _ => false,
+                    }
+                });
+                if all {
+                    if image {
+                        s.push(b'"');
+                    }
+                    return Ok(s);
+                }
+            }
             let rows: u64 = lens[..nd.saturating_sub(1)].iter().product();
             let mut texts = Vec::new();
             for r in 0..rows {

@@ -1,0 +1,13 @@
+slv 01XZUW-H "01XZUW-H" 59D 2635
+bv 10110011101 "10110011101"
+s hello "hello"
+sq (a,",b,nul,c,d) (a,",b,nul,c,d)
+e [] "" [] 
+c (red,blue,green) (red,blue,green)
+mm (101,001) ("101","001")
+r (5,"1010","xyz") (5,1010,xyz)
+bb ("10","01") (10,01)
+bo (true,false,true) (true,false,true)
+ul 1X0 X X
+1151130
+'è'atruegreenblue-51.53000000 fs

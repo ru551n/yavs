@@ -2009,3 +2009,12 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   `and` does not evaluate `X` after a false edge), and a process with one `wait [on ...] until
   E;` and no other suspension point (decided after lowering: `Process::several_waits`) is
   recognised in the same way.
+
+## Memory of designs with many instances (yavs-elab, yavs-kernel, #421, 2026-10-20)
+
+- **A plain run frees the elaborated model once the simulation is built.** `yavs run` without a
+  plugin, waveform or coverage reads, after `build_full_once`, only the IR (run-time diagnostics
+  with the VHDL call stack): `Elaborated::release_for_run` frees the hierarchy, net graph,
+  process instances and per-instance values. Process names for reports come from the kernel
+  (`Hook::process_name`), stored once. The debugger, plugins, the waveform recorder and coverage
+  keep the model.

@@ -692,6 +692,11 @@ pub fn run(
             return out.finish(2);
         }
     };
+    // Nothing below reads the elaborated model but its IR (run-time diagnostics) unless a
+    // plugin, the waveform recorder or coverage does (#421).
+    if a.vhpi.is_empty() && a.wave.is_none() && a.cov.is_none() {
+        e.release_for_run();
+    }
     crate::timing::mark("init");
     let r = sim.run_until(stop);
     crate::timing::mark("simulate");

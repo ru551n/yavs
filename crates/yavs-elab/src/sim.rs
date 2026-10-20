@@ -478,6 +478,36 @@ impl Elaborated {
         self.build_runtime_with(cfg, Some(session), start)
     }
 
+    /// Free what only the build and the tools that inspect the design (a plugin, the waveform
+    /// recorder, coverage, the debugger) read, for a run that has built its simulation: the
+    /// hierarchy, the net graph, the process instances and the per-instance values (#421).
+    /// What remains answers [`Elaborated::runtime_diagnostic`].
+    pub fn release_for_run(&mut self) {
+        macro_rules! free {
+            ($($f:ident),*) => {$(drop(std::mem::take(&mut self.$f));)*};
+        }
+        free!(
+            hier,
+            nets,
+            procs,
+            foreign_archs,
+            ext_procs,
+            model_vals,
+            sigs,
+            regions,
+            var_ports,
+            ext_vars,
+            ext_consts,
+            pkg_ext,
+            ext_unbound,
+            var_shapes,
+            shared_vars,
+            convs,
+            elab_calls
+        );
+        self.start = None;
+    }
+
     /// The path of a process instance as reports and the debugger show it: `:top:u1:p`.
     pub fn proc_name(&self, p: &crate::ProcInst) -> String {
         let n = self.hier.path_name(p.scope, crate::Case::Lrm);

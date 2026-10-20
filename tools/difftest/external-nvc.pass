@@ -94,9 +94,11 @@ block2
 bounds10
 bounds15
 bounds29
+bounds34
 bounds35
 bounds36
 bounds37
+bounds44
 bounds8
 buffer1
 case1
@@ -176,6 +178,7 @@ driver3
 driver4
 driver5
 driver8
+driver9
 elab1
 elab10
 elab11
@@ -213,8 +216,15 @@ elab7
 elab8
 elab9
 ename1
+ename10
+ename11
+ename12
+ename13
+ename14
 ename15
+ename17
 ename18
+ename2
 ename3
 ename4
 ename6
@@ -509,6 +519,7 @@ issue724
 issue726
 issue731
 issue732
+issue747
 issue750
 issue751
 issue766

@@ -139,6 +139,9 @@ test, `--jobs` tests at once, default 2) and puts it in one class:
   `order`, `fatalmsg`, `delta-path`: equal only with that much ignored (same-cycle order; the
   wording, process path and exit status of a run-time error when both fail); `output`: other
   differences; `outcome`: one passes a run the other fails;
+- `early`: yavs rejects the design when it analyses or elaborates it, with an error the LRM
+  states (`EARLY_OK` in `external.py`), where the reference simulator fails the run and the
+  test expects a failing run; it meets the suite's verdict and counts as passing;
 - `analysis`, `elab`, `timeout`, `threads`: yavs fails there or differs between thread counts;
 - `ref-bad`: the reference simulator does not meet the test's own expectation here (environment,
   version), so the test is not compared; `skip`: not modelled by the harness.

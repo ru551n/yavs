@@ -264,6 +264,12 @@ def compare(ref, got, base):
     return "output"
 
 
+# Errors the LRM states that yavs reports when it analyses or elaborates, where the reference
+# simulators (and so the suites) have the run fail: a test that expects a failing last run
+# is met by these (not by an unsupported feature or an internal error).
+EARLY_OK = re.compile(r"\[(E1405|E1812|E2103|E2107|E2110|E2111|E2113|E2117)\]")
+
+
 def one(t, args):
     if "skip" in t:
         return {"name": t["name"], "class": "skip", "msg": t["skip"]}
@@ -280,6 +286,8 @@ def one(t, args):
         if rc == 124 or any(r[0] == 124 for r in runs):
             return {**res, "class": "timeout", "msg": ""}
         if rc in (97, 98):
+            if EARLY_OK.search(err) and [s[3] for s in t["steps"] if s[0] == "run"][-1:] == [True]:
+                return {**res, "class": "pass" if args.oracle else "early", "oracle": True, "msg": err[:2000]}
             return {**res, "class": "analysis" if rc == 97 else "elab", "msg": err[:2000]}
         got = [dt.normalise(rc, o, drop_warnings(e), yavs=True) for rc, o, e in runs]
         if args.suite == "ghdl":  # exit 1 after `error` reports vs 0 (README "Ignore set", errexit)
@@ -330,7 +338,7 @@ def main():
     if args.json:
         args.json.write_text("".join(json.dumps(r) + "\n" for r in results))
     if args.write_pass:
-        args.write_pass.write_text("".join(r["name"] + "\n" for r in sorted(results, key=lambda r: r["name"]) if r["class"] == "pass" and r.get("oracle", True)))
+        args.write_pass.write_text("".join(r["name"] + "\n" for r in sorted(results, key=lambda r: r["name"]) if r["class"] in ("pass", "early") and r.get("oracle", True)))
     print(f"{args.suite}: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])))
     if args.check and counts.get("pass", 0) != len(tests):
         sys.exit(1)

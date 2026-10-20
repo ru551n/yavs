@@ -997,7 +997,6 @@ impl Db {
             self.share_anonymous_ops(d, new);
         }
         let key = self.decls[new].name.key();
-        let profile = self.profile(new);
         // ponytail: a spec in the entity takes the body of the last architecture analyzed
         // in the session (one per elaboration in practice); per-architecture bodies would
         // need the body keyed by architecture.
@@ -1007,7 +1006,7 @@ impl Db {
             let entity = self.scopes[r].kind == crate::scope::ScopeKind::Entity;
             self.scopes[r].names.get(&key)?.iter().copied().find_map(|d| {
                 let d = if mapped { self.header_generic(d)? } else { d };
-                (matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending | Body::Foreign(_)) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.profile(d) == profile).then_some(d)
+                (matches!(self.decls[d].kind.subprogram(), Some(s) if matches!(s.body, Body::Pending | Body::Foreign(_)) || entity && matches!(s.body, Body::Hir { .. }) && !self.decls[d].implicit) && self.same_profile(d, new)).then_some(d)
             })
         });
         let pscope = match &self.decls[new].kind {

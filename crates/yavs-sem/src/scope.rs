@@ -291,7 +291,7 @@ impl Db {
     }
 
     /// `profile(a) == profile(b)` without building the profiles (hot in `lookup`).
-    fn same_profile(&self, a: DeclId, b: DeclId) -> bool {
+    pub(crate) fn same_profile(&self, a: DeclId, b: DeclId) -> bool {
         enum P<'a> {
             Sub(&'a crate::decl::Subprogram),
             Lit(TypeId),

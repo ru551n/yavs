@@ -1580,10 +1580,11 @@ impl Db {
         // the actuals' types (#283).
         let (e, pre) = self.implicit_instance(scope, e, args, span)?;
         let s = self.decls[e].kind.subprogram()?;
-        let formals: Vec<(Symbol, SubtypeId)> =
+        let formals: smallvec::SmallVec<[(Symbol, SubtypeId); 8]> =
             s.params.iter().map(|p| (p.name.key, p.subtype)).collect();
-        let decls: Vec<Option<DeclId>> = s.params.iter().map(|p| p.decl).collect();
-        let classes: Vec<(crate::decl::ObjClass, crate::hir::Mode, Ident)> =
+        let decls: smallvec::SmallVec<[Option<DeclId>; 8]> =
+            s.params.iter().map(|p| p.decl).collect();
+        let classes: smallvec::SmallVec<[(crate::decl::ObjClass, crate::hir::Mode, Ident); 8]> =
             s.params.iter().map(|p| (p.class, p.mode, p.name)).collect();
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         let map = assoc_map(

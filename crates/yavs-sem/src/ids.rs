@@ -61,8 +61,10 @@ pub struct Arena<I, T> {
     /// The entries after the lazily decoded ones (all of them when `lazy` is `None`).
     items: Vec<T>,
     lazy: Option<Lazy<T>>,
-    /// A tracked arena counts every mutable access in [`epoch`] (visibility caches).
+    /// A tracked arena counts every mutable access in `version` (visibility caches).
     track: bool,
+    /// Mutable accesses so far; not serialized.
+    version: u64,
     _id: PhantomData<I>,
 }
 
@@ -112,22 +114,21 @@ fn decode_entries<T: serde::de::DeserializeOwned>(mut rest: &[u8], n: usize) -> 
         .collect()
 }
 
-static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Counts mutable accesses to tracked arenas (any `Db`): equal values mean nothing a cache
-/// could depend on changed in between.
-pub fn epoch() -> u64 {
-    EPOCH.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 impl<I: Id, T> Arena<I, T> {
     pub fn new() -> Self {
         Arena {
             items: Vec::new(),
             lazy: None,
             track: false,
+            version: 0,
             _id: PhantomData,
         }
+    }
+
+    /// Counts the mutable accesses of a tracked arena: equal values mean nothing a cache could
+    /// depend on changed in between.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn tracked() -> Self {
@@ -301,6 +302,7 @@ impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I
                 decode: decode_entries::<T>,
             }),
             track: img.track,
+            version: 0,
             _id: PhantomData,
         })
     }
@@ -321,9 +323,7 @@ impl<I: Id, T> std::ops::Index<I> for Arena<I, T> {
 
 impl<I: Id, T> std::ops::IndexMut<I> for Arena<I, T> {
     fn index_mut(&mut self, id: I) -> &mut T {
-        if self.track {
-            EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.version += 1;
         let i = id.index();
         let base = self.lazy.as_ref().map_or(0, |l| l.len);
         match &mut self.lazy {

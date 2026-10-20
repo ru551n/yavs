@@ -306,7 +306,7 @@ impl Db {
                 if is.iter().any(|i| i.ty == self.poison.ty) {
                     return self.build_any(scope, e, is[0], exp);
                 }
-                let mut best: Vec<(Interp, u32)> = Vec::new();
+                let mut best: smallvec::SmallVec<[(Interp, u32); 4]> = smallvec::SmallVec::new();
                 for i in &is {
                     if let Some(c) = self.cost(i, exp) {
                         if best.iter().any(|(b, _)| b.ty == i.ty && b.via == i.via) {
@@ -637,7 +637,7 @@ impl Db {
         let mut found: Vec<(DeclId, TypeId)> = Vec::new();
         let key = operator_key("??");
         let visible = match self.lookup(scope, key) {
-            Visible::Overloads(ds) => ds,
+            Visible::Overloads(ds) => ds.to_vec(),
             _ => Vec::new(),
         };
         // 9.2.9 does not say where the `??` comes from. Permissive (L53, user 2026-10-19): when
@@ -1065,7 +1065,7 @@ impl Db {
     /// subprograms (a 2019 composite `TO_STRING` and a user `to_string(A; sep := " ")`,
     /// in the same package or made visible by a use clause): the explicit ones win, as
     /// in NVC, GHDL and Questa (decisions.md).
-    fn prefer_explicit(&self, best: &mut Vec<(Interp, u32)>) {
+    fn prefer_explicit(&self, best: &mut smallvec::SmallVec<[(Interp, u32); 4]>) {
         let calls: Option<Vec<DeclId>> = best
             .iter()
             .map(|(i, _)| match i.via {
@@ -1375,13 +1375,18 @@ impl Db {
                 let Some(s) = self.decls[e].kind.subprogram() else {
                     continue;
                 };
-                let formals: Vec<(yavs_syntax::Symbol, TypeId, bool)> = s
+                let formals: smallvec::SmallVec<[(yavs_syntax::Symbol, TypeId, bool); 8]> = s
                     .params
                     .iter()
                     .map(|p| (p.name.key, self.base(p.subtype), p.default.is_some()))
                     .collect();
-                let Ok(map) = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args)
-                else {
+                let Ok(map) = assoc_map(
+                    &formals
+                        .iter()
+                        .map(|f| f.0)
+                        .collect::<smallvec::SmallVec<[yavs_syntax::Symbol; 8]>>(),
+                    args,
+                ) else {
                     continue;
                 };
                 let mut convs = 0;

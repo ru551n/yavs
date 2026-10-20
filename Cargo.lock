@@ -1630,6 +1630,7 @@ dependencies = [
  "postcard",
  "rustc-hash",
  "serde",
+ "smallvec",
  "tempfile",
  "yavs-diag",
  "yavs-lib",

@@ -1482,10 +1482,12 @@ impl Db {
 
     /// Whether `t` is an anonymous parameter type of subprogram `e` (#283).
     pub(crate) fn anonymous_param(&self, e: DeclId, t: TypeId) -> bool {
-        self.generic
-            .implicit
-            .get(&e)
-            .is_some_and(|v| v.contains(&t))
+        !self.generic.implicit.is_empty()
+            && self
+                .generic
+                .implicit
+                .get(&e)
+                .is_some_and(|v| v.contains(&t))
     }
 
     /// Whether an actual of type `ty` can belong to the class of generic type `t`; the
@@ -2160,7 +2162,7 @@ impl Db {
     fn warn_user_eq(&mut self, scope: ScopeId, predefined: DeclId, ty: TypeId, span: Span) {
         let key = crate::decl::operator_key("=");
         let ds = match self.lookup(scope, key) {
-            Visible::Overloads(ds) => ds,
+            Visible::Overloads(ds) => ds.to_vec(),
             Visible::One(d) => vec![d],
             _ => return,
         };
@@ -2507,7 +2509,7 @@ impl Db {
                         let key = fname.key();
                         let cands = match self.lookup(scope, key) {
                             Visible::One(d) => vec![d],
-                            Visible::Overloads(ds) => ds,
+                            Visible::Overloads(ds) => ds.to_vec(),
                             _ => Vec::new(),
                         };
                         (cands, true)

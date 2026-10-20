@@ -755,7 +755,7 @@ impl Db {
         }
         let key = self.decls[d].name.key();
         let cands = match self.lookup(scope, key) {
-            crate::scope::Visible::Overloads(ds) => ds,
+            crate::scope::Visible::Overloads(ds) => ds.to_vec(),
             crate::scope::Visible::One(d) => vec![d],
             _ => Vec::new(),
         };
@@ -1340,7 +1340,7 @@ impl Db {
         let cands = match self.generic.defaults.get(&f).cloned() {
             Some(crate::generic::SubpDefault::Box) => match self.lookup(scope, name.key()) {
                 Visible::One(d) => vec![d],
-                Visible::Overloads(ds) => ds,
+                Visible::Overloads(ds) => ds.to_vec(),
                 _ => Vec::new(),
             },
             Some(crate::generic::SubpDefault::Name { cands, .. }) => cands,

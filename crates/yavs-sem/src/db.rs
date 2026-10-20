@@ -156,7 +156,7 @@ pub struct Db {
     /// classified once per resolution pass).
     pub(crate) rev_reported: HashSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
-    /// `lookup` results valid while `ids::epoch()` is unchanged: (scope, key) -> (revision, epoch, direct hit, result).
+    /// `lookup` results valid while `Db::cache_epoch` is unchanged: (scope, key) -> (revision, epoch, direct hit, result).
     #[serde(skip)]
     pub(crate) lookup_cache:
         HashMap<(ScopeId, Symbol), (LangRev, u64, bool, crate::scope::Visible)>,

@@ -5,6 +5,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+use smallvec::SmallVec;
 use yavs_syntax::Symbol;
 
 use crate::ids::{DeclId, LibId, ScopeId};
@@ -85,7 +86,7 @@ pub enum Visible {
     None,
     One(DeclId),
     /// Subprograms and enumeration literals (and aliases of them).
-    Overloads(Vec<DeclId>),
+    Overloads(std::sync::Arc<[DeclId]>),
     /// Potentially visible non-overloadable declarations that cancel each other (12.4 c).
     Hidden(Conflict),
 }
@@ -123,7 +124,7 @@ struct OverSet {
 /// in a small vector and move to a hash set only past [`Seen::SMALL`].
 #[derive(Default)]
 struct Seen {
-    small: Vec<DeclId>,
+    small: SmallVec<[DeclId; 16]>,
     big: HashSet<DeclId>,
 }
 
@@ -158,7 +159,7 @@ impl Seen {
 /// few overloads), then a hash index.
 #[derive(Default)]
 struct ShapeIndex {
-    small: Vec<(Shape, DeclId)>,
+    small: SmallVec<[(Shape, DeclId); 8]>,
     big: HashMap<Shape, Vec<DeclId>>,
 }
 
@@ -174,6 +175,15 @@ impl ShapeIndex {
             }
         }
         self.big.entry(sh).or_default().push(d);
+    }
+
+    /// Does `f` hold for any member, of any shape?
+    fn any_member(&self, mut f: impl FnMut(DeclId) -> bool) -> bool {
+        if self.big.is_empty() {
+            self.small.iter().any(|(_, o)| f(*o))
+        } else {
+            self.big.values().flatten().any(|&o| f(o))
+        }
     }
 
     /// Does `f` hold for a member of shape `sh`?
@@ -315,10 +325,10 @@ impl Db {
     /// earlier `DeclId` instead of calling this.
     pub(crate) fn declare(&mut self, scope: ScopeId, d: DeclId) {
         let key = self.decls[d].name.key();
-        let existing = self.scopes[scope]
+        let existing: SmallVec<[DeclId; 4]> = self.scopes[scope]
             .names
             .get(&key)
-            .cloned()
+            .map(|v| v.iter().copied().collect())
             .unwrap_or_default();
         for old in existing {
             if !self.homographs(old, d) {
@@ -439,9 +449,23 @@ impl Db {
         sc.parent
     }
 
+    /// Counts the mutable accesses of the tracked arenas: a lookup result is valid while it
+    /// is unchanged.
+    fn cache_epoch(&self) -> u64 {
+        self.scopes.version() + self.decls.version() + self.subtypes.version()
+    }
+
     /// Visibility (sem.md 1.4, LRM 12.3 and 12.4).
     pub fn lookup(&mut self, scope: ScopeId, key: Symbol) -> Visible {
-        let (rev, epoch) = (self.file_rev(), crate::ids::epoch());
+        self.lookup_full(scope, key).0
+    }
+
+    /// `lookup` with the "direct hit" and "cacheable" flags. A region that declares no `key` and
+    /// has no use clauses and continues with its parent (most subprogram, process and block
+    /// regions) has its parent's answer: that is asked (and cached) instead of walking the
+    /// chain again for every new inner region.
+    fn lookup_full(&mut self, scope: ScopeId, key: Symbol) -> (Visible, bool, bool) {
+        let (rev, epoch) = (self.file_rev(), self.cache_epoch());
         if let Some((r, e, direct, v)) = self.lookup_cache.get(&(scope, key))
             && *r == rev
             && *e == epoch
@@ -454,20 +478,33 @@ impl Db {
                 assert_eq!(d, direct);
                 assert_eq!(fresh, v, "stale lookup cache entry for `{key}`");
             }
-            if let (true, Visible::One(d)) = (direct, &v) {
+            if let (true, Visible::One(d)) = (direct, &v)
+                && !self.generic.unused.is_empty()
+            {
                 // Same side effect as an uncached direct hit.
                 self.generic.unused.remove(d);
             }
-            return v;
+            return (v, direct, true);
         }
         let (mut cacheable, mut direct) = (true, false);
-        let v = self.lookup_uncached(scope, key, &mut cacheable, &mut direct);
-        // Something changed during the lookup (a unit was loaded): do not trust the epoch.
-        if cacheable && crate::ids::epoch() == epoch {
+        let sc = &self.scopes[scope];
+        let v = match sc.parent {
+            Some(p) if sc.outer.is_none() && sc.uses.is_empty() && !sc.names.contains_key(&key) => {
+                let (v, d, c) = self.lookup_full(p, key);
+                (direct, cacheable) = (d, c);
+                v
+            }
+            _ => self.lookup_uncached(scope, key, &mut cacheable, &mut direct),
+        };
+        // A name declared in `scope` itself is as cheap to find again as its cache entry is to
+        // probe: only results from further out are kept. Something changed during the lookup
+        // (a unit was loaded): do not trust the epoch.
+        let own = matches!(&v, Visible::One(d) if direct && self.decls[*d].scope == scope);
+        if cacheable && !own && self.cache_epoch() == epoch {
             self.lookup_cache
                 .insert((scope, key), (rev, epoch, direct, v.clone()));
         }
-        v
+        (v, direct, cacheable)
     }
 
     fn lookup_uncached(
@@ -478,10 +515,10 @@ impl Db {
         direct: &mut bool,
     ) -> Visible {
         // 1. Direct visibility, innermost region first.
-        let mut over: Vec<DeclId> = Vec::new();
+        let mut over: SmallVec<[DeclId; 8]> = SmallVec::new();
         let mut over_set = OverSet::default();
         let mut single: Option<DeclId> = None;
-        let mut regions = Vec::new();
+        let mut regions: SmallVec<[ScopeId; 8]> = SmallVec::new();
         let mut cur = Some(scope);
         let mut outer = None;
         'walk: while let Some(s) = cur {
@@ -521,7 +558,7 @@ impl Db {
         }
 
         // 2. Potential visibility through use clauses of every enclosing region.
-        let mut pot: Vec<DeclId> = Vec::new();
+        let mut pot: SmallVec<[DeclId; 8]> = SmallVec::new();
         let mut seen = Seen::default();
         for &s in &regions {
             for i in 0..self.scopes[s].uses.len() {
@@ -556,35 +593,36 @@ impl Db {
         // conflicts or overloads); if nothing else is visible they come back for `E1007`.
         let rev = self.file_rev();
         if pot.iter().any(|&d| self.decls[d].since > rev) {
-            let (newer, old): (Vec<DeclId>, Vec<DeclId>) =
+            let (newer, old): (SmallVec<[DeclId; 8]>, SmallVec<[DeclId; 8]>) =
                 pot.into_iter().partition(|&d| self.decls[d].since > rev);
             if old.is_empty() && over.is_empty() {
                 return match newer[..] {
                     [d] if !self.is_overloadable(d) => Visible::One(d),
-                    _ => Visible::Overloads(newer),
+                    _ => Visible::Overloads(newer[..].into()),
                 };
             }
             pot = old;
         }
         // (a) a directly visible homograph hides the potentially visible declaration.
         if !over.is_empty() {
-            pot.retain(|&p| !self.over_hides(&over_set, p));
+            pot.retain(|p| !self.over_hides(&over_set, *p));
         }
         // (b) of two potentially visible homographs, explicit beats implicit. Explicit
         // overloadables are bucketed by profile shape, so only equal shapes are compared.
         if pot.iter().any(|&p| self.decls[p].implicit) {
-            let mut by_shape: HashMap<Shape, Vec<DeclId>> = HashMap::default();
-            let mut explicit_other: Vec<DeclId> = Vec::new();
+            let mut by_shape = ShapeIndex::default();
+            let mut explicit_other: SmallVec<[DeclId; 4]> = SmallVec::new();
             for &q in &pot {
                 if self.decls[q].implicit || self.is_poison(q) {
                     continue;
                 }
                 match self.profile_shape(q) {
-                    Some(sh) => by_shape.entry(sh).or_default().push(q),
+                    Some(sh) => by_shape.push(sh, q),
                     None => explicit_other.push(q),
                 }
             }
-            pot.retain(|&p| {
+            pot.retain(|p| {
+                let p = *p;
                 if !self.decls[p].implicit || self.is_poison(p) {
                     return true;
                 }
@@ -593,33 +631,31 @@ impl Db {
                         explicit_other
                             .iter()
                             .any(|&q| self.entity(q) != self.entity(p))
-                            || by_shape
-                                .get(&sh)
-                                .is_some_and(|qs| qs.iter().any(|&q| self.homographs(p, q)))
+                            || by_shape.any(&sh, |q| self.homographs(p, q))
                     }
-                    None => explicit_other
-                        .iter()
-                        .chain(by_shape.values().flatten())
-                        .any(|&q| self.homographs(p, q)),
+                    None => {
+                        explicit_other.iter().any(|&q| self.homographs(p, q))
+                            || by_shape.any_member(|q| self.homographs(p, q))
+                    }
                 };
                 !hidden
             });
         }
-        let (pot_over, pot_single): (Vec<DeclId>, Vec<DeclId>) =
+        let (pot_over, pot_single): (SmallVec<[DeclId; 8]>, SmallVec<[DeclId; 8]>) =
             pot.into_iter().partition(|&d| self.is_overloadable(d));
         // (c) non-overloadable conflicts make all of them invisible.
         if !pot_single.is_empty() {
             if pot_single.len() == 1 && pot_over.is_empty() && over.is_empty() {
                 return Visible::One(pot_single[0]);
             }
-            let mut decls = pot_single;
+            let mut decls = pot_single.into_vec();
             decls.extend(pot_over);
             return Visible::Hidden(Conflict { decls });
         }
         over.extend(pot_over);
         match over.len() {
             0 => Visible::None,
-            _ => Visible::Overloads(over),
+            _ => Visible::Overloads(over[..].into()),
         }
     }
 

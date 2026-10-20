@@ -81,7 +81,7 @@ impl Db {
 
     /// Poison: compatible with everything, so no follow-up diagnostics.
     pub(crate) fn poison_cands(&self) -> CandSet {
-        CandSet::Types(vec![Interp::new(self.poison.ty, Via::Other)])
+        CandSet::Types(smallvec::smallvec![Interp::new(self.poison.ty, Via::Other)])
     }
 
     fn cands_uncached(&mut self, scope: ScopeId, e: &ast::Expr) -> CandSet {
@@ -93,7 +93,9 @@ impl Db {
             K::Aggregate(_) => CandSet::Class(ClassMask::ANY_COMPOSITE),
             K::New(_) => CandSet::Class(ClassMask::ANY_ACCESS),
             K::Qualified { type_mark, .. } => match self.type_mark(scope, type_mark) {
-                Ok(st) => CandSet::Types(vec![Interp::new(self.base(st), Via::Other)]),
+                Ok(st) => {
+                    CandSet::Types(smallvec::smallvec![Interp::new(self.base(st), Via::Other)])
+                }
                 Err(_) => self.poison_cands(),
             },
             K::Unary { op, operand } => {
@@ -149,7 +151,7 @@ impl Db {
                 )
             }
             (CandSet::Types(xs), CandSet::Types(ys)) => {
-                let mut out: Vec<Interp> = Vec::new();
+                let mut out = super::Interps::new();
                 for x in &xs {
                     for y in &ys {
                         // A convertible universal side takes the other side's type.
@@ -190,7 +192,7 @@ impl Db {
                     ui
                 };
                 match ty {
-                    Some(ty) => CandSet::Types(vec![Interp {
+                    Some(ty) => CandSet::Types(smallvec::smallvec![Interp {
                         convertible: true,
                         ..Interp::new(ty, Via::Literal)
                     }]),
@@ -203,7 +205,7 @@ impl Db {
             L::Physical { unit, .. } => match self.lookup(scope, unit.key) {
                 Visible::One(d) => match self.decls[self.entity(d)].kind {
                     DeclKind::PhysUnit { ty, .. } => {
-                        CandSet::Types(vec![Interp::new(ty, Via::Literal)])
+                        CandSet::Types(smallvec::smallvec![Interp::new(ty, Via::Literal)])
                     }
                     _ => self.not_a_unit(*unit),
                 },
@@ -261,10 +263,10 @@ impl Db {
             return self.poison_cands();
         }
         let Visible::Overloads(ds) = self.lookup(scope, operator_key(sym)) else {
-            return CandSet::Types(Vec::new());
+            return CandSet::Types(Default::default());
         };
-        let mut out = Vec::new();
-        for d in ds {
+        let mut out = super::Interps::new();
+        for &d in ds.iter() {
             let e = self.entity(d);
             let Some(s) = self.decls[e].kind.subprogram() else {
                 continue;
@@ -273,14 +275,14 @@ impl Db {
             if s.params.len() != operands.len() {
                 continue;
             }
-            let formals: Vec<TypeId> = s.params.iter().map(|p| self.base(p.subtype)).collect();
             let mut ret = self.base(ret);
             let mut convs = 0;
             let mut ok = true;
             // An anonymous parameter type takes any type of its class; a result of such a
             // type is the type its operand binds (#308).
             let mut bound: Vec<(TypeId, TypeId)> = Vec::new();
-            for (c, &f) in ocs.iter().zip(&formals) {
+            for (c, p) in ocs.iter().zip(&s.params) {
+                let f = self.base(p.subtype);
                 let cost = if self.anonymous_param(e, f) {
                     if !bound.iter().any(|b| b.0 == f)
                         && let Some(t) = self.anonymous_binding(c, f)

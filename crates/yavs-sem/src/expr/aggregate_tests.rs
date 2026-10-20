@@ -242,9 +242,10 @@ impl AggResolver for Mock {
         let ty = |t| Interp::new(t, Via::Other);
         match &e.kind {
             ast::ExprKind::Literal(l) => match &l.kind {
-                ast::LiteralKind::Abstract(_) => {
-                    CandSet::Types(vec![ty(db.well_known.universal_integer.unwrap())])
-                }
+                ast::LiteralKind::Abstract(_) => CandSet::Types(smallvec::smallvec![ty(db
+                    .well_known
+                    .universal_integer
+                    .unwrap())]),
                 ast::LiteralKind::Char(c) => CandSet::Types(
                     self.enums
                         .iter()
@@ -265,10 +266,10 @@ impl AggResolver for Mock {
                 kind: ast::NameKind::Simple(id),
                 ..
             }) => match self.objs.get(&id.key) {
-                Some(&(st, _, _)) => CandSet::Types(vec![ty(db.base(st))]),
-                None => CandSet::Types(vec![]),
+                Some(&(st, _, _)) => CandSet::Types(smallvec::smallvec![ty(db.base(st))]),
+                None => CandSet::Types(smallvec::smallvec![]),
             },
-            _ => CandSet::Types(vec![]),
+            _ => CandSet::Types(smallvec::smallvec![]),
         }
     }
 

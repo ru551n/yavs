@@ -69,7 +69,7 @@ impl Db {
         if let Some((key, ident)) = name_ident(n) {
             let r = match self.lookup(scope, key) {
                 Visible::One(d) => NameRes::One(d),
-                Visible::Overloads(ds) => NameRes::Overloads(ds),
+                Visible::Overloads(ds) => NameRes::Overloads(ds.to_vec()),
                 Visible::None => NameRes::Missing(ident),
                 Visible::Hidden(c) => NameRes::Conflict(ident, c),
             };
@@ -233,7 +233,7 @@ impl Db {
         match self.lookup(region, key) {
             Visible::One(x) if own(self, x) => NameRes::One(x),
             Visible::Overloads(ds) => {
-                let ds: Vec<DeclId> = ds.into_iter().filter(|&x| own(self, x)).collect();
+                let ds: Vec<DeclId> = ds.iter().copied().filter(|&x| own(self, x)).collect();
                 if ds.is_empty() {
                     NameRes::NotInRegion(region, at, key)
                 } else {
@@ -340,7 +340,7 @@ impl Db {
     fn name_cands_uncached(&mut self, scope: ScopeId, n: &ast::Name) -> CandSet {
         match &n.kind {
             ast::NameKind::External(x) => match self.external_expr(scope, x, n) {
-                Some(e) => CandSet::Types(vec![Interp::new(
+                Some(e) => CandSet::Types(smallvec::smallvec![Interp::new(
                     self.base(self.exprs[e].subtype),
                     Via::Object,
                 )]),
@@ -362,20 +362,20 @@ impl Db {
     fn decl_cands(&mut self, r: NameRes) -> CandSet {
         match r {
             NameRes::One(d) => match self.object_type(d) {
-                Some(t) => CandSet::Types(vec![Interp::new(t, Via::Object)]),
+                Some(t) => CandSet::Types(smallvec::smallvec![Interp::new(t, Via::Object)]),
                 None => match self.decls[self.entity(d)].kind {
                     DeclKind::PhysUnit { ty, .. } => {
-                        CandSet::Types(vec![Interp::new(ty, Via::Literal)])
+                        CandSet::Types(smallvec::smallvec![Interp::new(ty, Via::Literal)])
                     }
                     DeclKind::Error => self.poison_cands(),
-                    _ => CandSet::Types(Vec::new()),
+                    _ => CandSet::Types(Default::default()),
                 },
             },
             NameRes::Overloads(ds) => {
                 CandSet::Types(ds.iter().filter_map(|&d| self.value_interp(d, 0)).collect())
             }
             NameRes::Error => self.poison_cands(),
-            _ => CandSet::Types(Vec::new()),
+            _ => CandSet::Types(Default::default()),
         }
     }
 
@@ -467,7 +467,7 @@ impl Db {
                 .collect();
             return CandSet::Types(is);
         };
-        let mut out = Vec::new();
+        let mut out = super::Interps::new();
         for &t in &ts {
             // method_decls follows an access to a protected type itself.
             for d in self.method_decls(t, key) {
@@ -742,7 +742,9 @@ impl Db {
                 return self.poison_cands();
             }
             return match r.and_then(|(_, t)| self.range_record_of(t, attr.span)) {
-                Ok(st) => CandSet::Types(vec![Interp::new(self.base(st), Via::Other)]),
+                Ok(st) => {
+                    CandSet::Types(smallvec::smallvec![Interp::new(self.base(st), Via::Other)])
+                }
                 Err(_) => self.poison_cands(),
             };
         }
@@ -750,12 +752,14 @@ impl Db {
         let ps = match self.attr_prefixes(scope, prefix) {
             Ok(ps) => ps,
             Err(NameRes::Error) => return self.poison_cands(),
-            Err(_) => return CandSet::Types(Vec::new()),
+            Err(_) => return CandSet::Types(Default::default()),
         };
         let Some(a) = PredefAttr::from_key(attr.key) else {
             return match self.user_attr_type(&ps, attr.key) {
-                Some(t) if args.is_empty() => CandSet::Types(vec![Interp::new(t, Via::Attr)]),
-                _ => CandSet::Types(Vec::new()),
+                Some(t) if args.is_empty() => {
+                    CandSet::Types(smallvec::smallvec![Interp::new(t, Via::Attr)])
+                }
+                _ => CandSet::Types(Default::default()),
             };
         };
         let info = a.info();
@@ -772,7 +776,7 @@ impl Db {
         } else {
             Vec::new()
         };
-        let mut out = Vec::new();
+        let mut out = super::Interps::new();
         for (p, src) in &ps {
             if matches!(*src, PSrc::Value(t) if derefs.contains(&t)) {
                 continue;
@@ -835,10 +839,10 @@ impl Db {
         }
         if let Some(st) = self.quiet_type_mark(scope, prefix) {
             // Type conversion (9.3.6).
-            return CandSet::Types(vec![Interp::new(self.base(st), Via::Other)]);
+            return CandSet::Types(smallvec::smallvec![Interp::new(self.base(st), Via::Other)]);
         }
         let slice = self.is_slice_arg(scope, args);
-        let mut out = Vec::new();
+        let mut out = super::Interps::new();
         match self.classify(scope, prefix) {
             NameRes::Overloads(ds) => {
                 for &d in &ds {
@@ -944,12 +948,19 @@ impl Db {
         let e = self.entity(d);
         let s = self.decls[e].kind.subprogram()?;
         let ret = self.base(s.ret?);
-        let formals: Vec<(Symbol, TypeId, bool)> = s
+        let formals: smallvec::SmallVec<[(Symbol, TypeId, bool); 8]> = s
             .params
             .iter()
             .map(|p| (p.name.key, self.base(p.subtype), p.default.is_some()))
             .collect();
-        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
+        let map = assoc_map(
+            &formals
+                .iter()
+                .map(|f| f.0)
+                .collect::<smallvec::SmallVec<[yavs_syntax::Symbol; 8]>>(),
+            args,
+        )
+        .ok()?;
         let mut convs = 0;
         let mut anon_bound: Vec<(TypeId, TypeId)> = Vec::new();
         for (i, (_, ft, has_default)) in formals.iter().enumerate() {
@@ -1575,7 +1586,14 @@ impl Db {
         let classes: Vec<(crate::decl::ObjClass, crate::hir::Mode, Ident)> =
             s.params.iter().map(|p| (p.class, p.mode, p.name)).collect();
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
-        let map = assoc_map(&formals.iter().map(|f| f.0).collect::<Vec<_>>(), args).ok()?;
+        let map = assoc_map(
+            &formals
+                .iter()
+                .map(|f| f.0)
+                .collect::<smallvec::SmallVec<[yavs_syntax::Symbol; 8]>>(),
+            args,
+        )
+        .ok()?;
         let mut hargs = Vec::with_capacity(formals.len());
         // 9.4.3: a pure function call with globally static actuals is globally static
         // (sem folds only the implicit operations, so user calls never become locally static).
@@ -2833,8 +2851,8 @@ pub(crate) fn formal_root(n: &ast::Name) -> Option<Ident> {
 pub(crate) fn assoc_map(
     formals: &[Symbol],
     args: &[ast::AssocElem],
-) -> Result<Vec<Slot>, AssocErr> {
-    let mut map = vec![Slot::None; formals.len()];
+) -> Result<smallvec::SmallVec<[Slot; 8]>, AssocErr> {
+    let mut map = smallvec::SmallVec::from_elem(Slot::None, formals.len());
     let mut named = false;
     for (k, a) in args.iter().enumerate() {
         match &a.formal {

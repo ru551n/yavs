@@ -95,9 +95,12 @@ impl Interp {
     }
 }
 
+/// Interpretations of one expression: mostly one or two, so no heap.
+pub type Interps = smallvec::SmallVec<[Interp; 2]>;
+
 /// The bottom-up result of `cands` (3.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CandSet {
-    Types(Vec<Interp>),
+    Types(Interps),
     Class(ClassMask),
 }

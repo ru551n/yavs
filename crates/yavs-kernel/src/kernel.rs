@@ -1254,7 +1254,7 @@ impl SimControl {
                     );
                     for r in ranges.drain(..) {
                         sig.mark_active(r, now, cycle);
-                        sig.dirty.push(r);
+                        sig.push_dirty(r);
                         if sig.queued_up != cycle {
                             sig.queued_up = cycle;
                             up.push((sig.level, Reverse(info.signal.0)));
@@ -1352,7 +1352,7 @@ impl SimControl {
                 );
                 for r in ranges.drain(..) {
                     sig.mark_active(r, now, cycle);
-                    sig.dirty.push(r);
+                    sig.push_dirty(r);
                 }
             }
             let mut dirty = std::mem::take(&mut sig.dirty);

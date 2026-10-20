@@ -605,6 +605,15 @@ impl Signal {
         any
     }
 
+    /// Note that the driving value of `r` must be recomputed. A range that continues the last
+    /// one extends it: one process per element of a vector gives one range, not one per element.
+    pub fn push_dirty(&mut self, r: Range) {
+        match self.dirty.last_mut() {
+            Some(l) if l.end() == r.offset => l.len += r.len,
+            _ => self.dirty.push(r),
+        }
+    }
+
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
         let n = self.ty.len as usize;
         for e in r.elems() {

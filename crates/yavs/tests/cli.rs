@@ -367,7 +367,9 @@ fn signal_keeps_reports() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let pid = child.id().to_string();
-        let k = Command::new("kill").args([&format!("-{sig}"), &pid]).status();
+        let k = Command::new("kill")
+            .args([&format!("-{sig}"), &pid])
+            .status();
         assert!(k.expect("kill").success());
         assert!(!child.wait().expect("wait").success());
         let text = std::fs::read_to_string(&out).expect("read");

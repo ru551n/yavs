@@ -1053,6 +1053,7 @@ composite 6/6, force 8/8, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 t
 - An alias of a constant with a static value in a subprogram has no storage; its uses lower the aliased name (#300; difftest `composite/alias_constant`).
 
 - Entity statements (passive assertions and processes in an entity, LRM 3.2.4) lower with the architecture's, entity ones first (#301; difftest `hierarchy/entity_statements`).
+- Block configurations of for-generates evaluate their index or range in the generate's scope, so a generic works as the index; errors are reported (#41; difftest `hierarchy/config_generate_index`).
 
 - Aggregate variable targets of a record value, `(x, y) := f;`, positional elements (#302; difftest `composite/record_aggregate_target`).
 

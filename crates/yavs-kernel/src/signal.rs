@@ -586,6 +586,23 @@ impl Signal {
         }
     }
 
+    /// The elements of `r` that are not active in `cycle`, or `None` when all are (a port
+    /// passes activity on element by element, LRM 14.7.3.1).
+    pub fn idle_elems(&self, r: Range, cycle: u64) -> Option<Vec<bool>> {
+        let n = self.ty.len as usize;
+        let from = &self.stamps[n..2 * n][r.elems()];
+        (!from.iter().all(|&c| c == cycle)).then(|| from.iter().map(|&c| c != cycle).collect())
+    }
+
+    /// `mark_active` of the elements of `r` that `idle` (from `idle_elems`) does not exclude.
+    pub fn mark_active_except(&mut self, r: Range, idle: &[bool], now: Time, cycle: u64) {
+        let n = self.ty.len as usize;
+        for (e, _) in r.elems().zip(idle).filter(|&(_, &i)| !i) {
+            self.stamps[n + e] = cycle;
+            self.stamps[3 * n + e] = now.raw();
+        }
+    }
+
     fn event_cycles(&self) -> &[u64] {
         &self.stamps[..self.ty.len as usize]
     }

@@ -698,11 +698,23 @@ impl SimControl {
             if p.slots.len() != p.actual.len() {
                 return Err(ErrorKind::Internal("out-port without a source slot".into()));
             }
-            for ((v, &(a, ar)), &slot) in vs.into_iter().zip(&p.actual).zip(&p.slots) {
+            let same = p.conv.to_actual.is_none() && p.formal.len() == p.actual.len();
+            for (i, ((v, &(a, ar)), &slot)) in
+                vs.into_iter().zip(&p.actual).zip(&p.slots).enumerate()
+            {
+                let idle = match p.formal.get(i) {
+                    Some(&(f, fr)) if active && same && fr.len == ar.len => {
+                        self.signals[f.0 as usize].idle_elems(fr, self.cycle)
+                    }
+                    _ => None,
+                };
                 let actual = &mut self.signals[a.0 as usize];
                 actual.drivers[slot as usize].value = v;
                 if active {
-                    actual.mark_active(ar, self.now, self.cycle);
+                    match idle {
+                        Some(idle) => actual.mark_active_except(ar, &idle, self.now, self.cycle),
+                        None => actual.mark_active(ar, self.now, self.cycle),
+                    }
                     actual.dirty.push(ar);
                 }
                 touched.push(a.0);
@@ -747,14 +759,24 @@ impl SimControl {
                 name,
                 self.live.then_some(&mut self.callouts),
             )?;
-            for (v, &(f, fr)) in vs.into_iter().zip(&p.formal) {
+            let same = p.conv.to_formal.is_none() && p.formal.len() == p.actual.len();
+            for (i, (v, &(f, fr))) in vs.into_iter().zip(&p.formal).enumerate() {
+                let idle = match p.actual.get(i) {
+                    Some(&(a, ar)) if active && same && fr.len == ar.len => {
+                        self.signals[a.0 as usize].idle_elems(ar, self.cycle)
+                    }
+                    _ => None,
+                };
                 let formal = &mut self.signals[f.0 as usize];
                 let layer = formal.port_in.as_mut().ok_or_else(|| {
                     ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
                 })?;
                 layer.value.copy(fr.offset as usize, &v, 0, fr.len as usize);
                 if active {
-                    formal.mark_active(fr, self.now, self.cycle);
+                    match idle {
+                        Some(idle) => formal.mark_active_except(fr, &idle, self.now, self.cycle),
+                        None => formal.mark_active(fr, self.now, self.cycle),
+                    }
                     formal.eff_dirty.push(fr);
                 }
                 touched.push(f.0);

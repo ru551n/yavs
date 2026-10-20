@@ -1,0 +1,2 @@
+exit	0
+diag	note	1000000	1	:tb_port_elem_active:main	ok

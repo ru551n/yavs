@@ -505,6 +505,16 @@ One commit per change; each table is an interleaved A/B of the binary before and
 | `protected_scoreboard` | 0.30 | 0.28 | 0.92 |
 | `uvvm_util_rand_tb` | 12.25 | 11.70 | 0.95 |
 
+### Interpreter dispatch, round 3 (#431)
+
+1. The hidden zero-register dependency (#430): not a read before a write in the lowered IR. The sparse
+   register fill of round 2 skipped preloaded registers whose value is 0, so a skipped `Const 0` kept the
+   previous frame's value. The IR verifier now checks by dataflow (debug builds and tests) that every other
+   register is written before it is read, in a process also after a `Suspend`; the corpus passes it. The
+   interpreter still zeroes the other registers: starting them stale was 5-12% faster on call-heavy designs
+   but kept garbage alive in the conservative register scan of the collection (`uvvm_util_rand_tb` +25% run
+   time, +31% peak memory), so stale registers wait for precise roots (#422).
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

@@ -97,8 +97,8 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         ("to_string", "digits") => to_string_digits,
         ("to_string", "format") => to_string_format,
         ("to_string", "unit") => to_string_unit,
-        ("to_hstring", "") => |m, _, t, a| radix(m, t, a, image::bits_to_hstring),
-        ("to_ostring", "") => |m, _, t, a| radix(m, t, a, image::bits_to_ostring),
+        ("to_hstring", "") => |m, _, t, a| radix(m, t, a, 4, image::bits_to_hstring),
+        ("to_ostring", "") => |m, _, t, a| radix(m, t, a, 3, image::bits_to_ostring),
         ("rising_edge", "") => |m, c, _, a| edge(m, c, a, 1),
         ("falling_edge", "") => |m, c, _, a| edge(m, c, a, 0),
         ("deallocate", "") => |m, _, _, a| m.deallocate(arg(a, 0)?).map(|()| None),
@@ -879,9 +879,22 @@ fn to_string_unit(
     ret(m, &s)
 }
 
-fn radix(m: &mut Machine, t: Option<TyId>, a: &[u64], f: fn(&[bool]) -> Vec<u8>) -> R<Option<u64>> {
+fn radix(
+    m: &mut Machine,
+    t: Option<TyId>,
+    a: &[u64],
+    width: usize,
+    f: fn(&[bool]) -> Vec<u8>,
+) -> R<Option<u64>> {
     let (t, _) = ty_of(m, t)?;
     let (_, sc, nd) = array_ty(m, t)?;
+    // A `bit_vector` of up to 64 elements is one word.
+    if nd == 1
+        && logic_of(sc) == Some(LogicKind::Bit)
+        && let Some(v) = crate::ieee::small(m, a, 0)?
+    {
+        return ret(m, &image::word_to_radix(v.bits, v.n, width));
+    }
     let bits: Vec<bool> = match logic_of(sc) {
         // The usual case: the bits straight from the planes.
         Some(k) if nd == 1 => {

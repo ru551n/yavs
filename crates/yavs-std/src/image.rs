@@ -184,6 +184,16 @@ fn bits_to_radix(bits: &[bool], width: usize) -> Vec<u8> {
     out
 }
 
+/// The same for a vector of `n` (1 to 64) elements held as the bits of a word, element 0 in
+/// bit 0: `to_hstring` for `width` 4, `to_ostring` for 3.
+pub fn word_to_radix(bits: u64, n: usize, width: usize) -> Vec<u8> {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    (0..n.div_ceil(width))
+        .rev()
+        .map(|d| DIGITS[(bits >> (width * d) & ((1 << width) - 1)) as usize])
+        .collect()
+}
+
 /// `to_hstring(bit_vector)`: zero-extended on the left to whole digits.
 pub fn bits_to_hstring(bits: &[bool]) -> Vec<u8> {
     bits_to_radix(bits, 4)
@@ -198,6 +208,16 @@ pub fn bits_to_ostring(bits: &[bool]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::types::time_type;
+
+    #[test]
+    fn word_radix_matches_bits() {
+        for n in 1..=64usize {
+            let v = 0x9E37_79B9_7F4A_7C15u64 >> (64 - n);
+            let bits: Vec<bool> = (0..n).rev().map(|i| v >> i & 1 == 1).collect();
+            assert_eq!(word_to_radix(v, n, 4), bits_to_hstring(&bits), "{n}");
+            assert_eq!(word_to_radix(v, n, 3), bits_to_ostring(&bits), "{n}");
+        }
+    }
 
     #[test]
     fn write_unit() {

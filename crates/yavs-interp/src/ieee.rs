@@ -109,11 +109,11 @@ fn put(m: &mut Machine, o: &Vh) -> Ret {
 
 /// An array operand of 1 to 64 elements that holds only `0 1 L H` (`bit_vector`s included):
 /// numeric_std on such operands is plain integer arithmetic on one word, with no allocation.
-struct Small {
+pub(crate) struct Small {
     /// Element count.
-    n: usize,
+    pub(crate) n: usize,
     /// The elements as bits, element 0 in bit 0.
-    bits: u64,
+    pub(crate) bits: u64,
     /// No element is `L` or `H`: operations that move elements around keep those as they are.
     pure: bool,
     left: i64,
@@ -128,7 +128,7 @@ fn low(n: usize) -> u64 {
 
 /// [`Small`] of the array operand `i`, or `None` for anything else (empty, longer, a
 /// metavalue), which the general path handles.
-fn small(m: &Machine, a: &[u64], i: usize) -> R<Option<Small>> {
+pub(crate) fn small(m: &Machine, a: &[u64], i: usize) -> R<Option<Small>> {
     let fat = arg(a, i)?;
     let data = m.load(fat, Width::B8)?;
     let dope = m.load(add_addr(fat, 8)?, Width::B8)?;

@@ -227,6 +227,22 @@ pub(crate) enum Op {
         off: u32,
         w: Width,
     },
+    /// `StoreSlot`, then the jump.
+    StoreSlotBr {
+        src: u32,
+        off: u32,
+        to: u32,
+        w: Width,
+    },
+    /// `StoreSlot`, then `IndexImm`.
+    StoreSlotIndexImm {
+        src: u32,
+        off: u32,
+        dst: u32,
+        base: u32,
+        add: u32,
+        w: Width,
+    },
     /// `Move`, then the jump.
     MoveBr {
         dst: u32,
@@ -392,6 +408,12 @@ pub(crate) enum Op {
         dst: u32,
         handle: u32,
         what: CheckMsgId,
+    },
+    SubtypeCheck {
+        dope: u32,
+        want: u32,
+        what: CheckMsgId,
+        dims: u8,
     },
     Copy {
         dst: u32,
@@ -683,7 +705,58 @@ impl Code {
                             last = nx;
                             Op::StoreSlotStmt { src: src.0, off, w }
                         }
-                        Some(&Known::Frame(off)) => Op::StoreSlot { src: src.0, off, w },
+                        Some(&Known::Frame(off)) if matches!(fusable, Some(Inst::Br { to }) if target(to).is_some()) =>
+                        {
+                            last = nx;
+                            let to = match fusable {
+                                Some(Inst::Br { to }) => target(to).unwrap_or(0),
+                                _ => 0,
+                            };
+                            Op::StoreSlotBr {
+                                src: src.0,
+                                off,
+                                to,
+                                w,
+                            }
+                        }
+                        Some(&Known::Frame(off)) => {
+                            // An `Index` by a constant after it, unless a load or store at that
+                            // address makes it one op of its own.
+                            let imm = match fusable {
+                                Some(Inst::Index {
+                                    dst,
+                                    base,
+                                    pos,
+                                    stride,
+                                }) => int(pos)
+                                    .and_then(|p| u64::try_from(p).ok())
+                                    .and_then(|p| p.checked_mul(u64::from(stride)))
+                                    .and_then(|o| u32::try_from(o).ok())
+                                    .filter(|_| {
+                                        !matches!(
+                                            after(nx),
+                                            Some((_, Inst::Load { addr, .. } | Inst::Store { addr, .. }))
+                                                if addr == dst
+                                        )
+                                    })
+                                    .map(|o| (dst, base, o)),
+                                _ => None,
+                            };
+                            match imm {
+                                Some((d, b, o)) => {
+                                    last = nx;
+                                    Op::StoreSlotIndexImm {
+                                        src: src.0,
+                                        off,
+                                        w,
+                                        dst: d.0,
+                                        base: b.0,
+                                        add: o,
+                                    }
+                                }
+                                None => Op::StoreSlot { src: src.0, off, w },
+                            }
+                        }
                         _ => Op::Store {
                             addr: addr.0,
                             src: src.0,
@@ -1017,6 +1090,17 @@ impl Code {
                     dst: dst.0,
                     v: v.to_bits() as i64,
                 },
+                Inst::SubtypeCheck {
+                    dope,
+                    want,
+                    dims,
+                    what,
+                } => Op::SubtypeCheck {
+                    dope: dope.0,
+                    want: want.0,
+                    what,
+                    dims,
+                },
                 Inst::Copy { dst, src, bytes } => Op::Copy {
                     dst: dst.0,
                     src: src.0,
@@ -1079,6 +1163,9 @@ impl Code {
             let ir = at[k];
             *op = match *op {
                 Op::Br { to: t } => to(t).map_or(Op::Step(ir), |t| Op::Br { to: t }),
+                Op::StoreSlotBr { src, off, to: t, w } => {
+                    to(t).map_or(Op::Step(NONE), |t| Op::StoreSlotBr { src, off, to: t, w })
+                }
                 Op::MoveBr { dst, src, to: t } => {
                     to(t).map_or(Op::Step(NONE), |t| Op::MoveBr { dst, src, to: t })
                 }

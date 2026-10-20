@@ -928,6 +928,10 @@ through the step, three memory lookups and a staging buffer), 15% to 25% in call
    no longer touches the function (calls into hundreds of functions missed the cache on their parameter
    lists), looks the callee up once instead of twice, and `Frame` is 44 bytes instead of 72.
 
+5. `SubtypeCheck` is an op; without a tier the loop keeps the function, code and return op of the eight
+   innermost callers it entered in locals, so a return looks nothing up; a frame store fuses with a following
+   `Br` or `IndexImm`; the copy fast path checks its lengths for overflow.
+
 Release builds with the `llvm` feature (default `--tier=interp`), `python3 -I tools/bench/run.py --compare`,
 median total CPU seconds of 7 interleaved runs at `--threads 1`, host load about 5: main at `78b1c398` against
 main with this change.

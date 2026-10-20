@@ -1956,6 +1956,10 @@ impl Machine {
         let (dsp, didx, doff) = split(d);
         let (ssp, sidx, soff) = split(s);
         let (n, doff, soff) = (n as usize, doff as usize, soff as usize);
+        // A length that overflows an end is no copy for this path: the staged one reports it.
+        if doff.checked_add(n).is_none() || soff.checked_add(n).is_none() {
+            return false;
+        }
         let Machine {
             frames,
             root,
@@ -2064,6 +2068,38 @@ impl Machine {
         }
         let n = const_bytes(&self.rt, c)?.len() as u64;
         self.copy_mem(a, mk_addr(CONST, c.0, 0)?, n)
+    }
+
+    /// `Inst::SubtypeCheck`: the length of each dimension of the descriptor at `dope` against
+    /// the one at `want`.
+    #[inline(always)]
+    fn subtype_check(&self, dope: u64, want: u64, dims: u8, what: yavs_ir::CheckMsgId) -> R<()> {
+        for k in 0..u64::from(dims) {
+            let len = |base: u64| -> R<u64> {
+                let (l, r, dir) = self.dim_of(base, k)?;
+                yavs_ir::dim_len(l, r, dir == 1)
+                    .ok_or_else(|| Fault::Runtime("range too long".into()))
+            };
+            let (a, b) = (len(dope)?, len(want)?);
+            if a != b {
+                return self.subtype_fail(a, b, k, dims, what);
+            }
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn subtype_fail(&self, a: u64, b: u64, k: u64, dims: u8, what: yavs_ir::CheckMsgId) -> R<()> {
+        let (w, _) = self.check_msg(what);
+        let dim = if dims > 1 {
+            format!(" for dimension {}", k + 1)
+        } else {
+            String::new()
+        };
+        rt_err(format!(
+            "value length {a}{dim} does not match {w} length {b}"
+        ))
     }
 
     /// `Inst::Deref`: the address of the object the access value `h` designates.
@@ -2719,6 +2755,27 @@ impl Machine {
                 }
             };
         }
+        // The callers of the frames this loop pushed (innermost last): their function, code
+        // and the op after the call, so a return looks nothing up (not with a tier, whose
+        // compiled code pushes and pops frames too).
+        let mut saved: [Option<(FuncId, &Func, &pre::Code, u32)>; 8] = [None; 8];
+        let mut depth = 0usize;
+        macro_rules! save_caller {
+            () => {
+                if !TIER {
+                    if depth < saved.len() {
+                        let ret = code
+                            .at
+                            .get(k)
+                            .and_then(|&p| code.entry.get(p as usize + 1))
+                            .copied()
+                            .unwrap_or(pre::NONE);
+                        saved[depth] = Some((func, f, code, ret));
+                    }
+                    depth += 1;
+                }
+            };
+        }
         // The eight bytes at `off` of the frame's slots.
         macro_rules! slot8 {
             ($off:expr) => {{
@@ -2731,6 +2788,29 @@ impl Machine {
                     Some(b) => u64::from_le_bytes(*b),
                     None => t!(mk_addr(FRAME, top as u32, off.into())
                         .and_then(|a| self.load(a, Width::B8))),
+                }
+            }};
+        }
+        // Store register `src` to the frame's slot at `off`.
+        macro_rules! store_slot {
+            ($src:expr, $off:expr, $w:expr) => {{
+                let (off, w): (u32, Width) = ($off, $w);
+                let v = self.regs[$src as usize];
+                let o = off as usize;
+                if w == Width::B8
+                    && let Some(b) = self
+                        .fslots_mut(top)
+                        .and_then(|s| s.get_mut(o..))
+                        .and_then(|s| s.first_chunk_mut::<8>())
+                {
+                    *b = v.to_le_bytes();
+                } else {
+                    let n = w.bytes() as usize;
+                    match self.fslots_mut(top).and_then(|s| s.get_mut(o..o + n)) {
+                        Some(b) => put_le(b, v),
+                        None => t!(mk_addr(FRAME, top as u32, off.into())
+                            .and_then(|a| self.store(a, w, v))),
+                    }
                 }
             }};
         }
@@ -2834,15 +2914,24 @@ impl Machine {
                     });
                 }
                 Op::StoreSlotStmt { src, off, w } => {
-                    let n = w.bytes() as usize;
-                    let o = off as usize;
-                    let v = self.regs[src as usize];
-                    match self.fslots_mut(top).and_then(|s| s.get_mut(o..o + n)) {
-                        Some(b) => put_le(b, v),
-                        None => t!(mk_addr(FRAME, top as u32, off.into())
-                            .and_then(|a| self.store(a, w, v))),
-                    }
+                    store_slot!(src, off, w);
                     self.end_stmt();
+                    k += 1;
+                }
+                Op::StoreSlotBr { src, off, to, w } => {
+                    store_slot!(src, off, w);
+                    go!(to);
+                }
+                Op::StoreSlotIndexImm {
+                    src,
+                    off,
+                    dst,
+                    base,
+                    add,
+                    w,
+                } => {
+                    store_slot!(src, off, w);
+                    self.regs[dst as usize] = t!(add_addr(self.regs[base as usize], add.into()));
                     k += 1;
                 }
                 Op::MoveBr { dst, src, to } => {
@@ -2935,14 +3024,7 @@ impl Machine {
                     k += 1;
                 }
                 Op::StoreSlot { src, off, w } => {
-                    let n = w.bytes() as usize;
-                    let o = off as usize;
-                    let v = self.regs[src as usize];
-                    match self.fslots_mut(top).and_then(|s| s.get_mut(o..o + n)) {
-                        Some(b) => put_le(b, v),
-                        None => t!(mk_addr(FRAME, top as u32, off.into())
-                            .and_then(|a| self.store(a, w, v))),
-                    }
+                    store_slot!(src, off, w);
                     k += 1;
                 }
                 Op::LoadInst { dst, off, w } => {
@@ -3139,6 +3221,7 @@ impl Machine {
                         .pre(cid, cf)
                         .ok_or_else(|| ice(format!("no function {cid}")))?;
                     self.call_pre(f, cf, cid, cpre, args, dst, None)?;
+                    save_caller!();
                     // The callee's ops go on in this loop.
                     top += 1;
                     func = cid;
@@ -3171,6 +3254,7 @@ impl Machine {
                         .ok_or_else(|| ice(format!("no function {cid}")))?;
                     self.call_pre(f, cf, cid, cpre, args, dst, Some(h))?;
                     self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
+                    save_caller!();
                     top += 1;
                     func = cid;
                     f = cf;
@@ -3198,6 +3282,16 @@ impl Machine {
                     let caller = &mut self.frames[top];
                     caller.pc += 1;
                     let pc = caller.pc;
+                    // The caller this loop entered the callee from: no lookups.
+                    if !TIER && depth > 0 {
+                        depth -= 1;
+                        if let Some(&Some((sf, sff, sc, rk))) = saved.get(depth)
+                            && rk != pre::NONE
+                        {
+                            (func, f, code, k) = (sf, sff, sc, rk as usize);
+                            continue;
+                        }
+                    }
                     func = caller.func;
                     f = prog
                         .func(func)
@@ -3269,6 +3363,20 @@ impl Machine {
                         .ok_or_else(|| ice("operand list")));
                     let a = self.regs[at as usize];
                     t!(self.make_dope(a, parts));
+                    k += 1;
+                }
+                Op::SubtypeCheck {
+                    dope,
+                    want,
+                    dims,
+                    what,
+                } => {
+                    t!(self.subtype_check(
+                        self.regs[dope as usize],
+                        self.regs[want as usize],
+                        dims,
+                        what
+                    ));
                     k += 1;
                 }
                 Op::Deref { dst, handle, what } => {
@@ -4330,30 +4438,7 @@ impl Machine {
                 want,
                 dims,
                 what,
-            } => {
-                for k in 0..u64::from(dims) {
-                    let len = |m: &Machine, base: u64| -> R<u64> {
-                        let d = add_addr(base, k * 24)?;
-                        let l = m.load(d, Width::B8)? as i64;
-                        let r = m.load(add_addr(d, 8)?, Width::B8)? as i64;
-                        let dir = m.load(add_addr(d, 16)?, Width::B8)?;
-                        yavs_ir::dim_len(l, r, dir == 1)
-                            .ok_or_else(|| Fault::Runtime("range too long".into()))
-                    };
-                    let (a, b) = (len(self, self.r(dope))?, len(self, self.r(want))?);
-                    if a != b {
-                        let (w, _) = self.check_msg(what);
-                        let dim = if dims > 1 {
-                            format!(" for dimension {}", k + 1)
-                        } else {
-                            String::new()
-                        };
-                        return rt_err(format!(
-                            "value length {a}{dim} does not match {w} length {b}"
-                        ));
-                    }
-                }
-            }
+            } => self.subtype_check(self.r(dope), self.r(want), dims, what)?,
             Inst::Br { to } => return Ok(Flow::Jump(to)),
             Inst::CondBr { c, t, f } => {
                 return Ok(Flow::Jump(if self.r(c) != 0 { t } else { f }));

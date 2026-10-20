@@ -1,0 +1,1 @@
+A run of a design that uses packages with signals, shared variables or computed values now also reuses the lowered form of those packages from the compilation cache, so that part of the start-up work is skipped; results are unchanged.

@@ -28,14 +28,14 @@ use crate::{ConstData, ConstId, IdVec, ReflId, TyId};
 /// Bytes of one dimension in an array descriptor.
 pub const DOPE_DIM_BYTES: u64 = 24;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LogicKind {
     StdULogic,
     Bit,
     Boolean,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Field {
     pub name: String,
     pub ty: TyId,
@@ -44,7 +44,7 @@ pub struct Field {
     pub desc: Option<ConstId>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub enum Ty {
     /// Integer type: `i64` in registers and as a scalar in memory; 4 bytes as an array
     /// element when the range fits in 32 bits ([`Ty::elem_size`]).
@@ -90,13 +90,13 @@ pub enum Ty {
 /// A subtype as `std.reflection` sees it (LRM 2019 16.11): what a mirror needs beyond the
 /// value's [`Ty`]. Constraints of composites come from the descriptor at run time; scalar
 /// ranges are static. `name` is the subtype's simple name, upper case (as NVC reports it).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Refl {
     pub name: String,
     pub kind: ReflKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub enum ReflKind {
     Enum {
         ty: TyId,
@@ -142,7 +142,7 @@ pub enum ReflKind {
 }
 
 /// The layout of a fully constrained value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     pub size: u64,
     pub align: u64,
@@ -156,7 +156,7 @@ pub struct Layout {
 
 /// Why a layout cannot be computed: a malformed descriptor or type table (an ICE), or a size
 /// beyond 64 bits (a runtime error).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum LayoutError {
     Malformed(String),
     TooLarge,

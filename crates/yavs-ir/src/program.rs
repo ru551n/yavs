@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// A whole lowered design: immutable and `Send + Sync` once built.
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Program {
     pub funcs: IdVec<FuncId, Func>,
     pub types: IdVec<TyId, Ty>,
@@ -27,6 +27,7 @@ pub struct Program {
     /// the shared heap (#303).
     pub shared_roots: Vec<(u32, RootKind)>,
     /// Cache of the optimiser (`opt.rs`); leave it to `Default`.
+    #[serde(skip)]
     pub layouts: crate::opt::LayoutCache,
 }
 
@@ -71,7 +72,7 @@ impl Program {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FuncKind {
     Process,
     Procedure,
@@ -83,7 +84,9 @@ pub enum FuncKind {
 }
 
 /// Function attributes computed by `ProgramBuilder::finish`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+)]
 pub struct FuncFlags(pub u8);
 
 impl FuncFlags {
@@ -107,14 +110,14 @@ impl FuncFlags {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     In,
     Out,
     Inout,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ParamClass {
     /// A value (or an address, for composites and by-reference scalars).
     Value,
@@ -123,7 +126,7 @@ pub enum ParamClass {
 }
 
 /// A parameter: the caller's argument register is stored into `slot` of the new frame.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
     pub slot: u32,
@@ -134,7 +137,7 @@ pub struct Param {
 }
 
 /// A named object in a frame slot.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Local {
     pub name: String,
     pub slot: u32,
@@ -143,7 +146,7 @@ pub struct Local {
 }
 
 /// What a frame slot holds for the GC (precise roots, rule 6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RootKind {
     /// An 8-byte access handle.
     Handle,
@@ -151,13 +154,13 @@ pub enum RootKind {
     Composite(TyId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Block {
     pub start: u32,
     pub end: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Func {
     /// Original spelling (rule 8).
     pub name: String,
@@ -192,6 +195,7 @@ pub struct Func {
     pub nested: bool,
     /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
     /// lowered).
+    #[serde(skip)]
     pub opt: std::sync::OnceLock<Option<Box<Func>>>,
 }
 
@@ -232,7 +236,7 @@ impl Func {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StmtKind {
     Process,
     Subprogram,
@@ -253,7 +257,7 @@ pub enum StmtKind {
     Implicit,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct StmtInfo {
     pub span: Span,
     pub func: FuncId,
@@ -261,12 +265,39 @@ pub struct StmtInfo {
     pub parent: Option<StmtId>,
 }
 
+/// Constant bytes as one block in a serialised program, not as a sequence of numbers (the
+/// constant pool of a verification library is megabytes; the wire format is the same).
+mod bytes {
+    use serde::{Deserializer, Serializer, de};
+
+    pub fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(v)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        struct V;
+        impl<'de> de::Visitor<'de> for V {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(v.to_vec())
+            }
+        }
+        d.deserialize_bytes(V)
+    }
+}
+
 /// Compact constant data (rule 12).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub enum ConstData {
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "bytes")] Vec<u8>),
     /// `n` copies of one element.
     Repeat {
+        #[serde(with = "bytes")]
         elem: Vec<u8>,
         n: u64,
     },
@@ -280,14 +311,14 @@ pub enum ConstData {
 /// A native subprogram: a `lib/NATIVE.md` symbol. Implicit-family natives
 /// (`yavs.implicit.<family>.<type>`) and attribute natives (`yavs.attr.<name>`) also name the
 /// type they operate on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NativeRef {
     pub symbol: String,
     pub ty: Option<TyId>,
 }
 
 /// How one VHDL argument of a foreign call is passed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForeignArg {
     /// A scalar by value; the register is converted to the C type (range-checked).
     Value(CType),
@@ -327,7 +358,7 @@ impl ForeignArg {
 
 /// A VHPIDIRECT subprogram (ir.md 1.7). The function pointer is bound outside the IR (the
 /// elaborator looks the symbol up); the program only describes the call.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ForeignRef {
     pub name: String,
     pub symbol: String,
@@ -339,7 +370,7 @@ pub struct ForeignRef {
 }
 
 /// The parameter mode of a VHPI foreign subprogram's formal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForeignMode {
     In,
     Out,
@@ -348,7 +379,7 @@ pub enum ForeignMode {
 
 /// One formal of a VHPI foreign subprogram: its name, mode and type (the array type for an
 /// array formal, else the scalar's base type).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VhpiParam {
     pub name: String,
     pub mode: ForeignMode,
@@ -356,7 +387,7 @@ pub struct VhpiParam {
 }
 
 /// What a VHPI foreign call needs beyond the C-shaped [`ForeignRef`] fields.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VhpiModel {
     pub library: String,
     pub model: String,
@@ -370,7 +401,7 @@ pub struct VhpiModel {
 /// The index range of a VHPI function's array result: the left bound and direction, and the
 /// length when the result subtype is constrained (else the model sets it with
 /// `vhpiSizeConstraint`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VhpiIndex {
     pub left: i64,
     pub downto: bool,
@@ -401,7 +432,7 @@ impl ForeignRef {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CovKind {
     Statement,
     /// Arm `n` of a branching statement, in source order (an `if` without `else` and a
@@ -409,13 +440,13 @@ pub enum CovKind {
     Branch(u32),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct CovInfo {
     pub stmt: StmtId,
     pub kind: CovKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dir {
     To,
     Downto,
@@ -423,7 +454,7 @@ pub enum Dir {
 
 /// The static part of a check's message: what is checked (`"index of s"`) and the direction
 /// the bounds are shown in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CheckMsg {
     pub what: String,
     pub dir: Dir,
@@ -432,7 +463,7 @@ pub struct CheckMsg {
 }
 
 /// `Case` choices as sorted, non-overlapping inclusive ranges.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CaseTable {
     pub arms: Vec<(i64, i64, BlockId)>,
     pub default: BlockId,

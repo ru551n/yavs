@@ -10,9 +10,11 @@ use crate::{
     RootKind, StmtId, StmtInfo, StmtKind, Ty, TyId, Width,
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProgramBuilder {
     prog: Program,
+    /// Empty in a serialised builder (nothing is serialised while a lowering has failed).
+    #[serde(skip)]
     errors: Vec<VerifyError>,
     /// Functions below this id passed the verifier in a [`ProgramBuilder::snapshot`].
     verified: usize,
@@ -93,6 +95,19 @@ impl ProgramBuilder {
         if let Some(e) = self.prog.reflect.get_mut(id) {
             *e = r;
         }
+    }
+
+    /// Bytes held by the constant pool's byte strings.
+    pub fn const_bytes(&self) -> usize {
+        self.prog
+            .consts
+            .values()
+            .iter()
+            .map(|c| match c {
+                ConstData::Bytes(b) => b.len(),
+                _ => 0,
+            })
+            .sum()
     }
 
     pub fn types(&self) -> &IdVec<TyId, Ty> {

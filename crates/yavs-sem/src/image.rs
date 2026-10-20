@@ -44,6 +44,36 @@ impl Db {
         self.files.clear();
     }
 
+    /// The store for stage results (`Options::stages`).
+    pub fn stages(&self) -> Option<&std::sync::Arc<dyn crate::StageCache>> {
+        self.opts.stages.as_ref()
+    }
+
+    /// Use `s` as the store for stage results from here on (see [`Db::extent`]).
+    pub fn set_stages(&mut self, s: std::sync::Arc<dyn crate::StageCache>) {
+        self.opts.stages = Some(s);
+    }
+
+    /// The size of every arena: equal before and after a stage that does not grow the `Db`
+    /// (instantiation appends), so it says whether stage results of one still hold for the other.
+    pub fn extent(&self) -> Vec<usize> {
+        vec![
+            self.libs.len(),
+            self.units.len(),
+            self.decls.len(),
+            self.scopes.len(),
+            self.types.len(),
+            self.subtypes.len(),
+            self.exprs.len(),
+            self.stmts.len(),
+            self.consts.len(),
+            self.insts.len(),
+            self.views.len(),
+            self.externals.len(),
+            self.attr_values.len(),
+        ]
+    }
+
     /// The image of this `Db`, or why it cannot be restored later: an error was reported, an
     /// analysis is in progress, or work is pending.
     pub fn to_image(&self) -> Result<Vec<u8>, String> {

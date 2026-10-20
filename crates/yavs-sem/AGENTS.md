@@ -33,7 +33,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Typed ids and `Arena` (`DeclId`, `ScopeId`, `ExprId`, `SubtypeId`, `TypeId`, `UnitId`, ...) | `src/ids.rs` |
 | HIR shapes consumed by M2 (`Expr`/`ExprKind`, `Stmt`/`StmtKind`, `Call`, `Lsp`, `UnitHir`, `Binding`, `GenSelect`) | `src/hir.rs` |
 | HIR invariants (sem.md 7.3) | `src/validate.rs` |
-| `Db::to_image`, `from_image`, `settle`: the compilation cache image of a settled `Db` (serde + postcard, symbols through a per-image table) | `src/image.rs` |
+| `Db::to_image`, `from_image`, `settle`: the compilation cache image of a settled `Db` (serde + postcard, symbols through a per-image table); `Db::extent` (size of every arena), `Db::stages`/`set_stages` and the `StageCache` trait (`Options::stages`): the store later stages (lowering) keep their results in, valid for a `Db` of the extent it was analyzed to | `src/image.rs`, `src/lib.rs` |
 | Static folding, `ConstValue`, `Db::fold_with` (used by elab) | `src/stat.rs` |
 | Generics, instances by HIR cloning, `Db::instance_body`; for M2 `Db::package_regions` and `Db::decls_with_instances` (an instance's objects belong to the region declaring it, #101) | `src/generic.rs` |
 | Group templates, groups, disconnection specifications (`DeclKind::GroupTemplate`/`Group`, `Db::disconnect_times`), `E1640`, `E1641`, `E1650`, `E1651` (#260) | `src/group.rs` |

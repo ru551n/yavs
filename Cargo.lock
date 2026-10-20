@@ -1538,6 +1538,9 @@ dependencies = [
 [[package]]
 name = "yavs-ffi"
 version = "0.8.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "yavs-interp"
@@ -1555,6 +1558,7 @@ dependencies = [
 name = "yavs-ir"
 version = "0.8.0"
 dependencies = [
+ "serde",
  "yavs-diag",
  "yavs-ffi",
  "yavs-kernel",
@@ -1565,6 +1569,7 @@ name = "yavs-kernel"
 version = "0.8.0"
 dependencies = [
  "rayon",
+ "serde",
  "smallvec",
  "yavs-logic",
 ]
@@ -1603,6 +1608,8 @@ dependencies = [
 name = "yavs-lower"
 version = "0.8.0"
 dependencies = [
+ "postcard",
+ "serde",
  "tempfile",
  "yavs-diag",
  "yavs-elab",

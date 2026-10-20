@@ -13,7 +13,9 @@ use crate::{
 pub const SIG_PART_BYTES: u32 = 32;
 
 /// A register: an untyped 64-bit cell. A `Sig` value takes two consecutive registers.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 pub struct Reg(pub u32);
 
 impl fmt::Debug for Reg {
@@ -23,7 +25,7 @@ impl fmt::Debug for Reg {
 }
 
 /// A list of registers in `Func::operands[start .. start + len]`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Regs {
     pub start: u32,
     pub len: u32,
@@ -36,7 +38,7 @@ impl fmt::Debug for Regs {
 }
 
 /// What a register holds, for the verifier and the LLVM tier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RegTy {
     /// Integers, physical values, enums, booleans, handles.
     I64,
@@ -50,7 +52,7 @@ pub enum RegTy {
 
 /// Memory access width. `B1` loads zero-extend, `B4` loads sign-extend (a 4-byte cell holds a
 /// narrow integer array element or a non-negative enum position or file handle).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Width {
     B1,
     B4,
@@ -72,7 +74,7 @@ impl Width {
 
 /// The space of an `AddrOf`. `Up(depth)` walks `depth` static links and yields a frame
 /// address; `Shared` is the shared-variable area (serial processes only).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AddrSpace {
     Frame,
     Up(u8),
@@ -82,7 +84,7 @@ pub enum AddrSpace {
     Shared,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IntOp {
     Add,
     Sub,
@@ -93,13 +95,13 @@ pub enum IntOp {
     Pow,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IntUnOp {
     Neg,
     Abs,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FOp {
     Add,
     Sub,
@@ -111,20 +113,20 @@ pub enum FOp {
     Pow,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FUnOp {
     Neg,
     Abs,
 }
 
 /// Physical times real (`a` physical, `b` real).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PhysOp {
     MulReal,
     DivReal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CmpOp {
     Eq,
     Ne,
@@ -134,7 +136,7 @@ pub enum CmpOp {
     Ge,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BoolOp {
     And,
     Or,
@@ -143,7 +145,7 @@ pub enum BoolOp {
 }
 
 /// Element-wise logic-array operations (bit-planes, yavs-logic).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LOp {
     And,
     Or,
@@ -159,7 +161,7 @@ pub enum LOp {
 }
 
 /// Numeric operations on logic arrays (numeric_std style, equal lengths).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LNumOp {
     Add,
     Sub,
@@ -168,7 +170,7 @@ pub enum LNumOp {
     Cmp(CmpOp),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CheckKind {
     /// `lo <= v <= hi`.
     Range,
@@ -180,7 +182,7 @@ pub enum CheckKind {
     Null,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AttrKind {
     Event,
     Active,
@@ -188,14 +190,14 @@ pub enum AttrKind {
     LastActive,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DriveMode {
     Transport,
     /// Inertial; the rejection limit is the instruction's `reject` register when present.
     Inertial,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ForceKind {
     /// `force in`: the effective value.
     In,
@@ -205,7 +207,7 @@ pub enum ForceKind {
 
 /// Elaboration-only operations (yavs-elab defines their operands). The verifier rejects
 /// them outside `FuncKind::Elab`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ElabOp {
     Signal,
     Driver,
@@ -215,7 +217,7 @@ pub enum ElabOp {
     External,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum Inst {
     // move / const
     Const {
@@ -671,7 +673,7 @@ pub enum Inst {
 }
 
 /// How an instruction uses a register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Def,
     Use,

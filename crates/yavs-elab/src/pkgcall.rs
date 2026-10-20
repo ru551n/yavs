@@ -410,10 +410,7 @@ impl Session {
     /// Lower the packages and `lowered`, initialise the packages and replay the log.
     fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
-        let mut l = Lowerer::new(db, LowerOptions::default());
-        for &u in &pkgs {
-            l.package(u).map_err(lower)?;
-        }
+        let mut l = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
         let mut sigs = HashMap::new();
         for &(d, constant) in &self.lowered {
             sigs.insert(d, item(&mut l, db, d, constant)?);
@@ -452,6 +449,44 @@ impl Session {
             shared_size: lw.shared_size,
         })
     }
+}
+
+/// The smallest lowered-package image worth storing: packages that only declare constants lower to
+/// almost nothing.
+const MIN_IMAGE: usize = 256;
+
+/// A lowerer with the objects of `packages` lowered, in order: read back from the stage cache
+/// (`Options::stages`, #407) when `db` has not grown since its analysis, else lowered (and
+/// stored). Coverage counters are lowered every time.
+pub(crate) fn package_lowerer<'a>(
+    db: &'a Db,
+    packages: &[UnitId],
+    opts: LowerOptions,
+) -> Result<Lowerer<'a>, Vec<Diagnostic>> {
+    let cache = db.stages().filter(|_| !opts.coverage);
+    let extent = db.extent();
+    let mut part: Vec<u8> = packages
+        .iter()
+        .flat_map(|u| yavs_sem::Id::index(*u).to_le_bytes())
+        .collect();
+    part.push(opts.no_native_ieee as u8);
+    if let Some(c) = cache
+        && let Some(bytes) = c.get(&extent, "low", &part)
+        && let Some(l) = Lowerer::from_image(db, opts, &bytes)
+    {
+        return Ok(l);
+    }
+    let mut l = Lowerer::new(db, opts);
+    for &u in packages {
+        l.package(u)?;
+    }
+    if let Some(c) = cache
+        && let Some(image) = l.image()?
+        && image.len() >= MIN_IMAGE
+    {
+        c.put(&extent, "low", &part, &image);
+    }
+    Ok(l)
 }
 
 fn lower_fail(ds: Vec<Diagnostic>) -> Fail {

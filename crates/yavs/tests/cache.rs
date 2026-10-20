@@ -24,6 +24,19 @@ architecture a of tb is\n  signal s : std_logic := '0';\nbegin\n  process\n    v
     if false then v(5) := '1'; end if;\n    s <= '1';\n    wait for 1 ns;\n\
     report \"K=\" & integer'image(K) & \" f=\" & integer'image(f(3)) & \" s=\" & std_logic'image(s);\n    wait;\n  end process;\nend;\n";
 
+/// A package with run-time state (a signal, a shared protected variable), and a testbench that
+/// calls an impure function of it during elaboration: the lowered package is cached (`low`).
+const RT: &str = "package reg is\n  impure function get_id return integer;\n  signal sg : integer := 3;\nend;\n\
+package body reg is\n  type counter_t is protected\n    impure function next_id return integer;\n  end protected;\n\
+  type counter_t is protected body\n    variable n : integer := 10;\n\
+    impure function next_id return integer is begin n := n + 1; return n; end;\n  end protected body;\n\
+  shared variable ctr : counter_t;\n  impure function get_id return integer is begin return ctr.next_id; end;\nend;\n";
+
+const TB2: &str = "use work.reg.all;\nentity tb2 is end;\narchitecture a of tb2 is\n\
+  constant id1 : integer := get_id;\n  constant id2 : integer := get_id;\nbegin\n  process\n  begin\n\
+    report \"ids \" & integer'image(id1) & \" \" & integer'image(id2) & \" next \" & integer'image(get_id) & \" sg \" & integer'image(sg);\n\
+    sg <= 4;\n    wait for 1 ns;\n    report \"sg \" & integer'image(sg);\n    wait;\n  end process;\nend;\n";
+
 struct Env {
     tmp: PathBuf,
 }
@@ -38,11 +51,18 @@ struct Out {
 impl Env {
     fn new(name: &str) -> Env {
         let tmp = tempdir(name);
-        for (f, t) in [("pkg.vhd", PKG), ("other.vhd", OTHER), ("tb.vhd", TB)] {
+        let files = [
+            ("pkg.vhd", PKG),
+            ("other.vhd", OTHER),
+            ("tb.vhd", TB),
+            ("rt.vhd", RT),
+            ("tb2.vhd", TB2),
+        ];
+        for (f, t) in files {
             std::fs::write(tmp.join(f), t).expect("write");
         }
         let e = Env { tmp };
-        for f in ["pkg.vhd", "other.vhd", "tb.vhd"] {
+        for (f, _) in files {
             assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
         }
         e
@@ -84,11 +104,30 @@ impl Env {
 
     /// `yavs run` of the testbench, with more arguments.
     fn run(&self, more: &[&str]) -> Out {
+        self.run_top("tb", more)
+    }
+
+    fn run_top(&self, top: &str, more: &[&str]) -> Out {
         let work = self.work();
         let mut a = vec!["run", "--work", &work];
         a.extend_from_slice(more);
-        a.push("tb");
+        a.push(top);
         self.yavs(&a)
+    }
+
+    /// The cache entries of `kind` (`sem`, `low`).
+    fn entry_files(&self, kind: &str) -> Vec<PathBuf> {
+        std::fs::read_dir(self.cache_dir())
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        let n = p.file_name().unwrap_or_default().to_string_lossy();
+                        n.starts_with(&format!("{kind}-")) && n.ends_with(".img")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -270,4 +309,91 @@ fn old_sources_are_trusted_until_they_change() {
     // Analyzing it again records the new content and the run follows.
     assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "pkg.vhd"]).code, 0);
     assert!(e.run(&[]).stdout.contains("K=8 f=24"));
+}
+
+/// The lowered run-time packages are cached next to the analysis: a warm run is identical to a
+/// cold one and to one without the cache, also with `--threads 4` and with a waveform.
+#[test]
+fn lowered_packages_are_cached() {
+    let e = Env::new("low");
+    let wave = |n: &str| e.tmp.join(n).display().to_string();
+    let plain = e.run_top(
+        "tb2",
+        &["--no-cache", &format!("--wave={}", wave("plain.fst"))],
+    );
+    assert_eq!(plain.code, 0, "{plain:?}");
+    assert!(plain.stdout.contains("ids 11 12 next 13 sg 3"), "{plain:?}");
+    assert!(e.entry_files("low").is_empty(), "--no-cache must not write");
+    let cold = e.run_top("tb2", &[&format!("--wave={}", wave("cold.fst"))]);
+    assert!(note(&cold, "store low"), "{cold:?}");
+    assert_eq!(e.entry_files("low").len(), 1);
+    let warm = e.run_top("tb2", &[&format!("--wave={}", wave("warm.fst"))]);
+    assert!(note(&warm, "hit low"), "{warm:?}");
+    assert_eq!(visible(&plain), visible(&cold));
+    assert_eq!(visible(&plain), visible(&warm));
+    let read = |n: &str| std::fs::read(e.tmp.join(n)).expect("wave");
+    assert_eq!(read("plain.fst"), read("cold.fst"));
+    assert_eq!(read("plain.fst"), read("warm.fst"));
+    let nc = visible(&e.run_top("tb2", &["--threads", "4", "--no-cache"]));
+    let w = e.run_top("tb2", &["--threads", "4"]);
+    assert!(note(&w, "hit low"), "{w:?}");
+    assert_eq!(nc, visible(&w));
+    assert_eq!(e.entry_files("low").len(), 1);
+    // A design without run-time packages has no such entry.
+    assert_eq!(e.run(&[]).code, 0);
+    assert_eq!(e.entry_files("low").len(), 1);
+}
+
+#[test]
+fn editing_a_package_replaces_its_lowering() {
+    let e = Env::new("lowedit");
+    assert!(e.run_top("tb2", &[]).stdout.contains("ids 11 12"));
+    assert!(note(&e.run_top("tb2", &[]), "hit low"));
+    std::fs::write(
+        e.tmp.join("rt.vhd"),
+        RT.replace("n : integer := 10", "n : integer := 20"),
+    )
+    .expect("write");
+    assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "rt.vhd"]).code, 0);
+    let after = e.run_top("tb2", &[]);
+    assert!(note(&after, "store low"), "{after:?}");
+    assert!(after.stdout.contains("ids 21 22 next 23"), "{after:?}");
+    assert!(note(&e.run_top("tb2", &[]), "hit low"));
+}
+
+#[test]
+fn damaged_lowering_is_ignored() {
+    let e = Env::new("lowdamaged");
+    let cold = e.run_top("tb2", &[]);
+    let img = e.entry_files("low").pop().expect("low entry");
+    let good = std::fs::read(&img).expect("read");
+    for bad in [good[..good.len() / 2].to_vec(), b"not an entry".to_vec()] {
+        std::fs::write(&img, bad).expect("write");
+        let r = e.run_top("tb2", &[]);
+        assert!(!note(&r, "hit low"), "{r:?}");
+        assert_eq!(visible(&cold), visible(&r));
+        assert!(note(&r, "store low"), "the entry is rewritten");
+        assert!(note(&e.run_top("tb2", &[]), "hit low"));
+    }
+}
+
+#[test]
+fn parallel_cold_runs_agree_on_lowering() {
+    let e = Env::new("lowparallel");
+    let plain = visible(&e.run_top("tb2", &["--no-cache"]));
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| s.spawn(|| visible(&e.run_top("tb2", &[]))))
+            .collect();
+        for h in hs {
+            assert_eq!(plain, h.join().expect("join"));
+        }
+    });
+    assert_eq!(e.entry_files("low").len(), 1);
+    let leftovers = std::fs::read_dir(e.cache_dir())
+        .expect("dir")
+        .flatten()
+        .filter(|f| f.file_name().to_string_lossy().starts_with(".tmp-"))
+        .count();
+    assert_eq!(leftovers, 0);
 }

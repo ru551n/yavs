@@ -81,6 +81,10 @@ or a file it depends on, and the next run analyzes again and stores a new entry.
 directory that cannot be written is not cached into and works as before; entries that are
 damaged or from another yavs are ignored.
 
+The lowered form of the packages a design uses (the ones that hold signals, shared variables or
+values computed when the design starts) is kept in the same directory, so a short run skips that
+work too.
+
 * ``--no-cache`` (``elab``, ``run``) neither reads nor writes the cache.
 * ``yavs cache clean --work=lib:out/lib [--map=NAME:PATH ...]`` removes the entries of those
   libraries. Deleting ``yavs-cache/`` by hand does the same.

@@ -215,17 +215,11 @@ impl Elaborated {
         }
         let mut l = match resumed {
             Some(l) => l,
-            None => {
-                let mut l = Lowerer::new(db, opts);
-                // Package objects first (#183), in analysis order, which puts a package after
-                // those its declaration uses (LRM 14.4.2).
-                // ponytail: a body using a package analyzed after its declaration is
-                // initialised too early; order by the dependency graph if a design needs it.
-                for u in packages {
-                    l.package(u)?;
-                }
-                l
-            }
+            // Package objects first (#183), in analysis order, which puts a package after
+            // those its declaration uses (LRM 14.4.2).
+            // ponytail: a body using a package analyzed after its declaration is
+            // initialised too early; order by the dependency graph if a design needs it.
+            None => crate::pkgcall::package_lowerer(db, &packages, opts)?,
         };
         l.externals_bound(self.ext_unbound.clone());
         for p in &self.procs {

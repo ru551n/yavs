@@ -1966,6 +1966,32 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   the cache.
 - **Not stored in the library but per user:** nothing yet. A precomputed std/ieee base shared by all
   designs is part of a later slice of #407.
+- **Stage 2, step 1: the lowered run-time packages (`low-<key>.img`, #407).** Elaboration lowers the
+  packages with run-time objects first (36 for a verification component testbench) and verifies and
+  numbers that program: 4 to 6 ms of a 40 to 100 ms elaboration. `Lowerer::image` serialises the lowering
+  state after the packages (`yavs-ir` `Program`/`ProgramBuilder`, `yavs-lower` `Cx`, `UnitIr`, `PackageIr`;
+  serde and postcard as for the analysis image, ids unchanged, the in-memory forms untouched, the lazily
+  optimised copies of functions, #427, and the predecoded interpreter form, #431, are built from it at
+  run time as before) and `Lowerer::from_image` restores it, already verified; the lowering of the
+  elaboration-time calls, the architectures and the rest goes on from there as it does from a cold
+  lowering. Reading and decoding an image takes 2 ms for 490 KB.
+  - *Key:* the analysis key (so: the sources, options and yavs build) plus the list of package units
+    and the lowering options, in the same store (`yavs-cache` kind `low`). It holds only for a `Db`
+    that has not grown since the analysis (`Db::extent`, the size of every arena): instantiating a
+    generic during elaboration appends to the arenas and the packages' ids are then not those of the
+    image, so such a run lowers from source and stores nothing. The CLI hands the stage a
+    `yavs_sem::StageCache` through the `Db` (`Db::set_stages`); a run without a store (`--no-cache`,
+    custom std/ieee tree) is unchanged.
+  - *When not:* with coverage counters; when the images would be under 256 bytes (packages with only
+    constants); when the constant pool holds over 1 MiB of byte strings (one testbench library lowers
+    a 6.9 MB array constant as a byte string; reading that back cost more than lowering the packages, so
+    nothing is stored; the fix is a repeated-element constant in lowering, which would make it cacheable).
+  - *Cold and warm take the same path:* the cold run verifies and numbers the packages' program before
+    it stores, so a cold and a warm run lower everything after the packages from the same state.
+  - *Step 2 (package state after initialisation: heap and package data) is not done.* The initialisers
+    are 15 to 20 ms of the elaboration, more than all of step 1, but the heap structures are being
+    changed for precise roots (#422) and the package data refers into the heap: serialising both
+    waits for that work (comment on #407).
 
 
 ## Per-run overhead (#426)

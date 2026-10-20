@@ -437,6 +437,33 @@ this benchmark. Analysis of `std`/`ieee` units a design uses is 10 to 20 ms, so 
 base was not built. Tests: `crates/yavs/tests/cache.rs`, `crates/yavs-cache`; the difftest corpus (342
 tests at 1 and 4 threads) and the external runner's `check` suite pass with the cache on.
 
+Stage 2, step 1 (#407): the lowered run-time packages are cached as well (`low-<key>.img` beside the
+analysis image; `docs/decisions.md` "Compilation cache"). The IR (`yavs-ir`) and the lowering state
+(`yavs-lower`) are serialisable; the in-memory forms are unchanged. Measured with the lowering of
+the packages at 3 to 6 ms (4 ms, 238 functions and 48 000 instructions for `tb_axi_stream`; 1.8 ms to
+verify and number it) and 2 ms to read and decode the 490 KB image. Release build, busy host (load
+18 to 36), interleaved runs, `--time-report` elaborate phase:
+
+| Run | elaborate, ms, min of 15 before / after | total, ms |
+|---|---|---|
+| `tb_axi_stream` (one test case) | 116 / 112 (104 / 96 in an earlier pair) | 225 / 219 |
+| `tb_axi_lite_master` | 45 / 42 (40 / 36) | 116 / 123 (noise) |
+| OSVVM AXI-stream testbench | 41 / 36 (39 / 33) | 95 / 90 |
+| UVVM AXI-stream testbench (`--stop-time=1fs`) | 58 / 57 | 101 / 99 |
+
+`vunit_vc30`, `--compare`, 5 runs, median CPU seconds (two sessions, A before / B after): elaborate
+1.41 / 1.28 and 1.51 / 1.37, total 3.86 / 3.67 and 4.02 / 3.85 (4 to 5%, 4 ms per run). The
+UVVM, OSVVM and `elab_heavy` totals are within the noise of the host (the same binary twice differs
+by up to 8% there). Findings: a UVVM testbench lowers one 6.9 MB byte-string constant (a repeated
+element written out); reading its 7.7 MB image cost 4 ms more than lowering, so an image is made
+only for a constant pool up to 1 MiB (#407 comment, a lowering issue). Elaboration that instantiates
+generics grows the `Db`, and then the entry is not used. Checks: output of the 30 test cases of
+`vunit_vc30` byte-identical (md5 of stdout, stderr and exit status) with the cache off, cold and warm,
+at `--threads 1` and `4`; the difftest corpus passes (362 of 362, 1 and 4 threads); waveform files of a
+cold and a warm run are identical (`crates/yavs/tests/cache.rs`). Not done: step 2, the package state
+after initialisation (15 to 20 ms of the elaboration, more than all of step 1); it touches the heap
+structures that #422 is changing.
+
 ### Per-run overhead (#426)
 
 The fixed cost of one `yavs run`, which a testbench suite pays once per test case. Release builds, the main
@@ -503,9 +530,9 @@ What is left, per call of a verification component testbench (about 40 ms of a 4
 the initialisers of the run-time packages, 15 to 20 ms, are interpreted work (a `new` of an array
 fills a temporary, copies it into the heap object, and the library's storage grows by 2**16 entries
 at its first use: 8 to 10 MB of memory traffic, an interpreter and lowering matter); lowering the
-36 packages, 7 to 10 ms; verifying that program, 3 ms. Caching the lowered program and the package
-state after initialisation across runs (compilation cache stage 2) would remove all three; the
-IR and the heap are not serialisable yet.
+36 packages, 7 to 10 ms; verifying that program, 3 ms. The lowered program is cached across runs
+since #407 (stage 2, step 1, below); the package state after initialisation is not (the heap is
+not serialisable yet).
 
 ### Waveform recording cost (#410)
 

@@ -47,4 +47,4 @@ cargo test -p yavs --test cache      # the end-to-end gate
 
 ## 6. Coordination
 
-- #407 (all stages). Stage 2 (lowered IR) and 3 (compiled code) add kinds to this store.
+- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`); stage 3 (compiled code) would add one.

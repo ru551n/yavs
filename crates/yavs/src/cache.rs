@@ -8,11 +8,12 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use yavs_cache::{Key, KeyBuilder, Store};
 use yavs_diag::{Diagnostic, MessageFormat, SourceMap};
 use yavs_lib::{ClosureFile, Libraries};
-use yavs_sem::{Db, Options, Reported};
+use yavs_sem::{Db, Options, Reported, StageCache};
 
 /// The kind name of analysis images in the store.
 const KIND: &str = "sem";
@@ -40,6 +41,53 @@ fn key(opts: &Options, files: &[ClosureFile]) -> Key {
         k.text(&f.path.to_string_lossy());
     }
     k.finish()
+}
+
+/// What later stages cache for one analysis: entries keyed by the analysis' key and the stage's
+/// own part, valid only for a `Db` of the extent it was analyzed to (`StageCache`).
+#[derive(Debug)]
+struct Stages {
+    store: Store,
+    /// The analysis' key.
+    base: String,
+    extent: Vec<usize>,
+}
+
+impl Stages {
+    fn key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Key> {
+        (extent == self.extent).then(|| {
+            let mut k = KeyBuilder::new(kind);
+            k.text(&self.base).part(part);
+            k.finish()
+        })
+    }
+}
+
+impl StageCache for Stages {
+    fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Vec<u8>> {
+        let k = self.key(extent, kind, part)?;
+        let e = self.store.get(kind, &k)?;
+        debug(format!("hit {kind} {}", k.hex()));
+        Some(e.to_vec())
+    }
+
+    fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]) {
+        if let Some(k) = self.key(extent, kind, part) {
+            debug(format!("store {kind} {} ({} bytes)", k.hex(), bytes.len()));
+            self.store.put(kind, &k, bytes);
+        }
+    }
+}
+
+/// Let the stages after analysis keep their results next to the analysis image.
+fn with_stages(mut db: Db, store: Store, k: &Key) -> Db {
+    let extent = db.extent();
+    db.set_stages(Arc::new(Stages {
+        store,
+        base: k.hex(),
+        extent,
+    }));
+    db
 }
 
 fn debug(msg: String) {
@@ -87,7 +135,7 @@ pub fn analyze_closure(
         match Db::from_image(opts.clone(), &bytes, &|p| verified.contains(p)) {
             Ok(db) => {
                 debug(format!("hit {}", k.hex()));
-                return (db, Ok(()));
+                return (with_stages(db, store, &k), Ok(()));
             }
             Err(e) => {
                 debug(e.to_string());
@@ -97,16 +145,20 @@ pub fn analyze_closure(
     let mut db = Db::new(opts);
     let r = analyze(&mut db, files);
     db.settle();
-    if r.is_ok() {
-        match db.to_image() {
-            Ok(image) => {
-                debug(format!("store {} ({} bytes)", k.hex(), image.len()));
-                store.put(KIND, &k, &image);
-            }
-            Err(why) => debug(format!("no image: {why}")),
+    if r.is_err() {
+        return (db, r);
+    }
+    match db.to_image() {
+        Ok(image) => {
+            debug(format!("store {} ({} bytes)", k.hex(), image.len()));
+            store.put(KIND, &k, &image);
+            (with_stages(db, store, &k), r)
+        }
+        Err(why) => {
+            debug(format!("no image: {why}"));
+            (db, r)
         }
     }
-    (db, r)
 }
 
 #[derive(clap::Subcommand)]

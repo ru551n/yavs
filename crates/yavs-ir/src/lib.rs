@@ -42,7 +42,7 @@ pub trait Id: Copy {
 
 macro_rules! ids {
     ($($name:ident $prefix:literal),* $(,)?) => {$(
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub u32);
         impl Id for $name {
             fn from_index(i: u32) -> Self {
@@ -80,9 +80,11 @@ impl Id for StmtId {
 }
 
 /// A vector indexed by a 32-bit id. Access is checked (`get`); there is no panicking index.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct IdVec<I, T> {
     items: Vec<T>,
+    #[serde(skip)]
     _id: PhantomData<fn(I) -> I>,
 }
 

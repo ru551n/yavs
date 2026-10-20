@@ -42,7 +42,7 @@ pub const NOT_IMPLEMENTED: &str = "E2001";
 /// Internal compiler error.
 pub const INTERNAL: &str = "E9999";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LowerOptions {
     /// Emit statement and branch coverage counters (`Cover`, rule 10).
     pub coverage: bool,
@@ -62,7 +62,7 @@ impl Default for LowerOptions {
 }
 
 /// The lowered form of an architecture: what the elaborator needs to build its instances.
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct UnitIr {
     pub unit: UnitId,
     /// Bytes of instance data (`AddrSpace::Inst`).
@@ -90,14 +90,14 @@ pub struct UnitIr {
 
 /// A `'path_name` (`instance: false`) or `'instance_name` of named entity `decl`, as seen from
 /// the region whose instance data is being built; an array slot at `off`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct InstName {
     pub decl: DeclId,
     pub instance: bool,
     pub off: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct InstConst {
     pub decl: DeclId,
     pub name: String,
@@ -115,7 +115,7 @@ pub struct InstConst {
     pub instance_level: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct SignalIr {
     pub decl: DeclId,
     /// Original spelling (rule 8).
@@ -138,7 +138,7 @@ pub struct SignalIr {
 }
 
 /// A generic or constant in instance data.
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct InstValue {
     pub decl: DeclId,
     pub name: String,
@@ -215,7 +215,7 @@ impl UnitIr {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct ProcessIr {
     /// The HIR statement (a process or a concurrent statement).
     pub stmt: StmtId,
@@ -233,7 +233,7 @@ pub struct ProcessIr {
 /// The equivalent process `formal <= expr` of a port associated with a non-static expression
 /// (LRM 6.5.6.3), sensitive to the expression's signals. It has no driver slots of its own:
 /// the elaborator gives it one, slot 0, for the formal (or the formal's sub-element).
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct PortActual {
     pub expr: ExprId,
     /// The IR type of the formal (the expression's type).
@@ -267,7 +267,7 @@ pub type VarSlot = (DeclId, Option<FuncId>, TyId);
 /// once, in dependency order, with `yavs_interp::init_package(rt, init, index, size, shared)`
 /// and binds the results as `Bindings::packages` (index order); signals are the first
 /// entries of every `UnitIr::signals` (the same index in every instance).
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct PackageIr {
     /// The package declaration (its body, if analyzed, is included).
     pub unit: UnitId,
@@ -292,7 +292,7 @@ pub(crate) struct Failed;
 pub(crate) type R<T> = Result<T, Failed>;
 
 /// Where an object lives.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub(crate) enum Obj {
     /// A scalar of width `w` at `off` in `space`.
     Scalar { space: Space, off: u32, w: Width },
@@ -317,7 +317,7 @@ pub(crate) enum Obj {
     SignalRef { space: Space, off: u32, out: bool },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Space {
     /// The frame of the function at this nesting depth.
     Frame(u8),
@@ -361,10 +361,13 @@ impl VarShape {
 }
 
 /// State shared by the functions being lowered.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Cx {
     pub opts: LowerOptions,
     /// Files of the std/ieee libraries yavs provides: no coverage counters there.
     pub cov_skip: std::collections::HashSet<yavs_diag::FileId>,
+    /// Empty in an image (`Lowerer::image` refuses otherwise).
+    #[serde(skip)]
     pub diags: Vec<Diagnostic>,
     pub tys: HashMap<TypeId, TyId>,
     pub natives: HashMap<(String, Option<TyId>), NativeId>,
@@ -421,7 +424,7 @@ pub(crate) struct Cx {
 }
 
 /// One kernel signal of a record signal.
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub(crate) struct RecLeaf {
     pub path: Vec<u32>,
     pub st: yavs_sem::SubtypeId,
@@ -433,7 +436,7 @@ pub(crate) struct RecLeaf {
 /// yavs-elab"): from `off` in `space`, one signal reference (two cells) per leaf of the
 /// formal, in leaf order; then, with `out`, the caller's driver slot of the first leaf (leaf
 /// `k` is that slot plus `k`); then, with `desc`, the address of the actual's descriptor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RecParam {
     pub space: Space,
     pub off: u32,
@@ -518,6 +521,28 @@ impl Cx {
         (self.opts.coverage && !self.cov_skip.contains(&span.file))
             .then(|| pb.cov(CovInfo { stmt, kind }))
     }
+}
+
+/// The constant bytes up to which [`Lowerer::image`] makes an image.
+pub const IMAGE_MAX_CONSTS: usize = 1 << 20;
+
+/// [`Lowerer::image`].
+#[derive(serde::Serialize)]
+struct ImageRef<'a> {
+    opts: LowerOptions,
+    pb: &'a ProgramBuilder,
+    cx: &'a Cx,
+    units: &'a [UnitIr],
+    packages: &'a [PackageIr],
+}
+
+#[derive(serde::Deserialize)]
+struct Image {
+    opts: LowerOptions,
+    pb: ProgramBuilder,
+    cx: Cx,
+    units: Vec<UnitIr>,
+    packages: Vec<PackageIr>,
 }
 
 /// A [`Lowerer`] set aside without its `Db` ([`Lowerer::suspend`]).
@@ -818,6 +843,48 @@ impl<'a> Lowerer<'a> {
             units: s.units,
             packages: s.packages,
         }
+    }
+
+    /// The lowering state as bytes for [`Lowerer::from_image`], to skip lowering what was
+    /// lowered so far (the packages' objects, #407). What is lowered so far is verified and
+    /// numbered first (as [`Lowerer::snapshot_take`] does); lowering goes on from here
+    /// exactly as it does from a restored image. `None` (and nothing verified) when the
+    /// constant pool holds over [`IMAGE_MAX_CONSTS`] bytes: reading that back costs more than
+    /// lowering again.
+    pub fn image(&mut self) -> Result<Option<Vec<u8>>, Vec<Diagnostic>> {
+        self.drain();
+        if self.pb.const_bytes() > IMAGE_MAX_CONSTS {
+            return Ok(None);
+        }
+        let p = self.snapshot_take()?;
+        self.pb.restore(p.program);
+        let image = ImageRef {
+            opts: self.cx.opts,
+            pb: &self.pb,
+            cx: &self.cx,
+            units: &self.units,
+            packages: &self.packages,
+        };
+        postcard::to_stdvec(&image)
+            .map(Some)
+            .map_err(|e| vec![Diagnostic::error(INTERNAL, e.to_string())])
+    }
+
+    /// Go on from [`Lowerer::image`]'s bytes for `db`, which must be the `Db` (and `opts` the
+    /// options) the image was made with. `None` when the bytes do not decode or were made with
+    /// other options.
+    pub fn from_image(db: &'a Db, opts: LowerOptions, bytes: &[u8]) -> Option<Self> {
+        let i: Image = postcard::from_bytes(bytes).ok()?;
+        if i.opts != opts {
+            return None;
+        }
+        Some(Lowerer {
+            db,
+            pb: i.pb,
+            cx: i.cx,
+            units: i.units,
+            packages: i.packages,
+        })
     }
 
     /// Verify and freeze the program. Verifier errors are internal errors of this crate.

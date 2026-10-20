@@ -4,7 +4,7 @@ use crate::process::ProcId;
 use crate::time::Time;
 
 /// An IR statement id, resolved to a source span by the IR's tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct StmtId(pub u32);
 
 /// A kernel or runtime error. It stops the simulation at once and carries

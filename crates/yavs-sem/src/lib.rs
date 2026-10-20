@@ -81,6 +81,18 @@ pub struct Options {
     pub encoding: yavs_syntax::Encoding,
     /// `--psl`: read `-- psl` comments as PSL pragmas.
     pub psl: bool,
+    /// Where later stages keep what they derive from this analysis (`StageCache`); set by the
+    /// CLI after analysis, `None` for no caching.
+    pub stages: Option<std::sync::Arc<dyn StageCache>>,
+}
+
+/// A store for what later stages derive from an analyzed `Db` (#407): the lowered run-time
+/// packages. Entries belong to one analysis, whose key the implementation holds; `extent` is
+/// [`Db::extent`] of the `Db` the stage ran on, so that a `Db` that elaboration has grown
+/// since the analysis (instantiation) has no entries. A write failure is silent.
+pub trait StageCache: Send + Sync + std::fmt::Debug {
+    fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Vec<u8>>;
+    fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]);
 }
 
 impl Options {
@@ -93,6 +105,7 @@ impl Options {
             defines: Vec::new(),
             encoding: yavs_syntax::Encoding::Auto,
             psl: false,
+            stages: None,
         }
     }
 }

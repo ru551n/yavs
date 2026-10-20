@@ -163,6 +163,11 @@ identical to a run without it, at any `--threads`.
   disables it. `yavs cache clean --work=NAME:PATH [--map=NAME:PATH ...]` removes the entries of those
   library directories and prints what it removed (`E0123` if one cannot be removed). Deleting
   the `yavs-cache` directory by hand is equally safe.
+- The lowered form of the packages with run-time objects (signals, shared variables, constants
+  that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
+  elaborated without instantiating anything at elaboration time and the lowering is neither tiny
+  nor huge; the same rules apply (identical results, damaged or foreign entries ignored, atomic
+  writes, `--no-cache`, `yavs cache clean`). It counts toward the 48 entries.
 - `yavs analyze` does not read or write the cache.
 
 ## 4. `yavs analyze`

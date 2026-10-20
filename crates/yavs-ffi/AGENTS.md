@@ -33,6 +33,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Decision | Why | Source |
 |---|---|---|
 | Own per-ABI trampolines (SysV, AArch64, Win64), no libffi | Minimal dependencies, no manual install | `docs/plan.md` architecture `yavs-rt`, ir.md 1.7 |
+| `CType` derives serde (the one dependency, `serde`, with its derive) | `ForeignRef` is part of the serialised IR (the compilation cache of lowered packages, #407) | `docs/decisions.md` "Compilation cache" |
 | `unsafe` denied crate-wide, allowed only in `sys` (crate opts out of the workspace `forbid`) | Root `AGENTS.md` rule 11 | `Cargo.toml` comment |
 | The reference simulator's VHDL to C type convention | Existing VHPIDIRECT C code works | `src/vhdl.rs`; `docs/plan.md` "Foreign subprograms" |
 | More than 64 arguments is an error, never a crash | Fail early | `MAX_ARGS` |

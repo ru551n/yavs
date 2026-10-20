@@ -30,7 +30,7 @@ mod typed;
 pub const MAX_ARGS: usize = 64;
 
 /// The C types a foreign call can pass or return.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CType {
     I8,
     I16,

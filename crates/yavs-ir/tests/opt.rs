@@ -647,6 +647,15 @@ fn byte(fb: &mut FuncBuilder<'_>) -> Reg {
     d
 }
 
+/// Instructions to make a function long enough for the passes that skip short ones (their
+/// results are unused and go).
+fn pad(fb: &mut FuncBuilder<'_>) {
+    for k in 0..40 {
+        let a = fb.reg(RegTy::I64);
+        fb.emit(Inst::Const { dst: a, v: k });
+    }
+}
+
 fn check(fb: &mut FuncBuilder<'_>, v: Reg, lo: i64, hi: i64) {
     let what = fb.program().check_msg("range", Dir::To);
     let (lo, hi) = (fb.int(lo), fb.int(hi));
@@ -667,6 +676,7 @@ fn a_check_the_value_range_proves_goes() {
     let code = build(FuncKind::Function, |fb| {
         fb.slot(32, 8);
         fb.stmt(StmtKind::Return, sp());
+        pad(fb);
         let v = byte(fb);
         // A byte is 0 to 255: the first check passes, the second may fail.
         check(fb, v, 0, 255);
@@ -689,6 +699,7 @@ fn a_range_checked_sum_that_cannot_leave_its_range_is_plain() {
         let code = build(FuncKind::Function, |fb| {
             fb.slot(32, 8);
             fb.stmt(StmtKind::Return, sp());
+            pad(fb);
             let v = byte(fb);
             let one = fb.int(1);
             let (l, h) = (fb.int(0), fb.int(hi));
@@ -719,6 +730,7 @@ fn a_length_plus_one_is_not_zero() {
     let code = build(FuncKind::Function, |fb| {
         fb.slot(32, 8);
         fb.stmt(StmtKind::Return, sp());
+        pad(fb);
         let d = fb.addr(AddrSpace::Frame, 0);
         pin(fb, 0);
         let len = fb.reg(RegTy::I64);
@@ -767,6 +779,7 @@ fn a_branch_narrows_the_compared_value_on_each_edge() {
         let code = build(FuncKind::Function, |fb| {
             fb.slot(32, 8);
             fb.stmt(StmtKind::Return, sp());
+            pad(fb);
             let a = fb.addr(AddrSpace::Frame, 0);
             pin(fb, 0);
             let x = fb.reg(RegTy::I64);

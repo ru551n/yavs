@@ -24,6 +24,9 @@ const FULL: Iv = (i64::MIN, i64::MAX);
 
 /// Visits of a block after which a bound that still moves jumps to infinity.
 const WIDEN: u32 = 3;
+/// Functions of fewer instructions are left alone: the analysis costs more than it finds
+/// (every subprogram is optimised the first time it runs, and most run a few times).
+const MIN_CODE: usize = 40;
 /// Registers times blocks above which the analysis is skipped (its state is a vector of
 /// intervals per block).
 const BUDGET: usize = 1 << 20;
@@ -144,32 +147,69 @@ enum Cond {
     Not(Reg),
 }
 
-/// The state at a point: an interval per register.
+/// The state at a point: an interval per tracked register.
 type State = Vec<Iv>;
+
+/// The registers the analysis tracks, numbered densely.
+struct Tr {
+    idx: Vec<u32>,
+    k: usize,
+}
+
+impl Tr {
+    fn new(rel: &[bool]) -> Tr {
+        let mut k = 0;
+        let idx = rel
+            .iter()
+            .map(|&t| {
+                if t {
+                    k += 1;
+                    k as u32 - 1
+                } else {
+                    u32::MAX
+                }
+            })
+            .collect();
+        Tr { idx, k }
+    }
+
+    fn at(&self, r: Reg) -> Option<usize> {
+        self.idx
+            .get(r.0 as usize)
+            .filter(|&&i| i != u32::MAX)
+            .map(|&i| i as usize)
+    }
+
+    fn get(&self, st: &State, r: Reg) -> Iv {
+        self.at(r).map_or(FULL, |i| st[i])
+    }
+}
 
 impl Opt<'_> {
     /// Run the analysis and apply what it proves; whether the code changed.
     pub(super) fn ranges(&mut self) -> bool {
         let nb = self.blocks.len();
         let n = self.defs.len();
-        if !self.nosusp
+        if self.code.len() < MIN_CODE
+            || !self.nosusp
             || self.f.body.is_some()
             || self.f.flags.contains(FuncFlags::MAY_SUSPEND)
             || n.saturating_mul(nb) > BUDGET
         {
             return false;
         }
-        let tracked: Vec<bool> = (0..n as u32)
-            .map(|r| self.rty(Reg(r)) == Some(RegTy::I64))
-            .collect();
+        let tracked = Tr::new(&self.relevant());
+        if tracked.k == 0 {
+            return false;
+        }
         // A register defined once by a `Const` holds its value everywhere (a frame starts
         // with it).
-        let mut entry: State = vec![FULL; n];
+        let mut entry: State = vec![FULL; tracked.k];
         for (r, k) in self.kc.iter().enumerate() {
             if let Some(v) = k
-                && tracked[r]
+                && let Some(i) = tracked.at(Reg(r as u32))
             {
-                entry[r] = (*v, *v);
+                entry[i] = (*v, *v);
             }
         }
         // Reverse post-order of the blocks reachable from the entry.
@@ -216,27 +256,33 @@ impl Opt<'_> {
             let cond = self.transfer(b, &mut st, &tracked);
             let mut k = 0;
             while let Some(s) = self.succ(b, k) {
-                let mut out = st.clone();
-                let live = match cond {
+                let refined;
+                let out: &State = match cond {
                     Some(c) if self.is_cond_edge(b, k) => {
-                        self.refine_edge(&mut out, c, k == 0, &tracked)
+                        let mut e = st.clone();
+                        let live = self.refine_edge(&mut e, c, k == 0, &tracked);
+                        k += 1;
+                        if !live {
+                            continue;
+                        }
+                        refined = e;
+                        &refined
                     }
-                    _ => true,
+                    _ => {
+                        k += 1;
+                        &st
+                    }
                 };
-                k += 1;
-                if !live {
-                    continue;
-                }
                 let changed = match &mut inn[s] {
                     slot @ None => {
-                        *slot = Some(out);
+                        *slot = Some(out.clone());
                         true
                     }
                     Some(old) => {
                         visits[s] += 1;
                         let widen = visits[s] > WIDEN;
                         let mut ch = false;
-                        for (o, n) in old.iter_mut().zip(&out) {
+                        for (o, n) in old.iter_mut().zip(out.iter()) {
                             let lo = if n.0 < o.0 {
                                 if widen { i64::MIN } else { n.0 }
                             } else {
@@ -263,6 +309,81 @@ impl Opt<'_> {
         self.apply(&inn, &tracked)
     }
 
+    /// The integer registers the analysis can use: those a check, a compare, a boolean
+    /// operation or a branch reads, and what they are computed from. The others stay the full
+    /// range, which keeps the states small.
+    fn relevant(&self) -> Vec<bool> {
+        let n = self.defs.len();
+        let mut rel = vec![false; n];
+        let ok = |r: Reg, rel: &mut Vec<bool>| {
+            let i = r.0 as usize;
+            if self.rty(r) == Some(RegTy::I64) && !rel[i] {
+                rel[i] = true;
+                true
+            } else {
+                false
+            }
+        };
+        for i in &self.code {
+            match *i {
+                Inst::Check {
+                    kind, v, lo, hi, ..
+                } => {
+                    ok(v, &mut rel);
+                    if matches!(
+                        kind,
+                        CheckKind::Range | CheckKind::Index | CheckKind::Length
+                    ) {
+                        ok(lo, &mut rel);
+                    }
+                    if matches!(kind, CheckKind::Range | CheckKind::Index) {
+                        ok(hi, &mut rel);
+                    }
+                }
+                Inst::BinRange { a, b, lo, hi, .. } => {
+                    for r in [a, b, lo, hi] {
+                        ok(r, &mut rel);
+                    }
+                }
+                Inst::Cmp { a, b, .. } | Inst::Bool { a, b, .. } => {
+                    ok(a, &mut rel);
+                    ok(b, &mut rel);
+                }
+                Inst::CondBr { c, .. } => {
+                    ok(c, &mut rel);
+                }
+                _ => {}
+            }
+        }
+        // What a relevant register is computed from.
+        loop {
+            let mut grew = false;
+            for i in &self.code {
+                if is_dead(i) {
+                    continue;
+                }
+                let srcs: &[Reg] = &match *i {
+                    Inst::Move { dst, src } if rel[dst.0 as usize] => vec![src],
+                    Inst::Bin { dst, a, b, .. } if rel[dst.0 as usize] => vec![a, b],
+                    Inst::BinRange {
+                        dst, a, b, lo, hi, ..
+                    } if rel[dst.0 as usize] => {
+                        vec![a, b, lo, hi]
+                    }
+                    Inst::Un { dst, a, .. } if rel[dst.0 as usize] => vec![a],
+                    _ => continue,
+                };
+                for &r in srcs {
+                    grew |= ok(r, &mut rel);
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        rel
+    }
+
     /// Does block `b` end in a `CondBr` (whose two edges carry different facts)?
     fn is_cond_edge(&self, b: usize, k: usize) -> bool {
         let (s, e) = self.blocks[b];
@@ -271,14 +392,13 @@ impl Opt<'_> {
 
     /// Narrow `st` for the edge of a branch on `cond`: the true edge when `taken`. Whether
     /// the edge can be taken at all.
-    fn refine_edge(&self, st: &mut State, cond: Cond, taken: bool, tracked: &[bool]) -> bool {
+    fn refine_edge(&self, st: &mut State, cond: Cond, taken: bool, tracked: &Tr) -> bool {
         match cond {
             Cond::Not(c) => {
                 // `c` is a boolean: its truth is the opposite on this edge.
-                let c = c.0 as usize;
-                if !tracked[c] {
+                let Some(c) = tracked.at(c) else {
                     return true;
-                }
+                };
                 let want = if taken { (0, 0) } else { (1, i64::MAX) };
                 let r = (st[c].0.max(want.0), st[c].1.min(want.1));
                 if r.0 > r.1 {
@@ -289,8 +409,10 @@ impl Opt<'_> {
             }
             Cond::Cmp(op, a, b) => {
                 let op = if taken { op } else { negate(op) };
-                let (ai, bi) = (a.0 as usize, b.0 as usize);
-                if !tracked[ai] || !tracked[bi] || ai == bi {
+                let (Some(ai), Some(bi)) = (tracked.at(a), tracked.at(b)) else {
+                    return true;
+                };
+                if ai == bi {
                     return true;
                 }
                 let (x, y) = (st[ai], st[bi]);
@@ -335,7 +457,7 @@ impl Opt<'_> {
     /// Run block `b` over `st`. Returns what the block's final conditional branch tests,
     /// when that is a comparison (or the negation of a boolean) computed in the block from
     /// registers it did not change afterwards.
-    fn transfer(&self, b: usize, st: &mut State, tracked: &[bool]) -> Option<Cond> {
+    fn transfer(&self, b: usize, st: &mut State, tracked: &Tr) -> Option<Cond> {
         let mut conds: Vec<(Reg, Cond)> = Vec::new();
         let mut last = None;
         for pc in self.range(b) {
@@ -384,11 +506,11 @@ impl Opt<'_> {
     }
 
     /// The effect of one instruction on the intervals.
-    fn step(&self, i: &Inst, st: &mut State, tracked: &[bool]) {
-        let get = |st: &State, r: Reg| st[r.0 as usize];
+    fn step(&self, i: &Inst, st: &mut State, tracked: &Tr) {
+        let get = |st: &State, r: Reg| tracked.get(st, r);
         let set = |st: &mut State, r: Reg, v: Iv| {
-            if tracked[r.0 as usize] {
-                st[r.0 as usize] = v;
+            if let Some(i) = tracked.at(r) {
+                st[i] = v;
             }
         };
         match *i {
@@ -494,7 +616,7 @@ impl Opt<'_> {
 
     /// Rewrite what the solution proves; whether anything changed.
     #[allow(clippy::needless_range_loop)]
-    fn apply(&mut self, inn: &[Option<State>], tracked: &[bool]) -> bool {
+    fn apply(&mut self, inn: &[Option<State>], tracked: &Tr) -> bool {
         let mut any = false;
         for b in 0..self.blocks.len() {
             let Some(mut st) = inn[b].clone() else {
@@ -505,7 +627,7 @@ impl Opt<'_> {
                 if is_dead(&i) {
                     continue;
                 }
-                let get = |r: Reg| st[r.0 as usize];
+                let get = |r: Reg| tracked.get(&st, r);
                 let new = match i {
                     Inst::Check {
                         kind, v, lo, hi, ..
@@ -564,7 +686,7 @@ impl Opt<'_> {
     /// decide the condition on that edge, goes straight to the successor it would pick (the
     /// merge of `a and then b` tests a flag the predecessors just set).
     #[allow(clippy::needless_range_loop)]
-    fn thread(&mut self, inn: &[Option<State>], tracked: &[bool]) -> bool {
+    fn thread(&mut self, inn: &[Option<State>], tracked: &Tr) -> bool {
         let nb = self.blocks.len();
         let mut only: Vec<Option<(Reg, BlockId, BlockId)>> = vec![None; nb];
         for (b, slot) in only.iter_mut().enumerate() {
@@ -590,7 +712,13 @@ impl Opt<'_> {
                 continue;
             }
             let last = e as usize - 1;
-            if !matches!(self.code[last], Inst::Br { .. } | Inst::CondBr { .. }) {
+            let reaches = |t: BlockId| only.get(t.0 as usize).is_some_and(Option::is_some);
+            let any_only = match self.code[last] {
+                Inst::Br { to } => reaches(to),
+                Inst::CondBr { t, f, .. } => reaches(t) || reaches(f),
+                _ => false,
+            };
+            if !any_only {
                 continue;
             }
             let cond = self.transfer(p, &mut st, tracked);
@@ -606,7 +734,7 @@ impl Opt<'_> {
                 {
                     return None;
                 }
-                truth(es[c.0 as usize]).map(|v| if v { t } else { f })
+                truth(tracked.get(&es, c)).map(|v| if v { t } else { f })
             };
             match self.code[last] {
                 Inst::Br { to } => {

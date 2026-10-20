@@ -183,6 +183,31 @@ fn gate<const G: u8>(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u
     ))
 }
 
+/// The index of `g` in `GATES`, for `Op::Gate`.
+pub(crate) fn gate_index(g: Gate) -> Option<u8> {
+    GATES.iter().position(|x| *x == g).map(|i| i as u8)
+}
+
+/// A scalar gate on two `std_ulogic` codes, as the native `gate::<g>` computes it.
+#[inline(always)]
+pub(crate) fn scalar_gate(g: u8, x: u64, y: u64) -> R<u64> {
+    Ok(gate_of(GATES[g as usize], code(x)?, code(y)?) as u64)
+}
+
+/// `not` of a `std_ulogic` code.
+#[inline(always)]
+pub(crate) fn scalar_not(x: u64) -> R<u64> {
+    Ok(code(x)?.not() as u64)
+}
+
+#[inline(always)]
+fn code(c: u64) -> R<StdULogic> {
+    match c {
+        0..=8 => Ok(StdULogic::from_code_pub(c as u8)),
+        c => Err(ice(format!("std_ulogic code {c}"))),
+    }
+}
+
 const GATES: [Gate; 6] = [
     Gate::And,
     Gate::Nand,

@@ -366,6 +366,11 @@ pub(crate) struct Machine {
 struct Scratch {
     regs: Vec<u64>,
     temp: Vec<u8>,
+    /// Which function's root frame `regs` holds (runtime id, function id plus one; 0: none).
+    /// A definition that happens once is skipped by the loop and no other instruction writes
+    /// its register, so the next process of the same function starts with the values it
+    /// needs already in place: no `Pre::fill`.
+    key: u64,
 }
 
 thread_local! {
@@ -688,28 +693,43 @@ impl Machine {
         }
     }
 
+    /// The `Scratch::key` of the root frame's function.
+    fn scratch_key(&self) -> u64 {
+        self.frames.first().map_or(0, |fr| {
+            u64::from(self.rt.id) << 32 | (u64::from(fr.func.0) + 1)
+        })
+    }
+
     /// Before a process runs again: take this thread's scratch vectors back.
     pub(crate) fn borrow_scratch(&mut self) -> R<()> {
         if !self.released {
             return Ok(());
         }
         self.released = false;
-        SCRATCH.with(|s| {
+        let root = self.frames.first().map(|fr| fr.func);
+        let key = self.scratch_key();
+        let pristine = SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
             std::mem::swap(&mut self.regs.v, &mut s.regs);
             std::mem::swap(&mut self.temp, &mut s.temp);
+            // The scratch now holds the machine's empty vectors.
+            std::mem::replace(&mut s.key, 0) == key && key != 0
         });
+        self.regs.base = 0;
+        if pristine {
+            self.temp.clear();
+            self.troots.clear();
+            return Ok(());
+        }
         // Registers are written before they are read: stale values are harmless, except
         // those a frame starts with (`pre.rs`).
         let rt = &self.rt;
-        let root = self.frames.first().map(|fr| fr.func);
         match root.and_then(|id| Some((id, rt.prog.func(id)?))) {
             Some((id, f)) => {
                 let pre = rt
                     .pre(id, f)
                     .ok_or_else(|| ice(format!("no function {id}")))?;
                 self.regs.v.clear();
-                self.regs.base = 0;
                 pre.fill(&mut self.regs.v, 0)?;
             }
             None => self.regs.v.clear(),
@@ -728,10 +748,12 @@ impl Machine {
         }
         self.released = true;
         self.troots.clear();
+        let key = self.scratch_key();
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
             s.regs = std::mem::take(&mut self.regs.v);
             s.temp = std::mem::take(&mut self.temp);
+            s.key = key;
         });
     }
 
@@ -1482,6 +1504,7 @@ impl Machine {
 
     /// `Drive` and `DriveSlot`: the waveform at `wave` onto driver `d`.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn drive(
         &mut self,
         ctx: &mut Option<&mut Ctx<'_>>,
@@ -2200,6 +2223,16 @@ impl Machine {
         } else {
             self.sigref(sig)?
         };
+        Self::read_elem(sr, ty, ctx)
+    }
+
+    /// The value of the one element of `sr`.
+    #[inline(always)]
+    fn read_elem(
+        sr: SigRef,
+        ty: yavs_kernel::SignalType,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<u64> {
         let Some(c) = ctx.as_deref_mut() else {
             return rt_err("signal or wait operation during elaboration");
         };
@@ -2219,6 +2252,46 @@ impl Machine {
             }
         };
         Ok(v)
+    }
+
+    /// Element `o` of instance signal `sig`: what `SigVal` of one element makes of its
+    /// registers (`sig_val`, `sigref`).
+    #[inline(always)]
+    fn sig_elem(&self, sig: u32, o: u64) -> R<(SigRef, yavs_kernel::SignalType)> {
+        let Ok(o) = u32::try_from(o as i64) else {
+            return rt_err(format!(
+                "signal element range {} + 1 out of bounds",
+                o as i64
+            ));
+        };
+        let s = self
+            .inst
+            .sigs
+            .get(sig as usize)
+            .ok_or_else(|| ice(format!("no instance signal {sig}")))?;
+        Ok((s.signal.slice(s.off + o, 1), s.ty))
+    }
+
+    /// `rising_edge` / `falling_edge` of the first element of `sr` (the native `edge`).
+    #[inline(always)]
+    fn edge_elem(sr: SigRef, rising: bool, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err("signal read during elaboration");
+        };
+        let Some(hit) = c.edge(sr, rising)? else {
+            return Err(ice("edge of a null signal range"));
+        };
+        Ok(u64::from(hit))
+    }
+
+    /// Add `sr` to the sensitivity of the coming wait.
+    #[inline(always)]
+    fn wait_elem(sr: SigRef, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err("signal or wait operation during elaboration");
+        };
+        c.wait_on(sr)?;
+        Ok(())
     }
 
     /// `Inst::WaitOn`.
@@ -3310,6 +3383,67 @@ impl Machine {
                 }
                 Op::SigReadScalar { dst, sig } => {
                     self.regs[dst as usize] = t!(self.sig_read_scalar(Reg(sig), ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::Drive {
+                    driver,
+                    target,
+                    wave,
+                    n,
+                    reject,
+                    inertial,
+                } => {
+                    let mode = if inertial {
+                        DriveMode::Inertial
+                    } else {
+                        DriveMode::Transport
+                    };
+                    let reject = (reject != pre::NONE).then_some(Reg(reject));
+                    let (target, wave, n) = (Reg(target), Reg(wave), Reg(n));
+                    if self.is_multi(target) {
+                        t!(self.drive_parts(ctx, target, wave, n, mode, reject));
+                    } else {
+                        let d = t!(self.driver(driver));
+                        t!(self.drive(ctx, d, Some(target), wave, n, mode, reject));
+                    }
+                    k += 1;
+                    enter!();
+                }
+                Op::SigRead1 { dst, sig, offset } => {
+                    let (sr, ty) = t!(self.sig_elem(sig, self.regs[offset as usize]));
+                    self.regs[dst as usize] = t!(Self::read_elem(sr, ty, ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::EdgeSig {
+                    dst,
+                    sig,
+                    offset,
+                    rising,
+                } => {
+                    let (sr, _) = t!(self.sig_elem(sig, self.regs[offset as usize]));
+                    self.regs[dst as usize] = t!(Self::edge_elem(sr, rising, ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::WaitSig { sig, offset } => {
+                    let (sr, _) = t!(self.sig_elem(sig, self.regs[offset as usize]));
+                    t!(Self::wait_elem(sr, ctx));
+                    k += 1;
+                    enter!();
+                }
+                Op::Gate { g, dst, a, b } => {
+                    self.regs[dst as usize] = t!(crate::ieee::scalar_gate(
+                        g,
+                        self.regs[a as usize],
+                        self.regs[b as usize]
+                    ));
+                    k += 1;
+                    enter!();
+                }
+                Op::NotL { dst, a } => {
+                    self.regs[dst as usize] = t!(crate::ieee::scalar_not(self.regs[a as usize]));
                     k += 1;
                     enter!();
                 }

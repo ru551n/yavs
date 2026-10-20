@@ -253,7 +253,10 @@ impl Buf {
             Buf::Bytes { es, data } => data[i * es],
             Buf::Planes { b, .. } => {
                 let (blk, s) = (&b[i / 64], i % 64);
-                (0..4).fold(0u8, |c, k| c | ((blk[k] >> s & 1) as u8) << k)
+                ((blk[0] >> s & 1)
+                    | (blk[1] >> s & 1) << 1
+                    | (blk[2] >> s & 1) << 2
+                    | (blk[3] >> s & 1) << 3) as u8
             }
         }
     }

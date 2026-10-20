@@ -580,7 +580,7 @@ impl Runtime {
         Some(
             self.pre
                 .get(id.0 as usize)?
-                .get_or_init(|| pre::Pre::new(f)),
+                .get_or_init(|| pre::Pre::new(f, &self.prog)),
         )
     }
 

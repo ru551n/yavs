@@ -17,7 +17,7 @@
 //! through `Machine::step`. `Code::at` maps each op back to its IR pc, which frames keep
 //! (`Frame::pc`), so traces, messages, coverage, root maps and the debug loop see the IR.
 
-use yavs_ir::{AddrSpace, CheckKind, CheckMsgId, CmpOp, Func, Inst, IntOp, Role, Width};
+use yavs_ir::{AddrSpace, CheckKind, CheckMsgId, CmpOp, Func, Inst, IntOp, Program, Role, Width};
 
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
@@ -60,7 +60,7 @@ impl Pre {
         Ok(())
     }
 
-    pub(crate) fn new(f: &Func) -> Pre {
+    pub(crate) fn new(f: &Func, prog: &Program) -> Pre {
         let n = f.reg_ty.len();
         let mut defs = vec![0u8; n];
         for inst in &f.code {
@@ -141,7 +141,7 @@ impl Pre {
                 *n = *t;
             }
         }
-        let code = Code::new(f, &skip, &known, &next);
+        let code = Code::new(f, prog, &skip, &known, &next);
         Pre {
             init,
             slots: f.frame,
@@ -471,6 +471,47 @@ pub(crate) enum Op {
         dst: u32,
         sig: u32,
     },
+    /// `SigVal` of one element of instance signal `sig` at `offset`, and the `SigReadScalar`
+    /// of it (nothing else reads the reference).
+    SigRead1 {
+        dst: u32,
+        sig: u32,
+        offset: u32,
+    },
+    /// `SigVal` of one element and `rising_edge` / `falling_edge` of it.
+    EdgeSig {
+        dst: u32,
+        sig: u32,
+        offset: u32,
+        rising: bool,
+    },
+    /// `SigVal` of one element and the `WaitOn` of it.
+    WaitSig {
+        sig: u32,
+        offset: u32,
+    },
+    /// A scalar `std_ulogic` gate (`ieee::GATES` index `g`) as the native computes it.
+    Gate {
+        g: u8,
+        dst: u32,
+        a: u32,
+        b: u32,
+    },
+    /// Scalar `not` of a `std_ulogic`.
+    NotL {
+        dst: u32,
+        a: u32,
+    },
+    /// `Inst::Drive` onto a signal reference in register `target`.
+    Drive {
+        driver: u32,
+        target: u32,
+        wave: u32,
+        n: u32,
+        /// The register of the rejection limit, `NONE` without one.
+        reject: u32,
+        inertial: bool,
+    },
     WaitOn {
         sig: u32,
     },
@@ -520,6 +561,49 @@ pub(crate) struct Code {
 
 pub(crate) const NONE: u32 = u32::MAX;
 
+/// A native the loop runs as an op of its own.
+enum NativeOp {
+    Gate {
+        g: u8,
+        a: yavs_ir::Reg,
+        b: yavs_ir::Reg,
+    },
+    Not {
+        a: yavs_ir::Reg,
+    },
+    /// `rising_edge` / `falling_edge` of the signal reference in register `sig`.
+    Edge {
+        rising: bool,
+        sig: yavs_ir::Reg,
+    },
+}
+
+/// The scalar `std_logic_1164` natives, by their symbol (`ieee::lookup` has the bodies).
+fn native_op(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+) -> Option<NativeOp> {
+    use yavs_ir::ieee::Op as Ie;
+    let sym = &prog.natives.get(native)?.symbol;
+    let key = sym.strip_prefix("yavs.ieee.")?;
+    let regs = f.regs(args)?;
+    let scalar = |r: &yavs_ir::Reg| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig);
+    match (yavs_ir::ieee::parse(key)?, regs) {
+        (Ie::Gate(g), [a, b]) if scalar(a) && scalar(b) => Some(NativeOp::Gate {
+            g: crate::ieee::gate_index(g)?,
+            a: *a,
+            b: *b,
+        }),
+        (Ie::Not, [a]) if scalar(a) => Some(NativeOp::Not { a: *a }),
+        (Ie::Edge(rising), [r]) if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) => {
+            Some(NativeOp::Edge { rising, sig: *r })
+        }
+        _ => None,
+    }
+}
+
 /// A comparison as a mask over the three outcomes of `Ord::cmp`: bit `ord + 1` is set when
 /// the comparison holds for that outcome (`cmp_holds`), so no dispatch on the operator.
 pub(crate) fn cmp_mask(op: CmpOp) -> u8 {
@@ -540,7 +624,7 @@ pub(crate) fn cmp_holds(m: u8, a: i64, b: i64) -> bool {
 }
 
 impl Code {
-    fn new(f: &Func, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
+    fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
         let n = f.code.len();
         let mut block_start = vec![false; n + 1];
         for (_, b) in f.blocks.iter() {
@@ -1037,12 +1121,51 @@ impl Code {
                     sig,
                     offset,
                     len,
-                } => Op::SigVal {
-                    dst: dst.0,
-                    sig,
-                    offset: offset.0,
-                    len: len.0,
-                },
+                } => {
+                    // One element that only the next instruction reads.
+                    let one = int(len) == Some(1) && once(dst);
+                    let fused = match fusable {
+                        Some(Inst::SigReadScalar { dst: d, sig: r }) if one && r == dst => {
+                            Some(Op::SigRead1 {
+                                dst: d.0,
+                                sig,
+                                offset: offset.0,
+                            })
+                        }
+                        Some(Inst::WaitOn { sig: r }) if one && r == dst => Some(Op::WaitSig {
+                            sig,
+                            offset: offset.0,
+                        }),
+                        Some(Inst::CallNative {
+                            native,
+                            args,
+                            dst: d,
+                        }) if one => match (native_op(prog, f, native, args), d) {
+                            (Some(NativeOp::Edge { rising, sig: r }), Some(d)) if r == dst => {
+                                Some(Op::EdgeSig {
+                                    dst: d.0,
+                                    sig,
+                                    offset: offset.0,
+                                    rising,
+                                })
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    match fused {
+                        Some(op) => {
+                            last = nx;
+                            op
+                        }
+                        None => Op::SigVal {
+                            dst: dst.0,
+                            sig,
+                            offset: offset.0,
+                            len: len.0,
+                        },
+                    }
+                }
                 Inst::DopeLen { dst, dope, dim } => Op::DopeLen {
                     dst: dst.0,
                     dope: dope.0,
@@ -1066,17 +1189,43 @@ impl Code {
                     len: args.len,
                     dst: dst.map_or(NONE, |d| d.0),
                 },
-                Inst::CallNative { native, args, dst } => Op::CallNative {
-                    native: native.0,
-                    start: args.start,
-                    len: args.len,
-                    dst: dst.map_or(NONE, |d| d.0),
-                },
+                Inst::CallNative { native, args, dst } => {
+                    match (native_op(prog, f, native, args), dst) {
+                        (Some(NativeOp::Gate { g, a, b }), Some(d)) => Op::Gate {
+                            g,
+                            dst: d.0,
+                            a: a.0,
+                            b: b.0,
+                        },
+                        (Some(NativeOp::Not { a }), Some(d)) => Op::NotL { dst: d.0, a: a.0 },
+                        _ => Op::CallNative {
+                            native: native.0,
+                            start: args.start,
+                            len: args.len,
+                            dst: dst.map_or(NONE, |d| d.0),
+                        },
+                    }
+                }
                 Inst::SigReadScalar { dst, sig } => Op::SigReadScalar {
                     dst: dst.0,
                     sig: sig.0,
                 },
                 Inst::WaitOn { sig } => Op::WaitOn { sig: sig.0 },
+                Inst::Drive {
+                    driver,
+                    target: Some(target),
+                    wave,
+                    n,
+                    mode,
+                    reject,
+                } => Op::Drive {
+                    driver,
+                    target: target.0,
+                    wave: wave.0,
+                    n: n.0,
+                    reject: reject.map_or(NONE, |r| r.0),
+                    inertial: mode == yavs_ir::DriveMode::Inertial,
+                },
                 Inst::Suspend { .. } => Op::Suspend,
                 Inst::Ret { v } => Op::Ret {
                     v: v.map_or(NONE, |r| r.0),

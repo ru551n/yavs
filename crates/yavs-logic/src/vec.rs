@@ -47,15 +47,11 @@ impl<R: Repr> Logic<R> {
 
     /// Elements `lo..lo + n`.
     pub fn slice(&self, lo: usize, n: usize) -> Self {
-        assert!(lo + n <= self.len());
-        Self::from_fn(n, |i| self.get(lo + i))
+        Self(self.0.slice(lo, n))
     }
     /// `self & low` in VHDL terms: `self` becomes the high part.
     pub fn concat(&self, low: &Self) -> Self {
-        let l = low.len();
-        Self::from_fn(l + self.len(), |i| {
-            if i < l { low.get(i) } else { self.get(i - l) }
-        })
+        Self(self.0.concat(&low.0))
     }
 
     fn binop(&self, o: &Self, op: BinOp) -> Self {
@@ -102,25 +98,25 @@ impl<R: Repr> Logic<R> {
     }
     /// Resolve N >= 1 drivers of equal length (one driver is passed through unchanged).
     pub fn resolve(drivers: &[&Self]) -> Self {
-        let (first, rest) = drivers.split_first().expect("at least one driver");
-        let mut r = first.0.clone();
-        rest.iter().for_each(|d| {
-            assert_eq!(d.len(), r.len(), "length mismatch");
-            r.bin(&d.0, BinOp::Resolve)
-        });
-        Self(r)
+        let first = drivers.first().expect("at least one driver");
+        drivers
+            .iter()
+            .for_each(|d| assert_eq!(d.len(), first.len(), "length mismatch"));
+        Self(match drivers {
+            [a] => a.0.clone(),
+            [a, b] => R::resolve_all(&[&a.0, &b.0]),
+            _ => R::resolve_all(&drivers.iter().map(|d| &d.0).collect::<Vec<_>>()),
+        })
     }
     /// `is_x` on a vector: any element not `0 1 L H`.
     pub fn has_x(&self) -> bool {
-        self.iter().any(StdULogic::is_x)
+        self.0.has_x()
     }
     /// Vector `?=`: `1` if all elements match, `0` on a definite mismatch, `X`/`U` as in the LRM.
     pub fn match_eq(&self, o: &Self) -> StdULogic {
         assert_eq!(self.len(), o.len(), "length mismatch");
         // LRM 9.2.3: the AND of the element matches, so a later '0' wins over U and X.
-        self.iter()
-            .zip(o.iter())
-            .fold(One, |r, (a, b)| r.and(a.match_eq(b)))
+        self.0.match_eq(&o.0)
     }
     pub fn match_ne(&self, o: &Self) -> StdULogic {
         self.match_eq(o).not()
@@ -128,36 +124,36 @@ impl<R: Repr> Logic<R> {
 
     /// Shift towards the high end, filling with `0` (`shift_left`, `sll`).
     pub fn shl(&self, n: usize) -> Self {
-        Self::from_fn(self.len(), |i| if i >= n { self.get(i - n) } else { Zero })
+        self.shifted(n, Zero, true)
     }
     /// Shift towards the low end, filling with `0` (`shift_right` on unsigned, `srl`).
     pub fn shr(&self, n: usize) -> Self {
-        Self::from_fn(self.len(), |i| {
-            if i + n < self.len() {
-                self.get(i + n)
-            } else {
-                Zero
-            }
-        })
+        self.shifted(n, Zero, false)
     }
     /// Shift towards the low end replicating the leftmost element (`shift_right` on signed).
     pub fn sra(&self, n: usize) -> Self {
-        let sign = self.get(self.len() - 1);
-        Self::from_fn(self.len(), |i| {
-            if i + n < self.len() {
-                self.get(i + n)
-            } else {
-                sign
-            }
-        })
+        self.shifted(n, self.get(self.len() - 1), false)
+    }
+    /// `n` fill elements enter at the high (`up`) or low end; the rest move.
+    fn shifted(&self, n: usize, fill: StdULogic, up: bool) -> Self {
+        let l = self.len();
+        let k = n.min(l);
+        let fill = Self::new(k, fill);
+        if up {
+            self.slice(0, l - k).concat(&fill)
+        } else {
+            fill.concat(&self.slice(k, l - k))
+        }
     }
     pub fn rol(&self, n: usize) -> Self {
         let l = self.len();
-        Self::from_fn(l, |i| self.get((i + l - n % l) % l))
+        let n = n % l;
+        self.slice(0, l - n).concat(&self.slice(l - n, n))
     }
     pub fn ror(&self, n: usize) -> Self {
         let l = self.len();
-        Self::from_fn(l, |i| self.get((i + n) % l))
+        let n = n % l;
+        self.slice(0, n).concat(&self.slice(n, l - n))
     }
 
     /// The vector as a pure 0/1 vector (`L`/`H` map to `0`/`1`), or `None` if it has a metavalue.
@@ -191,12 +187,8 @@ impl<R: Repr> Logic<R> {
         if self.is_empty() || o.is_empty() {
             return None;
         }
-        let size = self.len().max(o.len());
         let (a, b) = (self.to_bitvec()?, o.to_bitvec()?);
-        Some(
-            a.extend(size, signed)
-                .cmp_num(&b.extend(size, signed), signed),
-        )
+        Some(a.cmp_ext(&b, signed))
     }
     pub fn from_u64(len: usize, v: u64) -> Self {
         Self::from_bitvec(&BitVec::from_u64(len, v))

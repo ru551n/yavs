@@ -8,7 +8,8 @@
 use std::fmt;
 
 use smallvec::{SmallVec, smallvec};
-use yavs_logic::{Block, Logic, Planes};
+use yavs_logic::wide::{chunks, get_block, nmask, put_block};
+use yavs_logic::{Block, Logic, Planes, wide};
 
 /// The kernel's logic vector: always bit-planes, whatever yavs-logic's default layout is.
 pub type LogicVec = Logic<Planes>;
@@ -122,19 +123,11 @@ impl<'a> From<&'a Value> for ValueRef<'a> {
     }
 }
 
-/// Every element `Z` (code 4: plane 2 only).
-const Z_BLOCK: Block = [0, 0, !0, 0];
-
 /// Storage for a run of elements of one signal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Buf {
     Bytes { es: usize, data: SmallVec<[u8; 16]> },
     Planes { len: usize, b: SmallVec<[Block; 1]> },
-}
-
-/// The low `n` bits (`n <= 64`).
-fn nmask(n: usize) -> u64 {
-    if n >= 64 { !0 } else { (1u64 << n) - 1 }
 }
 
 /// Bits `off .. off + n` (`n <= 64`) of a bitset.
@@ -156,36 +149,6 @@ pub(crate) fn fill_bits(words: &mut [u64], off: usize, n: usize, on: bool) {
             words[i / 64] &= !(1 << (i % 64));
         }
     }
-}
-
-fn get_block(b: &[Block], off: usize, n: usize) -> Block {
-    let (w, s) = (off / 64, off % 64);
-    let m = nmask(n);
-    std::array::from_fn(|k| {
-        let mut v = b[w][k] >> s;
-        if s != 0 && w + 1 < b.len() {
-            v |= b[w + 1][k] << (64 - s);
-        }
-        v & m
-    })
-}
-
-/// Write the elements of `v` selected by `sel` (low `n` bits) at `off`.
-fn put_block(b: &mut [Block], off: usize, n: usize, v: Block, sel: u64) {
-    let m = sel & nmask(n);
-    let (w, s) = (off / 64, off % 64);
-    for k in 0..4 {
-        b[w][k] = (b[w][k] & !(m << s)) | ((v[k] & m) << s);
-        if s != 0 && s + n > 64 {
-            let m2 = m >> (64 - s);
-            b[w + 1][k] = (b[w + 1][k] & !m2) | ((v[k] >> (64 - s)) & m2);
-        }
-    }
-}
-
-/// Chunks of at most 64 elements covering `0..n`: `(start, len)`.
-fn chunks(n: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..n).step_by(64).map(move |c| (c, (n - c).min(64)))
 }
 
 impl Buf {
@@ -292,9 +255,7 @@ impl Buf {
             },
             Buf::Planes { b, .. } => {
                 let mut out: SmallVec<[Block; 1]> = smallvec![[0; 4]; n.div_ceil(64)];
-                for (c, k) in chunks(n) {
-                    out[c / 64] = get_block(b, off + c, k);
-                }
+                wide::copy_range(&mut out, 0, b, off, n);
                 Buf::Planes { len: n, b: out }
             }
         }
@@ -371,6 +332,9 @@ impl Buf {
                 }
             }
             (Buf::Planes { b, .. }, Buf::Planes { b: sb, .. }) => {
+                if moff.is_none() {
+                    return wide::copy_range(b, off, sb, soff, n);
+                }
                 for (c, k) in chunks(n) {
                     put_block(b, off + c, k, get_block(sb, soff + c, k), sel(c, k));
                 }
@@ -386,11 +350,7 @@ impl Buf {
                 d.len() == n * es && data.get(off * es..(off + n) * es) == Some(d)
             }
             (Buf::Planes { len, b }, ValueRef::Logic(l)) => {
-                l.len() == n
-                    && off + n <= *len
-                    && chunks(n).all(|(c, k)| {
-                        get_block(b, off + c, k) == get_block(l.repr().blocks(), c, k)
-                    })
+                l.len() == n && off + n <= *len && wide::eq_range(b, off, l.repr().blocks(), 0, n)
             }
             _ => false,
         }
@@ -428,23 +388,24 @@ impl Buf {
         }
     }
 
-    /// IEEE 1164 resolution of `sources` (each with its element offset) into `off..off + n`.
+    /// IEEE 1164 resolution of `nsrc` sources (`src(i)`: the buffer and its element offset)
+    /// into `off..off + n`.
     /// No sources gives `Z`, as the `resolved` function does for an empty array.
-    pub fn resolve_std_logic(&mut self, off: usize, n: usize, sources: &[(&Buf, usize)]) {
+    pub fn resolve_std_logic_by<'a>(
+        &mut self,
+        off: usize,
+        n: usize,
+        nsrc: usize,
+        src: impl Fn(usize) -> (&'a Buf, usize),
+    ) {
         let Buf::Planes { b, .. } = self else {
             unreachable!("std_logic resolution on byte storage")
         };
-        for (c, k) in chunks(n) {
-            let acc = sources
-                .iter()
-                .map(|(s, soff)| match s {
-                    Buf::Planes { b: sb, .. } => get_block(sb, soff + c, k),
-                    Buf::Bytes { .. } => unreachable!("mixed storage kinds"),
-                })
-                .reduce(Planes::resolve_block)
-                .unwrap_or(Z_BLOCK);
-            put_block(b, off + c, k, acc, !0);
-        }
+        let planes = |i: usize| match src(i) {
+            (Buf::Planes { b: sb, .. }, soff) => (sb.as_slice(), soff),
+            (Buf::Bytes { .. }, _) => unreachable!("mixed storage kinds"),
+        };
+        wide::resolve_into(b, off, nsrc, planes, n);
     }
 
     /// Elements as one byte each: the bytes themselves, or logic codes (a transpose, used only
@@ -518,9 +479,9 @@ mod tests {
         let a = Buf::from_ref(Elem::Logic, 4, (&lv("01ZZ")).into()).unwrap();
         let b = Buf::from_ref(Elem::Logic, 4, (&lv("1Z0Z")).into()).unwrap();
         let mut r = Buf::zeroed(Elem::Logic, 4);
-        r.resolve_std_logic(0, 4, &[(&a, 0), (&b, 0)]);
+        r.resolve_std_logic_by(0, 4, 2, |i| [(&a, 0), (&b, 0)][i]);
         assert_eq!(r.to_value(), Value::Logic(lv("X10Z")));
-        r.resolve_std_logic(0, 4, &[]);
+        r.resolve_std_logic_by(0, 4, 0, |_| (&a, 0));
         assert_eq!(r.to_value(), Value::Logic(lv("ZZZZ")));
         let mut m = Buf::zeroed(Elem::Logic, 4);
         m.select(0, &a, 0, 4, &[0b0101], Some(0));

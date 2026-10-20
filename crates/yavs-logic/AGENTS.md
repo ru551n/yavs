@@ -21,10 +21,13 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/planes.rs` | `Planes`: `Vec<Block>`, `Block = [u64; 4]` (64 elements, plane k = bit k of the code); `blocks`, `from_blocks`, `resolve_block` (kernel accessors) |
 | `src/nibbles.rs` | `Nibbles`: 4-bit codes, table lookups (behind `--features nibbles` as the default alias) |
 | `src/vec.rs` | `Logic<R>`: the vector API used by the rest of yavs; `LogicVec = Logic<DefaultRepr>` in `lib.rs` |
+| `src/wide.rs` | Block-slice kernels over `[Block]` plus an element offset (copy, equality, `is_x`, `?=`, many-source resolution, `Lane`/`L4` four-blocks-at-a-time arithmetic); used by `Planes`, the kernel's `Buf` and the ieee natives |
 | `src/bitvec.rs` | `BitVec`: plain `u64` words for 0/1 vectors, arithmetic and conversions |
 | `tests/ieee_tables.rs` | Tables checked against the vendored `lib/ieee` std_logic_1164 body |
 | `tests/layouts.rs` | Both layouts vs a `Vec<StdULogic>` reference: exhaustive pairs/triples at every bit position, proptest |
+| `tests/wide.rs` | Every `wide` kernel and the word-level `Logic` slice/concat/shift/`?=`/`is_x` and `BitVec` compare/`to_i64` against per-element models: random planes, all nine values, odd lengths, every offset |
 | `benches/layout.rs` | Criterion layout benchmark; results in `LAYOUT.md` |
+| `benches/wide.rs` | The `wide` kernels against the pairwise per-block loops they replaced |
 
 ## 3. Design decisions that bind this module
 
@@ -36,7 +39,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Element 0 is the rightmost element | Matches numeric bit order; elab maps row-major position p to `n - 1 - p` | `LAYOUT.md`; `docs/decisions.md` "Elaboration (yavs-elab, M2)" |
 | BIT and BOOLEAN in bit-plane arrays use the codes of '0'/'1' (2/3) | Shared plane ops stay correct for `bit_vector` | `docs/decisions.md` "Interpreter: BIT/BOOLEAN codes" |
 | Kernel keeps scalar signals as bare `StdULogic` | A 1-element vector costs 32 bytes | `docs/decisions.md` "Packed logic vectors" |
-| `#![forbid(unsafe_code)]` | Pure Rust | `src/lib.rs` |
+| `#![forbid(unsafe_code)]`; no `std::arch`, no per-CPU variants: wide loops are portable lane-wise code the compiler vectorises | Measured: an AVX2 build of the same loops is no faster; simple gates are faster as scalar words | `src/lib.rs`; `docs/decisions.md` "Wide plane kernels" |
 
 Module-local decisions go in this section (and `LAYOUT.md` for layout data) in the same commit
 (root `AGENTS.md` rule 24).
@@ -47,7 +50,8 @@ Module-local decisions go in this section (and `LAYOUT.md` for layout data) in t
   an op that can set them (e.g. `not`) must call `norm`. Every new op needs the exhaustive tests at every bit position (block boundaries 63/64).
 - Both layouts must give identical results; add a new op to `Repr` for both and to the reference
   comparison in `tests/layouts.rs`.
-- `Planes::blocks`/`from_blocks`/`resolve_block` and `Logic::repr`/`from_repr` are kernel API
+- A new loop over blocks goes in `wide.rs` with a case in `tests/wide.rs` (offsets 0, 3, 63, 64, lengths 0, 1, 63, 64, 65, over 256) and a `benches/wide.rs` entry; measure before keeping any lane or SIMD variant (simple gates lost to the transpose).
+- `Planes::blocks`/`from_blocks`/`resolve_block`, `yavs_logic::wide::{get_block, put_block, chunks, copy_range, eq_range, resolve_into}` and `Logic::repr`/`from_repr` are kernel API
   (`docs/decisions.md` "Kernel round 2"); changing them breaks `yavs-kernel`.
 - `tests/ieee_tables.rs` reads `lib/ieee`; never "fix" a table without the 1164 body agreeing.
 

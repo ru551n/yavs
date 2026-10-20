@@ -627,15 +627,6 @@ fn plane_word(b: &[u8], p: usize) -> u64 {
     u64::from_le_bytes(w)
 }
 
-fn get_bits(words: &[[u64; 4]], start: u64, m: u64, p: usize) -> u64 {
-    let (w, s) = ((start / 64) as usize, start % 64);
-    let mut v = words.get(w).map_or(0, |b| b[p]) >> s;
-    if s > 0 {
-        v |= words.get(w + 1).map_or(0, |b| b[p]) << (64 - s);
-    }
-    if m < 64 { v & ((1 << m) - 1) } else { v }
-}
-
 fn set_bits(words: &mut [[u64; 4]], start: u64, m: u64, p: usize, v: u64) {
     let mask = if m < 64 { (1u64 << m) - 1 } else { !0 };
     let (w, s) = ((start / 64) as usize, start % 64);
@@ -1523,16 +1514,13 @@ impl Machine {
         let sw = blocks_of(self.rd(add_addr(src, sb0 * 32)?, (sb1 - sb0 + 1) * 32)?);
         let da = add_addr(dst, db0 * 32)?;
         let mut dw = blocks_of(self.rd(da, (db1 - db0 + 1) * 32)?);
-        let (s0, d0) = (soff - sb0 * 64, doff - db0 * 64);
-        let mut k = 0;
-        while k < n {
-            let m = (n - k).min(64);
-            for p in 0..4 {
-                let v = get_bits(&sw, s0 + k, m, p);
-                set_bits(&mut dw, d0 + k, m, p, v);
-            }
-            k += m;
-        }
+        yavs_logic::wide::copy_range(
+            &mut dw,
+            (doff - db0 * 64) as usize,
+            &sw,
+            (soff - sb0 * 64) as usize,
+            n as usize,
+        );
         self.put(da, &bytes_of(&dw))
     }
 

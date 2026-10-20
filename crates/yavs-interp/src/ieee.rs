@@ -1025,8 +1025,7 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
         return bad(m, ctx, "metavalue");
     };
     let ord = if let Some(Some(rb)) = rb {
-        let n = lb.len().max(rb.len());
-        zero_ext(&lb, n, SIGNED).cmp_num(&zero_ext(&rb, n, SIGNED), SIGNED)
+        lb.cmp_ext(&rb, SIGNED)
     } else if FORM == 1 {
         let i = int(a, 1)?;
         let i = if SIGNED { i } else { natural(m, i)? };
@@ -1133,10 +1132,11 @@ fn resize<const SIGNED: bool>(
     } else if SIGNED {
         // The top element is the argument's sign element; below it the low elements.
         let keep = len.min(new) - 1;
-        let sign = l.get(len - 1);
-        LogicVec::from_fn(new, |i| if i < keep { l.get(i) } else { sign })
+        LogicVec::new(new - keep, l.get(len - 1)).concat(&l.slice(0, keep))
+    } else if len >= new {
+        l.slice(0, new)
     } else {
-        LogicVec::from_fn(new, |i| if i < len { l.get(i) } else { StdULogic::Zero })
+        LogicVec::new(new - len, StdULogic::Zero).concat(&l)
     };
     put(m, &Vh::down(v))
 }

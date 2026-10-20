@@ -3,6 +3,7 @@
 
 use crate::repr::{BinOp, Repr, UnOp};
 use crate::scalar::StdULogic;
+use crate::wide::{self, Classes};
 
 type B = [u64; 4];
 
@@ -47,34 +48,10 @@ fn xor(x: B, y: B) -> B {
     [!u & (!k | v), !u & k, 0, 0]
 }
 fn resolve(x: B, y: B) -> B {
-    let cls = |[a, b, c, d]: B| {
-        let nd = !d;
-        let f = nd & !c & b; // forced 0/1
-        let k = nd & c & !b; // Z or W
-        let wk = nd & c & b; // L or H
-        (
-            !(a | b | c | d),       // U
-            (a & !b & !c & nd) | d, // X or -
-            f & !a,                 // 0
-            f & a,                  // 1
-            wk & !a,                // L
-            wk & a,                 // H
-            k & a,                  // W
-        )
-    };
-    let (ux, bx, f0x, f1x, lx, hx, wx) = cls(x);
-    let (uy, by, f0y, f1y, ly, hy, wy) = cls(y);
-    let u = ux | uy;
-    let xm = !u & (bx | by | (f0x & f1y) | (f1x & f0y));
-    let rest = !u & !xm;
-    let m0 = rest & (f0x | f0y);
-    let m1 = rest & (f1x | f1y);
-    let weak = rest & !m0 & !m1;
-    let mw = weak & (wx | wy | (lx & hy) | (hx & ly));
-    let ml = weak & !mw & (lx | ly);
-    let mh = weak & !mw & (hx | hy);
-    let mz = weak & !mw & !ml & !mh;
-    [xm | m1 | mw | mh, m0 | m1 | ml | mh, mz | mw | ml | mh, 0]
+    let mut c = Classes::new();
+    c.add(x);
+    c.add(y);
+    c.finish()
 }
 fn not(x: B) -> B {
     [!is_u(x) & !is1(x), is0(x) | is1(x), 0, 0]
@@ -187,6 +164,34 @@ impl Repr for Planes {
             UnOp::ToX01Z => self.map(to_x01z),
             UnOp::ToUx01 => self.map(to_ux01),
         }
+    }
+    fn slice(&self, lo: usize, n: usize) -> Self {
+        assert!(lo + n <= self.len);
+        let mut b = vec![[0; 4]; n.div_ceil(64)];
+        wide::copy_range(&mut b, 0, &self.b, lo, n);
+        Self { len: n, b }
+    }
+    fn concat(&self, low: &Self) -> Self {
+        let l = low.len;
+        let mut b = vec![[0; 4]; (l + self.len).div_ceil(64)];
+        wide::copy_range(&mut b, 0, &low.b, 0, l);
+        wide::copy_range(&mut b, l, &self.b, 0, self.len);
+        Self {
+            len: l + self.len,
+            b,
+        }
+    }
+    fn has_x(&self) -> bool {
+        wide::has_x(&self.b, self.len)
+    }
+    fn match_eq(&self, o: &Self) -> StdULogic {
+        StdULogic::from_code(wide::match_eq(&self.b, 0, &o.b, 0, self.len))
+    }
+    fn resolve_all(drivers: &[&Self]) -> Self {
+        let (first, len) = (drivers[0], drivers[0].len);
+        let mut b = vec![[0; 4]; first.b.len()];
+        wide::resolve_into(&mut b, 0, drivers.len(), |i| (&drivers[i].b, 0), len);
+        Self { len, b }
     }
     fn to_words01(&self) -> Option<Vec<u64>> {
         let mut w = Vec::with_capacity(self.b.len());

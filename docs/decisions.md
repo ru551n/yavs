@@ -162,6 +162,26 @@ milestone users care about works.
 - **Costs:** `to_string` is 2x slower (per-element decode); a 1-element vector takes 32 bytes, so
   the kernel keeps scalar signals as bare `StdULogic`. VHPI/FST need a transpose per element.
 
+## Wide plane kernels: portable vector code, no per-CPU variants (yavs-logic, #199)
+
+- **Choice:** the hot loops over plane blocks live in `yavs_logic::wide` as functions over block
+  slices and element offsets (copy, equality, `is_x`, `?=`, many-source resolution); the kernel's
+  `Buf` and the ieee natives call them. Resolution folds all sources into class masks and
+  resolves once instead of resolving pairwise. Whole blocks are handled four at a time with the
+  planes held apart, one lane per block (`Lane`/`L4`), written as plain lane-wise loops that the
+  compiler vectorises at the baseline target. No `unsafe`, no `std::arch`, no runtime CPU
+  detection.
+- **Why:** an AVX2 build of the same four-block loops measured no faster than the baseline one
+  (the plane transpose of the block layout, not the arithmetic, is the cost, and a run that
+  does not fit in cache is bound by memory), and the simple gates (`and`, `or`, `xor`, `not`)
+  are slower with the transpose than as scalar words. A hand-written intrinsics version would need
+  `unsafe` and a build per CPU for a gain the measurements do not show. Revisit if the block
+  layout changes to planes stored contiguously per signal (no transpose), where 256-bit loads
+  would apply directly.
+- **Rules kept:** results are bit-identical to the scalar tables (`crates/yavs-logic/tests/wide.rs`
+  checks every kernel against a per-element model for random planes over all nine values, odd
+  lengths and every offset); one driver is the identity, not a resolution (`-` stays `-`).
+
 ## LLVM bindings: llvm-sys 211, no inkwell (yavs-llvm)
 
 - **Choice:** `llvm-sys` `=211.1.1` (MIT), the raw LLVM 21.1 C API, features `prefer-dynamic` and

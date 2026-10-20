@@ -11,6 +11,7 @@ mod planes;
 mod repr;
 mod scalar;
 mod vec;
+pub mod wide;
 
 pub use bitvec::BitVec;
 pub use nibbles::Nibbles;

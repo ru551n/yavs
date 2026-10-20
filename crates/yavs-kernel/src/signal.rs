@@ -788,18 +788,17 @@ fn resolve_run(
         name,
         live,
     } = out;
-    let srcs: SmallVec<[(&Buf, usize); 4]> = conn
-        .iter()
-        .map(|&i| {
-            let d = &drivers[i as usize];
-            (&d.value, (run.offset - d.range.offset) as usize)
-        })
-        .collect();
+    let rel = |i: u32| (run.offset - drivers[i as usize].range.offset) as usize;
     let (off, n) = (run.offset as usize, run.len as usize);
     match res {
-        Resolution::StdLogic => driving.resolve_std_logic(off, n, &srcs),
+        Resolution::StdLogic => driving.resolve_std_logic_by(off, n, conn.len(), |k| {
+            (&drivers[conn[k] as usize].value, rel(conn[k]))
+        }),
         Resolution::Func(f) => {
-            let codes: Vec<Vec<u8>> = srcs.iter().map(|(b, o)| b.codes(*o, n)).collect();
+            let codes: Vec<Vec<u8>> = conn
+                .iter()
+                .map(|&i| drivers[i as usize].value.codes(rel(i), n))
+                .collect();
             let views: Vec<&[u8]> = codes.iter().map(Vec::as_slice).collect();
             let mut out = driving.codes(off, n);
             let r = if live {

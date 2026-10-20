@@ -20,3 +20,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "wide"
+harness = false

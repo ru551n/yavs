@@ -129,12 +129,58 @@ impl BitVec {
     /// Compare as unsigned, or as two's complement when `signed`; equal lengths.
     pub fn cmp_num(&self, o: &Self, signed: bool) -> Ordering {
         assert_eq!(self.len, o.len);
-        let (mut a, mut b) = (self.clone(), o.clone());
-        if signed && self.len > 0 {
-            a.set(self.len - 1, !a.get(self.len - 1));
-            b.set(self.len - 1, !b.get(self.len - 1));
+        // Flipping the sign bit turns the two's complement order into the unsigned one.
+        let flip = if signed && self.len > 0 {
+            1u64 << ((self.len - 1) % 64)
+        } else {
+            0
+        };
+        let top = self.w.len().wrapping_sub(1);
+        self.w
+            .iter()
+            .zip(&o.w)
+            .enumerate()
+            .rev()
+            .map(|(i, (&a, &b))| {
+                let f = if i == top { flip } else { 0 };
+                (a ^ f).cmp(&(b ^ f))
+            })
+            .find(|c| c.is_ne())
+            .unwrap_or(Ordering::Equal)
+    }
+    /// Word `i` of the vector widened to any length: zero or sign extension (`signed`).
+    fn ext_word(&self, i: usize, signed: bool) -> u64 {
+        let neg = signed && self.len > 0 && self.get(self.len - 1);
+        match self.w.get(i) {
+            Some(&w) if neg && i == self.w.len() - 1 && !self.len.is_multiple_of(64) => {
+                w | !0 << (self.len % 64)
+            }
+            Some(&w) => w,
+            None if neg => !0,
+            None => 0,
         }
-        a.w.iter().rev().cmp(b.w.iter().rev())
+    }
+    /// `self.extend(n, signed).cmp_num(&o.extend(n, signed), signed)` for `n` the longer
+    /// length, without building the widened vectors.
+    pub fn cmp_ext(&self, o: &Self, signed: bool) -> Ordering {
+        let n = self.len.max(o.len);
+        let top = n.div_ceil(64).wrapping_sub(1);
+        let (mask, flip) = if n.is_multiple_of(64) {
+            (!0, 1 << 63)
+        } else {
+            ((1u64 << (n % 64)) - 1, 1 << ((n - 1) % 64))
+        };
+        let flip = if signed && n > 0 { flip } else { 0 };
+        (0..=top)
+            .rev()
+            .map(|i| {
+                let m = if i == top { mask } else { !0 };
+                let f = if i == top { flip } else { 0 };
+                let (a, b) = (self.ext_word(i, signed) & m, o.ext_word(i, signed) & m);
+                (a ^ f).cmp(&(b ^ f))
+            })
+            .find(|c| c.is_ne())
+            .unwrap_or(Ordering::Equal)
     }
     /// Unsigned value, `None` if it does not fit.
     pub fn to_u64(&self) -> Option<u64> {
@@ -149,10 +195,26 @@ impl BitVec {
             return Some(0);
         }
         let neg = self.get(self.len - 1);
-        let e = self.extend(self.len.max(64), true);
+        if self.len <= 64 {
+            let v = self.w[0];
+            return Some(if neg && self.len < 64 {
+                (v | !0 << self.len) as i64
+            } else {
+                v as i64
+            });
+        }
         // Fits iff bits 63.. are all equal to the sign.
-        let ok = (63..e.len).all(|i| e.get(i) == neg);
-        ok.then(|| e.w[0] as i64)
+        let fill = if neg { !0 } else { 0 };
+        let last = self.w.len() - 1;
+        let top = if self.len.is_multiple_of(64) {
+            !0
+        } else {
+            (1u64 << (self.len % 64)) - 1
+        };
+        let ok = (self.w[0] >> 63 == u64::from(neg))
+            && self.w[1..last].iter().all(|&x| x == fill)
+            && self.w[last] == fill & top;
+        ok.then(|| self.w[0] as i64)
     }
     /// Low `len` bits of `v` (modulo 2^len), as `TO_UNSIGNED`.
     pub fn from_u64(len: usize, v: u64) -> Self {

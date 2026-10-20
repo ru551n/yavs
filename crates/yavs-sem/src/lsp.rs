@@ -855,7 +855,15 @@ impl Db {
         self.collect_drivers(&[s], &mut drivers);
         let mut reads = Vec::new();
         self.stmt_reads(s, &mut reads);
-        if let Some((g, span)) = guard {
+        // The assignment tests the guard condition itself, not the GUARD signal, which
+        // updates a delta later: sensitive to the condition's signals (11.6).
+        let cond = guard.and_then(|(g, _)| match &self.decls[g].kind {
+            DeclKind::Object(o) if o.role == ObjRole::Guard => o.default,
+            _ => None,
+        });
+        if let Some(c) = cond {
+            self.reads(c, &mut reads);
+        } else if let Some((g, span)) = guard {
             push_unique(
                 self,
                 &mut reads,

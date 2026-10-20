@@ -1224,6 +1224,11 @@ which tools/difftest parses.
   disconnect `bus`/`register` targets when GUARD is false, after the signal's disconnection
   time: elab takes it from `Db::disconnect_times` (a disconnection specification, 7.4) and
   gives it to the kernel signal, 0 fs without one (#260).
+  A guarded concurrent assignment tests the block's guard condition itself on the current
+  values, not the GUARD signal, which updates a delta after the signals the condition reads
+  (LRM 11.6; the references update GUARD in the cycle of the event); its sensitivity is the
+  condition's signals instead of GUARD (#373). A process reading GUARD still sees it a delta
+  late.
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for

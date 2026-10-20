@@ -4,6 +4,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Most results one element-wise user resolution function remembers.
+const RES_MEMO: usize = 1 << 14;
+
 use yavs_diag::Diagnostic;
 use yavs_interp::{
     CallVal, DebugSession, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState,
@@ -690,14 +693,31 @@ impl Elaborated {
                         (1, Some(k))
                     }
                 };
+                // A resolution function is pure (E1225): the same driving values give the same
+                // result, so one that reported nothing is remembered (R3, `docs/decisions.md`).
+                let memo = Mutex::new((HashMap::<Vec<u8>, Vec<u8>>::new(), Vec::new()));
                 Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
+                    let (memo, key) = &mut *memo.lock().unwrap_or_else(|e| e.into_inner());
                     for (k, o) in out.chunks_mut(w).enumerate() {
                         let el: Vec<&[u8]> = vals
                             .iter()
                             .map(|v| v.get(k * w..(k + 1) * w).unwrap_or(&[]))
                             .collect();
+                        key.clear();
+                        el.iter().for_each(|v| key.extend_from_slice(v));
+                        if let Some(r) = memo.get(&*key) {
+                            o.copy_from_slice(r);
+                            continue;
+                        }
+                        let reports = yavs_kernel::callout::captured();
                         yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic, index)
                             .map_err(|e| e.to_string())?;
+                        if reports.is_some()
+                            && yavs_kernel::callout::captured() == reports
+                            && memo.len() < RES_MEMO
+                        {
+                            memo.insert(key.clone(), o.to_vec());
+                        }
                     }
                     Ok(())
                 }))

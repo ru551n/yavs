@@ -2045,6 +2045,18 @@ user's performance priority:
   analysed units (they are the only activity readers the kernel cannot see), and with `--cov`,
   `--dap`, `--vhpi` like the edge triggers. A new observer of activity must switch it off.
 
+## Remembered results of user resolution functions (yavs-elab, #420, 2026-10-20)
+
+- The element-wise resolver of a user resolution function (one call per element, a scalar
+  leaf) remembers the result per set of driving values, up to 16384 sets per signal. The
+  function is pure (E1225), so equal inputs give equal results; a call that made a report is not
+  remembered (the report must come every time), and nothing is remembered outside a run's
+  update phase (initialisation reports at once). Resolution of composites as a whole and
+  `std_logic` (plane-wise, native) are unchanged. Rationale: one interpreter call per element
+  and delta cost 10 times a native resolution (`docs/design/performance.md` R3).
+  The lookup replaces the plan's tables built at elaboration by probing the function: nothing
+  to probe, nothing silenced, and it covers integer and larger types too.
+
 ## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
 
 - A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or

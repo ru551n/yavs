@@ -25,6 +25,13 @@ pub(crate) fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<(Severity, String)>) 
     (r, got)
 }
 
+/// How many reports the running capture holds so far, `None` outside one (at initialisation
+/// reports are made at once): a function call that leaves it unchanged reported nothing, so a
+/// caller may remember its result (R3 memo).
+pub fn captured() -> Option<usize> {
+    CAPTURE.with(|c| c.borrow().as_ref().map(Vec::len))
+}
+
 /// A `report` of a function the kernel is calling (see the module docs). Outside a capture,
 /// e.g. at initialisation, the message comes back for the caller to report at once.
 pub fn push(severity: Severity, message: String) -> Result<(), String> {

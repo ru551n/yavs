@@ -279,6 +279,7 @@ const PASS: &[&str] = &[
     "resolution/nested_record_whole",
     "resolution/record_whole",
     "resolution/resolved_array_bounds",
+    "resolution/resolved_memo",
     "resolution/resolved_record_port",
     "resolution/std_logic_drivers",
     "resolution/std_logic_table",

@@ -244,7 +244,7 @@ parts, in this order, each landing separately with byte-identical output at 1, 4
   Expected: about half the activations of a single-clock design disappear; with R2a to R2c the
   per-activation kernel overhead should fall by an order of magnitude.
 
-**R3 (rank 7): resolution memo tables.** For a resolved signal whose element type is an
+**R3 (rank 7; done for element-wise user functions, #420: a remembered result per set of driving values, `docs/decisions.md` "Remembered results of user resolution functions"): resolution memo tables.** For a resolved signal whose element type is an
 enumeration of up to 16 literals and whose resolution function is not the `std_logic` one
 (already plane-wise): at elaboration run the function through the interpreter for each single
 literal and each pair (diagnostics silenced, as the table is a probe), store the table, and

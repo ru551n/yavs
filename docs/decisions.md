@@ -279,7 +279,7 @@ milestone users care about works.
   (`TierHost::view`) and `tier_go` returns one word: copies of structs the callee had just written
   in narrower pieces stalled on store forwarding. The LLVM agent, 2026-10-20.
 - **O2 recompile (#432, 2026-10-20):** the sampling slot also names compiled functions (bit 31);
-  a function seen running its first-tier code for ten times its `Heat` (about three times its
+  a function seen running its first-tier code for 30 times its `Heat` (about ten times its
   O2 compile time) is compiled again at O2 on the same thread, in a second JIT made at O2, and its
   entry (an atomic word per function, code never freed) is replaced; frames running the O0 code
   finish in it. With `--tier-heat=..,..,0` the O2 recompile follows the first compile at once, so

@@ -1522,6 +1522,40 @@ sampled functions run no faster compiled while their compilation adds CPU. Next:
 of the hottest functions, inline signal reads and edges (#339), `Deref` (#340), and natives
 without the generic step (#337).
 
+Clocked RTL (#339, #432, 2026-10-20): compiled code runs `SigReadScalar`, `Drive`, `WaitOn`
+(with its `Suspend`), `Suspend` and the `rising_edge`/`falling_edge` natives as direct calls of the
+interpreter's functions (`TierHost::signal`), the scalar `std_ulogic` natives as tables, and frame,
+temporary and instance addresses inline; the entry fills its frame view in place and two
+store-forwarding stalls of the entry are gone; `--tier=auto` compiles functions still hot in their
+compiled code again at O2 and leaves short loop-free functions interpreted (docs/decisions.md "LLVM
+tier"). Kernel designs, default generics, `--threads 1`, total CPU seconds, median of 5 interleaved
+runs on a loaded host (load 5 to 6; ratios vary by about 0.05 between runs), `--tier=auto` of main
+before this work (`d75ef11d`) for comparison:
+
+| Design | interp | auto | auto before | sim1 | auto / interp | auto before / interp | auto / sim1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ff: 4096 registers x 2000 | 2.91 | 2.39 | 3.87 | 0.51 | 0.82 | 1.41 | 4.7x |
+| lfsr: 512 x 16-bit x 5000 | 1.58 | 1.54 | 2.13 | 0.19 | 0.98 | 1.21 | 8.1x |
+| chain: 1000 stages x 2000 | 0.92 | 0.94 | 1.05 | 0.15 | 1.02 | 1.15 | 6.3x |
+| fan: 4000 x 5000 | 2.71 | 2.90 | 3.61 | 0.91 | 1.07 | 1.33 | 3.2x |
+| bus: 32 drivers x 20000 | 0.49 | 0.52 | 0.54 | 0.56 | 1.08 | 1.11 | 0.9x |
+
+(ff and lfsr from a second run of the same binaries; the first gave ff 0.98 and lfsr 1.03 at a
+higher load, an earlier one 0.83 and 0.91.) Where the time of these designs goes now: the kernel
+(update phase, wake filter, waiter lists) is over half; compiled process code at O2 is 13% of `ff`;
+the per-activation entry (view, entry switch) and the callbacks are what keeps `fan` and `chain` at
+the interpreter's speed. The shared benchmarks (`tools/bench/run.py --compare`, the same binary with
+`--tier=interp` (A) and `--tier=auto` (B), 3 runs, total CPU): geometric mean 1.153 over 18;
+`--tier=auto` against the same with main's tier: 1.015 before the short-function rule, which then
+gave 0.94 on the seven call-heavy ones. The interpreter got much faster since the table below
+(`uvvm_util_rand_tb` 1.13 s, `calls` 0.10 s): `access_heavy` 1.46, `uvvm_util_rand_tb` 1.42,
+`protected_scoreboard` 1.30, `compute_loop` 1.26, `vai_window_gen` 1.25, `calls` 1.24, the
+other twelve 0.98 to 1.16. So `--tier=interp` stays the
+default: compiled code at O0 is no faster than the predecoded interpreter on testbench code, and
+an entry from interpreted code costs about what a short body costs. Difftest 409/409 for
+`yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` (O0 and O2 swapped in mid-run) at 1 and 4
+threads; a `gc-stress` build 407/409 for both, the two `synopsys/` tests over the harness timeout.
+
 The measurements before this work, for reference:
 
 Compile cost at O0 (release, per function, compile thread): about 2 ms plus 40 us per IR

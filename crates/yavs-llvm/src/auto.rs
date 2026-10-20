@@ -5,7 +5,7 @@
 //! The thread samples what the simulation threads interpret (`Runtime::sampler`) every
 //! [`Heat::period`] microseconds and compiles a function once it was seen for about as long
 //! as compiling it takes ([`Heat`]); the function is compiled in a module of its own and
-//! published through an atomic entry. A function then seen running its compiled code ten
+//! published through an atomic entry. A function then seen running its compiled code 30
 //! times as long is compiled again at O2 ([`Heat::o2_threshold`]) and its entry replaced (#432).
 //! The interpreter asks the tier on entry and now and then at
 //! jumps, so the swap-in happens there in any frame of that function: compiled code runs on
@@ -55,7 +55,7 @@ impl Heat {
     }
 
     /// The time `f` must be seen running its first-tier code before it is compiled again at
-    /// O2: `O2_AFTER` times `threshold`, about three times its O2 compile time (O2 costs
+    /// O2: `O2_AFTER` times `threshold`, about ten times its O2 compile time (O2 costs
     /// about seven times O0).
     pub fn o2_threshold(self, f: &yavs_ir::Func) -> u64 {
         self.threshold(f).saturating_mul(O2_AFTER)
@@ -95,7 +95,7 @@ fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
 }
 
 /// See `Heat::o2_threshold`.
-const O2_AFTER: u64 = 10;
+const O2_AFTER: u64 = 30;
 
 /// What happened to a hot function: compiled at that level (with the time it took), or why
 /// it stays interpreted (or at its first level).
@@ -183,13 +183,15 @@ impl AutoTier {
                 // Microseconds each function was seen interpreted, and running compiled.
                 let mut time = vec![[0u64; 2]; prog.funcs.len()];
                 let mut running = Vec::new();
-                // Functions to compile, whether at O2, and whether the sampler found them (a
-                // short one then stays interpreted; one eager `Tier::hot` asks for is compiled).
-                let mut hot: Vec<(FuncId, bool, bool)> = Vec::new();
+                // Functions to compile at the first level, in order, and whether the sampler
+                // found them (a short one then stays interpreted; one eager `Tier::hot` asks for
+                // is compiled); then those to compile again at O2.
+                let mut hot: std::collections::VecDeque<(FuncId, bool)> = Default::default();
+                let mut later: Vec<FuncId> = Vec::new();
                 let upgrade = opt != OptLevel::O2;
                 loop {
                     match rx.recv_timeout(period) {
-                        Ok(id) => hot.push((id, false, false)),
+                        Ok(id) => hot.push_back((id, false)),
                         Err(RecvTimeoutError::Timeout) => {
                             running.clear();
                             sample(&mut running);
@@ -207,14 +209,28 @@ impl AutoTier {
                                 } else {
                                     heat.threshold(f)
                                 };
-                                if was < at && *t >= at && (!compiled || upgrade) {
-                                    hot.push((id, compiled, true));
+                                if was < at && *t >= at {
+                                    if !compiled {
+                                        hot.push_back((id, true));
+                                    } else if upgrade {
+                                        later.push(id);
+                                    }
                                 }
                             }
                         }
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
-                    while let Some((id, o2, sampled)) = hot.pop() {
+                    loop {
+                        while let Ok(id) = rx.try_recv() {
+                            hot.push_back((id, false));
+                        }
+                        let Some((id, o2, sampled)) = hot
+                            .pop_front()
+                            .map(|(id, sampled)| (id, false, sampled))
+                            .or_else(|| later.pop().map(|id| (id, true, false)))
+                        else {
+                            break;
+                        };
                         // `busy` before `halt` here and `halt` before `busy` in `stop` (both
                         // SeqCst): either this thread sees the halt or `stop` sees it busy.
                         sh.busy.store(true, Ordering::SeqCst);
@@ -245,7 +261,7 @@ impl AutoTier {
                                     note(id, level, Ok(t0.elapsed()));
                                     // Eager (tests): swap the O2 code in during the run too.
                                     if heat.eager() && upgrade && !o2 {
-                                        hot.push((id, true, false));
+                                        later.push(id);
                                     }
                                 }
                                 Err(why) => note(id, level, Err(why)),

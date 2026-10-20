@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:aggregate_element_lengths:_p0	rows 2
+diag	fatal	0	0	-	value length 8 does not match aggregate element length 4

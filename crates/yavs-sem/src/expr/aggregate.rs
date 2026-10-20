@@ -2277,6 +2277,26 @@ fn fold_runs(
     this: StaticRange,
     has_others: bool,
 ) -> Option<Vec<(u64, ConstValue)>> {
+    // Elements that are arrays of different lengths (an unconstrained element type) are not
+    // folded: the run-time element check reports the mismatch (LRM 9.3.3.3).
+    let mut shape: Option<Vec<i128>> = None;
+    for v in vals {
+        if let Val::Elem(e) = v
+            && let Some(ConstValue::Array(a)) = db.value(*e)
+        {
+            let lens = a
+                .bounds
+                .iter()
+                .map(|&(l, d, r)| {
+                    let (lo, hi) = if d == Direction::To { (l, r) } else { (r, l) };
+                    (i128::from(hi) - i128::from(lo) + 1).max(0)
+                })
+                .collect::<Vec<_>>();
+            if shape.get_or_insert_with(|| lens.clone()) != &lens {
+                return None;
+            }
+        }
+    }
     // The runs one index position contributes, or a piece's whole runs.
     let row = |v: &Val| -> Option<Vec<(u64, ConstValue)>> {
         match v {

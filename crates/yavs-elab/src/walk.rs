@@ -1318,6 +1318,8 @@ impl Elab<'_> {
                     }
                     // 2008 expression actual: a static value is the port's value; any other
                     // drives the port through an equivalent process (LRM 6.5.6.3).
+                    // The actual's context subtype may name the instance's generics (#475).
+                    self.m.actual_of = Some(s);
                     let v = match self.m.eval(db, *e, Some(sc)) {
                         Ok(v) => v,
                         Err(d) if d.code == codes::NOT_EVALUATED => {
@@ -1332,10 +1334,12 @@ impl Elab<'_> {
                             let fo =
                                 self.m
                                     .add_obj(self.db, s, p, kind, shape, init.as_ref(), span)?;
+                            self.m.actual_of = None;
                             return self.actual_process(s, sc, fo, Vec::new(), *e, Some(subtype));
                         }
                         Err(d) => return Err(d),
                     };
+                    self.m.actual_of = None;
                     // An unconstrained formal takes the bounds of the static value.
                     let espan = db.exprs[*e].span;
                     let shape = match own {
@@ -1485,7 +1489,10 @@ impl Elab<'_> {
                         }
                         // A static value is the part's initial value; any other expression
                         // drives the part through an equivalent process (LRM 6.5.6.3).
-                        match self.m.eval(self.db, *e, Some(sc)) {
+                        self.m.actual_of = Some(s);
+                        let r = self.m.eval(self.db, *e, Some(sc));
+                        self.m.actual_of = None;
+                        match r {
                             Ok(v) => self.m.part_init(self.db, &fl, &fshape, &v, espan)?,
                             Err(d) if d.code == codes::NOT_EVALUATED => {
                                 // A scalar part's subtype, for its range check: from the

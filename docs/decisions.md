@@ -2500,12 +2500,14 @@ user's performance priority:
   stays in range". Arithmetic overflow is a runtime error, so the continuing path only holds
   results inside `i64`; that is what makes the intervals sound. Executed instructions of the
   queue/scoreboard testbench fell by 13 percent.
-- **Not changed:** processes and anything that may suspend, functions of fewer than 40 instructions
-  or over a size budget (registers times blocks above 2^20), every check whose interval does not
-  prove it. Both passes cost optimiser time at the first call of every subprogram (about 9 ms of
-  40 for a verification-component test case of 500 subprograms): the analysis tracks only the
-  registers a check, compare or branch depends on, and the liveness pass only registers defined
-  on several paths.
+- **Not changed:** processes and anything that may suspend, functions without a loop or of fewer than 40
+  instructions, or over a size budget (registers times blocks above 2^15), every check whose
+  interval does not prove it. Both passes cost optimiser time at the first call of every
+  subprogram, and most of a library runs a few times: without the loop condition they added 15
+  ms to a 200 ms verification-component test case and 25 ms to a small testbench of the second
+  verification library (a third of the optimiser's time, #444 comment). The analysis tracks only
+  the registers a check, compare or branch depends on, and the liveness pass only registers
+  defined on several paths.
 
 ## Equality of arrays of integers and enumerations compares bytes (yavs-lower, yavs-interp, #444)
 

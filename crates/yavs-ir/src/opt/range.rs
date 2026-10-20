@@ -23,13 +23,13 @@ type Iv = (i64, i64);
 const FULL: Iv = (i64::MIN, i64::MAX);
 
 /// Visits of a block after which a bound that still moves jumps to infinity.
-const WIDEN: u32 = 3;
+const WIDEN: u32 = 2;
 /// Functions of fewer instructions are left alone: the analysis costs more than it finds
 /// (every subprogram is optimised the first time it runs, and most run a few times).
-const MIN_CODE: usize = 40;
+pub(super) const MIN_CODE: usize = 40;
 /// Registers times blocks above which the analysis is skipped (its state is a vector of
 /// intervals per block).
-const BUDGET: usize = 1 << 20;
+const BUDGET: usize = 1 << 15;
 
 /// An interval from `i128` bounds: the part inside `i64` (arithmetic that leaves `i64` is a
 /// runtime error); all of `i64` when nothing is left.
@@ -190,8 +190,7 @@ impl Opt<'_> {
     pub(super) fn ranges(&mut self) -> bool {
         let nb = self.blocks.len();
         let n = self.defs.len();
-        if self.code.len() < MIN_CODE
-            || !self.nosusp
+        if !self.nosusp
             || self.f.body.is_some()
             || self.f.flags.contains(FuncFlags::MAY_SUSPEND)
             || n.saturating_mul(nb) > BUDGET

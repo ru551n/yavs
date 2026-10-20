@@ -647,13 +647,31 @@ fn byte(fb: &mut FuncBuilder<'_>) -> Reg {
     d
 }
 
-/// Instructions to make a function long enough for the passes that skip short ones (their
-/// results are unused and go).
+/// Make a function long enough and give it a loop, the two conditions of the passes that
+/// leave short and loop-free functions alone (the padding's results are unused and go). The
+/// code after the call is in the block after the loop.
 fn pad(fb: &mut FuncBuilder<'_>) {
     for k in 0..40 {
         let a = fb.reg(RegTy::I64);
         fb.emit(Inst::Const { dst: a, v: k });
     }
+    let (head, rest) = (fb.block(), fb.block());
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    let a = fb.addr(AddrSpace::Frame, 16);
+    pin(fb, 16);
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: c,
+        addr: a,
+        w: Width::B1,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: head,
+        f: rest,
+    });
+    fb.at(rest);
 }
 
 fn check(fb: &mut FuncBuilder<'_>, v: Reg, lo: i64, hi: i64) {
@@ -756,9 +774,10 @@ fn a_length_plus_one_is_not_zero() {
         fb.at(e);
         fb.emit(Inst::Ret { v: Some(n) });
     });
+    // The loop's own branch stays; the test of the length does not.
     assert_eq!(
         count(&code, |i| matches!(i, Inst::CondBr { .. })),
-        0,
+        1,
         "{code:?}"
     );
     assert_eq!(

@@ -15,19 +15,12 @@ use super::*;
 
 type Bits = Vec<u64>;
 
-/// Functions of fewer instructions are left alone (see `range.rs`).
-const MIN_CODE: usize = 40;
-
 impl Opt<'_> {
     /// Remove pure definitions no path reads; whether any went.
     pub(super) fn dead_defs(&mut self) -> bool {
         let n = self.defs.len();
         let nb = self.blocks.len();
-        if self.code.len() < MIN_CODE
-            || !self.nosusp
-            || self.f.body.is_some()
-            || self.f.flags.contains(FuncFlags::MAY_SUSPEND)
-        {
+        if !self.nosusp || self.f.body.is_some() || self.f.flags.contains(FuncFlags::MAY_SUSPEND) {
             return false;
         }
         let mut any = false;

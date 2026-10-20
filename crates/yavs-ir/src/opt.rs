@@ -842,23 +842,35 @@ impl<'a> Opt<'a> {
             self.hide_inits(inited);
             self.pass();
         }
-        // The analysis wants the renames applied and the tables rebuilt.
-        self.dce();
-        self.reanalyse();
-        if let Some(inited) = &promoted {
-            self.hide_inits(inited);
-        }
-        if self.ranges() {
-            // Decided tests and dropped checks make more constants and fewer branches.
+        // The loops of subprograms are where the passes below pay: they cost optimiser time at
+        // the first call of every subprogram, most of which run a few times (decisions.md
+        // "Interval analysis, jump threading and dead register definitions").
+        let loops = self.code.len() >= range::MIN_CODE
+            && self.nosusp
+            && self.f.body.is_none()
+            && !self.f.flags.contains(FuncFlags::MAY_SUSPEND)
+            && self.has_loop();
+        if loops {
+            // The analysis wants the renames applied and the tables rebuilt.
             self.dce();
             self.reanalyse();
             if let Some(inited) = &promoted {
                 self.hide_inits(inited);
             }
-            self.pass();
+            if self.ranges() {
+                // Decided tests and dropped checks make more constants and fewer branches.
+                self.dce();
+                self.reanalyse();
+                if let Some(inited) = &promoted {
+                    self.hide_inits(inited);
+                }
+                self.pass();
+            }
         }
         self.kill_unreachable();
-        self.dead_defs();
+        if loops {
+            self.dead_defs();
+        }
         self.drop_statements();
         self.merge_consts();
         self.dce();
@@ -1018,6 +1030,36 @@ impl<'a> Opt<'a> {
             self.changed = true;
         }
         done
+    }
+
+    /// Does the control flow graph have a cycle (a loop)? Code that runs once is not worth
+    /// the passes whose cost grows with its size: every subprogram is optimised at its first
+    /// call, and most of a library runs a few times.
+    fn has_loop(&self) -> bool {
+        let nb = self.blocks.len();
+        // 0 unseen, 1 on the DFS stack, 2 done.
+        let mut color = vec![0u8; nb];
+        let mut stack = vec![(0usize, 0usize)];
+        color[0] = 1;
+        while let Some(&(b, k)) = stack.last() {
+            if let Some(s) = self.succ(b, k) {
+                if let Some(top) = stack.last_mut() {
+                    top.1 += 1;
+                }
+                match color[s] {
+                    1 => return true,
+                    0 => {
+                        color[s] = 1;
+                        stack.push((s, 0));
+                    }
+                    _ => {}
+                }
+            } else {
+                color[b] = 2;
+                stack.pop();
+            }
+        }
+        false
     }
 
     /// Is block `b` on a cycle of the control flow graph?

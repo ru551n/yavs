@@ -24,7 +24,8 @@ use std::time::Duration;
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::lower::{RunFn, compile_one, enter, new_jit, too_big};
+use crate::lower::{compile_one, new_jit, too_big};
+use crate::rt::{RunFn, enter, too_short};
 use crate::{Error, Jit, OptLevel};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
@@ -65,33 +66,6 @@ impl Heat {
     pub fn eager(self) -> bool {
         self.period == 0
     }
-}
-
-/// Below this many IR instructions a function without a loop stays interpreted (`too_short`).
-const SHORT: usize = 64;
-
-/// Why `f` stays interpreted although hot: shorter than `SHORT` IR instructions and without a
-/// jump back, so each entry into compiled code from the interpreter (the frame view, the
-/// entry switch, the way back) would cost about what interpreting its body costs: the small
-/// helpers a testbench calls millions of times ran slower compiled (#432).
-fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
-    use yavs_ir::Inst;
-    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
-    let back = f.code.iter().enumerate().any(|(pc, i)| match i {
-        Inst::Br { to } => start(*to) <= pc,
-        Inst::CondBr { t, f: e, .. } => start(*t) <= pc || start(*e) <= pc,
-        Inst::Case { table, .. } => prog
-            .cases
-            .get(*table)
-            .is_some_and(|t| start(t.default) <= pc || t.arms.iter().any(|a| start(a.2) <= pc)),
-        _ => false,
-    });
-    (!back && f.code.len() < SHORT).then(|| {
-        format!(
-            "{} IR instructions without a loop: entering compiled code would cost about as much",
-            f.code.len()
-        )
-    })
 }
 
 /// See `Heat::o2_threshold`.

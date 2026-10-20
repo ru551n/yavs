@@ -19,6 +19,7 @@ mod auto;
 mod jit;
 #[cfg(feature = "llvm")]
 mod lower;
+pub mod rt;
 #[cfg(feature = "llvm")]
 pub mod spike;
 

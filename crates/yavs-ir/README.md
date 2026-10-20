@@ -43,9 +43,12 @@ textual dump.
 - `opt.rs` (#427): `ProgramBuilder::finish`/`snapshot` optimise every process, procedure and
   function once (not `Elab`/`Thunk`) after flag propagation and before resume numbering and
   verification: constant folding, identities, branch folding, `Index` of a known address
-  becomes `AddrOf`, constant-pool descriptor and scalar reads, available-expression sharing
-  per extended basic block (checks that cannot fail a second time included), store-to-load
-  forwarding, dead pure definitions. `YAVS_NO_IROPT=1` disables it. `Inst::visit_mut` is the
+  becomes `AddrOf`, constant-pool descriptor and scalar reads, `Field` of a record whose
+  layout does not depend on a descriptor becomes an `Index` by a constant (the `LayoutOf` goes
+  when unread; the pass adds registers and `Const` instructions), available-expression
+  sharing per extended basic block (checks that cannot fail a second time included),
+  store-to-load forwarding, dead pure definitions. The declarative part of a process (blocks
+  before `Func::body`) runs once and is left alone. `YAVS_NO_IROPT=1` disables it. `Inst::visit_mut` is the
   writable form of `Inst::visit`.
 - `Inst::SigParts` and `Inst::SigSlice` (#71): signal references of several parts, possibly in
   different signals, in the same two registers (ir.md 1.8); `SIG_PART_BYTES` is the size of a

@@ -157,23 +157,26 @@ fn repeated_computations_and_loads_are_shared() {
     );
 }
 
-#[test]
-fn a_store_forwards_to_the_load_and_a_call_stops_it() {
-    if !on() {
-        return;
-    }
+/// `f` stores 5 to a frame slot, loads it, runs `between` and loads again; the number of
+/// loads left.
+fn loads_left(named: bool, between: impl FnOnce(&mut FuncBuilder<'_>, FuncId)) -> usize {
     let mut pb = ProgramBuilder::new();
     let g = pb.declare("g", FuncKind::Procedure, None);
     let mut gb = pb.define(g);
     gb.stmt(StmtKind::Return, sp());
     gb.emit(Inst::Ret { v: None });
     gb.finish();
+    let int = pb.ty(Ty::Int { lo: 0, hi: 99 });
     let f = pb.declare("f", FuncKind::Function, None);
     let mut fb = pb.define(f);
-    fb.slot(32, 8);
+    if named {
+        fb.local("x", int, 8, 8);
+    } else {
+        fb.slot(8, 8);
+    }
     fb.stmt(StmtKind::Return, sp());
     let v = fb.reg(RegTy::I64);
-    let a = fb.addr(AddrSpace::Frame, 8);
+    let a = fb.addr(AddrSpace::Frame, 0);
     let k = fb.int(5);
     fb.emit(Inst::Move { dst: v, src: k });
     fb.emit(Inst::Store {
@@ -181,24 +184,48 @@ fn a_store_forwards_to_the_load_and_a_call_stops_it() {
         src: v,
         w: Width::B8,
     });
-    let x = load(&mut fb, 8);
+    let x = load(&mut fb, 0);
+    between(&mut fb, g);
+    let y = load(&mut fb, 0);
+    let r = bin(&mut fb, IntOp::Add, x, y);
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let code = &p.funcs.get(f).expect("f").code;
+    count(code, |i| matches!(i, Inst::Load { .. }))
+}
+
+fn call(fb: &mut FuncBuilder<'_>, g: FuncId) {
     let args = fb.regs(&[]);
     fb.emit(Inst::Call {
         func: g,
         args,
         dst: None,
     });
-    let y = load(&mut fb, 8);
-    let r = bin(&mut fb, IntOp::Add, x, y);
-    fb.emit(Inst::Ret { v: Some(r) });
-    fb.finish();
-    let p = pb.finish().expect("verifies");
-    let code = &p.funcs.get(f).expect("f").code;
-    // The first load is the stored constant, the second must read memory again.
+}
+
+#[test]
+fn a_store_forwards_to_the_load() {
+    if !on() {
+        return;
+    }
+    // Both loads are the stored constant; a slot nobody can reach survives a call.
+    assert_eq!(loads_left(false, |_, _| {}), 0);
+    assert_eq!(loads_left(false, call), 0);
+}
+
+#[test]
+fn a_call_or_a_statement_stops_what_a_debugger_or_callee_may_change() {
+    if !on() {
+        return;
+    }
+    // A scalar local can be written by a debugger at any statement or while a callee runs.
+    assert_eq!(loads_left(true, call), 1);
     assert_eq!(
-        count(code, |i| matches!(i, Inst::Load { .. })),
-        1,
-        "{code:?}"
+        loads_left(true, |fb, _| {
+            fb.stmt(StmtKind::Null, sp());
+        }),
+        1
     );
 }
 
@@ -291,4 +318,52 @@ fn statement_locations_follow_their_instructions() {
         .position(|i| matches!(i, Inst::Ret { .. }))
         .expect("ret");
     assert_eq!(func.loc[ret], s2);
+}
+
+#[test]
+fn facts_do_not_leak_between_sibling_branches_or_into_a_join() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::If, sp());
+        let x = load(fb, 0);
+        let zero = fb.int(0);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Gt,
+            dst: c,
+            a: x,
+            b: zero,
+        });
+        let (bt, be, bj) = (fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t: bt, f: be });
+        fb.at(bt);
+        // Shared with the load before the branch: only this branch can reach here.
+        let y = load(fb, 0);
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Move { dst: m, src: y });
+        fb.emit(Inst::Br { to: bj });
+        fb.at(be);
+        let a = fb.addr(AddrSpace::Frame, 0);
+        let seven = fb.int(7);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: seven,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Move { dst: m, src: seven });
+        fb.emit(Inst::Br { to: bj });
+        fb.at(bj);
+        // Reached from both: the store of the other branch means this must read memory.
+        let z = load(fb, 0);
+        let r = bin(fb, IntOp::Add, z, m);
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Load { .. })),
+        2,
+        "{code:?}"
+    );
 }

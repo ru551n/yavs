@@ -692,33 +692,41 @@ One commit per change; each table is an interleaved A/B of the binary before and
    instruction out of line. Frames keep IR pcs (`Code::at`, `Code::entry`), so messages, traces, root maps,
    coverage, DAP stepping and the LLVM tier are unchanged; the debug loop runs the IR unfused.
 3. `Copy` and `Fill` stage their bytes in a reused buffer instead of a new vector per execution.
+4. `Call`, `Ret`, `CallNative`, `SigReadScalar`, `WaitOn` and `Suspend` are ops of the loop too (their bodies
+   shared with `step`): the per-activation instructions of small clocked processes no longer go through the
+   generic step.
 
 Release builds, median CPU seconds of 5 interleaved runs (3 for the synthetic designs) at `--threads 1`, host
-load about 24 on 24 cores; main at `e453131d` (with the IR optimiser of #427) against each step. Synthetic designs
-(scratch, see "Simulation kernel"; `calls`: 3 million calls of a one-line function):
+load about 24 on 24 cores; main at `5b524584` (with the IR optimiser of #427) against main with steps 2 to 4.
+Synthetic designs (scratch, see "Simulation kernel"; `calls`: 3 million calls of a one-line function). Measured
+per step on the way (same host, earlier main): step 2 alone gave 0.68 to 0.87 on the interpreter-bound
+benchmarks; step 3 is within the noise except `osvvm_axistream` (0.82 to 0.77); step 4 gave `calls` 0.89 and
+`fan` 0.88.
 
-| Benchmark | main | step 2 | ratio | step 3 | ratio |
-|---|---|---|---|---|---|
-| `compute_loop` | 0.33 | 0.23 | 0.68 | 0.24 | 0.72 |
-| `ff_rtl` | 0.048 | 0.042 | 0.87 | 0.040 | 0.85 |
-| `delta_chain` | 0.20 | 0.19 | 0.99 | 0.19 | 0.99 |
-| `protected_scoreboard` | 0.19 | 0.14 | 0.73 | 0.13 | 0.72 |
-| `strings_heavy` | 0.44 | 0.30 | 0.67 | 0.31 | 0.72 |
-| `access_heavy` | 0.20 | 0.15 | 0.76 | 0.15 | 0.74 |
-| `uvvm_util_rand_tb` | 5.15 | 3.81 | 0.74 | 3.70 | 0.72 |
-| `osvvm_axistream` | 1.69 | 1.39 | 0.82 | 1.30 | 0.77 |
-| `vai_window_gen` | 1.52 | 1.28 | 0.84 | 1.36 | 0.90 |
-| `ff` | 10.54 | | | 9.44 | 0.90 |
-| `lfsr` | 14.82 | | | 12.04 | 0.81 |
-| `chain` | 2.45 | | | 2.40 | 0.98 |
-| `fan` | 7.14 | | | 6.70 | 0.94 |
-| `calls` | 0.47 | | | 0.36 | 0.77 |
+| Benchmark | main | steps 2-4 | ratio |
+|---|---|---|---|
+| `compute_loop` | 0.32 | 0.18 | 0.57 |
+| `ff_rtl` | 0.039 | 0.034 | 0.87 |
+| `delta_chain` | 0.17 | 0.15 | 0.86 |
+| `protected_scoreboard` | 0.16 | 0.10 | 0.65 |
+| `strings_heavy` | 0.35 | 0.26 | 0.74 |
+| `access_heavy` | 0.17 | 0.12 | 0.71 |
+| `uvvm_util_rand_tb` | 3.74 | 2.72 | 0.73 |
+| `osvvm_axistream` | 1.23 | 1.01 | 0.83 |
+| `vai_window_gen` | 1.23 | 0.88 | 0.72 |
+| `ff` | 7.41 | 6.02 | 0.81 |
+| `lfsr` | 11.39 | 9.29 | 0.82 |
+| `chain` | 2.09 | 1.87 | 0.90 |
+| `fan` | 6.30 | 5.70 | 0.90 |
+| `calls` | 0.41 | 0.29 | 0.71 |
 
 What is left in these profiles: `lfsr` reads its whole array signal for one element (#436, lowering); a call
-costs about 120 ns (frame vectors, root-map-ready frame setup, the step of `Call` and `Ret`), spread over many
-small parts; `fan` and `ff` are dominated by the kernel and by per-activation work (scratch vectors, the
-register fill, native `rising_edge`). The difftest corpus (356) passes at 1 and 4 threads, shuffled, and on
-the LLVM tier; the external runner's `check` and `verification_components` suites pass.
+costs about 90 ns (frame vectors and their setup, the frame push and pop), spread over many small parts; `fan` and `ff` are dominated by the kernel and by per-activation work (scratch vectors, the
+register fill, native `rising_edge`). The difftest corpus (359) passes at 1 and 4 threads, shuffled, and on
+the LLVM tier; the external runner's `check` and `verification_components` suites pass, and the two external verification libraries' suites (one: 78 pass,
+33 fail, 26 skipped; the other's scripts: 314/314 under 2008 and 2019) give the same verdict per test as main.
+A build with the `llvm` feature runs `--tier=auto` by default, which keeps the IR loop (the tier-up counts live
+there), so it does not use the predecoded code yet.
 
 ### Verification-testbench runtime library (#428)
 

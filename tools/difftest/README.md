@@ -125,7 +125,7 @@ standard, `fail`, `gold`, `stop=`, generics) and `ghdl` (the per-directory `test
 whose lines are only `analyze`, `elab_simulate`, `elab_simulate_failure`, `clean` and the standard
 flags; anything else, such as `if`, loops or tool options, is skipped). Tests of other languages,
 VHPI, coverage, waves dumps compared to files, Tcl and shell scripts are skipped. yavs runs tests
-written for an earlier standard as 2008.
+written for an earlier standard as 2008 with `--relaxed` (VHDL-93 shared variables).
 
     tools/difftest/external.py nvc                      # yavs against the reference simulator, classified
     tools/difftest/external.py ghdl --filter 'issue1'   # a subset

@@ -144,7 +144,9 @@ def script(sim, t):
     q = shlex.quote
     std, rel = t["std"], t["relaxed"]
     if sim == "yavs" and std < "2008":
-        std = "2008"  # yavs runs 2008 and 2019 only; older code mostly analyses as 2008
+        # yavs runs 2008 and 2019 only; code of an earlier standard is read as 2008, relaxed
+        # for what only the earlier standards allow (non-protected shared variables).
+        std, rel = "2008", True
     lines, i = ["set -u", "mkdir -p lib"], 0
     yavs = '"${YAVS_BIN:-yavs}"'
     for s in t["steps"]:

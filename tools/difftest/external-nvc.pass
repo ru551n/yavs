@@ -1,4 +1,5 @@
 access1
+access11
 access12
 access2
 access3
@@ -131,6 +132,7 @@ conf2
 conf4
 conf6
 const1
+const10
 const2
 const3
 const4
@@ -511,6 +513,7 @@ issue750
 issue751
 issue766
 issue787
+issue79
 issue790
 issue791
 issue794
@@ -677,6 +680,9 @@ record9
 reflect6
 seqblock1
 seqblock2
+shared1
+shared2
+shared3
 shift1
 shift2
 signal1

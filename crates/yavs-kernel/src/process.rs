@@ -180,11 +180,13 @@ impl Ctx<'_> {
 
     fn sig(&self, r: impl Into<SigRef>) -> Result<(&Signal, Range), SimError> {
         check_ref(self.sh.signals, r.into()).map_err(|k| self.error(k))
+    #[inline(always)]
     }
 
     /// Current value of a byte signal.
     pub fn value(&self, r: impl Into<SigRef>) -> Result<&[u8], SimError> {
         let (s, r) = self.sig(r)?;
+    #[inline]
         s.cur
             .bytes(r.offset as usize, r.len as usize)
             .ok_or_else(|| {
@@ -212,6 +214,7 @@ impl Ctx<'_> {
     /// elements, unused bits zero, as `LogicVec`'s blocks). `out` must be exactly that size.
     pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
         let (s, r) = self.sig(r)?;
+    #[inline]
         if s.cur.write_to(r.offset as usize, r.len as usize, out) {
             return Ok(());
         }
@@ -226,6 +229,7 @@ impl Ctx<'_> {
     /// `'event`: an event on any element in this cycle.
     pub fn event(&self, r: impl Into<SigRef>) -> Result<bool, SimError> {
         let (s, r) = self.sig(r)?;
+    #[inline]
         Ok(s.event_in(r, self.sh.cycle))
     }
 
@@ -257,6 +261,7 @@ impl Ctx<'_> {
     /// (`last`) its `'last_value`, without allocating; `None` for a null range.
     pub fn first_code(&self, r: impl Into<SigRef>, last: bool) -> Result<Option<u8>, SimError> {
         let (s, r) = self.sig(r)?;
+    #[inline(always)]
         if r.len == 0 {
             return Ok(None);
         }
@@ -276,6 +281,7 @@ impl Ctx<'_> {
     /// the three of `event` and two `first_code`.
     pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
         let (s, r) = self.sig(r)?;
+    #[inline(always)]
         if r.len == 0 {
             return Ok(None);
         }
@@ -555,6 +561,7 @@ impl Ctx<'_> {
         self.st.deadline = Some(deadline);
         Ok(())
     }
+    #[inline]
 
     /// The process resumed because its timeout expired.
     pub fn timed_out(&self) -> bool {
@@ -629,6 +636,7 @@ impl Ctx<'_> {
 
 /// Resolve a reference against the model: the signal must exist and the range must lie
 /// within it (null ranges allowed).
+#[inline(always)]
 pub(crate) fn check_ref(signals: &[Signal], r: SigRef) -> Result<(&Signal, Range), ErrorKind> {
     let s = signals
         .get(r.signal.0 as usize)

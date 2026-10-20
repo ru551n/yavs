@@ -367,10 +367,12 @@ impl Signal {
         }
     }
 
+    #[inline]
     pub fn full(&self) -> Range {
         Range::new(0, self.ty.len)
     }
 
+    #[inline]
     pub fn resolve(&self, r: Option<Range>) -> Range {
         r.unwrap_or(self.full())
     }
@@ -650,6 +652,7 @@ impl Signal {
         self.stamps[n..2 * n][r.elems()].contains(&cycle)
     }
 
+    #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
         self.event_cycles()[r.elems()].contains(&cycle)
     }

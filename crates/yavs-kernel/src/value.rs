@@ -247,6 +247,7 @@ impl Buf {
     }
 
     /// Element `i` as one byte: its first byte, or its logic code.
+    #[inline]
     pub fn code(&self, i: usize) -> u8 {
         match self {
             Buf::Bytes { es, data } => data[i * es],

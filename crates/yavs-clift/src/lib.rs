@@ -32,8 +32,8 @@ use yavs_llvm::rt::{RunFn, enter};
 #[cfg(feature = "clift")]
 pub struct ClifTier {
     /// Keeps the code alive; never used after construction.
-    _jit: Mutex<Jit>,
-    funcs: Vec<Option<(RunFn, usize)>>,
+    pub(crate) _jit: Mutex<Jit>,
+    pub(crate) funcs: Vec<Option<(RunFn, usize)>>,
     /// Functions that stay interpreted, with the reason.
     pub notes: Vec<(FuncId, String)>,
     /// Time spent translating and finalizing every function.
@@ -50,28 +50,6 @@ pub struct ClifTier {
 
 #[cfg(feature = "clift")]
 impl ClifTier {
-    fn new(
-        jit: Jit,
-        funcs: Vec<Option<(RunFn, usize)>>,
-        notes: Vec<(FuncId, String)>,
-        compile_time: std::time::Duration,
-        interpreted: Vec<(String, usize)>,
-        inline: usize,
-        instrs: usize,
-        times: Vec<(usize, std::time::Duration)>,
-    ) -> ClifTier {
-        ClifTier {
-            _jit: Mutex::new(jit),
-            funcs,
-            notes,
-            compile_time,
-            interpreted,
-            inline,
-            instrs,
-            times,
-        }
-    }
-
     /// The number of functions with compiled code.
     pub fn compiled(&self) -> usize {
         self.funcs.iter().filter(|f| f.is_some()).count()

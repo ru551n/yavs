@@ -1445,8 +1445,8 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
     }
     let mut interpreted: Vec<(String, usize)> = kinds.into_iter().collect();
     interpreted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    Ok(crate::ClifTier::new(
-        jit,
+    Ok(crate::ClifTier {
+        _jit: std::sync::Mutex::new(jit),
         funcs,
         notes,
         compile_time,
@@ -1454,5 +1454,5 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
         inline,
         instrs,
         times,
-    ))
+    })
 }

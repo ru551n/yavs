@@ -790,7 +790,10 @@ a note and a help suggesting an access type, as the reference simulators reject 
   that uses package state and is called for the first time is lowered into the session's
   program by the kept lowering (`Lowerer::suspend`/`resume`, `snapshot`), and the runtime moves
   to the grown program with the package data, shared state, open files and assert counts as they
-  are (`Runtime::extend`). Lowering every run-time package again, initialising them and replaying
+  are (`Runtime::extend`). The program itself moves between the runtime and the lowering
+  (`Lowerer::snapshot_take`, `Runtime::take_program`) instead of being copied for every function,
+  and only the functions added since the last snapshot are numbered and verified again; the
+  state is rebuilt when a lowering fails (#425). Lowering every run-time package again, initialising them and replaying
   the log per new function was most of elaboration on library testbenches. A full rebuild stays
   for `Session::undo`, a failed lowering or call, and a change of the run-time packages.
   The simulation's program then goes on from the session's lowering, and every build starts

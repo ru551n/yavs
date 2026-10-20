@@ -525,6 +525,13 @@ pub struct Suspended {
     packages: Vec<PackageIr>,
 }
 
+impl Suspended {
+    /// [`Lowerer::restore`] before [`Lowerer::resume`].
+    pub fn restore(&mut self, program: Program) {
+        self.pb.restore(program);
+    }
+}
+
 pub struct Lowerer<'a> {
     db: &'a Db,
     pb: ProgramBuilder,
@@ -759,6 +766,31 @@ impl<'a> Lowerer<'a> {
             }),
             Err(errs) => Err(errs.iter().map(verify_ice).collect()),
         }
+    }
+
+    /// [`Lowerer::snapshot`] without copying the program: it leaves the lowerer, which cannot
+    /// lower again until [`Lowerer::restore`] (or [`Suspended::restore`]) gets it back. Only
+    /// what was lowered since the last snapshot is verified and numbered again.
+    pub fn snapshot_take(&mut self) -> Result<Lowered, Vec<Diagnostic>> {
+        self.drain();
+        if !self.cx.diags.is_empty() {
+            return Err(self.cx.take_failed());
+        }
+        match self.pb.snapshot_take() {
+            Ok(program) => Ok(Lowered {
+                program,
+                units: self.units.clone(),
+                packages: self.packages.clone(),
+                shared_size: self.cx.shared_size,
+            }),
+            Err(errs) => Err(errs.iter().map(verify_ice).collect()),
+        }
+    }
+
+    /// Put back the program [`Lowerer::snapshot_take`] returned (possibly after the runtime
+    /// that ran it handed it back).
+    pub fn restore(&mut self, program: Program) {
+        self.pb.restore(program);
     }
 
     /// Set the lowering aside without its `Db`, to go on with [`Lowerer::resume`] (the

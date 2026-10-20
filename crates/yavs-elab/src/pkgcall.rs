@@ -264,6 +264,8 @@ pub(crate) struct Session {
     live: Option<Live>,
     /// A call failed after it may have changed the package state.
     dirty: bool,
+    /// `run_time_packages` for a `Db` of that size (it only grows, by instantiation).
+    packages: Option<((usize, usize, usize), Vec<UnitId>)>,
 }
 
 impl Session {
@@ -285,11 +287,18 @@ impl Session {
         if self.dirty {
             return None;
         }
-        let live = self.live.take()?;
-        let (lowerer, pkgs) = live.lowerer?;
+        let mut live = self.live.take()?;
+        let (mut lowerer, pkgs) = live.lowerer.take()?;
         if live.rt.files_touched() {
             return None;
         }
+        // The lowering goes on from the program the runtime holds: moved over when nothing
+        // else holds it (the runtime only keeps its assert state from here on), else copied.
+        lowerer.restore(
+            Arc::get_mut(&mut live.rt)
+                .and_then(Runtime::take_program)
+                .unwrap_or_else(|| (*live.rt.prog).clone()),
+        );
         let data = live
             .rt
             .package_data()
@@ -309,6 +318,19 @@ impl Session {
         })
     }
 
+    /// The run-time packages of `db`, found again only when `db` has grown.
+    fn run_time_packages(&mut self, db: &Db) -> Vec<UnitId> {
+        let key = (db.units.len(), db.decls.len(), db.exprs.len());
+        match &self.packages {
+            Some((k, p)) if *k == key => p.clone(),
+            _ => {
+                let p = crate::sim::run_time_packages(db);
+                self.packages = Some((key, p.clone()));
+                p
+            }
+        }
+    }
+
     /// A point to return to with [`Session::undo`].
     pub(crate) fn mark(&self) -> usize {
         self.log.len()
@@ -321,7 +343,8 @@ impl Session {
         }
         self.log.truncate(mark);
         self.live = None;
-        match self.rebuild(db) {
+        let pkgs = self.run_time_packages(db);
+        match self.rebuild(db, pkgs) {
             Ok(l) => {
                 self.live = Some(l);
                 self.dirty = false;
@@ -344,17 +367,22 @@ impl Session {
         if self.live.as_ref().is_none_or(|l| !l.sigs.contains_key(&d)) {
             self.lowered.push((d, constant));
             // A failed call may have left the package state half changed: rebuild it then.
+            let pkgs = self.run_time_packages(db);
             let added = match self.live.as_mut() {
-                Some(live) if !self.dirty => add(live, db, d, constant),
+                Some(live) if !self.dirty => add(live, db, &pkgs, d, constant),
                 _ => None,
             };
+            if !matches!(added, Some(Ok(()))) {
+                // `add` may have taken the runtime's program: the state is rebuilt.
+                self.live = None;
+            }
             if let Some(r) = added {
                 if let Err(e) = r {
                     self.lowered.pop();
                     return Err(e);
                 }
             } else {
-                match self.rebuild(db) {
+                match self.rebuild(db, pkgs) {
                     Ok(l) => {
                         self.live = Some(l);
                         self.dirty = false;
@@ -380,10 +408,9 @@ impl Session {
     }
 
     /// Lower the packages and `lowered`, initialise the packages and replay the log.
-    fn rebuild(&self, db: &Db) -> Result<Live, Fail> {
+    fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
         let mut l = Lowerer::new(db, LowerOptions::default());
-        let pkgs = crate::sim::run_time_packages(db);
         for &u in &pkgs {
             l.package(u).map_err(lower)?;
         }
@@ -391,7 +418,7 @@ impl Session {
         for &(d, constant) in &self.lowered {
             sigs.insert(d, item(&mut l, db, d, constant)?);
         }
-        let lw = l.snapshot().map_err(lower)?;
+        let lw = l.snapshot_take().map_err(lower)?;
         let lowerer = Some((l.suspend(), pkgs));
         let prog = Arc::new(lw.program);
         let shared = Arc::new(Mutex::new(SharedState::new(vec![
@@ -449,26 +476,35 @@ fn item(l: &mut Lowerer, db: &Db, d: DeclId, constant: bool) -> Result<Sig, Fail
 /// Add `d` (as [`item`]) to `live`'s program, keeping the package state. `None` when it
 /// cannot be added and the session must be rebuilt: no lowering to resume, other run-time
 /// packages, another shared variables area, or the runtime still in use.
-fn add(live: &mut Live, db: &Db, d: DeclId, constant: bool) -> Option<Result<(), Fail>> {
-    let (st, pkgs) = live.lowerer.take()?;
-    if pkgs != crate::sim::run_time_packages(db) {
+fn add(
+    live: &mut Live,
+    db: &Db,
+    now: &[UnitId],
+    d: DeclId,
+    constant: bool,
+) -> Option<Result<(), Fail>> {
+    let (mut st, pkgs) = live.lowerer.take()?;
+    if pkgs != now {
         return None;
     }
+    // The program moves from the runtime to the lowerer and back, never copied. Every exit
+    // below this point leaves the runtime without it: the caller drops the session's state.
+    let rt = Arc::get_mut(&mut live.rt)?;
+    let stmts = rt.prog.stmts.len();
+    st.restore(rt.take_program()?);
     let mut l = Lowerer::resume(db, st);
     let s = match item(&mut l, db, d, constant) {
         Ok(s) => s,
         Err(e) => return Some(Err(e)),
     };
-    let lw = match l.snapshot() {
+    let lw = match l.snapshot_take() {
         Ok(lw) => lw,
         Err(ds) => return Some(Err(lower_fail(ds))),
     };
     if lw.shared_size != live.shared_size {
         return None;
     }
-    let rt = Arc::get_mut(&mut live.rt)?;
-    let prog = Arc::new(lw.program);
-    if let Err(e) = rt.extend(prog, &db.sources) {
+    if let Err(e) = rt.extend_from(Arc::new(lw.program), stmts, &db.sources) {
         return Some(Err(runtime(e)));
     }
     live.sigs.insert(d, s);

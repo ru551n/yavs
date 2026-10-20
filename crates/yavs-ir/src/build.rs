@@ -16,6 +16,10 @@ pub struct ProgramBuilder {
     errors: Vec<VerifyError>,
     /// Functions below this id passed the verifier in a [`ProgramBuilder::snapshot`].
     verified: usize,
+    /// Functions below this id are propagated and numbered in the program held: set by
+    /// [`ProgramBuilder::snapshot_take`], whose program comes back with
+    /// [`ProgramBuilder::restore`].
+    processed: usize,
 }
 
 impl ProgramBuilder {
@@ -149,7 +153,9 @@ impl ProgramBuilder {
     /// Propagate flags, number resume points and verify. Errors are internal compiler
     /// errors of the producer.
     pub fn finish(self) -> Result<Program, Vec<VerifyError>> {
-        self.finish_from(0)
+        // Functions a snapshot verified already are not verified again (see `snapshot`).
+        let (verified, processed) = (self.verified, self.processed);
+        self.finish_from(verified, processed)
     }
 
     /// [`ProgramBuilder::finish`] on a copy, building goes on. Only the functions added since
@@ -157,12 +163,38 @@ impl ProgramBuilder {
     /// is added later cannot make an earlier one invalid.
     pub fn snapshot(&mut self) -> Result<Program, Vec<VerifyError>> {
         let n = self.prog.funcs.len();
-        let p = self.clone().finish_from(self.verified)?;
+        let p = self.clone().finish_from(self.verified, 0)?;
         self.verified = n;
         Ok(p)
     }
 
-    fn finish_from(mut self, first: usize) -> Result<Program, Vec<VerifyError>> {
+    /// [`ProgramBuilder::snapshot`] without the copy: the program leaves the builder, which
+    /// holds an empty one until the caller hands the same program back with
+    /// [`ProgramBuilder::restore`] to go on building. Only the functions added since the last
+    /// call are propagated, numbered and verified.
+    pub fn snapshot_take(&mut self) -> Result<Program, Vec<VerifyError>> {
+        let n = self.prog.funcs.len();
+        let b = ProgramBuilder {
+            prog: std::mem::take(&mut self.prog),
+            errors: self.errors.clone(),
+            verified: self.verified,
+            processed: self.processed,
+        };
+        let p = b.finish_from(self.verified, self.processed)?;
+        (self.verified, self.processed) = (n, n);
+        Ok(p)
+    }
+
+    /// Put back the program [`ProgramBuilder::snapshot_take`] returned.
+    pub fn restore(&mut self, prog: Program) {
+        self.prog = prog;
+    }
+
+    fn finish_from(
+        mut self,
+        verified: usize,
+        processed: usize,
+    ) -> Result<Program, Vec<VerifyError>> {
         let prog = &mut self.prog;
         for (id, f) in prog.funcs.iter() {
             if !f.defined {
@@ -177,9 +209,9 @@ impl ProgramBuilder {
         if !self.errors.is_empty() {
             return Err(self.errors);
         }
-        propagate(prog);
-        number_resumes(prog);
-        let errors = verify(prog, first);
+        propagate(prog, processed);
+        number_resumes(prog, processed);
+        let errors = verify(prog, verified);
         if errors.is_empty() {
             Ok(self.prog)
         } else {
@@ -231,13 +263,15 @@ fn touches_files(symbol: &str) -> bool {
     .any(|p| symbol.starts_with(p))
 }
 
-/// MAY_SUSPEND and TOUCHES_SHARED over the reverse call graph; each edge is visited once.
-fn propagate(prog: &mut Program) {
+/// MAY_SUSPEND and TOUCHES_SHARED over the reverse call graph; each edge is visited once. Only
+/// functions from `first` on are scanned and changed: the earlier ones are final (they
+/// cannot call a later function), so their flags only seed the later callers'.
+fn propagate(prog: &mut Program, first: usize) {
     let n = prog.funcs.len();
     let mut callers: Vec<Vec<u32>> = vec![Vec::new(); n];
-    let mut flags: Vec<FuncFlags> = Vec::with_capacity(n);
-    for (id, f) in prog.funcs.iter() {
-        let mut fl = f.flags;
+    let mut flags: Vec<FuncFlags> = prog.funcs.values().iter().map(|f| f.flags).collect();
+    for (id, f) in prog.funcs.iter().skip(first) {
+        let fl = &mut flags[id.0 as usize];
         for inst in &f.code {
             match *inst {
                 Inst::Suspend { .. } => fl.insert(FuncFlags::MAY_SUSPEND),
@@ -264,7 +298,6 @@ fn propagate(prog: &mut Program) {
                 v.push(id.0);
             }
         }
-        flags.push(fl);
     }
     for bit in [FuncFlags::MAY_SUSPEND, FuncFlags::TOUCHES_SHARED] {
         let mut work: Vec<u32> = (0..n as u32)
@@ -287,21 +320,21 @@ fn propagate(prog: &mut Program) {
             }
         }
     }
-    for (i, fl) in flags.into_iter().enumerate() {
+    for (i, fl) in flags.into_iter().enumerate().skip(first) {
         if let Some(f) = prog.funcs.get_mut(FuncId(i as u32)) {
             f.flags = fl;
         }
     }
 }
 
-fn number_resumes(prog: &mut Program) {
+fn number_resumes(prog: &mut Program, first: usize) {
     let suspending: Vec<bool> = prog
         .funcs
         .values()
         .iter()
         .map(|f| f.flags.contains(FuncFlags::MAY_SUSPEND))
         .collect();
-    for i in 0..prog.funcs.len() {
+    for i in first..prog.funcs.len() {
         let Some(f) = prog.funcs.get_mut(FuncId(i as u32)) else {
             continue;
         };

@@ -393,6 +393,25 @@ impl Runtime {
         prog: Arc<Program>,
         map: &yavs_diag::SourceMap,
     ) -> Result<(), SimError> {
+        let first = self.prog.stmts.len();
+        self.extend_from(prog, first, map)
+    }
+
+    /// Take the program out of the runtime to grow it in place, without a copy: the runtime
+    /// holds an empty one until [`Runtime::extend_from`] gets the grown program (the caller
+    /// keeps the old statement count). `None` while anything else holds the program.
+    pub fn take_program(&mut self) -> Option<Program> {
+        Arc::get_mut(&mut self.prog).map(std::mem::take)
+    }
+
+    /// [`Runtime::extend`] when the statements before `first` are those of the old program
+    /// (it was taken with [`Runtime::take_program`]).
+    pub fn extend_from(
+        &mut self,
+        prog: Arc<Program>,
+        first: usize,
+        map: &yavs_diag::SourceMap,
+    ) -> Result<(), SimError> {
         for (_, n) in prog.natives.iter().skip(self.natives.len()) {
             self.natives.push(native::lookup(&n.symbol).map_err(usage)?);
         }
@@ -401,7 +420,7 @@ impl Runtime {
         self.expanded
             .resize_with(prog.consts.len(), Default::default);
         self.pre.resize_with(prog.funcs.len(), Default::default);
-        self.sources.add_from(&prog, self.prog.stmts.len(), map);
+        self.sources.add_from(&prog, first, map);
         self.prog = prog;
         Ok(())
     }

@@ -3334,7 +3334,7 @@ impl Machine {
                 if size > 1 << 32 {
                     return Err(Fault::Runtime("object larger than 4 GiB".into()));
                 }
-                if fill != 0 && size % u64::from(fill) != 0 {
+                if fill != 0 && !size.is_multiple_of(u64::from(fill)) {
                     return Err(ice("NewFill size is not a multiple of its element"));
                 }
                 let (ds, size) = (dsize as usize, size as usize);

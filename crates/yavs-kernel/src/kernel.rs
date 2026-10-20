@@ -1348,22 +1348,10 @@ impl SimControl {
             next = s + 1;
             jobs.push((sig, run));
         }
-        let (drivers, slots) = (&self.drivers, &self.slots);
-        let job = |(sig, run): &mut (&mut Signal, &[(u32, u32)])| -> Result<bool, ErrorKind> {
-            for &(_, d) in run.iter() {
-                let info = &drivers[d as usize];
-                let mut slot = lock(&slots[info.owner.0 as usize]);
-                let mut ranges: smallvec::SmallVec<[Range; 4]> = smallvec::SmallVec::new();
-                slot.st.waveforms[info.local as usize].apply_due(
-                    now,
-                    &mut sig.drivers[info.slot as usize],
-                    |r| ranges.push(r),
-                );
-                for r in ranges.drain(..) {
-                    sig.mark_active(r, now, cycle);
-                    sig.push_dirty(r);
-                }
-            }
+        let drivers = &self.drivers;
+        // The matured transactions of one driver into its signal (`Signal::apply_driver`),
+        // then the driving and effective values of what became dirty.
+        fn finish(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
             let mut dirty = std::mem::take(&mut sig.dirty);
             for &r in &dirty {
                 sig.compute_driving(r)?;
@@ -1374,13 +1362,45 @@ impl SimControl {
             }
             sig.dirty = dirty;
             Ok(changed)
-        };
+        }
         // ponytail: fixed cut-off below which a parallel split costs more than it saves.
         let results: Vec<Result<bool, ErrorKind>> = match &self.pool {
             Some(pool) if jobs.len() >= 256 => {
+                let slots = &self.slots;
+                let job = |(sig, run): &mut (&mut Signal, &[(u32, u32)])| {
+                    for &(_, d) in run.iter() {
+                        let info = &drivers[d as usize];
+                        let mut slot = lock(&slots[info.owner.0 as usize]);
+                        sig.apply_driver(
+                            &mut slot.st.waveforms[info.local as usize],
+                            info.slot,
+                            now,
+                            cycle,
+                        );
+                    }
+                    finish(sig, now, cycle)
+                };
                 pool.install(|| jobs.par_iter_mut().map(job).collect())
             }
-            _ => jobs.iter_mut().map(job).collect(),
+            // No other thread touches the slots: no lock.
+            _ => {
+                let slots = &mut self.slots;
+                jobs.iter_mut()
+                    .map(|(sig, run)| {
+                        for &(_, d) in run.iter() {
+                            let info = &drivers[d as usize];
+                            let slot = slot_mut(&mut slots[info.owner.0 as usize]);
+                            sig.apply_driver(
+                                &mut slot.st.waveforms[info.local as usize],
+                                info.slot,
+                                now,
+                                cycle,
+                            );
+                        }
+                        finish(sig, now, cycle)
+                    })
+                    .collect()
+            }
         };
         for (run, changed) in due.chunk_by(|a, b| a.0 == b.0).zip(results) {
             if changed? {

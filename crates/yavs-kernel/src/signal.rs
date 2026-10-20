@@ -659,6 +659,17 @@ impl Signal {
         any
     }
 
+    /// Apply the transactions of one driver (`w`, its waveform; `slot` its index in `drivers`)
+    /// that are due, marking the elements active and dirty.
+    pub fn apply_driver(&mut self, w: &mut Waveform, slot: u32, now: Time, cycle: u64) {
+        let mut ranges: SmallVec<[Range; 4]> = SmallVec::new();
+        w.apply_due(now, &mut self.drivers[slot as usize], |r| ranges.push(r));
+        for r in ranges.drain(..) {
+            self.mark_active(r, now, cycle);
+            self.push_dirty(r);
+        }
+    }
+
     /// Note that the driving value of `r` must be recomputed. A range that continues the last
     /// one extends it: one process per element of a vector gives one range, not one per element.
     pub fn push_dirty(&mut self, r: Range) {

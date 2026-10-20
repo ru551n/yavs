@@ -26,6 +26,8 @@ pub struct Program {
     /// Root map of the shared variables area (`AddrSpace::Shared`), for the collection of
     /// the shared heap (#303).
     pub shared_roots: Vec<(u32, RootKind)>,
+    /// Cache of the optimiser (`opt.rs`); leave it to `Default`.
+    pub layouts: crate::opt::LayoutCache,
 }
 
 impl Program {

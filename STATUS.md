@@ -1111,9 +1111,33 @@ and skipped jumps not counted, fused pairs count once):
 | vunit_vc30 (30 runs) | - | 4.91 -> 4.74 | 1.62 -> 1.28 | 1.69 -> 1.91 |
 | elab_heavy | - | 0.41 -> 0.47 | 0.10 -> 0.12 | 0.14 -> 0.15 |
 
-The pass costs about 0.1 microsecond per lowered instruction (20 to 25 ms for the 300k instructions of the utility
-library testbench), which short runs (`vunit_vc30`, `elab_heavy`) do not win back. Left: range-based check removal,
-a `New` that fills in place (package initialisers, #425), promoting hidden frame slots to registers.
+Round 2 (#427, #425, #436): the optimiser runs per function the first time `Program::func` is asked for it
+(the interpreter's predecoded form is built from that copy), a statically sized array variable reads its
+descriptor from the constant pool, `NewFill` allocates an array object without a temporary, and a part of an
+array-of-arrays signal is read alone (#436). `tools/bench/run.py --compare` of main (A) against this work (B), release
+builds without the `llvm` feature, `--threads 1`, 7 runs, median CPU seconds (the first four rows are a second run of
+the same pair):
+
+| Benchmark | Total A -> B | Elaborate A -> B | Simulate A -> B |
+|---|---|---|---|
+| vunit_vc30 (30 runs) | 3.19 -> 3.23 | 1.32 -> 1.14 | 0.64 -> 0.79 |
+| uvvm_util_rand_tb | 2.62 -> 2.65 | 0.05 -> 0.03 | 2.53 -> 2.58 |
+| osvvm_axistream | 0.97 -> 0.95 | 0.05 -> 0.03 | 0.87 -> 0.87 |
+| compute_loop | 0.18 -> 0.18 | - | 0.17 -> 0.17 |
+| elab_heavy | 0.34 -> 0.34 | 0.11 -> 0.11 | 0.08 -> 0.08 |
+| ff_rtl | 0.03 -> 0.03 | - | 0.02 -> 0.02 |
+| delta_chain | 0.16 -> 0.15 | - | 0.15 -> 0.14 |
+| protected_scoreboard | 0.11 -> 0.11 | - | 0.10 -> 0.10 |
+| vai_window_gen | 0.92 -> 0.92 | 0.04 -> 0.03 | 0.82 -> 0.84 |
+| 512-register array-signal design (#436), 5000 cycles | 11.07 -> 4.01 | - | - |
+
+Geometric mean of the total CPU ratio over the nine benchmarks 0.98. Lazy optimisation moves the pass from
+elaborate to the first call in simulate and does not shrink it: in a library testbench nearly every lowered
+function is called (542 of 904 functions, 61% of the instructions, in a verification component test; lowering is
+already demand driven), so a short run still pays about 6 ms of pass for 108k instructions. A function's version is
+fixed at its first use because frames find their function by id; optimising only after a call count would need the
+version in the frame (an interpreter change). Left: range-based check removal, loop-invariant hoisting, promoting
+hidden frame slots to registers.
 
 Performance (M6, #334/#335, 2026-10-19, `tools/bench/run.py --compare` of one release build run
 with `--tier=interp` (A) and `--tier=llvm` (B), median CPU of 3 runs, shared host). The LLVM

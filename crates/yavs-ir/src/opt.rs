@@ -46,6 +46,17 @@ pub fn enabled() -> bool {
     })
 }
 
+/// Field offsets of the static record layouts met by the optimiser, kept in the program so
+/// that the functions optimised one by one share them. A copy of the program starts empty.
+#[derive(Default, Debug)]
+pub struct LayoutCache(std::sync::Mutex<FxMap<TyId, Option<Vec<u64>>>>);
+
+impl Clone for LayoutCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 /// A fast, non-cryptographic hasher: the tables are small, built per function and never
 /// see hostile keys.
 #[derive(Default)]
@@ -100,7 +111,11 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     if matches!(raw.kind, FuncKind::Elab | FuncKind::Thunk) || raw.code.len() < 2 {
         return None;
     }
-    let mut layouts = FxMap::default();
+    let mut layouts = prog
+        .layouts
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut o = Opt::new(
         prog,
         raw,

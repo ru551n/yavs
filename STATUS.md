@@ -505,6 +505,17 @@ cold and a warm run are identical (`crates/yavs/tests/cache.rs`). Not done: step
 after initialisation (15 to 20 ms of the elaboration, more than all of step 1); it touches the heap
 structures that #422 is changing.
 
+Compact composite constants (#446, `Fx::konst_comp`): a folded record or array-of-composites constant is
+lowered as runs of repeated bytes (repeated elements, record fields with padding, one-valued logic arrays), and the
+pool keeps `ConstData::Repeat`/`Runs` when that is four times smaller. The 6.9 MB constant of the UVVM
+AXI-stream testbench is now about 12 KB (the pool of the lowered packages 7.6 MB to 12 KB), so its lowered packages are
+cached (image 68 KB; before: not stored). `--compare`, 7 runs, median, same host: peak RSS 93.7 to 86.1 MiB, elaborate CPU
+0.11 to 0.10 s, total CPU 3.16 to 3.18 s (noise); `vunit_vc30` (60 MiB, total 3.66 / 3.67 s) and `osvvm_axistream` (1.25 / 1.27 s)
+unchanged. The interpreter expands a compact constant only when its address is used and writes `CopyConst` straight
+to the copy; the optimiser reads pool bytes through `ConstData::read`. Tests: `composite/periodic_const` (difftest),
+`periodic_constant_is_compact` (`yavs-lower`), `periodic_constant_does_not_block_the_lowering_cache`
+(`crates/yavs/tests/cache.rs`, warm, cold and `--no-cache` identical), `ConstData::read` unit test.
+
 ### Per-run overhead (#426)
 
 The fixed cost of one `yavs run`, which a testbench suite pays once per test case. Release builds, the main

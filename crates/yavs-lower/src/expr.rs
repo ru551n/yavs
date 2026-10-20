@@ -3845,6 +3845,17 @@ impl<'a> Fx<'a, '_> {
                         let r = self.scalar_bounds(st, span)?;
                         self.range_attr(attr, r, None, span)
                     }
+                    // 2019 `T'LENGTH` of a discrete subtype: its number of values (LCS-2016-018).
+                    Length => {
+                        let r = self.scalar_bounds(st, span)?;
+                        let (lo, hi) = self.low_high(r);
+                        let d = self.bin(IntOp::Sub, hi, lo);
+                        let one = self.int(1);
+                        let n = self.bin(IntOp::Add, d, one);
+                        let z = self.int(0);
+                        let neg = self.cmp(CmpOp::Lt, n, z);
+                        Ok(V::S(self.select(neg, z, n, RegTy::I64)))
+                    }
                     Pos => Ok(V::S(self.scalar_expr(args[0])?)),
                     Val => {
                         let v = self.scalar_expr(args[0])?;

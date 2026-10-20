@@ -49,7 +49,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 015 | Report the calling path | supported | crash | reject | ok | crash | `get_call_path` |
 | 015a | Report the current file name | supported | ok | reject | ok | ok | `file_name`, `file_line` |
 | 016 | Anonymous types | unsupported | reject | reject | reject | reject | `E0002` on `array (..) of` in an object declaration; no reference accepts the form I tried, so the intended syntax is unverified. No issue filed |
-| 018 | Attributes for enumerated types | not tested | - | - | - | - | the exact attribute set could not be identified without the LCS text |
+| 018 | Attributes for enumerated types | supported | ok | reject | reject | ok | `T'LENGTH` of a discrete type or subtype, the number of its values (0 for a null range; a physical type stays `E1621`); the other attributes of the LCS example (`'base` as a type mark, `'ascending`, `'reverse_range` of enumeration-indexed arrays) already worked (#445) |
 | 018a | `'INDEX` | supported | ok | reject | reject | ok |  |
 | 018d | `'DESIGNATED_SUBTYPE` | supported | ok | reject | reject | ok |  |
 | 019 | Constraints from initial values of signals and variables | supported | ok | reject | reject | ok |  |

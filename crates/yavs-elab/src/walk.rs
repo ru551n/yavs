@@ -2775,9 +2775,12 @@ impl Elab<'_> {
             .map(|rs| {
                 rs.into_iter()
                     .map(|(l, r)| {
+                        // `merged` is sorted and disjoint: the last range starting at or
+                        // before `r` is the one that holds it.
                         let k = merged
-                            .iter()
-                            .position(|(ml, mr)| *ml == l && mr.contains(r))
+                            .partition_point(|(ml, mr)| (*ml, mr.offset) <= (l, r.offset))
+                            .checked_sub(1)
+                            .filter(|&k| merged[k].0 == l && merged[k].1.contains(r))
                             .expect("merged ranges cover every lsp range");
                         (base + k, l, r)
                     })

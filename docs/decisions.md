@@ -367,7 +367,7 @@ milestone users care about works.
 - **Result (STATUS.md "clift"):** the tier is correct (corpus identical at 1 and 4 threads, collection stress) and translates the
   closure of a verification-library testbench in about 4 s instead of 95 s with LLVM O2, at steady-state
   quality close to LLVM O0. As a tier-up it performs like the LLVM tier-up (geometric mean of total CPU against the
-  interpreter 1.08 to 1.16, LLVM 1.12; eager `clift` 2.5x): the cost left is entering compiled code and the
+  interpreter 1.08 to 1.42 over four sets, LLVM 1.12 and 1.23; eager `clift` 2.5x): the cost left is entering compiled code and the
   callbacks for calls, natives and reports, which both tiers share. A tier that publishes code must set
   `NativeFlags` (`Runtime::native_flags`) or the interpreter never enters it. Whether to adopt, and as what, is
   the user's decision (issue #481).

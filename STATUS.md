@@ -2061,7 +2061,7 @@ LLVM install. It generates code for the contract the LLVM tier defined and now s
 `yavs_llvm::rt` (the frame view `Mem`, the callbacks `yavs_rt_step`, `yavs_rt_signal`, `yavs_rt_host`, `enter`, the
 per-instruction facts): inline are the integer and real operations with their checks, compares, branches, `Case`,
 loads, stores, `Copy`, `Alloc`, `AddrOf`, `Index`, `Stmt`, descriptor reads and writes, `LayoutOf` of static layouts,
-logic elements, `SigVal`, the `std_ulogic` table natives and the signal operations that use `yavs_rt_signal`; everything
+logic elements and logic copies (`LCopy`), `SigVal`, the `std_ulogic` table natives and the signal operations that use `yavs_rt_signal`; everything
 else (calls, natives, reports, `**`, heap) runs in place through `yavs_rt_step`, and a failing inline instruction
 returns its pc to the interpreter, so the output is the interpreter's. Registers stay in the frame's register array;
 Cranelift's alias analysis (regions for registers, guest memory and the `Mem` view) forwards and drops accesses
@@ -2075,7 +2075,9 @@ logic elements, native tables, calls, precise roots) pass unchanged against this
 
 Measurements (2026-10-21, release build with `llvm,clift` of main at 6dabc9fc plus this work, one performance core,
 `tools/bench/run.py`, 3 runs, median total CPU seconds including the background compile thread; the host ran at
-load average 20 to 35 from other agents, so differences under 10% are noise; `clift-auto` was measured twice):
+load average 20 to 35 from other agents, so differences under 20% are noise; `clift-auto` was measured four times and
+the LLVM tier-up twice, the table shows the first two sets of `clift-auto`; the geometric means of all sets are 1.08, 1.16,
+1.21 and 1.42 for `clift-auto` and 1.12 and 1.23 for the LLVM tier-up):
 
 | Benchmark | interp | `--tier=auto` (LLVM) | `--tier=clift` | `--tier=clift-auto` (two runs) |
 |---|---|---|---|---|
@@ -2122,8 +2124,8 @@ Release build with `-p yavs` (cores 8 to 23, 2 jobs, clean target directory): de
 What the numbers say: Cranelift removes the compile cost problem (the closure of a verification-library testbench
 translates in 1.2 to 4 s instead of 95 s) and its steady-state code is about as good as LLVM O0, so eager
 translation is not the problem any more, but as a tier-up (`clift-auto`) it lands where the LLVM tier-up does: within
-noise of the interpreter in total CPU (geometric mean 1.08 to 1.16 against LLVM's 1.12), worst on `calls` (1.3x) and
-`access_heavy` (1.2x), where entering compiled code and the callbacks for calls, natives and reports (shared by both
+noise of the LLVM tier-up and 10% to 30% above the interpreter in total CPU on these short runs, worst on `calls`
+(1.3x to 1.5x) and `access_heavy` (1.2x to 1.4x), where entering compiled code and the callbacks for calls, natives and reports (shared by both
 tiers) cost about what the interpreter's dispatch costs. Compiled code wins where the time is in loops without calls
 (the loop above 0.6x, compute_loop at 0.85x eager), and the kernel designs do not move. A tier-up has to tell the
 interpreter when code is ready (`NativeFlags::set`, the protocol of `Runtime::native_flags`): without it the code is

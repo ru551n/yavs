@@ -29,51 +29,6 @@ use yavs_ir::{
 use crate::rt::*;
 use crate::{Error, Jit, Module, OptLevel};
 
-const LCOPY: &str = "yavs_rt_lcopy";
-
-/// The most plane blocks an inline `LCopy` reads or writes (`yavs_rt_lcopy`'s stack copy).
-const LCOPY_BLOCKS: u64 = 8;
-
-/// `Inst::LCopy` on the `ns` source and `nd` destination plane blocks compiled code found
-/// (`Gen::host`): `yavs_interp::copy_bits`, the interpreter's own copy, on stack copies of both
-/// (they may be one vector).
-extern "C" fn yavs_rt_lcopy(
-    dst: *mut u8,
-    nd: u64,
-    d0: u64,
-    src: *const u8,
-    ns: u64,
-    s0: u64,
-    n: u64,
-) {
-    let blocks = |b: &[u8], out: &mut [[u64; 4]]| {
-        for (o, c) in out.iter_mut().zip(b.as_chunks::<32>().0) {
-            *o = std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j])));
-        }
-    };
-    let (ns, nd) = (ns.min(LCOPY_BLOCKS) as usize, nd.min(LCOPY_BLOCKS) as usize);
-    let mut sw = [[0u64; 4]; LCOPY_BLOCKS as usize];
-    let mut dw = [[0u64; 4]; LCOPY_BLOCKS as usize];
-    // SAFETY: compiled code checked `ns` readable blocks at `src` and `nd` writable blocks at
-    // `dst` (`Gen::host`, both at most `LCOPY_BLOCKS`); each slice is dead before the next
-    // one exists.
-    unsafe {
-        blocks(std::slice::from_raw_parts(src, ns * 32), &mut sw[..ns]);
-        blocks(std::slice::from_raw_parts(dst, nd * 32), &mut dw[..nd]);
-    }
-    yavs_interp::copy_bits(&sw[..ns], &mut dw[..nd], s0, d0, n);
-    // SAFETY: as above.
-    let d = unsafe { std::slice::from_raw_parts_mut(dst, nd * 32) };
-    for (c, w) in d
-        .as_chunks_mut::<8>()
-        .0
-        .iter_mut()
-        .zip(dw[..nd].as_flattened())
-    {
-        *c = w.to_le_bytes();
-    }
-}
-
 /// Compiled code for the functions of one program.
 pub struct LlvmTier {
     /// Keeps the code alive; never used after construction.

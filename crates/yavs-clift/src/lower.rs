@@ -51,6 +51,7 @@ pub struct Jit {
     step: ClifId,
     host: ClifId,
     signal: ClifId,
+    lcopy: ClifId,
     zero: ClifId,
     mov: ClifId,
     tables: HashMap<Vec<u8>, DataId>,
@@ -86,6 +87,7 @@ impl Jit {
             (STEP, yavs_rt_step as *const u8),
             (HOST, yavs_rt_host as *const u8),
             (SIGNAL, yavs_rt_signal as *const u8),
+            (LCOPY, yavs_rt_lcopy as *const u8),
             ("clift_zero", clift_zero as *const u8),
             ("clift_move", clift_move as *const u8),
         ] {
@@ -103,6 +105,7 @@ impl Jit {
         let step = imp(STEP, &[I64, I64, I64, I32], Some(I32))?;
         let host = imp(HOST, &[I64, I64, I64, I64, I64, I32], Some(I64))?;
         let signal = imp(SIGNAL, &[I64, I64, I64, I32, I32], Some(I32))?;
+        let lcopy = imp(LCOPY, &[I64; 7], None)?;
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
         let mut sig = module.make_signature();
@@ -116,6 +119,7 @@ impl Jit {
             step,
             host,
             signal,
+            lcopy,
             zero,
             mov,
             tables: HashMap::new(),
@@ -175,6 +179,9 @@ impl Jit {
             signal: self
                 .module
                 .declare_func_in_func(self.signal, &mut self.ctx.func),
+            lcopy: self
+                .module
+                .declare_func_in_func(self.lcopy, &mut self.ctx.func),
             zero: self
                 .module
                 .declare_func_in_func(self.zero, &mut self.ctx.func),
@@ -213,6 +220,7 @@ struct Imports {
     step: FuncRef,
     host: FuncRef,
     signal: FuncRef,
+    lcopy: FuncRef,
     zero: FuncRef,
     mov: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
@@ -867,6 +875,55 @@ fn gen_func(
                     let v = g.ld(r);
                     g.b.ins().store(g.gf, v, p, k as i32 * 8);
                 }
+                g.join(join);
+            }
+            Inst::LCopy {
+                dst,
+                dst_off,
+                src,
+                src_off,
+                n,
+            } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let (k, so, d) = (g.ld(n), g.ld(src_off), g.ld(dst_off));
+                // Nothing to copy: no memory is touched, as in the interpreter.
+                let go = g.b.create_block();
+                let z = g.b.ins().icmp_imm_s(IntCC::Equal, k, 0);
+                g.b.ins().brif(z, join, &[], go, &[]);
+                g.b.switch_to_block(go);
+                let small =
+                    |g: &mut Gen, v| g.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, v, 1 << 32);
+                let (sk, ss, sd) = (small(&mut g, k), small(&mut g, so), small(&mut g, d));
+                let okv = g.b.ins().band(sk, ss);
+                let okv = g.b.ins().band(okv, sd);
+                g.guard(okv, slow);
+                // First block, block count, first element in it.
+                let blocks = |g: &mut Gen, off| {
+                    let b0 = g.b.ins().ushr_imm_s(off, 6);
+                    let last = g.b.ins().iadd(off, k);
+                    let last = g.b.ins().iadd_imm_s(last, -1);
+                    let b1 = g.b.ins().ushr_imm_s(last, 6);
+                    let nb = g.b.ins().isub(b1, b0);
+                    let nb = g.b.ins().iadd_imm_s(nb, 1);
+                    let first = g.b.ins().ishl_imm_s(b0, 6);
+                    (b0, nb, g.b.ins().isub(off, first))
+                };
+                let (sb0, ns, s0) = blocks(&mut g, so);
+                let (db0, nd, d0) = blocks(&mut g, d);
+                let a =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, ns, LCOPY_BLOCKS as i64);
+                let b =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, nd, LCOPY_BLOCKS as i64);
+                let fit = g.b.ins().band(a, b);
+                g.guard(fit, slow);
+                let (sb, sn) = (g.b.ins().ishl_imm_s(sb0, 5), g.b.ins().ishl_imm_s(ns, 5));
+                let (db, dn) = (g.b.ins().ishl_imm_s(db0, 5), g.b.ins().ishl_imm_s(nd, 5));
+                let (sa, da) = (g.ld(src), g.ld(dst));
+                let ps = g.host(sa, g.fk(src), Op::V(sb), Op::V(sn), false, slow);
+                let pd = g.host(da, g.fk(dst), Op::V(db), Op::V(dn), true, slow);
+                g.b.ins().call(g.imp.lcopy, &[pd, nd, d0, ps, ns, s0, k]);
                 g.join(join);
             }
             Inst::CondBr { c: r, t, f: e } => {

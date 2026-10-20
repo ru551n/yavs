@@ -2377,6 +2377,41 @@ impl Db {
             return self.poison_expr();
         };
         let (el, dir) = (elems[0].subtype, elems[2].subtype);
+        // A prefix with a static range gives a constant record (usable as a range, 099).
+        let pst = match p {
+            AttrPrefix::Subtype(st) => Some(st),
+            AttrPrefix::Expr(e) => Some(self.exprs[e].subtype),
+            AttrPrefix::Entity(_) => None,
+        };
+        let is_array = |db: &Self, st| matches!(db.types[db.base(st)].kind, TypeKind::Array { .. });
+        if let Some(st) = pst
+            && let Some(r) = crate::expr::aggregate::subtype_range(
+                self,
+                st,
+                if is_array(self, st) {
+                    dim as usize - 1
+                } else {
+                    0
+                },
+            )
+        {
+            let enum_ = matches!(self.types[t].kind, TypeKind::Enum { .. });
+            let mk = |v: i64| {
+                if enum_ {
+                    ConstValue::Enum(v as u32)
+                } else {
+                    ConstValue::Int(v)
+                }
+            };
+            let (l, r_, asc) = if reverse {
+                (r.right, r.left, r.dir != Direction::To)
+            } else {
+                (r.left, r.right, r.dir == Direction::To)
+            };
+            let v =
+                ConstValue::Record(Box::new([mk(l), mk(r_), ConstValue::Enum(u32::from(!asc))]));
+            return self.const_expr(v, rec, span);
+        }
         let stat = match p {
             AttrPrefix::Subtype(st) => self.subtype_staticness(st),
             _ => Staticness::None,

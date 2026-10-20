@@ -1070,6 +1070,9 @@ impl Db {
                     }
                     return Ok((rc, t));
                 }
+                if let Some(r) = self.range_record_object(scope, n) {
+                    return r;
+                }
                 let st = self.discrete_type_mark(scope, n)?;
                 let t = self.base(st);
                 Ok((
@@ -1094,6 +1097,65 @@ impl Db {
                 ))
             }
         }
+    }
+
+    /// 2019 (LCS-2016-099): a constant of a range record type (`R'RECORD`) used as a range,
+    /// `bit_vector(r)`. `None` when `n` is not such an object.
+    // ponytail: only a constant whose value folds at analysis; a run-time range record needs
+    // a range with a dynamic direction (a new `RangeC` form in lowering and elaboration)
+    fn range_record_object(
+        &mut self,
+        scope: ScopeId,
+        n: &ast::Name,
+    ) -> Option<Result<(RangeC, TypeId), Reported>> {
+        if self.file_rev() < yavs_syntax::Std::Vhdl2019 {
+            return None;
+        }
+        let crate::expr::names::NameRes::One(d) = self.classify(scope, n) else {
+            return None;
+        };
+        let DeclKind::Object(o) = &self.decls[d].kind else {
+            return None;
+        };
+        let (class, default) = (o.class, o.default);
+        let rb = self.base(o.subtype);
+        let (&t, _) = self
+            .range_records
+            .iter()
+            .find(|&(_, &st)| self.base(st) == rb)?;
+        let value = default.and_then(|e| self.value(e).cloned());
+        let Some(ConstValue::Record(f)) =
+            value.filter(|_| class == crate::decl::ObjClass::Constant)
+        else {
+            return Some(Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_STATIC,
+                    "a range given by an object of a range record type needs a constant with a static value",
+                )
+                .with_primary(n.span, "not a constant whose value is known at analysis"),
+            )));
+        };
+        let [l, r, ConstValue::Enum(dir)] = &*f else {
+            return Some(Err(self.ice(n.span, "malformed range record value")));
+        };
+        let st = self.types[t].first_subtype;
+        let (l, r) = (
+            self.const_expr(l.clone(), st, n.span),
+            self.const_expr(r.clone(), st, n.span),
+        );
+        let dir = if *dir == 0 {
+            Direction::To
+        } else {
+            Direction::Downto
+        };
+        Some(Ok((
+            RangeC::Explicit {
+                left: l,
+                dir,
+                right: r,
+            },
+            t,
+        )))
     }
 
     /// The type of `l to r` without a type mark.
@@ -1579,6 +1641,23 @@ impl Db {
                 Ok(rc)
             }
             None => {
+                if let Some(r) = self.range_record_object(scope, n) {
+                    let (rc, t) = r?;
+                    if t != base && t != self.poison.ty && base != self.poison.ty {
+                        let names = self.type_names(&[base, t]);
+                        return Err(self.error(
+                            Diagnostic::error(
+                                diag::TYPE_MISMATCH,
+                                format!(
+                                    "expected a range of `{}`, found one of `{}`",
+                                    names[0], names[1]
+                                ),
+                            )
+                            .with_primary(n.span, "wrong type"),
+                        ));
+                    }
+                    return Ok(rc);
+                }
                 let st = self.type_mark(scope, n)?;
                 Ok(RangeC::Attr {
                     prefix: AttrPrefix::Subtype(st),

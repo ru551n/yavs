@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:range_record_objects_2019:_p0	x 7 0 false
+diag	note	0	0	:range_record_objects_2019:_p0	y 30 31
+diag	note	0	0	:range_record_objects_2019:_p0	sr 2 5
+diag	note	0	0	:range_record_objects_2019:_p0	z 2 4
+diag	note	0	0	:range_record_objects_2019:_p0	sum 45

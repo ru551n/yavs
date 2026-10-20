@@ -77,7 +77,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 082 | Empty record | supported | ok | reject | ok | ok |  |
 | 086 | All interface lists can be ordered | supported | ok | reject | reject | ok | later items refer to earlier ones through `'subtype` |
 | 094a | Conditional return | supported | ok | reject | reject | ok | `return x when c` in functions and procedures |
-| 099 | Extended ranges | not tested | ok | reject | reject | ok | scope unclear; a plain range loop works everywhere |
+| 099 | Extended ranges | partly supported | ok | reject | reject | ok | `R'RECORD` and `R'VALUE` were there; a constant of a range record type now works as a range (index constraint, range constraint, array type, loop) when its value is known at analysis (`E1410` otherwise); the sole accepting reference answers `'ascending` wrongly for one case (#445) |
 | I03 | Signatures in the formal part of a generic map | supported | ok | reject | reject | ok | subprogram, package and entity instances; overloaded formals; the signature may name the list's generic types (#363, L104) |
 | I13 | Precedence of unary operators | supported | ok | ok | ok | ok | only `-k ** 2` and `not` against `=` and `and` probed; weak test |
 

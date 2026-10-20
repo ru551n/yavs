@@ -1266,7 +1266,7 @@ HIR to IR for every architecture the elaborator instantiates: generics, ports (u
 array ports take the actual's bounds), blocks (guarded ones with their guard process), generates
 (one instance data per region), processes and concurrent statements; scalar and array
 expressions with runtime descriptors (bit-planes for logic arrays), aggregates, conversions,
-attributes including 'path_name/'instance_name (items of packages and package instances named by their package, #445), 2019 'length of discrete types and subtypes (#445), 'driving/'driving_value and signal attributes
+attributes including 'path_name/'instance_name (items of packages and package instances named by their package, #445), 2019 'length of discrete types and subtypes and constants of range record types as ranges (#445), 'driving/'driving_value and signal attributes
 of elements and slices; all sequential statements including case over arrays and matching
 case, aggregate targets, every wait form; subprograms with signal parameters of every mode
 (arrays too, `DriveSlot` for out/inout), signals assigned in subprograms declared in a process (driven through that process's slots, #206), `signal out` actuals passed the driver slot of their own longest static prefix (#231), copy-out of logic elements and slices, individually associated parameters (`pr(x(0) => s)`, `swap(v(4) => a, v(5) => b)`, record elements, slices; unconstrained formals take their bounds from the parts; a signal formal of several parts, also in different signals and field by field for records, is a reference of several parts, #71); parameters associated through conversions (copy-in through the actual part, copy-out through the formal part, #229); nested names of signals of arrays of arrays

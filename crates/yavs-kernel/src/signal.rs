@@ -245,11 +245,16 @@ impl Waiters {
             last = i;
             scanned += 1;
             let (l, n) = &mut self.lists[i];
+            // The cheap range test first: a stale waiter off the events stays until `add`
+            // compacts the list, and the process table is not touched for it.
             l.retain(|w| {
+                if !hit(w.range) {
+                    return true;
+                }
                 if !live(w) {
                     return false;
                 }
-                if hit(w.range) && !hold(w) {
+                if !hold(w) {
                     out.push((w.seq, w.proc));
                     return false;
                 }
@@ -315,6 +320,9 @@ pub(crate) struct Signal {
     pub callouts: Vec<(crate::process::Severity, String)>,
     /// An assignment of the value a source already has may be skipped (`Builder::build`).
     pub skip_ok: bool,
+    /// The segment the last `compute_driving` started in: the next dirty range is usually there
+    /// or in the next one.
+    seg_hint: usize,
 }
 
 impl Signal {
@@ -355,6 +363,7 @@ impl Signal {
             force_ev: SmallVec::new(),
             callouts: Vec::new(),
             skip_ok: false,
+            seg_hint: 0,
         }
     }
 
@@ -417,7 +426,16 @@ impl Signal {
         }
         // Segments are sorted and disjoint: start at the first one that reaches `r`, so a
         // signal with one driver per element costs O(log n) per dirty range, not O(n).
-        let first = self.segments.partition_point(|s| s.range.end() <= r.offset);
+        let at = |i: usize| self.segments.get(i).is_some_and(|s| s.range.end() > r.offset);
+        let h = self.seg_hint;
+        let first = if at(h) && (h == 0 || !at(h - 1)) {
+            h
+        } else if at(h + 1) && !at(h) {
+            h + 1
+        } else {
+            self.segments.partition_point(|s| s.range.end() <= r.offset)
+        };
+        self.seg_hint = first;
         for seg in &self.segments[first..] {
             if seg.range.offset >= r.end() {
                 break;
@@ -429,6 +447,13 @@ impl Signal {
                 (_, []) => {}
                 // The common case: one unguarded source, no allocation.
                 (None, [i]) => {
+                    let d = &self.drivers[*i as usize];
+                    let rel = (part.offset - d.range.offset) as usize;
+                    self.driving
+                        .copy(part.offset as usize, &d.value, rel, part.len as usize);
+                }
+                // One unguarded source of a std_logic signal: the resolution is the identity.
+                (Some(Resolution::StdLogic), [i]) if self.guard.is_none() => {
                     let d = &self.drivers[*i as usize];
                     let rel = (part.offset - d.range.offset) as usize;
                     self.driving

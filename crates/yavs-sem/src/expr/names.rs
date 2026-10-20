@@ -1346,9 +1346,15 @@ impl Db {
             crate::types::Constraint::Array { elem, .. } => elem.clone(),
             _ => Box::new(crate::types::Constraint::None),
         };
-        let stat = self.exprs[p]
+        let mut stat = self.exprs[p]
             .stat
             .min(crate::expr::aggregate::range_stat(self, &range));
+        // Only slices of scalar elements fold (stat.rs): a slice of composites stays globally static.
+        if let TypeKind::Array { elem, .. } = &self.types[t].kind
+            && !self.types[self.base(*elem)].kind.is_scalar()
+        {
+            stat = stat.min(Staticness::Globally);
+        }
         let subtype = self.subtypes.push(crate::types::SubtypeDef {
             base: t,
             name: None,
@@ -2067,6 +2073,9 @@ impl Db {
         });
         if stat == Staticness::Locally {
             self.fold_into(id);
+            if self.warn_if_outside(id, st, span) {
+                self.exprs[id].value = None;
+            }
         }
         id
     }

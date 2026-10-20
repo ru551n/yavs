@@ -132,5 +132,6 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1904 | shared / private variable not protected | 8.1 |
 | E1905 | illegal use of a protected type | 8.1 |
 | W1008 | construct means something different under the design revision | 0.1, 8.1 |
+| W1403 | static operand of a qualified expression or type conversion outside its subtype, in possibly dead code | 9.3.5, 9.3.6, not in 8.1 |
 | W1404 | static index out of range in possibly dead code | 8.1 |
 | W1501 | unused generic | 8.1 |

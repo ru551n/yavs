@@ -140,6 +140,7 @@ codes! {
     // Warnings
     W_CHANGED_MEANING = "W1008", "The construct means something different under the design's VHDL-2019 std/ieee than under VHDL-2008, for example `integer'high`.";
     W_OVERFLOW = "W1401", "Static arithmetic overflows in a context that does not require the value; the runtime check stays.";
+    W_STATIC_OUTSIDE = "W1403", "A static operand of a qualified expression or type conversion lies outside the subtype it is converted to; the code may be dead, so this is checked again at runtime.";
     W_STATIC_INDEX = "W1404", "A static index is outside the static range of the array; the code may be dead, so this is checked again at runtime.";
     W_UNUSED_GENERIC = "W1501", "A generic is never used.";
     W_GENERIC_EQ = "W1506", "An instance of a generic with a 2008 `type T` (or 2019 `type T is private`) compares values with the actual type's predefined `=`/`/=` (LRM 6.5.3), while a different user `\"=\"` for the actual type is visible at the instantiation; NVC would use that one (decision U-6). To use the user operator, declare a formal `function \"=\" (l, r : t) return boolean is <>`.";

@@ -265,6 +265,11 @@ impl Db {
                 let TypeKind::Array { elem, .. } = &self.types[self.base(e.subtype)].kind else {
                     return Err(Fold::No);
                 };
+                // Elements of composite type keep the bounds of the constant's own subtype,
+                // which a folded value does not carry.
+                if !self.types[self.base(*elem)].kind.is_scalar() {
+                    return Err(Fold::No);
+                }
                 if want.is_null() {
                     return Ok(ConstValue::Array(array_const(self, self.base(*elem), vec![want], Vec::new())));
                 }

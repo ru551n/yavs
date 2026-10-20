@@ -93,6 +93,28 @@ impl Db {
         id
     }
 
+    /// `W1403`: the static scalar value of `id` lies outside subtype `st`, which a qualified
+    /// expression or a type conversion applies (9.3.5, 9.3.6). The value is not used and the
+    /// run-time check fails (the code may never run, like `W1404`).
+    pub(crate) fn warn_if_outside(&mut self, id: ExprId, st: crate::ids::SubtypeId, span: Span) -> bool {
+        let (Some(v), Some((l, d, r))) = (self.value(id), self.static_bounds(st)) else {
+            return false;
+        };
+        if crate::stat::within(v, &l, d, &r) != Some(false) {
+            return false;
+        }
+        let name = self.subtype_name(st);
+        self.report(
+            Diagnostic::warning(
+                diag::W_STATIC_OUTSIDE,
+                format!("static value is outside subtype `{name}`"),
+            )
+            .with_primary(span, "out of range")
+            .with_note("the code may never run, so this is checked again at run time (LRM 9.3.5, 9.3.6)"),
+        );
+        true
+    }
+
     /// `E1403`: a static scalar value outside the static subtype it goes into (4.3).
     pub(crate) fn check_in_subtype(&mut self, id: ExprId, st: crate::ids::SubtypeId) {
         if let Some(crate::stat::ConstValue::Array(a)) = self.value(id)
@@ -370,10 +392,10 @@ impl Db {
                     return self.poison_expr();
                 };
                 let op = self.resolve_in(scope, operand, st);
-                self.check_in_subtype(op, st);
+                let outside = self.warn_if_outside(op, st, e.span);
                 let (stat, value) = (
                     self.exprs[op].stat.min(self.subtype_staticness(st)),
-                    self.exprs[op].value,
+                    self.exprs[op].value.filter(|_| !outside),
                 );
                 self.add_expr(Expr {
                     kind: ExprKind::Qualified {

@@ -216,13 +216,13 @@ pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &s
             }
         }
         None => {
-            use std::io::Write;
             if !m.rt.asserts.report_elab(s) {
                 return Ok(());
             }
-            let name = ["Note", "Warning", "Error", "Failure"][s as usize];
-            let mut o = std::io::stderr().lock();
-            let _ = writeln!(o, "** {name}: (init): {text}");
+            crate::env::print_elab(s, text);
+            if let Some(r) = m.init_reports.as_mut() {
+                r.push((s as u8, text.to_string()));
+            }
             if s >= Severity::Failure {
                 return rt_err(format!("report of severity failure: {text}"));
             }

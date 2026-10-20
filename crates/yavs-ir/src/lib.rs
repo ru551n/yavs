@@ -22,6 +22,7 @@ pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, ElabOp, FOp, FUnOp, ForceKind, Inst,
     IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES, Width,
 };
+pub use program::bytes;
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
     ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, OptCopy, Param, ParamClass,

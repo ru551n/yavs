@@ -46,7 +46,7 @@ pub enum HeapError {
 }
 
 /// What a heap object holds, for the GC.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Obj {
     /// A value of this type (arrays as `[descriptor][elements]`).
     Typed(TyId),
@@ -58,10 +58,11 @@ pub enum Obj {
     Mirror,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Slot {
     generation: u32,
     ty: Obj,
+    #[serde(with = "opt_bytes")]
     data: Option<Vec<u8>>,
     /// The object is `data[start..]`: a READ drops a line's prefix in O(1) (#196).
     start: usize,
@@ -69,7 +70,7 @@ struct Slot {
     writes: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Heap {
     tag: u8,
     slots: Vec<Slot>,
@@ -84,6 +85,21 @@ pub struct Heap {
     pub live_bytes: u64,
     /// Handles that are roots for good ([`Heap::seal`]).
     sealed: Vec<u64>,
+}
+
+/// An object's bytes as one block in a serialised heap (package state, #407).
+mod opt_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::state::{Block, BlockRef};
+
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        v.as_deref().map(BlockRef).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        Ok(Option::<Block>::deserialize(d)?.map(|b| b.0))
+    }
 }
 
 pub fn pack(tag: u8, index: u32, generation: u32) -> u64 {
@@ -115,6 +131,17 @@ impl Heap {
     /// Slots in use, deallocated or not (for tests and statistics).
     pub fn slots(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Whether this is heap `tag` holding only plain objects and nothing sealed: what a stored
+    /// package state may hold (no reflection mirror, which refers into the running program).
+    pub(crate) fn is_plain(&self, tag: u8) -> bool {
+        self.tag == tag
+            && self.sealed.is_empty()
+            && !self
+                .slots
+                .iter()
+                .any(|s| s.data.is_some() && s.ty == Obj::Mirror)
     }
 
     pub fn live(&self) -> usize {

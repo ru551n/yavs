@@ -179,6 +179,13 @@ identical to a run without it, at any `--threads`.
   lacks writes the entry again when it ends. The IR verifier runs on every function when the
   program is finished in debug builds and with `YAVS_VERIFY_IR` set; otherwise a function is
   verified when first called, unless the program was stored (verified when stored).
+- The state of those packages after their initialisation (package data, shared variables, the shared
+  heap with protected objects) is kept as `<dir>/yavs-cache/init-<key>.img` under the same
+  conditions and for the same time resolution, and a run restores it instead of running the
+  initialisers. The reports the initialisers made (`** Note: (init): text`) are printed again, in the
+  same order and counted for the exit status. It is not kept when an initialiser opened or used a
+  file, read the environment or a clock, or called foreign code: those run every time. Results,
+  messages and waveforms are identical with and without it. It counts toward the 96 entries.
 - `yavs analyze` does not read or write the cache.
 
 ## 4. `yavs analyze`

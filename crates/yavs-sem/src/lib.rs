@@ -93,6 +93,8 @@ pub struct Options {
 pub trait StageCache: Send + Sync + std::fmt::Debug {
     fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Vec<u8>>;
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]);
+    /// A reason an entry was not made, for `YAVS_LOG=debug`.
+    fn note(&self, _msg: &str) {}
 }
 
 impl Options {

@@ -18,6 +18,8 @@ yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-logic.workspace = true
 yavs-std = { path = "../yavs-std" }
+postcard.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

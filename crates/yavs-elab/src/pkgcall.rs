@@ -114,10 +114,38 @@ pub(crate) fn run(
     crate::value::decode(&prog, ret, &r).ok_or(Fail::Unsupported("a result of this type"))
 }
 
+/// Where the package state after initialisation is kept (#407, stage 2 step 2): next to the lowered
+/// packages (`package_lowerer`) in the stage cache, for the same packages, options and `Db`.
+#[derive(Clone, Debug)]
+pub(crate) struct InitKey {
+    cache: Arc<dyn yavs_sem::StageCache>,
+    extent: Vec<usize>,
+    part: Vec<u8>,
+}
+
+impl InitKey {
+    fn part(&self, resolution: yavs_std::arith::TimeResolution) -> Vec<u8> {
+        let mut p = self.part.clone();
+        p.push(resolution as u8);
+        p
+    }
+
+    fn get(&self, resolution: yavs_std::arith::TimeResolution) -> Option<Vec<u8>> {
+        self.cache.get(&self.extent, "init", &self.part(resolution))
+    }
+
+    fn put(&self, resolution: yavs_std::arith::TimeResolution, bytes: &[u8]) {
+        self.cache
+            .put(&self.extent, "init", &self.part(resolution), bytes);
+    }
+}
+
 /// Initialise `packages` of `prog` in order (each sees those before it, LRM 14.4.2) with
 /// `shared`, `fix` completing each package's data, and return the runtime with all of them
 /// bound. With `start`, the packages' data is a copy of it instead (initialised already, by
-/// the elaboration session, [`Start`]).
+/// the elaboration session, [`Start`]). With `cache` (and no `start`), the state the
+/// initialisers made is read from the stage cache and they do not run; a cold run stores it
+/// unless they did more than compute. `fix` must then change nothing the initialisers read.
 #[allow(clippy::too_many_arguments)] // ponytail: one more setting; bundle into a struct when the next one comes
 pub(crate) fn init_packages(
     prog: &Arc<Program>,
@@ -131,6 +159,7 @@ pub(crate) fn init_packages(
     resolution: yavs_std::arith::TimeResolution,
     revision: yavs_std::types::Revision,
     start: Option<&[InstData]>,
+    cache: Option<&InitKey>,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
@@ -150,6 +179,21 @@ pub(crate) fn init_packages(
             "the elaboration session has other packages".into(),
         )));
     }
+    let cache = cache.filter(|_| start.is_none() && !packages.is_empty());
+    if let Some(k) = cache
+        && let Some(bytes) = k.get(resolution)
+        && let vars = shared.lock().map_or(0, |s| s.vars.len())
+        && let Some((d, st)) = yavs_interp::restore_state(&bytes, packages.len(), vars)
+    {
+        st.replay_init_reports();
+        *shared.lock().map_err(|_| {
+            SimError::new(yavs_kernel::ErrorKind::Internal(
+                "shared state poisoned".into(),
+            ))
+        })? = st;
+        let data: Vec<Arc<InstData>> = d.into_iter().map(Arc::new).collect();
+        return Runtime::new(prog.clone(), bind(&data));
+    }
     for (i, p) in packages.iter().enumerate() {
         let mut d = match start {
             Some(s) => s[i].clone(),
@@ -160,6 +204,14 @@ pub(crate) fn init_packages(
         };
         fix(p, &mut d)?;
         data.push(Arc::new(d));
+    }
+    if let Some(k) = cache
+        && let Ok(s) = shared.lock()
+    {
+        match s.state_image(&data) {
+            Ok(image) => k.put(resolution, &image),
+            Err(why) => k.cache.note(&format!("no init entry: {why}")),
+        }
     }
     Runtime::new(prog.clone(), bind(&data))
 }
@@ -415,6 +467,7 @@ impl Session {
     fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
         let mut l = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
+        let init = init_key(db, &pkgs, &LowerOptions::default());
         let mut sigs = HashMap::new();
         for &(d, constant) in &self.lowered {
             sigs.insert(d, item(&mut l, db, d, constant)?);
@@ -441,6 +494,7 @@ impl Session {
             yavs_std::arith::TimeResolution::Fs,
             revision_of(db),
             None,
+            init.as_ref(),
             |_, _| Ok(()),
         )
         .map_err(runtime)?;
@@ -459,6 +513,27 @@ impl Session {
 /// almost nothing.
 const MIN_IMAGE: usize = 256;
 
+/// The part of a stage-cache key that names `packages` and the lowering options.
+fn stage_part(packages: &[UnitId], opts: &LowerOptions) -> Vec<u8> {
+    let mut part: Vec<u8> = packages
+        .iter()
+        .flat_map(|u| yavs_sem::Id::index(*u).to_le_bytes())
+        .collect();
+    part.push(opts.no_native_ieee as u8);
+    part
+}
+
+/// Where the state of `packages` after their initialisation is cached, if `db` has a stage cache
+/// and the run has no coverage counters.
+pub(crate) fn init_key(db: &Db, packages: &[UnitId], opts: &LowerOptions) -> Option<InitKey> {
+    let cache = db.stages().filter(|_| !opts.coverage)?;
+    Some(InitKey {
+        cache: cache.clone(),
+        extent: db.extent(),
+        part: stage_part(packages, opts),
+    })
+}
+
 /// A lowerer with the objects of `packages` lowered, in order: read back from the stage cache
 /// (`Options::stages`, #407) when `db` has not grown since its analysis, else lowered (and
 /// stored). Coverage counters are lowered every time.
@@ -469,11 +544,7 @@ pub(crate) fn package_lowerer<'a>(
 ) -> Result<Lowerer<'a>, Vec<Diagnostic>> {
     let cache = db.stages().filter(|_| !opts.coverage);
     let extent = db.extent();
-    let mut part: Vec<u8> = packages
-        .iter()
-        .flat_map(|u| yavs_sem::Id::index(*u).to_le_bytes())
-        .collect();
-    part.push(opts.no_native_ieee as u8);
+    let part = stage_part(packages, &opts);
     if let Some(c) = cache
         && let Some(bytes) = c.get(&extent, "low", &part)
         && let Some(l) = Lowerer::from_image(db, opts, &bytes)

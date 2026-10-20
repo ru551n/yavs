@@ -2153,10 +2153,48 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     never the raw `Bytes`. Descriptors stay `Bytes`.
   - *Cold and warm take the same path:* the cold run verifies and numbers the packages' program before
     it stores, so a cold and a warm run lower everything after the packages from the same state.
-  - *Step 2 (package state after initialisation: heap and package data) is not done.* The initialisers
-    are 15 to 20 ms of the elaboration, more than all of step 1, but the heap structures are being
-    changed for precise roots (#422) and the package data refers into the heap: serialising both
-    waits for that work (comment on #407).
+- **Stage 2, step 2: the package state after initialisation (`init-<key>.img`, #407).** The
+  initialisers of the run-time packages were 17 to 25 ms of a verification-component testbench's
+  elaboration (one interpreted pass that allocates and fills the library's tables). The state they
+  leave is plain data: each package's data bytes, the shared variables area and the shared heap
+  (protected objects, access-type objects), whose handles are `u64`s naming heap slots. It is
+  written as it is, slot by slot with generations, free list and write counts, so nothing is
+  relocated and the precise roots of #422 (the shared-variables root map, the sealed set made at
+  the start of the simulation) see the same heap as after a cold initialisation (`yavs-interp`
+  `state.rs`, serde and postcard like the other images; blocks are packed as literals, runs of zeros
+  and repeats of a pattern up to 64 bytes: the library's tables are megabytes of zeros and of one
+  repeated record, 6 MB become 3 MB and a restore costs 5 ms instead of 25).
+  - *Key:* the stage-1 key plus the lowering part (package list, options) plus the time resolution
+    (the one run-time setting initialisers can see; the revision and the options are in the stage-1
+    key). Generics of package instances are in the sources, so in the key; top-level generics and
+    configuration cannot reach a package initialiser (no state of the design is read before the
+    packages are initialised, external names in them bind later). Like `low` it holds only for a
+    `Db` that has not grown since its analysis and only when the lowered packages are cached.
+  - *Both paths use it:* the elaboration session's first initialisation (and each rebuild after an
+    undone call) and the simulation start when no session ran (`init_packages` with a key). A
+    design whose packages have an array signal with open bounds (`PackageIr::signals[].dope`) is
+    not served at the simulation start: its descriptors are written between two initialisers
+    (`fix`) and a later initialiser may read them.
+  - *Reports are replayed:* what an initialiser reports (`report`, an ieee warning; the line
+    `** Note: (init): text` on stderr, counted for the exit status) is recorded with the state and
+    printed and counted again, in order, when the state is restored (`SharedState::replay_init_reports`),
+    at the point where the initialisers would have run. A verification library's packages report at
+    initialisation, so they would otherwise never be cached.
+  - *Not cached, run every time:* an initialiser that did anything else but compute. Every effect is
+    recorded while a package is initialised (`SharedState::tainted`, with the reason, shown by
+    `YAVS_LOG=debug` as `no init entry: ...`): textio writes and file operations, `std.env` calls other
+    than the constant ones (environment, clocks, assert state, call paths), the reflection natives,
+    foreign calls (`--load`) and any native not on the pure list (`native::pure`, an allow-list: a new
+    native is impure until listed). A heap holding a reflection mirror or sealed objects is not
+    stored either. Coverage runs have no lowered cache and so none of this. A damaged or foreign
+    entry is a miss.
+  - *Warm == cold:* tests in `crates/yavs/tests/cache.rs` compare the run without the cache, cold and
+    warm at `--threads 1` and `4` (stdout, stderr, exit status, waveform bytes) for protected
+    objects, heap objects grown by elaboration-time calls, and the simulation-start path; editing a
+    package replaces its state; reports of initialisers are printed again and counted; an initialiser
+    that opens a file is never stored.
+  - *Entries per design:* now three (`sem`, `low`, `init`), so the store keeps the 96 most recently
+    used instead of 48.
 
 - **Stage 2: the lowered design (`ir-<key>.img`, #479).** After the packages, elaboration lowers the
   architectures that own processes and every subprogram they reach, verifies and numbers the program

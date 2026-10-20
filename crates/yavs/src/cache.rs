@@ -80,6 +80,10 @@ impl StageCache for Stages {
         Some(e.to_vec())
     }
 
+    fn note(&self, msg: &str) {
+        debug(msg.to_string());
+    }
+
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]) {
         if let Some(k) = self.key(extent, kind, part) {
             debug(format!("store {kind} {} ({} bytes)", k.hex(), bytes.len()));

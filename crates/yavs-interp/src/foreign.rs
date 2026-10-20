@@ -791,6 +791,8 @@ impl Machine {
             .foreign
             .get(id)
             .ok_or_else(|| ice(format!("no foreign subprogram {id}")))?;
+        self.tainted
+            .get_or_insert_with(|| format!("it calls the foreign subprogram `{}`", x.name));
         let rt = self.rt.clone();
         if let Some(m) = &x.model {
             let regs = f.regs(args).ok_or_else(|| ice("operand list"))?.to_vec();

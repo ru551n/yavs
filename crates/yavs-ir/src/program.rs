@@ -394,7 +394,7 @@ pub struct StmtInfo {
 
 /// Constant bytes as one block in a serialised program, not as a sequence of numbers (the
 /// constant pool of a verification library is megabytes; the wire format is the same).
-mod bytes {
+pub mod bytes {
     use serde::{Deserializer, Serializer, de};
 
     pub fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {

@@ -334,6 +334,31 @@ pub fn elaboration_reports(s: Severity) -> u64 {
     ELAB_COUNTS[s as usize].load(Ordering::Relaxed)
 }
 
+/// The line of a report made while no kernel runs.
+pub(crate) fn print_elab(s: Severity, text: &str) {
+    use std::io::Write;
+    let name = ["Note", "Warning", "Error", "Failure"][s as usize];
+    let mut o = std::io::stderr().lock();
+    let _ = writeln!(o, "** {name}: (init): {text}");
+}
+
+/// Print and count again the reports a package initialisation made (`SharedState::replay_init_reports`).
+pub(crate) fn replay_elab(reports: &[(u8, String)]) {
+    for (s, text) in reports {
+        ELAB_COUNTS[*s as usize].fetch_add(1, Ordering::Relaxed);
+        print_elab(sev_of(*s), text);
+    }
+}
+
+fn sev_of(i: u8) -> Severity {
+    match i {
+        0 => Severity::Note,
+        1 => Severity::Warning,
+        2 => Severity::Error,
+        _ => Severity::Failure,
+    }
+}
+
 /// The assert state of a simulation (module docs).
 #[derive(Default)]
 pub(crate) struct Asserts(Mutex<Shared>);

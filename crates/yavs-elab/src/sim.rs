@@ -69,6 +69,8 @@ pub struct Ir {
     pub start: Option<Arc<crate::pkgcall::StartState>>,
     /// How to store the optimised copies the run makes (#479); `None`: the design is not cached.
     pub(crate) learn: Option<Learn>,
+    /// Where the packages' state after initialisation is cached (#407).
+    pub(crate) init_key: Option<crate::pkgcall::InitKey>,
 }
 
 /// What lowering a design gives besides the program (`Elaborated::lower_cold`); what `Ir` takes
@@ -427,6 +429,7 @@ impl Elaborated {
             var_slots,
             start,
             learn,
+            init_key: crate::pkgcall::init_key(db, &packages, &opts),
         });
         Ok(())
     }
@@ -870,6 +873,13 @@ impl Elaborated {
             time_resolution(cfg.resolution),
             ir.revision,
             start.as_ref().map(|s| &s.data[..]),
+            // The descriptors `fix` writes are read by the initialisers that follow (a package
+            // array signal's bounds): only a design without any gets the cached state.
+            ir.init_key.as_ref().filter(|_| {
+                !ir.packages
+                    .iter()
+                    .any(|p| p.signals.iter().any(|s| s.dope.is_some()))
+            }),
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an
                 // external signal: its subprogram fails when called).

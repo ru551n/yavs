@@ -449,6 +449,226 @@ fn parallel_cold_runs_agree_on_lowering() {
     assert_eq!(leftovers, 0);
 }
 
+/// Package state after initialisation (`init` entries, #407 stage 2 step 2): a protected type
+/// whose state is a heap object made by the initialiser and grown by elaboration-time calls.
+const HEAPY: &str = "package heapy is\n  impure function total return integer;\n  impure function push(x : integer) return integer;\nend;\n\
+package body heapy is\n  type ints is access integer_vector;\n\
+  type bag_t is protected\n    impure function total return integer;\n    impure function push(x : integer) return integer;\n  end protected;\n\
+  type bag_t is protected body\n    variable buf : ints := new integer_vector'(1, 2, 3, 4);\n    variable n : integer := 4;\n\
+    impure function total return integer is\n      variable s : integer := 0;\n    begin\n\
+      for i in 0 to n - 1 loop s := s + buf(i); end loop;\n      return s;\n    end;\n\
+    impure function push(x : integer) return integer is\n      variable nb : ints;\n    begin\n\
+      if n = buf'length then\n        nb := new integer_vector(0 to 2 * n - 1);\n        nb(0 to n - 1) := buf.all;\n        deallocate(buf);\n        buf := nb;\n      end if;\n\
+      buf(n) := x;\n      n := n + 1;\n      return n;\n    end;\n  end protected body;\n\
+  shared variable bag : bag_t;\n\
+  impure function total return integer is begin return bag.total; end;\n\
+  impure function push(x : integer) return integer is begin return bag.push(x); end;\nend;\n";
+
+const HEAPYTB: &str = "use work.heapy.all;\nentity heapytb is end;\narchitecture a of heapytb is\n\
+  constant n1 : integer := push(5);\n  constant t1 : integer := total;\nbegin\n  process\n    variable n2, n3 : integer;\n  begin\n\
+    report \"n1 \" & integer'image(n1) & \" t1 \" & integer'image(t1);\n\
+    n2 := push(7);\n    n3 := push(8);\n    report \"n2 \" & integer'image(n2) & \" n3 \" & integer'image(n3) & \" total \" & integer'image(total);\n    wait;\n  end process;\nend;\n";
+
+/// Runs the same testbench with the cache off, cold, warm and warm at 4 threads: all four agree.
+fn same_everywhere(e: &Env, top: &str) -> Out {
+    let plain = visible(&e.run_top(top, &["--no-cache"]));
+    assert_eq!(plain.code, 0, "{plain:?}");
+    let cold = e.cold(top, &[]);
+    let warm = e.run_top(top, &[]);
+    let warm4 = e.run_top(top, &["--threads", "4"]);
+    assert_eq!(plain, visible(&cold), "cold");
+    assert_eq!(plain, visible(&warm), "warm");
+    assert_eq!(plain, visible(&warm4), "warm, 4 threads");
+    plain
+}
+
+#[test]
+fn package_state_after_initialisation_is_cached() {
+    let e = Env::new("init");
+    let wave = |n: &str| e.tmp.join(n).display().to_string();
+    let plain = e.run_top(
+        "tb2",
+        &["--no-cache", &format!("--wave={}", wave("plain.fst"))],
+    );
+    assert!(plain.stdout.contains("ids 11 12 next 13 sg 3"), "{plain:?}");
+    assert!(
+        e.entry_files("init").is_empty(),
+        "--no-cache must not write"
+    );
+    let cold = e.cold("tb2", &[&format!("--wave={}", wave("cold.fst"))]);
+    assert!(note(&cold, "store init"), "{cold:?}");
+    assert!(!note(&cold, "hit init"), "{cold:?}");
+    assert_eq!(e.entry_files("init").len(), 1);
+    let warm = e.run_top("tb2", &[&format!("--wave={}", wave("warm.fst"))]);
+    assert!(note(&warm, "hit init"), "{warm:?}");
+    assert!(!note(&warm, "store init"), "{warm:?}");
+    assert_eq!(visible(&plain), visible(&cold));
+    assert_eq!(visible(&plain), visible(&warm));
+    let read = |n: &str| std::fs::read(e.tmp.join(n)).expect("wave");
+    assert_eq!(read("plain.fst"), read("cold.fst"));
+    assert_eq!(read("plain.fst"), read("warm.fst"));
+    let w4 = e.run_top("tb2", &["--threads", "4"]);
+    assert!(note(&w4, "hit init"), "{w4:?}");
+    assert_eq!(visible(&plain), visible(&w4));
+    // A design without run-time packages has no such entry.
+    assert_eq!(e.run(&[]).code, 0);
+    assert_eq!(e.entry_files("init").len(), 1);
+}
+
+/// No elaboration-time call: the simulation initialises the packages itself, and the time
+/// resolution it runs with is part of the key.
+const TB4: &str = "use work.reg.all;\nentity tb4 is end;\narchitecture a of tb4 is\nbegin\n  process\n  begin\n\
+    report \"id \" & integer'image(get_id) & \" sg \" & integer'image(sg);\n    wait;\n  end process;\nend;\n";
+
+#[test]
+fn simulation_start_uses_the_cached_state() {
+    let e = Env::new("initbuild");
+    std::fs::write(e.tmp.join("tb4.vhd"), TB4).expect("write");
+    assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "tb4.vhd"]).code, 0);
+    let plain = visible(&e.run_top("tb4", &["--no-cache"]));
+    assert!(plain.stdout.contains("id 11 sg 3"), "{plain:?}");
+    let cold = e.cold("tb4", &[]);
+    assert!(note(&cold, "store init"), "{cold:?}");
+    let warm = e.run_top("tb4", &[]);
+    assert!(note(&warm, "hit init"), "{warm:?}");
+    assert_eq!(plain, visible(&cold));
+    assert_eq!(plain, visible(&warm));
+    let ps = e.run_top("tb4", &["--resolution", "ps"]);
+    assert!(note(&ps, "store init"), "{ps:?}");
+    assert_eq!(e.entry_files("init").len(), 2);
+    assert_eq!(plain, visible(&ps));
+    assert!(note(&e.run_top("tb4", &["--resolution", "ps"]), "hit init"));
+    assert!(note(&e.run_top("tb4", &["--threads", "4"]), "hit init"));
+}
+
+#[test]
+fn heap_and_protected_state_is_restored() {
+    let e = Env::new("heapy");
+    for (f, t) in [("heapy.vhd", HEAPY), ("heapytb.vhd", HEAPYTB)] {
+        std::fs::write(e.tmp.join(f), t).expect("write");
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let plain = same_everywhere(&e, "heapytb");
+    assert!(plain.stdout.contains("n1 5 t1 15"), "{plain:?}");
+    assert!(plain.stdout.contains("n2 6 n3 7 total 30"), "{plain:?}");
+    assert_eq!(e.entry_files("init").len(), 1);
+    assert!(note(&e.run_top("heapytb", &[]), "hit init"));
+}
+
+#[test]
+fn editing_a_package_replaces_its_state() {
+    let e = Env::new("initedit");
+    assert!(e.cold("tb2", &[]).stdout.contains("ids 11 12"));
+    assert!(note(&e.run_top("tb2", &[]), "hit init"));
+    std::fs::write(
+        e.tmp.join("rt.vhd"),
+        RT.replace("n : integer := 10", "n : integer := 20"),
+    )
+    .expect("write");
+    assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "rt.vhd"]).code, 0);
+    let after = e.cold("tb2", &[]);
+    assert!(note(&after, "store init"), "{after:?}");
+    assert!(after.stdout.contains("ids 21 22 next 23"), "{after:?}");
+    assert!(note(&e.run_top("tb2", &[]), "hit init"));
+}
+
+/// Initialisers that report, and one that opens a file. `{}` is the declarations of the effect.
+const EFFECTS: &str = "library std; use std.textio.all;\n\
+package fx is\n  impure function probe return integer;\nend;\n\
+package body fx is\n  type holder_t is protected\n    impure function get return integer;\n  end protected;\n\
+  type holder_t is protected body\n    variable v : integer := 5;\n    impure function get return integer is begin return v; end;\n  end protected body;\n\
+  shared variable h : holder_t;\n\
+  impure function say return integer is begin\n    report \"init note\";\n    report \"init warning\" severity warning;\n    report \"init error\" severity error;\n    return 3;\n  end;\n\
+{}\
+  impure function probe return integer is begin return h.get + noted; end;\nend;\n";
+
+const EFFECTSTB: &str = "use work.fx.all;\nentity fxtb is end;\narchitecture a of fxtb is\n  constant k : integer := probe;\nbegin\n  process\n  begin\n\
+    report \"k \" & integer'image(k);\n    wait;\n  end process;\nend;\n";
+
+fn effects_env(name: &str, decls: &str) -> Env {
+    let e = Env::new(name);
+    let pkg = EFFECTS.replace("{}", decls);
+    for (f, t) in [("fx.vhd", pkg.as_str()), ("fxtb.vhd", EFFECTSTB)] {
+        std::fs::write(e.tmp.join(f), t).expect("write");
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    e
+}
+
+/// What an initialiser reports is printed again, and counted for the exit status, when its state
+/// is restored: a warm run ends as a cold one does (an `error` report makes the run exit 1).
+#[test]
+fn reports_of_initialisers_are_replayed() {
+    let e = effects_env("reports", "  constant noted : integer := say;\n");
+    let plain = e.run_top("fxtb", &["--no-cache"]);
+    assert_eq!(plain.code, 1, "{plain:?}");
+    assert!(plain.stdout.contains("k 8"), "{plain:?}");
+    let count = |o: &Out, what: &str| o.stderr.matches(what).count();
+    assert!(count(&plain, "(init): init note") >= 1, "{plain:?}");
+    let cold = e.cold("fxtb", &[]);
+    assert!(note(&cold, "store init"), "{cold:?}");
+    for threads in ["1", "4"] {
+        let warm = e.run_top("fxtb", &["--threads", threads]);
+        assert!(note(&warm, "hit init"), "{warm:?}");
+        assert_eq!(visible(&plain), visible(&warm), "threads {threads}");
+        for what in ["init note", "init warning", "init error"] {
+            assert_eq!(count(&plain, what), count(&warm, what), "{what}: {warm:?}");
+        }
+    }
+}
+
+/// An initialiser that opens a file is not cached: a warm run does it again.
+#[test]
+fn package_that_opens_a_file_is_not_cached() {
+    let e = effects_env(
+        "file",
+        "  file out_f : text open write_mode is \"fx-out.txt\";\n  constant noted : integer := 3;\n",
+    );
+    let plain = e.run_top("fxtb", &["--no-cache"]);
+    assert_eq!(plain.code, 0, "{plain:?}");
+    assert!(plain.stdout.contains("k 8"), "{plain:?}");
+    e.run_top("fxtb", &[]); // the note
+    for _ in 0..3 {
+        let r = e.run_top("fxtb", &[]);
+        assert!(!note(&r, "store init") && !note(&r, "hit init"), "{r:?}");
+        assert!(r.stderr.contains("no init entry"), "{r:?}");
+        assert_eq!(visible(&plain), visible(&r));
+    }
+    assert!(e.entry_files("init").is_empty());
+}
+
+#[test]
+fn damaged_state_is_ignored() {
+    let e = Env::new("initdamaged");
+    let cold = e.cold("tb2", &[]);
+    let img = e.entry_files("init").pop().expect("init entry");
+    let good = std::fs::read(&img).expect("read");
+    for bad in [good[..good.len() / 2].to_vec(), b"not an entry".to_vec()] {
+        std::fs::write(&img, bad).expect("write");
+        let r = e.run_top("tb2", &[]);
+        assert!(!note(&r, "hit init"), "{r:?}");
+        assert_eq!(visible(&cold), visible(&r));
+        assert!(note(&r, "store init"), "the entry is rewritten");
+        assert!(note(&e.run_top("tb2", &[]), "hit init"));
+    }
+}
+
+#[test]
+fn parallel_cold_runs_agree_on_state() {
+    let e = Env::new("initparallel");
+    let plain = visible(&e.run_top("tb2", &["--no-cache"]));
+    e.run_top("tb2", &[]); // leaves the note: the runs below all make the entries
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| s.spawn(|| visible(&e.run_top("tb2", &[]))))
+            .collect();
+        for h in hs {
+            assert_eq!(plain, h.join().expect("join"));
+        }
+    });
+    assert_eq!(e.entry_files("init").len(), 1);
+}
+
 /// A package with a warning of its own (a static index outside the bounds, in dead code) after a
 /// line with a non-ASCII character, so that the snippet and column come from the source text.
 const NOISY: &str = "-- caf\u{e9} \u{e9}\u{e9}\npackage n is\n  function g (x : integer) return integer;\nend;\n\

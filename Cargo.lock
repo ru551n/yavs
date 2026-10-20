@@ -1550,6 +1550,8 @@ dependencies = [
 name = "yavs-interp"
 version = "0.8.0"
 dependencies = [
+ "postcard",
+ "serde",
  "yavs-diag",
  "yavs-ffi",
  "yavs-ir",

@@ -59,6 +59,35 @@ fn known() -> &'static Known {
     })
 }
 
+/// Whether the native `symbol` only computes from its arguments and the heap: package
+/// initialisation that calls any other (files, the environment, clocks, assert state,
+/// reflection) is not stored (`SharedState::tainted`, #407). A symbol not named here is not pure.
+pub(crate) fn pure(symbol: &str) -> bool {
+    if symbol.starts_with("yavs.ieee.") || symbol.starts_with("yavs.attr.") {
+        return true;
+    }
+    if let Some(r) = symbol.strip_prefix("yavs.implicit.") {
+        let family = r.split('.').next().unwrap_or(r);
+        return !(family.starts_with("file_")
+            || matches!(family, "read" | "write" | "flush" | "endfile"));
+    }
+    if let Some(r) = symbol.strip_prefix("yavs.textio.") {
+        let op = r.split('.').next().unwrap_or(r);
+        return !matches!(op, "readline" | "writeline" | "tee");
+    }
+    if let Some(r) = symbol.strip_prefix("yavs.env.") {
+        return r.starts_with("to_string.")
+            || r.starts_with("add.")
+            || r.starts_with("sub.")
+            || r.starts_with("tool_")
+            || matches!(
+                r.split('.').next().unwrap_or(r),
+                "vhdl_version" | "resolution_limit"
+            );
+    }
+    false
+}
+
 /// The implementation of `symbol`: `Ok(None)` when NATIVE.md defines it but yavs does not
 /// implement it yet, `Err` when it is not a native symbol at all.
 pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {

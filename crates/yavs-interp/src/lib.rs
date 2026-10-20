@@ -25,6 +25,7 @@ mod implicit;
 mod native;
 mod reflect;
 mod roots;
+mod state;
 mod textio;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,6 +46,7 @@ pub use debug::{
 };
 pub use heap::Heap;
 pub use ieee::{code_table, edge_native};
+pub use state::restore_state;
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
 pub use yavs_ir::opt::keep_variables;
@@ -94,6 +96,13 @@ pub struct SharedState {
     /// elaboration holds handles that no root map names, so nothing is collected inside an
     /// activation.
     pub(crate) started: bool,
+    /// Code run on this state did more than compute (package initialisation printed, read the
+    /// environment, a clock or a file, or called foreign code): the state is not stored
+    /// ([`SharedState::state_image`], #407).
+    pub(crate) tainted: Option<String>,
+    /// What package initialisation reported (printed at once, to stderr), in order: a restored
+    /// state prints it again ([`SharedState::replay_init_reports`], #407).
+    pub(crate) init_reports: Vec<(u8, String)>,
 }
 
 /// A serial process's shared-heap roots: the handles its frames' root maps and recorded
@@ -111,6 +120,8 @@ impl SharedState {
             heap: Some(Box::new(Heap::new(heap::SHARED))),
             procs: Vec::new(),
             started: false,
+            tainted: None,
+            init_reports: Vec::new(),
         }
     }
 
@@ -1235,6 +1246,7 @@ pub fn init_package(
 ) -> Result<InstData, SimError> {
     let mut m = Machine::new(rt, Arc::new(InstData::default()), Vec::new(), func);
     m.pkg_init = Some((pkg, vec![0; size]));
+    m.init_reports = Some(Vec::new());
     let mut guard = match shared {
         Some(s) => Some(s.lock().map_err(|_| {
             SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
@@ -1245,7 +1257,12 @@ pub fn init_package(
         m.sh = Some(std::mem::take(&mut **g));
     }
     let r = m.enter(func, &[]).and_then(|()| m.run(None, 0));
-    if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
+    if let (Some(g), Some(mut st)) = (guard.as_mut(), m.sh.take()) {
+        if st.tainted.is_none() {
+            st.tainted = m.tainted.take();
+        }
+        st.init_reports
+            .extend(m.init_reports.take().unwrap_or_default());
         **g = st;
     }
     match r {

@@ -351,6 +351,13 @@ pub(crate) struct Machine {
     pub sh: Option<SharedState>,
     /// The package being initialised (`init_package`): its index and writable data.
     pub pkg_init: Option<(u32, Vec<u8>)>,
+    /// Package initialisation did something other than compute package state (printed, read the
+    /// environment or a clock, touched a file, called foreign code): its result is not stored
+    /// (`SharedState::tainted`, #407).
+    pub(crate) tainted: Option<String>,
+    /// The reports it printed, to print again when its state is restored (`Some` while a
+    /// package is initialised).
+    pub(crate) init_reports: Option<Vec<(u8, String)>>,
     pub entry: FuncId,
     dbg: Option<Dbg>,
     waits: Waits,
@@ -687,6 +694,8 @@ impl Machine {
             troots: Vec::new(),
             sh: None,
             pkg_init: None,
+            tainted: None,
+            init_reports: None,
             entry,
             dbg: None,
             waits: Waits::default(),
@@ -2423,6 +2432,9 @@ impl Machine {
                 n.symbol
             ));
         };
+        if self.pkg_init.is_some() && self.tainted.is_none() && !crate::native::pure(&n.symbol) {
+            self.tainted = Some(format!("it calls `{}`", n.symbol));
+        }
         // The argument cells go through `Machine::cells`: a native call allocates no vector.
         let mut cells = std::mem::take(&mut self.cells);
         cells.clear();
@@ -5133,7 +5145,6 @@ impl Machine {
                     // to stderr at once, ahead of the first cycle, as the reference does. Severity failure stops
                     // elaboration as it stops a run.
                     None => {
-                        use std::io::Write;
                         if self.rt.replay.load(std::sync::atomic::Ordering::Relaxed) {
                             return Ok(Flow::Next);
                         }
@@ -5146,9 +5157,10 @@ impl Machine {
                             Ok(()) => return Ok(Flow::Next),
                             Err(text) => text,
                         };
-                        let name = ["Note", "Warning", "Error", "Failure"][s as usize];
-                        let mut o = std::io::stderr().lock();
-                        let _ = writeln!(o, "** {name}: (init): {text}");
+                        crate::env::print_elab(s, &text);
+                        if let Some(r) = self.init_reports.as_mut() {
+                            r.push((s as u8, text.clone()));
+                        }
                         if s >= yavs_kernel::Severity::Failure {
                             return rt_err(format!("report of severity failure: {text}"));
                         }

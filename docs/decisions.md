@@ -1910,7 +1910,7 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   restored `Db` and a cold one continue from the same state. Symbols are written as indices into a
   per-image text table and interned again on load (`yavs_syntax::encode_table`/`decode_table`).
 - **Format.** `serde` with `postcard` (a maintained, specified, compact serde format), wrapped by
-  `yavs-cache` in a header with magic, format version, key, length and sha256 of the payload. Stored in
+  `yavs-cache` in a header with magic, format version, key, length and an xxh3 checksum of the payload. Stored in
   `<work library dir>/yavs-cache/sem-<key>.img`; a write is a temporary file plus an atomic rename (no
   lock needed; the library lock rules of rule 14 are unchanged and the manifest is never touched by
   `run`); the 48 most recently used entries are kept; a directory that cannot be written is skipped
@@ -1939,6 +1939,9 @@ user's performance priority:
 - **The restored image does not compare the closure's source files again** (`Db::from_image` takes a
   `verified` predicate): the closure verified them and the key holds their hashes. Only the built-in
   `std`/`ieee` text is compared.
+- **Cache entries carry an xxh3 checksum of the payload instead of sha256** (format 2) and are read into one
+  buffer without copying the payload out. Keys stay sha256. The checksum finds a damaged or truncated file;
+  nothing here defends against someone who can write the library directory (they could edit the sources).
 
 ## Native ieee operators (#395)
 

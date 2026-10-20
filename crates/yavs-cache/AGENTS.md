@@ -17,14 +17,14 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `clean`), entry header (magic, format, key, length, payload sha256), tests |
+| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the read payload, no copy), tests |
 
 ## 3. Design decisions that bind this module
 
 | Decision | Why | Source |
 |---|---|---|
 | Every key mixes in `FORMAT` and `build_id()` (version, size and mtime of the executable) | An entry never outlives the code that made it, with no build-time hash | `docs/decisions.md` "Compilation cache" |
-| Entry = header + payload, verified (magic, format, key echo, exact length, sha256) before use | A truncated or damaged file is a miss, not a wrong result | same |
+| Entry = header + payload, verified (magic, format, key echo, exact length, xxh3 checksum) before use | A truncated or damaged file is a miss, not a wrong result; xxh3 because sha256 of a 10 MB image cost as much as reading it (#426) | same |
 | Writes: temporary file in the same directory, then `rename`; no lock | Concurrent runs never see half an entry; readers need no lock | same |
 | `put` never returns an error to the caller | The cache can only make a run faster | same |
 | Pruning by modification time, which `get` refreshes | Keep what is in use | same |

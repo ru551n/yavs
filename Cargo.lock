@@ -1478,6 +1478,7 @@ version = "0.8.0"
 dependencies = [
  "sha2",
  "tempfile",
+ "twox-hash",
 ]
 
 [[package]]

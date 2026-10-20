@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 use sha2::{Digest, Sha256};
 
 /// Version of the entry file layout; part of every key and of the header.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// Name of the cache directory inside a library directory.
 pub const DIR: &str = "yavs-cache";
@@ -27,7 +27,7 @@ pub const DIR: &str = "yavs-cache";
 pub const MAX_ENTRIES: usize = 48;
 
 const MAGIC: &[u8; 8] = b"YAVSIMG\0";
-const HEADER: usize = 8 + 4 + 32 + 8 + 32;
+const HEADER: usize = 8 + 4 + 32 + 8 + 8;
 
 /// Identifies the running build: the version, the executable's size and modification time. Any
 /// rebuild changes it, so an entry never outlives the analyzer that made it.
@@ -48,6 +48,27 @@ pub fn build_id() -> &'static str {
             .unwrap_or_else(|_| format!("unknown:{}", std::process::id()));
         format!("{}+{exe}", env!("CARGO_PKG_VERSION"))
     })
+}
+
+/// The payload of an entry that was read: the file's bytes without copying them out of the buffer
+/// they were read into.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Entry {
+    bytes: Vec<u8>,
+}
+
+impl std::ops::Deref for Entry {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes[HEADER..]
+    }
+}
+
+/// The checksum of a payload: fast enough not to show next to reading the file (a damaged entry
+/// is a miss; nothing here defends against an attacker, who could edit the sources as well).
+fn checksum(payload: &[u8]) -> [u8; 8] {
+    twox_hash::XxHash3_64::oneshot(payload).to_le_bytes()
 }
 
 /// A hash of everything an entry depends on.
@@ -122,21 +143,18 @@ impl Store {
     }
 
     /// The entry, or `None` for anything that is not a complete, intact entry for this key.
-    pub fn get(&self, kind: &str, key: &Key) -> Option<Vec<u8>> {
+    pub fn get(&self, kind: &str, key: &Key) -> Option<Entry> {
         let path = self.file(kind, key);
         let bytes = fs::read(&path).ok()?;
-        let payload = match check(&bytes, key) {
-            Some(p) => p,
-            None => {
-                debug(format!("{} is not a valid entry", path.display()));
-                return None;
-            }
-        };
+        if !check(&bytes, key) {
+            debug(format!("{} is not a valid entry", path.display()));
+            return None;
+        }
         // Recently used entries survive pruning; failing to say so is harmless.
         if let Ok(f) = fs::File::options().write(true).open(&path) {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
-        Some(bytes[HEADER..HEADER + payload].to_vec())
+        Some(Entry { bytes })
     }
 
     /// Store `payload` atomically. Failures are only noted with `YAVS_LOG=debug`.
@@ -161,7 +179,7 @@ impl Store {
             f.write_all(&FORMAT.to_le_bytes())?;
             f.write_all(&key.0)?;
             f.write_all(&(payload.len() as u64).to_le_bytes())?;
-            f.write_all(&Sha256::digest(payload))?;
+            f.write_all(&checksum(payload))?;
             f.write_all(payload)?;
             f.flush()
         };
@@ -229,19 +247,22 @@ impl Store {
     }
 }
 
-/// The payload length if `bytes` is a complete entry for `key` of this format.
-fn check(bytes: &[u8], key: &Key) -> Option<usize> {
-    if bytes.len() < HEADER || &bytes[..8] != MAGIC {
-        return None;
-    }
-    if bytes[8..12] != FORMAT.to_le_bytes() || bytes[12..44] != key.0 {
-        return None;
-    }
-    let len = u64::from_le_bytes(bytes[44..52].try_into().ok()?) as usize;
-    if bytes.len() != HEADER.checked_add(len)? {
-        return None;
-    }
-    (Sha256::digest(&bytes[HEADER..]).as_slice() == &bytes[52..84]).then_some(len)
+/// `bytes` is a complete entry for `key` of this format.
+fn check(bytes: &[u8], key: &Key) -> bool {
+    let ok = || -> Option<bool> {
+        if bytes.len() < HEADER || &bytes[..8] != MAGIC {
+            return None;
+        }
+        if bytes[8..12] != FORMAT.to_le_bytes() || bytes[12..44] != key.0 {
+            return None;
+        }
+        let len = u64::from_le_bytes(bytes[44..52].try_into().ok()?) as usize;
+        if bytes.len() != HEADER.checked_add(len)? {
+            return None;
+        }
+        Some(checksum(&bytes[HEADER..]) == bytes[52..60])
+    };
+    ok() == Some(true)
 }
 
 #[cfg(test)]

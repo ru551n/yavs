@@ -21,30 +21,68 @@ use std::collections::BinaryHeap;
 
 use super::*;
 
-type Bits = Vec<u64>;
+const NONE: u32 = u32::MAX;
 
-/// New number of every register (`u32::MAX`: unused) and the type of every new register.
+/// Below this many registers a frame is small and the analysis costs more than it saves
+/// (half the functions of a library testbench are below it and hold a seventh of the cells).
+const MIN_REGS: usize = 32;
+
+/// What the scan knows of one register. `hi` and `lo` are the hull; the rest says what its
+/// ends are made of.
+#[derive(Clone, Copy)]
+struct Life {
+    lo: u32,
+    hi: u32,
+    def_lo: u32,
+    ext_lo: u32,
+    /// Last real read, last definition, last end given by liveness (`-1`: none).
+    use_hi: i32,
+    def_hi: i32,
+    ext_hi: i32,
+    /// The block of the last definition seen and of the last exposed read recorded.
+    defb: u32,
+    expb: u32,
+    defs: u8,
+    uses: u8,
+    konst: bool,
+}
+
+const NEW: Life = Life {
+    lo: NONE,
+    hi: 0,
+    def_lo: NONE,
+    ext_lo: NONE,
+    use_hi: -1,
+    def_hi: -1,
+    ext_hi: -1,
+    defb: NONE,
+    expb: NONE,
+    defs: 0,
+    uses: 0,
+    konst: false,
+};
+
+/// New number of every register (`0`: unused) and the type of every new register.
 pub(super) fn plan(
     prog: &Program,
     f: &crate::Func,
     used: &[bool],
 ) -> Option<(Vec<u32>, Vec<RegTy>)> {
     let n = f.reg_ty.len();
-    let blocks: Vec<(u32, u32)> = f.blocks.iter().map(|(_, b)| (b.start, b.end)).collect();
-    let nb = blocks.len();
-    let none = u32::MAX;
-    let (mut lo, mut hi) = (vec![none; n], vec![0u32; n]);
-    let (mut defs, mut uses) = (vec![0u8; n], vec![0u8; n]);
-    let mut konst = vec![false; n];
-    // Last real use, last definition, first definition; the ends the liveness analysis added.
-    let (mut use_hi, mut def_hi) = (vec![-1i64; n], vec![-1i64; n]);
-    let (mut def_lo, mut ext_lo) = (vec![none; n], vec![none; n]);
-    let mut ext_hi = vec![-1i64; n];
-    let (mut defb, mut expb) = (vec![none; n], vec![none; n]);
-    let mut exposed: Vec<Vec<u32>> = vec![Vec::new(); nb];
+    if used.iter().filter(|&&u| u).count() < MIN_REGS {
+        return None;
+    }
+    let nb = f.blocks.len();
+    let mut life = vec![NEW; n];
+    // Registers read before written, and registers written, per block (flat, `*_at` offsets).
+    let (mut exp, mut exp_at) = (Vec::new(), Vec::with_capacity(nb + 1));
+    let (mut dfs, mut dfs_at) = (Vec::new(), Vec::with_capacity(nb + 1));
     let mut buf: Vec<(u32, Role)> = Vec::new();
-    for (b, &(s, e)) in blocks.iter().enumerate() {
-        for pc in s..e {
+    for (b, blk) in f.blocks.iter() {
+        let b = b.0;
+        exp_at.push(exp.len() as u32);
+        dfs_at.push(dfs.len() as u32);
+        for pc in blk.start..blk.end {
             let i = f.code.get(pc as usize)?;
             buf.clear();
             i.visit(&mut |r, role, _| buf.push((r.0, role)));
@@ -69,146 +107,133 @@ pub(super) fn plan(
                     if (role == Role::Def) != def {
                         continue;
                     }
-                    let k = r as usize;
-                    if k >= n {
-                        return None;
-                    }
-                    lo[k] = lo[k].min(pc);
-                    hi[k] = hi[k].max(pc);
+                    let l = life.get_mut(r as usize)?;
+                    l.lo = l.lo.min(pc);
+                    l.hi = l.hi.max(pc);
                     if def {
-                        def_hi[k] = def_hi[k].max(i64::from(pc));
-                        def_lo[k] = def_lo[k].min(pc);
-                        defb[k] = b as u32;
-                        defs[k] = defs[k].saturating_add(1);
-                        konst[k] |= is_const;
+                        l.def_hi = l.def_hi.max(pc as i32);
+                        l.def_lo = l.def_lo.min(pc);
+                        l.defb = b;
+                        l.defs = l.defs.saturating_add(1);
+                        l.konst |= is_const;
+                        dfs.push(r);
                     } else {
-                        uses[k] = uses[k].saturating_add(1);
-                        use_hi[k] = use_hi[k].max(i64::from(pc));
-                        if defb[k] != b as u32 && expb[k] != b as u32 {
-                            expb[k] = b as u32;
-                            exposed[b].push(r);
+                        l.uses = l.uses.saturating_add(1);
+                        l.use_hi = l.use_hi.max(pc as i32);
+                        if l.defb != b && l.expb != b {
+                            l.expb = b;
+                            exp.push(r);
                         }
                     }
                 }
             }
         }
     }
-    // Successors of every block.
-    let mut at_start = vec![none; f.code.len() + 1];
-    for (b, &(s, e)) in blocks.iter().enumerate().rev() {
-        if e > s {
-            at_start[s as usize] = b as u32;
+    exp_at.push(exp.len() as u32);
+    dfs_at.push(dfs.len() as u32);
+    // Liveness of the registers read before they are written in some block.
+    if !exp.is_empty() {
+        let mut at_start = vec![NONE; f.code.len() + 1];
+        for (b, blk) in f.blocks.iter() {
+            if blk.end > blk.start && at_start[blk.start as usize] == NONE {
+                at_start[blk.start as usize] = b.0;
+            }
         }
-    }
-    let succs: Vec<Vec<usize>> = blocks
-        .iter()
-        .map(|&(s, e)| {
-            let Some(last) = e.checked_sub(1).filter(|&l| l >= s) else {
-                return Vec::new();
+        let (mut succ, mut succ_at) = (Vec::new(), Vec::with_capacity(nb + 1));
+        for (_, blk) in f.blocks.iter() {
+            succ_at.push(succ.len() as u32);
+            let Some(last) = blk.end.checked_sub(1).filter(|&l| l >= blk.start) else {
+                continue;
             };
             match f.code.get(last as usize) {
-                Some(Inst::Case { table, .. }) => prog
-                    .cases
-                    .get(*table)
-                    .map(|t| {
-                        t.arms
-                            .iter()
-                            .map(|a| a.2)
-                            .chain([t.default])
-                            .map(|b| b.0 as usize)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                Some(Inst::Ret { .. } | Inst::Unreachable { .. }) => Vec::new(),
+                Some(Inst::Case { table, .. }) => {
+                    if let Some(t) = prog.cases.get(*table) {
+                        succ.extend(t.arms.iter().map(|a| a.2.0));
+                        succ.push(t.default.0);
+                    }
+                }
+                Some(Inst::Ret { .. } | Inst::Unreachable { .. }) => {}
                 Some(i @ (Inst::Br { .. } | Inst::CondBr { .. })) => {
-                    i.targets().into_iter().map(|b| b.0 as usize).collect()
+                    succ.extend(i.targets().into_iter().map(|b| b.0));
                 }
-                _ => at_start
-                    .get(e as usize)
-                    .filter(|&&b| b != none)
-                    .map(|&b| b as usize)
-                    .into_iter()
-                    .collect(),
+                _ => succ.extend(Some(at_start[blk.end as usize]).filter(|&b| b != NONE)),
             }
-        })
-        .collect();
-    // Liveness of the registers read before they are written in some block.
-    let mut gidx = vec![none; n];
-    let mut globals: Vec<u32> = Vec::new();
-    for &r in exposed.iter().flatten() {
-        if gidx[r as usize] == none {
-            gidx[r as usize] = globals.len() as u32;
-            globals.push(r);
         }
-    }
-    let g = globals.len();
-    let w = g.div_ceil(64);
-    if g.saturating_mul(nb) > 1 << 27 {
-        return None;
-    }
-    let mut gen_: Vec<Bits> = vec![vec![0; w]; nb];
-    let mut kill: Vec<Bits> = vec![vec![0; w]; nb];
-    for (b, &(s, e)) in blocks.iter().enumerate() {
-        for &r in &exposed[b] {
-            let k = gidx[r as usize] as usize;
-            gen_[b][k / 64] |= 1 << (k % 64);
+        succ_at.push(succ.len() as u32);
+        let mut gidx = vec![NONE; n];
+        let mut globals: Vec<u32> = Vec::new();
+        for &r in &exp {
+            if gidx[r as usize] == NONE {
+                gidx[r as usize] = globals.len() as u32;
+                globals.push(r);
+            }
         }
-        if g == 0 {
-            continue;
+        let w = globals.len().div_ceil(64);
+        if globals.len().saturating_mul(nb) > 1 << 24 {
+            return None;
         }
-        for pc in s..e {
-            f.code[pc as usize].visit(&mut |r, role, _| {
-                let k = gidx.get(r.0 as usize).copied().unwrap_or(none);
-                if role == Role::Def && k != none {
-                    kill[b][k as usize / 64] |= 1 << (k % 64);
+        let mut gen_ = vec![0u64; nb * w];
+        let mut kill = vec![0u64; nb * w];
+        for b in 0..nb {
+            for &r in &exp[exp_at[b] as usize..exp_at[b + 1] as usize] {
+                let k = gidx[r as usize] as usize;
+                gen_[b * w + k / 64] |= 1 << (k % 64);
+            }
+            for &r in &dfs[dfs_at[b] as usize..dfs_at[b + 1] as usize] {
+                let k = gidx[r as usize];
+                if k != NONE {
+                    kill[b * w + k as usize / 64] |= 1 << (k % 64);
                 }
-            });
+            }
         }
-    }
-    let mut live_in = gen_.clone();
-    let mut out = vec![0u64; w];
-    let mut changed = g > 0;
-    while changed {
-        changed = false;
-        for b in (0..nb).rev() {
+        let mut live_in = gen_.clone();
+        let mut out = vec![0u64; w];
+        let succs = |b: usize| &succ[succ_at[b] as usize..succ_at[b + 1] as usize];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for b in (0..nb).rev() {
+                out.fill(0);
+                for &s in succs(b) {
+                    let i = live_in.get(s as usize * w..(s as usize + 1) * w)?;
+                    for (o, i) in out.iter_mut().zip(i) {
+                        *o |= *i;
+                    }
+                }
+                for x in 0..w {
+                    let v = gen_[b * w + x] | (out[x] & !kill[b * w + x]);
+                    if v & !live_in[b * w + x] != 0 {
+                        live_in[b * w + x] |= v;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for (b, blk) in f.blocks.iter() {
+            let b = b.0 as usize;
+            if blk.end <= blk.start {
+                continue;
+            }
             out.fill(0);
-            for &s in &succs[b] {
-                for (o, i) in out.iter_mut().zip(live_in.get(s)?) {
+            for &s in succs(b) {
+                for (o, i) in out.iter_mut().zip(&live_in[s as usize * w..]) {
                     *o |= *i;
                 }
             }
             for x in 0..w {
-                let v = gen_[b][x] | (out[x] & !kill[b][x]);
-                if v & !live_in[b][x] != 0 {
-                    live_in[b][x] |= v;
-                    changed = true;
-                }
-            }
-        }
-    }
-    for (b, &(s, e)) in blocks.iter().enumerate() {
-        if e <= s {
-            continue;
-        }
-        out.fill(0);
-        for &sb in &succs[b] {
-            for (o, i) in out.iter_mut().zip(live_in.get(sb)?) {
-                *o |= *i;
-            }
-        }
-        for x in 0..w {
-            for (bits, is_in) in [(live_in[b][x], true), (out[x], false)] {
-                let mut bits = bits;
+                let mut bits = live_in[b * w + x];
                 while bits != 0 {
-                    let r = globals[x * 64 + bits.trailing_zeros() as usize] as usize;
+                    let l = &mut life[globals[x * 64 + bits.trailing_zeros() as usize] as usize];
                     bits &= bits - 1;
-                    if is_in {
-                        lo[r] = lo[r].min(s);
-                        ext_lo[r] = ext_lo[r].min(s);
-                    } else {
-                        hi[r] = hi[r].max(e - 1);
-                        ext_hi[r] = ext_hi[r].max(i64::from(e - 1));
-                    }
+                    l.lo = l.lo.min(blk.start);
+                    l.ext_lo = l.ext_lo.min(blk.start);
+                }
+                let mut bits = out[x];
+                while bits != 0 {
+                    let l = &mut life[globals[x * 64 + bits.trailing_zeros() as usize] as usize];
+                    bits &= bits - 1;
+                    l.hi = l.hi.max(blk.end - 1);
+                    l.ext_hi = l.ext_hi.max(blk.end as i32 - 1);
                 }
             }
         }
@@ -227,27 +252,9 @@ pub(super) fn plan(
                 }
             });
         }
-        let drop = d.is_some_and(|k| konst[k] && defs[k] == 1);
+        let drop = d.is_some_and(|k| life[k].konst && life[k].defs == 1);
         loose[pc + 1] = loose[pc] + u32::from(drop);
     }
-    // Linear scan.
-    let mut order: Vec<u32> = (0..n as u32)
-        .filter(|&r| {
-            used[r as usize]
-                && lo[r as usize] != none
-                && (r == 0 || f.reg_ty[r as usize - 1] != RegTy::Sig)
-        })
-        .collect();
-    order.sort_by_key(|&r| (lo[r as usize], r));
-    let mut map = vec![none; n];
-    let mut ty: Vec<RegTy> = Vec::new();
-    let class = |t: RegTy| match t {
-        RegTy::I64 => Some(0),
-        RegTy::F64 => Some(1),
-        RegTy::Ptr => Some(2),
-        RegTy::Handle => Some(3),
-        RegTy::Sig => None,
-    };
     // The producers the predecoder fuses with their reader (`pre.rs`).
     let fuses = |i: &Inst| {
         matches!(
@@ -275,17 +282,35 @@ pub(super) fn plan(
                 | Inst::Field { .. }
         )
     };
+    // Linear scan.
+    let mut order: Vec<u32> = (0..n as u32)
+        .filter(|&r| {
+            used[r as usize]
+                && life[r as usize].lo != NONE
+                && (r == 0 || f.reg_ty[r as usize - 1] != RegTy::Sig)
+        })
+        .collect();
+    order.sort_unstable_by_key(|&r| (life[r as usize].lo, r));
+    let mut map = vec![0u32; n];
+    let mut ty: Vec<RegTy> = Vec::new();
+    let class = |t: RegTy| match t {
+        RegTy::I64 => Some(0),
+        RegTy::F64 => Some(1),
+        RegTy::Ptr => Some(2),
+        RegTy::Handle => Some(3),
+        RegTy::Sig => None,
+    };
     let mut active: [BinaryHeap<Reverse<(u32, u8, u32)>>; 4] = Default::default();
     let mut free: [Vec<u32>; 4] = Default::default();
     for r in order {
         let k = r as usize;
-        let t = f.reg_ty[k];
-        let fused = defs[k] == 1
-            && fuses(&f.code[lo[k] as usize])
-            && uses[k] == 1
-            && hi[k] > lo[k]
-            && (loose[hi[k] as usize] - loose[lo[k] as usize + 1]) == hi[k] - lo[k] - 1;
-        let pinned = (konst[k] && defs[k] == 1) || fused;
+        let (t, l) = (f.reg_ty[k], life[k]);
+        let fused = l.defs == 1
+            && fuses(&f.code[l.lo as usize])
+            && l.uses == 1
+            && l.hi > l.lo
+            && (loose[l.hi as usize] - loose[l.lo as usize + 1]) == l.hi - l.lo - 1;
+        let pinned = (l.konst && l.defs == 1) || fused;
         match class(t).filter(|_| !pinned) {
             None => {
                 map[k] = ty.len() as u32;
@@ -295,10 +320,9 @@ pub(super) fn plan(
                 }
             }
             Some(c) => {
-                let takes =
-                    defs[k] == 1 && def_lo[k] == lo[k] && ext_lo[k] > lo[k] && simple(lo[k]);
+                let takes = l.defs == 1 && l.def_lo == l.lo && l.ext_lo > l.lo && simple(l.lo);
                 while let Some(&Reverse((h, rw, cell))) = active[c].peek() {
-                    if h > lo[k] || (h == lo[k] && !(takes && rw == 0)) {
+                    if h > l.lo || (h == l.lo && !(takes && rw == 0)) {
                         break;
                     }
                     active[c].pop();
@@ -309,16 +333,10 @@ pub(super) fn plan(
                     ty.len() as u32 - 1
                 });
                 map[k] = cell;
-                // Reads last at `hi` and nothing else touches it there?
-                let ro =
-                    i64::from(hi[k]) == use_hi[k] && ext_hi[k] < use_hi[k] && def_hi[k] < use_hi[k];
-                active[c].push(Reverse((hi[k], u8::from(!ro), cell)));
+                // Is `hi` the last real read, with nothing else touching the cell there?
+                let ro = l.hi as i32 == l.use_hi && l.ext_hi < l.use_hi && l.def_hi < l.use_hi;
+                active[c].push(Reverse((l.hi, u8::from(!ro), cell)));
             }
-        }
-    }
-    for m in &mut map {
-        if *m == none {
-            *m = 0;
         }
     }
     Some((map, ty))

@@ -1141,6 +1141,31 @@ areas are on #443 (dispatch, frame templates), #422 (collection) and #338 (inlin
 of process variables between suspensions, temporaries of constant size in frame slots, the dynamic-bound local
 arrays that are heap objects per call (`New` + `Deref` + collection).
 
+### Register sharing (#478)
+
+`opt/share.rs` gives registers with disjoint live ranges one frame cell (decisions.md "Registers share cells by live range"),
+functions with at least 32 registers only. Registers per function (average over the functions a run optimises; "used" is
+after dense renumbering, which already existed; preloaded constants and addresses are about 45 percent of it and stay):
+
+| Benchmark | functions | lowered | used | shared |
+|---|---|---|---|---|
+| `uvvm_util_rand_tb` | 253 | 529 | 243 | 152 |
+| `osvvm_axistream` | 361 | 375 | 164 | 94 |
+| `vunit_vc30` (30 runs) | 10491 | 137 | 61 | 39 |
+| `protected_scoreboard` | 6 | 64 | 28 | 21 |
+| `calls` | 3 | 36 | 32 | 23 |
+| `compute_loop` | 2 | 88 | 72 | 53 |
+
+CPU (`tools/bench/run.py --compare`, 9 runs, pinned to core 2, main at `383bb6b3` as A): total CPU B/A
+`uvvm_util_rand_tb` 0.99, `osvvm_axistream` 1.00, `protected_scoreboard` 0.98, `calls` 1.00, `compute_loop` 1.00,
+`vunit_vc30` 1.03 (the optimiser runs once per function and the 30 runs are start-up bound: the pass is about 3 percent of
+their CPU); peak MiB 0.96 to 0.99. Geometric mean 1.000: the interpreter does not gain from the smaller frames
+(skipping the frame fill altogether was measured at 0 to 4 percent in #478). A first version that shared the
+temporaries the predecoder fuses was 2 to 5 percent slower. Not done: preloaded constants that the predecoder folds into
+its operations still occupy template cells that are never read (pre.rs would have to renumber after encoding).
+Checked: difftest 410/410 at 1 and 4 threads (interpreter, gc-stress, llvm, auto), workspace tests, `yavs-llvm` tests,
+OSVVM scripts 314/314, UVVM suite identical to main (102 pass, 9 fail, 26 skipped), the external runner's 11 suites all passing.
+
 ### Verification-library testbenches, round 2 (#444)
 
 CPU seconds, minimum of 9 interleaved runs, `--threads 1`, release binaries, interpreter tier, pinned to one

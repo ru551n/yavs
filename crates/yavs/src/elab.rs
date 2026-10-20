@@ -448,6 +448,7 @@ pub fn elab(
             if a.print_hierarchy {
                 print_hierarchy(&db, &e);
             }
+            std::mem::forget(db);
             out.finish(0)
         }
         Err((out, code)) => out.finish(code),

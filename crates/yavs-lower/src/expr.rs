@@ -1820,7 +1820,11 @@ impl<'a> Fx<'a, '_> {
         let (index, elem) = (indexes[0], *elem);
         let dope = match bounds {
             AggBounds::Context => match self.subtype_dope(st, span)? {
-                Some(d) => d,
+                Some(d) => {
+                    let len = self.dope_len(d);
+                    self.agg_count_check(assocs, len);
+                    d
+                }
                 None => return Err(self.cx.ice(span, "aggregate context without bounds")),
             },
             AggBounds::Positional { count } => {
@@ -1972,6 +1976,35 @@ impl<'a> Fx<'a, '_> {
             }
         }
         Ok(V::A(data, dope))
+    }
+
+    /// The positional elements of an aggregate level against the length `len` of the context
+    /// subtype (LRM 9.3.3.3): without `others` the counts must be equal, with it the
+    /// positional elements must fit. A mismatch is a run-time length error, not a write
+    /// outside the aggregate's object.
+    pub(crate) fn agg_count_check(&mut self, assocs: &[AggAssoc], len: Reg) {
+        let n = assocs.iter().filter(|a| a.choices.is_empty()).count() as i64;
+        if n == 0 {
+            return;
+        }
+        let others = assocs
+            .iter()
+            .any(|a| a.choices.iter().any(|c| matches!(c, Choice::Others)));
+        let k = self.int(n);
+        let v = if others {
+            let over = self.cmp(CmpOp::Gt, k, len);
+            self.select(over, k, len, RegTy::I64)
+        } else {
+            k
+        };
+        let what = self.msg("aggregate", Dir::To);
+        self.emit(Inst::Check {
+            kind: CheckKind::Length,
+            v,
+            lo: len,
+            hi: len,
+            what,
+        });
     }
 
     /// `n` copies of scalar `v` (width `w`) at element `start` of the array at `data`.

@@ -1408,6 +1408,10 @@ impl Fx<'_, '_> {
             Some(d) => d,
             None => self.agg_desc(t, tid, assocs, bounds, dims, span)?,
         };
+        if matches!(bounds, AggBounds::Context) {
+            let len = self.dope_len(desc);
+            self.agg_count_check(assocs, len);
+        }
         let size = self.size_of(tid, desc);
         let data = self.alloc_val(size, tid, Some(desc));
         self.agg_fill(t, tid, assocs, 0, dims, data, desc, None, span)?;

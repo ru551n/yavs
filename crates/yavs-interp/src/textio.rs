@@ -380,6 +380,21 @@ impl Machine {
     /// Replace the line at `cell` by a new object holding `s`, deallocating the old one.
     pub(crate) fn line_set(&mut self, cell: u64, s: &[u8]) -> R<()> {
         let old = self.load(cell, Width::B8)?;
+        // The object stays in its slot, as in [`Machine::line_edit`], and keeps its capacity.
+        if old != 0 && crate::heap::tag_of(old) == self.line_tag(cell) {
+            let hp = self.heap_of(old)?.0;
+            let (i, v, start) = hp.edit(old).map_err(|e| match e {
+                HeapError::Stale => Fault::Runtime(
+                    "deallocate of an access value whose object was already deallocated".into(),
+                ),
+                e => ice(format!("deallocate: {e:?}")),
+            })?;
+            v.truncate(*start + 24);
+            v.extend_from_slice(s);
+            v[*start..*start + 24].copy_from_slice(&line_desc(s.len()));
+            let nh = hp.reissue(i, s.len());
+            return self.store(cell, Width::B8, nh);
+        }
         self.free_handle(old)?;
         let h = self.new_line(cell, s)?;
         self.store(cell, Width::B8, h)
@@ -393,8 +408,8 @@ impl Machine {
         f: impl FnOnce(&mut FileSlot) -> R<T>,
     ) -> R<T> {
         let c = self.load(cell, Width::B4)?;
-        let rt = self.rt.clone();
-        let mut files = rt
+        let mut files = self
+            .rt
             .files
             .lock()
             .map_err(|_| ice("file table lock poisoned"))?;
@@ -451,17 +466,28 @@ impl Machine {
         Ok(FileOpenStatus::Ok)
     }
 
-    fn writeline_to(&mut self, ctx: &mut Option<&mut Ctx<'_>>, f: u64, line: &[u8]) -> R<()> {
-        let mut text = line.to_vec();
+    /// WRITELINE of `text` to the file in `f`; `text` is left empty for a TEXT file.
+    fn writeline_to(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        f: u64,
+        text: &mut Vec<u8>,
+    ) -> R<()> {
         let out = self.with_file(f, |s| match s {
-            FileSlot::Text(t) => t.writeline(&mut text).map(|()| false).map_err(file_err),
+            FileSlot::Text(t) => t.writeline(text).map(|()| false).map_err(file_err),
             FileSlot::Output { open: true } => Ok(true),
             FileSlot::Output { open: false } => Err(file_err(FileError::NotOpen)),
         })?;
         if out {
             text.push(b'\n');
-            emit(ctx, &text)?;
+            emit(ctx, text)?;
         }
+        Ok(())
+    }
+
+    /// The bytes of the line at `cell` (null is empty) appended to `out`.
+    fn line_into(&mut self, cell: u64, out: &mut Vec<u8>) -> R<()> {
+        out.extend_from_slice(self.line_ref(cell)?.unwrap_or_default());
         Ok(())
     }
 }
@@ -789,8 +815,10 @@ fn writeline(
     a: Args<'_>,
 ) -> R<Option<u64>> {
     let cell = arg(a, 1)?;
-    let l = m.line_get(cell)?.unwrap_or_default();
-    m.writeline_to(ctx, arg(a, 0)?, &l)?;
+    let mut l = m.take_bytes();
+    m.line_into(cell, &mut l)?;
+    m.writeline_to(ctx, arg(a, 0)?, &mut l)?;
+    m.give_bytes(l);
     m.line_set(cell, b"")?;
     Ok(None)
 }
@@ -803,7 +831,7 @@ fn tee(
 ) -> R<Option<u64>> {
     let cell = arg(a, 1)?;
     let mut l = m.line_get(cell)?.unwrap_or_default();
-    m.writeline_to(ctx, arg(a, 0)?, &l)?;
+    m.writeline_to(ctx, arg(a, 0)?, &mut l.clone())?;
     l.push(b'\n');
     emit(ctx, &l)?;
     m.line_set(cell, b"")?;

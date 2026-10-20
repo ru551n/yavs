@@ -114,8 +114,7 @@ unsupported PSL beyond the subset, W0004 (17, plus 4 that differ only in the dir
 missing run-time checks, #379 (about 11); PSL-free reference quirks and LRM-unclear cases (about
 15: mirror identity in reflection, null array bounds, `'transaction` start value 2 to 2, textio
 read of bits with spaces, real image format of the second suite, environment and time stamps);
-ICE on arrays with element constraints, #380 (3); `'path_name` of block and generate labels,
-#376 (3); binary files of records and arrays of composites (3); guarded assignments with a false
+ICE on arrays with element constraints, #380 (3); binary files of records and arrays of composites (3); guarded assignments with a false
 guard, #373 (2); access to protected types, #377 (2); predefined operations on arrays of
 composites (2); aggregate longer than a non-static constant subtype is an ICE, #378 (2); failed
 textio READ stops the run, #381 (1); a repeated force in one cycle, #382 (1); sensitivity of

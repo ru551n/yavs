@@ -421,11 +421,29 @@ impl Elaborated {
                 });
                 match p {
                     Some(&p) => text(p),
-                    None => format!(
-                        "{}{}",
-                        text(region),
-                        db.decls[d].name.to_string().to_ascii_lowercase()
-                    ),
+                    // A block or generate label names its own scope (16.2.5), the nearest
+                    // one: the region itself or a child of it, outwards.
+                    None => {
+                        let key = db.decls[d].name.key();
+                        let own = chain.iter().find_map(|&s| {
+                            std::iter::once(s)
+                                .chain(self.hier.scope(s).children.iter().copied())
+                                .find(|&c| {
+                                    let sc = self.hier.scope(c);
+                                    sc.name.key == key
+                                        && matches!(
+                                            sc.kind,
+                                            ScopeKind::Block
+                                                | ScopeKind::ForGenerate { .. }
+                                                | ScopeKind::Generate { .. }
+                                        )
+                                })
+                        });
+                        match own {
+                            Some(c) => text(c),
+                            None => format!("{}{key}:", text(region)),
+                        }
+                    }
                 }
             }
             _ => {

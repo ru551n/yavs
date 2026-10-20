@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:label_path_name:g:_p0	g :label_path_name:g:
+diag	note	0	0	:label_path_name:b:n:_p0	n :label_path_name:b:n:
+diag	note	0	0	:label_path_name:b:_p0	b :label_path_name:b:
+diag	note	0	0	:label_path_name:f(1):q:_p0	q :label_path_name:f(1):q:
+diag	note	0	0	:label_path_name:f(1):_p0	f :label_path_name:f(1):
+diag	note	0	0	:label_path_name:f(2):q:_p0	q :label_path_name:f(2):q:
+diag	note	0	0	:label_path_name:f(2):_p0	f :label_path_name:f(2):
+diag	note	1000000	0	:label_path_name:_p0	top :label_path_name:

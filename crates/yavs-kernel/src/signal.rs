@@ -421,40 +421,38 @@ impl Signal {
                     return Err(ErrorKind::Internal(msg));
                 }
                 (Some(res), ds) => {
-                    let runs = connected_runs(&self.drivers, self.guard.is_some(), part, ds);
-                    for (run, conn) in runs {
+                    // An unguarded signal has the one run of all its sources: no list of runs.
+                    if self.guard.is_none() {
+                        resolve_run(
+                            &self.drivers,
+                            ResOut {
+                                driving: &mut self.driving,
+                                callouts: &mut self.callouts,
+                                name: &self.name,
+                                live: self.live,
+                            },
+                            res,
+                            part,
+                            ds,
+                        )?;
+                        continue;
+                    }
+                    for (run, conn) in connected_runs(&self.drivers, true, part, ds) {
                         if conn.is_empty() && self.guard == Some(GuardKind::Register) {
                             continue;
                         }
-                        let srcs: Vec<(&Buf, usize)> = conn
-                            .iter()
-                            .map(|&i| {
-                                let d = &self.drivers[i as usize];
-                                (&d.value, (run.offset - d.range.offset) as usize)
-                            })
-                            .collect();
-                        let (off, n) = (run.offset as usize, run.len as usize);
-                        match res {
-                            Resolution::StdLogic => self.driving.resolve_std_logic(off, n, &srcs),
-                            Resolution::Func(f) => {
-                                let codes: Vec<Vec<u8>> =
-                                    srcs.iter().map(|(b, o)| b.codes(*o, n)).collect();
-                                let views: Vec<&[u8]> = codes.iter().map(Vec::as_slice).collect();
-                                let mut out = self.driving.codes(off, n);
-                                let r = if self.live {
-                                    let (r, reps) = crate::callout::capture(|| f(&views, &mut out));
-                                    self.callouts.extend(reps);
-                                    r
-                                } else {
-                                    f(&views, &mut out)
-                                };
-                                r.map_err(|message| ErrorKind::Resolution {
-                                    signal: self.name.clone(),
-                                    message,
-                                })?;
-                                self.driving.set_codes(off, &out);
-                            }
-                        }
+                        resolve_run(
+                            &self.drivers,
+                            ResOut {
+                                driving: &mut self.driving,
+                                callouts: &mut self.callouts,
+                                name: &self.name,
+                                live: self.live,
+                            },
+                            res,
+                            run,
+                            &conn,
+                        )?;
                     }
                 }
             }
@@ -616,6 +614,59 @@ fn elapsed(now: Time, times: &[u64]) -> Time {
         .filter(|&&t| t != NEVER)
         .max()
         .map_or(Time::MAX, |&t| now.since(Time::from_raw(t)))
+}
+
+/// What resolving a run writes, borrowed apart from the sources it reads.
+struct ResOut<'a> {
+    driving: &'a mut Buf,
+    callouts: &'a mut Vec<(crate::process::Severity, String)>,
+    name: &'a str,
+    live: bool,
+}
+
+/// Resolve the elements of `run` from the sources `conn` into the driving value.
+fn resolve_run(
+    drivers: &[DriverSlot],
+    out: ResOut<'_>,
+    res: &Resolution,
+    run: Range,
+    conn: &[u32],
+) -> Result<(), ErrorKind> {
+    let ResOut {
+        driving,
+        callouts,
+        name,
+        live,
+    } = out;
+    let srcs: SmallVec<[(&Buf, usize); 4]> = conn
+        .iter()
+        .map(|&i| {
+            let d = &drivers[i as usize];
+            (&d.value, (run.offset - d.range.offset) as usize)
+        })
+        .collect();
+    let (off, n) = (run.offset as usize, run.len as usize);
+    match res {
+        Resolution::StdLogic => driving.resolve_std_logic(off, n, &srcs),
+        Resolution::Func(f) => {
+            let codes: Vec<Vec<u8>> = srcs.iter().map(|(b, o)| b.codes(*o, n)).collect();
+            let views: Vec<&[u8]> = codes.iter().map(Vec::as_slice).collect();
+            let mut out = driving.codes(off, n);
+            let r = if live {
+                let (r, reps) = crate::callout::capture(|| f(&views, &mut out));
+                callouts.extend(reps);
+                r
+            } else {
+                f(&views, &mut out)
+            };
+            r.map_err(|message| ErrorKind::Resolution {
+                signal: name.to_string(),
+                message,
+            })?;
+            driving.set_codes(off, &out);
+        }
+    }
+    Ok(())
 }
 
 /// Runs of `part` with a constant set of connected sources (all of `sources` when the

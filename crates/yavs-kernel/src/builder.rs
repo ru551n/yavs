@@ -626,6 +626,10 @@ fn add_source(s: &mut Signal, range: Range, taken: &mut BTreeMap<u32, u32>) -> R
     }
     let value = s.cur.extract(range.offset as usize, range.len as usize);
     let off = s.guard.map(|_| vec![0; (range.len as usize).div_ceil(64)]);
+    // Most signals have one source: do not let the first push take room for four.
+    if s.drivers.is_empty() {
+        s.drivers.reserve_exact(1);
+    }
     s.drivers.push(DriverSlot { range, value, off });
     Ok(())
 }

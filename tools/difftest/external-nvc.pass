@@ -84,7 +84,6 @@ attr2
 attr3
 attr4
 attr5
-attr6
 attr7
 attr8
 bitstr1
@@ -691,6 +690,7 @@ signal19
 signal2
 signal20
 signal21
+signal22
 signal23
 signal24
 signal25

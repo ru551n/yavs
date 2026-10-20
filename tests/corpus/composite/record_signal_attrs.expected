@@ -9,7 +9,7 @@ diag	note	4000000	1	:record_signal_attrs:delayed	dl (false,5) dv (false,5)(false
 diag	note	5000000	2	:record_signal_attrs:mon	st false qu false rst true
 diag	note	5000000	2	:record_signal_attrs:mon	transaction 2
 diag	note	6000000	1	:record_signal_attrs:delayed	dl (false,5) dv (true,5)(false,3)
-diag	note	7000000	0	:record_signal_attrs:drv	s(1)'last_event 2000000 fs s(0)'last_event 9223372036854775807 fs s(1)'last_active 2000000 fs s(1 to 2)'last_value(1) (false,1)
+diag	note	7000000	0	:record_signal_attrs:drv	s(1)'last_event 2000000 fs s(0)'last_event 9223372036854775807 fs s(1)'last_active 2000000 fs s(1 to 2)'last_value(1) (false,5)
 diag	note	7000000	1	:record_signal_attrs:mon	st true qu true rst true
 diag	note	7000000	2	:record_signal_attrs:mon	st false qu false rst false
 diag	note	7000000	2	:record_signal_attrs:mon	transaction 3

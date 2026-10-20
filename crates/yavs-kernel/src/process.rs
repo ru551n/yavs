@@ -246,12 +246,10 @@ impl Ctx<'_> {
         Ok(s.last_active(r, self.sh.now))
     }
 
-    /// `'last_value`, element by element.
+    /// `'last_value` of the range as a whole.
     pub fn last_value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = self.sig(r)?;
-        Ok(s.last_value
-            .extract(r.offset as usize, r.len as usize)
-            .to_value())
+        Ok(s.last_value_of(r).to_value())
     }
 
     /// The first element of `r` of a logic signal as a `std_ulogic` code, its current value or

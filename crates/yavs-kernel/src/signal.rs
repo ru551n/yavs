@@ -603,6 +603,19 @@ impl Signal {
         }
     }
 
+    /// `'last_value` of `r`: the value before the last change of the whole of `r` (LRM 16.2.4),
+    /// so an element that did not change in that cycle keeps its current value.
+    pub fn last_value_of(&self, r: Range) -> Buf {
+        let mut b = self.last_value.extract(r.offset as usize, r.len as usize);
+        let ev = &self.event_cycles()[r.elems()];
+        if let Some(&latest) = ev.iter().max() {
+            for (i, _) in ev.iter().enumerate().filter(|&(_, &c)| c != latest) {
+                b.copy(i, &self.cur, r.offset as usize + i, 1);
+            }
+        }
+        b
+    }
+
     fn event_cycles(&self) -> &[u64] {
         &self.stamps[..self.ty.len as usize]
     }

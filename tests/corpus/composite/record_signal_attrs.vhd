@@ -1,4 +1,8 @@
--- difftest: top=record_signal_attrs std=2008 ignore=order
+-- difftest: top=record_signal_attrs std=2008 ignore=order ref=hand
+-- ref=hand: 'last_value of s(1 to 2) is the value before the last event of that part (LRM 16.2.4), so
+-- an element that did not change in it keeps its current value; the first reference simulator answers
+-- per element (#451, catalogue case last-value-composite), the other two references agree with the
+-- hand-edited line.
 -- ignore=order: processes report in one cycle, ordered by yavs's rule (#252), which the
 -- reference simulator does not follow here, so each process's reports are compared.
 -- Signal attributes of records and of parts of arrays of records that span several fields:

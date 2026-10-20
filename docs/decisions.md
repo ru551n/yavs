@@ -271,7 +271,9 @@ milestone users care about works.
 - **Event tracking:** per-element flat arrays (`event_cycle`, `last_event`, `last_value`, ...)
   over the whole signal, with `Range` operations; inertial preemption is decided per element and
   transactions are split. This is how rule 2 is read: no per-scalar objects, exact per-scalar
-  semantics.
+  semantics. `'last_value` of an array part is the value of the part before its last event (LRM
+  16.2.4): elements that did not change in that event keep their current value (#451; the
+  elements of one leaf, a record's leaves are read leaf by leaf).
 - **Forces and deposits** (from processes, `SimControl` or callbacks) are queued and applied in
   the next cycle, as VHDL-2008 forces are. A deposit sets the driving value until a driver next
   updates those elements.

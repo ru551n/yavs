@@ -961,6 +961,26 @@ Instruction counts of one process activation (deterministic, stepping the proces
 
 What the instruction profile shows next (ff, about 5000 instructions per activation): the kernel assignment behind `Drive` is 1250, op fetch and register indexing about 20 per op, a vector element read about 500 (index arithmetic), the process exit path 330 and entry 250. These belong to the kernel work (scalar assignment, element read and edge entry points) and to fusing the index arithmetic of a signal element read.
 
+### Interpreter, index arithmetic and vector ops (#443)
+
+Round 6 of the clocked-process work, driven by exact instruction counts of one process activation (stepping `InterpProcess::run` under a debugger, attributing every instruction to the op of the loop that ran it, callees included; scratch tooling, not in the repository). Changes, all in `pre.rs` and `exec.rs`:
+
+- A run in one block of add, subtract and multiply-by-constant `Bin`s, `Pos`es and `DopeLen`s of the first dimension is a few linear ops (`Aff1`, `Aff2`, `AffP`, `AffL`, `AffPL`, `AffPR`): `c0 + sum coef * atom`, one op per result something else reads. Exact: the fast path takes atoms within 2^30, where no intermediate of the replaced instructions can overflow; an index outside its range, a long range or a big value runs the replaced IR instructions as they are (`aff_replay`), so every error has the same text and pc as before. A vector element read was `LoadInst`, `Pos`, `DopeLen`, four `Bin`s and `SigRead1` (nine ops); it is `LoadInst` and `ReadPL`/`ReadPR` now.
+- The `peephole` pass makes `WaveBuf` (`Alloc` + `Store` + `Index` by 8), `ReadPL`/`ReadPR` and `LSetDrive` (the `LSet` of element 0 of a waveform `WaveBuf` made and the one-element `Drive` of it: a scalar logic assignment goes to the kernel without building the waveform's planes). `Bool`, `LCopy` and the vector `SigRead` are ops (they were `Step`s), a `Cmp` + `Not` + `CondBr` is one `CmpBr`, and a `BinRange` with 32-bit constant bounds reads no bound registers (`BinRangeK`).
+- Memory paths: `lcopy` runs on stack buffers (and directly in the temporary area), a single-element `Drive` builds no vectors, `dim_of` reads a descriptor in one slice (constant descriptors included), a layout word of a constant descriptor needs no descriptor read, `make_dope` writes in place, the register scratch is a const-initialised thread local.
+
+Instructions per activation (steady state, deterministic) and core cycles of a whole run (`perf stat`, `--threads 1`, pinned to one performance core, A and B on the same core) before and after, and against the reference simulator:
+
+| Design | instructions before | now | cycles before (G) | now (G) | now / before | reference (G) | now / reference (before) |
+|---|---|---|---|---|---|---|---|
+| lfsr | 10719 | 7387 | 7.23 | 5.64 | 0.78 | 0.56 | 10.1 (13.0) |
+| chain | 3382 | 2739 | 3.56 | 3.16 | 0.89 | 0.54 | 5.9 (6.6) |
+| ff | 4907 | 4078 | 10.57 | 9.23 | 0.87 | 2.01 | 4.6 (5.3) |
+| fan | 1075 | 1090 | 8.61 | 8.89 | 1.03 | 3.81 | 2.3 (2.3) |
+| bus | | | 1.53 | 1.45 | 0.95 | 2.48 | 0.6 (0.6) |
+
+Where the remaining instructions are (lfsr, 7400 per activation): the op fetch and dispatch 19%, the kernel assignment behind `Drive` 19% (ff and chain: 28% and 41%), single-element signal reads 160 each (the kernel read is inlined into the op), the vector concatenation sequence the lowering emits for `a(14 downto 0) & b` (about 30 ops: two descriptors, a length test, three `LayoutOf` + `Alloc` pairs, `LCopy`, `LSet`, `SubtypeCheck`, `Copy`), and a fixed 330 per activation for the scratch swap, `run_quick`, `exec_fast` and `after_suspend` (30% of `fan`). The kernel side of the same profile (assignment layers `schedule`/`own`/`same_as`/`unchanged`, the re-registration of the static sensitivity after every activation, the edge test of a process the kernel resumed because of that very edge) is commented on #443.
+
 ### Interpreter dispatch, round 4 (#443)
 
 Two measurements pick the work (scratch builds, not in the repository): a dynamic histogram of the ops

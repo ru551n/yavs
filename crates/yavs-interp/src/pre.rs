@@ -17,7 +17,9 @@
 //! through `Machine::step`. `Code::at` maps each op back to its IR pc, which frames keep
 //! (`Frame::pc`), so traces, messages, coverage, root maps and the debug loop see the IR.
 
-use yavs_ir::{AddrSpace, CheckKind, CheckMsgId, CmpOp, Func, Inst, IntOp, Program, Role, Width};
+use yavs_ir::{
+    AddrSpace, BoolOp, CheckKind, CheckMsgId, CmpOp, Func, Inst, IntOp, Program, Role, Width,
+};
 
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
@@ -345,6 +347,93 @@ pub(crate) enum Op {
         a: u32,
         b: u32,
     },
+    /// A run of `Bin` (add, subtract, multiply by a constant), `Pos` and `DopeLen` as linear
+    /// forms (`Lin`): `c0 + ca * a`, `Aff2` of two registers, `AffP` of the position of `idx`
+    /// in the first dimension of `dope`, `AffL` of its length, `AffPL` of both, `AffPR` of the
+    /// position and a register. Atoms within 2^30 give the instructions' result by
+    /// construction; anything else (an index out of range, a long range, big values) executes
+    /// the run as the IR has it (`Code::aff`).
+    Aff1 {
+        dst: u32,
+        a: u32,
+        ca: i16,
+        c0: i32,
+    },
+    Aff2 {
+        dst: u32,
+        a: u32,
+        b: u32,
+        ca: i16,
+        cb: i16,
+        c0: i32,
+    },
+    AffP {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        cp: i16,
+        c0: i32,
+    },
+    AffL {
+        dst: u32,
+        dope: u32,
+        cl: i16,
+        c0: i32,
+    },
+    AffPL {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        cp: i16,
+        cl: i16,
+        c0: i32,
+    },
+    AffPR {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        a: u32,
+        cp: i16,
+        ca: i16,
+        c0: i16,
+    },
+    /// `Alloc`, the `Store` of a time to its start and the `Index` 8 bytes into it: the start
+    /// of a waveform (`time` the register holding the delay).
+    WaveBuf {
+        w: u32,
+        size: u32,
+        time: u32,
+        e: u32,
+    },
+    /// `LSet` of element 0 of a waveform `WaveBuf` made (nothing else reads it) and the one-element
+    /// `Drive` of it, without delay limit: a scalar logic assignment straight to the kernel.
+    LSetDrive {
+        v: u32,
+        driver: u32,
+        target: u32,
+        wave: u32,
+        inertial: bool,
+    },
+    /// `AffPL` / `AffPR` (the second with the register's coefficient 1) and the `SigRead1` of
+    /// the element it computes (nothing else reads the offset).
+    ReadPL {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        sig: u16,
+        cp: i16,
+        cl: i16,
+        c0: i16,
+    },
+    ReadPR {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        a: u32,
+        sig: u16,
+        cp: i16,
+        c0: i16,
+    },
     /// `Inst::BinRange`; its message is read from the IR when it fails.
     BinRange {
         op: IntOp,
@@ -354,11 +443,39 @@ pub(crate) enum Op {
         lo: u32,
         hi: u32,
     },
+    /// `BinRange` whose bounds are constants within 32 bits.
+    BinRangeK {
+        op: IntOp,
+        dst: u32,
+        a: u32,
+        b: u32,
+        lo: i32,
+        hi: i32,
+    },
     Cmp {
         m: u8,
         dst: u32,
         a: u32,
         b: u32,
+    },
+    Bool {
+        op: BoolOp,
+        dst: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `Inst::LCopy`.
+    LCopy {
+        dst: u32,
+        doff: u32,
+        src: u32,
+        soff: u32,
+        n: u32,
+    },
+    /// `Inst::SigRead` of one signal reference (a reference of several parts steps).
+    SigReadVec {
+        dst: u32,
+        sig: u32,
     },
     /// `Cmp` and the `CondBr` on its result.
     CmpBr {
@@ -562,6 +679,9 @@ pub(crate) struct Code {
     pub entry: Vec<u32>,
     /// `entry[0]`, so a call finds the first op without reading `entry`.
     pub first: u32,
+    /// For each `Aff` op (sorted by op index): the IR pcs of the `Bin` run it stands for, from
+    /// its first instruction to the one defining the op's result.
+    pub aff: Vec<(u32, u32, u32)>,
 }
 
 pub(crate) const NONE: u32 = u32::MAX;
@@ -628,6 +748,460 @@ pub(crate) fn cmp_holds(m: u8, a: i64, b: i64) -> bool {
     m >> (a.cmp(&b) as i8 + 1) & 1 != 0
 }
 
+/// What a linear form is made of: a register, the position of an index in a descriptor
+/// (`Inst::Pos`) or the length of a descriptor's first dimension (`Inst::DopeLen`).
+#[derive(Clone, Copy, PartialEq)]
+enum Atom {
+    Reg(u32),
+    Pos { dope: u32, idx: u32 },
+    Len { dope: u32 },
+}
+
+/// A linear form `c0 + sum coef * atom` of at most two atoms, with bounds on the size of any
+/// value the instructions it replaces compute from atoms within 2^30: `am` times 2^30 plus
+/// `cm`.
+#[derive(Clone)]
+struct Lin {
+    c0: i128,
+    t: [(Atom, i128); 2],
+    n: usize,
+    am: i128,
+    cm: i128,
+}
+
+impl Lin {
+    fn konst(v: i64) -> Lin {
+        Lin {
+            c0: v.into(),
+            t: [(Atom::Reg(0), 0); 2],
+            n: 0,
+            am: 0,
+            cm: i128::from(v).abs(),
+        }
+    }
+
+    fn atom(a: Atom) -> Lin {
+        Lin {
+            c0: 0,
+            t: [(a, 1), (Atom::Reg(0), 0)],
+            n: 1,
+            am: 1,
+            cm: 0,
+        }
+    }
+
+    fn scale(&self, k: i128) -> Lin {
+        let mut l = self.clone();
+        l.c0 *= k;
+        for t in &mut l.t {
+            t.1 *= k;
+        }
+        l.am *= k.abs();
+        l.cm *= k.abs();
+        l
+    }
+
+    /// `self + sign * o`.
+    fn add(&self, o: &Lin, sign: i128) -> Option<Lin> {
+        let mut l = self.clone();
+        l.c0 += sign * o.c0;
+        for &(a, c) in &o.t[..o.n] {
+            match l.t[..l.n].iter_mut().find(|t| t.0 == a) {
+                Some(t) => t.1 += sign * c,
+                None if l.n < 2 => {
+                    l.t[l.n] = (a, sign * c);
+                    l.n += 1;
+                }
+                None => return None,
+            }
+        }
+        l.am += o.am;
+        l.cm += o.cm;
+        Some(l)
+    }
+
+    /// Whether the form has an op (`lin_op`) and cannot overflow `i64` for atoms within 2^30.
+    fn fits(&self) -> bool {
+        let kinds = match self.t[..self.n] {
+            [] | [_] => true,
+            [(Atom::Reg(_), _), (Atom::Reg(_), _)] => true,
+            [(Atom::Pos { dope: a, .. }, _), (Atom::Len { dope: b }, _)]
+            | [(Atom::Len { dope: b }, _), (Atom::Pos { dope: a, .. }, _)] => a == b,
+            // (`AffPR` keeps its constant in 16 bits.)
+            [(Atom::Pos { .. }, _), (Atom::Reg(_), _)]
+            | [(Atom::Reg(_), _), (Atom::Pos { .. }, _)] => self.c0.abs() <= i128::from(i16::MAX),
+            _ => false,
+        };
+        kinds
+            && self.c0.abs() <= i128::from(i32::MAX)
+            && self.t[..self.n]
+                .iter()
+                .all(|t| t.1.abs() <= i128::from(i16::MAX))
+            && self.am <= 1 << 31
+            && self.cm <= 1 << 40
+    }
+
+    /// The op computing the form into `dst`.
+    fn op(&self, dst: u32) -> Op {
+        let co = |i: usize| self.t[i].1 as i16;
+        let c0 = self.c0 as i32;
+        match self.t[..self.n] {
+            [] => Op::Const {
+                dst,
+                v: self.c0 as i64,
+            },
+            [(Atom::Reg(a), _)] => Op::Aff1 {
+                dst,
+                a,
+                ca: co(0),
+                c0,
+            },
+            [(Atom::Reg(a), _), (Atom::Reg(b), _)] => Op::Aff2 {
+                dst,
+                a,
+                b,
+                ca: co(0),
+                cb: co(1),
+                c0,
+            },
+            [(Atom::Pos { dope, idx }, _)] => Op::AffP {
+                dst,
+                dope,
+                idx,
+                cp: co(0),
+                c0,
+            },
+            [(Atom::Len { dope }, _)] => Op::AffL {
+                dst,
+                dope,
+                cl: co(0),
+                c0,
+            },
+            [(Atom::Pos { dope, idx }, _), (Atom::Len { .. }, _)] => Op::AffPL {
+                dst,
+                dope,
+                idx,
+                cp: co(0),
+                cl: co(1),
+                c0,
+            },
+            [(Atom::Len { .. }, _), (Atom::Pos { dope, idx }, _)] => Op::AffPL {
+                dst,
+                dope,
+                idx,
+                cp: co(1),
+                cl: co(0),
+                c0,
+            },
+            [(Atom::Pos { dope, idx }, _), (Atom::Reg(a), _)] => Op::AffPR {
+                dst,
+                dope,
+                idx,
+                a,
+                cp: co(0),
+                ca: co(1),
+                c0: self.c0 as i16,
+            },
+            [(Atom::Reg(a), _), (Atom::Pos { dope, idx }, _)] => Op::AffPR {
+                dst,
+                dope,
+                idx,
+                a,
+                cp: co(1),
+                ca: co(0),
+                c0: self.c0 as i16,
+            },
+            // `fits` admits no other pair.
+            _ => Op::Step(NONE),
+        }
+    }
+}
+
+/// The ops of a run (`lin_run`): all but the last, the last, and the pc of the run's last
+/// instruction.
+struct LinRun {
+    head: Vec<(Op, u32)>,
+    tail: (Op, u32),
+    end: usize,
+}
+
+struct LinCx<'a> {
+    f: &'a Func,
+    skip: &'a [bool],
+    block_start: &'a [bool],
+    known: &'a [Known],
+    defs: &'a [u8],
+    uses: &'a [u32],
+}
+
+/// The run of add, subtract and multiply-by-constant `Bin`s, `Pos`es and `DopeLen`s of the
+/// first dimension starting at `pc` (within a block, only preloaded definitions between them,
+/// each result defined once) as one op per result something else reads (`Lin::op`), in
+/// program order, with the IR pc of the instruction that defines it; and the pc of the run's
+/// last instruction. `None` when the first instruction does not fit.
+fn lin_run(cx: &LinCx, pc: usize) -> Option<LinRun> {
+    let n = cx.f.code.len();
+    // (register, its form, use count by the run, pc of its definition).
+    let mut forms: Vec<(u32, Lin, u32, usize)> = Vec::new();
+    let (mut p, mut last) = (pc, pc);
+    while p < n {
+        if p != pc && cx.block_start[p] {
+            break;
+        }
+        if cx.skip[p] {
+            p += 1;
+            continue;
+        }
+        let once = |r: yavs_ir::Reg| cx.defs.get(r.0 as usize) == Some(&1);
+        let virt = |r: yavs_ir::Reg| forms.iter().any(|x| x.0 == r.0);
+        let form = |r: yavs_ir::Reg| match forms.iter().find(|x| x.0 == r.0) {
+            Some(x) => x.1.clone(),
+            None => match cx.known.get(r.0 as usize) {
+                Some(&Known::Int(v)) => Lin::konst(v),
+                _ => Lin::atom(Atom::Reg(r.0)),
+            },
+        };
+        let (dst, lin, srcs) = match cx.f.code[p] {
+            Inst::Bin {
+                op: op @ (IntOp::Add | IntOp::Sub | IntOp::Mul),
+                dst,
+                a,
+                b,
+            } if once(dst) => {
+                let (x, y) = (form(a), form(b));
+                let lin = match op {
+                    IntOp::Add => x.add(&y, 1),
+                    IntOp::Sub => x.add(&y, -1),
+                    _ if y.n == 0 => Some(x.scale(y.c0)),
+                    _ if x.n == 0 => Some(y.scale(x.c0)),
+                    _ => None,
+                };
+                // Constants folded here must not overflow where the instructions would.
+                let folded = x.n == 0 && y.n == 0;
+                (
+                    dst,
+                    lin.filter(|l| !folded || i64::try_from(l.c0).is_ok()),
+                    [Some(a), Some(b)],
+                )
+            }
+            Inst::Pos {
+                dst,
+                dope,
+                dim: 0,
+                idx,
+                ..
+            } if once(dst) && !virt(dope) && !virt(idx) => (
+                dst,
+                Some(Lin::atom(Atom::Pos {
+                    dope: dope.0,
+                    idx: idx.0,
+                })),
+                [None, None],
+            ),
+            Inst::DopeLen { dst, dope, dim: 0 } if once(dst) && !virt(dope) => (
+                dst,
+                Some(Lin::atom(Atom::Len { dope: dope.0 })),
+                [None, None],
+            ),
+            _ => break,
+        };
+        let Some(lin) = lin.filter(Lin::fits) else {
+            break;
+        };
+        for r in srcs.into_iter().flatten() {
+            if let Some(x) = forms.iter_mut().find(|x| x.0 == r.0) {
+                x.2 += 1;
+            }
+        }
+        forms.push((dst.0, lin, 0, p));
+        last = p;
+        p += 1;
+    }
+    // A run of `Pos`es and `DopeLen`s alone gains nothing over their own ops (and fusions).
+    let has_bin = (pc..=last).any(|q| matches!(cx.f.code[q], Inst::Bin { .. }));
+    if forms.is_empty() || !has_bin {
+        return None;
+    }
+    let mut emit = Vec::new();
+    for (dst, l, inrun, at) in &forms {
+        if *inrun != 0 && cx.uses.get(*dst as usize) == Some(inrun) {
+            continue;
+        }
+        emit.push((l.op(*dst), *at as u32));
+    }
+    let tail = emit.pop()?;
+    Some(LinRun {
+        head: emit,
+        tail,
+        end: last,
+    })
+}
+
+/// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
+/// first op's pc stays an entry, the others' pcs are not).
+fn peephole(
+    ops: &mut Vec<Op>,
+    at: &mut Vec<u32>,
+    start: &mut [u32],
+    aff: &mut Vec<(u32, u32, u32)>,
+    block_start: &[bool],
+    uses: &[u32],
+    known: &[Known],
+) {
+    let (old, old_at) = (std::mem::take(ops), std::mem::take(at));
+    // The waveform starts `WaveBuf` made so far: wave register to the register 8 bytes in.
+    let mut waves: Vec<(u32, u32)> = Vec::new();
+    let int = |r: u32| match known.get(r as usize) {
+        Some(&Known::Int(v)) => Some(v),
+        _ => None,
+    };
+    let mut remap = vec![NONE; old.len()];
+    let mut new_aff = Vec::with_capacity(aff.len());
+    // The run an `Aff` op stands for.
+    let run = |k: usize| {
+        aff.binary_search_by_key(&(k as u32), |e| e.0)
+            .ok()
+            .and_then(|i| aff.get(i).map(|e| (e.1, e.2)))
+    };
+    let free = |k: usize| old_at.get(k).is_some_and(|&p| !block_start[p as usize]);
+    let mut i = 0;
+    while i < old.len() {
+        let here = ops.len() as u32;
+        let (fused, len) = match (old[i], old.get(i + 1), old.get(i + 2)) {
+            (
+                Op::Alloc { dst: w, size },
+                Some(&Op::Store {
+                    addr,
+                    src: time,
+                    w: Width::B8,
+                }),
+                Some(&Op::IndexImm {
+                    dst: e,
+                    base,
+                    off: 8,
+                }),
+            ) if addr == w && base == w && free(i + 1) && free(i + 2) => {
+                waves.push((w, e));
+                (Some(Op::WaveBuf { w, size, time, e }), 3)
+            }
+            (
+                Op::LSet { base, idx, v },
+                Some(&Op::Drive {
+                    driver,
+                    target,
+                    wave,
+                    n,
+                    reject: NONE,
+                    inertial,
+                }),
+                _,
+            ) if free(i + 1)
+                && int(idx) == Some(0)
+                && int(n) == Some(1)
+                && waves.contains(&(wave, base))
+                && uses.get(wave as usize) == Some(&3)
+                && uses.get(base as usize) == Some(&1) =>
+            {
+                (
+                    Some(Op::LSetDrive {
+                        v,
+                        driver,
+                        target,
+                        wave,
+                        inertial,
+                    }),
+                    2,
+                )
+            }
+            (
+                Op::AffPL {
+                    dst: o,
+                    dope,
+                    idx,
+                    cp,
+                    cl,
+                    c0,
+                },
+                Some(&Op::SigRead1 { dst, sig, offset }),
+                _,
+            ) if offset == o
+                && uses.get(o as usize) == Some(&1)
+                && free(i + 1)
+                && let (Ok(sig), Ok(c0)) = (u16::try_from(sig), i16::try_from(c0)) =>
+            {
+                (
+                    Some(Op::ReadPL {
+                        dst,
+                        dope,
+                        idx,
+                        sig,
+                        cp,
+                        cl,
+                        c0,
+                    }),
+                    2,
+                )
+            }
+            (
+                Op::AffPR {
+                    dst: o,
+                    dope,
+                    idx,
+                    a,
+                    cp,
+                    ca: 1,
+                    c0,
+                },
+                Some(&Op::SigRead1 { dst, sig, offset }),
+                _,
+            ) if offset == o
+                && uses.get(o as usize) == Some(&1)
+                && free(i + 1)
+                && let Ok(sig) = u16::try_from(sig) =>
+            {
+                (
+                    Some(Op::ReadPR {
+                        dst,
+                        dope,
+                        idx,
+                        a,
+                        sig,
+                        cp,
+                        c0,
+                    }),
+                    2,
+                )
+            }
+            _ => (None, 1),
+        };
+        match fused {
+            Some(op) => {
+                remap[i] = here;
+                if let Some((from, root)) = run(i) {
+                    new_aff.push((here, from, root));
+                }
+                ops.push(op);
+                at.push(old_at[i]);
+            }
+            None => {
+                remap[i] = here;
+                if let Some((from, root)) = run(i) {
+                    new_aff.push((here, from, root));
+                }
+                ops.push(old[i]);
+                at.push(old_at[i]);
+            }
+        }
+        i += len;
+    }
+    for s in start.iter_mut() {
+        if *s != NONE {
+            *s = remap[*s as usize];
+        }
+    }
+    *aff = new_aff;
+}
+
 impl Code {
     fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
         let n = f.code.len();
@@ -662,6 +1236,17 @@ impl Code {
             Some(blk) if f.body != Some(b) => Some(blk.start),
             _ => None,
         };
+        let mut defs = vec![0u8; f.reg_ty.len()];
+        for inst in &f.code {
+            inst.visit(&mut |r, role, _| {
+                if role == Role::Def
+                    && let Some(d) = defs.get_mut(r.0 as usize)
+                {
+                    *d = d.saturating_add(1);
+                }
+            });
+        }
+        let mut aff = Vec::new();
         let mut ops = Vec::with_capacity(n);
         let mut at = Vec::with_capacity(n);
         let mut start = vec![NONE; n + 1];
@@ -711,6 +1296,35 @@ impl Code {
                         }
                         _ => Op::Stmt,
                     }
+                }
+                Inst::Bin {
+                    op: IntOp::Add | IntOp::Sub | IntOp::Mul,
+                    ..
+                }
+                | Inst::Pos { dim: 0, .. }
+                | Inst::DopeLen { dim: 0, .. }
+                    if let Some(LinRun { head, tail, end }) = lin_run(
+                        &LinCx {
+                            f,
+                            skip,
+                            block_start: &block_start,
+                            known,
+                            defs: &defs,
+                            uses: &uses,
+                        },
+                        pc,
+                    ) =>
+                {
+                    last = end;
+                    // The ops of the run share its first pc (compiled code entering at one
+                    // starts at the run).
+                    for (o, root) in head {
+                        aff.push((ops.len() as u32, pc as u32, root));
+                        ops.push(o);
+                        at.push(pc as u32);
+                    }
+                    aff.push((ops.len() as u32, pc as u32, tail.1));
+                    tail.0
                 }
                 Inst::Move { dst, src } => match fusable {
                     Some(Inst::Br { to }) if target(to).is_some() => {
@@ -1013,15 +1627,48 @@ impl Code {
                     lo,
                     hi,
                     ..
-                } => Op::BinRange {
-                    op,
-                    dst: dst.0,
-                    a: a.0,
-                    b: b.0,
-                    lo: lo.0,
-                    hi: hi.0,
+                } => match (int(lo).map(i32::try_from), int(hi).map(i32::try_from)) {
+                    (Some(Ok(l)), Some(Ok(h))) => Op::BinRangeK {
+                        op,
+                        dst: dst.0,
+                        a: a.0,
+                        b: b.0,
+                        lo: l,
+                        hi: h,
+                    },
+                    _ => Op::BinRange {
+                        op,
+                        dst: dst.0,
+                        a: a.0,
+                        b: b.0,
+                        lo: lo.0,
+                        hi: hi.0,
+                    },
                 },
                 Inst::Cmp { op, dst, a, b } => match fusable {
+                    // `Cmp`, `Not` of it, `CondBr` on that: the compare with the opposite mask.
+                    Some(Inst::Bool {
+                        op: BoolOp::Not,
+                        dst: nd,
+                        a: na,
+                        ..
+                    }) if na == dst
+                        && once(dst)
+                        && let Some((n2, Inst::CondBr { c, t, f: e })) = after(nx)
+                        && c == nd
+                        && target(t).is_some()
+                        && target(e).is_some() =>
+                    {
+                        last = n2;
+                        Op::CmpBr {
+                            m: !cmp_mask(op) & 0b111,
+                            dst: nd.0,
+                            a: a.0,
+                            b: b.0,
+                            t: target(t).unwrap_or(0),
+                            f: target(e).unwrap_or(0),
+                        }
+                    }
                     Some(Inst::CondBr { c, t, f: e })
                         if c == dst && target(t).is_some() && target(e).is_some() =>
                     {
@@ -1041,6 +1688,29 @@ impl Code {
                         a: a.0,
                         b: b.0,
                     },
+                },
+                Inst::Bool { op, dst, a, b } => Op::Bool {
+                    op,
+                    dst: dst.0,
+                    a: a.0,
+                    b: b.0,
+                },
+                Inst::LCopy {
+                    dst,
+                    dst_off,
+                    src,
+                    src_off,
+                    n,
+                } => Op::LCopy {
+                    dst: dst.0,
+                    doff: dst_off.0,
+                    src: src.0,
+                    soff: src_off.0,
+                    n: n.0,
+                },
+                Inst::SigRead { dst, sig } => Op::SigReadVec {
+                    dst: dst.0,
+                    sig: sig.0,
                 },
                 Inst::Check {
                     kind,
@@ -1305,6 +1975,15 @@ impl Code {
         start[n] = ops.len() as u32;
         ops.push(Op::Step(n as u32));
         at.push(n as u32);
+        peephole(
+            &mut ops,
+            &mut at,
+            &mut start,
+            &mut aff,
+            &block_start,
+            &uses,
+            known,
+        );
         let entry: Vec<u32> = next
             .iter()
             .map(|&p| start.get(p as usize).copied().unwrap_or(NONE))
@@ -1377,6 +2056,7 @@ impl Code {
             at,
             entry,
             first,
+            aff,
         }
     }
 }

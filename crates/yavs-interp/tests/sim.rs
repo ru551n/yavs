@@ -383,6 +383,190 @@ fn checked_overflow_stack_trace() {
     assert_eq!(e.exit_status(), 1);
 }
 
+/// A function `lin(x, y) = y - (x * 16 + 3) - 1`: the fast loop runs the four `Bin`s as one
+/// linear op for operands within 2^30 and as the checked instructions beyond, with the same
+/// results and the same overflow error at the failing statement.
+fn lin_design(args: &[(i64, i64)]) -> (Vec<String>, Result<RunStatus, SimError>, [StmtId; 2]) {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let lin = pb.declare("lin", FuncKind::Function, None);
+    let p = pb.declare("p", FuncKind::Process, None);
+    let s_lin;
+    {
+        let mut fb = pb.define(lin);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        let y = fb.param("y", Width::B8, ParamClass::Value, Mode::In, None);
+        s_lin = stmt(&mut fb, StmtKind::Return);
+        let (xv, yv) = (
+            load(&mut fb, AddrSpace::Frame, x, Width::B8),
+            load(&mut fb, AddrSpace::Frame, y, Width::B8),
+        );
+        let (c16, c3, c1) = (fb.int(16), fb.int(3), fb.int(1));
+        let t1 = bin(&mut fb, IntOp::Mul, xv, c16);
+        let t2 = bin(&mut fb, IntOp::Add, t1, c3);
+        let t3 = bin(&mut fb, IntOp::Sub, yv, t2);
+        let t4 = bin(&mut fb, IntOp::Sub, t3, c1);
+        fb.emit(Inst::Ret { v: Some(t4) });
+        fb.finish();
+    }
+    let s_call;
+    {
+        let mut fb = pb.define(p);
+        s_call = stmt(&mut fb, StmtKind::Report);
+        for &(x, y) in args {
+            let (xr, yr) = (fb.int(x), fb.int(y));
+            let a = fb.regs(&[xr, yr]);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: lin,
+                args: a,
+                dst: Some(r),
+            });
+            report_image(&mut fb, "lin = ", int, r);
+        }
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "top.p",
+        func: p,
+        drives: vec![],
+    }];
+    let (lines, r) = d.run(Time::ns(10));
+    (lines, r, [s_lin, s_call])
+}
+
+#[test]
+fn linear_runs_match_checked_arithmetic() {
+    let (lines, r, _) = lin_design(&[(5, 100), (1 << 40, 7), (-(1 << 35), -9)]);
+    assert_eq!(r, Ok(RunStatus::Ended(EndReason::Idle)));
+    let got: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.split("lin = ").nth(1))
+        .collect();
+    let want = |x: i64, y: i64| (y - (x * 16 + 3) - 1).to_string();
+    assert_eq!(
+        got,
+        [want(5, 100), want(1 << 40, 7), want(-(1 << 35), -9)],
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn linear_run_overflow_is_the_checked_error() {
+    let (_, r, [s_lin, s_call]) = lin_design(&[(1 << 62, 1)]);
+    let e = r.unwrap_err();
+    let ErrorKind::Runtime(m) = &e.kind else {
+        panic!("{e}")
+    };
+    assert!(m.contains("cannot be represented in 64 bits"), "{m}");
+    assert_eq!(e.trace, [s_lin, s_call]);
+}
+
+/// `off(i) = len * 16 - (pos(i) * 16 + 3) - 1` over the descriptor `7 downto 0`: the fast loop
+/// fuses `Pos`, `DopeLen` and the four `Bin`s into one op; an index outside the range is the
+/// error of the `Pos` itself.
+fn elem_design(idxs: &[i64]) -> (Vec<String>, Result<RunStatus, SimError>) {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let what = pb.check_msg("array V", Dir::Downto);
+    let off = pb.declare("off", FuncKind::Function, None);
+    let p = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(off);
+        let slot = fb.param("i", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb, StmtKind::Return);
+        let data = fb.addr(AddrSpace::Frame, 0);
+        let fat = fat_of(&mut fb, data, 7, 0, true);
+        let (_, _) = fat_parts(&mut fb, fat);
+        let eight = fb.int(8);
+        let pd = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Index {
+            dst: pd,
+            base: fat,
+            pos: eight,
+            stride: 1,
+        });
+        let dope = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: dope,
+            addr: pd,
+            w: Width::B8,
+        });
+        let i = load(&mut fb, AddrSpace::Frame, slot, Width::B8);
+        let pos = fb.reg(RegTy::I64);
+        fb.emit(Inst::Pos {
+            dst: pos,
+            dope,
+            dim: 0,
+            idx: i,
+            what,
+        });
+        let len = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: len,
+            dope,
+            dim: 0,
+        });
+        let (c16, c3, c1) = (fb.int(16), fb.int(3), fb.int(1));
+        let t1 = bin(&mut fb, IntOp::Mul, pos, c16);
+        let t2 = bin(&mut fb, IntOp::Add, t1, c3);
+        let t3 = bin(&mut fb, IntOp::Mul, len, c16);
+        let t4 = bin(&mut fb, IntOp::Sub, t3, t2);
+        let t5 = bin(&mut fb, IntOp::Sub, t4, c1);
+        fb.emit(Inst::Ret { v: Some(t5) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(p);
+        stmt(&mut fb, StmtKind::Report);
+        for &i in idxs {
+            let ir = fb.int(i);
+            let a = fb.regs(&[ir]);
+            let r = fb.reg(RegTy::I64);
+            fb.emit(Inst::Call {
+                func: off,
+                args: a,
+                dst: Some(r),
+            });
+            report_image(&mut fb, "off = ", int, r);
+        }
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "top.p",
+        func: p,
+        drives: vec![],
+    }];
+    d.run(Time::ns(10))
+}
+
+#[test]
+fn position_and_length_runs_match_the_instructions() {
+    let (lines, r) = elem_design(&[7, 3, 0]);
+    assert_eq!(r, Ok(RunStatus::Ended(EndReason::Idle)));
+    let got: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.split("off = ").nth(1))
+        .collect();
+    let want = |i: i64| (8 * 16 - ((7 - i) * 16 + 3) - 1).to_string();
+    assert_eq!(got, [want(7), want(3), want(0)], "{lines:#?}");
+}
+
+#[test]
+fn position_and_length_run_with_an_index_outside_is_the_pos_error() {
+    let (lines, r) = elem_design(&[2, 9]);
+    let e = r.unwrap_err();
+    let ErrorKind::Runtime(m) = &e.kind else {
+        panic!("{e}")
+    };
+    assert!(m.contains("index 9 outside of range 7 downto 0"), "{m}");
+    assert!(has(&lines, "off = "), "{lines:#?}");
+}
+
 fn lv(n: usize, f: impl Fn(usize) -> u8) -> LogicVec {
     LogicVec::from_fn(n, |i| yavs_logic::StdULogic::from_code_pub(f(i)))
 }

@@ -983,6 +983,29 @@ counts) 993679 instructions are compiled inline and 39038 executed by the interp
 native (60.8% before #334/#335): Call 7351, Ret 4974, CallNative 3649, SigVal 3336, LCopy 3078,
 CopyConst 2517, Report 2473, Deref 2445, New 2155, ... (#336 to #341).
 
+IR optimiser (#427, `crates/yavs-ir/src/opt.rs`, run by `ProgramBuilder::finish`/`snapshot`; `YAVS_NO_IROPT=1`
+turns it off). `tools/bench/run.py --compare` at `--threads 1`, three runs, median CPU seconds, same release build
+with the pass off (A) and on (B); instructions are the interpreter's dispatched instructions (preloaded constants
+and skipped jumps not counted, fused pairs count once):
+
+| Benchmark | Instructions A -> B | Total CPU A -> B | Simulate A -> B | Elaborate A -> B |
+|---|---|---|---|---|
+| compute_loop | 48.0M -> 44.0M | 0.42 -> 0.40 | 0.41 -> 0.39 | - |
+| ff_rtl | 1.98M -> 1.33M | 0.06 -> 0.05 | 0.04 -> 0.04 | - |
+| delta_chain | 10.3M -> 4.7M | 0.23 -> 0.20 | 0.22 -> 0.19 | - |
+| protected_scoreboard | 24.9M -> 18.6M | 0.33 -> 0.18 | 0.32 -> 0.17 | - |
+| resolved_bus | 22.3M -> 15.9M | 0.42 -> 0.35 | 0.41 -> 0.34 | - |
+| textio_heavy | 13.6M -> 12.4M | 0.44 -> 0.43 | 0.43 -> 0.42 | - |
+| vai_window_gen | 133.6M -> 97.4M | 2.41 -> 1.80 | 2.33 -> 1.68 | 0.04 -> 0.05 |
+| uvvm_util_rand_tb | 672M -> 543M (earlier build) | 5.74 -> 4.82 | 5.66 -> 4.49 | 0.04 -> 0.07 |
+| osvvm_axistream | - | 2.15 -> 1.73 | 2.04 -> 1.60 | 0.05 -> 0.07 |
+| vunit_vc30 (30 runs) | - | 4.91 -> 4.74 | 1.62 -> 1.28 | 1.69 -> 1.91 |
+| elab_heavy | - | 0.41 -> 0.47 | 0.10 -> 0.12 | 0.14 -> 0.15 |
+
+The pass costs about 0.1 microsecond per lowered instruction (20 to 25 ms for the 300k instructions of the utility
+library testbench), which short runs (`vunit_vc30`, `elab_heavy`) do not win back. Left: range-based check removal,
+a `New` that fills in place (package initialisers, #425), promoting hidden frame slots to registers.
+
 Performance (M6, #334/#335, 2026-10-19, `tools/bench/run.py --compare` of one release build run
 with `--tier=interp` (A) and `--tier=llvm` (B), median CPU of 3 runs, shared host). The LLVM
 compile of every function is in `init`; simulation alone:

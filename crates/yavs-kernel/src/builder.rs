@@ -307,6 +307,18 @@ impl Builder {
         drivers: &[DriverId],
         process: impl Process + 'static,
     ) -> ProcId {
+        self.process_boxed(name, flags, drivers, Box::new(process))
+    }
+
+    /// [`Builder::process`] for a process that is already boxed (no second box and no second
+    /// virtual call per activation).
+    pub fn process_boxed(
+        &mut self,
+        name: &str,
+        flags: ProcFlags,
+        drivers: &[DriverId],
+        process: Box<dyn Process>,
+    ) -> ProcId {
         let pid = ProcId(self.procs.len() as u32);
         for d in drivers {
             match self.drivers.get_mut(d.0 as usize).map(|d| &mut d.2) {
@@ -326,7 +338,7 @@ impl Builder {
         self.procs.push(ProcDecl {
             name: name.to_string(),
             flags,
-            process: Box::new(process),
+            process,
             drivers: drivers.to_vec(),
             trigger: None,
         });

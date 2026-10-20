@@ -158,7 +158,7 @@ pub struct ProcInst {
     /// the driver indices and kernel ranges it covers.
     pub lsps: Vec<Vec<(usize, LeafId, yavs_kernel::Range)>>,
     /// The equivalent process of a port's expression actual (LRM 6.5.6.3).
-    pub actual: Option<PortActual>,
+    pub actual: Option<Box<PortActual>>,
     /// A clocked process on one edge of one scalar signal: rising, the signal, the element,
     /// and whether it is valid only with a single suspension point
     /// (`yavs_kernel::EdgeTrigger`, `Walker::edge_trigger`).

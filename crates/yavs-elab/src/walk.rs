@@ -1579,13 +1579,13 @@ impl Elab<'_> {
             let hs = self.db.alias_external_uses(ExtOwner::Expr(e), r);
             self.pending.extend(hs.iter().map(|&h| (region, h)));
         }
-        self.procs.last_mut().expect("just added").actual = Some(crate::PortActual {
+        self.procs.last_mut().expect("just added").actual = Some(Box::new(crate::PortActual {
             expr: e,
             formal,
             port: self.m.nets.obj(fo).decl,
             shape,
             bounds,
-        });
+        }));
         Ok(())
     }
 

@@ -101,8 +101,6 @@ pub(crate) struct ProcState {
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
     pub scheduled: Vec<(Time, DriverId)>,
-    /// Scratch for the transactions of one assignment.
-    pub new: TxnList,
 }
 
 pub(crate) struct DriverInfo {
@@ -316,8 +314,7 @@ impl Ctx<'_> {
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
         let local = self.own(d)?.local as usize;
-        let mut new = std::mem::take(&mut self.st.new);
-        new.clear();
+        let mut new = TxnList::new();
         for &(delay, v) in waveform {
             let (n, v) = (r.len as usize, v.into());
             let buf = match self.st.waveforms[local].spare.pop() {
@@ -327,9 +324,7 @@ impl Ctx<'_> {
             .map_err(|m| self.error(ErrorKind::InvalidAssign(m)))?;
             self.push_txn(&mut new, r, delay, Some(buf))?;
         }
-        let res = self.schedule(d, r, &mut new, mode);
-        self.st.new = new;
-        res
+        self.schedule(d, r, &mut new, mode)
     }
 
     /// `d <= value;` on the whole driver (zero-delay inertial).

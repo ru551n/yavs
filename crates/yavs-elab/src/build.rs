@@ -9,26 +9,6 @@ use yavs_kernel::{
 use crate::hier::{Case, ImplicitKind, LeafRes};
 use crate::{Elaborated, ProcInst};
 
-struct Boxed(Box<dyn Process>);
-
-impl Process for Boxed {
-    fn run(&mut self, ctx: &mut yavs_kernel::Ctx<'_>) -> Result<(), SimError> {
-        self.0.run(ctx)
-    }
-    fn serial(&self) -> bool {
-        self.0.serial()
-    }
-    fn several_waits(&self) -> bool {
-        self.0.several_waits()
-    }
-    fn concurrent_call(&self) -> bool {
-        self.0.concurrent_call()
-    }
-    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
-        self.0.as_any()
-    }
-}
-
 fn usage(m: String) -> SimError {
     SimError::new(yavs_kernel::ErrorKind::Usage(m))
 }
@@ -170,7 +150,7 @@ impl Elaborated {
             let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);
             let name = name.strip_suffix(':').unwrap_or(&name);
-            let pid = b.process(
+            let pid = b.process_boxed(
                 name,
                 ProcFlags {
                     postponed: p.postponed,
@@ -179,7 +159,7 @@ impl Elaborated {
                     concurrent_call: false,
                 },
                 &ds,
-                Boxed(proc),
+                proc,
             );
             if let Some((rising, leaf, elem, _)) = p.trigger.filter(|t| !t.3 || !proc_waits) {
                 let signal = yavs_kernel::SignalId(leaf.0);

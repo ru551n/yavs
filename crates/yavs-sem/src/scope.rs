@@ -113,8 +113,8 @@ type Shape = (usize, Option<TypeId>, Option<TypeId>);
 /// one of them" does not scan all of them (a region can hold hundreds of `"="`).
 #[derive(Default)]
 struct OverSet {
-    entities: HashSet<DeclId>,
-    shapes: HashMap<Shape, Vec<DeclId>>,
+    entities: Seen,
+    shapes: ShapeIndex,
     /// Members that are not poison.
     live: usize,
 }
@@ -143,6 +143,46 @@ impl Seen {
             self.big.extend(self.small.drain(..));
         }
         self.big.insert(d)
+    }
+
+    fn contains(&self, d: DeclId) -> bool {
+        if self.big.is_empty() {
+            self.small.contains(&d)
+        } else {
+            self.big.contains(&d)
+        }
+    }
+}
+
+/// Declarations by profile shape: plain pairs until there are many (a lookup mostly meets a
+/// few overloads), then a hash index.
+#[derive(Default)]
+struct ShapeIndex {
+    small: Vec<(Shape, DeclId)>,
+    big: HashMap<Shape, Vec<DeclId>>,
+}
+
+impl ShapeIndex {
+    fn push(&mut self, sh: Shape, d: DeclId) {
+        if self.big.is_empty() {
+            if self.small.len() < Seen::SMALL {
+                self.small.push((sh, d));
+                return;
+            }
+            for (s, x) in self.small.drain(..) {
+                self.big.entry(s).or_default().push(x);
+            }
+        }
+        self.big.entry(sh).or_default().push(d);
+    }
+
+    /// Does `f` hold for a member of shape `sh`?
+    fn any(&self, sh: &Shape, mut f: impl FnMut(DeclId) -> bool) -> bool {
+        if self.big.is_empty() {
+            self.small.iter().any(|(s, o)| s == sh && f(*o))
+        } else {
+            self.big.get(sh).is_some_and(|os| os.iter().any(|&o| f(o)))
+        }
     }
 }
 
@@ -219,14 +259,14 @@ impl Db {
         if !self.is_poison(d) {
             set.live += 1;
             if let Some(sh) = self.profile_shape(d) {
-                set.shapes.entry(sh).or_default().push(d);
+                set.shapes.push(sh, d);
             }
         }
     }
 
     /// `set.iter().any(|o| homographs(o, p) || entity(o) == entity(p))`.
     fn over_hides(&self, set: &OverSet, p: DeclId) -> bool {
-        if set.entities.contains(&self.entity(p)) {
+        if set.entities.contains(self.entity(p)) {
             return true;
         }
         if self.is_poison(p) || set.live == 0 {
@@ -234,10 +274,7 @@ impl Db {
         }
         match self.profile_shape(p) {
             // Members are overloadable: homograph iff same profile.
-            Some(sh) => set
-                .shapes
-                .get(&sh)
-                .is_some_and(|os| os.iter().any(|&o| self.homographs(o, p))),
+            Some(sh) => set.shapes.any(&sh, |o| self.homographs(o, p)),
             // A non-overloadable declaration conflicts with every other live member.
             None => true,
         }

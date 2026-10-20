@@ -105,6 +105,8 @@ pub(crate) struct ProcState {
     /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
     /// this run.
     pub phantoms: Vec<u32>,
+    /// A one-element logic value kept for `Ctx::assign_code`.
+    pub one: Option<LogicVec>,
 }
 
 impl ProcState {
@@ -178,15 +180,15 @@ impl Ctx<'_> {
         e
     }
 
+    #[inline(always)]
     fn sig(&self, r: impl Into<SigRef>) -> Result<(&Signal, Range), SimError> {
         check_ref(self.sh.signals, r.into()).map_err(|k| self.error(k))
-    #[inline(always)]
     }
 
     /// Current value of a byte signal.
+    #[inline]
     pub fn value(&self, r: impl Into<SigRef>) -> Result<&[u8], SimError> {
         let (s, r) = self.sig(r)?;
-    #[inline]
         s.cur
             .bytes(r.offset as usize, r.len as usize)
             .ok_or_else(|| {
@@ -212,9 +214,9 @@ impl Ctx<'_> {
     /// Current value of `r` copied into `out` without allocating: the bytes of a byte signal,
     /// or the bit-plane blocks of a logic signal (four little-endian `u64` planes per 64
     /// elements, unused bits zero, as `LogicVec`'s blocks). `out` must be exactly that size.
+    #[inline]
     pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
         let (s, r) = self.sig(r)?;
-    #[inline]
         if s.cur.write_to(r.offset as usize, r.len as usize, out) {
             return Ok(());
         }
@@ -227,9 +229,9 @@ impl Ctx<'_> {
     }
 
     /// `'event`: an event on any element in this cycle.
+    #[inline]
     pub fn event(&self, r: impl Into<SigRef>) -> Result<bool, SimError> {
         let (s, r) = self.sig(r)?;
-    #[inline]
         Ok(s.event_in(r, self.sh.cycle))
     }
 
@@ -259,9 +261,9 @@ impl Ctx<'_> {
 
     /// The first element of `r` of a logic signal as a `std_ulogic` code, its current value or
     /// (`last`) its `'last_value`, without allocating; `None` for a null range.
+    #[inline(always)]
     pub fn first_code(&self, r: impl Into<SigRef>, last: bool) -> Result<Option<u8>, SimError> {
         let (s, r) = self.sig(r)?;
-    #[inline(always)]
         if r.len == 0 {
             return Ok(None);
         }
@@ -279,9 +281,9 @@ impl Ctx<'_> {
     /// in this cycle, `To_X01` of the current value the new level and `To_X01` of the
     /// `'last_value` the old one; `None` for a null range. One reference check instead of
     /// the three of `event` and two `first_code`.
+    #[inline(always)]
     pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
         let (s, r) = self.sig(r)?;
-    #[inline(always)]
         if r.len == 0 {
             return Ok(None);
         }
@@ -391,6 +393,27 @@ impl Ctx<'_> {
             self.push_txn(&mut new, r, delay, Some(buf))?;
         }
         self.schedule(d, r, &mut new, mode)
+    }
+
+    /// `assign` of one `std_ulogic` code (`std_ulogic'pos`) with one waveform element: the
+    /// scalar case without building a value or a waveform list.
+    pub fn assign_code(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        code: u8,
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
+        let mut one = self
+            .st
+            .one
+            .take()
+            .unwrap_or_else(|| LogicVec::new(1, StdULogic::U));
+        one.set(0, StdULogic::from_code_pub(code));
+        let r = self.assign(d, target, &[(delay, &one)], mode);
+        self.st.one = Some(one);
+        r
     }
 
     /// Whether a zero-delay assignment of `v` to `r` of driver `d` would change nothing: the
@@ -538,6 +561,7 @@ impl Ctx<'_> {
     }
 
     /// Add `r` to the sensitivity of the coming wait.
+    #[inline]
     pub fn wait_on(&mut self, r: impl Into<SigRef>) -> Result<(), SimError> {
         let r = r.into();
         let range = self.sig(r)?.1;
@@ -561,7 +585,6 @@ impl Ctx<'_> {
         self.st.deadline = Some(deadline);
         Ok(())
     }
-    #[inline]
 
     /// The process resumed because its timeout expired.
     pub fn timed_out(&self) -> bool {

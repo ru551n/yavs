@@ -1367,6 +1367,18 @@ impl Machine {
         self.put(da, &bytes_of(&dw))
     }
 
+    fn delay_mode(&self, mode: DriveMode, reject: Option<Reg>) -> R<DelayMode> {
+        Ok(match mode {
+            DriveMode::Transport => DelayMode::Transport,
+            DriveMode::Inertial => DelayMode::Inertial {
+                reject: match reject {
+                    Some(r) => Some(to_time(self.ri(r))?),
+                    None => None,
+                },
+            },
+        })
+    }
+
     /// `Drive` and `DriveSlot`: the waveform at `wave` onto driver `d`.
     #[allow(clippy::too_many_arguments)]
     fn drive(
@@ -1390,6 +1402,19 @@ impl Machine {
         let vsize = value_size(elem, len);
         let stride = 8 + vsize.next_multiple_of(8);
         let w = self.r(wave);
+        // One scalar logic element: no value, no lists (a scalar assignment per activation).
+        if elem == Elem::Logic && len == 1 && self.r(n) == 1 {
+            let t = to_time(self.load(w, Width::B8)? as i64)?;
+            let b = self.rd(add_addr(w, 8)?, 32)?;
+            let code = (0..4).fold(0u8, |c, p| c | (b[p * 8] & 1) << p);
+            let mode = self.delay_mode(mode, reject)?;
+            let range = target.map(|_| sr.range).unwrap_or(None);
+            let Some(c) = ctx.as_deref_mut() else {
+                return rt_err("signal or wait operation during elaboration");
+            };
+            c.assign_code(d.id, range, t, code, mode)?;
+            return Ok(());
+        }
         let mut items = Vec::new();
         for k in 0..self.r(n) {
             let at = add_addr(w, k * stride)?;
@@ -1397,15 +1422,7 @@ impl Machine {
             items.push((t, self.get_value(add_addr(at, 8)?, elem, len)?));
         }
         let refs: Vec<(Time, ValueRef<'_>)> = items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
-        let mode = match mode {
-            DriveMode::Transport => DelayMode::Transport,
-            DriveMode::Inertial => DelayMode::Inertial {
-                reject: match reject {
-                    Some(r) => Some(to_time(self.ri(r))?),
-                    None => None,
-                },
-            },
-        };
+        let mode = self.delay_mode(mode, reject)?;
         let range = target.map(|_| sr.range).unwrap_or(None);
         let Some(c) = ctx.as_deref_mut() else {
             return rt_err("signal or wait operation during elaboration");

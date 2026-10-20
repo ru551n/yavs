@@ -64,6 +64,13 @@ pub fn keep_variables() {
     KEEP_VARS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether an optimised copy made now is the one every run makes: the pass is on and no debugger
+/// keeps variables in their slots ([`keep_variables`]). Only such copies are stored and used again
+/// (`Program::export_optimized`).
+pub fn copies_are_portable() -> bool {
+    enabled() && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Field offsets of the static record layouts met by the optimiser, kept in the program so
 /// that the functions optimised one by one share them. A copy of the program starts empty.
 #[derive(Default, Debug)]

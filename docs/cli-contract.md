@@ -156,7 +156,7 @@ identical to a run without it, at any `--threads`.
   yavs build, another format version or a damaged file are ignored, never an error. An error-free
   analysis is stored; a design with errors never is.
 - Entries are written to a temporary file and renamed into place: concurrent runs need no lock and
-  never see a partial entry. The newest 48 entries per library directory are kept. A library
+  never see a partial entry. The newest 96 entries per library directory are kept. A library
   directory that cannot be written (read-only mount, no permission) is simply not cached into;
   reading from it works as before.
 - `--no-cache` (`run` and `elab`) neither reads nor writes the cache. A custom `$YAVS_STDLIB` tree
@@ -172,7 +172,13 @@ identical to a run without it, at any `--threads`.
   that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
   elaborated without instantiating anything at elaboration time and the lowering is neither tiny
   nor huge; the same rules apply (identical results, damaged or foreign entries ignored, atomic
-  writes, `--no-cache`, `yavs cache clean`). It counts toward the 48 entries.
+  writes, `--no-cache`, `yavs cache clean`). It counts toward the 96 entries.
+- The lowered design (the architectures that own processes and every subprogram they reach, with
+  the optimised copies of the functions earlier runs called) is kept beside it,
+  `<dir>/yavs-cache/ir-<key>.img`, under the same rules; a run that called functions the entry
+  lacks writes the entry again when it ends. The IR verifier runs on every function when the
+  program is finished in debug builds and with `YAVS_VERIFY_IR` set; otherwise a function is
+  verified when first called, unless the program was stored (verified when stored).
 - `yavs analyze` does not read or write the cache.
 
 ## 4. `yavs analyze`

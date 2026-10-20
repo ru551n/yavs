@@ -177,7 +177,8 @@ fn warm_run_is_identical_to_cold() {
     assert_eq!(visible(&plain), visible(&first));
     let cold = e.run(&[]);
     assert!(note(&cold, "store"), "{cold:?}");
-    assert_eq!(e.entries(), 1);
+    // The analysis and the lowered design (`sem`, `ir`).
+    assert_eq!(e.entries(), 2);
     let warm = e.run(&[]);
     assert!(note(&warm, "hit"), "{warm:?}");
     assert_eq!(visible(&plain), visible(&cold));
@@ -189,7 +190,7 @@ fn warm_run_is_identical_to_cold() {
         assert!(note(&w, "hit"), "{w:?}");
         assert_eq!(nc, visible(&w), "{args:?}");
     }
-    assert_eq!(e.entries(), 1);
+    assert_eq!(e.entries(), 2);
 }
 
 #[test]
@@ -217,12 +218,7 @@ fn editing_a_dependency_invalidates() {
 fn damaged_entries_are_ignored() {
     let e = Env::new("damaged");
     let cold = e.cold("tb", &[]);
-    let img = std::fs::read_dir(e.cache_dir())
-        .expect("dir")
-        .flatten()
-        .find(|f| f.file_name().to_string_lossy().ends_with(".img"))
-        .expect("entry")
-        .path();
+    let img = e.entry_files("sem").pop().expect("entry");
     let good = std::fs::read(&img).expect("read");
     for bad in [good[..good.len() / 2].to_vec(), b"not an entry".to_vec(), {
         let mut g = good.clone();
@@ -231,6 +227,10 @@ fn damaged_entries_are_ignored() {
         g
     }] {
         std::fs::write(&img, bad).expect("write");
+        // Only the analysis image is under test: its hit must not be told from the lowered design's.
+        for f in e.entry_files("ir") {
+            std::fs::remove_file(f).expect("remove");
+        }
         let r = e.run(&[]);
         assert!(!note(&r, "hit"), "{r:?}");
         assert_eq!(visible(&cold), visible(&r));
@@ -261,11 +261,11 @@ fn read_only_library_is_not_cached_into() {
 fn clean_removes_entries() {
     let e = Env::new("clean");
     e.cold("tb", &[]);
-    assert_eq!(e.entries(), 1);
+    assert_eq!(e.entries(), 2);
     let work = e.work();
     let o = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(o.code, 0, "{o:?}");
-    assert!(o.stdout.contains("1 entry"), "{o:?}");
+    assert!(o.stdout.contains("2 entries"), "{o:?}");
     assert!(!e.cache_dir().exists());
     let again = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(again.code, 0);
@@ -284,7 +284,7 @@ fn parallel_cold_runs_agree() {
             assert_eq!(plain, h.join().expect("join"));
         }
     });
-    assert_eq!(e.entries(), 1);
+    assert_eq!(e.entries(), 2);
     assert!(Path::new(&e.cache_dir()).is_dir());
     let leftovers = std::fs::read_dir(e.cache_dir())
         .expect("dir")
@@ -651,4 +651,116 @@ fn closures_share_the_analysis_of_their_first_files() {
     let edited = run("tb1", &[]);
     assert!(!note(&edited, "hit prefix"), "{edited:?}");
     assert!(edited.stdout.contains("k=47"), "{edited:?}");
+}
+
+/// Two entities for a generate that picks one by a generic: the lowered design differs with the
+/// generic, the closure does not (#479).
+const PICK: &str = "entity ea is end;\narchitecture a of ea is\nbegin\n  process\n  begin\n    report \"from ea\";\n    wait;\n  end process;\nend;\n\
+entity eb is end;\narchitecture a of eb is\nbegin\n  process\n  begin\n    report \"from eb\";\n    wait;\n  end process;\nend;\n\
+entity pick is generic (g : boolean := true); end;\narchitecture a of pick is\nbegin\n  \
+ua : if g generate\n    u : entity work.ea;\n  end generate;\n  ub : if not g generate\n    u : entity work.eb;\n  end generate;\nend;\n";
+
+/// The lowered design (architectures and every subprogram they reach) is cached next to the
+/// analysis: a warm run is identical to a cold one and to one without the cache, with a
+/// package-state session (`tb2`) and without (`tb`), at `--threads 4` and with a waveform.
+#[test]
+fn lowered_design_is_cached() {
+    let e = Env::new("ir");
+    let wave = |n: &str| e.tmp.join(n).display().to_string();
+    for top in ["tb", "tb2"] {
+        let plain = e.run_top(
+            top,
+            &["--no-cache", &format!("--wave={}", wave("plain.fst"))],
+        );
+        assert_eq!(plain.code, 0, "{plain:?}");
+        assert!(e.entry_files("ir").is_empty(), "--no-cache must not write");
+        let cold = e.cold(top, &[&format!("--wave={}", wave("cold.fst"))]);
+        assert!(note(&cold, "store ir"), "{top}: {cold:?}");
+        let warm = e.run_top(top, &[&format!("--wave={}", wave("warm.fst"))]);
+        assert!(note(&warm, "hit ir"), "{top}: {warm:?}");
+        // The cold run stored the optimised copies of what it called: nothing new to learn.
+        assert!(!note(&warm, "store ir"), "{top}: {warm:?}");
+        assert_eq!(visible(&plain), visible(&cold), "{top}");
+        assert_eq!(visible(&plain), visible(&warm), "{top}");
+        let read = |n: &str| std::fs::read(e.tmp.join(n)).expect("wave");
+        assert_eq!(read("plain.fst"), read("cold.fst"), "{top}");
+        assert_eq!(read("plain.fst"), read("warm.fst"), "{top}");
+        let nc = visible(&e.run_top(top, &["--threads", "4", "--no-cache"]));
+        let w = e.run_top(top, &["--threads", "4"]);
+        assert!(note(&w, "hit ir"), "{top}: {w:?}");
+        assert_eq!(nc, visible(&w), "{top}");
+        // With the optimiser off the stored copies stay unused.
+        let work = e.work();
+        let off = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&e.tmp)
+            .env("YAVS_NO_IROPT", "1")
+            .env("YAVS_LOG", "debug")
+            .args(["--color", "never", "run", "--work", &work, top])
+            .output()
+            .expect("run");
+        assert!(String::from_utf8_lossy(&off.stderr).contains("hit ir"));
+        assert_eq!(visible(&plain).stdout, String::from_utf8_lossy(&off.stdout));
+        for f in e.entry_files("ir") {
+            std::fs::remove_file(f).expect("remove");
+        }
+    }
+}
+
+/// Editing a package whose function only the architecture reaches replaces the lowered design,
+/// and a damaged entry is a miss that is stored again.
+#[test]
+fn editing_a_subprogram_replaces_the_lowered_design() {
+    let e = Env::new("iredit");
+    assert!(e.cold("tb", &[]).stdout.contains("f=21"));
+    assert!(note(&e.run(&[]), "hit ir"));
+    std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace("x * K", "x * K + 1")).expect("write");
+    assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "pkg.vhd"]).code, 0);
+    let after = e.cold("tb", &[]);
+    assert!(!note(&after, "hit ir"), "{after:?}");
+    assert!(after.stdout.contains("f=22"), "{after:?}");
+    let warm = e.run(&[]);
+    assert!(
+        note(&warm, "hit ir") && warm.stdout.contains("f=22"),
+        "{warm:?}"
+    );
+    // The entry of the edited design is the newest one.
+    let img = e
+        .entry_files("ir")
+        .into_iter()
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .expect("ir entry");
+    let good = std::fs::read(&img).expect("read");
+    for bad in [good[..good.len() / 2].to_vec(), b"not an entry".to_vec()] {
+        std::fs::write(&img, bad).expect("write");
+        let r = e.run(&[]);
+        assert!(!note(&r, "hit ir"), "{r:?}");
+        assert_eq!(visible(&after), visible(&r));
+        assert!(note(&r, "store ir"), "the entry is rewritten");
+        assert!(note(&e.run(&[]), "hit ir"));
+    }
+}
+
+/// A generic picks the entity a generate instantiates: the architectures lowered differ, so
+/// do the entries, and no run reads the other's.
+#[test]
+fn lowered_design_depends_on_what_elaboration_asked_for() {
+    let e = Env::new("irpick");
+    std::fs::write(e.tmp.join("pick.vhd"), PICK).expect("write");
+    assert_eq!(
+        e.yavs(&["analyze", "--work", &e.work(), "pick.vhd"]).code,
+        0
+    );
+    let run = |g: &str| e.run_top("pick", &[&format!("-gg={g}")]);
+    for _ in 0..3 {
+        for (g, want) in [("true", "from ea"), ("false", "from eb")] {
+            let r = run(g);
+            assert!(
+                r.stdout.contains(want) || r.stderr.contains(want),
+                "{g}: {r:?}"
+            );
+        }
+    }
+    assert!(note(&run("true"), "hit ir"));
+    assert!(note(&run("false"), "hit ir"));
+    assert_eq!(e.entry_files("ir").len(), 2);
 }

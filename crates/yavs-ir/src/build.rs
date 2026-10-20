@@ -189,7 +189,10 @@ impl ProgramBuilder {
         // Propagate in place: the next snapshot starts from this builder, not from the copy.
         propagate(&mut self.prog, self.propagated);
         let p = self.clone().finish_from(self.verified, 0)?;
-        (self.verified, self.propagated) = (n, n);
+        if eager_verify() {
+            self.verified = n;
+        }
+        self.propagated = n;
         Ok(p)
     }
 
@@ -207,8 +210,19 @@ impl ProgramBuilder {
             propagated: self.propagated,
         };
         let p = b.finish_from(self.verified, self.processed)?;
-        (self.verified, self.processed, self.propagated) = (n, n, n);
+        if eager_verify() {
+            self.verified = n;
+        }
+        (self.processed, self.propagated) = (n, n);
         Ok(p)
+    }
+
+    /// Verify what is not verified yet, so that the program can be stored and read back without
+    /// the verification of first use (a stored program is verified when it is made, #479).
+    pub fn verify_now(&mut self) -> Result<(), Vec<VerifyError>> {
+        self.prog.verify_pending()?;
+        self.verified = self.prog.funcs.len();
+        Ok(())
     }
 
     /// Put back the program [`ProgramBuilder::snapshot_take`] returned.
@@ -237,13 +251,29 @@ impl ProgramBuilder {
         }
         propagate(prog, processed);
         number_resumes(prog, processed);
-        let errors = verify(prog, verified);
+        let errors = verify(
+            prog,
+            if eager_verify() {
+                verified
+            } else {
+                prog.funcs.len()
+            },
+        );
         if errors.is_empty() {
             Ok(self.prog)
         } else {
             Err(errors)
         }
     }
+}
+
+/// Whether [`ProgramBuilder::finish`] verifies every function: debug builds (and so the
+/// tests) and runs with `YAVS_VERIFY_IR` set. Other builds verify a function when
+/// [`Program::func`] first hands it out (`Program::optimized`), so the functions a run never
+/// calls cost nothing (#479).
+pub(crate) fn eager_verify() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("YAVS_VERIFY_IR").is_some())
 }
 
 /// Callees of `inst` that propagate flags to the caller.

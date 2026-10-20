@@ -47,4 +47,4 @@ cargo test -p yavs --test cache      # the end-to-end gate
 
 ## 6. Coordination
 
-- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`), `pre` (the analysis of the first files of a closure, shared by closures that start alike) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`); stage 3 (compiled code) would add one.
+- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`), `pre` (the analysis of the first files of a closure, shared by closures that start alike) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`) and `ir` (the lowered design with the optimised copies of the functions earlier runs called, `yavs-elab` `sim.rs` `LoweringKey`, #479); stage 3 (compiled code) would add one.

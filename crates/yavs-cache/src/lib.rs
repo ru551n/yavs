@@ -24,7 +24,7 @@ pub const FORMAT: u32 = 2;
 pub const DIR: &str = "yavs-cache";
 
 /// Entries kept per directory; the least recently used ones are removed when it grows past this.
-pub const MAX_ENTRIES: usize = 48;
+pub const MAX_ENTRIES: usize = 96;
 
 /// Notes ([`Store::note`]) kept per directory.
 pub const MAX_NOTES: usize = 512;

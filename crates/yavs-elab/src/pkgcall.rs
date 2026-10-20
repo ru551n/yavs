@@ -28,7 +28,7 @@ use yavs_sem::{Db, DeclId, UnitId};
 use crate::eval::Val;
 
 /// A function lowered into a program, with the IR types of its parameters and result.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Sig {
     pub(crate) func: FuncId,
     pub(crate) params: Vec<TyId>,
@@ -243,6 +243,9 @@ struct Live {
 pub(crate) struct Start {
     pub(crate) lowerer: yavs_lower::Suspended,
     pub(crate) pkgs: Vec<UnitId>,
+    /// What the session lowered after the packages, in order (`Session::lowered`): with the
+    /// packages, it says what `lowerer`'s program holds.
+    pub(crate) lowered: Vec<(DeclId, bool)>,
     pub(crate) state: Arc<StartState>,
 }
 
@@ -310,6 +313,7 @@ impl Session {
         Some(Start {
             lowerer,
             pkgs,
+            lowered: self.lowered.clone(),
             state: Arc::new(StartState {
                 data,
                 shared,

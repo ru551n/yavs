@@ -24,8 +24,8 @@ pub use inst::{
 };
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
-    ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, Param, ParamClass, Program,
-    RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam,
+    ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, OptCopy, Param, ParamClass,
+    Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam,
 };
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;

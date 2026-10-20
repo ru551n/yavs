@@ -554,6 +554,11 @@ pub struct Suspended {
 }
 
 impl Suspended {
+    /// [`Lowerer::externals_early`] of the lowering set aside.
+    pub fn externals_early(&self) -> bool {
+        self.cx.ext_early
+    }
+
     /// [`Lowerer::restore`] before [`Lowerer::resume`].
     pub fn restore(&mut self, program: Program) {
         self.pb.restore(program);
@@ -869,6 +874,9 @@ impl<'a> Lowerer<'a> {
         }
         let p = self.snapshot_take()?;
         self.pb.restore(p.program);
+        self.pb
+            .verify_now()
+            .map_err(|errs| errs.iter().map(verify_ice).collect::<Vec<_>>())?;
         let image = ImageRef {
             opts: self.cx.opts,
             pb: &self.pb,
@@ -914,6 +922,14 @@ impl<'a> Lowerer<'a> {
             Err(errs) => Err(errs.iter().map(verify_ice).collect()),
         }
     }
+}
+
+/// Verify what a release build left to the first use of each function, before `program` is
+/// stored (#479): a stored program is read back without verification.
+pub fn verify_stored(program: &mut Program) -> Result<(), Vec<Diagnostic>> {
+    program
+        .verify_pending()
+        .map_err(|errs| errs.iter().map(verify_ice).collect())
 }
 
 fn verify_ice(e: &VerifyError) -> Diagnostic {

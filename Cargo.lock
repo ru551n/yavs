@@ -1523,6 +1523,8 @@ dependencies = [
 name = "yavs-elab"
 version = "0.8.0"
 dependencies = [
+ "postcard",
+ "serde",
  "tempfile",
  "yavs-diag",
  "yavs-ffi",
@@ -1560,6 +1562,7 @@ dependencies = [
 name = "yavs-ir"
 version = "0.8.0"
 dependencies = [
+ "postcard",
  "serde",
  "yavs-diag",
  "yavs-ffi",

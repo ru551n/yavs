@@ -927,6 +927,8 @@ pub fn run(
     }
     let code = if out.errors > 0 { code.max(1) } else { code };
     let done = out.finish(code);
+    // The optimised copies of this run's functions go into the stored lowering of the design.
+    e.learn();
     if let Some(t) = tier_up {
         // `end` may end the process at once, without destructors: the files the design left
         // open are written out and closed first.

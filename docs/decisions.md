@@ -2116,7 +2116,7 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   `yavs-cache` in a header with magic, format version, key, length and an xxh3 checksum of the payload. Stored in
   `<work library dir>/yavs-cache/sem-<key>.img`; a write is a temporary file plus an atomic rename (no
   lock needed; the library lock rules of rule 14 are unchanged and the manifest is never touched by
-  `run`); the 48 most recently used entries are kept; a directory that cannot be written is skipped
+  `run`); the 96 most recently used entries are kept; a directory that cannot be written is skipped
   silently. `--no-cache` and `yavs cache clean` (`E0123`) control it. A custom `$YAVS_STDLIB` disables
   the cache.
 - **Not stored in the library but per user:** nothing yet. A precomputed std/ieee base shared by all
@@ -2157,6 +2157,42 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     are 15 to 20 ms of the elaboration, more than all of step 1, but the heap structures are being
     changed for precise roots (#422) and the package data refers into the heap: serialising both
     waits for that work (comment on #407).
+
+- **Stage 2: the lowered design (`ir-<key>.img`, #479).** After the packages, elaboration lowers the
+  architectures that own processes and every subprogram they reach, verifies and numbers the program
+  (a library testbench: 530 functions, 12 to 18 ms of lowering and 5 to 7 ms of verification in a
+  40 to 60 ms elaboration). The whole result is stored in one entry: the program, the `UnitIr` of the
+  architectures, the package descriptions, and what elaboration asks of the lowering besides (the
+  thunks of package variable ports, the functions of the elaboration-time calls, the shared variable
+  slots, the user resolution functions and their types). A hit replaces lowering and `finish` of
+  that run; decoding 2 MB takes about 3 ms.
+  - *Key:* the analysis key, and the part that names every request elaboration made of the lowerer
+    (the packages, what the elaboration session lowered after them, the unbound external names, the
+    port actuals that get an equivalent process, the package variable ports, the logged calls, the
+    resolution functions, the architectures), so the same requests on the same analysis give the
+    same program, ids and all. Like `low`, only for a `Db` that has not grown since its analysis and
+    never with coverage counters. A design whose constant pool is over 1 MiB is not stored (same
+    reason as `low`). A run that resumes the elaboration session's program (package state left by
+    elaboration-time calls) and one that does not have different keys; the hit keeps the session's
+    start state, which the program extends.
+  - *Verification:* a stored program is verified when it is stored (second run of a closure) and
+    read back without it. A program that is not stored is verified function by function when
+    `Program::func` first hands the function out, so the functions a run never calls cost nothing;
+    that holds in release builds only: debug builds and runs with `YAVS_VERIFY_IR` set verify
+    everything when the program is finished (tests keep their internal errors for broken IR).
+    A function that fails the check at first use panics with the verifier message (the kernel turns
+    it into an internal error).
+  - *Optimised copies:* a hit that read the program but not the optimised copies would optimise the
+    functions again (the optimiser was 20 to 25 ms of a small test, and the elaboration session had
+    already done it for some). The entry therefore holds the optimised copy of every function an
+    earlier run called, serialised one by one and decoded on the function's first use
+    (`Program::export_optimized`, `load_optimized`; the copy is a function of the program alone, so
+    it is what the run would make). A run that optimised functions the entry lacks writes the entry
+    again at its end (`Elaborated::learn`); a run converges after one or two hits. Copies are not
+    stored or used with `YAVS_NO_IROPT` or while a debugger keeps variables in their slots
+    (`opt::copies_are_portable`).
+  - *Entries per design:* `ir` is one more beside `sem` and `low`, so the store keeps the 96 most
+    recently used entries instead of 48.
 
 
 ## Lazy image decode (#426, yavs decisions under the user's single-thread performance priority)
@@ -2542,7 +2578,7 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
   gets an image of its own (kind `pre`, key = the analysis key of the prefix's files). The entry is stored in
   the cache of the library of the prefix's last file, because every closure with that prefix maps it; the work
   library's cache is per testbench. Ceiling: a prefix is found only at a library change, and a shared library
-  directory keeps the usual 48 entries.
+  directory keeps the usual 96 entries.
 - **The state at a prefix end is the same whether it was restored or computed**: the analysis of the files
   up to the end, then the bodies of the packages outside the closure's own libraries
   (`yavs_elab::load_bodies_in`: `ieee`, and the generic package instances whose generic body is analyzed

@@ -29,6 +29,40 @@ pub struct Program {
     /// Cache of the optimiser (`opt.rs`); leave it to `Default`.
     #[serde(skip)]
     pub layouts: crate::opt::LayoutCache,
+    /// Functions from this id on were not verified when the program was built: [`Program::func`]
+    /// verifies each when it hands it out first (`None`: all were, or a stored program).
+    #[serde(skip)]
+    pub(crate) lazy_verify: Option<u32>,
+    /// Optimised copies an earlier run of this program made ([`Program::load_optimized`]).
+    #[serde(skip)]
+    stored_opt: StoredOpt,
+}
+
+/// An optimised copy of a function, serialised (see [`Program::export_optimized`]).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct OptCopy {
+    pub func: FuncId,
+    #[serde(with = "bytes")]
+    pub bytes: Vec<u8>,
+}
+
+/// Serialised optimised copies by function id, used instead of running the optimiser. A copy
+/// of the program starts without them.
+#[derive(Default, Debug)]
+struct StoredOpt(std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>);
+
+impl Clone for StoredOpt {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl StoredOpt {
+    fn map(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u32, Vec<u8>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl Program {
@@ -49,9 +83,94 @@ impl Program {
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
         raw.opt
-            .get_or_init(|| crate::opt::optimize_func(self, f))
+            .get_or_init(|| {
+                if self.lazy_verify.is_some_and(|from| f.0 >= from) {
+                    let mut errs = Vec::new();
+                    crate::verify::verify_func(self, f, raw, &mut errs);
+                    // A producer bug: the kernel turns the panic into an internal error.
+                    assert!(
+                        errs.is_empty(),
+                        "internal error: {}; this is a bug in yavs",
+                        errs[0]
+                    );
+                }
+                self.stored_copy(f)
+                    .or_else(|| crate::opt::optimize_func(self, f))
+            })
             .as_deref()
             .unwrap_or(raw)
+    }
+
+    /// The optimised copy of `f` an earlier run stored, if it is still the one this run would make.
+    fn stored_copy(&self, f: FuncId) -> Option<Box<Func>> {
+        if !crate::opt::copies_are_portable() {
+            return None;
+        }
+        let bytes = self.stored_opt.map().remove(&f.0)?;
+        postcard::from_bytes::<Func>(&bytes).ok().map(Box::new)
+    }
+
+    /// Make the optimised copies `copies` (from [`Program::export_optimized`] of a run of the same
+    /// program) the ones [`Program::func`] hands out, instead of optimising again (#479).
+    pub fn load_optimized(&self, copies: Vec<OptCopy>) {
+        if crate::opt::copies_are_portable() {
+            self.stored_opt
+                .map()
+                .extend(copies.into_iter().map(|c| (c.func.0, c.bytes)));
+        }
+    }
+
+    /// How many copies [`Program::export_optimized`] would return, without making them.
+    pub fn optimized_count(&self) -> usize {
+        if !crate::opt::copies_are_portable() {
+            return 0;
+        }
+        let made = self
+            .funcs
+            .values()
+            .iter()
+            .filter(|f| matches!(f.opt.get(), Some(Some(_))))
+            .count();
+        made + self.stored_opt.map().len()
+    }
+
+    /// The optimised copies made so far and the loaded ones not used yet, serialised, by function
+    /// id. Empty when copies are not portable (the pass is off, a debugger keeps variables).
+    pub fn export_optimized(&self) -> Vec<OptCopy> {
+        if !crate::opt::copies_are_portable() {
+            return Vec::new();
+        }
+        let mut out: Vec<OptCopy> = self
+            .funcs
+            .iter()
+            .filter_map(|(id, f)| match f.opt.get() {
+                Some(Some(o)) => postcard::to_stdvec(&**o)
+                    .ok()
+                    .map(|bytes| OptCopy { func: id, bytes }),
+                _ => None,
+            })
+            .collect();
+        out.extend(self.stored_opt.map().iter().map(|(&f, b)| OptCopy {
+            func: FuncId(f),
+            bytes: b.clone(),
+        }));
+        out.sort_by_key(|c| c.func.0);
+        out
+    }
+
+    /// Verify the functions not verified yet (see `lazy_verify`), all of them; afterwards
+    /// [`Program::func`] verifies nothing.
+    pub fn verify_pending(&mut self) -> Result<(), Vec<crate::VerifyError>> {
+        let Some(from) = self.lazy_verify else {
+            return Ok(());
+        };
+        let errs = crate::verify::verify(self, from as usize);
+        if errs.is_empty() {
+            self.lazy_verify = None;
+            Ok(())
+        } else {
+            Err(errs)
+        }
     }
 
     /// The process must run serially (ir.md 3.5): it or a subprogram it reaches touches
@@ -540,5 +659,38 @@ mod const_tests {
         assert_eq!(read(&runs, 8, 3), None);
         assert_eq!(read(&ConstData::Bytes(vec![5, 6]), 1, 1), Some(vec![6]));
         assert_eq!(read(&ConstData::Logic(vec![(4, 3)]), 0, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod lazy_verify_tests {
+    use yavs_diag::{FileId, Span};
+
+    use crate::{Inst, ProgramBuilder, StmtKind};
+
+    /// A function that was not verified when the program was built (a release build) is
+    /// verified when first handed out; a stored program (`verify_pending`) is not verified again.
+    #[test]
+    fn broken_function_is_caught_at_first_use() {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", crate::FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        fb.stmt(StmtKind::Null, Span::new(FileId(0), 0, 1));
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+        let mut prog = pb.finish().expect("well formed");
+        assert!(prog.lazy_verify.is_none() == cfg!(debug_assertions));
+        prog.lazy_verify = Some(0);
+        assert!(prog.verify_pending().is_ok());
+        assert!(prog.lazy_verify.is_none());
+        // Break it behind the builder's back.
+        prog.funcs.get_mut(f).expect("f").code.clear();
+        assert!(prog.verify_pending().is_ok(), "nothing pending");
+        prog.lazy_verify = Some(0);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prog.func(f);
+        }));
+        assert!(caught.is_err(), "the broken function must not run");
+        assert!(prog.verify_pending().is_err());
     }
 }

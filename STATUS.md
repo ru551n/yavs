@@ -1288,6 +1288,17 @@ Left in the floor (not changed here, owners named):
    would save 9 ms.
 3. Package initialisation (20 to 28 ms for a library with a protected-type logger) waits for #422.
 
+### floor of a run: the lowered design is cached (#479)
+
+Elaboration lowered every subprogram a library testbench reaches again on each run and verified all of
+them. The stage cache now keeps the lowered design (`ir` entries: program, architecture IR, the
+elaboration-time lowering results) and the optimised copies of the functions earlier runs called; a
+run that called more writes the entry again at its end. Release builds verify a function when it is
+first called (debug builds, tests and `YAVS_VERIFY_IR` verify at build; stored programs are verified when
+stored). Small library testbench, second run onwards, pinned to one performance core, `--stop-time=1ns`
+(min of 15): total 191 to 111 ms (elaborate 110 to 72, init 21 to 3, simulate 35 to 7). Left: the
+elaboration walk and session (about 40 ms) and a prefix-keyed form for closures that run once.
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

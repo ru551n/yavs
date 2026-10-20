@@ -1,6 +1,7 @@
 //! Processes: lowering the architectures that own processes (yavs-lower) and building one
 //! interpreter process per process instance (yavs-interp), with per-instance data.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -66,6 +67,90 @@ pub struct Ir {
     /// simulation starts from a copy of it instead of initialising the packages and replaying
     /// the elaboration-time calls (#383).
     pub start: Option<Arc<crate::pkgcall::StartState>>,
+    /// How to store the optimised copies the run makes (#479); `None`: the design is not cached.
+    pub(crate) learn: Option<Learn>,
+}
+
+/// What lowering a design gives besides the program (`Elaborated::lower_cold`); what `Ir` takes
+/// from it.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Rest {
+    /// The `UnitIr` of each architecture lowered, in the order of the request.
+    units: Vec<UnitIr>,
+    packages: Vec<yavs_lower::PackageIr>,
+    shared_size: u32,
+    var_pkgs: Vec<(yavs_sem::DeclId, yavs_ir::FuncId)>,
+    elab_sigs: Vec<(yavs_sem::DeclId, crate::pkgcall::Sig)>,
+    var_slots: Vec<yavs_lower::VarSlot>,
+    resolvers: Vec<(yavs_sem::DeclId, yavs_ir::FuncId)>,
+    res_types: Vec<(yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId))>,
+}
+
+/// A lowered design as stored in the stage cache (#479): the program, the rest and the optimised
+/// copies of the functions earlier runs called.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Lowering<'a> {
+    program: Cow<'a, yavs_ir::Program>,
+    rest: Cow<'a, Rest>,
+    optimized: Vec<yavs_ir::OptCopy>,
+}
+
+/// The stage-cache entry of a [`Lowering`].
+#[derive(Clone)]
+struct LoweringKey {
+    cache: Arc<dyn yavs_sem::StageCache>,
+    extent: Vec<usize>,
+    part: Vec<u8>,
+}
+
+/// The constant bytes up to which a lowering is stored: reading a big constant pool back costs
+/// more than lowering the design again (`Lowerer::image` has the same limit).
+const LOWERING_MAX_CONSTS: usize = yavs_lower::IMAGE_MAX_CONSTS;
+
+impl LoweringKey {
+    fn get(&self) -> Option<Lowering<'static>> {
+        let bytes = self.cache.get(&self.extent, "ir", &self.part)?;
+        postcard::from_bytes(&bytes).ok()
+    }
+
+    /// Whether `program` is worth storing: reading a big constant pool back costs more than
+    /// lowering again.
+    fn fits(program: &yavs_ir::Program) -> bool {
+        let consts: usize = program
+            .consts
+            .values()
+            .iter()
+            .map(|c| match c {
+                yavs_ir::ConstData::Bytes(b) => b.len(),
+                _ => 0,
+            })
+            .sum();
+        consts <= LOWERING_MAX_CONSTS
+    }
+
+    /// Store `program` (verified) and `rest` with the optimised copies `program` holds; returns
+    /// how many.
+    fn put(&self, program: &yavs_ir::Program, rest: &Rest) -> usize {
+        let optimized = program.export_optimized();
+        let n = optimized.len();
+        let lw = Lowering {
+            program: Cow::Borrowed(program),
+            rest: Cow::Borrowed(rest),
+            optimized,
+        };
+        if let Ok(bytes) = postcard::to_stdvec(&lw) {
+            self.cache.put(&self.extent, "ir", &self.part, &bytes);
+        }
+        n
+    }
+}
+
+/// What the end of a run needs to store the optimised copies it made ([`Elaborated::learn`]).
+pub(crate) struct Learn {
+    key: LoweringKey,
+    rest: Rest,
+    /// How many optimised copies the entry holds.
+    stored: usize,
 }
 
 /// The interpreter side of a built simulation (`Elaborated::build_full`).
@@ -223,75 +308,73 @@ impl Elaborated {
         // The program goes on from the elaboration session's when it can, so that the
         // simulation starts from the package state elaboration left (#383): same packages, no
         // coverage counters, no subprogram with external names lowered before they were bound.
-        let mut start = None;
-        let mut resumed = None;
-        if let Some(s) = self.start.take()
-            && !opts.coverage
-            && s.pkgs == packages
+        let session = self
+            .start
+            .take()
+            .filter(|s| !opts.coverage && s.pkgs == packages && !s.lowerer.externals_early());
+        let key = self.lowering_key(db, &opts, &packages, &archs, session.as_ref());
+        let (program, rest, start, learn) = match key.as_ref().and_then(|k| k.get().map(|l| (k, l)))
         {
-            let l = Lowerer::resume(db, s.lowerer);
-            if !l.externals_early() {
-                start = Some(s.state);
-                resumed = Some(l);
+            Some((k, lw)) => {
+                let Lowering {
+                    program,
+                    rest,
+                    optimized,
+                } = lw;
+                let stored = optimized.len();
+                program.load_optimized(optimized);
+                let rest = rest.into_owned();
+                let learn = Learn {
+                    key: k.clone(),
+                    rest: rest.clone(),
+                    stored,
+                };
+                (
+                    program.into_owned(),
+                    rest,
+                    session.map(|s| s.state),
+                    Some(learn),
+                )
             }
-        }
-        let mut l = match resumed {
-            Some(l) => l,
-            // Package objects first (#183), in analysis order, which puts a package after
-            // those its declaration uses (LRM 14.4.2).
-            // ponytail: a body using a package analyzed after its declaration is
-            // initialised too early; order by the dependency graph if a design needs it.
-            None => crate::pkgcall::package_lowerer(db, &packages, opts)?,
+            None => {
+                let (resumed, start) = match session {
+                    Some(s) => (Some(Lowerer::resume(db, s.lowerer)), Some(s.state)),
+                    None => (None, None),
+                };
+                let (mut program, rest) = self.lower_cold(db, opts, &packages, &archs, resumed)?;
+                let learn = match &key {
+                    Some(k) if LoweringKey::fits(&program) => {
+                        yavs_lower::verify_stored(&mut program)?;
+                        let stored = k.put(&program, &rest);
+                        Some(Learn {
+                            key: k.clone(),
+                            rest: rest.clone(),
+                            stored,
+                        })
+                    }
+                    _ => None,
+                };
+                (program, rest, start, learn)
+            }
         };
-        l.externals_bound(self.ext_unbound.clone());
-        for p in &self.procs {
-            if let Some(a) = &p.actual {
-                l.port_actual(p.stmt, a.expr, a.formal, a.port);
-            }
-        }
-        let mut var_pkgs = HashMap::new();
-        for v in self.var_ports.values() {
-            if let crate::VarObj::Package(d) = *v
-                && !var_pkgs.contains_key(&d)
-            {
-                var_pkgs.insert(d, l.package_value(d)?);
-            }
-        }
-        let mut elab_sigs = HashMap::new();
-        for c in &self.elab_calls {
-            if let std::collections::hash_map::Entry::Vacant(v) = elab_sigs.entry(c.func) {
-                v.insert(crate::pkgcall::sig(&mut l, db, c.func)?);
-            }
-        }
-        let mut idx = Vec::new();
-        for &a in &archs {
-            idx.push(l.architecture(a)?);
-        }
-        let var_slots = l.var_slots()?;
-        let mut resolvers = HashMap::new();
-        let mut res_types = HashMap::new();
-        let mut res_index = HashMap::new();
-        for leaf in &self.nets.leaves {
-            if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
-                && !resolvers.contains_key(&d)
-            {
-                resolvers.insert(d, l.subprogram(d)?);
-            }
-            if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
-                && !res_types.contains_key(&d)
-                && let Some(sp) = db.decls[d].kind.subprogram()
-                && let ([p], Some(r)) = (&sp.params[..], sp.ret)
-            {
-                let tys = (l.ty(db.base(p.subtype))?, l.ty(db.base(r))?);
-                res_types.insert(d, tys);
-                res_index.insert(d, res_index_of(db, p.subtype));
-            }
-        }
-        let lowered = l.finish()?;
-        let mut units = HashMap::new();
-        for (a, i) in archs.into_iter().zip(idx) {
-            units.insert(a, lowered.units[i].clone());
-        }
+        let Rest {
+            units: arch_units,
+            packages: pkg_irs,
+            shared_size,
+            var_pkgs,
+            elab_sigs,
+            var_slots,
+            resolvers,
+            res_types,
+        } = rest;
+        let res_index: HashMap<_, _> = res_types
+            .iter()
+            .filter_map(|&(d, _)| {
+                let sp = db.decls[d].kind.subprogram()?;
+                Some((d, res_index_of(db, sp.params.first()?.subtype)))
+            })
+            .collect();
+        let units: HashMap<UnitId, UnitIr> = archs.into_iter().zip(arch_units).collect();
         let mut names = HashMap::new();
         // The regions processes run in, and those holding the targets of external names
         // (their thunks may name entities, #255).
@@ -322,29 +405,203 @@ impl Elaborated {
                 names.insert((region, n.decl, n.instance), text);
             }
         }
-        let sources = yavs_interp::Sources::of(&lowered.program, &db.sources);
+        let sources = yavs_interp::Sources::of(&program, &db.sources);
         self.ir = Some(Ir {
             sources,
             revision: crate::pkgcall::revision_of(db),
-            program: Arc::new(lowered.program),
+            program: Arc::new(program),
             units,
-            resolvers,
-            res_types,
+            resolvers: resolvers.into_iter().collect(),
+            res_types: res_types.into_iter().collect(),
             res_index,
             res_regions,
             init_regions,
             names,
-            packages: lowered.packages,
-            shared_size: lowered.shared_size,
+            packages: pkg_irs,
+            shared_size,
             foreign: Vec::new(),
             foreign_searched: String::new(),
             models: Vec::new(),
+            var_pkgs: var_pkgs.into_iter().collect(),
+            elab_sigs: elab_sigs.into_iter().collect(),
+            var_slots,
+            start,
+            learn,
+        });
+        Ok(())
+    }
+
+    /// Lower the architectures `archs`, the subprograms and the resolution functions the design
+    /// reaches, on top of the packages (`resumed`: the elaboration session's lowering, else the
+    /// packages are lowered or read from the stage cache).
+    fn lower_cold(
+        &self,
+        db: &Db,
+        opts: LowerOptions,
+        packages: &[UnitId],
+        archs: &[UnitId],
+        resumed: Option<Lowerer>,
+    ) -> Result<(yavs_ir::Program, Rest), Vec<Diagnostic>> {
+        let mut l = match resumed {
+            Some(l) => l,
+            // Package objects first (#183), in analysis order, which puts a package after
+            // those its declaration uses (LRM 14.4.2).
+            // ponytail: a body using a package analyzed after its declaration is
+            // initialised too early; order by the dependency graph if a design needs it.
+            None => crate::pkgcall::package_lowerer(db, packages, opts)?,
+        };
+        l.externals_bound(self.ext_unbound.clone());
+        for p in &self.procs {
+            if let Some(a) = &p.actual {
+                l.port_actual(p.stmt, a.expr, a.formal, a.port);
+            }
+        }
+        let mut var_pkgs = Vec::new();
+        for v in self.var_ports.values() {
+            if let crate::VarObj::Package(d) = *v
+                && !var_pkgs.iter().any(|&(x, _)| x == d)
+            {
+                var_pkgs.push((d, l.package_value(d)?));
+            }
+        }
+        let mut elab_sigs: Vec<(yavs_sem::DeclId, crate::pkgcall::Sig)> = Vec::new();
+        for c in &self.elab_calls {
+            if !elab_sigs.iter().any(|&(x, _)| x == c.func) {
+                elab_sigs.push((c.func, crate::pkgcall::sig(&mut l, db, c.func)?));
+            }
+        }
+        let mut idx = Vec::new();
+        for &a in archs {
+            idx.push(l.architecture(a)?);
+        }
+        let var_slots = l.var_slots()?;
+        let mut resolvers = Vec::new();
+        let mut res_types = Vec::new();
+        for leaf in &self.nets.leaves {
+            if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
+                && !resolvers.iter().any(|&(x, _)| x == d)
+            {
+                resolvers.push((d, l.subprogram(d)?));
+            }
+            if let Some(LeafRes::Func(d) | LeafRes::Whole(d)) = leaf.resolution
+                && !res_types.iter().any(|&(x, _)| x == d)
+                && let Some(sp) = db.decls[d].kind.subprogram()
+                && let ([p], Some(r)) = (&sp.params[..], sp.ret)
+            {
+                res_types.push((d, (l.ty(db.base(p.subtype))?, l.ty(db.base(r))?)));
+            }
+        }
+        let lowered = l.finish()?;
+        let rest = Rest {
+            units: idx.iter().map(|&i| lowered.units[i].clone()).collect(),
+            packages: lowered.packages,
+            shared_size: lowered.shared_size,
             var_pkgs,
             elab_sigs,
             var_slots,
-            start,
-        });
-        Ok(())
+            resolvers,
+            res_types,
+        };
+        Ok((lowered.program, rest))
+    }
+
+    /// Where the result of [`Elaborated::lower_cold`] is kept (#479): the stage cache of the
+    /// analysis, for a `Db` that has not grown since, with a key part naming everything the
+    /// lowering was asked for. `None`: no cache, coverage counters, or constants that make
+    /// reading the program back dearer than lowering it.
+    fn lowering_key(
+        &self,
+        db: &Db,
+        opts: &LowerOptions,
+        packages: &[UnitId],
+        archs: &[UnitId],
+        session: Option<&crate::pkgcall::Start>,
+    ) -> Option<LoweringKey> {
+        use yavs_sem::Id;
+        let cache = db.stages().filter(|_| !opts.coverage)?.clone();
+        // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
+        // on the same analysis give the same program, ids and all.
+        let mut p = vec![opts.no_native_ieee as u8];
+        fn ids(p: &mut Vec<u8>, tag: u8, it: &mut dyn Iterator<Item = usize>) {
+            p.push(tag);
+            let v: Vec<usize> = it.collect();
+            p.extend((v.len() as u32).to_le_bytes());
+            for x in v {
+                p.extend((x as u32).to_le_bytes());
+            }
+        }
+        ids(&mut p, b'p', &mut packages.iter().map(|u| u.index()));
+        match session {
+            // The session's program holds the packages and what it lowered after them.
+            Some(s) => ids(
+                &mut p,
+                b's',
+                &mut s
+                    .lowered
+                    .iter()
+                    .flat_map(|&(d, c)| [d.index(), usize::from(c)]),
+            ),
+            None => ids(&mut p, b'n', &mut std::iter::empty()),
+        }
+        let mut unbound: Vec<_> = self.ext_unbound.iter().collect();
+        unbound.sort_by_key(|(d, _)| d.index());
+        ids(&mut p, b'u', &mut unbound.iter().map(|(d, _)| d.index()));
+        let why: Vec<u8> = unbound
+            .iter()
+            .flat_map(|(_, w)| w.bytes().chain([0]))
+            .collect();
+        p.extend(why);
+        let mut ac = Vec::new();
+        for pi in &self.procs {
+            if let Some(a) = &pi.actual {
+                ac.extend([
+                    pi.stmt.index(),
+                    a.expr.index(),
+                    a.formal.map_or(usize::MAX, |f| f.index()),
+                    a.port.index(),
+                ]);
+            }
+        }
+        ids(&mut p, b'a', &mut ac.into_iter());
+        ids(
+            &mut p,
+            b'v',
+            &mut self.var_ports.values().filter_map(|v| match *v {
+                crate::VarObj::Package(d) => Some(d.index()),
+                _ => None,
+            }),
+        );
+        ids(
+            &mut p,
+            b'c',
+            &mut self.elab_calls.iter().map(|c| c.func.index()),
+        );
+        let mut seen = std::collections::HashSet::new();
+        ids(
+            &mut p,
+            b'r',
+            &mut self.nets.leaves.iter().filter_map(|l| match l.resolution {
+                Some(LeafRes::Func(d) | LeafRes::Whole(d)) if seen.insert(d) => Some(d.index()),
+                _ => None,
+            }),
+        );
+        ids(&mut p, b'h', &mut archs.iter().map(|u| u.index()));
+        Some(LoweringKey {
+            cache,
+            extent: db.extent(),
+            part: p,
+        })
+    }
+
+    /// Call at the end of a run: when it optimised functions the stored lowering of the design
+    /// does not hold yet, store them with it, so that the next run of the design reads them
+    /// instead of optimising again (#479). Nothing when the design is not cached.
+    pub fn learn(&mut self) {
+        let Some(ir) = &mut self.ir else { return };
+        let Some(l) = &mut ir.learn else { return };
+        if ir.program.optimized_count() > l.stored {
+            l.stored = l.key.put(&ir.program, &l.rest);
+        }
     }
 
     /// The instance whose data resolution function `d` reads when it resolves a signal

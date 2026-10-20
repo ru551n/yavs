@@ -18,45 +18,71 @@ use crate::types::TypeKind;
 /// package's name), then `.<name>` per nested region. A subprogram region
 /// uses the subprogram's mangled name, so overloads stay distinct.
 pub fn region(db: &Db, scope: ScopeId) -> String {
+    let mut out = String::new();
+    region_into(db, scope, &mut out);
+    out
+}
+
+/// [`region`] appended to `out`.
+fn region_into(db: &Db, scope: ScopeId, out: &mut String) {
     let s = &db.scopes[scope];
     let Some(owner) = s.owner else {
-        return s.parent.map_or_else(String::new, |p| region(db, p));
+        if let Some(p) = s.parent {
+            region_into(db, p, out);
+        }
+        return;
     };
     let d = &db.decls[owner];
     match &d.kind {
         DeclKind::Unit(u) => {
             if let Some(m) = db.generic.unit_names.get(u) {
-                return m.to_string();
+                out.push_str(m.as_str());
+                return;
             }
             let u = &db.units[*u];
-            let lib = db.libs[u.lib].name.key;
+            out.push_str(db.libs[u.lib].name.key.as_str());
+            out.push('.');
             match u.key {
-                UnitKey::Primary(p) => format!("{lib}.{p}"),
-                UnitKey::Secondary(p, b) if b.as_str() == "body" => format!("{lib}.{p}"),
-                UnitKey::Secondary(p, a) => format!("{lib}.{p}.{a}"),
+                UnitKey::Primary(p) => out.push_str(p.as_str()),
+                UnitKey::Secondary(p, b) if b.as_str() == "body" => out.push_str(p.as_str()),
+                UnitKey::Secondary(p, a) => {
+                    out.push_str(p.as_str());
+                    out.push('.');
+                    out.push_str(a.as_str());
+                }
             }
         }
-        DeclKind::Subprogram(sp) => sp.mangled.to_string(),
-        _ => join(&region(db, d.scope), d.name.key().as_str()),
+        DeclKind::Subprogram(sp) => out.push_str(sp.mangled.as_str()),
+        _ => {
+            join_into(db, d.scope, d.name.key().as_str(), out);
+        }
     }
 }
 
-fn join(region: &str, name: &str) -> String {
-    if region.is_empty() {
-        name.to_string()
-    } else {
-        format!("{region}.{name}")
+/// `<region of scope>.<name>`, or `<name>` for the empty region, appended to `out`.
+fn join_into(db: &Db, scope: ScopeId, name: &str, out: &mut String) {
+    let before = out.len();
+    region_into(db, scope, out);
+    if out.len() > before {
+        out.push('.');
     }
+    out.push_str(name);
 }
 
 /// The mangled name of a type: its region plus its (declared) name; the
 /// universal types are `universal_integer` and `universal_real`.
 pub fn type_name(db: &Db, ty: TypeId) -> String {
+    let mut out = String::new();
+    type_name_into(db, ty, &mut out);
+    out
+}
+
+fn type_name_into(db: &Db, ty: TypeId, out: &mut String) {
     let t = &db.types[ty];
     match t.kind {
-        TypeKind::UniversalInteger => "universal_integer".into(),
-        TypeKind::UniversalReal => "universal_real".into(),
-        _ => join(&region(db, db.decls[t.decl].scope), t.name.key.as_str()),
+        TypeKind::UniversalInteger => out.push_str("universal_integer"),
+        TypeKind::UniversalReal => out.push_str("universal_real"),
+        _ => join_into(db, db.decls[t.decl].scope, t.name.key.as_str(), out),
     }
 }
 
@@ -68,13 +94,20 @@ pub fn subprogram(
     params: &[SubtypeId],
     ret: Option<SubtypeId>,
 ) -> String {
-    let params: Vec<String> = params.iter().map(|&p| type_name(db, db.base(p))).collect();
-    let ret = ret.map_or_else(String::new, |r| type_name(db, db.base(r)));
-    format!(
-        "{}({}){ret}",
-        join(&region(db, scope), name.key().as_str()),
-        params.join(",")
-    )
+    let mut out = String::with_capacity(128);
+    join_into(db, scope, name.key().as_str(), &mut out);
+    out.push('(');
+    for (i, &p) in params.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        type_name_into(db, db.base(p), &mut out);
+    }
+    out.push(')');
+    if let Some(r) = ret {
+        type_name_into(db, db.base(r), &mut out);
+    }
+    out
 }
 
 /// The native link of an implicit operation: `yavs.implicit.<family>.<type>[#<form>]`.

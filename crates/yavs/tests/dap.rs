@@ -51,7 +51,7 @@ fn spawn(dir: &Path, top: &str, extra: &[&str]) -> Child {
 
 /// Kills the process `pid` unless dropped within `secs`: a session that is stuck fails its test
 /// (end of input on its stdout) instead of hanging CI (#441).
-struct Watchdog(std::sync::mpsc::Sender<()>);
+struct Watchdog(#[allow(dead_code)] std::sync::mpsc::Sender<()>); // dropped to disarm
 
 impl Watchdog {
     fn new(pid: u32, secs: u64) -> Self {

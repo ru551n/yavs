@@ -461,6 +461,44 @@ fn concurrent_batches() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// A file the design never closes is written out when the run ends, also when `yavs run` ends
+/// without freeing the design.
+#[test]
+fn files_left_open_are_written() {
+    let tmp = tempdir("openfile");
+    std::fs::write(
+        tmp.join("f.vhd"),
+        "use std.textio.all;\n\
+         entity f is end;\n\
+         architecture t of f is begin\n\
+           process\n\
+             file o : text open write_mode is \"out.txt\";\n\
+             variable l : line;\n\
+           begin\n\
+             write(l, string'(\"hello\")); writeline(o, l);\n\
+             wait;\n\
+           end process;\n\
+         end;\n",
+    )
+    .expect("write");
+    for args in [
+        &["analyze", "--work=work:lib", "f.vhd"][..],
+        &["run", "--work=work:lib", "f"],
+    ] {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&tmp)
+            .args(args)
+            .output()
+            .expect("run");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    assert_eq!(
+        std::fs::read_to_string(tmp.join("out.txt")).expect("out.txt"),
+        "hello\n"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// `yavs elab` and `yavs run` (cli-contract section 5): exit codes and diagnostic codes.
 #[test]
 fn elab_and_run() {

@@ -446,6 +446,12 @@ impl Runtime {
         files.len() != 2 || !files.iter().all(textio::FileSlot::is_open)
     }
 
+    /// Close the files the design left open, writing out what they buffer, as dropping the
+    /// runtime does: for a process that ends without dropping it.
+    pub fn close_files(&self) {
+        self.files.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     /// Start from `from`'s VHDL assert state (enables and the like, as code run by `from`
     /// left it): a simulation going on from package state that elaboration-time calls made.
     pub fn inherit(&self, from: &Runtime) {

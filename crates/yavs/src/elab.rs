@@ -796,8 +796,12 @@ pub fn run(
     let done = out.finish(code);
     // The process ends now: freeing the design and the runtime piece by piece only hands memory
     // back to an operating system that takes it anyway (a tenth of the run for a large design).
-    // Runs with a waveform file or a plugin keep their orderly teardown.
+    // Runs with a waveform file or a plugin keep their orderly teardown. The files the design
+    // left open are written out and closed first.
     if a.wave.is_none() && a.vhpi.is_empty() {
+        if let Some(rt) = &rt {
+            rt.close_files();
+        }
         std::mem::forget((sim, built, rt, e, db));
     }
     done

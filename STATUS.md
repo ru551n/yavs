@@ -124,6 +124,15 @@ a type evaluated twice, `log2` precision, 2019 mode view parameters). Analysis a
 failures (about 160) are mostly "not lowered yet" (`E2001`) features and VHDL-93 code read as
 2008; the analysis corpora cover them.
 
+Run-time fixes found by this harness (2026-10-20): a file declared in a subprogram is closed when the
+subprogram returns (#375); a positional aggregate longer than the non-static subtype it initialises is a
+run-time length error, not a write outside it (#378); a textio READ that fails without GOOD reports an
+error and the run goes on, as three of the four references do (#381, L107, case `textio-read-failure`); a
+locally static aggregate whose array elements differ in length is no longer folded (#380; under a context with ranges it is #455); the method call through an access to a protected type (#377) and the read outside a
+constant of an array with element constraints (#380) no longer reproduce on main (regression tests
+`protected/access_method_call_2019`, `composite/aggregate_element_lengths`; `issue3010` joined the second
+suite's pass list).
+
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:

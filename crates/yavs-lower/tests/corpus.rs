@@ -18,6 +18,9 @@ use yavs_sem::{Db, LangRev, Options};
 
 /// Corpus files whose output matches NVC's exactly.
 const PASS: &[&str] = &[
+    "protected/access_method_call_2019",
+    "textio/file_in_subprogram",
+    "textio/read_failed",
     "access/access_string_array",
     "access/gc_random",
     "access/linked_list",
@@ -61,6 +64,7 @@ const PASS: &[&str] = &[
     "composite/aggregate_target_elems",
     "composite/aggregate_target_elems_cover",
     "composite/aggregate_target_elems_order",
+    "composite/aggregate_element_lengths",
     "composite/aggregate_target_range_length",
     "composite/aggregate_target_range_order",
     "composite/aggregate_target_ranges",

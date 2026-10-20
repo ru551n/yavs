@@ -103,7 +103,7 @@ reference answers per net; catalogue `last-value-composite`), a use clause namin
 explicit operations visible (#452, L106), VHDL-93 shared variables read with `--relaxed` (#454),
 `early` (an LRM error found at analysis or elaboration where the suite has the run fail, #456),
 files declared in an architecture (#466), binding indication actuals see the names of the binding
-(#468), IEEE function calls and slices locally static (#470, L108), a package body naming an item of
+(#468), IEEE function calls and slices locally static (#470, L109), a package body naming an item of
 its package (#471), a block configuration seeing the components of its block (#473), a port actual
 whose context subtype names the instance's generics (#475) and 2019 record conversion (#476). Still
 open in the first suite (102 tests): PSL beyond the subset (about 25), mirror identity in reflection

@@ -91,6 +91,12 @@ to span, statement kind and enclosing subprogram without any other table.
   addresses are kept in caller slots. The interpreter keeps registers anyway (frames are heap
   objects), but the JIT tier relies on this: resuming needs only the frame memory and a resume
   index.
+- **Definition invariant:** every register is written before it is read on every path from the
+  entry (in a process: from the last `Suspend`), except the registers defined once by a
+  constant or an address, which a frame starts with (`yavs-interp` `pre.rs`). The verifier
+  checks it by dataflow in debug builds and tests (`verify::undefined_uses`, #430), so a frame
+  may start with stale registers; the interpreter still zeroes them until its collection scan
+  of registers is precise (#422).
 - Every pass is one walk over blocks in order: verifier (types, invariant above, every instruction
   has a `StmtId`), `MAY_SUSPEND` and `TOUCHES_SHARED` propagation (worklist over the reverse call
   graph, each edge visited once), coverage numbering. No pass is quadratic; a unit over the LLVM
@@ -711,7 +717,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 | foreign | `ForeignRef {name, symbol, args: Vec<ForeignArg>, ret, model: Option<VhpiModel>}` (`model` set for `"VHPI library model"` subprograms: library, model, parameter names, modes and types; the call goes to the plugin's model, not a C function) with `ForeignArg::{Value(CType), ScalarRef(CType, Width), Array {ty, lengths, copy_back}, Record {ty, copy_back}, Access}`. Arrays: the register is a fat-pair address (constrained arrays too); C gets a C-layout copy left to right (logic elements as one code byte, BIT/BOOLEAN as 0/1) and `lengths` `int64_t` lengths. Records of scalars: a naturally aligned C struct. Access: a pointer to the object's data in VHDL layout (after the descriptor of an array object), NULL for null. Copy-back range-checks what C wrote. The elaborator binds pointers through `Bindings.foreign`; `Runtime::new` fails on unbound or mismatched signatures |
 | heap | handle `{tag: 1 private / 2 shared, index: u24, generation: u32}`. A heap address carries no generation; a deallocated slot is quarantined until a suspension finds no address to it in the owner's frames and temporaries (or, once 4096 wait, a recycle before a native call or `deallocate` that also searches the registers, #355), so a stale address always meets the freed slot (runtime error, #81). Handles are found through each object's descriptor (#80). GC: mark and sweep of the private heap at a suspension once `Limits.gc_threshold` bytes were allocated; objects that addresses in the frames reach are kept; an object whose handles cannot be located from its type skips the collection (never unsound). The shared heap is collected at the start of a cycle by `SharedGc` (#303, docs/decisions.md "Shared heap collection") |
 | std.env 2019 | call paths from the frame stack and `Bindings::sources`; the VHDL assert state is per-cycle snapshots plus each process's own changes, merged in process order (deterministic at any thread count); records go to natives as fat pairs (docs/decisions.md, #99) |
-| verifier | the "no register live across a suspension" check is intra-block only; cross-block liveness needs dataflow and comes with the JIT tier |
+| verifier | the "no register live across a suspension" check is intra-block only; the "written before read" dataflow check (debug builds, #430) covers cross-block liveness across a `Suspend` of a process for registers that are not constants |
 | serial marking | `TOUCHES_SHARED` from `AddrOf Shared`, `CallProt`, `New {shared: true}` and `CallNative` of a file or directory native (#82); `InterpProcess::new` refuses a serial process without a `SharedState`, and touching shared state without one is an ICE |
 | elaboration | `Elab` instructions are a runtime "needs yavs-elab" error; `InstData {data, sigs, cov_base}` has no child or package links yet. `call_shared` runs elaboration code with the `SharedState` (shared variables, shared protected objects) |
 | native arguments | `in` scalars by value; `out`/`inout` scalars and access variables by cell address; unconstrained arrays as a fat-pair address; files as the address of their 4-byte cell; records by address. Results: scalars by value, strings as a fat-pair address, `line` as a handle |

@@ -89,6 +89,15 @@ fn malformed_ir_is_rejected() {
         fb.emit(Inst::WaitFor { t });
         fb.emit(Inst::Ret { v: None });
     });
+    // A register never written (a frame may start with stale registers).
+    if cfg!(debug_assertions) {
+        expect(FuncKind::Process, "read before it is written", |fb| {
+            fb.stmt(StmtKind::Null, sp());
+            let t = fb.reg(RegTy::I64);
+            fb.emit(Inst::WaitFor { t });
+            fb.emit(Inst::Ret { v: None });
+        });
+    }
     expect(
         FuncKind::Process,
         "instruction before any statement",

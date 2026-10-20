@@ -131,6 +131,16 @@ fn verify_func(prog: &Program, id: FuncId, errs: &mut Vec<VerifyError>) {
         f.kind,
         FuncKind::Function | FuncKind::Elab | FuncKind::Thunk
     );
+    // Debug builds and tests only: the dataflow costs about 30 ms on a large verification
+    // library, and nothing depends on it until frames start with stale registers (#430).
+    if cfg!(debug_assertions) {
+        for (pc, r) in undefined_uses(prog, f) {
+            err(
+                Some(pc as usize),
+                format!("r{r} is read before it is written on some path"),
+            );
+        }
+    }
     for (b, blk) in f.blocks.iter() {
         let mut epoch = 0u32;
         for pc in blk.start as usize..blk.end as usize {
@@ -330,4 +340,102 @@ fn check_inst(
         )),
         _ => {}
     }
+}
+
+/// Registers read where some path from the entry (or, in a process, from the last `Suspend`)
+/// does not define them first: `(pc, register)`. Registers defined once by a constant or an
+/// address start every frame with their value and are exempt.
+pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
+    let n = f.reg_ty.len();
+    let w = n.div_ceil(64).max(1);
+    let mut defs = vec![0u8; n];
+    for inst in &f.code {
+        inst.visit(&mut |r, role, _| {
+            if role == Role::Def
+                && let Some(d) = defs.get_mut(r.0 as usize)
+            {
+                *d = d.saturating_add(1);
+            }
+        });
+    }
+    let mut pre = vec![0u64; w];
+    for inst in &f.code {
+        let r = match *inst {
+            Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => Some(dst),
+            Inst::AddrOf { dst, space, .. } if !matches!(space, AddrSpace::Up(_)) => Some(dst),
+            _ => None,
+        };
+        if let Some(r) = r
+            && defs.get(r.0 as usize) == Some(&1)
+        {
+            pre[r.0 as usize / 64] |= 1 << (r.0 % 64);
+        }
+    }
+    let nb = f.blocks.len();
+    let mut input: Vec<Option<Vec<u64>>> = vec![None; nb];
+    if nb == 0 {
+        return Vec::new();
+    }
+    input[0] = Some(pre.clone());
+    let mut work = vec![0usize];
+    let mut bad = Vec::new();
+    let is_proc = f.kind == FuncKind::Process;
+    let blocks: Vec<_> = f.blocks.iter().map(|(_, b)| *b).collect();
+    while let Some(b) = work.pop() {
+        let mut cur = input[b].clone().unwrap_or_else(|| vec![!0; w]);
+        let blk = blocks[b];
+        for pc in blk.start as usize..blk.end as usize {
+            let inst = &f.code[pc];
+            let mut uses = Vec::new();
+            inst.visit(&mut |r, role, _| uses.push((r, role)));
+            if let Some(l) = inst.list()
+                && let Some(rs) = f.regs(l)
+            {
+                uses.extend(rs.iter().map(|&r| (r, Role::Use)));
+            }
+            for (r, role) in uses {
+                let (i, m) = (r.0 as usize / 64, 1u64 << (r.0 % 64));
+                if i >= w {
+                    continue;
+                }
+                match role {
+                    Role::Use if cur[i] & m == 0 => {
+                        bad.push((pc as u32, r.0));
+                    }
+                    Role::Use => {}
+                    Role::Def => cur[i] |= m,
+                }
+            }
+            if is_proc && matches!(inst, Inst::Suspend { .. }) {
+                cur.clone_from(&pre);
+            }
+        }
+        let succ: Vec<crate::BlockId> = match f.code[blk.end as usize - 1] {
+            Inst::Case { table, .. } => prog.cases.get(table).map_or_else(Vec::new, |t| {
+                t.arms
+                    .iter()
+                    .map(|a| a.2)
+                    .chain(std::iter::once(t.default))
+                    .collect()
+            }),
+            ref i => i.targets(),
+        };
+        for s in succ {
+            let s = s.0 as usize;
+            if s >= nb {
+                continue;
+            }
+            let new = match &input[s] {
+                None => cur.clone(),
+                Some(old) => old.iter().zip(&cur).map(|(a, b)| a & b).collect(),
+            };
+            if input[s].as_ref() != Some(&new) {
+                input[s] = Some(new);
+                work.push(s);
+            }
+        }
+    }
+    bad.sort_unstable();
+    bad.dedup();
+    bad
 }

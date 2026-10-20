@@ -1718,7 +1718,10 @@ impl Elab<'_> {
                 let (gens, pts) = (generics.to_vec(), ports.to_vec());
                 let (ga, pa) = (assocs(generic_map, gens.len()), assocs(port_map, pts.len()));
                 let b = self.m.hier.add(Some(s), ScopeKind::Block, named(db)?);
-                let bcfg = cfg.and_then(|c| self.sub_cfg(c, st, None));
+                let bcfg = match cfg {
+                    Some(c) => self.sub_cfg(c, st, None, b)?,
+                    None => None,
+                };
                 // Block generics and ports (LRM 11.2): like an instance's, actuals in the
                 // enclosing region.
                 for (g, a) in gens.iter().zip(&ga) {
@@ -1790,7 +1793,10 @@ impl Elab<'_> {
                     );
                     self.m.hier.scopes[g.index()].index = Some(image);
                     self.m.set(g, param, val.clone());
-                    let gcfg = cfg.and_then(|c| self.sub_cfg(c, st, Some(&val)));
+                    let gcfg = match cfg {
+                        Some(c) => self.sub_cfg(c, st, Some(&val), g)?,
+                        None => None,
+                    };
                     self.decls(g, gscope)?;
                     let mut c = 0;
                     self.stmts(g, &body, gcfg.as_ref(), &mut c, depth)?;
@@ -1948,10 +1954,19 @@ impl Elab<'_> {
     }
 
     /// The block configuration item for block or generate statement `st` (with the
-    /// generate parameter value `val`).
-    fn sub_cfg(&mut self, c: &CfgPath, st: StmtId, val: Option<&Val>) -> Option<CfgPath> {
+    /// generate parameter value `val`); a generate index is evaluated in `scope`, the
+    /// scope of the block or generate being entered (#41).
+    fn sub_cfg(
+        &mut self,
+        c: &CfgPath,
+        st: StmtId,
+        val: Option<&Val>,
+        scope: ScopeId,
+    ) -> R<Option<CfgPath>> {
         let db: &Db = self.db;
-        let b = block_cfg(db, c)?;
+        let Some(b) = block_cfg(db, c) else {
+            return Ok(None);
+        };
         for (i, it) in b.items.iter().enumerate() {
             let ConfigItem::Block(bc) = it else { continue };
             let hit = match &bc.target {
@@ -1961,14 +1976,12 @@ impl Elab<'_> {
                         && match (select, val) {
                             (None, _) => true,
                             (Some(GenSelect::Index(e)), Some(v)) => {
-                                self.m.eval(db, *e, None).ok().as_ref() == Some(v)
+                                self.m.eval(db, *e, Some(scope))? == *v
                             }
-                            (Some(GenSelect::Range(r)), Some(v)) => self
-                                .m
-                                .range(db, r, None, bc.span)
-                                .ok()
-                                .zip(v.as_int())
-                                .is_some_and(|(b, x)| b.pos(x).is_some()),
+                            (Some(GenSelect::Range(r)), Some(v)) => {
+                                let b = self.m.range(db, r, Some(scope), bc.span)?;
+                                v.as_int().is_some_and(|x| b.pos(x).is_some())
+                            }
                             _ => false,
                         }
                 }
@@ -1977,10 +1990,10 @@ impl Elab<'_> {
             if hit {
                 let mut p = c.clone();
                 p.steps.push(i);
-                return Some(p);
+                return Ok(Some(p));
             }
         }
-        None
+        Ok(None)
     }
 
     fn sub_cfg_alt(&mut self, c: &CfgPath, st: StmtId, alt: Option<Symbol>) -> Option<CfgPath> {

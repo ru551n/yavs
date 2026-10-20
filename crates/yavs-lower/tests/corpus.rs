@@ -140,6 +140,7 @@ const PASS: &[&str] = &[
     "generics/subprog_header_map_2019",
     "hierarchy/entity_statements",
     "hierarchy/component_binding",
+    "hierarchy/config_generate_index",
     "hierarchy/config_port_expr",
     "hierarchy/external_alias",
     "hierarchy/external_direct",

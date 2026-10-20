@@ -401,6 +401,10 @@ impl Buf {
                     .enumerate()
                     .fold(0, |m, (i, (x, y))| if x != y { m | 1 << i } else { m })
             }
+            (Buf::Planes { b, .. }, Buf::Planes { b: ob, .. }) if k == 1 => {
+                let (w, s, ow, os) = (off / 64, off % 64, ooff / 64, ooff % 64);
+                (0..4).fold(0, |a, p| a | ((b[w][p] >> s ^ ob[ow][p] >> os) & 1))
+            }
             (Buf::Planes { b, .. }, Buf::Planes { b: ob, .. }) => {
                 let (x, y) = (get_block(b, off, k), get_block(ob, ooff, k));
                 (0..4).fold(0, |a, p| a | (x[p] ^ y[p]))

@@ -311,21 +311,25 @@ impl Waiters {
                 continue;
             }
             scanned += 1;
-            // The cheap range test first: a stale waiter off the events stays until `add`
-            // compacts the list, and the process table is not touched for it.
-            l.retain(|w| {
+            // Read the list first: resident waiters that wake stay, so most scans change nothing
+            // and need no rewrite of the list. The cheap range test comes first: a stale waiter
+            // off the events stays until `add` compacts the list, and the process table is not
+            // touched for it.
+            let mut remove = false;
+            for w in l.iter() {
                 if !hit(w.range) {
-                    return true;
+                    continue;
                 }
                 if !live(w) {
-                    return false;
-                }
-                if !hold(w) {
+                    remove = true;
+                } else if !hold(w) {
                     out.push((w.seq, w.proc));
-                    return w.perm != 0;
+                    remove |= w.perm == 0;
                 }
-                true
-            });
+            }
+            if remove {
+                l.retain(|w| !hit(w.range) || (live(w) && (hold(w) || w.perm != 0)));
+            }
             *n = l.len();
         }
         if self.lists.len() == 1 && self.lists[0].0.is_empty() {
@@ -643,6 +647,12 @@ impl Signal {
                     Some(run) if run.end() as usize == e => run.len += 1,
                     _ => self.changed.push(Range::new(e as u32, 1)),
                 }
+            }
+            if k == 1 {
+                // m is 1: one element changed.
+                self.last_value.copy(off + c, &self.cur, off + c, 1);
+                self.cur.copy(off + c, src, soff + c, 1);
+                continue;
             }
             self.last_value
                 .select(off + c, &self.cur, off + c, k, &[m], Some(0));

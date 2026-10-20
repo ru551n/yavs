@@ -357,6 +357,7 @@ testbenches and the harness benchmarks.
 | Sources and segments of wide signals built in O(n log n) (#411) | `elab_heavy` init / total | 0.60 / 1.23 | 0.26 / 0.87 |
 | Edge triggers (clocked processes not resumed on the other edge) | `ff` | 1.38 | 1.28 |
 | One element of an array signal read, not the whole signal | `ff` | 1.32 | 0.81 |
+| #420: edge triggers for `and`ed conditions (`fan`), no per-instruction allocation for one-range signal accesses, `rising_edge` without copying values, no shared reference count bump per activation | `fan` / `ff` / `chain` / `lfsr` (min of 5, CPU s) | 1.10 / 0.54 / 1.04 / 0.66 | 0.50 / 0.48 / 0.96 / 0.66 |
 
 `bus`, `fan`, the two local testbenches (`vai_window_gen`, `vai_bias_requant`) and the harness's `ff_rtl` stay
 within the noise for every change: their time is in process code, not in the kernel. Sampled profiles (a
@@ -378,8 +379,13 @@ The AXI-stream verification component testbench (first generic set, full run, 1 
 before this work (`7110f09f`) and 173 s after it (most of the gain is the interpreter work of #386 and the native
 operators of #395 that landed in the same period); it now runs to the end and its alert summary fails (#419,
 identical before and after). Still open from `docs/design/performance.md` R2/R3: skipping unchanged assignments
-(R2b, needs the elaborator's activity analysis), static sensitivity (R2c), resolution tables (R3), and edge
-triggers for more shapes (an element of a vector, `elsif` with an asynchronous reset).
+(R2b, needs the elaborator's activity analysis and an empty delta kept for delta numbering), resolution
+tables (R3), and edge triggers for `elsif` with an asynchronous reset (needs R2b: the skipped reset branch
+would re-assign the same values). Static sensitivity (R2c) was prototyped in the kernel (waiters that stay
+registered while a process suspends on the same list) and measured: no change on the benchmarks above or on the
+kernel-only bench, so it was not kept. Sampled profiles after #420: 55 to 70 percent of `ff`/`lfsr`/`chain` is
+interpreter dispatch (instruction fetch and `step`), 15 to 25 percent kernel (wake scan, driving values, `Ctx`
+accessors), the rest allocation in the interpreter (`temp_alloc`, the part tables now removed).
 
 ## CI and releases
 

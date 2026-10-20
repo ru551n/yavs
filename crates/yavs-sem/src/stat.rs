@@ -271,7 +271,12 @@ impl Db {
                     return Err(Fold::No);
                 }
                 if want.is_null() {
-                    return Ok(ConstValue::Array(array_const(self, self.base(*elem), vec![want], Vec::new())));
+                    return Ok(ConstValue::Array(array_const(
+                        self,
+                        self.base(*elem),
+                        vec![want],
+                        Vec::new(),
+                    )));
                 }
                 // Anything else is the run-time check's.
                 if want.dir != d0 || !have.contains(want.left) || !have.contains(want.right) {
@@ -288,7 +293,12 @@ impl Db {
                         take -= k;
                     }
                 }
-                Ok(ConstValue::Array(array_const(self, self.base(*elem), vec![want], runs)))
+                Ok(ConstValue::Array(array_const(
+                    self,
+                    self.base(*elem),
+                    vec![want],
+                    runs,
+                )))
             }
             ExprKind::Conv { operand: inner, .. }
             | ExprKind::ImplicitConv { operand: inner }

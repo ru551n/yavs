@@ -154,7 +154,9 @@ impl Elaborated {
         for (k, sc) in self.hier.scopes.iter().enumerate() {
             if let ScopeKind::Instance { entity, arch } = sc.kind
                 && !with_procs.contains(&ScopeId(k as u32))
-                && [entity, arch].iter().any(|&u| runtime_constant(db, db.units[u].scope))
+                && [entity, arch]
+                    .iter()
+                    .any(|&u| runtime_constant(db, db.units[u].scope))
             {
                 if !archs.contains(&arch) {
                     archs.push(arch);

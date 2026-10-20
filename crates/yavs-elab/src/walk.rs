@@ -1832,7 +1832,9 @@ impl Elab<'_> {
                     for ch in cs.choices.iter() {
                         let hit = match ch {
                             Choice::Others => true,
-                            Choice::Expr(e) => crate::value::same(&self.m.eval(db, *e, Some(s))?, &v),
+                            Choice::Expr(e) => {
+                                crate::value::same(&self.m.eval(db, *e, Some(s))?, &v)
+                            }
                             Choice::Range(r) => {
                                 let b = self.m.range(db, r, Some(s), span)?;
                                 v.as_int().is_some_and(|x| b.pos(x).is_some())

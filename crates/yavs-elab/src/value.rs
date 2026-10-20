@@ -40,12 +40,10 @@ pub(crate) fn same(a: &Val, b: &Val) -> bool {
     match (a, b) {
         (Val::Array(x), Val::Array(y)) => {
             let (bx, by) = (bounds_of(x), bounds_of(y));
-            bx.len() == by.len()
-                && bx.iter().zip(&by).all(|(p, q)| p.len() == q.len())
-                && {
-                    let (ex, ey) = (elems(x), elems(y));
-                    ex.len() == ey.len() && ex.iter().zip(&ey).all(|(p, q)| same(p, q))
-                }
+            bx.len() == by.len() && bx.iter().zip(&by).all(|(p, q)| p.len() == q.len()) && {
+                let (ex, ey) = (elems(x), elems(y));
+                ex.len() == ey.len() && ex.iter().zip(&ey).all(|(p, q)| same(p, q))
+            }
         }
         (Val::Record(x), Val::Record(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| same(p, q))
@@ -954,7 +952,9 @@ impl Model {
             }
         }
         let params: Vec<_> = sp.params.iter().map(|p| db.base(p.subtype)).collect();
-        self.native_call(db, e, vals, &params, db.base(ret), |l| l.implicit_native(op))
+        self.native_call(db, e, vals, &params, db.base(ret), |l| {
+            l.implicit_native(op)
+        })
     }
 
     /// `T'image(x)` and `T'value(s)` during elaboration: the attribute natives run on the
@@ -970,15 +970,24 @@ impl Model {
             return Ok(None);
         };
         let (name, x, from, to) = match (attr, prefix, args.first()) {
-            (PredefAttr::Image, AttrPrefix::Subtype(st), Some(&x)) => {
-                ("yavs.attr.image", x, db.base(*st), db.base(db.exprs[e].subtype))
-            }
-            (PredefAttr::Image, AttrPrefix::Expr(x), None) => {
-                ("yavs.attr.image", *x, db.base(db.exprs[*x].subtype), db.base(db.exprs[e].subtype))
-            }
-            (PredefAttr::Value, AttrPrefix::Subtype(st), Some(&x)) => {
-                ("yavs.attr.value", x, db.base(db.exprs[x].subtype), db.base(*st))
-            }
+            (PredefAttr::Image, AttrPrefix::Subtype(st), Some(&x)) => (
+                "yavs.attr.image",
+                x,
+                db.base(*st),
+                db.base(db.exprs[e].subtype),
+            ),
+            (PredefAttr::Image, AttrPrefix::Expr(x), None) => (
+                "yavs.attr.image",
+                *x,
+                db.base(db.exprs[*x].subtype),
+                db.base(db.exprs[e].subtype),
+            ),
+            (PredefAttr::Value, AttrPrefix::Subtype(st), Some(&x)) => (
+                "yavs.attr.value",
+                x,
+                db.base(db.exprs[x].subtype),
+                db.base(*st),
+            ),
             _ => return Ok(None),
         };
         let v = self.eval(db, x, scope)?;
@@ -990,9 +999,15 @@ impl Model {
             && db.types[db.base(*st)].kind.is_scalar()
             && !matches!(db.types[db.base(*st)].kind, TypeKind::Floating)
         {
-            let (lo, hi) = self.scalar_bounds(db, *st, scope, db.exprs[e].span)?.low_high();
+            let (lo, hi) = self
+                .scalar_bounds(db, *st, scope, db.exprs[e].span)?
+                .low_high();
             if x < lo || x > hi {
-                return Err(fails(db, e, format!("'value result {x} is outside the subtype")));
+                return Err(fails(
+                    db,
+                    e,
+                    format!("'value result {x} is outside the subtype"),
+                ));
             }
         }
         Ok(Some(r))
@@ -1006,9 +1021,7 @@ impl Model {
         vals: Vec<Val>,
         params: &[yavs_sem::TypeId],
         ret: yavs_sem::TypeId,
-        native: impl FnOnce(
-            &mut yavs_lower::Lowerer,
-        ) -> Result<yavs_ir::NativeId, Vec<Diagnostic>>,
+        native: impl FnOnce(&mut yavs_lower::Lowerer) -> Result<yavs_ir::NativeId, Vec<Diagnostic>>,
     ) -> R<Val> {
         let lowered = (|| {
             let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());

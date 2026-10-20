@@ -96,7 +96,12 @@ impl Db {
     /// `W1403`: the static scalar value of `id` lies outside subtype `st`, which a qualified
     /// expression or a type conversion applies (9.3.5, 9.3.6). The value is not used and the
     /// run-time check fails (the code may never run, like `W1404`).
-    pub(crate) fn warn_if_outside(&mut self, id: ExprId, st: crate::ids::SubtypeId, span: Span) -> bool {
+    pub(crate) fn warn_if_outside(
+        &mut self,
+        id: ExprId,
+        st: crate::ids::SubtypeId,
+        span: Span,
+    ) -> bool {
         let (Some(v), Some((l, d, r))) = (self.value(id), self.static_bounds(st)) else {
             return false;
         };
@@ -110,7 +115,9 @@ impl Db {
                 format!("static value is outside subtype `{name}`"),
             )
             .with_primary(span, "out of range")
-            .with_note("the code may never run, so this is checked again at run time (LRM 9.3.5, 9.3.6)"),
+            .with_note(
+                "the code may never run, so this is checked again at run time (LRM 9.3.5, 9.3.6)",
+            ),
         );
         true
     }

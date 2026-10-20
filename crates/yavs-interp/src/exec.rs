@@ -1763,9 +1763,11 @@ impl Machine {
         base: usize,
     ) -> R<Outcome> {
         let prog = &rt.prog;
-        let tier = if DEBUG { None } else { rt.tier.get() };
-        if !DEBUG && tier.is_none() {
-            return self.exec_fast(rt, ctx, base);
+        if !DEBUG {
+            return match rt.tier.get() {
+                Some(tier) => self.exec_fast::<true>(rt, Some(&**tier), ctx, base),
+                None => self.exec_fast::<false>(rt, None, ctx, base),
+            };
         }
         loop {
             // The top frame changes only at calls and returns: look its function up once.
@@ -1780,34 +1782,7 @@ impl Machine {
                 .pre(fr.func, f)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
             let mut pc = fr.pc as usize;
-            let func = fr.func;
-            // The tier-up count (`--tier=auto`); a call counts the entry block.
-            #[cfg(feature = "tier")]
-            let count = if DEBUG { None } else { rt.count(func) };
-            #[cfg(feature = "tier")]
-            if let Some(c) = count
-                && pc == 0
-            {
-                rt.heat(func, c, pre.entry);
-            }
-            // Whether to ask the tier at this instruction: after entering the frame, a jump,
-            // a call or a return, and as long as the function runs compiled (`run_tier`).
-            // Interpreted code pays nothing per instruction; new compiled code is taken at the
-            // next jump.
-            let mut native = true;
             loop {
-                if native && let Some(tier) = tier {
-                    // A function still counting towards tier-up has no compiled code.
-                    #[cfg(feature = "tier")]
-                    let maybe = count.is_none_or(Runtime::reached);
-                    #[cfg(not(feature = "tier"))]
-                    let maybe = true;
-                    if maybe && tier.ready(func) {
-                        (pc, native) = self.run_tier(&**tier, prog, f, pc, ctx)?;
-                    } else {
-                        native = false;
-                    }
-                }
                 // Skip the definitions the frame started with (`pre.rs`).
                 pc = *pre
                     .next
@@ -1830,13 +1805,6 @@ impl Machine {
                             .blocks
                             .get(b)
                             .ok_or_else(|| ice(format!("no block {b}")))?;
-                        // The block counts towards tier-up (`--tier=auto`), and a jump is
-                        // where compiled code is taken.
-                        #[cfg(feature = "tier")]
-                        if let Some(c) = count {
-                            rt.heat(func, c, blk.end - blk.start);
-                        }
-                        native = true;
                         pc = blk.start as usize;
                         if self.pause == Some(b) && self.frames.len() == 1 {
                             self.pause = None;
@@ -1979,12 +1947,6 @@ impl Machine {
                     }
                     _ => {}
                 }
-                // An instruction off the fast path: a call, a native, a signal operation, ...,
-                // where compiled code would mostly leave to the interpreter again.
-                #[cfg(feature = "tier")]
-                if !native && let Some(c) = count {
-                    Runtime::cool(c);
-                }
                 match self.step(prog, f, *inst, ctx)? {
                     Flow::Next => pc += 1,
                     Flow::Jump(b) => {
@@ -1992,13 +1954,6 @@ impl Machine {
                             .blocks
                             .get(b)
                             .ok_or_else(|| ice(format!("no block {b}")))?;
-                        // The block counts towards tier-up (`--tier=auto`), and a jump is
-                        // where compiled code is taken.
-                        #[cfg(feature = "tier")]
-                        if let Some(c) = count {
-                            rt.heat(func, c, blk.end - blk.start);
-                        }
-                        native = true;
                         pc = blk.start as usize;
                         if self.pause == Some(b) && self.frames.len() == 1 {
                             self.pause = None;
@@ -2035,9 +1990,10 @@ impl Machine {
     /// The dispatch loop on predecoded code (`pre::Code`, #431), without a debugger or a
     /// compiled tier: the top frame's function runs from its ops until a call, a return or a
     /// suspension, which are handled here as in `exec_in`.
-    fn exec_fast(
+    fn exec_fast<const TIER: bool>(
         &mut self,
         rt: &Runtime,
+        tier: Option<&dyn crate::Tier>,
         ctx: &mut Option<&mut Ctx<'_>>,
         base: usize,
     ) -> R<Outcome> {
@@ -2055,7 +2011,7 @@ impl Machine {
             let pre = rt
                 .pre(func, f)
                 .ok_or_else(|| ice(format!("no function {func}")))?;
-            match self.run_ops(prog, f, &pre.code, top, ctx)? {
+            match self.run_ops::<TIER>(rt, tier, func, f, &pre.code, top, ctx)? {
                 Flow::Call => {}
                 Flow::Ret(v) => {
                     let done = self
@@ -2086,9 +2042,18 @@ impl Machine {
     /// Run the ops of frame `top` (function `f`) from its pc. Returns at a call, a return, a
     /// suspension (`Flow::Suspend`) or a pause (`Flow::Next`), with the frame's pc the IR pc
     /// of the instruction; on a fault the frame's pc is the failing op's IR pc.
-    fn run_ops(
+    ///
+    /// With `TIER` (a compiled tier is set, `--tier=llvm|auto`): the function's tier-up count
+    /// grows by the ops run between jumps and shrinks at every op compiled code would leave
+    /// to the interpreter (`Runtime::set_heat`); on entry and after every jump, if the
+    /// function has compiled code, that runs from the op's IR pc, and the interpreter goes
+    /// on at the op of the IR pc it returns (stepping IR instructions inside a fused op).
+    #[allow(clippy::too_many_arguments)]
+    fn run_ops<const TIER: bool>(
         &mut self,
-        prog: &Program,
+        rt: &Runtime,
+        tier: Option<&dyn crate::Tier>,
+        func: FuncId,
         f: &Func,
         code: &pre::Code,
         top: usize,
@@ -2103,6 +2068,99 @@ impl Machine {
                 .ok_or_else(|| ice(format!("pc {pc} of `{}` inside a fused operation", f.name)))
         };
         let mut k = entry(self.frames[top].pc)? as usize;
+        let prog = &*rt.prog;
+        let count = if TIER { rt.count(func) } else { None };
+        let cool = if TIER { rt.cool() } else { 0 };
+        // Whether compiled code can run now.
+        let ready = || tier.is_some_and(|t| t.ready(func));
+        // What the count still lacks (at most 0: reached, or no counting, `--tier=llvm`) and
+        // what this run added since it was last written (kept local: the atomic counter is
+        // touched only when the threshold may be reached and when the run ends).
+        let mut left = count.map_or(0, Runtime::left);
+        let mut spent: i64 = 0;
+        let mut native = TIER && left <= 0 && ready();
+        // The op the run since the last jump started at.
+        let mut since = k;
+        // Run compiled code from op `k` when the function has some (`native`): at the start,
+        // after a jump and after an op compiled code leaves to the interpreter.
+        macro_rules! enter {
+            () => {
+                if TIER
+                    && native
+                    && let Some(tier) = tier
+                {
+                    let pc = code.at.get(k).copied().unwrap_or(0) as usize;
+                    let (mut next, ran) = self.run_tier(tier, prog, f, pc, ctx)?;
+                    // No progress: `pc` is no entry of the compiled code; interpret to the next jump.
+                    native = ran && next != pc;
+                    // An IR pc inside a fused op: step its instructions up to the next op.
+                    while code.entry.get(next).is_some_and(|&o| o == pre::NONE) {
+                        let inst = *f
+                            .code
+                            .get(next)
+                            .ok_or_else(|| ice(format!("pc {next} beyond `{}`", f.name)))?;
+                        self.frames[top].pc = next as u32;
+                        match self.step_out(prog, f, inst, ctx)? {
+                            Flow::Next => next += 1,
+                            Flow::Jump(b) => {
+                                next = f
+                                    .blocks
+                                    .get(b)
+                                    .ok_or_else(|| ice(format!("no block {b}")))?
+                                    .start as usize;
+                                native = ready();
+                            }
+                            flow => return Ok(flow),
+                        }
+                    }
+                    k = entry(next as u32)? as usize;
+                    since = k;
+                }
+            };
+        }
+        // A jump to op `to`.
+        macro_rules! go {
+            ($to:expr) => {{
+                let to = $to as usize;
+                if TIER {
+                    if left > 0 {
+                        spent += (k + 1).saturating_sub(since) as i64;
+                        if spent >= left
+                            && let Some(c) = count
+                        {
+                            left = rt.heat(func, c, spent);
+                            spent = 0;
+                            native = left <= 0 && ready();
+                        }
+                    } else {
+                        native = ready();
+                    }
+                    since = to;
+                }
+                k = to;
+                enter!();
+            }};
+        }
+        // An op compiled code leaves to the interpreter.
+        macro_rules! slow {
+            () => {
+                if TIER && left > 0 {
+                    spent -= cool;
+                }
+            };
+        }
+        // The end of the run.
+        macro_rules! leave {
+            () => {
+                if TIER
+                    && left > 0
+                    && let Some(c) = count
+                {
+                    spent += (k + 1).saturating_sub(since) as i64;
+                    rt.heat(func, c, spent);
+                }
+            };
+        }
         // A fault leaves the IR pc of the op that failed in the frame.
         macro_rules! t {
             ($e:expr) => {
@@ -2115,16 +2173,21 @@ impl Machine {
                 }
             };
         }
+        enter!();
         loop {
             match ops[k] {
                 Op::Step(pc) => {
+                    slow!();
                     let inst = *f
                         .code
                         .get(pc as usize)
                         .ok_or_else(|| ice(format!("pc {pc} beyond `{}`", f.name)))?;
                     self.frames[top].pc = pc;
                     match self.step_out(prog, f, inst, ctx)? {
-                        Flow::Next => k += 1,
+                        Flow::Next => {
+                            k += 1;
+                            enter!();
+                        }
                         Flow::Jump(b) => {
                             let blk = f
                                 .blocks
@@ -2134,9 +2197,12 @@ impl Machine {
                                 self.pause = None;
                                 return Ok(Flow::Next);
                             }
-                            k = entry(blk.start)? as usize;
+                            go!(entry(blk.start)?);
                         }
-                        flow => return Ok(flow),
+                        flow => {
+                            leave!();
+                            return Ok(flow);
+                        }
                     }
                 }
                 Op::Stmt => {
@@ -2278,7 +2344,7 @@ impl Machine {
                         (self.regs[a as usize] as i64).cmp(&(self.regs[b as usize] as i64)),
                     );
                     self.regs[dst as usize] = v.into();
-                    k = if v { t } else { e } as usize;
+                    go!(if v { t } else { e });
                 }
                 Op::Check {
                     kind,
@@ -2322,7 +2388,7 @@ impl Machine {
                     self.regs[dst as usize] = t!(add_addr(self.regs[base as usize], off));
                     k += 1;
                 }
-                Op::Br { to } => k = to as usize,
+                Op::Br { to } => go!(to),
                 Op::BrBody { to, block } => {
                     if self.pause == Some(BlockId(block)) && self.frames.len() == 1 {
                         // Stopped before the jump, which runs again on resumption.
@@ -2330,7 +2396,7 @@ impl Machine {
                         self.pause = None;
                         return Ok(Flow::Next);
                     }
-                    k = to as usize;
+                    go!(to);
                 }
                 Op::SigVal {
                     dst,
@@ -2338,6 +2404,7 @@ impl Machine {
                     offset,
                     len,
                 } => {
+                    slow!();
                     let (a, b) = t!(self.sig_val(
                         sig,
                         self.regs[offset as usize] as i64,
@@ -2346,6 +2413,7 @@ impl Machine {
                     self.regs[dst as usize] = a;
                     self.regs[dst as usize + 1] = b;
                     k += 1;
+                    enter!();
                 }
                 Op::DopeLen { dst, dope, dim } => {
                     self.regs[dst as usize] = t!(self.dope_len(self.regs[dope as usize], dim));
@@ -2357,24 +2425,34 @@ impl Machine {
                     len,
                     dst,
                 } => {
+                    slow!();
+                    leave!();
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     return self.call_with(prog, f, FuncId(func), None, args, dst);
                 }
                 Op::Ret { v } => {
+                    slow!();
+                    leave!();
                     let v = (v != pre::NONE).then(|| self.regs[v as usize]);
                     return Ok(Flow::Ret(v));
                 }
                 Op::SigReadScalar { dst, sig } => {
+                    slow!();
                     self.regs[dst as usize] = t!(self.sig_read_scalar(Reg(sig), ctx));
                     k += 1;
+                    enter!();
                 }
                 Op::WaitOn { sig } => {
+                    slow!();
                     t!(self.wait_on(Reg(sig), ctx));
                     k += 1;
+                    enter!();
                 }
                 Op::Suspend => {
+                    slow!();
+                    leave!();
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     self.suspend(prog, f, ctx)?;
                     return Ok(Flow::Suspend);
@@ -2385,12 +2463,19 @@ impl Machine {
                     len,
                     dst,
                 } => {
+                    slow!();
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     match self.call_native(prog, f, yavs_ir::NativeId(native), args, dst, ctx)? {
-                        Flow::Next => k += 1,
-                        flow => return Ok(flow),
+                        Flow::Next => {
+                            k += 1;
+                            enter!();
+                        }
+                        flow => {
+                            leave!();
+                            return Ok(flow);
+                        }
                     }
                 }
                 Op::Alloc { dst, size } => {
@@ -2398,7 +2483,7 @@ impl Machine {
                     k += 1;
                 }
                 Op::CondBr { c, t, f: e } => {
-                    k = if self.regs[c as usize] != 0 { t } else { e } as usize;
+                    go!(if self.regs[c as usize] != 0 { t } else { e });
                 }
             }
         }

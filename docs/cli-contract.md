@@ -382,8 +382,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   never waits for the client: when too many batches are queued the newest is merged into the
   last (`merged: true`, only the last change of each value kept). A failure of the live waves
   is `E0702` (the run fails). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
-- `--tier=interp|llvm|auto` (`run`, default `auto` in a yavs built with the `llvm` cargo
-  feature, else `interp`): `llvm` compiles every function of the
+- `--tier=interp|llvm|auto` (`run`, default `interp`): `llvm` compiles every function of the
   design with the LLVM tier before time 0 and runs that code; `auto` starts in the interpreter
   and compiles each function that becomes hot (once the instructions it ran in the interpreter
   would have paid for its compilation) at the cheapest optimisation level on one background
@@ -395,9 +394,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   that compilation so their exit handlers run. Elaboration-time
   code (package and instance initialisation) runs interpreted either way, and so does a run
   under `--dap`. `--tier-max-size=N` (default 50000): with `llvm` or `auto`, a function of more
-  than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR`
+  than N IR instructions stays interpreted (user, 2026-10-19, #126). `--tier-heat=BASE,PER_INSTR,COOL`
   (hidden, for tests and tuning): with `auto`, a function is hot once the interpreter has run
-  BASE plus PER_INSTR per IR instruction of it (`1,0`: from its first call or jump). Both tiers need a yavs
+  BASE ops plus PER_INSTR per IR instruction of it, less COOL per op compiled code would leave
+  (`1,0,0`: from its first call or jump). Both tiers need a yavs
   built with the `llvm` cargo feature (LLVM 21): otherwise asking for them is error `E0120` (exit 2); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
   bug in yavs). `--verbose` prints, on stderr, a note per function left to the

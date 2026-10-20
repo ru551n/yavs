@@ -29,10 +29,6 @@ pub(crate) struct Pre {
     /// For each pc (and one past the end), the first pc at or after it that is not a
     /// preloaded definition.
     pub next: Vec<u32>,
-    /// The length of the entry block: what a call counts towards tier-up
-    /// (`Runtime::heat`).
-    #[cfg_attr(not(feature = "tier"), allow(dead_code))]
-    pub entry: u32,
     /// The predecoded code of the fast loop.
     pub code: Code,
 }
@@ -135,17 +131,11 @@ impl Pre {
                 *n = *t;
             }
         }
-        let entry = f
-            .blocks
-            .iter()
-            .find(|(_, b)| b.start == 0)
-            .map_or(1, |(_, b)| b.end - b.start);
         let code = Code::new(f, &skip, &known, &next);
         Pre {
             init,
             frame,
             next,
-            entry,
             code,
         }
     }

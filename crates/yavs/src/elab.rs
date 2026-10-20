@@ -142,18 +142,18 @@ pub struct RunArgs {
     vhpi: Vec<String>,
     /// Execution tier: `interp`; `llvm` to compile every function with LLVM before time 0; or
     /// `auto` to compile the functions that become hot on a background thread while the
-    /// simulation runs (both need a yavs built with the `llvm` feature). Default: `auto` in a
-    /// yavs built with the LLVM tier, else `interp`.
-    #[arg(long, value_enum, default_value = DEFAULT_TIER)]
+    /// simulation runs (both need a yavs built with the `llvm` feature).
+    #[arg(long, value_enum, default_value = "interp")]
     tier: TierArg,
     /// With `--tier=llvm` or `auto`: functions of more than N IR instructions stay
     /// interpreted (compile time grows faster than their size).
     #[arg(long, value_name = "N", default_value = "50000")]
     tier_max_size: usize,
-    /// With `--tier=auto`: compile a function once the interpreter has run BASE of its
-    /// instructions plus PER_INSTR per IR instruction it has (for tests and tuning).
-    #[arg(long, value_name = "BASE,PER_INSTR", value_parser = heat, hide = true)]
-    tier_heat: Option<(u32, u32)>,
+    /// With `--tier=auto`: compile a function once the interpreter has run BASE of its ops plus
+    /// PER_INSTR per IR instruction it has, less COOL per op compiled code would leave (for
+    /// tests and tuning).
+    #[arg(long, value_name = "BASE,PER_INSTR,COOL", value_parser = heat, hide = true)]
+    tier_heat: Option<[u32; 3]>,
     /// Print notes on how the run is set up (functions the LLVM tier leaves interpreted or
     /// compiles).
     #[arg(long)]
@@ -171,12 +171,13 @@ pub struct RunArgs {
     plusargs: Vec<String>,
 }
 
-fn heat(s: &str) -> Result<(u32, u32), String> {
-    let n = |v: &str| v.trim().parse::<u32>().map_err(|e| format!("`{v}`: {e}"));
-    let (b, k) = s
-        .split_once(',')
-        .ok_or_else(|| format!("expected BASE,PER_INSTR, found `{s}`"))?;
-    Ok((n(b)?, n(k)?))
+fn heat(s: &str) -> Result<[u32; 3], String> {
+    let v: Vec<u32> = s
+        .split(',')
+        .map(|v| v.trim().parse::<u32>().map_err(|e| format!("`{v}`: {e}")))
+        .collect::<Result<_, _>>()?;
+    v.try_into()
+        .map_err(|_| format!("expected BASE,PER_INSTR,COOL, found `{s}`"))
 }
 
 fn plusarg(s: &str) -> Result<String, String> {
@@ -186,14 +187,6 @@ fn plusarg(s: &str) -> Result<String, String> {
         Err(format!("expected +NAME or +NAME=VALUE, found `{s}`"))
     }
 }
-
-/// `auto` where the LLVM tier is built in: its CPU is at most 1.01x the interpreter's on the
-/// shared benchmarks and down to 0.89x (STATUS.md "llvm", docs/decisions.md "LLVM tier").
-const DEFAULT_TIER: &str = if cfg!(feature = "llvm") {
-    "auto"
-} else {
-    "interp"
-};
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TierArg {
@@ -543,8 +536,12 @@ fn use_tier(
         TierArg::Auto => {
             let heat = a
                 .tier_heat
-                .map_or(yavs_llvm::Heat::DEFAULT, |(base, per_instr)| {
-                    yavs_llvm::Heat { base, per_instr }
+                .map_or(yavs_llvm::Heat::DEFAULT, |[base, per_instr, cool]| {
+                    yavs_llvm::Heat {
+                        base,
+                        per_instr,
+                        cool,
+                    }
                 });
             let prog = rt.prog.clone();
             let verbose = a.verbose;

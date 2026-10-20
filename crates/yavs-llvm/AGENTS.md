@@ -62,7 +62,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 | Memory instructions run natively only where the bytes lie in memory `Mem` reaches and no error is possible; anything else steps the whole instruction, before any side effect | Rule 5: one implementation of address spaces and errors | `docs/decisions.md` "LLVM tier: side exits" (Memory) |
 | A function whose generated LLVM does not verify, or that names a register beyond its frame, stays interpreted with a note (`--verbose`); never a guess | Fail clearly, per function | `src/lower.rs` `compile` |
 | Size cap: a function of more than 50k yavs IR instructions stays interpreted unless `--tier-max-size` raises it (both tiers); `--tier=auto` compiles only hot functions | Superlinear codegen time (user, 2026-10-19) | `docs/decisions.md` "LLVM bindings"; #126 |
-| `--tier=auto`: the interpreter's estimate of what compiled code saves (feature `yavs-interp/tier`, on with `llvm`: block lengths at calls and jumps, minus 4 per instruction off its fast path) calls `Tier::hot` at `Heat::DEFAULT` (500k plus 10k per IR instruction, about the compile time at O0); ONE compile thread, one module per function at O0 (the CLI picks it: O1 codegen costs 10x, IR passes before O0 codegen do not shrink it); entries published through `OnceLock`, swapped in at the next jump, call or return; `stop(false)` drops the queue and joins an idle thread, and when it is busy the CLI closes the design's open files (`Runtime::close_files`) and ends the process with `exit_now` (`_exit` after flushing) | The simulation and the exit never wait for compilation; output independent of compile timing (rule 5); LLVM static destructors never run under the compile thread; compile only what pays (CPU of the run never above the interpreter's beyond noise, STATUS.md "llvm") | `docs/decisions.md` "LLVM tier: side exits", #125 |
+| `--tier=auto` (opt-in, default `interp`): the interpreter's estimate of what compiled code saves (ops run in its predecoded loop, minus 12 per op compiled code leaves) calls `Tier::hot` at `Heat::DEFAULT` (1M plus 20k per IR instruction, about the compile time at O0); ONE compile thread, one module per function at O0 (the CLI picks it: O1 codegen costs 10x, IR passes before O0 codegen do not shrink it); entries published through `OnceLock`, swapped in on entry and at the next jump; `stop(false)` drops the queue and joins an idle thread, and when it is busy the CLI closes the design's open files (`Runtime::close_files`) and ends the process with `exit_now` (`_exit` after flushing) | The simulation and the exit never wait for compilation; output independent of compile timing (rule 5); LLVM static destructors never run under the compile thread; not the default while compiled code is slower than the predecoded interpreter (STATUS.md "llvm") | `docs/decisions.md` "LLVM tier: side exits", #125 |
 | Time resolution and integer semantics identical in every tier (checked i64) | Rule 7 | `docs/plan.md` rule 7 |
 | `unsafe` denied in `Cargo.toml`, allowed at the crate root only; raw handles never leave `jit`/`lower`/`spike` (`auto` only declares `fflush` and `_exit` for `exit_now`) | Root `AGENTS.md` rule 11 | `src/lib.rs`, `Cargo.toml` |
 
@@ -77,7 +77,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 - Codegen cost grows faster than linearly with function size; measure with
   `examples/measure.rs` before changing thresholds, one process per row.
 - CI (`llvm` job in `.github/workflows/ci.yml`, #127, #128) clippys, tests and runs 47 difftest cases
-  with `--tier=llvm` and with `--tier=auto --tier-heat=1,0` (at 1 and 4 threads) on Linux x86_64, Linux aarch64 (native runner) and Windows x86_64 (tests only,
+  with `--tier=llvm` and with `--tier=auto --tier-heat=1,0,0` (at 1 and 4 threads) on Linux x86_64, Linux aarch64 (native runner) and Windows x86_64 (tests only,
   the difftest harness needs a POSIX shell). Windows needs the steps in WINDOWS.md section 4: static
   CRT, empty `libxml2s.lib`, SDK import libs copied into the LLVM `lib` dir.
 
@@ -100,7 +100,7 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
   `yavs run --tier=llvm --verbose` for what each design leaves to the interpreter.
 
 - `--candidate yavs-auto` runs the corpus with `--tier=auto` (also must equal `yavs`);
-  `YAVS_RUN_FLAGS=--tier-heat=1,0` compiles every function from its first call or jump, so the
+  `YAVS_RUN_FLAGS=--tier-heat=1,0,0` compiles every function from its first call or jump, so the
   swap-ins happen in the middle of each test.
 
 - Open issues (snapshot 2026-10-19, `gh issue list -R ru551n/yavs --label crate:llvm`): #125

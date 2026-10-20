@@ -12,7 +12,7 @@
 | M3: full types and libraries | done per `docs/plan.md`: arrays, records, access and protected types, resolution (composite, access, protected and resolution groups in `tests/corpus/RESULTS.md`); `numeric_std`, fixed and float from source (#94); textio, `env`, package generics, external names; `--load` foreign subprograms (#95); bit-plane layout (user, 2026-10-18). Not done: binary file read/write of records and arrays of composites (ir and interp section) |
 | M8: DAP server | first slice (#130): `yavs run --dap=PORT\|stdio` serves the Debug Adapter Protocol over the interpreter's debug session (`crates/yavs-dap`): threads per process, line breakpoints with hit counts, continue, pause (in a process or between cycles), run for or until a time, next delta and next time step (custom requests and VS Code commands, #324), signal breakpoints on a change or a value (DAP data breakpoints and `yavs/setSignalBreakpoints`, #322), force, deposit and release of signals and their fields, elements and slices (#364) and `setVariable` on signals and locals with values parsed as VHDL literals of the target type (`yavs_std::value::literal`, #323), conditions on line and data breakpoints (VHDL expressions evaluated by the server), composite variables expanded by field and index (paged), a Hierarchy scope and `yavs/hierarchy` (#326), step over/in/out, stack frames with source positions, locals, region signals and generics, evaluate for locals and signals by name or path, output events, exit status; one thread under `--dap`, so sessions are deterministic. Scripted sessions in `crates/yavs/tests/dap.rs`. VS Code extension `editors/vscode` (debugger type `yavs`, analyzes and launches over stdio): verified with the DAP test client (`test/client.js`) and in a real headless VS Code (`test/vscode`, breakpoint hit, frame, `setVariable`, force and release commands, a conditional breakpoint, scopes and an expanded array, continue to the end); not in CI. Live waves (#325): `yavs/waveSubscribe` records the client's selection (globs, array cap, variables) with the `--wave` recorder into a second sink and streams `yavs/waves` batches of completed time steps (values base64 of the recorder's bytes with `encoding` in the hierarchy, bounded queue, never blocks the simulation); `--wave` and `--vhpi` work under `--dap` (the FST equals a plain run's). Attach (#423): `--dap=PORT` prints `yavs: waiting for a debugger on port PORT` and holds the run until a client attaches (also from a response file); the extension has an "Attach to yavs" snippet and `docs/usage.rst` a recipe for debugging one test of an external test runner. Open: VHPI plugin stdout under `--dap=stdio` #389 |
 | M9: coverage | statement and branch coverage (#131): `yavs run --cov[=FILE]` writes a per-run database keyed by instance path and statement text hash, `yavs cov merge`, `yavs cov report` (text summary, Cobertura XML); no counters without `--cov`; counts identical at any `--threads`; pinned in `crates/yavs/tests/coverage.rs`. Exclusions (#351): `-- coverage off/on` pragmas, `cov report --uncovered` rows and `--exclude FILE`. Toggle coverage (#343): 0->1 and 1->0 per `bit`/`std_logic` scalar of signals and ports from the value-change bus, `--cov-kind`, `--cov-toggle-max` (W0115), `toggle` exclusion rows. Per-test attribution (#353): `--cov-test`, tests per item kept through `cov merge`, `yavs cov rank` (greedy minimal set, unique items per test), `cov report --tests`; database version 4. HTML report (#344): `cov report --html DIR`, static pages with line counts, a missed-only page per file, missed items as exclusion rows, tests per item (E0113 for an unreadable source). |
-| M6: JIT tier | in progress: `yavs run --tier=llvm` (feature `llvm`) compiles every function with LLVM 21 and passes the whole difftest corpus (348/348 at 1 and 4 threads, identical to the interpreter, rule 5); 96% of the compiled programs' instructions run as native code (memory, descriptors and layouts since #334/#335; simulation 2x to 5x faster than interpreted, compile time aside), the rest through the interpreter (side exits, `docs/decisions.md`); `--tier=auto` (the default with the feature) compiles only hot functions on a background thread with identical output, never above the interpreter's CPU beyond noise on the shared benchmarks and up to 11% below it (#125), functions over `--tier-max-size` stay interpreted (#126); open: native lowering of the rest (#336 to #341); CI builds and tests the feature on Linux x86_64, aarch64 and Windows; llvm section |
+| M6: JIT tier | in progress: `yavs run --tier=llvm` (feature `llvm`) compiles every function with LLVM 21 and passes the whole difftest corpus (348/348 at 1 and 4 threads, identical to the interpreter, rule 5); 96% of the compiled programs' instructions run as native code (memory, descriptors and layouts since #334/#335; simulation 2x to 5x faster than interpreted, compile time aside), the rest through the interpreter (side exits, `docs/decisions.md`); `--tier=auto` compiles only hot functions on a background thread with identical output (#125; opt-in: since the predecoded interpreter, #431, compiled code with its side exits is slower than interpreting on most benchmarks), functions over `--tier-max-size` stay interpreted (#126); open: native lowering of the rest (#336 to #341); CI builds and tests the feature on Linux x86_64, aarch64 and Windows; llvm section |
 | M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; slice G2 (#399): source view with breakpoint gutter (conditions, hit counts), call stack per process, locals and watch with lazy and paged expansion and edit, hover, step buttons, time and delta in the status bar, tested against a scripted DAP server and, ignored, the real `yavs`; G3 to G6 and the server slices S1 (#396), S2 (#397), S4 (#398) not started) |
 
 ### External test runner: its own VHDL suites (#112)
@@ -1158,19 +1158,23 @@ still leaves compiled code on that testbench, per 10 us: 0.9 M entries into comp
 call or return (#336), 1.5 M stepped instructions (`LCopy`, `LayoutOf` of records and nested
 arrays, `Deref`, `New`, `SigSlice`, `CopyConst`, signal reads), 1.5 M object lookups.
 
-Tier-up (`--tier=auto`, #125, the default in a yavs built with the feature; `docs/decisions.md`
-"LLVM tier: side exits"): the interpreter keeps a tier-up count per function (only in builds with
-the feature): a call adds the length of the entry block, a jump the length of its target block,
-an instruction off the interpreter's fast path (call, native, signal operation, ...) takes 4 off.
-At 500k plus 10k per IR instruction of the function (about its O0 compile time in interpreted
-instructions; the hidden `--tier-heat=BASE,PER_INSTR` sets it) the function is queued for one
+Tier-up (`--tier=auto`, #125; `docs/decisions.md`
+"LLVM tier: side exits"): the interpreter keeps a tier-up count per function while a compiled tier
+is set: the predecoded loop adds the ops it runs between jumps, and every op compiled code
+would leave to the interpreter (call, return, native, signal read, wait, generic step) takes 12
+off, kept in a local and written to the shared counter only when it may cross the threshold or
+the run ends. At 1M plus 20k per IR instruction of the function (about its O0 compile time in interpreted
+instructions; the hidden `--tier-heat=BASE,PER_INSTR,COOL` sets it) the function is queued for one
 background compile thread (O0, one module per function, the JIT made with the first hot function)
 and swapped in at the next jump, call or return; the run never waits for compilation. Functions
 over `--tier-max-size` (default 50000 IR instructions, user, 2026-10-19, #126) stay interpreted
-in both compiling tiers. Output is byte-identical to the interpreter: difftest `--candidate
-yavs-auto --threads 4` 354/354 (1 and 4 threads), and with every function compiled from its first
-call or jump (`--tier-heat=1,0`) 354/354 at 1 and 4 threads, at 4 threads shuffled (seeds 7 and
-3, the latter at `--tier-heat=300,2`); `native_matches_bodies_2008` (debug build) takes 45 s with
+in both compiling tiers. Compiled code enters at the IR pc of the op where the interpreter is and
+returns the IR pc it goes on at, mapped back to an op (`Code::entry`; inside a fused op the
+interpreter steps IR instructions up to the next op). Output is byte-identical to the
+interpreter: difftest `--candidate yavs-auto --threads 4` 361/361 (1 and 4 threads), and with
+every function compiled from its first call or jump (`--tier-heat=1,0,0`) 361/361 at 1 and 4
+threads, at 4 threads shuffled (seeds 7 and
+3, the latter at `--tier-heat=300,2,12`); `native_matches_bodies_2008` (debug build) takes 45 s with
 `YAVS_IEEE_TIER=auto` against 43 s interpreted, and 169 s with `llvm` (it did not finish in 25
 minutes before the size cap).
 
@@ -1186,39 +1190,43 @@ interpreted instructions per off-fast-path instruction) runs 0.43 s interpreted 
 threads (#412) and compiled such functions: up to 1.22x the interpreter's CPU
 (`osvvm_axistream`, at a flat 3000 per IR instruction).
 
-Measurements (2026-10-20, release build of this change on main 06dc880e, `--threads 1`, shared
-24-core host, `tools/bench/run.py --compare`, median of 5 runs, CPU seconds of the whole process,
-compile thread included; peak RSS in MiB). A: `--tier=interp`, B: `--tier=auto`, the same yavs
-built with the `llvm` feature; last column: B against an interpreter-only build of the same
-commit (another session):
+Measurements (2026-10-20, after the predecoded interpreter loop of #431, which tier-up now
+counts in: release build with the `llvm` feature, `--threads 1`, shared 24-core host,
+`tools/bench/run.py --compare`, median of 3 runs, total CPU seconds, compile thread included;
+A `--tier=interp`, B `--tier=auto`):
 
-| Benchmark | interp CPU | auto CPU | auto / interp | peak RSS interp / auto | auto / interp-only build |
-|---|---:|---:|---:|---:|---:|
-| `compute_loop` | 0.39 | 0.35 | 0.91 | 58 / 69 | 0.93 |
-| `ff_rtl` | 0.07 | 0.07 | 1.00 | 62 / 62 | 1.22 |
-| `resolved_bus` | 0.40 | 0.41 | 1.01 | 59 / 59 | 1.02 |
-| `delta_chain` | 0.26 | 0.26 | 0.98 | 58 / 58 | 1.06 |
-| `textio_heavy` | 0.47 | 0.48 | 1.01 | 58 / 58 | 1.03 |
-| `protected_scoreboard` | 0.35 | 0.33 | 0.95 | 58 / 68 | 0.97 |
-| `elab_heavy` | 0.55 | 0.55 | 0.99 | 223 / 223 | 1.06 |
-| `vunit_vc30` (30 runs) | 6.18 | 6.16 | 1.00 | 120 / 120 | 1.08 |
-| `uvvm_axistream_vvc_tb` (to 10 us) | 3.93 | 3.51 | 0.89 | 138 / 171 | 0.95 |
-| `uvvm_util_rand_tb` | 4.51 | 4.34 | 0.96 | 92 / 99 | 0.81 |
-| `osvvm_axistream` | 2.15 | 2.04 | 0.95 | 100 / 111 | 1.07 |
-| `vai_pe_array` | 0.27 | 0.26 | 0.99 | 97 / 97 | 0.95 |
-| `vai_window_gen` | 2.38 | 2.38 | 1.00 | 100 / 110 | 1.11 |
-| geometric mean | | | 0.971 | | 1.015 |
+| Benchmark | interp | auto | auto / interp | peak RSS MiB interp / auto |
+|---|---:|---:|---:|---:|
+| `compute_loop` | 0.20 | 0.27 | 1.34 | 58 / 70 |
+| `ff_rtl` | 0.04 | 0.05 | 1.04 | 61 / 61 |
+| `resolved_bus` | 0.24 | 0.24 | 1.03 | 60 / 59 |
+| `delta_chain` | 0.16 | 0.16 | 1.05 | 59 / 59 |
+| `textio_heavy` | 0.30 | 0.31 | 1.04 | 59 / 59 |
+| `protected_scoreboard` | 0.12 | 0.13 | 1.07 | 59 / 59 |
+| `strings_heavy` | 0.25 | 0.25 | 1.02 | 60 / 71 |
+| `access_heavy` | 0.12 | 0.14 | 1.09 | 59 / 59 |
+| `report_heavy` | 0.27 | 0.28 | 1.05 | 59 / 59 |
+| `file_io` | 0.23 | 0.24 | 1.06 | 59 / 59 |
+| `elab_heavy` | 0.34 | 0.35 | 1.02 | 212 / 212 |
+| `vunit_vc30` (30 runs) | 3.70 | 3.75 | 1.01 | 116 / 116 |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 2.76 | 2.57 | 0.93 | 137 / 147 |
+| `uvvm_util_rand_tb` | 2.93 | 2.79 | 0.95 | 98 / 104 |
+| `osvvm_axistream` | 0.98 | 1.04 | 1.05 | 99 / 99 |
+| `vai_pe_array` | 0.16 | 0.17 | 1.02 | 94 / 95 |
+| `vai_window_gen` | 0.89 | 0.92 | 1.03 | 96 / 96 |
+| geometric mean | | | 1.045 | |
 
-Within the same build `--tier=auto` is never above `--tier=interp` beyond noise (at most 1.01)
-and below it wherever hot code pays (up to 11% less CPU); the compile thread adds 10 to 33 MiB of
-peak RSS when it compiles. Against an interpreter-only build, every process of a yavs built with
-the feature pays about 11 ms of CPU and 47 MiB of RSS to load and relocate the shared LLVM library
-(`yavs --version`: 11 ms and 53 MiB against 0.1 ms and 5 MiB), whatever the tier: that is the
-short-run difference in the last column (#432). The interpreter itself also runs differently in
-the build with the feature, tier-up or not: `--tier=interp` 16% slower on `vai_window_gen` and
-10% faster on `uvvm_util_rand_tb` than the interpreter-only build (5 runs each); an
-interpreter-only build with the tier-up counters compiled in (`yavs-interp/tier`) is as fast as
-the plain one there, so the counters are not the cause.
+The predecoded interpreter (#431) runs these 1.1x to 2x faster than the loop the measurements
+before it used, and now outruns compiled code wherever that leaves to the interpreter often:
+`compute_loop` simulates in 0.18 s interpreted, 0.24 s with everything compiled at O2
+(`--tier=llvm`) and 0.29 s compiled at O0 from the first call; `protected_scoreboard` 0.11 s,
+0.17 s and 0.17 s; only `strings_heavy` gains (0.23 s, 0.13 s at O2). Counting alone (nothing
+compiled) costs 2% to 9%. So `--tier=interp` is the default again (docs/decisions.md "LLVM
+tier"); tier-up pays once compiled code leaves less often (#336, #337) and costs less (#432).
+Before #431 (old dispatch loop, same tier-up) `--tier=auto` was at most 1.01x and down to 0.89x
+the interpreter's CPU (geometric mean 0.97). Every process of a yavs built with the feature
+also pays about 11 ms of CPU and 47 MiB of RSS for loading the shared LLVM library, whatever the
+tier (#432).
 
 Spike (before M6), done: llvm-sys 211 bindings (docs/decisions.md), ORC LLJIT with a portable CPU, O2 through
 `LLVMRunPasses`, Rust runtime callbacks as absolute symbols, a checked i64 sum that traps into

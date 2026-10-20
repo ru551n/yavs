@@ -50,8 +50,7 @@ otherwise.
 * ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code;
   ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
   simulation runs in the interpreter. The output is the same as with ``--tier=interp``. Both
-  need a yavs built with the ``llvm`` feature (LLVM 21); in such a yavs ``--tier=auto`` is the
-  default, otherwise ``--tier=interp``. Functions of
+  need a yavs built with the ``llvm`` feature (LLVM 21); the default is ``--tier=interp``. Functions of
   more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``
   prints what the LLVM tier compiles and what it leaves to the interpreter.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or

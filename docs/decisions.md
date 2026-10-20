@@ -226,45 +226,38 @@ milestone users care about works.
   leave functions over `--tier-max-size` (default 50000 IR instructions) interpreted (user,
   2026-10-19, #126).
 - **Tier-up (`--tier=auto`, #125):** the interpreter estimates per function what compiled code
-  would save (`Runtime::set_heat`, cargo feature `tier` of `yavs-interp`, enabled only by
-  `yavs-llvm/llvm`, so an interpreter-only build counts nothing): every call adds the length of
-  the entry block and every jump the length of the block it goes to (the instructions
-  interpreted), and every instruction off the interpreter's fast path (calls, natives, signal
-  operations, ...) takes 4 off again, because compiled code returns to the interpreter there and
-  leaving and entering it costs about what it saves on 4 instructions (measured: a text I/O loop
-  with 3.7 interpreted instructions per such instruction ran 10% slower compiled, protected-type
-  methods with 6 to 7 ran faster). Once the count reaches `Heat::DEFAULT` (500k plus 10k per IR
-  instruction of the function: compiling costs about 2 ms plus 40 us per IR instruction at O0,
-  codegen nearly all of it, which is what the interpreter needs for that many instructions), it
-  calls `Tier::hot` once, which queues the function for ONE background compile thread
-  (single-threaded LLVM, one module per function, O0, the JIT made with the first hot
-  function). Other pass pipelines do not pay: O1 codegen costs 10x O0, and IR passes before O0
-  codegen (instcombine, early CSE, CFG simplification) shrink neither the compile time nor the
-  machine code. The thread publishes the entry through a per-function `OnceLock` (the slot
-  later direct calls can load, #336); the interpreter asks the tier (`Tier::ready`, then
-  `Tier::run`) after every jump, call and return and at every instruction while a function runs
-  compiled, so interpreted code pays nothing per instruction and the swap-in happens at the next
-  jump, call or return (compiled code enters at any pc and leaves non-entry instructions to the
-  interpreter). The simulation never waits for compilation, and output does not depend on when
-  it finishes (rule 5). At the end of the run the queue is dropped and the files the design left open are
-  closed (`Runtime::close_files`); if a function is still being compiled, the CLI flushes the
-  standard streams and ends the process at once without exit handlers (`exit_now`): LLVM's static
-  destructors must not run under the compile thread, and waiting would cost up to one
-  compilation. With `--load` or `--vhpi` libraries the end of the run waits for the compilation
-  instead, so their exit handlers run. The counters are racy on purpose (a lost count delays
-  tier-up; the thread ignores a function it has seen). `--tier-heat=BASE,PER_INSTR` (hidden, for
-  tests and tuning) sets the threshold. The M6 agent, 2026-10-20, replacing the call and
-  back-edge count of 2026-10-19: the interpreter's dispatch threads unconditional jumps, so
-  most loop back-edges were never counted, and a flat count compiled functions whose compiled
-  code is slower than the interpreter.
-- **Default:** `--tier=auto` in a yavs built with the `llvm` feature (else `interp`): on the
-  shared benchmarks (STATUS.md "llvm", 5 runs) its CPU, compile thread included, is at most 1.01x
-  that of `--tier=interp` in the same build and down to 0.89x where hot code pays (geometric mean
-  0.97), and the difftest corpus is identical at 1 and 4 threads, also with every function
-  compiled from its first call or jump. A yavs built with the feature costs about 11 ms of CPU and
-  47 MiB of RSS per process for loading the shared LLVM library, whatever the tier (#432), so the
-  interpreter-only build stays the default build. The M6 agent, 2026-10-20, under the rule the
-  user set for #125 (measured before deciding).
+  would save (`Runtime::set_heat`): its predecoded loop (#431) adds the ops it runs between jumps
+  and takes 12 off at every op compiled code would leave to the interpreter (call, return,
+  native, signal read, wait, generic step), since leaving and re-entering compiled code costs
+  about 15 ns. The run keeps this in a local and writes the shared counter only when it may cross
+  the threshold or the run ends (counting costs 2% to 9% of CPU when nothing compiles). At
+  `Heat::DEFAULT` (1M plus 20k per IR instruction of the function, about its O0 compile time of
+  2 ms plus 40 us per IR instruction in interpreted ops) it calls `Tier::hot` once, which queues
+  the function for ONE background compile thread (single-threaded LLVM, one module per function,
+  O0, the JIT made with the first hot function). Other pass pipelines do not pay: O1 codegen
+  costs 10x O0, and IR passes before O0 codegen (instcombine, early CSE, CFG simplification)
+  shrink neither the compile time nor the machine code. The thread publishes the entry through a
+  per-function `OnceLock` (the slot later direct calls can load, #336). The predecoded loop asks
+  the tier (`Tier::ready`) on entry and at every jump of a function that reached its threshold;
+  with compiled code it runs that from the op's IR pc and goes on at the op of the IR pc it
+  returns (`Code::entry`; inside a fused op it steps the IR instructions up to the next op), and
+  enters again after every op compiled code left to it. The simulation never waits for
+  compilation, and output does not depend on when it finishes (rule 5). At the end of the run the
+  queue is dropped and the files the design left open are closed (`Runtime::close_files`); if a
+  function is still being compiled, the CLI flushes the standard streams and ends the process at
+  once without exit handlers (`exit_now`): LLVM's static destructors must not run under the
+  compile thread, and waiting would cost up to one compilation. With `--load` or `--vhpi`
+  libraries the end of the run waits for the compilation instead, so their exit handlers run.
+  The counters are racy on purpose (a lost update delays tier-up; the thread ignores a function
+  it has seen). `--tier-heat=BASE,PER_INSTR,COOL` (hidden, for tests and tuning) sets the threshold.
+  The M6 agent, 2026-10-20.
+- **Default:** `--tier=interp`, also in a yavs built with the `llvm` feature. With the old
+  dispatch loop `--tier=auto` was at most 1.01x and down to 0.89x the interpreter's CPU on the
+  shared benchmarks, but the predecoded interpreter (#431) outruns compiled code wherever it
+  leaves to the interpreter often (`compute_loop`: 0.18 s interpreted, 0.24 s all compiled at
+  O2): `--tier=auto` is 1.02x to 1.34x on most benchmarks and 0.93x to 0.95x on two (geometric
+  mean 1.045, STATUS.md "llvm"). It becomes the default again only when measured never slower,
+  after #336, #337 and #432. The M6 agent, 2026-10-20, under the rule the user set for #125.
 - Decided by the M6 agent, 2026-10-19; **accepted by the user (user, 2026-10-19)**: compiled
   code runs native operations and hands slow or erroring instructions back to the interpreter.
 

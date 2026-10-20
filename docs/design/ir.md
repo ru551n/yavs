@@ -700,7 +700,7 @@ range, division by zero and the delta limit.
 | Q3 | Protected types under `--threads N` | All protected callers serial through M3; per-instance locks later only if benchmarks ask for it. |
 | Q4 | Generic types | Shared code with runtime descriptors; specialisation is a later LLVM-tier option. |
 | Q5 | VHPIDIRECT calls | No libffi: own per-ABI trampolines in `yavs-ffi` (1.7), tested on SysV x86_64, AAPCS64 and Win64. |
-| Q6 | Tier-up threshold | About the compile time in interpreted instructions: 500k plus 10k per IR instruction of the function, each instruction off the interpreter's fast path counting -4 (`--tier=auto`, #125; hidden `--tier-heat` for tests). |
+| Q6 | Tier-up threshold | About the compile time in interpreted ops: 1M plus 20k per IR instruction of the function, each op compiled code would leave counting -12 (`--tier=auto`, #125; hidden `--tier-heat` for tests). |
 | Q7 | Kernel asks | K1 to K7 handed to the kernel agent. |
 
 ## 9. Implementation notes and deviations (yavs-ir, yavs-interp)

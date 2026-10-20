@@ -6,11 +6,6 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-# Hotness counters for `yavs run --tier=auto` (`Runtime::set_heat`); enabled by `yavs-llvm/llvm`,
-# so an interpreter-only build has no counting at all.
-tier = []
-
 [dependencies]
 yavs-diag.workspace = true
 yavs-ffi = { path = "../yavs-ffi" }

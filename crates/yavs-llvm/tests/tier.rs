@@ -169,6 +169,7 @@ fn loop_runs_compiled() {
 const HOT: Heat = Heat {
     base: 100,
     per_instr: 10,
+    cool: 0,
 };
 
 /// `--tier=auto`: the loop becomes hot while it runs in the interpreter, is compiled on the

@@ -1,11 +1,11 @@
 //! `--tier=auto`: compile the functions that become hot, one at a time on one background
 //! thread, while the simulation keeps running them in the interpreter (#125).
 //!
-//! The interpreter counts the instructions it runs per function (`Runtime::set_heat`) and
+//! The interpreter counts the ops it runs per function (`Runtime::set_heat`) and
 //! calls [`Tier::hot`] once a function reaches its [`Heat`] threshold; the function is queued,
 //! compiled in a module of its own and published through a `OnceLock`. The interpreter asks
-//! the tier after every jump, call and return, so the swap-in happens there in any frame of
-//! that function: compiled code runs on the interpreter frame's registers and enters at any
+//! the tier on entry and at every jump once the threshold is reached, so the swap-in happens
+//! there in any frame of that function: compiled code runs on the interpreter frame's registers and enters at any
 //! pc (an instruction that is not an entry point is left to the interpreter), so output is
 //! identical whenever compilation finishes (rule 5). At the end of a run `stop(false)` does
 //! not wait for a function being compiled; the CLI then ends the process with [`exit_now`].
@@ -22,21 +22,26 @@ use yavs_ir::{FuncId, FuncKind};
 use crate::lower::{RunFn, compile_one, enter, new_jit, too_big};
 use crate::{Error, Jit, OptLevel};
 
-/// When a function is hot: once the interpreter has run `base` of its instructions plus
-/// `per_instr` per IR instruction the function has (`Runtime::set_heat` counts them).
+/// When a function is hot: once the interpreter has run `base` of its ops plus `per_instr` per
+/// IR instruction the function has, less `cool` per op compiled code would leave
+/// (`Runtime::set_heat` counts them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Heat {
     pub base: u32,
     pub per_instr: u32,
+    /// Taken off the count at every op compiled code would leave to the interpreter: leaving
+    /// and entering it again (about 15 ns) costs what the interpreter spends on that many ops.
+    pub cool: u32,
 }
 
 impl Heat {
     /// Compiling a function costs about 2 ms plus 40 us per IR instruction at O0 (codegen
-    /// nearly all of it), the time the interpreter needs for about 500k and 10k instructions:
+    /// nearly all of it), the time the predecoded interpreter needs for about 1M and 20k ops:
     /// a function is compiled once its interpreted run time has reached its compile time.
     pub const DEFAULT: Heat = Heat {
-        base: 500_000,
-        per_instr: 10_000,
+        base: 1_000_000,
+        per_instr: 20_000,
+        cool: 12,
     };
 
     /// The threshold of `f`, saturating.
@@ -135,7 +140,7 @@ impl AutoTier {
             shared,
             worker: Mutex::new(Some(worker)),
         });
-        if !rt.set_tier(tier.clone()) || !rt.set_heat(|f| heat.threshold(f)) {
+        if !rt.set_tier(tier.clone()) || !rt.set_heat(|f| heat.threshold(f), heat.cool) {
             tier.stop(true);
             return Err(Error(
                 "the runtime has a tier already (a bug in yavs)".into(),

@@ -559,9 +559,9 @@ fn tier_auto_matches_interp() {
     assert!(interp.1.contains("cannot be represented"), "{}", interp.1);
     assert_eq!(interp.3.lines().count(), 4, "{}", interp.3);
     for heat in [
-        "--tier-heat=1,0",
-        "--tier-heat=2000,10",
-        "--tier-heat=500000,10000",
+        "--tier-heat=1,0,0",
+        "--tier-heat=2000,10,12",
+        "--tier-heat=1000000,20000,12",
     ] {
         for threads in ["--threads=1", "--threads=4"] {
             let args = [
@@ -581,7 +581,7 @@ fn tier_auto_matches_interp() {
         "--work=work:lib",
         "hot",
         "--tier=auto",
-        "--tier-heat=1,0",
+        "--tier-heat=1,0,0",
         "--verbose",
     ]);
     for f in ["`mix`", "`p0`"] {

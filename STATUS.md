@@ -1075,6 +1075,105 @@ load 10 to 30). Every row is one commit; the "before" column is the binary of th
 |---|---|---|---|---|
 | Local composite variables of subprograms that cannot suspend live in the frame's temporary memory (`Inst::NewFrame`, decisions.md "Local composite variables live in the frame's temporary memory") | 1.81 | 1.61 | 0.45 | 0.42 |
 
+## performance: gap map against the reference simulator (sim1), 2026-10-20
+
+Measurement only (no code changed). yavs at `d75ef11d`, release build with the `llvm` feature, `--threads 1`, tiers
+`interp` and `auto`; sim1 run the way the external test runner starts it (`-H 64m -e <top> --no-save --jit -r`).
+Host: 24 cores shared with other agents, load average 3 to 12 during the runs (mostly 3 to 5), 12 to 13 GB free;
+median of 3 interleaved runs (order swapped every rep), each run under `systemd-run -p MemoryMax=2G`, one timed run
+at a time. Analysis is excluded from the design rows: yavs from `--time-report` (startup = elaborate + init,
+simulation = simulate), sim1 as one run minus a run stopped at 0 fs (or with the generic that empties the run).
+Wall time is ranked; sim1's CPU time is above its wall time because it compiles on other threads. Libraries were
+analysed afresh with this binary. Ratios are yavs / sim1, so above 1 is slower. Sub-0.1 s sim1 cells are good to
+about 0.01 s, so the biggest ratios (12x) are +-15%.
+
+### Designs (total excluding analysis; startup / simulation in s)
+
+| Rank | Row | sim1 | yavs interp | yavs auto | wall interp / sim1 | wall auto / sim1 | CPU interp / sim1 | Dominant | Peak MiB yavs / sim1 |
+|---:|---|---|---|---|---:|---:|---:|---|---|
+| 1 | 2b 64 LFSR, 20000 cycles | 0.08 (0.02/0.06) | 0.96 (0.00/0.96) | 0.93 | 12.0x | 11.6x | 8.7x | simulation | 60 / 72 |
+| 2 | `lfsr` (512 lanes) | 0.15 (0.03/0.12) | 1.60 (0.00/1.60) | 1.83 | 10.7x | 12.2x | 9.5x | simulation | 60 / 75 |
+| 3 | `ff` (4096 registers) | 0.39 (0.16/0.23) | 3.02 (0.01/3.01) | 3.41 | 7.7x | 8.7x | 7.4x | simulation | 67 / 108 |
+| 4 | 2a 64 LFSR, 5000 cycles, XOR reduce | 0.05 (0.02/0.03) | 0.36 (0.00/0.36) | 0.42 | 7.3x | 8.3x | 4.0x | simulation | 61 / 74 |
+| 5 | `chain` | 0.12 (0.05/0.07) | 0.79 (0.00/0.78) | 0.89 | 6.6x | 7.4x | 6.0x | simulation | 61 / 75 |
+| 6 | 3 library queue/scoreboard testbench | 0.28 (0.12/0.17) | 1.81 (0.02/1.78) | 1.91 | 6.5x | 6.8x | 1.8x | simulation | 89 / 193 |
+| 7 | `fan` (4000 processes on one clock) | 0.73 (0.14/0.59) | 2.41 (0.01/2.40) | 3.13 | 3.3x | 4.3x | 3.3x | simulation | 66 / 109 |
+| 8 | 6a window generator (one test case) | 0.19 (0.10/0.09) | 0.42 (0.04/0.38) | 0.51 | 2.2x | 2.7x | 0.5x | simulation | 92 / 133 |
+| 9 | 4 AXI-stream testbench (other library) | 0.23 (0.06/0.18) | 0.44 (0.04/0.40) | 0.48 | 1.9x | 2.1x | 0.5x | simulation | 91 / 154 |
+| 10 | `bus` (resolved 32-bit bus) | 0.47 (0.01/0.45) | 0.47 (0.00/0.47) | 0.51 | 1.0x | 1.1x | 0.9x | simulation | 59 / 75 |
+| 11 | 6b bias/requant (one test case) | 0.11 (0.10/0.01) | 0.07 (0.04/0.03) | 0.07 | 0.6x | 0.6x | 0.2x | startup | 88 / 117 |
+| 12 | 1 compute loop, 20M iterations | 2.19 (0.01/2.18) | 1.83 (0.00/1.82) | 0.62 | 0.8x | 0.3x | 0.8x | simulation | 58 / 56 |
+| 13 | `elab_heavy` (20000 instances) | 5.14 (4.72/0.10) | 0.24 (0.19/0.04) | 0.23 | 0.05x | 0.04x | 0.05x | startup | 216 / 755 |
+
+Notes. The 6a and 6b configurations enable 13 test cases but the testbenches run only the first one per
+simulation (the same on both simulators, 14.9 us and 145 ns of simulated time), so they are start-up rows; the
+longer test cases of those testbenches need an embedded interpreter. `--tier=auto` beats the interpreter only on
+the compute loop (3x); on every RTL and library row it is 0 to 30% slower, and on design 3 it costs 40% more CPU
+and 60 MiB more memory (background compile thread). Elaboration plus initialisation is below 0.05 s on every row
+except `elab_heavy`, where yavs is 20x faster than sim1. Peak memory of yavs is below sim1's on every row except
+the compute loop (equal).
+
+### Suites and end-to-end runs (single job, wall seconds)
+
+| Rank | Row | sim1 | yavs | yavs / sim1 | Note |
+|---:|---|---:|---:|---:|---|
+| 1 | Second library's `.pro` suite, 314 tests (test phase) | 59.4 | 106.8 | 1.8x | per test floor 0.1 s vs 0.26 s (76 tests under 0.2 s on sim1 cost 20 s on yavs vs 7.5 s); 8 slowest tests are the long random testbenches (1.2 to 2.3 s vs 0.2 to 0.4 s). One sim1 test fails (stale-library error, order of analysis) |
+| 2 | Same suite, analysis of 521 files, one call each | 22.3 | 37.0 | 1.7x | CPU 18.0 s user + 9.2 s sys on yavs vs 7.2 + 7.1 on sim1 |
+| 3 | First library's suite (maintenance testbenches, 138 runs) | 163.1 | 280.0 | 1.7x | analysis included; yavs passes 102 and fails 9, sim1 89 and 22 (different sets, 26 skipped on both) |
+| 4 | Difftest corpus, 409 testbenches (analysis, elaboration and run, harness included) | 21.3 | 30.8 | 1.45x | CPU 20.3 s vs 23.4 s (1.15x); yavs uses three processes per test (analyze, elab, run) |
+| 5 | External test runner, data-types suite (210 tests) | 12.6 | 15.4 | 1.22x | two dictionary tests are all of it: 3.1 s and 2.0 s on yavs vs 0.9 s and 0.1 s; without them yavs wins |
+| 6 | External test runner, communication suite (145 tests) | 16.2 | 11.9 | 0.74x | |
+| 7 | External test runner, check suite (257 tests) | 25.8 | 13.0 | 0.50x | CPU 46 s vs 13 s |
+| - | Compile step of the three suites | 1.1 to 1.4 | 0.35 to 0.45 | 0.33x | warm compilation cache |
+| - | `vunit_vc30` (30 verification-component test cases, one `yavs run` each, warm cache) | not run | 2.86 CPU: analyze 0.03, elaborate 1.45, init 0.15, simulate 0.72 | | peak 106 MiB; elaboration is half, 48 ms per process |
+
+Per-test floor of a yavs process in the test runner: 45 ms total (elaborate 10 ms, init 14 ms, simulate 18 ms for a
+tiny data-types test), about 77 MiB.
+
+### Where yavs spends the time (gdb sampling of `--tier=interp`, 5 ms stops, 60 to 400 samples per row)
+
+| Row | Top 3 (self time of the first yavs frame) |
+|---|---|
+| 2b, `lfsr`, 2a | `run_ops` dispatch 15 to 21%; `update_effective` + `schedule` + `drive` (kernel signal update) 7 to 12%; `lcopy`/`temp_alloc`/memcpy of logic vectors (interp exec.rs) 6 to 10%. By file: exec.rs 45%, signal.rs 10 to 18%, kernel.rs 8 to 12% |
+| `ff` | `run_ops` 18%; `value.rs` closure (vector element read/write) 6.6%; `apply_driver`/`schedule` 6%, `call_native` 3% |
+| `chain` | spread: `value.rs` closure 6.5%, `run_ops` 6.5%, `update_independent` 4.8%, `take_woken` 4%; kernel is 25% of the time |
+| `fan` | `run_ops` 16%; `run_batch` wake scan (`add`/`order`/`get EdgeTrigger`) 9 + 9 + 5%; `exec` 7% |
+| 3 library testbench | `run_ops` 30%; `cell_w` 8%; heap (`release`, `alloc_from`, libc malloc/free) 12%; `fill` 4% |
+| 4, 6a | `run_ops` 14 to 20%; `temp_alloc` 7%, `rd`/`layout_words` 6%; heap `release` 6% |
+| `bus` | resolution: `value.rs` closure 12%, `planes.rs` resolve 10 + 8%, `resolve_run` 8% |
+| compute loop | `run_ops` 49%, `step` 18%, `fast_op` 10% (all exec.rs) |
+| `elab_heavy` | `release_for_run` 28% (drop of the elaborated scopes, `unlink_chunk`), `push_frame` 16%, `layout_words` 12% |
+| dictionary tests of the data-types suite | `run_ops` 17 to 24%, `cell_w` 8 to 10%, `layout_word(s)` 14% (one case), `obj` 5% |
+
+Method: `tools/` sampler is not in the repository (a gdb Python script that stops the process on a SIGUSR1 every 5 ms
+and counts the first frame under `crates/`); no hardware profiler on this host.
+
+### Next levers by gap (largest first)
+
+1. Clocked RTL (2b, `lfsr`, `ff`, 2a, `chain`: 6.6x to 12x). The per-activation cost (1 to 1.5 us) is interpreter
+   dispatch plus logic-vector copies, and the LLVM tier does not help (`auto` is 10 to 15% slower). Lever: lower
+   process bodies over `std_logic_vector` signals natively with the vector operations inline (no side exit per
+   element access), so tier-up pays off; owner `yavs-llvm` (#336 to #341) with `yavs-lower` for the instruction forms.
+   Second lever, `yavs-kernel`: signal update (`update_effective`, `schedule`, `drive`) is 7 to 12% and rises to 25%
+   for `chain`; batch the driver update of vector signals.
+2. Library testbench (design 3, 6.5x; design 4, 1.9x): string and queue code run as interpreted instructions plus
+   heap churn (12% in `heap.rs` allocate/release, `cell_w`). Lever: make `--tier=auto` profitable on call-heavy
+   code (it is now slower), owner `yavs-llvm`; and fewer heap objects per call, owner `yavs-interp` (`heap.rs`).
+3. `fan` (3.3x): the wake scan of 4000 processes on one clock (`run_batch`, `order`, edge trigger lookup, about 30%).
+   Lever: group the waiters of one edge so a clock wakes its processes without per-process lookup; owner `yavs-kernel`.
+4. Test-runner and suite floor (suites 1.7x to 1.8x, difftest 1.45x, data-types dictionary tests): per process
+   cost of 0.16 to 0.26 s for a small test of the second library (library load and the warnings of an
+   instance printed on every run) and the dictionary string code (`layout_word(s)`, `cell_w`). Levers:
+   `yavs-interp` (`LayoutOf` for string/record layouts in the dictionary tests), `yavs` (one process for
+   analyze, elab and run; not printing repeated warnings is a CLI decision for the user).
+5. Resolved buses (`bus`, 1.0x): at parity; resolution functions in `yavs-logic` (`planes.rs`) and `yavs-kernel`
+   `resolve_run` are 30% and would be the next step if a wider bus is measured.
+   Not a gap but worth keeping: elaboration (20x faster than sim1 on 20000 instances) and the compute loop under
+   `--tier=auto` (3x faster).
+
+Raw data: median tables above come from 3 interleaved runs per row (suites: 3 runs for the test-runner suites, 1
+run for the two verification-library suites and the difftest corpus numbers are medians of 3).
+
 ## CI and releases
 
 `.github/workflows/ci.yml` runs fmt, clippy and `cargo test --workspace` (default features) on

@@ -667,3 +667,57 @@ fn package_subprograms() {
     l.subprograms_of(body).unwrap();
     assert!(l.finish().unwrap().program.cov.is_empty());
 }
+
+/// The bounds of a statically sized array variable are a constant: indexing it reads no
+/// descriptor from the frame (every `Pos` reads a constant-pool descriptor).
+#[test]
+fn static_array_bounds_are_constant() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg_static_array.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let dir = std::env::temp_dir().join(format!("yavs-lower-static-{}", std::process::id()));
+    opts.libraries
+        .add_spec(&format!("work:{}", dir.display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let body = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
+        .map(|(id, _)| id)
+        .unwrap();
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    let funcs = l.subprograms_of(body).unwrap();
+    assert_eq!(funcs.len(), 1);
+    let p = l.finish().unwrap().program;
+    let f = p.func(funcs[0]).unwrap();
+    let konst: Vec<_> = f
+        .code
+        .iter()
+        .filter_map(|i| match *i {
+            yavs_ir::Inst::AddrOf {
+                dst,
+                space: yavs_ir::AddrSpace::Const(_),
+                ..
+            } => Some(dst),
+            _ => None,
+        })
+        .collect();
+    let pos: Vec<_> = f
+        .code
+        .iter()
+        .filter_map(|i| match *i {
+            yavs_ir::Inst::Pos { dope, .. } => Some(dope),
+            _ => None,
+        })
+        .collect();
+    assert!(!pos.is_empty());
+    for d in pos {
+        assert!(konst.contains(&d), "{}", p.dump_func(funcs[0]));
+    }
+}

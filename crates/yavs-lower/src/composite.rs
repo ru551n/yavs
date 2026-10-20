@@ -312,7 +312,7 @@ impl Fx<'_, '_> {
         Ty::desc_size(self.fb.program().types(), tid).unwrap_or(0) as u32
     }
 
-    fn const_addr(&mut self, c: yavs_ir::ConstId) -> Reg {
+    pub(crate) fn const_addr(&mut self, c: yavs_ir::ConstId) -> Reg {
         let dst = self.reg(RegTy::Ptr);
         self.emit(Inst::AddrOf {
             dst,

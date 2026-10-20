@@ -381,6 +381,9 @@ pub(crate) struct Cx {
     /// declared in a method act on its object (LRM 5.6.2, #221).
     pub method_self: HashMap<ScopeId, (TypeId, u8, u32)>,
     pub objs: HashMap<DeclId, Obj>,
+    /// Array variables (`Obj::Array`) whose descriptor is a constant: reads use it instead of
+    /// loading the descriptor pointer from the slot (the optimiser then folds bounds).
+    pub const_dope: HashMap<DeclId, yavs_ir::ConstId>,
     /// `std.reflection` entries per subtype (`reflect.rs`).
     pub refl: HashMap<yavs_sem::SubtypeId, yavs_ir::ReflId>,
     /// Instance data of the architecture being lowered: bytes allocated so far, and the
@@ -569,6 +572,7 @@ impl<'a> Lowerer<'a> {
                 proc_drivers: HashMap::new(),
                 method_self: HashMap::new(),
                 objs: HashMap::new(),
+                const_dope: HashMap::new(),
                 refl: HashMap::new(),
                 inst_size: 0,
                 names: Vec::new(),

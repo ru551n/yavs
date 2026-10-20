@@ -392,8 +392,7 @@ impl<'a> Fx<'a, '_> {
             Some(Obj::Array { space, off }) => {
                 let a = self.addr(space, off);
                 let data = self.load(a, Width::B8, RegTy::Ptr);
-                let dp = self.offset(a, 8);
-                let dope = self.load(dp, Width::B8, RegTy::Ptr);
+                let dope = self.array_dope(d, a);
                 Ok(V::A(data, dope))
             }
             Some(Obj::InstArray { space, off }) => {
@@ -1513,6 +1512,16 @@ impl<'a> Fx<'a, '_> {
         dst
     }
 
+    /// The descriptor of array variable `d` whose slot is at `slot`: its constant when the
+    /// bounds are static, else the pointer the slot holds.
+    fn array_dope(&mut self, d: DeclId, slot: Reg) -> Reg {
+        if let Some(c) = self.cx.const_dope.get(&d).copied() {
+            return self.const_addr(c);
+        }
+        let dp = self.offset(slot, 8);
+        self.load(dp, Width::B8, RegTy::Ptr)
+    }
+
     /// The descriptor of an array expression, without reading its elements when it names an
     /// object.
     pub(crate) fn dope_of(&mut self, e: ExprId) -> R<Reg> {
@@ -1525,8 +1534,7 @@ impl<'a> Fx<'a, '_> {
             match self.cx.objs.get(&d).copied() {
                 Some(Obj::Array { space, off }) => {
                     let a = self.addr(space, off);
-                    let dp = self.offset(a, 8);
-                    return Ok(self.load(dp, Width::B8, RegTy::Ptr));
+                    return Ok(self.array_dope(d, a));
                 }
                 Some(Obj::InstArray { space, off }) => return Ok(self.inst_array(space, off).1),
                 Some(Obj::Fixed { space, off, size }) => return Ok(self.addr(space, off + size)),
@@ -4140,8 +4148,7 @@ impl<'a> Fx<'a, '_> {
                     Some(Obj::Array { space, off }) => {
                         let a = self.addr(space, off);
                         let data = self.load(a, Width::B8, RegTy::Ptr);
-                        let dp = self.offset(a, 8);
-                        let dope = self.load(dp, Width::B8, RegTy::Ptr);
+                        let dope = self.array_dope(*d, a);
                         let t = db.base(st);
                         let tid = self.ty(t, span)?;
                         let dims = ty::array_of(db, t).map_or(0, |x| x.1);

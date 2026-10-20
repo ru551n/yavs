@@ -701,6 +701,13 @@ impl<'a, 'b> Fx<'a, 'b> {
                 });
                 let dp = self.offset(slot, 8);
                 self.store(dp, dslot, Width::B8);
+                let c = &db.subtypes[o.subtype].constraint;
+                if let Some(b) = crate::composite::static_desc(db, self.fb.program(), t, c, tid)
+                    && b.len() == dope_bytes as usize
+                {
+                    let k = self.fb.program().konst(yavs_ir::ConstData::Bytes(b));
+                    self.cx.const_dope.insert(d, k);
+                }
                 Ok(())
             }
             VarShape::Scalar(w) => {

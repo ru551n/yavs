@@ -794,6 +794,13 @@ pub fn run(
             return out.finish(code);
         }
     };
+    // Only the design writes to standard output: no plugin, no foreign code.
+    let foreign =
+        e.ir.as_ref()
+            .is_some_and(|ir| ir.program.foreign.iter().next().is_some());
+    if a.vhpi.is_empty() && a.load.is_empty() && !foreign {
+        crate::stdout::buffer();
+    }
     sim.subscribe(Box::new(Printer));
     let rt = built.as_ref().map(|b| b.rt.clone());
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
@@ -839,6 +846,7 @@ pub fn run(
     crate::timing::mark("init");
     let r = sim.run_until(stop);
     crate::timing::mark("simulate");
+    crate::stdout::flush();
     crate::timing::report();
     let mut o = std::io::stdout().lock();
     let code = match r {
@@ -1053,21 +1061,17 @@ impl yavs_kernel::Observer for Printer {
             (Some(p), _) => format!("Process {}", hook.process_name(p).unwrap_or("?")),
             (None, c) => format!("Function {}", c.as_deref().unwrap_or("?")),
         };
-        let mut o = std::io::stdout().lock();
-        let _ = writeln!(
-            o,
-            "** {sev}: {}fs+{}: {}\n    {at}",
+        let text = format!(
+            "** {sev}: {}fs+{}: {}\n    {at}\n",
             hook.now().as_fs(),
             hook.delta(),
             r.message
         );
-        let _ = o.flush();
+        crate::stdout::write(text.as_bytes());
     }
 
     fn output(&mut self, _: &mut yavs_kernel::Hook<'_>, _: yavs_kernel::ProcId, bytes: &[u8]) {
-        let mut o = std::io::stdout().lock();
-        let _ = o.write_all(bytes);
-        let _ = o.flush();
+        crate::stdout::write(bytes);
     }
 }
 

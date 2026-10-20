@@ -301,6 +301,42 @@ fn runtime_error() {
     run_snapshot("runtime_error", 1);
 }
 
+/// Reports are written in blocks on a pipe, but a diagnostic on the same pipe still comes after
+/// every report that preceded it (#428).
+#[test]
+fn output_order_on_one_pipe() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("output_order");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let yavs = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.args(["--color", "never"]).current_dir(&dir);
+        c
+    };
+    let a = yavs()
+        .args(["analyze", &lib, "output_order.vhd"])
+        .status()
+        .expect("run");
+    assert!(a.success());
+    let (mut r, w) = std::io::pipe().expect("pipe");
+    let mut c = yavs();
+    c.args(["run", &lib, "output_order"])
+        .stdout(w.try_clone().expect("dup"))
+        .stderr(w);
+    let mut child = c.spawn().expect("spawn");
+    // The command holds the write ends: drop it so that the read ends at the child's exit.
+    drop(c);
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut r, &mut text).expect("read");
+    assert_eq!(child.wait().expect("wait").code(), Some(1));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let reports: Vec<_> = text.match_indices("** Note: ").collect();
+    assert_eq!(reports.len(), 2000);
+    let err = text.find("error[E3009]").expect("diagnostic");
+    assert!(reports.iter().all(|(at, _)| *at < err), "{text}");
+    assert!(text.contains("line 2000\n"));
+}
+
 /// A runtime error while packages are initialised is an elaboration error (exit 2) with the
 /// same diagnostic, not an internal error (#110).
 #[test]

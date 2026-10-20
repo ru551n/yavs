@@ -10,6 +10,7 @@ mod cov;
 mod elab;
 mod explain;
 mod gui;
+mod stdout;
 mod timing;
 
 use clap::{Parser, Subcommand, ValueEnum};

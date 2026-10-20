@@ -144,6 +144,7 @@ impl Out {
             Severity::Warning => self.warnings += 1,
             Severity::Note => {}
         }
+        crate::stdout::flush();
         let _ = std::io::stderr()
             .lock()
             .write_all(yavs_diag::render(sources, d, self.format, self.color).as_bytes());
@@ -155,10 +156,12 @@ impl Out {
                 "",
                 format!("aborting due to {} previous error{s}", self.errors),
             );
+            crate::stdout::flush();
             let _ = std::io::stderr().lock().write_all(
                 yavs_diag::render(&SourceMap::default(), &d, self.format, self.color).as_bytes(),
             );
         }
+        crate::stdout::flush();
         ExitCode::from(code)
     }
 }

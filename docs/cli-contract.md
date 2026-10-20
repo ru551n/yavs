@@ -441,8 +441,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   lines, then `test_suite_done`) into the `output path` from `runner_cfg`, via
   textio. yavs needs no test-runner knowledge beyond correct textio and `std.env`.
 - Standard output: `report`/`assert` messages go to stdout in the human format,
-  one message per line group, flushed at least at every simulation time step
-  so that the test runner's live output and timeouts work. `--color=always` forces ANSI
+  one message per line group. On a terminal each message is written at once. On a pipe or
+  file, without a plugin (`--vhpi`), a `--load` library or a foreign subprogram, messages are
+  collected and written in blocks: at the latest 100 ms after they were produced, before
+  anything yavs writes to stderr, and at the end of the run, so that the test runner's live
+  output and timeouts work and the order of the two streams is the order of the events. `--color=always` forces ANSI
   colour on a pipe (the test runner passes it when it wants colour); without it yavs
   follows the TTY/`NO_COLOR` rules of plan `yavs-diag`.
 - Runtime errors (bound check, overflow, null access, delta limit, internal) are diagnostics

@@ -389,7 +389,9 @@ impl Db {
             stack: Vec::new(),
             undeclared: HashSet::default(),
             rev_reported: HashSet::default(),
-            lookup_cache: HashMap::default(),
+            // A library's worth of lookups fills it; sized up front so it does not rehash
+            // a dozen times on the way.
+            lookup_cache: HashMap::with_capacity_and_hasher(1 << 13, Default::default()),
             memo: HashMap::default(),
             name_memo: HashMap::default(),
             pending_implicit: Vec::new(),

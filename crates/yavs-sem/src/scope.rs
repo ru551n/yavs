@@ -119,6 +119,33 @@ struct OverSet {
     live: usize,
 }
 
+/// The entities a use-clause walk has met: a lookup mostly sees a handful, so they are kept
+/// in a small vector and move to a hash set only past [`Seen::SMALL`].
+#[derive(Default)]
+struct Seen {
+    small: Vec<DeclId>,
+    big: HashSet<DeclId>,
+}
+
+impl Seen {
+    const SMALL: usize = 32;
+
+    /// `true` when `d` was not in the set.
+    fn insert(&mut self, d: DeclId) -> bool {
+        if self.big.is_empty() {
+            if self.small.contains(&d) {
+                return false;
+            }
+            if self.small.len() < Self::SMALL {
+                self.small.push(d);
+                return true;
+            }
+            self.big.extend(self.small.drain(..));
+        }
+        self.big.insert(d)
+    }
+}
+
 /// Parameter and result type profile (4.5.3): base types only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
@@ -458,25 +485,32 @@ impl Db {
 
         // 2. Potential visibility through use clauses of every enclosing region.
         let mut pot: Vec<DeclId> = Vec::new();
-        let mut seen: HashSet<DeclId> = HashSet::default();
+        let mut seen = Seen::default();
         for &s in &regions {
             for i in 0..self.scopes[s].uses.len() {
-                let found: Vec<DeclId> = match &self.scopes[s].uses[i] {
-                    UseItem::All(p) => self.scopes[*p].names.get(&key).cloned().unwrap_or_default(),
-                    UseItem::One(ds) => ds
-                        .iter()
-                        .copied()
-                        .filter(|&d| self.decls[d].name.key() == key)
-                        .collect(),
+                match &self.scopes[s].uses[i] {
+                    UseItem::All(p) => {
+                        for &d in self.scopes[*p].names.get(&key).into_iter().flatten() {
+                            if seen.insert(self.entity(d)) {
+                                pot.push(d);
+                            }
+                        }
+                    }
+                    UseItem::One(ds) => {
+                        for &d in ds.iter().filter(|&&d| self.decls[d].name.key() == key) {
+                            if seen.insert(self.entity(d)) {
+                                pot.push(d);
+                            }
+                        }
+                    }
                     UseItem::Library(lib) => {
                         let lib = *lib;
                         *cacheable = false;
-                        self.library_unit_decl(lib, key).into_iter().collect()
-                    }
-                };
-                for d in found {
-                    if seen.insert(self.entity(d)) {
-                        pot.push(d);
+                        if let Some(d) = self.library_unit_decl(lib, key)
+                            && seen.insert(self.entity(d))
+                        {
+                            pot.push(d);
+                        }
                     }
                 }
             }

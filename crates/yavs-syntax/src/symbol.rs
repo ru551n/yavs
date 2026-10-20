@@ -13,10 +13,19 @@ use rustc_hash::FxHashMap;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol(u32);
 
-#[derive(Default)]
 struct Interner {
     map: FxHashMap<&'static str, Symbol>,
     strings: Vec<&'static str>,
+}
+
+impl Default for Interner {
+    /// Sized for a few libraries' worth of names, so the table does not rehash on the way.
+    fn default() -> Self {
+        Interner {
+            map: FxHashMap::with_capacity_and_hasher(1 << 14, Default::default()),
+            strings: Vec::with_capacity(1 << 14),
+        }
+    }
 }
 
 fn interner() -> &'static RwLock<Interner> {

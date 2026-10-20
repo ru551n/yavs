@@ -1,0 +1,12 @@
+exit	1
+diag	error	0	0	:read_failed:_p0	integer read failed
+diag	error	0	0	:read_failed:_p0	real read failed
+diag	error	0	0	:read_failed:_p0	bit read failed
+diag	error	0	0	:read_failed:_p0	boolean read failed
+diag	error	0	0	:read_failed:_p0	character read failed
+diag	error	0	0	:read_failed:_p0	time read failed
+diag	error	0	0	:read_failed:_p0	string read failed
+diag	error	0	0	:read_failed:_p0	bit_vector read failed
+diag	error	0	0	:read_failed:_p0	hread failed
+diag	error	0	0	:read_failed:_p0	oread failed
+diag	note	0	0	:read_failed:_p0	end

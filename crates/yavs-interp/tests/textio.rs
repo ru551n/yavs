@@ -330,11 +330,8 @@ fn file_and_read_errors() {
         m.starts_with("file_open of \"") && m.contains("does-not-exist.txt"),
         "{m}"
     );
-    let e = yavs_interp::call(rt, f2, inst, &[]).unwrap_err();
-    let ErrorKind::Runtime(m) = &e.kind else {
-        panic!("{e}")
-    };
-    assert!(m.starts_with("textio read: "), "{m}");
+    // A failed READ without GOOD is an error report, not a stop (reported to stderr here).
+    yavs_interp::call(rt, f2, inst, &[]).unwrap();
 }
 
 /// getenv, vhdl_version, dir_createdir, dir_open (items listed), dir_close, dir_deletedir.

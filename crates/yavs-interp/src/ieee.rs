@@ -108,7 +108,7 @@ fn put(m: &mut Machine, o: &Vh) -> Ret {
 
 /// A report from a native, as `Inst::Report` does it. The process ends after a report at the
 /// stop severity (`Machine::ieee_stop`).
-fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &str) -> R<()> {
+pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &str) -> R<()> {
     match ctx.as_deref_mut() {
         Some(c) => {
             if !m.rt.asserts.report(c, s) {

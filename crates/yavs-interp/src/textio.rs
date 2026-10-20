@@ -21,7 +21,7 @@
 use std::io::Write;
 
 use yavs_ir::{TyId, Width};
-use yavs_kernel::Ctx;
+use yavs_kernel::{Ctx, Severity};
 use yavs_std::file::{
     FileError, FileOpenKind, FileOpenState, FileOpenStatus, FileOrigin, STD_OUTPUT, TextFile,
 };
@@ -746,9 +746,12 @@ fn parse_line<T>(m: &mut Machine, cell: u64, parse: impl FnOnce(&mut &[u8]) -> T
 }
 
 /// READ: parse from the line; on success store the value and drop what was read from the line.
-/// The GOOD form (one more argument) reports failure in GOOD, the other form is an error.
+/// The GOOD form (one more argument) reports failure in GOOD, the other form reports an error
+/// (severity error, the text `what`) and leaves the variable and the line as they were.
 fn read_with<T>(
     m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    what: &str,
     a: Args<'_>,
     parse: impl FnOnce(&mut &[u8]) -> Result<T, yavs_std::error::ConvError>,
     store: impl FnOnce(&mut Machine, T) -> R<()>,
@@ -766,7 +769,10 @@ fn read_with<T>(
             let _ = e;
             false
         }
-        Err(e) => return rt_err(format!("textio read: {e}")),
+        Err(_) => {
+            crate::ieee::report(m, ctx, Severity::Error, what)?;
+            return Ok(None);
+        }
     };
     if let Some(g) = good {
         m.store(g, Width::B1, ok.into())?;
@@ -776,21 +782,32 @@ fn read_with<T>(
 
 fn read_scalar(
     m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    what: &str,
     a: Args<'_>,
     w: Width,
     f: impl FnOnce(&mut &[u8], yavs_std::types::Revision) -> Result<u64, yavs_std::error::ConvError>,
 ) -> R<Option<u64>> {
     let (rev, dst) = (m.rt.revision, arg(a, 1)?);
-    read_with(m, a, |l| f(l, rev), |m, v| m.store(dst, w, v))
+    read_with(m, ctx, what, a, |l| f(l, rev), |m, v| m.store(dst, w, v))
 }
 
 fn read_bits(
     m: &mut Machine,
+    ctx: &mut Option<&mut Ctx<'_>>,
+    what: &str,
     a: Args<'_>,
     f: fn(&mut &[u8], usize) -> Result<Vec<bool>, yavs_std::error::ConvError>,
 ) -> R<Option<u64>> {
     let (data, n) = m.fat1(arg(a, 1)?)?;
-    read_with(m, a, |l| f(l, n as usize), |m, b| m.put_bits(data, &b))
+    read_with(
+        m,
+        ctx,
+        what,
+        a,
+        |l| f(l, n as usize),
+        |m, b| m.put_bits(data, &b),
+    )
 }
 
 macro_rules! natives {
@@ -822,23 +839,23 @@ fn conv<T>(r: Result<T, yavs_std::error::ConvError>) -> R<T> {
 }
 
 natives! {
-    read_bit(m, ctx, a) { read_scalar(m, a, Width::B1, |l, _| tio::read_bit(l).map(u64::from)) }
-    read_boolean(m, ctx, a) { read_scalar(m, a, Width::B1, |l, _| tio::read_boolean(l).map(u64::from)) }
-    read_character(m, ctx, a) { read_scalar(m, a, Width::B1, |l, _| tio::read_character(l).map(u64::from)) }
+    read_bit(m, ctx, a) { read_scalar(m, ctx, "bit read failed", a, Width::B1, |l, _| tio::read_bit(l).map(u64::from)) }
+    read_boolean(m, ctx, a) { read_scalar(m, ctx, "boolean read failed", a, Width::B1, |l, _| tio::read_boolean(l).map(u64::from)) }
+    read_character(m, ctx, a) { read_scalar(m, ctx, "character read failed", a, Width::B1, |l, _| tio::read_character(l).map(u64::from)) }
     read_integer(m, ctx, a) {
-        read_scalar(m, a, Width::B8, |l, rev| tio::read_integer(l, rev.integer_bounds()).map(|v| v as u64))
+        read_scalar(m, ctx, "integer read failed", a, Width::B8, |l, rev| tio::read_integer(l, rev.integer_bounds()).map(|v| v as u64))
     }
-    read_real(m, ctx, a) { read_scalar(m, a, Width::B8, |l, _| tio::read_real(l, RealBounds::REAL).map(f64::to_bits)) }
+    read_real(m, ctx, a) { read_scalar(m, ctx, "real read failed", a, Width::B8, |l, _| tio::read_real(l, RealBounds::REAL).map(f64::to_bits)) }
     read_time(m, ctx, a) {
-        read_scalar(m, a, Width::B8, |l, _| tio::read_physical(l, &time_type(), Bounds::I64).map(|v| v as u64))
+        read_scalar(m, ctx, "time read failed", a, Width::B8, |l, _| tio::read_physical(l, &time_type(), Bounds::I64).map(|v| v as u64))
     }
     read_string(m, ctx, a) {
         let (data, n) = m.fat1(arg(a, 1)?)?;
-        read_with(m, a, |l| tio::read_string(l, n as usize), |m, b| m.put(data, &b))
+        read_with(m, ctx, "string read failed", a, |l| tio::read_string(l, n as usize), |m, b| m.put(data, &b))
     }
-    read_bit_vector(m, ctx, a) { read_bits(m, a, tio::read_bit_vector) }
-    hread(m, ctx, a) { read_bits(m, a, tio::hread) }
-    oread(m, ctx, a) { read_bits(m, a, tio::oread) }
+    read_bit_vector(m, ctx, a) { read_bits(m, ctx, "bit_vector read failed", a, tio::read_bit_vector) }
+    hread(m, ctx, a) { read_bits(m, ctx, "hread failed", a, tio::hread) }
+    oread(m, ctx, a) { read_bits(m, ctx, "oread failed", a, tio::oread) }
     sread(m, ctx, a) {
         let cell = arg(a, 0)?;
         let (data, n) = m.fat1(arg(a, 1)?)?;

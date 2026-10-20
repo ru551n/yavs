@@ -1663,6 +1663,55 @@ clocked processes on `std_logic_vector` signals (lfsr, ff, 2a, 2b, chain), libra
 0.9 s of 4.2 s) and the interpreted IEEE arithmetic of the original packages (the `synopsys/`
 testbenches, 11.8 s of the 12.9 s corpus total).
 
+## kernel: cost of a process wake-up in clocked RTL (#440), 2026-10-20
+
+Single-threaded (`--threads 1`), release build, interpreter tier, designs of the kernel benchmark set with
+their default generics, against sim1 `-e --no-save --jit -r`. Profiles are sampling stops under a debugger
+(no profiler on this host): per wake-up of 4096 one-bit registers the time went to the interpreter 55 to 70%,
+the update phase 15 to 20%, batch bookkeeping about 10%, the wake filter of the clock's waiters 5 to 14%, and
+two stalls the kernel caused. Table: median of 5 interleaved runs, total CPU seconds (user + system, start-up
+included), main at `4e12507f` against this work; the host was loaded (load average about 23), so read the
+ratios, not the seconds (a quiet run of the same binaries is 1.6x to 2x faster).
+
+| Design | main | this work | sim1 | main / sim1 | this work / sim1 | this work / main |
+|---|---:|---:|---:|---:|---:|---:|
+| ff: 4096 registers x 2000 cycles | 8.42 | 5.54 | 0.71 | 11.9x | 7.8x | 0.66 |
+| lfsr: 512 x 16-bit x 5000 | 5.07 | 3.75 | 0.22 | 23.1x | 17.0x | 0.74 |
+| chain: 1000 stages x 2000 | 2.39 | 1.56 | 0.19 | 12.9x | 8.4x | 0.65 |
+| fan: 4000 x 5000 | 5.87 | 3.88 | 1.26 | 4.6x | 3.1x | 0.66 |
+| bus: 32 drivers x 20000 | 0.98 | 0.91 | 1.27 | 0.8x | 0.7x | 0.92 |
+
+What changed, each its own commit: a 16-byte load of a signal reference the interpreter had just written in
+pieces waited for the stores (store forwarding), at every signal read, edge query and wait; the references are now
+checked inline in the interpreter's reads (`Ctx::first_code`, `Ctx::edge`), which was the largest single item
+(ff 3.5 to 3.1 s, fan 3.1 to 2.5 s quiet). A scalar `std_ulogic` assignment built a waveform list, a logic value
+and a reference list (three allocations): `Ctx::assign_code`. Dirty ranges that continue each other are one range
+(one process per element of a vector made one driving-value search, diff and event per element). Waiters are
+bucketed by 8 elements (64 above 4096) and the bucket lists exist only for signals something waits on, so an event on
+one element of a vector with a process per element scans a few waiters, not 64 (chain 1.0 to 0.74 s); the range
+test precedes the liveness test, an event with one range skips the search. The edge check of a clock is computed
+once per trigger, and a one-list signal whose waiters all share one edge trigger that did not happen is not scanned
+(the falling edge). Observers say which phases and value changes they read (`Observer::wants_phase`): a plain run
+locked the shared-heap collector's mutex five times per delta (chain 7%). The batch order is packed and sorted
+once (it was sorted twice, with a table lookup per comparison). One-source `std_logic` driving values are a copy,
+the segment search starts at the last segment or its neighbour, and the one-thread update phase takes no slot lock.
+The same one-layout-per-type memo made lfsr recompute the layout of a vector and of its slice on every execution
+(about 20% of its time); #444 fixed that in the meantime, and the lfsr row includes it.
+
+Checks at this work's tip (rebased on main of 2026-10-20): difftest corpus 369 of 369 at 1 and 4 threads
+and at 1 and 4 shuffled threads, for the interpreter and the LLVM tier; the reference simulators' own regression
+lists (`external.py --oracle --check`) pass (813 and 382 tests); the external runner's `check` suite 256 of 257 and
+`verification_components` 572 of 579, the same 8 failures as main without this work (#462). Before the last
+rebase `check` was 257 of 257 and `verification_components` 579 of 579, the `.pro` regression
+(`tools/suites/pro.py`, 314 tests) all pass with results identical to main's, and `tools/suites/uvvm.py`
+gave 78 pass, 33 fail, 26 skip, the same failures as before (two axistream configurations that were over 5 minutes
+now finish); the output of all five designs was identical to main's at 1 thread, 4 shuffled threads and 8 threads.
+
+What is left, from the same profiles: the interpreter is 55 to 75% of the time of these designs (each activation
+of `ff` runs predecoded operations and native calls, `xor`, `nor` and `rising_edge`, with their argument pushes); the process, instance and slot data of thousands of instances are cache misses per activation
+(#434); array and slice assignments of logic still build a value and two lists in `Machine::drive`; the update
+phase still touches each element of a vector once per cycle (`mark_active`, `set_event`).
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

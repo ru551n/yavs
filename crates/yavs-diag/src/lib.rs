@@ -689,8 +689,9 @@ mod tests {
         let u = sm.add(utf8.display().to_string(), "a\u{e9}b\nentity e is\n");
         let l = sm.add_latin1(latin1.display().to_string(), b"a\xe9b\nx\xe9 y\n".to_vec());
         let bytes = postcard::to_stdvec(&sm).expect("serialize");
+        let paths = utf8.display().to_string().len() + latin1.display().to_string().len();
         assert!(
-            bytes.len() < 120,
+            bytes.len() < paths + 100,
             "no text in the image: {} bytes",
             bytes.len()
         );

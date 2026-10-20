@@ -882,6 +882,64 @@ The difftest corpus (360 with the new `process/call_frames`) passes at 1 and 4 t
 (`--tier=llvm`, `--tier=auto`); the external runner's `check` (257) and `verification_components` suites pass;
 the verification-library suite gives 78 pass, 33 fail, 26 skipped as before.
 
+### Interpreter dispatch, round 4 (#443)
+
+Two measurements pick the work (scratch builds, not in the repository): a dynamic histogram of the ops
+the predecoded loop runs and of the pairs and triples they form, and a time profile per op (cycles between
+two dispatches, subtracting the cost of the probe). They showed, over the benchmark set: `Stmt` and frame
+loads 20% to 35% of the ops, a `Br` or `Move` + `Br` after almost every block, `Pos` + `Index` + load in
+array code, and of the time in the verification testbenches 11% to 14% in `Copy` (a few dozen bytes each, but
+through the step, three memory lookups and a staging buffer), 15% to 25% in calls and returns, `CallProt`
+(through the step and an argument vector) and `LayoutOf` words.
+
+1. More ops for what stepped out of line: `Deref`, `Field`, `LGet`, `LSet`, a `Const` defined twice, `Copy`,
+   `CopyConst`, `MakeDope` and `CallProt` (enters its callee in the loop like `Call`).
+2. Single ops for the frequent sequences (`pre.rs`, never across a block start): statements in a row, `Stmt` +
+   frame load, two frame loads, a frame load and the compare-branch on it, a frame store + `Stmt`, `Move` +
+   jump, `Pos` + `Index` + load or store, `Index` + load or store. A compare is a mask over `Ord::cmp`
+   instead of a second dispatch on the operator; an 8-byte frame load has no width dispatch.
+3. `Copy` and `CopyConst` copy inside one object or from frame, temporary, constant, instance or heap memory
+   into temporary, frame or heap memory without the staging buffer; stores and descriptor reads take the
+   inline path of loads (heap objects too); a layout word of a memoized array of scalars comes from its
+   bounds; `MakeDope` writes its words from the stack.
+4. A call reads the callee's parameter slots and widths, frame size, nesting and first op from its `Pre` and
+   no longer touches the function (calls into hundreds of functions missed the cache on their parameter
+   lists), looks the callee up once instead of twice, and `Frame` is 44 bytes instead of 72.
+
+Release builds with the `llvm` feature (default `--tier=interp`), `python3 -I tools/bench/run.py --compare`,
+median total CPU seconds of 7 interleaved runs at `--threads 1`, host load about 5: main at `78b1c398` against
+main with this change.
+
+| Benchmark | main | now | ratio |
+|---|---|---|---|
+| `compute_loop` | 0.12 | 0.11 | 0.87 |
+| `calls` | 0.10 | 0.09 | 0.84 |
+| `protected_scoreboard` | 0.08 | 0.07 | 0.89 |
+| `access_heavy` | 0.08 | 0.07 | 0.83 |
+| `strings_heavy` | 0.17 | 0.15 | 0.88 |
+| `uvvm_util_rand_tb` | 1.83 | 1.55 | 0.85 |
+| `osvvm_axistream` | 0.66 | 0.54 | 0.81 |
+| `vai_window_gen` | 0.56 | 0.47 | 0.83 |
+
+Geometric mean 0.85. The five synthetic designs at ten times their default size (min of 7 interleaved runs, so
+startup is out of the ratio): `compute_loop` 1.07 to 0.93 s, `calls` 0.84 to 0.71, `protected_scoreboard` 0.59 to
+0.50, `access_heavy` 0.65 to 0.50, `strings_heavy` 1.53 to 1.32.
+
+What was measured and left: not zeroing or copying a callee's registers (the preloaded ones only, a
+high-water register stack; poisoned stale registers in a debug build pass the whole corpus) gained 0% to 4% and
+was dropped; a frame has 255 registers on average in the library testbenches (23% of the numbered registers
+are never referenced), so dense register numbering or live-range sharing in the IR optimiser is the way to a
+smaller frame and fewer cache misses (#478). What the profile shows now: natives (`textio.write` about 700
+cycles a call, `to_string` of vectors), `Ret`, `Call` and `CallProt` (cache misses on cold functions),
+`NewFill`, `Free`, `SubtypeCheck`, `LCopy` and `Case` through the step (each under 1.5% of the ops).
+
+The difftest corpus (392) passes at 1 and 4 threads on the interpreter, `--tier=llvm` and `--tier=auto`, and
+with the `gc-stress` feature on the interpreter and the LLVM tier (two `synopsys/` tests over the harness
+timeout, as documented); the external runner's `check` (243 pass, 1 fail, 13 skipped) and
+`verification_components` (572 pass, 7 fail) suites give the same verdict per test as main (the failures are
+#462); the two verification libraries' suites (one: 102 pass, 9 fail, 26 skipped, the other's scripts 314/314)
+give the same verdict per test.
+
 ### Verification-testbench runtime library (#428)
 
 Sampled profiles (stack samples every 2 to 4 ms of one thread) of the shared benchmarks, the runner's

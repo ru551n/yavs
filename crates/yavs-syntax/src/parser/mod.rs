@@ -400,7 +400,15 @@ impl<'a> Parser<'a> {
             text
         } else if s.is_ascii() {
             if s.bytes().any(|b| b.is_ascii_uppercase()) {
-                Symbol::intern(&s.to_ascii_lowercase())
+                let mut buf = [0u8; 64];
+                match buf.get_mut(..s.len()) {
+                    Some(dst) => {
+                        dst.copy_from_slice(s.as_bytes());
+                        dst.make_ascii_lowercase();
+                        Symbol::intern(std::str::from_utf8(dst).expect("checked ASCII"))
+                    }
+                    None => Symbol::intern(&s.to_ascii_lowercase()),
+                }
             } else {
                 text
             }

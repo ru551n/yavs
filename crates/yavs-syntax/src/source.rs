@@ -41,7 +41,10 @@ impl<'a> Src<'a> {
         if self.latin1 && !b.is_ascii() {
             Cow::Owned(b.iter().map(|&c| c as char).collect())
         } else {
-            String::from_utf8_lossy(b)
+            match std::str::from_utf8(b) {
+                Ok(s) => Cow::Borrowed(s),
+                Err(_) => String::from_utf8_lossy(b),
+            }
         }
     }
 

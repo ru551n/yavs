@@ -24,29 +24,63 @@ fn interner() -> &'static RwLock<Interner> {
     I.get_or_init(Default::default)
 }
 
+/// Per-thread mirror of the table: a hit or `as_str` of a known symbol takes no lock (the
+/// table only grows, so a copy never goes stale, it only lacks newer entries).
+#[derive(Default)]
+struct Local {
+    map: FxHashMap<&'static str, Symbol>,
+    strings: Vec<&'static str>,
+}
+
+thread_local! {
+    static LOCAL: std::cell::RefCell<Local> = std::cell::RefCell::new(Local::default());
+}
+
 impl Symbol {
     pub fn intern(s: &str) -> Symbol {
-        if let Some(&sym) = interner()
+        LOCAL.with(|l| {
+            let mut l = l.borrow_mut();
+            if let Some(&sym) = l.map.get(s) {
+                return sym;
+            }
+            let (sym, text) = Self::intern_global(s);
+            l.map.insert(text, sym);
+            sym
+        })
+    }
+
+    fn intern_global(s: &str) -> (Symbol, &'static str) {
+        if let Some((&text, &sym)) = interner()
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .map
-            .get(s)
+            .get_key_value(s)
         {
-            return sym;
+            return (sym, text);
         }
         let mut i = interner().write().unwrap_or_else(|e| e.into_inner());
-        if let Some(&sym) = i.map.get(s) {
-            return sym;
+        if let Some((&text, &sym)) = i.map.get_key_value(s) {
+            return (sym, text);
         }
         let s: &'static str = Box::leak(s.to_owned().into_boxed_str());
         let sym = Symbol(i.strings.len() as u32);
         i.strings.push(s);
         i.map.insert(s, sym);
-        sym
+        (sym, s)
     }
 
     pub fn as_str(self) -> &'static str {
-        interner().read().unwrap_or_else(|e| e.into_inner()).strings[self.0 as usize]
+        let i = self.0 as usize;
+        LOCAL.with(|l| {
+            let mut l = l.borrow_mut();
+            if let Some(&s) = l.strings.get(i) {
+                return s;
+            }
+            let g = interner().read().unwrap_or_else(|e| e.into_inner());
+            let have = l.strings.len();
+            l.strings.extend_from_slice(&g.strings[have..]);
+            l.strings[i]
+        })
     }
 }
 

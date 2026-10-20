@@ -84,7 +84,7 @@ impl Lexer<'_> {
     /// In a UTF-8 file, every character of a literal or identifier must be
     /// in ISO-8859-1, since VHDL values are Latin-1 characters.
     fn check_latin1(&mut self, start: usize, end: usize, what: &str) {
-        if self.src.latin1 {
+        if self.src.latin1 || self.b[start..end].is_ascii() {
             return;
         }
         let mut p = start;
@@ -435,8 +435,51 @@ impl Lexer<'_> {
         p
     }
 
+    /// An identifier or keyword of ASCII letters, digits and `_` (the common case, no
+    /// allocation); `false` when a byte above 0x7f follows it, which may continue the word.
+    fn ascii_ident(&mut self, start: usize) -> bool {
+        let mut p = start;
+        while self
+            .b
+            .get(p)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            p += 1;
+        }
+        if self.b.get(p).is_some_and(|&c| c >= 0x80) {
+            return false;
+        }
+        self.pos = p;
+        // The longest reserved word is 17 bytes; the longest bit string base 2.
+        let mut buf = [0u8; 24];
+        let lower = match buf.get_mut(..p - start) {
+            Some(dst) => {
+                dst.copy_from_slice(&self.b[start..p]);
+                dst.make_ascii_lowercase();
+                std::str::from_utf8(dst).ok()
+            }
+            None => None,
+        };
+        let q = self.peek(0);
+        if matches!(q, b'"' | b'%') && lower.is_some_and(|l| BASES.contains(&l)) {
+            self.string(q);
+            self.push(Tok::BitStr, start);
+            self.check_latin1(start, self.pos, "bit string literal");
+            return true;
+        }
+        let kind = match lower.and_then(|l| Kw::lookup(l, self.std)) {
+            Some(kw) => Tok::Kw(kw),
+            None => Tok::Ident,
+        };
+        self.push(kind, start);
+        true
+    }
+
     fn ident(&mut self) {
         let start = self.pos;
+        if self.ascii_ident(start) {
+            return;
+        }
         self.pos = self.word_end(start);
         let lower = self
             .src

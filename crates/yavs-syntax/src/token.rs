@@ -14,8 +14,23 @@ macro_rules! keywords {
                 match self { $(Kw::$kw => $s,)* }
             }
 
+            /// Reserved words by first letter: most identifiers are rejected after a few
+            /// comparisons instead of one per reserved word.
             fn from_lower(s: &str) -> Option<Kw> {
-                match s { $($s => Some(Kw::$kw),)* _ => None }
+                static BY_LETTER: std::sync::LazyLock<[Vec<(&'static str, Kw)>; 26]> =
+                    std::sync::LazyLock::new(|| {
+                        let mut t: [Vec<(&'static str, Kw)>; 26] = Default::default();
+                        $(t[($s.as_bytes()[0] - b'a') as usize].push(($s, Kw::$kw));)*
+                        t
+                    });
+                let c = *s.as_bytes().first()?;
+                if !c.is_ascii_lowercase() {
+                    return None;
+                }
+                BY_LETTER[(c - b'a') as usize]
+                    .iter()
+                    .find(|(k, _)| *k == s)
+                    .map(|&(_, kw)| kw)
             }
         }
     };

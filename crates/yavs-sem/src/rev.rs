@@ -124,6 +124,11 @@ impl Db {
     /// file sees the 2008 overloads. `E1007` at `at` when nothing is left.
     pub(crate) fn rev_gate(&mut self, r: NameRes, name: Span, at: Span) -> NameRes {
         let rev = self.file_rev();
+        // No declaration is newer than the design, so nothing is hidden from a file of the
+        // design's revision.
+        if self.rev <= rev {
+            return r;
+        }
         let what = |db: &Db| db.span_text(name);
         match r {
             NameRes::One(d) if self.decls[d].since > rev => {

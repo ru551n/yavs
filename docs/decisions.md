@@ -1936,6 +1936,12 @@ user's performance priority:
 - **A manifest is parsed once per run.** `Library::read` keeps the parsed manifest of a library and
   returns it again while the manifest file has its size and time and is two seconds old; the library lock
   is still taken for every read. The closure and the restore of the analysis image both read each library.
+- **A manifest is read by a parser for the text yavs writes, with `toml` as the fallback** (yavs-lib
+  `parse_written`): the `toml` crate took 5 ms for the manifests of a testbench library and a run parses
+  them at every start. The parser accepts only the exact shape `Manifest::to_text` produces (simple
+  strings, no escapes, known keys, all required fields) and returns `None` for anything else, so
+  other format versions, hand edits and unusual paths are read by `toml` with the same result and the
+  same diagnostics; a test compares both on written manifests.
 - **The restored image does not compare the closure's source files again** (`Db::from_image` takes a
   `verified` predicate): the closure verified them and the key holds their hashes. Only the built-in
   `std`/`ieee` text is compared.

@@ -14,7 +14,7 @@ in its own directory. PASS = exit 0 and the library's final summary ">> Simulati
 Results: DIR/results.tsv (component, lib.entity, generics, status, first error line) and DIR/<comp>/<n>/log.txt;
 the per-component pass/fail table is printed at the end. Exit 0 always unless usage errors (a measurement).
 """
-import argparse, concurrent.futures as cf, contextlib, glob, io, os, re, shutil, subprocess, sys, types
+import argparse, concurrent.futures as cf, contextlib, glob, io, itertools, os, re, shutil, subprocess, sys, types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -193,13 +193,24 @@ def build(a, comp, plan_):
     if a.private_copies:  # a source listed for several libraries gets one path per library (see the module doc)
         srcs = [(lib, copy_for(a, comp, lib, p)) for lib, p in srcs]
     bad = {}  # failed testbench file -> first error; library sources stop the component
-    for lib, p in srcs + tbs:
-        cmd = [a.yavs, "analyze", f"--std={STD}", "--relaxed", f"--work={lib}:{d}/{lib}"] + [f"--map={l}:{d}/{l}" for l in libs if l != lib] + [str(p)]
-        rc, out = sh(cmd, d, not a.no_wrap, "2G")
-        if rc:
-            if (lib, p) not in tbs:
-                return f"analyze {p.name} exit {rc}: " + first_error(out), {}
-            bad[p] = f"analyze {p.name} exit {rc}: " + first_error(out)
+    todo = srcs + tbs
+    # Consecutive files of one library go in one call (one analysis session sees the units of the
+    # files before it); a failing call is repeated file by file to find the files that fail.
+    groups = [(lib, [p for _, p in g]) for lib, g in itertools.groupby(todo, key=lambda t: t[0])]
+
+    def call(lib, files):
+        cmd = [a.yavs, "analyze", f"--std={STD}", "--relaxed", f"--work={lib}:{d}/{lib}"] + [f"--map={l}:{d}/{l}" for l in libs if l != lib] + [str(p) for p in files]
+        return sh(cmd, d, not a.no_wrap, "2G")
+
+    for lib, files in groups:
+        if call(lib, files)[0] == 0:
+            continue
+        for p in files:
+            rc, out = call(lib, [p])
+            if rc:
+                if (lib, p) not in tbs:
+                    return f"analyze {p.name} exit {rc}: " + first_error(out), {}
+                bad[p] = f"analyze {p.name} exit {rc}: " + first_error(out)
     return None, bad
 
 

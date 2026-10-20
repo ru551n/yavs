@@ -338,22 +338,38 @@ def main():
         return
     out.mkdir(parents=True, exist_ok=True)
     (out / "run").mkdir(exist_ok=True)
-    # phase 1: analyze everything in script order, one file per call
+    # phase 1: analyze everything in script order; consecutive files of one library with the same
+    # library mapping go in one call (one analysis session sees the units of the files before it)
     failed, nan = {}, 0
+    batches = []
     for k, d in plan.actions:
         if k != "analyze":
             continue
-        lib = d["lib"]
+        key = (d["lib"].lower(), tuple(sorted(d["libs"].items())), d["suite"])
+        if batches and batches[-1][0] == key:
+            batches[-1][1].append(d)
+        else:
+            batches.append((key, [d]))
+    log = out / "analyze.log"
+
+    def analyze(group):
+        d = group[0]
         dirs = dict(d["libs"])
-        log = out / "analyze.log"
-        cmd = [o.yavs, "analyze", f"--std={o.std}", f"--work={lib}:{dirs[lib.lower()]}"]
-        cmd += [f"--map={n}:{p}" for n, p in dirs.items()] + [str(d["file"])]
+        cmd = [o.yavs, "analyze", f"--std={o.std}", f"--work={d['lib']}:{dirs[d['lib'].lower()]}"]
+        cmd += [f"--map={n}:{p}" for n, p in dirs.items()]
         with open(log, "ab") as f:
-            f.write(f"== {d['where']} {d['file'].name}\n".encode())
-        s, _ = sandbox(cmd, log, out)
-        nan += 1
-        if s != 0:
-            failed.setdefault(d["suite"], []).append(f"{d['where']} {d['file'].name} (exit {s})")
+            for x in group:
+                f.write(f"== {x['where']} {x['file'].name}\n".encode())
+        return sandbox(cmd + [str(x["file"]) for x in group], log, out)[0]
+
+    for _, group in batches:
+        nan += len(group)
+        if analyze(group) == 0:
+            continue
+        for x in group:  # a failing batch stops at its first error: find the files that fail
+            if len(group) > 1 and analyze([x]) == 0:
+                continue
+            failed.setdefault(x["suite"], []).append(f"{x['where']} {x['file'].name}")
     print(f"analyzed {nan} files; failures: {sum(len(v) for v in failed.values())}")
     if o.analyze_only:
         for v in failed.values():

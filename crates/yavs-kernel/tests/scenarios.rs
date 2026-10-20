@@ -1347,6 +1347,8 @@ fn edge_trigger_skips_other_events() {
                 signal: clk,
                 elem: 0,
                 rising,
+                legacy: false,
+                reset: None,
             },
         );
         let cfg = Config {
@@ -1479,4 +1481,83 @@ fn skipped_unchanged_assignments_keep_the_deltas() {
     let (off, on) = (unchanged_scenario(false), unchanged_scenario(true));
     assert!(off.iter().any(|l| l.contains("+1 NextCycle")));
     assert_eq!(off, on);
+}
+
+/// The legacy form (`clk'event and clk = '1'`) and an asynchronous reset level: the process
+/// runs exactly when its condition can be true, and the same number of times it matters.
+#[test]
+fn legacy_and_reset_triggers_skip_other_events() {
+    let logic = |ch: char| -> LogicVec { ch.to_string().parse().unwrap() };
+    let run = |triggers: bool| {
+        let mut b = Builder::new();
+        let mk = |b: &mut Builder, name: &str, seq: &'static str| {
+            let s = b.resolved_signal(
+                name,
+                SignalType::logic(1),
+                &LogicVec::new(1, StdULogic::Zero),
+                Resolution::StdLogic,
+            );
+            let d = b.driver(s);
+            let mut step = 0;
+            b.process(
+                name,
+                NONE,
+                &[d],
+                p(move |c| {
+                    if let Some(ch) = seq.chars().nth(step) {
+                        c.assign(d, None, &[(Time::ZERO, &logic(ch))], DelayMode::INERTIAL)?;
+                        step += 1;
+                        c.wait_for(ns(5))?;
+                    }
+                    Ok(())
+                }),
+            );
+            s
+        };
+        // clk: 0 1 X 1 0 1 H 0 1 1 (legacy rising = event ending on '1': 1, X->1 and 1 = no
+        // event, 0->1, H->0 no, 0->1); rst: '1' for the 4th and 5th step.
+        let clk = mk(&mut b, "clk", "1X1010H011");
+        let rst = mk(&mut b, "rst", "0001100000");
+        let seen = Arc::new(std::sync::Mutex::new((0u32, 0u32)));
+        let out = seen.clone();
+        let (mut runs, mut needed) = (0u32, 0u32);
+        let reg = b.process(
+            "reg",
+            NONE,
+            &[],
+            p(move |c| {
+                runs += 1;
+                let one = |s| c.logic(s).map(|l| l.get(0) == StdULogic::One);
+                if (c.event(clk)? && one(clk)?) || one(rst)? {
+                    needed += 1;
+                }
+                *out.lock().unwrap() = (runs, needed);
+                c.wait_on(clk)?;
+                c.wait_on(rst)
+            }),
+        );
+        b.edge_trigger(
+            reg,
+            EdgeTrigger {
+                signal: clk,
+                elem: 0,
+                rising: true,
+                legacy: true,
+                reset: Some((rst, 0, StdULogic::One as u8)),
+            },
+        );
+        let cfg = Config {
+            edge_triggers: triggers,
+            ..Config::default()
+        };
+        let (mut sim, _) = build(b, cfg);
+        sim.run_until(ns(100)).unwrap();
+        *seen.lock().unwrap()
+    };
+    let (all, needed) = run(false);
+    let (held, needed_held) = run(true);
+    assert_eq!(needed, needed_held);
+    assert!(needed > 0 && all > needed + 1);
+    // The initial run, then only the activations that could do something.
+    assert_eq!(held, needed + 1);
 }

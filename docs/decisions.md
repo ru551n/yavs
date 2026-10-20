@@ -2061,6 +2061,15 @@ user's performance priority:
   `and` does not evaluate `X` after a false edge), and a process with one `wait [on ...] until
   E;` and no other suspension point (decided after lowering: `Process::several_waits`) is
   recognised in the same way.
+- Asynchronous reset and the legacy edge (#420): `if R then ... elsif E then ... end if;`
+  (no `else`, `R` an `=` test of a `std_ulogic` element against a literal, `E` as above) is
+  recognised with the reset as part of the trigger: the process also runs whenever `R` holds
+  at the event, so the reset branch runs for every event during reset exactly as before (no
+  need to skip its unchanged assignments), and only events with neither `R` nor `E` are
+  skipped. `x'event and x = '1'` (`'0'` for falling; either operand order; `x` a `std_ulogic`
+  element) is an edge too, as an event ending on that value from any value (not the IEEE 1164
+  function, which also needs the old value to be '0' or 'L'). Other literals ('H', ...) and
+  non-`std_ulogic` signals are not recognised.
 
 ## Memory of designs with many instances (yavs-elab, yavs-kernel, #421, 2026-10-20)
 

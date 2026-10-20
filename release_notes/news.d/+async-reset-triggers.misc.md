@@ -1,0 +1,1 @@
+Clocked processes with an asynchronous reset (`if rst = '1' then ... elsif rising_edge(clk) then ...`) and processes written with `clk'event and clk = '1'` are no longer started on the clock edge or event they ignore, so such designs simulate faster.

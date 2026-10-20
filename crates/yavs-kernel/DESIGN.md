@@ -113,7 +113,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
    element of a signal, or one `wait until` of that, and does nothing without the edge) stays
    suspended, its waiter in place, when the event does not make the edge true: running it
    would only evaluate the condition and suspend again
-   (`Config::edge_triggers`, off when activations are observable).
+   (`Config::edge_triggers`, off when activations are observable). The trigger may also be
+   `s'event and s = '1'` (`legacy`) and carry an asynchronous reset level
+   (`if r = c then ... elsif <edge> then ...`): the process then also runs when `r` holds `c`.
    `Config::skip_unchanged` (R2b): an assignment that changes nothing on a signal whose
    activity nothing can observe (`Builder::mark_skippable`) is not queued; the cycle it would
    have caused still runs (`empty_delta`), and a later assignment of the run to the same driver

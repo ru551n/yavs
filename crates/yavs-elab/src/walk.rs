@@ -2412,16 +2412,18 @@ impl Elab<'_> {
         Ok(())
     }
 
-    /// A process that does nothing unless one edge of one scalar signal happens: the kernel
-    /// resumes it only on that edge (`yavs_kernel::EdgeTrigger`), where it would evaluate a
-    /// false condition and suspend again. Returns rising, the signal and the element, and
-    /// whether the process must also have a single suspension point (the wait form, checked
-    /// once it is lowered). Shapes: `process (...) begin if E then ... end if; end process;`
-    /// (no `else`, no `elsif`) and `process begin ... wait [on ...] until E; ... end process;`,
-    /// where `E` is `rising_edge(x)` or `falling_edge(x)` (IEEE 1164), optionally the first
-    /// operand of `and`s (the others are not evaluated on a false edge), and `x` is a static
-    /// element of a signal: `clk`, `v(2)`, `r.f`.
-    fn edge_trigger(&mut self, s: ScopeId, st: StmtId) -> Option<(bool, LeafId, u32, bool)> {
+    /// A process that does nothing unless one edge of one scalar signal happens (or its reset
+    /// level holds): the kernel resumes it only then (`yavs_kernel::EdgeTrigger`), where it
+    /// would evaluate false conditions and suspend again. Shapes: `process (...) begin if E
+    /// then ... end if; end process;` (no `else`), the same with an asynchronous reset,
+    /// `if R then ... elsif E then ... end if;` (no `else`), and `process begin ... wait [on
+    /// ...] until E; ... end process;` (valid only with one suspension point, checked once
+    /// the process is lowered). `E` is `rising_edge(x)` or `falling_edge(x)` (IEEE 1164) or
+    /// `x'event and x = '1'` (`'0'`), optionally the first operand of `and`s (the others are
+    /// not evaluated on a false edge); `x` is a static element of a signal: `clk`, `v(2)`,
+    /// `r.f`. `R` is `r = '1'` (any `std_ulogic` literal) on such an element. The legacy form
+    /// and the reset need a `std_ulogic` signal.
+    fn edge_trigger(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcTrigger> {
         let db: &Db = &*self.db;
         let StmtKind::Process {
             postponed: false,
@@ -2432,7 +2434,7 @@ impl Elab<'_> {
         else {
             return None;
         };
-        let (cond, wait) = match (sensitivity, &body[..]) {
+        let (cond, reset, wait) = match (sensitivity, &body[..]) {
             (Sensitivity::List(sens), [only]) if !sens.is_empty() => {
                 let StmtKind::If {
                     branches,
@@ -2441,10 +2443,11 @@ impl Elab<'_> {
                 else {
                     return None;
                 };
-                let [(cond, _)] = &branches[..] else {
-                    return None;
-                };
-                (*cond, false)
+                match &branches[..] {
+                    [(cond, _)] => (*cond, None, false),
+                    [(reset, _), (cond, _)] => (*cond, Some(*reset), false),
+                    _ => return None,
+                }
             }
             (Sensitivity::None, body) => {
                 let mut waits = body.iter().filter_map(|&w| match &db.stmts[w].kind {
@@ -2454,29 +2457,105 @@ impl Elab<'_> {
                 let (Some((Some(c), false)), None) = (waits.next(), waits.next()) else {
                     return None;
                 };
-                (c, true)
+                (c, None, true)
             }
             _ => return None,
         };
-        let (rising, arg) = self.edge_of(cond)?;
-        let (d, path) = self.static_signal(arg)?;
+        let (rising, arg, level) = self.edge_of(cond)?;
+        let (leaf, elem) = self.static_elem(s, arg)?;
+        let legacy = level.is_some();
+        if let Some(l) = level {
+            // `x'event and x = '1'`: both operands name the same element.
+            (self.static_elem(s, l)? == (leaf, elem)).then_some(())?;
+        }
+        let logic = |e: &Self, l: LeafId| e.m.nets.leaf(l).ty.elem == Elem::Logic;
+        let reset = match reset {
+            Some(r) => {
+                let (x, pos) = self.level_of(r)?;
+                let (rl, re) = self.static_elem(s, x)?;
+                (logic(self, rl) && pos <= 8).then_some((rl, re, pos as u8))
+            }
+            None => None,
+        };
+        if (legacy || reset.is_some()) && !logic(self, leaf) {
+            return None;
+        }
+        Some(crate::ProcTrigger {
+            rising,
+            leaf,
+            elem,
+            wait,
+            legacy,
+            reset,
+        })
+    }
+
+    /// The leaf and element a static signal name denotes.
+    fn static_elem(&mut self, s: ScopeId, e: ExprId) -> Option<(LeafId, u32)> {
+        let db: &Db = &*self.db;
+        let (d, path) = self.static_signal(e)?;
         let l = Lsp {
             root: ObjRoot::Decl(d),
             path: path.into(),
             stat: Staticness::Globally,
-            span: db.exprs[arg].span,
+            span: db.exprs[e].span,
         };
         // A probe: the same name is resolved for real when the process is lowered.
         let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
         match self.m.nets.select(o, &sels).ok()?.0[..] {
-            [(leaf, r)] if r.len == 1 => Some((rising, leaf, r.offset, wait)),
+            [(leaf, r)] if r.len == 1 => Some((leaf, r.offset)),
             _ => None,
         }
     }
 
-    /// `rising_edge(x)` or `falling_edge(x)` of IEEE 1164, or an `and` of BOOLEANs whose first
-    /// operand is one: whether it is rising and the argument.
-    fn edge_of(&self, cond: ExprId) -> Option<(bool, ExprId)> {
+    /// `x = '1'` or `'1' = x` of the predefined `=`: the signal name and the position of the
+    /// enumeration literal.
+    fn level_of(&self, e: ExprId) -> Option<(ExprId, u32)> {
+        let db: &Db = &*self.db;
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[e].kind
+        else {
+            return None;
+        };
+        let decl = &db.decls[*callee];
+        let [
+            Arg {
+                actual: Actual::Expr(l),
+                ..
+            },
+            Arg {
+                actual: Actual::Expr(r),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return None;
+        };
+        if !decl.implicit || decl.name.key().as_str() != "\"=\"" {
+            return None;
+        }
+        let pos = |x: ExprId| match db.exprs[x].kind {
+            ExprKind::Const(c) => match db.consts[c] {
+                yavs_sem::stat::ConstValue::Enum(p) => Some(p),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (pos(*l), pos(*r)) {
+            (None, Some(p)) => Some((*l, p)),
+            (Some(p), None) => Some((*r, p)),
+            _ => None,
+        }
+    }
+
+    /// `rising_edge(x)` or `falling_edge(x)` of IEEE 1164, `x'event and x = '1'` (or `'0'`;
+    /// either order), or an `and` of BOOLEANs whose first operand is one: whether it is rising,
+    /// the argument and, for the legacy form, the other mention of the signal.
+    fn edge_of(&self, cond: ExprId) -> Option<(bool, ExprId, Option<ExprId>)> {
         let db: &Db = &*self.db;
         let ExprKind::Call {
             callee,
@@ -2499,18 +2578,49 @@ impl Elab<'_> {
             // The predefined `and` of BOOLEAN (it does not evaluate its second operand
             // after a false first one).
             let boolean = Some(db.base(db.exprs[cond].subtype)) == db.well_known.boolean;
-            return (boolean && args.len() == 2 && decl.name.key().as_str() == "\"and\"")
-                .then(|| self.edge_of(first))?;
+            if !(boolean && args.len() == 2 && decl.name.key().as_str() == "\"and\"") {
+                return None;
+            }
+            if let Some(Arg {
+                actual: Actual::Expr(second),
+                ..
+            }) = args.get(1)
+                && let Some(x) = self.legacy_of(first, *second)
+            {
+                return Some(x);
+            }
+            return self.edge_of(first);
         }
         let owner = db.scopes[decl.scope].owner?;
         match (
             decl.name.key().as_str(),
             db.decls[owner].name.key().as_str(),
         ) {
-            ("rising_edge", "std_logic_1164") if args.len() == 1 => Some((true, first)),
-            ("falling_edge", "std_logic_1164") if args.len() == 1 => Some((false, first)),
+            ("rising_edge", "std_logic_1164") if args.len() == 1 => Some((true, first, None)),
+            ("falling_edge", "std_logic_1164") if args.len() == 1 => Some((false, first, None)),
             _ => None,
         }
+    }
+
+    /// `x'event` with `x = '1'` (rising) or `x = '0'`, in either order.
+    fn legacy_of(&self, a: ExprId, b: ExprId) -> Option<(bool, ExprId, Option<ExprId>)> {
+        use yavs_sem::hir::{AttrPrefix, PredefAttr};
+        let db: &Db = &*self.db;
+        let event = |e: ExprId| match &db.exprs[e].kind {
+            ExprKind::Attr {
+                attr: PredefAttr::Event,
+                prefix: AttrPrefix::Expr(x),
+                ..
+            } => Some(*x),
+            _ => None,
+        };
+        let (x, (l, pos)) = match (event(a), event(b)) {
+            (Some(x), None) => (x, self.level_of(b)?),
+            (None, Some(x)) => (x, self.level_of(a)?),
+            _ => return None,
+        };
+        // std_ulogic positions: '0' is 2, '1' is 3.
+        matches!(pos, 2 | 3).then_some((pos == 3, x, Some(l)))
     }
 
     /// A name made of a signal, static indices and fields: the signal and the steps.

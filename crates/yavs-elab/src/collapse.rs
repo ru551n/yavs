@@ -183,9 +183,13 @@ pub(crate) fn in_ports(
             mr(&mut q);
             (*l, *r) = q;
         }
-        if let Some((_, l, e, _)) = &mut p.trigger {
-            let (t, off) = m(*l);
-            (*l, *e) = (t, *e + off);
+        if let Some(t) = &mut p.trigger {
+            let (l, off) = m(t.leaf);
+            (t.leaf, t.elem) = (l, t.elem + off);
+            if let Some((l, e, _)) = &mut t.reset {
+                let (n, off) = m(*l);
+                (*l, *e) = (n, *e + off);
+            }
         }
     }
     count

@@ -1932,6 +1932,7 @@ fn clocked_processes_get_edge_triggers() {
         signal clk, rst, en : std_logic := '0';
         signal v : std_logic_vector(3 downto 0);
         signal q, r, s : std_logic;
+        signal bt : bit;
       begin
         p1 : process (clk) begin if rising_edge(clk) then q <= '1'; end if; end process;
         p2 : process (rst) begin if falling_edge(rst) then r <= '1'; end if; end process;
@@ -1946,31 +1947,64 @@ fn clocked_processes_get_edge_triggers() {
         g : for i in 0 to 1 generate
           p11 : process (v) begin if rising_edge(v(i + 1)) then q <= '1'; end if; end process;
         end generate;
+        p12 : process (clk) begin if clk'event and clk = '1' then q <= '1'; end if; end process;
+        p13 : process (clk) begin if clk = '0' and clk'event then q <= '1'; end if; end process;
+        p14 : process (clk) begin if clk'event and clk = 'H' then q <= '1'; end if; end process;
+        p15 : process (clk, rst) begin
+          if rst = '0' then q <= '0'; elsif falling_edge(clk) then q <= '1'; end if;
+        end process;
+        p16 : process (bt) begin if bt'event and bt = '1' then q <= '1'; end if; end process;
+        p17 : process (clk, rst) begin
+          if rst = '1' then q <= '0'; elsif clk'event and clk = '1' and en = '1' then q <= '1'; end if;
+        end process;
+        p18 : process (clk, rst) begin
+          if rst = '1' then q <= '0'; elsif rising_edge(clk) then q <= '1'; else q <= '0'; end if;
+        end process;
+        p19 : process (clk, rst) begin
+          if rst = en then q <= '0'; elsif rising_edge(clk) then q <= '1'; end if;
+        end process;
       end;";
     let (_, e) = elab("edges", src, "t", &[]);
     let t: Vec<_> = e
         .procs
         .iter()
         .map(|p| {
-            p.trigger
-                .map(|(rising, _, elem, wait)| (rising, elem, wait))
+            p.trigger.map(|t| {
+                (
+                    t.rising,
+                    t.elem,
+                    t.wait,
+                    t.legacy,
+                    t.reset.map(|r| (r.1, r.2)),
+                )
+            })
         })
         .collect();
+    let (edge, wait, legacy) = ((false, false), (true, false), (false, true));
+    let x = |rising, elem, (w, l): (bool, bool), reset| Some((rising, elem, w, l, reset));
     assert_eq!(
         t,
         [
-            Some((true, 0, false)),
-            Some((false, 0, false)),
-            Some((false, 2, false)),
-            Some((true, 0, false)),
+            x(true, 0, edge, None),
+            x(false, 0, edge, None),
+            x(false, 2, edge, None),
+            x(true, 0, edge, None),
             None,
-            Some((true, 0, false)),
+            x(true, 0, edge, None),
             None,
-            Some((true, 0, true)),
+            x(true, 0, wait, None),
+            None,
+            x(true, 0, edge, Some((0, 3))),
+            x(true, 1, edge, None),
+            x(true, 2, edge, None),
+            x(true, 0, legacy, None),
+            x(false, 0, legacy, None),
+            None,
+            x(false, 0, edge, Some((0, 2))),
+            None,
+            x(true, 0, legacy, Some((0, 3))),
             None,
             None,
-            Some((true, 1, false)),
-            Some((true, 2, false)),
         ]
     );
 }

@@ -1083,7 +1083,7 @@ impl SimControl {
                 self.cfg.edge_triggers
                     && procs[w.proc as usize]
                         .trigger
-                        .is_some_and(|t| !edge(signals, t, self.cycle))
+                        .is_some_and(|t| !fires(signals, t, self.cycle))
             };
             waiters.take_woken(&runs, live, hold, &mut woken);
             let sig = &mut self.signals[s as usize];
@@ -1716,11 +1716,27 @@ impl SimControl {
     }
 }
 
-/// Whether edge trigger `t` holds in this cycle: an event on the element, with its value and
-/// `'last_value` through `To_X01` giving the edge ('1' or 'H' after '0' or 'L' for rising).
+/// Whether the process of trigger `t` must run in this cycle: its edge, or its reset level.
+fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
+    edge(signals, t, cycle)
+        || t.reset
+            .is_some_and(|(r, e, c)| signals[r.0 as usize].cur.code(e as usize) == c)
+}
+
+/// Whether the edge of trigger `t` holds in this cycle: an event on the element, with its
+/// value and `'last_value` through `To_X01` giving the edge ('1' or 'H' after '0' or 'L' for
+/// rising), or an event ending on '1' (rising) or '0' for the legacy form.
 fn edge(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
     let s = &signals[t.signal.0 as usize];
     let i = t.elem as usize;
+    if t.legacy {
+        let end = if t.rising {
+            StdULogic::One
+        } else {
+            StdULogic::Zero
+        };
+        return s.event_in(Range::new(t.elem, 1), cycle) && s.cur.code(i) == end as u8;
+    }
     let to_x01 = |c: u8| match c {
         c if c == StdULogic::One as u8 || c == StdULogic::H as u8 => Some(true),
         c if c == StdULogic::Zero as u8 || c == StdULogic::L as u8 => Some(false),

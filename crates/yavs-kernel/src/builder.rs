@@ -62,15 +62,22 @@ struct ProcDecl {
 /// The one condition under which an event resumes a process to any effect: the process is
 /// `process (...) begin if rising_edge(s) then ... end if; end process;` (or `falling_edge`;
 /// or one `wait until` of that, optionally `and`ed with more) on element `elem` of a logic
-/// signal. An event that does not make the edge true would only evaluate the condition and
-/// suspend again, so the kernel leaves the process suspended
-/// (`Config::edge_triggers`). Edges as the IEEE 1164 functions define them: `'event`, and the
-/// value and `'last_value` through `To_X01`.
+/// signal; or the same with `s'event and s = '1'`; or either behind a reset branch,
+/// `if r = '1' then ... elsif <edge> then ... end if`. An event that makes neither the edge
+/// nor the reset condition true would only evaluate them and suspend again, so the kernel
+/// leaves the process suspended (`Config::edge_triggers`). Edges as the IEEE 1164 functions
+/// define them: `'event`, and the value and `'last_value` through `To_X01`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeTrigger {
     pub signal: SignalId,
     pub elem: u32,
     pub rising: bool,
+    /// The condition is `s'event and s = '1'` (`'0'` when falling) instead of the IEEE 1164
+    /// function: an event ending on that value, from any value.
+    pub legacy: bool,
+    /// An asynchronous reset: `if s = c then ... elsif <edge> then ... end if`. The process
+    /// also runs whenever element `.1` of signal `.0` holds the `std_ulogic` code `.2`.
+    pub reset: Option<(SignalId, u32, u8)>,
 }
 
 /// Builds a model: signals, drivers, ports, implicit signals and processes, in elaboration
@@ -348,10 +355,11 @@ impl Builder {
     /// Process `p` resumes for an event only when `t` holds ([`EdgeTrigger`]); the caller
     /// guarantees the process has that shape and waits on that element alone.
     pub fn edge_trigger(&mut self, p: ProcId, t: EdgeTrigger) {
-        let ok = self
-            .signals
-            .get(t.signal.0 as usize)
-            .is_some_and(|s| s.ty.elem == crate::value::Elem::Logic && t.elem < s.ty.len);
+        let logic = |s: SignalId, e: u32| {
+            (self.signals.get(s.0 as usize))
+                .is_some_and(|s| s.ty.elem == crate::value::Elem::Logic && e < s.ty.len)
+        };
+        let ok = logic(t.signal, t.elem) && t.reset.is_none_or(|(s, e, _)| logic(s, e));
         match self.procs.get_mut(p.0 as usize) {
             Some(d) if ok => d.trigger = Some(t),
             _ => self.usage(format!("edge trigger {t:?} on process {}", p.0)),

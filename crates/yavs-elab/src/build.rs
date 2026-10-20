@@ -161,14 +161,15 @@ impl Elaborated {
                 &ds,
                 proc,
             );
-            if let Some((rising, leaf, elem, _)) = p.trigger.filter(|t| !t.3 || !proc_waits) {
-                let signal = yavs_kernel::SignalId(leaf.0);
+            if let Some(t) = p.trigger.filter(|t| !t.wait || !proc_waits) {
                 b.edge_trigger(
                     pid,
                     EdgeTrigger {
-                        signal,
-                        elem,
-                        rising,
+                        signal: yavs_kernel::SignalId(t.leaf.0),
+                        elem: t.elem,
+                        rising: t.rising,
+                        legacy: t.legacy,
+                        reset: t.reset.map(|(l, e, c)| (yavs_kernel::SignalId(l.0), e, c)),
                     },
                 );
             }

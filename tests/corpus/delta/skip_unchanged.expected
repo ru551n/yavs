@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:skip_unchanged:_p10	x event '0'
+diag	note	12000000	1	:skip_unchanged:_p8	pp at 12000000 fs y=0000
+diag	note	31000000	1	:skip_unchanged:_p8	pp2 at 31000000 fs
+diag	note	50000000	1	:skip_unchanged:_p9	w0
+diag	note	71000000	0	:skip_unchanged:_p8	pp3

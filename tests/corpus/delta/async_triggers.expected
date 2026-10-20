@@ -1,0 +1,135 @@
+exit	0
+diag	note	0	0	:async_triggers:_p7	q1=0 q2=0 q3=0 q4=0 q5=0 cnt=0
+diag	note	0	1	:async_triggers:_p7	q1=0 q2=0 q3=F q4=0 q5=0 cnt=0
+diag	note	3000000	1	:async_triggers:_p7	q1=0 q2=A q3=F q4=0 q5=0 cnt=0
+diag	note	7000000	0	:async_triggers:_p8	pp 0
+diag	note	14000000	0	:async_triggers:_p8	pp 0
+diag	note	21000000	0	:async_triggers:_p8	pp 0
+diag	note	25000000	1	:async_triggers:_p7	q1=1 q2=A q3=F q4=0 q5=0 cnt=0
+diag	note	28000000	0	:async_triggers:_p8	pp 1
+diag	note	35000000	1	:async_triggers:_p7	q1=2 q2=A q3=F q4=0 q5=0 cnt=0
+diag	note	35000000	2	:async_triggers:_p8	pp 2
+diag	note	42000000	0	:async_triggers:_p8	pp 2
+diag	note	45000000	1	:async_triggers:_p7	q1=3 q2=B q3=F q4=0 q5=0 cnt=1
+diag	note	49000000	0	:async_triggers:_p8	pp 3
+diag	note	50000000	1	:async_triggers:_p7	q1=3 q2=B q3=E q4=0 q5=0 cnt=1
+diag	note	55000000	1	:async_triggers:_p7	q1=4 q2=C q3=E q4=0 q5=0 cnt=2
+diag	note	56000000	0	:async_triggers:_p8	pp 4
+diag	note	60000000	1	:async_triggers:_p7	q1=4 q2=C q3=D q4=0 q5=0 cnt=2
+diag	note	63000000	0	:async_triggers:_p8	pp 4
+diag	note	65000000	1	:async_triggers:_p7	q1=5 q2=D q3=D q4=0 q5=0 cnt=3
+diag	note	70000000	1	:async_triggers:_p7	q1=5 q2=D q3=C q4=1 q5=0 cnt=3
+diag	note	70000000	1	:async_triggers:_p8	pp 5
+diag	note	75000000	1	:async_triggers:_p7	q1=6 q2=E q3=C q4=1 q5=0 cnt=4
+diag	note	77000000	0	:async_triggers:_p8	pp 6
+diag	note	80000000	1	:async_triggers:_p7	q1=6 q2=E q3=B q4=1 q5=0 cnt=4
+diag	note	84000000	0	:async_triggers:_p8	pp 6
+diag	note	85000000	1	:async_triggers:_p7	q1=7 q2=F q3=B q4=1 q5=0 cnt=5
+diag	note	90000000	1	:async_triggers:_p7	q1=7 q2=F q3=A q4=2 q5=0 cnt=5
+diag	note	91000000	0	:async_triggers:_p8	pp 7
+diag	note	95000000	1	:async_triggers:_p7	q1=8 q2=0 q3=A q4=2 q5=0 cnt=5
+diag	note	98000000	0	:async_triggers:_p8	pp 8
+diag	note	100000000	1	:async_triggers:_p7	q1=8 q2=0 q3=A q4=2 q5=1 cnt=5
+diag	note	103000000	1	:async_triggers:_p7	q1=0 q2=0 q3=F q4=2 q5=1 cnt=5
+diag	note	105000000	1	:async_triggers:_p7	q1=0 q2=1 q3=F q4=2 q5=1 cnt=5
+diag	note	105000000	1	:async_triggers:_p8	pp 0
+diag	note	112000000	0	:async_triggers:_p8	pp 0
+diag	note	115000000	1	:async_triggers:_p7	q1=1 q2=2 q3=F q4=2 q5=1 cnt=5
+diag	note	119000000	0	:async_triggers:_p8	pp 1
+diag	note	120000000	1	:async_triggers:_p7	q1=1 q2=2 q3=E q4=2 q5=1 cnt=5
+diag	note	125000000	1	:async_triggers:_p7	q1=2 q2=3 q3=E q4=2 q5=1 cnt=6
+diag	note	126000000	0	:async_triggers:_p8	pp 2
+diag	note	130000000	1	:async_triggers:_p7	q1=2 q2=3 q3=D q4=2 q5=1 cnt=6
+diag	note	133000000	0	:async_triggers:_p8	pp 2
+diag	note	135000000	1	:async_triggers:_p7	q1=3 q2=4 q3=D q4=2 q5=1 cnt=7
+diag	note	140000000	1	:async_triggers:_p7	q1=3 q2=4 q3=C q4=2 q5=1 cnt=7
+diag	note	140000000	1	:async_triggers:_p8	pp 3
+diag	note	145000000	1	:async_triggers:_p7	q1=4 q2=5 q3=C q4=2 q5=1 cnt=8
+diag	note	147000000	0	:async_triggers:_p8	pp 4
+diag	note	150000000	1	:async_triggers:_p7	q1=4 q2=5 q3=B q4=2 q5=1 cnt=8
+diag	note	154000000	0	:async_triggers:_p8	pp 4
+diag	note	155000000	1	:async_triggers:_p7	q1=5 q2=6 q3=B q4=2 q5=1 cnt=9
+diag	note	160000000	1	:async_triggers:_p7	q1=5 q2=6 q3=A q4=2 q5=1 cnt=9
+diag	note	161000000	0	:async_triggers:_p8	pp 5
+diag	note	165000000	1	:async_triggers:_p7	q1=6 q2=7 q3=A q4=2 q5=1 cnt=10
+diag	note	168000000	0	:async_triggers:_p8	pp 6
+diag	note	170000000	1	:async_triggers:_p7	q1=6 q2=7 q3=9 q4=2 q5=1 cnt=10
+diag	note	175000000	1	:async_triggers:_p7	q1=7 q2=8 q3=9 q4=2 q5=1 cnt=11
+diag	note	175000000	1	:async_triggers:_p8	pp 7
+diag	note	180000000	1	:async_triggers:_p7	q1=7 q2=8 q3=8 q4=2 q5=1 cnt=11
+diag	note	182000000	0	:async_triggers:_p8	pp 7
+diag	note	185000000	1	:async_triggers:_p7	q1=8 q2=9 q3=8 q4=2 q5=1 cnt=12
+diag	note	189000000	0	:async_triggers:_p8	pp 8
+diag	note	190000000	1	:async_triggers:_p7	q1=8 q2=9 q3=7 q4=2 q5=1 cnt=12
+diag	note	195000000	1	:async_triggers:_p7	q1=9 q2=A q3=7 q4=2 q5=1 cnt=13
+diag	note	196000000	0	:async_triggers:_p8	pp 9
+diag	note	200000000	1	:async_triggers:_p7	q1=9 q2=A q3=6 q4=2 q5=1 cnt=13
+diag	note	203000000	0	:async_triggers:_p8	pp 9
+diag	note	205000000	1	:async_triggers:_p7	q1=A q2=A q3=6 q4=0 q5=0 cnt=14
+diag	note	210000000	1	:async_triggers:_p7	q1=A q2=A q3=5 q4=0 q5=0 cnt=14
+diag	note	210000000	2	:async_triggers:_p8	pp A
+diag	note	215000000	1	:async_triggers:_p7	q1=B q2=A q3=5 q4=0 q5=0 cnt=15
+diag	note	217000000	0	:async_triggers:_p8	pp B
+diag	note	220000000	1	:async_triggers:_p7	q1=B q2=A q3=4 q4=0 q5=0 cnt=15
+diag	note	224000000	0	:async_triggers:_p8	pp B
+diag	note	225000000	1	:async_triggers:_p7	q1=C q2=B q3=4 q4=0 q5=0 cnt=16
+diag	note	230000000	1	:async_triggers:_p7	q1=C q2=B q3=3 q4=0 q5=0 cnt=16
+diag	note	231000000	0	:async_triggers:_p8	pp C
+diag	note	235000000	1	:async_triggers:_p7	q1=D q2=C q3=3 q4=0 q5=0 cnt=17
+diag	note	238000000	0	:async_triggers:_p8	pp D
+diag	note	240000000	1	:async_triggers:_p7	q1=D q2=C q3=2 q4=0 q5=0 cnt=17
+diag	note	245000000	1	:async_triggers:_p7	q1=E q2=D q3=2 q4=0 q5=0 cnt=18
+diag	note	245000000	1	:async_triggers:_p8	pp E
+diag	note	250000000	1	:async_triggers:_p7	q1=E q2=D q3=1 q4=0 q5=0 cnt=18
+diag	note	252000000	0	:async_triggers:_p8	pp E
+diag	note	255000000	1	:async_triggers:_p7	q1=F q2=E q3=1 q4=0 q5=0 cnt=19
+diag	note	259000000	0	:async_triggers:_p8	pp F
+diag	note	260000000	1	:async_triggers:_p7	q1=F q2=E q3=0 q4=0 q5=0 cnt=19
+diag	note	265000000	1	:async_triggers:_p7	q1=0 q2=F q3=0 q4=0 q5=0 cnt=20
+diag	note	266000000	0	:async_triggers:_p8	pp 0
+diag	note	270000000	1	:async_triggers:_p7	q1=0 q2=F q3=F q4=0 q5=0 cnt=20
+diag	note	273000000	0	:async_triggers:_p8	pp 0
+diag	note	275000000	1	:async_triggers:_p7	q1=1 q2=0 q3=F q4=0 q5=0 cnt=21
+diag	note	280000000	1	:async_triggers:_p7	q1=1 q2=0 q3=E q4=0 q5=0 cnt=21
+diag	note	280000000	1	:async_triggers:_p8	pp 1
+diag	note	285000000	1	:async_triggers:_p7	q1=2 q2=1 q3=E q4=0 q5=0 cnt=22
+diag	note	287000000	0	:async_triggers:_p8	pp 2
+diag	note	290000000	1	:async_triggers:_p7	q1=2 q2=1 q3=D q4=0 q5=0 cnt=22
+diag	note	294000000	0	:async_triggers:_p8	pp 2
+diag	note	295000000	1	:async_triggers:_p7	q1=3 q2=2 q3=D q4=0 q5=0 cnt=23
+diag	note	300000000	1	:async_triggers:_p7	q1=3 q2=2 q3=C q4=0 q5=0 cnt=23
+diag	note	301000000	0	:async_triggers:_p8	pp 3
+diag	note	305000000	1	:async_triggers:_p7	q1=4 q2=3 q3=C q4=0 q5=0 cnt=24
+diag	note	308000000	0	:async_triggers:_p8	pp 4
+diag	note	310000000	1	:async_triggers:_p7	q1=4 q2=3 q3=B q4=0 q5=0 cnt=24
+diag	note	315000000	1	:async_triggers:_p7	q1=5 q2=4 q3=B q4=0 q5=0 cnt=25
+diag	note	315000000	1	:async_triggers:_p8	pp 5
+diag	note	320000000	1	:async_triggers:_p7	q1=5 q2=4 q3=A q4=0 q5=0 cnt=25
+diag	note	322000000	0	:async_triggers:_p8	pp 5
+diag	note	325000000	1	:async_triggers:_p7	q1=6 q2=5 q3=A q4=0 q5=0 cnt=26
+diag	note	329000000	0	:async_triggers:_p8	pp 6
+diag	note	330000000	1	:async_triggers:_p7	q1=6 q2=5 q3=9 q4=0 q5=0 cnt=26
+diag	note	335000000	1	:async_triggers:_p7	q1=7 q2=6 q3=9 q4=0 q5=0 cnt=27
+diag	note	336000000	0	:async_triggers:_p8	pp 7
+diag	note	340000000	1	:async_triggers:_p7	q1=7 q2=6 q3=8 q4=0 q5=0 cnt=27
+diag	note	343000000	0	:async_triggers:_p8	pp 7
+diag	note	345000000	1	:async_triggers:_p7	q1=8 q2=7 q3=8 q4=0 q5=0 cnt=28
+diag	note	350000000	1	:async_triggers:_p7	q1=8 q2=7 q3=7 q4=0 q5=0 cnt=28
+diag	note	350000000	1	:async_triggers:_p8	pp 8
+diag	note	355000000	1	:async_triggers:_p7	q1=9 q2=8 q3=7 q4=0 q5=0 cnt=29
+diag	note	357000000	0	:async_triggers:_p8	pp 9
+diag	note	360000000	1	:async_triggers:_p7	q1=9 q2=8 q3=6 q4=0 q5=0 cnt=29
+diag	note	364000000	0	:async_triggers:_p8	pp 9
+diag	note	365000000	1	:async_triggers:_p7	q1=A q2=9 q3=6 q4=0 q5=0 cnt=30
+diag	note	370000000	1	:async_triggers:_p7	q1=A q2=9 q3=5 q4=0 q5=0 cnt=30
+diag	note	371000000	0	:async_triggers:_p8	pp A
+diag	note	375000000	1	:async_triggers:_p7	q1=B q2=A q3=5 q4=0 q5=0 cnt=31
+diag	note	378000000	0	:async_triggers:_p8	pp B
+diag	note	380000000	1	:async_triggers:_p7	q1=B q2=A q3=4 q4=0 q5=0 cnt=31
+diag	note	385000000	1	:async_triggers:_p7	q1=C q2=B q3=4 q4=0 q5=0 cnt=32
+diag	note	385000000	1	:async_triggers:_p8	pp C
+diag	note	390000000	1	:async_triggers:_p7	q1=C q2=B q3=3 q4=0 q5=0 cnt=32
+diag	note	392000000	0	:async_triggers:_p8	pp C
+diag	note	395000000	1	:async_triggers:_p7	q1=D q2=C q3=3 q4=0 q5=0 cnt=33
+diag	note	399000000	0	:async_triggers:_p8	pp D
+diag	note	400000000	1	:async_triggers:_p7	q1=D q2=C q3=2 q4=0 q5=0 cnt=33

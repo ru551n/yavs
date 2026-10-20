@@ -80,7 +80,11 @@ pub fn analyze_closure(
     let store = Store::of_library(work_dir);
     let k = key(&opts, files);
     if let Some(bytes) = store.get(KIND, &k) {
-        match Db::from_image(opts.clone(), &bytes) {
+        // The closure verified the content hash of its files (`yavs_lib::closure`), and the key
+        // holds those hashes: only the files outside it (`std`, `ieee`) are compared again.
+        let verified: std::collections::HashSet<String> =
+            files.iter().map(|f| f.path.display().to_string()).collect();
+        match Db::from_image(opts.clone(), &bytes, &|p| verified.contains(p)) {
             Ok(db) => {
                 debug(format!("hit {}", k.hex()));
                 return (db, Ok(()));

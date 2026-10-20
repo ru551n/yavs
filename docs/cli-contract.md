@@ -133,6 +133,12 @@ raises an error itself for a project containing VHDL-93/2002 files.
   `run`/`elab` hold it shared only while reading the manifest. Read-only
   library directories never fail: shared lock via a read-only open, or no lock
   if the file cannot be opened at all. The test runner needs no locking of its own.
+- Edited sources: `run`/`elab` find a file that changed since it was analyzed (`L0034`) by its content
+  hash. When `analyze` recorded a file that had not been modified for two seconds, the manifest also
+  holds its size and modification time (`size`, `mtime_ns`), and a file that still has both is not
+  read and hashed again. So content of the same size written back under the recorded modification
+  time goes unnoticed (as with build tools in general); re-analyze such a file. A manifest without
+  the two fields (an older one, or a file edited right before it was analyzed) is always hashed.
 
 ### Compilation cache
 
@@ -143,9 +149,10 @@ analyzing the sources again; the output, the diagnostics (warnings included) and
 identical to a run without it, at any `--threads`.
 
 - The key is a hash of the yavs build, `--std`, `--relaxed`, `--psl`, `--encoding` and every file of the
-  closure (library, path, recorded content hash, standard). An entry also records the bytes of every
-  source file it was made from and is used only if they are unchanged, so editing a file (or any file
-  it depends on) makes the next run analyze from source and store a new entry. Entries of another
+  closure (library, path, recorded content hash, standard). Editing a file (or any file it depends
+  on) is found by the content hash check of the closure (`L0034`, re-analyze it); an entry also records
+  the bytes of the built-in `std` and `ieee` files it was made from and is used only if they are
+  unchanged. Entries of another
   yavs build, another format version or a damaged file are ignored, never an error. An error-free
   analysis is stored; a design with errors never is.
 - Entries are written to a temporary file and renamed into place: concurrent runs need no lock and

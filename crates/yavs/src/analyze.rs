@@ -227,6 +227,8 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         let mut shown = 0;
         for (i, file) in a.files.iter().enumerate() {
             current.set(i);
+            // Stamped before the read: an edit in between is never trusted.
+            let stamp = yavs_lib::Stamp::of(file);
             let bytes = std::fs::read(file);
             let before = out.errors;
             let r = db.analyze_file(work, file, rev);
@@ -240,7 +242,8 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             };
             // bytes was readable or analysis would have failed.
             let hash = yavs_lib::hash_content(&bytes.unwrap_or_default());
-            if let Err(d) = session.record(std_name, Path::new(file), &hash, records) {
+            if let Err(d) = session.record_stamped(std_name, Path::new(file), &hash, stamp, records)
+            {
                 out.emit(&none, &d);
                 return Some(i);
             }

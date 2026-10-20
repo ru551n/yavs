@@ -74,8 +74,14 @@ impl Db {
     }
 
     /// Restore the `Db` of an image under the options of this run. `Stale` when a source file
-    /// the image was made from changed (or a library cannot be read again).
-    pub fn from_image(opts: Options, bytes: &[u8]) -> Result<Db, ImageError> {
+    /// the image was made from changed (or a library cannot be read again). Files for which
+    /// `verified` says so are not read again: the caller already knows they hold what the image
+    /// was made from.
+    pub fn from_image(
+        opts: Options,
+        bytes: &[u8],
+        verified: &dyn Fn(&str) -> bool,
+    ) -> Result<Db, ImageError> {
         let corrupt = |s: &str| ImageError::Corrupt(s.into());
         let n = bytes
             .get(..8)
@@ -111,13 +117,13 @@ impl Db {
             };
             db.libs[id].source = source;
         }
-        db.check_sources()?;
+        db.check_sources(verified)?;
         Ok(db)
     }
 
-    /// Every file the analysis read must still hold the bytes it read.
-    fn check_sources(&self) -> Result<(), ImageError> {
-        for (path, bytes) in self.sources.iter() {
+    /// Every file the analysis read, except the `verified` ones, must still hold the bytes it read.
+    fn check_sources(&self, verified: &dyn Fn(&str) -> bool) -> Result<(), ImageError> {
+        for (path, bytes) in self.sources.iter().filter(|(p, _)| !verified(p)) {
             match crate::stdlib::read(std::path::Path::new(path)) {
                 Ok(now) if now == bytes => {}
                 _ => return Err(ImageError::Stale(path.to_string())),

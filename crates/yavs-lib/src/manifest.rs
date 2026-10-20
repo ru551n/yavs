@@ -27,6 +27,37 @@ pub fn hash_content(bytes: &[u8]) -> String {
     s
 }
 
+/// Size and modification time (ns since the epoch) of a file, taken to skip re-hashing it later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub size: u64,
+    pub mtime_ns: i64,
+}
+
+/// How long a file must have been unmodified before its [`Stamp`] is trusted: a coarse file
+/// system clock can give a later edit of the same size the same modification time.
+const STAMP_AGE: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl Stamp {
+    /// The stamp of `path` now; `None` when it cannot be read or was modified within the last
+    /// two seconds (then the content hash is always checked).
+    pub fn of(path: &std::path::Path) -> Option<Stamp> {
+        Self::of_meta(&std::fs::metadata(path).ok()?)
+    }
+
+    pub(crate) fn of_meta(m: &std::fs::Metadata) -> Option<Stamp> {
+        let t = m.modified().ok()?;
+        if t.checked_add(STAMP_AGE)? > std::time::SystemTime::now() {
+            return None;
+        }
+        let ns = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+        Some(Stamp {
+            size: m.len(),
+            mtime_ns: i64::try_from(ns).ok()?,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnitKind {
@@ -138,8 +169,24 @@ pub struct FileEntry {
     pub hash: String,
     /// VHDL standard this file was analyzed with (per file: projects may mix 2008 and 2019).
     pub std: String,
+    /// Size of the file when `hash` was taken, if it was old enough to trust (see [`Stamp`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Modification time (ns since the epoch) of the file when `hash` was taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtime_ns: Option<i64>,
     #[serde(default, rename = "unit")]
     pub units: Vec<UnitRecord>,
+}
+
+impl FileEntry {
+    /// The file on disk is the one `hash` was taken of, by size and modification time alone.
+    pub fn unchanged(&self) -> bool {
+        match (self.size, self.mtime_ns) {
+            (Some(size), Some(mtime_ns)) => Stamp::of(&self.path) == Some(Stamp { size, mtime_ns }),
+            _ => false,
+        }
+    }
 }
 
 /// Contents of `yavs-lib.toml`. Files are in compile order.
@@ -202,6 +249,7 @@ impl Manifest {
         &mut self,
         path: PathBuf,
         hash: String,
+        stamp: Option<Stamp>,
         std: String,
         mut units: Vec<UnitRecord>,
     ) {
@@ -218,6 +266,8 @@ impl Manifest {
             path,
             hash,
             std,
+            size: stamp.map(|s| s.size),
+            mtime_ns: stamp.map(|s| s.mtime_ns),
             units,
         });
     }

@@ -304,7 +304,9 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
         let fe = cx.manifests[&lib]
             .file(&path)
             .expect("file of a reachable unit");
-        check_hash(&lib, &path, &fe.hash)?;
+        if !fe.unchanged() {
+            check_hash(&lib, &path, &fe.hash)?;
+        }
         out.push(ClosureFile {
             library: lib,
             path,

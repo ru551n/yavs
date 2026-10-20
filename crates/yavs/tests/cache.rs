@@ -240,3 +240,34 @@ fn parallel_cold_runs_agree() {
         .count();
     assert_eq!(leftovers, 0);
 }
+
+/// Sets the modification time of `p` back by an hour (a file that was edited long ago).
+fn age(p: &Path) {
+    let f = std::fs::File::options().write(true).open(p).expect("open");
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .expect("age");
+}
+
+/// Sources old enough to be trusted by size and modification time (`yavs_lib::Stamp`) are not
+/// read again on a hit; an edit is still seen, because it moves the modification time.
+#[test]
+fn old_sources_are_trusted_until_they_change() {
+    let e = Env::new("aged");
+    for f in ["pkg.vhd", "other.vhd", "tb.vhd"] {
+        age(&e.tmp.join(f));
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let cold = e.run(&[]);
+    assert!(note(&cold, "store"), "{cold:?}");
+    let warm = e.run(&[]);
+    assert!(note(&warm, "hit"), "{warm:?}");
+    assert_eq!(visible(&cold), visible(&warm));
+    // The same length, so only the modification time tells: the edit is found (L0034).
+    std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace('7', "8")).expect("write");
+    let edited = e.run(&[]);
+    assert_ne!(edited.code, 0, "{edited:?}");
+    assert!(edited.stderr.contains("L0034"), "{edited:?}");
+    // Analyzing it again records the new content and the run follows.
+    assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "pkg.vhd"]).code, 0);
+    assert!(e.run(&[]).stdout.contains("K=8 f=24"));
+}

@@ -1896,9 +1896,11 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - **Key and validation.** Key = sha256 over the cache format, the yavs build id (version, size and
   modification time of the executable), `--std`/`--relaxed`/`--psl`/`--encoding`/defines, the std/ieee
   tree, and the closure's files (library, path, recorded content hash, standard; the working directory
-  for a relative path). The image also holds the bytes of every source file read (std/ieee included) and
-  is rejected unless each still equals what is on disk or built in, so a file the manifests do not list
-  cannot make an entry stale. Library manifests are never stored: they are read again on restore.
+  for a relative path). The image also holds the bytes of every source file read (std/ieee included);
+  the files of the closure were verified by the closure itself (content hash, or size and modification
+  time, see "Per-run overhead" below) and the key holds their hashes, so on restore only the built-in
+  files are compared again, and a file the manifests do not list cannot make an entry stale. Library
+  manifests are never stored: they are read again on restore.
   Anything that does not match, or does not decode, is a miss and analysis runs from source; the cache
   can only make a run faster.
 - **The image is taken after `yavs_elab::load_bodies`** (the bodies of every loaded package, std/ieee included), because loading them was a third of the per-run cost; a body error is reported with the analysis errors.
@@ -1917,6 +1919,26 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - **Not stored in the library but per user:** nothing yet. A precomputed std/ieee base shared by all
   designs is part of a later slice of #407.
 
+
+## Per-run overhead (#426)
+
+The fixed cost of one `yavs run` (a testbench suite starts one process per test case) is measured by
+`tools/bench` (`vunit_vc30`, `--time-report`); the decisions that cut it, all yavs decisions under the
+user's performance priority:
+
+- **A source file is not hashed again when its size and modification time are unchanged** (yavs-lib
+  `Stamp`). `analyze` takes the stamp before it reads the file and records it in the manifest
+  (`size`, `mtime_ns`) only if the file had not been modified for two seconds (a coarse file system clock
+  can give an edit of the same size the same time). `closure` skips the read and the sha256 of a file
+  that still has both. Ceiling: content of the same size written back under the recorded time goes
+  unnoticed (re-analyze), as with build tools generally. The manifest format stays 2: both fields are
+  optional and an older yavs ignores them.
+- **A manifest is parsed once per run.** `Library::read` keeps the parsed manifest of a library and
+  returns it again while the manifest file has its size and time and is two seconds old; the library lock
+  is still taken for every read. The closure and the restore of the analysis image both read each library.
+- **The restored image does not compare the closure's source files again** (`Db::from_image` takes a
+  `verified` predicate): the closure verified them and the key holds their hashes. Only the built-in
+  `std`/`ieee` text is compared.
 
 ## Native ieee operators (#395)
 

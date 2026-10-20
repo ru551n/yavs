@@ -19,8 +19,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | Re-exports; `Result<T>` = boxed span-less `Diagnostic`; `render` helper |
-| `src/manifest.rs` | `MANIFEST_FILE`, `LOCK_FILE`, format version `FORMAT = 2` (standard per file), `Manifest` (parse, `to_text`, `units`, `find`, `file`), `FileEntry`, `UnitRecord` (builders `new`, `architecture`, `package_body`, `depends`), `UnitKind`, `UnitRef`, `fold`, `hash_content` (sha256) |
-| `src/library.rs` | `Library` (`read` under a shared lock, `update_file`, `session`), `Session::record` (one exclusive hold for a whole analyze batch, one atomic rename per file), lock acquisition with a waiting note, process-wide `HELD` set |
+| `src/manifest.rs` | `MANIFEST_FILE`, `LOCK_FILE`, format version `FORMAT = 2` (standard per file), `Manifest` (parse, `to_text`, `units`, `find`, `file`), `FileEntry` (with the optional `size`/`mtime_ns` stamp and `unchanged`), `Stamp`, `UnitRecord` (builders `new`, `architecture`, `package_body`, `depends`), `UnitKind`, `UnitRef`, `fold`, `hash_content` (sha256) |
+| `src/library.rs` | `Library` (`read` under a shared lock, keeping the parsed manifest while its file is old and unchanged, `update_file`, `session`), `Session::record` (one exclusive hold for a whole analyze batch, one atomic rename per file), lock acquisition with a waiting note, process-wide `HELD` set |
 | `src/closure.rs` | `Libraries` (`add`, `add_spec` for `NAME:PATH`, `get`, `names`), `closure(libs, top) -> Vec<ClosureFile>` (dependency order, cycles, stale hashes, unknown units with suggestions) |
 | `src/error.rs` | `err`, `io` (code + path + OS error), `note` (`L0000`, stderr), `debug` (only with `YAVS_LOG=debug`) |
 | `tests/lib.rs` | Re-analyze, cross-library order, errors, stale hash, cycles, lock waits, read-only libraries, multi-process concurrency (re-runs itself with `YAVS_LIB_TEST_CHILD`) |
@@ -37,6 +37,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | A lock wait longer than a few seconds prints a note naming the library | User feedback | rule 14 |
 | Standard recorded per file (manifest format 2) | Mixed 2008/2019 projects (user, 2026-10-18) | `docs/plan.md` "Test-runner integration", `docs/design/sem.md` 0.1 |
 | Pre-rename manifest name fails with `L0004` asking to re-analyze; no reader for old names | Rename to yavs (user, 2026-10-18) | `docs/decisions.md` "Project name" |
+| `FileEntry` records `size`/`mtime_ns` (a `Stamp`) when `analyze` found the file unmodified for two seconds; `closure` skips the read and hash of a file with the same stamp | A run no longer reads and hashes every source of the closure (#426); the age rule keeps an edit within the clock granularity from being trusted | `docs/decisions.md` "Per-run overhead" |
+| `Library::read` returns the manifest it parsed before while the file has the same stamp (still taking the lock) | The closure and the image restore both read each library (#426) | same |
 | Names folded with `fold` (ASCII lower case; extended identifiers keep case) | Rule 8 lookup keys | `docs/plan.md` rule 8 |
 
 Module-local decisions go in this section in the same commit; library behaviour visible to external test runners

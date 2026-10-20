@@ -1,9 +1,10 @@
 use crate::Result;
 use crate::error::{debug, err, io, note};
-use crate::manifest::{LOCK_FILE, MANIFEST_FILE, Manifest, UnitRecord};
+use crate::manifest::{LOCK_FILE, MANIFEST_FILE, Manifest, Stamp, UnitRecord};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const LOCK_NOTE_AFTER: Duration = Duration::from_secs(3);
@@ -16,6 +17,9 @@ const OLD_MANIFEST_FILE: &str = "rsim-lib.toml"; // rename: keep
 pub struct Library {
     pub name: String,
     pub dir: PathBuf,
+    /// The manifest as last parsed by [`Library::read`], with the stamp of the file it came from
+    /// (shared by clones): a run reads each library twice, once for the closure, once for analysis.
+    parsed: Arc<Mutex<Option<(Stamp, Manifest)>>>,
 }
 
 impl Library {
@@ -23,6 +27,7 @@ impl Library {
         Library {
             name: name.into(),
             dir: dir.into(),
+            parsed: Arc::default(),
         }
     }
 
@@ -106,6 +111,15 @@ impl Library {
             }
         };
         let p = self.manifest_path();
+        // A manifest unmodified for two seconds that still has the size and time of the parsed one
+        // is the same manifest (the library lock is held, so no writer is replacing it).
+        let stamp = Stamp::of(&p);
+        if let Some(st) = stamp
+            && let Some((s, m)) = &*self.parsed.lock().unwrap()
+            && *s == st
+        {
+            return Ok(m.clone());
+        }
         let text = fs::read_to_string(&p).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 if let Err(d) = self.reject_old_manifest() {
@@ -121,7 +135,11 @@ impl Library {
                 io("L0002", "read", &p, &e)
             }
         })?;
-        Manifest::parse(&text, &p)
+        let m = Manifest::parse(&text, &p)?;
+        if let Some(st) = stamp {
+            *self.parsed.lock().unwrap() = Some((st, m.clone()));
+        }
+        Ok(m)
     }
 
     /// Record `path` (content hash `hash`) as defining `units`, replacing its earlier
@@ -198,6 +216,19 @@ impl Session {
         hash: &str,
         units: Vec<UnitRecord>,
     ) -> Result<()> {
+        self.record_stamped(standard, path, hash, None, units)
+    }
+
+    /// [`Session::record`] with the stamp of the file taken before its content was read, so that
+    /// an edit in between is never trusted (see [`Stamp`]).
+    pub fn record_stamped(
+        &self,
+        standard: &str,
+        path: &Path,
+        hash: &str,
+        stamp: Option<Stamp>,
+        units: Vec<UnitRecord>,
+    ) -> Result<()> {
         let path = std::path::absolute(path).map_err(|e| io("L0002", "resolve", path, &e))?;
         let mp = self.lib.manifest_path();
         let mut m = match fs::read_to_string(&mp) {
@@ -208,7 +239,7 @@ impl Session {
             }
             Err(e) => return Err(io("L0002", "read", &mp, &e)),
         };
-        m.replace_file(path, hash.to_string(), standard.to_string(), units);
+        m.replace_file(path, hash.to_string(), stamp, standard.to_string(), units);
 
         let tmp = self
             .lib

@@ -12,7 +12,7 @@ mod manifest;
 pub use closure::{ClosureFile, Libraries, closure};
 pub use library::{Library, Session};
 pub use manifest::{
-    FileEntry, LOCK_FILE, MANIFEST_FILE, Manifest, UnitKind, UnitRecord, UnitRef, fold,
+    FileEntry, LOCK_FILE, MANIFEST_FILE, Manifest, Stamp, UnitKind, UnitRecord, UnitRef, fold,
     hash_content,
 };
 

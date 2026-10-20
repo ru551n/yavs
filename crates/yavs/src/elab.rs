@@ -246,7 +246,10 @@ fn elaborate(
                 files = Ok(f);
                 break;
             }
-            Err(d) if files.is_err() => files = Err(Some(d)),
+            // The last "unknown unit" is reported, but never in place of a real failure of an
+            // earlier try (a changed or unreadable source file, a cycle).
+            Err(d) if matches!(&files, Err(None)) => files = Err(Some(d)),
+            Err(d) if matches!(&files, Err(Some(p)) if p.code == "L0031") => files = Err(Some(d)),
             Err(_) => {}
         }
     }

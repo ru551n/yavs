@@ -387,3 +387,61 @@ fn old_format_manifest() {
             .is_err()
     );
 }
+
+/// Set the modification time of `p` to an hour ago.
+fn age(p: &Path) {
+    let f = std::fs::File::options().write(true).open(p).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+}
+
+#[test]
+fn unchanged_files_are_not_hashed_again() {
+    let (t, libs, work, _) = setup();
+    let a = t.path().join("a.vhd");
+    std::fs::write(&a, "aaaa").unwrap();
+    age(&a);
+    let h = hash_content(b"aaaa");
+    let stamp = yavs_lib::Stamp::of(&a);
+    assert!(stamp.is_some(), "an hour old file is stampable");
+    work.session()
+        .unwrap()
+        .record_stamped(STD, &a, &h, stamp, vec![pkg("A")])
+        .unwrap();
+    let top = UnitRef::new("work", UnitKind::Package, "a");
+    assert!(work.read().unwrap().file(&a).unwrap().unchanged());
+    assert!(closure(&libs, &top).is_ok());
+    // New content of the same size and a new modification time: the stamp no longer matches, the
+    // hash is checked and differs.
+    let recorded = std::fs::metadata(&a).unwrap().modified().unwrap();
+    std::fs::write(&a, "bbbb").unwrap();
+    assert!(!work.read().unwrap().file(&a).unwrap().unchanged());
+    let e = closure(&libs, &top).unwrap_err();
+    assert!(render(&e, false).contains("L0034"), "{}", render(&e, false));
+    // The same size and the recorded time (a restored time stamp) is trusted.
+    let f = std::fs::File::options().write(true).open(&a).unwrap();
+    f.set_modified(recorded).unwrap();
+    assert!(work.read().unwrap().file(&a).unwrap().unchanged());
+    assert!(closure(&libs, &top).is_ok());
+}
+
+#[test]
+fn fresh_files_are_always_hashed() {
+    let (t, libs, work, _) = setup();
+    let a = t.path().join("a.vhd");
+    std::fs::write(&a, "aaaa").unwrap();
+    assert_eq!(
+        yavs_lib::Stamp::of(&a),
+        None,
+        "a file just written is not stampable"
+    );
+    work.session()
+        .unwrap()
+        .record_stamped(STD, &a, &hash_content(b"aaaa"), None, vec![pkg("A")])
+        .unwrap();
+    let top = UnitRef::new("work", UnitKind::Package, "a");
+    assert!(!work.read().unwrap().file(&a).unwrap().unchanged());
+    assert!(closure(&libs, &top).is_ok());
+    std::fs::write(&a, "bbbb").unwrap();
+    assert!(closure(&libs, &top).is_err());
+}

@@ -1010,12 +1010,12 @@ impl SimControl {
 
     /// Whether a queue entry at `t` still has something to do; stale ones are dropped before
     /// they could cause an empty cycle.
-    fn live(&self, t: Time, e: Entry) -> bool {
+    fn live(&mut self, t: Time, e: Entry) -> bool {
         match e {
             Entry::Timeout(p, g) => self.procs[p as usize].generation == g,
             Entry::Driver(d) => {
                 let info = &self.drivers[d as usize];
-                let slot = lock(&self.slots[info.owner.0 as usize]);
+                let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
                 slot.st.waveforms[info.local as usize]
                     .pending
                     .first()
@@ -1175,7 +1175,7 @@ impl SimControl {
                         indep.push((s, d));
                         continue;
                     }
-                    let mut slot = lock(&self.slots[info.owner.0 as usize]);
+                    let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
                     let sig = &mut self.signals[info.signal.0 as usize];
                     let mut ranges: smallvec::SmallVec<[Range; 4]> = smallvec::SmallVec::new();
                     slot.st.waveforms[info.local as usize].apply_due(
@@ -1486,7 +1486,7 @@ impl SimControl {
         meta.ready = true;
         meta.by_timeout = by_timeout;
         meta.generation += 1;
-        lock(&self.slots[p as usize]).st.timed_out = by_timeout;
+        slot_mut(&mut self.slots[p as usize]).st.timed_out = by_timeout;
         if meta.flags.postponed {
             self.postponed.push(p);
         } else {
@@ -1537,10 +1537,7 @@ impl SimControl {
                 drivers: &self.drivers,
                 names: &self.names,
             };
-            let slots = &self.slots;
-            let run = |&p: &u32| {
-                let mut guard = lock(&slots[p as usize]);
-                let slot = &mut *guard;
+            let run = |p: u32, slot: &mut Slot| {
                 let mut ctx = Ctx {
                     sh: &sh,
                     pid: ProcId(p),
@@ -1564,10 +1561,21 @@ impl SimControl {
                     let (serial, par): (Vec<u32>, Vec<u32>) = pids
                         .iter()
                         .partition(|&&p| self.procs[p as usize].flags.serial);
-                    pool.install(|| par.par_iter().for_each(run));
-                    serial.iter().for_each(run);
+                    let slots = &self.slots;
+                    pool.install(|| {
+                        par.par_iter()
+                            .for_each(|&p| run(p, &mut lock(&slots[p as usize])))
+                    });
+                    serial
+                        .iter()
+                        .for_each(|&p| run(p, &mut lock(&slots[p as usize])));
                 }
-                _ => pids.iter().for_each(run),
+                // No other thread touches the slots: no lock.
+                _ => {
+                    for &p in &pids {
+                        run(p, slot_mut(&mut self.slots[p as usize]));
+                    }
+                }
             }
         }
         self.stats.process_runs += pids.len() as u64;
@@ -1576,18 +1584,13 @@ impl SimControl {
         for &p in &pids {
             self.procs[p as usize].ready = false;
             let generation = self.procs[p as usize].generation;
-            let mut slot = lock(&self.slots[p as usize]);
+            let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
             let effects = std::mem::take(&mut st.effects);
-            if postponed
+            let bad = postponed
                 && (st.deadline == Some(self.now)
                     || !st.phantoms.is_empty()
-                    || st.scheduled.iter().any(|&(t, _)| t == self.now))
-            {
-                let mut e = self.err(ErrorKind::PostponedDelta);
-                e.process = Some((ProcId(p), self.names[p as usize].clone()));
-                first_err = Some(e);
-            }
+                    || st.scheduled.iter().any(|&(t, _)| t == self.now));
             for (t, d) in st.scheduled.drain(..) {
                 self.queue.push(self.now, t, Entry::Driver(d.0));
             }
@@ -1604,7 +1607,11 @@ impl SimControl {
                     });
             }
             let result = std::mem::replace(&mut slot.result, Ok(()));
-            drop(slot);
+            if bad {
+                let mut e = self.err(ErrorKind::PostponedDelta);
+                e.process = Some((ProcId(p), self.names[p as usize].clone()));
+                first_err = Some(e);
+            }
             self.commit(ProcId(p), effects);
             if let Err(e) = result {
                 first_err.get_or_insert(e);
@@ -1767,6 +1774,11 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 
 /// Lock a process slot. Process panics are caught inside the lock, so a poisoned slot cannot
 /// occur; its state would be intact anyway.
+/// A slot nothing else can reach (the kernel thread, outside a parallel batch): no lock.
+fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {
+    m.get_mut().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn lock(m: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }

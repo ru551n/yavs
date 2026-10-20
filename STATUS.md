@@ -620,7 +620,7 @@ and after, difftest corpus (357 tests) identical at 1 and 4 threads, shuffled, b
 | all of the above, harness | `vai_window_gen` / `ff_rtl` / `resolved_bus` / `delta_chain` | 2.39 / 0.057 / 0.38 / 0.22 | 2.17 / 0.052 / 0.39 / 0.22 |
 
 `ff`, `fan`, `chain` and `bus` (synthetic kernel designs) are unchanged within the noise (their assignments change
-values and their clocked processes have no reset). Measured and not done: a level condition as trigger
+values and their clocked processes have no reset). Process slots reached without a lock outside the parallel batch (`slot_mut`): `fan` (4000 processes on one clock, default generics) 5.48 s to 4.70 s CPU. Measured and not done: a level condition as trigger
 (`if rising_edge(clk) then if en = '1' then`): an activation that only tests a false enable costs 0.4 us, so even
 a permanently low enable would save 0.4 s per million activations, less than the trigger's bookkeeping would
 cost where the enable is often high; waiters grouped per trigger (a clock with 2000 ignoring processes costs 15 ns

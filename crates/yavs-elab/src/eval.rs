@@ -670,6 +670,9 @@ impl Model {
         if let Some(v) = self.composite(db, e, scope)? {
             return Ok(v);
         }
+        if let Some(v) = self.attr_text(db, e, scope)? {
+            return Ok(v);
+        }
         let mut inner: Option<Box<Diagnostic>> = None;
         let r = db.fold_with(e, &mut |c| match self.eval(db, c, scope) {
             Ok(v) => Some(v),

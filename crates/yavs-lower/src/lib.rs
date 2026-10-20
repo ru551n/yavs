@@ -755,6 +755,17 @@ impl<'a> Lowerer<'a> {
         Ok(self.pb.native(&sym, Some(t)))
     }
 
+    /// The native of attribute `name` (`yavs.attr.image`, `yavs.attr.value`) on prefix type
+    /// `t`, for callers running it on marshalled values (elaboration-time evaluation).
+    pub fn attr_native(
+        &mut self,
+        name: &str,
+        t: yavs_sem::TypeId,
+    ) -> Result<yavs_ir::NativeId, Vec<Diagnostic>> {
+        let t = self.ty(t)?;
+        Ok(self.pb.native(name, Some(t)))
+    }
+
     /// Every subprogram body declared in the units' regions (a package body, say).
     pub fn subprograms_of(&mut self, unit: UnitId) -> Result<Vec<FuncId>, Vec<Diagnostic>> {
         let u = &self.db.units[unit];

@@ -953,15 +953,72 @@ impl Model {
                 }
             }
         }
+        let params: Vec<_> = sp.params.iter().map(|p| db.base(p.subtype)).collect();
+        self.native_call(db, e, vals, &params, db.base(ret), |l| l.implicit_native(op))
+    }
+
+    /// `T'image(x)` and `T'value(s)` during elaboration: the attribute natives run on the
+    /// marshalled operand, as in the simulation. `None` for any other expression.
+    pub(crate) fn attr_text(
+        &mut self,
+        db: &Db,
+        e: ExprId,
+        scope: Option<ScopeId>,
+    ) -> R<Option<Val>> {
+        use yavs_sem::hir::{AttrPrefix, PredefAttr};
+        let ExprKind::Attr { attr, prefix, args } = &db.exprs[e].kind else {
+            return Ok(None);
+        };
+        let (name, x, from, to) = match (attr, prefix, args.first()) {
+            (PredefAttr::Image, AttrPrefix::Subtype(st), Some(&x)) => {
+                ("yavs.attr.image", x, db.base(*st), db.base(db.exprs[e].subtype))
+            }
+            (PredefAttr::Image, AttrPrefix::Expr(x), None) => {
+                ("yavs.attr.image", *x, db.base(db.exprs[*x].subtype), db.base(db.exprs[e].subtype))
+            }
+            (PredefAttr::Value, AttrPrefix::Subtype(st), Some(&x)) => {
+                ("yavs.attr.value", x, db.base(db.exprs[x].subtype), db.base(*st))
+            }
+            _ => return Ok(None),
+        };
+        let v = self.eval(db, x, scope)?;
+        let t = if name == "yavs.attr.image" { from } else { to };
+        let r = self.native_call(db, e, vec![v], &[from], to, |l| l.attr_native(name, t))?;
+        // 'value: the result must belong to the prefix subtype (LRM 16.2.1).
+        if let (PredefAttr::Value, AttrPrefix::Subtype(st)) = (attr, prefix)
+            && let Some(x) = r.as_int()
+            && db.types[db.base(*st)].kind.is_scalar()
+            && !matches!(db.types[db.base(*st)].kind, TypeKind::Floating)
+        {
+            let (lo, hi) = self.scalar_bounds(db, *st, scope, db.exprs[e].span)?.low_high();
+            if x < lo || x > hi {
+                return Err(fails(db, e, format!("'value result {x} is outside the subtype")));
+            }
+        }
+        Ok(Some(r))
+    }
+
+    /// Run `native` on `vals` (of the types `params`) and decode its result of type `ret`.
+    fn native_call(
+        &self,
+        db: &Db,
+        e: ExprId,
+        vals: Vec<Val>,
+        params: &[yavs_sem::TypeId],
+        ret: yavs_sem::TypeId,
+        native: impl FnOnce(
+            &mut yavs_lower::Lowerer,
+        ) -> Result<yavs_ir::NativeId, Vec<Diagnostic>>,
+    ) -> R<Val> {
         let lowered = (|| {
             let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
-            let native = l.implicit_native(op)?;
-            let mut params = Vec::with_capacity(sp.params.len());
-            for p in sp.params.iter() {
-                params.push(l.ty(db.base(p.subtype))?);
+            let native = native(&mut l)?;
+            let mut tys = Vec::with_capacity(params.len());
+            for &p in params {
+                tys.push(l.ty(p)?);
             }
-            let ret = l.ty(db.base(ret))?;
-            Ok::<_, Vec<Diagnostic>>((native, params, ret, l.finish()?.program))
+            let ret = l.ty(ret)?;
+            Ok::<_, Vec<Diagnostic>>((native, tys, ret, l.finish()?.program))
         })();
         let (native, params, ret, prog) = lowered.map_err(|ds| {
             let why = ds.into_iter().next().map(|d| d.message).unwrap_or_default();

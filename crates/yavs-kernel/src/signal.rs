@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use smallvec::{SmallVec, smallvec};
+
 use crate::error::ErrorKind;
 use crate::time::Time;
 use crate::value::{Buf, SignalType, bits, fill_bits};
@@ -130,7 +132,7 @@ pub(crate) struct DriverSlot {
 pub(crate) struct Segment {
     pub range: Range,
     /// Indices into `Signal::drivers`.
-    pub drivers: Vec<u32>,
+    pub drivers: SmallVec<[u32; 2]>,
 }
 
 pub(crate) struct Waiter {
@@ -155,21 +157,26 @@ const WAIT_NARROW: u32 = 4;
 #[derive(Default)]
 pub(crate) struct Waiters {
     /// Per chunk, then the wide list last.
-    lists: Vec<(Vec<Waiter>, usize)>,
+    lists: SmallVec<[(SmallVec<[Waiter; 1]>, usize); 1]>,
     next: u64,
 }
 
 impl Waiters {
     fn new(len: u32) -> Waiters {
-        let n = len.div_ceil(WAIT_CHUNK) as usize + 1;
+        // A signal of one chunk or less has one list: the chunk's and the wide one.
+        let chunks = len.div_ceil(WAIT_CHUNK) as usize;
+        let n = if chunks <= 1 { 1 } else { chunks + 1 };
         Waiters {
-            lists: (0..n).map(|_| (Vec::new(), 0)).collect(),
+            lists: (0..n).map(|_| (SmallVec::new(), 0)).collect(),
             next: 0,
         }
     }
 
     fn lists_of(&self, r: Range) -> std::ops::Range<usize> {
         let wide = self.lists.len() - 1;
+        if wide == 0 {
+            return 0..1;
+        }
         if r.len == 0 {
             return wide..wide + 1;
         }
@@ -192,7 +199,7 @@ impl Waiters {
         for i in self.lists_of(range) {
             let (l, n) = &mut self.lists[i];
             if l.len() >= 2 * *n + 16 {
-                l.retain(&live);
+                l.retain(|w| live(w));
                 *n = l.len();
             }
             l.push(Waiter {
@@ -262,15 +269,13 @@ pub(crate) struct Signal {
     /// Driving value computed from the sources or a deposit, before forces.
     pub driving: Buf,
     pub last_value: Buf,
-    /// Per element: cycle number of the last event / activity.
-    pub event_cycle: Vec<u64>,
-    pub active_cycle: Vec<u64>,
-    /// Per element: time of the last event / activity, `None` if never.
-    pub last_event: Vec<Option<Time>>,
-    pub last_active: Vec<Option<Time>>,
+    /// Four per-element arrays in one buffer (`len` entries each): the cycle number of the
+    /// last event, of the last activity, and the time (`Time::raw`, [`NEVER`] if never) of
+    /// the last event and of the last activity.
+    stamps: SmallVec<[u64; 4]>,
     /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
-    pub segments: Vec<Segment>,
+    pub segments: SmallVec<[Segment; 1]>,
     pub resolution: Option<Resolution>,
     pub guard: Option<GuardKind>,
     /// Indices into the kernel's composite groups covering this signal: resolved together
@@ -289,19 +294,17 @@ pub(crate) struct Signal {
     pub queued_down: u64,
     pub waiters: Waiters,
     /// Elements changed in the current cycle.
-    pub changed: Vec<Range>,
+    pub changed: SmallVec<[Range; 2]>,
     /// Ranges whose driving value must be recomputed this cycle.
-    pub dirty: Vec<Range>,
-    /// Scratch for the ranges of the transactions applied to one driver.
-    pub applied: Vec<Range>,
+    pub dirty: SmallVec<[Range; 2]>,
     /// Ranges whose effective value must be recomputed this cycle.
-    pub eff_dirty: Vec<Range>,
+    pub eff_dirty: SmallVec<[Range; 2]>,
     /// The simulation runs (not initialising): reports of its resolution function are
     /// collected in `callouts` for the kernel to commit (#372).
     pub live: bool,
     /// Ranges where a force or release of this cycle changed the effective value, whatever
     /// the cycle's last one left: an event even when the value ends up unchanged (#382).
-    pub force_ev: Vec<Range>,
+    pub force_ev: SmallVec<[Range; 2]>,
     pub callouts: Vec<(crate::process::Severity, String)>,
 }
 
@@ -314,12 +317,9 @@ impl Signal {
             cur: init.clone(),
             driving: init.clone(),
             last_value: init,
-            event_cycle: vec![0; n],
-            active_cycle: vec![0; n],
-            last_event: vec![None; n],
-            last_active: vec![None; n],
+            stamps: stamps(n),
             drivers: Vec::new(),
-            segments: Vec::new(),
+            segments: SmallVec::new(),
             resolution,
             guard: None,
             groups: Vec::new(),
@@ -331,12 +331,11 @@ impl Signal {
             queued_up: 0,
             queued_down: 0,
             waiters: Waiters::new(ty.len),
-            changed: Vec::new(),
-            dirty: Vec::new(),
-            applied: Vec::new(),
-            eff_dirty: Vec::new(),
+            changed: SmallVec::new(),
+            dirty: SmallVec::new(),
+            eff_dirty: SmallVec::new(),
             live: false,
-            force_ev: Vec::new(),
+            force_ev: SmallVec::new(),
             callouts: Vec::new(),
         }
     }
@@ -376,7 +375,7 @@ impl Signal {
         by_start.sort_by_key(|&i| self.drivers[i as usize].range.offset);
         let mut next = by_start.iter().peekable();
         let mut active = std::collections::BTreeSet::new();
-        self.segments = Vec::with_capacity(cuts.len());
+        self.segments = SmallVec::with_capacity(cuts.len().saturating_sub(1));
         for w in cuts.windows(2) {
             let range = Range::new(w[0], w[1] - w[0]);
             active.retain(|&i: &u32| self.drivers[i as usize].range.end() > w[0]);
@@ -387,7 +386,7 @@ impl Signal {
                 active.insert(i);
                 next.next();
             }
-            let drivers = active.iter().copied().collect();
+            let drivers: SmallVec<[u32; 2]> = active.iter().copied().collect();
             self.segments.push(Segment { range, drivers });
         }
     }
@@ -523,8 +522,7 @@ impl Signal {
             while w != 0 {
                 let e = off + c + w.trailing_zeros() as usize;
                 w &= w - 1;
-                self.event_cycle[e] = cycle;
-                self.last_event[e] = Some(now);
+                set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
                 match self.changed.last_mut() {
                     Some(run) if run.end() as usize == e => run.len += 1,
                     _ => self.changed.push(Range::new(e as u32, 1)),
@@ -550,12 +548,11 @@ impl Signal {
                 continue;
             };
             for e in part.elems() {
-                if self.event_cycle[e] == cycle {
+                if self.event_cycles()[e] == cycle {
                     continue;
                 }
                 any = true;
-                self.event_cycle[e] = cycle;
-                self.last_event[e] = Some(now);
+                set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
                 match self.changed.last_mut() {
                     Some(run) if run.end() as usize == e => run.len += 1,
                     _ => self.changed.push(Range::new(e as u32, 1)),
@@ -566,19 +563,59 @@ impl Signal {
     }
 
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
+        let n = self.ty.len as usize;
         for e in r.elems() {
-            self.active_cycle[e] = cycle;
-            self.last_active[e] = Some(now);
+            self.stamps[n + e] = cycle;
+            self.stamps[3 * n + e] = now.raw();
         }
     }
 
+    fn event_cycles(&self) -> &[u64] {
+        &self.stamps[..self.ty.len as usize]
+    }
+
     pub fn active_in(&self, r: Range, cycle: u64) -> bool {
-        self.active_cycle[r.elems()].contains(&cycle)
+        let n = self.ty.len as usize;
+        self.stamps[n..2 * n][r.elems()].contains(&cycle)
     }
 
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
-        self.event_cycle[r.elems()].contains(&cycle)
+        self.event_cycles()[r.elems()].contains(&cycle)
     }
+
+    /// `'last_event` of `r`: time since the most recent event, `TIME'HIGH` if none.
+    pub fn last_event(&self, r: Range, now: Time) -> Time {
+        let n = self.ty.len as usize;
+        elapsed(now, &self.stamps[2 * n..3 * n][r.elems()])
+    }
+
+    /// `'last_active` of `r`.
+    pub fn last_active(&self, r: Range, now: Time) -> Time {
+        let n = self.ty.len as usize;
+        elapsed(now, &self.stamps[3 * n..][r.elems()])
+    }
+}
+
+/// The stamp of an element that never had an event or activity.
+const NEVER: u64 = u64::MAX;
+
+fn set_event(stamps: &mut [u64], n: usize, e: usize, cycle: u64, now: Time) {
+    stamps[e] = cycle;
+    stamps[2 * n + e] = now.raw();
+}
+
+fn stamps(n: usize) -> SmallVec<[u64; 4]> {
+    let mut v: SmallVec<[u64; 4]> = smallvec![0; 4 * n];
+    v[2 * n..].fill(NEVER);
+    v
+}
+
+fn elapsed(now: Time, times: &[u64]) -> Time {
+    times
+        .iter()
+        .filter(|&&t| t != NEVER)
+        .max()
+        .map_or(Time::MAX, |&t| now.since(Time::from_raw(t)))
 }
 
 /// Runs of `part` with a constant set of connected sources (all of `sources` when the
@@ -620,7 +657,8 @@ fn apply_txn(d: &mut DriverSlot, t: Txn, spare: &mut Vec<Buf>) {
             } else {
                 d.value.copy(rel, &v, 0, t.range.len as usize);
             }
-            if spare.len() < SPARE_BUFS {
+            // A value stored inline costs nothing to make again.
+            if v.spilled() && spare.len() < SPARE_BUFS {
                 spare.push(v);
             }
             if let Some(off) = &mut d.off {
@@ -645,6 +683,9 @@ pub(crate) struct Txn {
     pub value: Option<Buf>,
 }
 
+/// The transactions of one driver or one assignment: nearly always one.
+pub(crate) type TxnList = SmallVec<[Txn; 1]>;
+
 /// How the first element of a waveform preempts pending transactions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DelayMode {
@@ -665,7 +706,7 @@ const SPARE_BUFS: usize = 4;
 /// The projected output waveform of one driver, sorted by time.
 #[derive(Default)]
 pub(crate) struct Waveform {
-    pub pending: Vec<Txn>,
+    pub pending: TxnList,
     /// Values of applied transactions, reused by the next assignments (no allocation per
     /// transaction in the steady state).
     pub spare: Vec<Buf>,
@@ -702,7 +743,7 @@ impl Waveform {
     /// Apply LRM 10.5.2.2 to target elements `r` for a new waveform whose first transaction is
     /// at `t1`, then insert the new transactions. `reject_from` is `t1 - reject` for inertial
     /// delay, `None` for transport.
-    pub fn schedule(&mut self, r: Range, reject_from: Option<Time>, new: &mut Vec<Txn>) {
+    pub fn schedule(&mut self, r: Range, reject_from: Option<Time>, new: &mut TxnList) {
         // Nothing pending on these elements (the usual zero-delay case): nothing to preempt.
         if !self.pending.iter().any(|t| t.range.overlaps(r)) {
             for t in new.drain(..) {
@@ -771,7 +812,7 @@ impl Waveform {
 }
 
 /// Push the runs of `t` not marked in `mask`.
-fn split_kept(t: Txn, mask: &[u64], out: &mut Vec<Txn>) {
+fn split_kept(t: Txn, mask: &[u64], out: &mut TxnList) {
     let n = t.range.len as usize;
     let mut start = None;
     for k in 0..=n {
@@ -820,7 +861,7 @@ mod tests {
         let got: Vec<_> = sig
             .segments
             .iter()
-            .map(|g| (g.range.offset, g.range.len, g.drivers.clone()))
+            .map(|g| (g.range.offset, g.range.len, g.drivers.to_vec()))
             .collect();
         let want = vec![
             (0, 2, vec![0]),
@@ -862,12 +903,27 @@ mod tests {
     }
 
     #[test]
+    fn one_chunk_signal_has_one_waiter_list() {
+        let all = |_: &Waiter| true;
+        let mut w = Waiters::new(40);
+        assert_eq!(w.lists.len(), 1);
+        w.add(1, Range::new(30, 1), 0, all);
+        w.add(2, Range::new(0, 40), 0, all);
+        w.add(3, Range::new(5, 0), 0, all); // null: never woken
+        let mut out = Vec::new();
+        w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
+        assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);
+        w.take_woken(&[Range::new(30, 1)], all, |_| false, &mut out);
+        assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
     fn transport_deletes_at_or_after() {
         let mut w = Waveform::default();
-        w.schedule(Range::new(0, 1), None, &mut vec![txn(10, 0, &[1])]);
-        w.schedule(Range::new(0, 1), None, &mut vec![txn(20, 0, &[2])]);
-        w.schedule(Range::new(0, 1), None, &mut vec![txn(15, 0, &[3])]);
-        assert_eq!(w.pending, vec![txn(10, 0, &[1]), txn(15, 0, &[3])]);
+        w.schedule(Range::new(0, 1), None, &mut smallvec![txn(10, 0, &[1])]);
+        w.schedule(Range::new(0, 1), None, &mut smallvec![txn(20, 0, &[2])]);
+        w.schedule(Range::new(0, 1), None, &mut smallvec![txn(15, 0, &[3])]);
+        assert_eq!(w.pending.to_vec(), vec![txn(10, 0, &[1]), txn(15, 0, &[3])]);
     }
 
     #[test]
@@ -879,9 +935,12 @@ mod tests {
         w.schedule(
             Range::new(0, 2),
             Some(Time::ZERO),
-            &mut vec![txn(20, 0, &[0, 1])],
+            &mut smallvec![txn(20, 0, &[0, 1])],
         );
-        assert_eq!(w.pending, vec![txn(10, 0, &[0]), txn(20, 0, &[0, 1])]);
+        assert_eq!(
+            w.pending.to_vec(),
+            vec![txn(10, 0, &[0]), txn(20, 0, &[0, 1])]
+        );
     }
 
     #[test]
@@ -891,7 +950,7 @@ mod tests {
         w.schedule(
             Range::new(0, 1),
             Some(Time::ns(5)),
-            &mut vec![txn(10, 0, &[1])],
+            &mut smallvec![txn(10, 0, &[1])],
         );
         assert_eq!(w.pending.len(), 2);
     }
@@ -900,9 +959,9 @@ mod tests {
     fn sub_element_assignment_splits_only_its_range() {
         let mut w = Waveform::default();
         w.pending.push(txn(10, 0, &[1, 2, 3, 4]));
-        w.schedule(Range::new(1, 2), None, &mut vec![txn(5, 1, &[9, 9])]);
+        w.schedule(Range::new(1, 2), None, &mut smallvec![txn(5, 1, &[9, 9])]);
         assert_eq!(
-            w.pending,
+            w.pending.to_vec(),
             vec![txn(5, 1, &[9, 9]), txn(10, 0, &[1]), txn(10, 3, &[4])]
         );
     }
@@ -919,7 +978,11 @@ mod tests {
         };
         let mut w = Waveform::default();
         w.pending.push(lt(10, "10"));
-        w.schedule(Range::new(0, 2), Some(Time::ZERO), &mut vec![lt(20, "11")]);
+        w.schedule(
+            Range::new(0, 2),
+            Some(Time::ZERO),
+            &mut smallvec![lt(20, "11")],
+        );
         // Element 1 ('1' both times) keeps the 10 ns transaction, element 0 does not.
         assert_eq!(w.pending.len(), 2);
         assert_eq!(w.pending[0].range, Range::new(1, 1));
@@ -930,7 +993,7 @@ mod tests {
         };
         let mut w = Waveform::default();
         w.pending.push(null(10));
-        w.schedule(Range::new(0, 2), Some(Time::ZERO), &mut vec![null(20)]);
-        assert_eq!(w.pending, vec![null(10), null(20)]);
+        w.schedule(Range::new(0, 2), Some(Time::ZERO), &mut smallvec![null(20)]);
+        assert_eq!(w.pending.to_vec(), vec![null(10), null(20)]);
     }
 }

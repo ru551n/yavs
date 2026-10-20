@@ -8,6 +8,7 @@ description = "yavs simulation kernel: the VHDL LRM 14.7 cycle with parallel pro
 
 [dependencies]
 rayon.workspace = true
+smallvec.workspace = true
 yavs-logic.workspace = true
 
 [lints]

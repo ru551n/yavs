@@ -2,7 +2,7 @@
 
 use crate::error::{ErrorKind, SimError};
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Txn, Waveform,
+    DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Txn, TxnList, Waveform,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
@@ -102,7 +102,7 @@ pub(crate) struct ProcState {
     /// Times of transactions scheduled during this run.
     pub scheduled: Vec<(Time, DriverId)>,
     /// Scratch for the transactions of one assignment.
-    pub new: Vec<Txn>,
+    pub new: TxnList,
 }
 
 pub(crate) struct DriverInfo {
@@ -222,13 +222,13 @@ impl Ctx<'_> {
     /// `'last_event`: time since the most recent event, `TIME'HIGH` if none.
     pub fn last_event(&self, r: impl Into<SigRef>) -> Result<Time, SimError> {
         let (s, r) = self.sig(r)?;
-        Ok(elapsed(self.sh.now, &s.last_event[r.elems()]))
+        Ok(s.last_event(r, self.sh.now))
     }
 
     /// `'last_active`.
     pub fn last_active(&self, r: impl Into<SigRef>) -> Result<Time, SimError> {
         let (s, r) = self.sig(r)?;
-        Ok(elapsed(self.sh.now, &s.last_active[r.elems()]))
+        Ok(s.last_active(r, self.sh.now))
     }
 
     /// `'last_value`, element by element.
@@ -360,7 +360,7 @@ impl Ctx<'_> {
             ))));
         }
         let delay = after.unwrap_or(s.disconnect);
-        let mut new = Vec::with_capacity(1);
+        let mut new = TxnList::new();
         self.push_txn(&mut new, r, delay, None)?;
         self.schedule(d, r, &mut new, mode)
     }
@@ -377,7 +377,7 @@ impl Ctx<'_> {
     /// Append one waveform element, checking ascending times.
     fn push_txn(
         &self,
-        new: &mut Vec<Txn>,
+        new: &mut TxnList,
         r: Range,
         delay: Time,
         value: Option<Buf>,
@@ -404,7 +404,7 @@ impl Ctx<'_> {
         &mut self,
         d: DriverId,
         r: Range,
-        new: &mut Vec<Txn>,
+        new: &mut TxnList,
         mode: DelayMode,
     ) -> Result<(), SimError> {
         let fail = |m: &str| self.error(ErrorKind::InvalidAssign(m.into()));
@@ -525,14 +525,6 @@ impl Ctx<'_> {
         self.st.effects.push(Effect::Op(op));
         Ok(())
     }
-}
-
-fn elapsed(now: Time, times: &[Option<Time>]) -> Time {
-    times
-        .iter()
-        .flatten()
-        .max()
-        .map_or(Time::MAX, |&t| now.since(t))
 }
 
 /// Resolve a reference against the model: the signal must exist and the range must lie

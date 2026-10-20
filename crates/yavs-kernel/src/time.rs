@@ -88,6 +88,15 @@ impl Time {
         Self::from_fs(fs)
     }
 
+    /// The femtoseconds, for compact per-element storage (`from_raw` is the inverse).
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) const fn from_raw(fs: u64) -> Time {
+        Time(fs)
+    }
+
     const fn from_fs(fs: u64) -> Option<Time> {
         if fs <= Time::MAX.0 {
             Some(Time(fs))

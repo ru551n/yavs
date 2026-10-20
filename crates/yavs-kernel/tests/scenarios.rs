@@ -1363,3 +1363,32 @@ fn edge_trigger_skips_other_events() {
     assert_eq!(run(false, false), (11, 2));
     assert_eq!(run(true, false), (3, 2));
 }
+
+#[test]
+fn hook_names_the_reporting_process() {
+    struct Names(Arc<std::sync::Mutex<Vec<String>>>);
+    impl Observer for Names {
+        fn report(&mut self, h: &mut Hook<'_>, r: &Report) {
+            let name = h.process_name(r.process.unwrap()).unwrap_or("?");
+            self.0.lock().unwrap().push(name.to_string());
+        }
+    }
+    let mut b = Builder::new();
+    for name in [":top:a", ":top:b"] {
+        b.process(
+            name,
+            ProcFlags::default(),
+            &[],
+            p(|c| {
+                c.report(Severity::Note, "hi");
+                c.wait_for(ns(1))?;
+                Ok(())
+            }),
+        );
+    }
+    let mut sim = b.build(Config::default()).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    sim.subscribe(Box::new(Names(seen.clone())));
+    sim.run_until(ns(0)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), [":top:a", ":top:b"]);
+}

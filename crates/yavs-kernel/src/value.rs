@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use smallvec::{SmallVec, smallvec};
 use yavs_logic::{Block, Logic, Planes};
 
 /// The kernel's logic vector: always bit-planes, whatever yavs-logic's default layout is.
@@ -127,8 +128,8 @@ const Z_BLOCK: Block = [0, 0, !0, 0];
 /// Storage for a run of elements of one signal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Buf {
-    Bytes { es: usize, data: Vec<u8> },
-    Planes { len: usize, b: Vec<Block> },
+    Bytes { es: usize, data: SmallVec<[u8; 16]> },
+    Planes { len: usize, b: SmallVec<[Block; 1]> },
 }
 
 /// The low `n` bits (`n <= 64`).
@@ -193,11 +194,11 @@ impl Buf {
         match elem {
             Elem::Bytes(es) => Buf::Bytes {
                 es: es as usize,
-                data: vec![0; n * es as usize],
+                data: smallvec![0; n * es as usize],
             },
             Elem::Logic => Buf::Planes {
                 len: n,
-                b: vec![[0; 4]; n.div_ceil(64)],
+                b: smallvec![[0; 4]; n.div_ceil(64)],
             },
         }
     }
@@ -207,11 +208,11 @@ impl Buf {
         match (elem, v) {
             (Elem::Bytes(es), ValueRef::Bytes(d)) if d.len() == n * es as usize => Ok(Buf::Bytes {
                 es: es as usize,
-                data: d.to_vec(),
+                data: SmallVec::from_slice(d),
             }),
             (Elem::Logic, ValueRef::Logic(l)) if l.len() == n => Ok(Buf::Planes {
                 len: n,
-                b: l.repr().blocks().to_vec(),
+                b: SmallVec::from_slice(l.repr().blocks()),
             }),
             (Elem::Bytes(es), ValueRef::Bytes(d)) => Err(format!(
                 "value has {} bytes, expected {n} elements of {es} bytes",
@@ -256,6 +257,14 @@ impl Buf {
         }
     }
 
+    /// The elements are on the heap (not stored inline).
+    pub fn spilled(&self) -> bool {
+        match self {
+            Buf::Bytes { data, .. } => data.spilled(),
+            Buf::Planes { b, .. } => b.spilled(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Buf::Bytes { es, data } => data.len() / es,
@@ -275,10 +284,10 @@ impl Buf {
         match self {
             Buf::Bytes { es, data } => Buf::Bytes {
                 es: *es,
-                data: data[off * es..(off + n) * es].to_vec(),
+                data: SmallVec::from_slice(&data[off * es..(off + n) * es]),
             },
             Buf::Planes { b, .. } => {
-                let mut out = vec![[0; 4]; n.div_ceil(64)];
+                let mut out: SmallVec<[Block; 1]> = smallvec![[0; 4]; n.div_ceil(64)];
                 for (c, k) in chunks(n) {
                     out[c / 64] = get_block(b, off + c, k);
                 }
@@ -316,9 +325,9 @@ impl Buf {
 
     pub fn to_value(&self) -> Value {
         match self {
-            Buf::Bytes { data, .. } => Value::Bytes(data.clone()),
+            Buf::Bytes { data, .. } => Value::Bytes(data.to_vec()),
             Buf::Planes { len, b } => {
-                Value::Logic(Logic::from_repr(Planes::from_blocks(*len, b.clone())))
+                Value::Logic(Logic::from_repr(Planes::from_blocks(*len, b.to_vec())))
             }
         }
     }

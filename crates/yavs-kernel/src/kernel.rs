@@ -179,6 +179,11 @@ impl Hook<'_> {
         Ok(s.cur.extract(r.offset as usize, r.len as usize).to_value())
     }
 
+    /// The name of process `p`, as reports show it.
+    pub fn process_name(&self, p: ProcId) -> Option<&str> {
+        self.names.get(p.0 as usize).map(String::as_str)
+    }
+
     pub fn signal_name(&self, s: SignalId) -> Result<&str, SimError> {
         Ok(&check_ref(self.signals, s.into())
             .map_err(|k| self.err(k))?
@@ -334,7 +339,6 @@ pub(crate) struct Slot {
 }
 
 pub(crate) struct ProcMeta {
-    pub name: String,
     pub flags: ProcFlags,
     /// Bumped on every resumption; stale waiters and timeouts carry an older one.
     pub generation: u64,
@@ -518,6 +522,7 @@ impl SimControl {
         groups: Vec<Group>,
         slots: Vec<Mutex<Slot>>,
         procs: Vec<ProcMeta>,
+        names: Vec<String>,
     ) -> Result<SimControl, SimError> {
         let pool = match cfg.threads {
             0 => {
@@ -554,7 +559,7 @@ impl SimControl {
             }
         }
         let mut sim = SimControl {
-            names: procs.iter().map(|p| p.name.clone()).collect(),
+            names,
             rng: cfg.shuffle,
             cfg,
             signals,
@@ -785,11 +790,10 @@ impl SimControl {
     }
 
     pub fn process_name(&self, p: ProcId) -> Result<&str, SimError> {
-        let meta = self
-            .procs
+        let name = (self.names)
             .get(p.0 as usize)
             .ok_or_else(|| self.err(ErrorKind::BadRef(format!("no process {}", p.0))))?;
-        Ok(&meta.name)
+        Ok(name)
     }
 
     /// Effective value.
@@ -1159,7 +1163,7 @@ impl SimControl {
                     }
                     let mut slot = lock(&self.slots[info.owner.0 as usize]);
                     let sig = &mut self.signals[info.signal.0 as usize];
-                    let mut ranges = std::mem::take(&mut sig.applied);
+                    let mut ranges: smallvec::SmallVec<[Range; 4]> = smallvec::SmallVec::new();
                     slot.st.waveforms[info.local as usize].apply_due(
                         now,
                         &mut sig.drivers[info.slot as usize],
@@ -1173,7 +1177,6 @@ impl SimControl {
                             up.push((sig.level, Reverse(info.signal.0)));
                         }
                     }
-                    sig.applied = ranges;
                 }
             }
         }
@@ -1258,7 +1261,7 @@ impl SimControl {
             for &(_, d) in run.iter() {
                 let info = &drivers[d as usize];
                 let mut slot = lock(&slots[info.owner.0 as usize]);
-                let mut ranges = std::mem::take(&mut sig.applied);
+                let mut ranges: smallvec::SmallVec<[Range; 4]> = smallvec::SmallVec::new();
                 slot.st.waveforms[info.local as usize].apply_due(
                     now,
                     &mut sig.drivers[info.slot as usize],
@@ -1268,7 +1271,6 @@ impl SimControl {
                     sig.mark_active(r, now, cycle);
                     sig.dirty.push(r);
                 }
-                sig.applied = ranges;
             }
             let mut dirty = std::mem::take(&mut sig.dirty);
             for &r in &dirty {

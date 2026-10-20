@@ -655,8 +655,7 @@ pub fn run(
         out.emit(&none, &d);
         return out.finish(code);
     }
-    let names: Vec<String> = e.procs.iter().map(|p| e.proc_name(p)).collect();
-    sim.subscribe(Box::new(Printer { names }));
+    sim.subscribe(Box::new(Printer));
     let rt = built.as_ref().map(|b| b.rt.clone());
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
     let toggles = kind(CovKindArg::Toggle).then(|| {
@@ -867,9 +866,7 @@ fn observers(
 
 /// Prints reports and `OUTPUT` text in NVC's format on stdout (cli-contract section 5;
 /// tools/difftest parses it).
-struct Printer {
-    names: Vec<String>,
-}
+struct Printer;
 
 impl yavs_kernel::Observer for Printer {
     fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
@@ -880,10 +877,7 @@ impl yavs_kernel::Observer for Printer {
             yavs_kernel::Severity::Failure => "Failure",
         };
         let at = match (r.process, &r.context) {
-            (Some(p), _) => format!(
-                "Process {}",
-                self.names.get(p.0 as usize).map_or("?", |s| s.as_str())
-            ),
+            (Some(p), _) => format!("Process {}", hook.process_name(p).unwrap_or("?")),
             (None, c) => format!("Function {}", c.as_deref().unwrap_or("?")),
         };
         let mut o = std::io::stdout().lock();

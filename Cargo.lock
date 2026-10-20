@@ -1564,6 +1564,7 @@ name = "yavs-kernel"
 version = "0.8.0"
 dependencies = [
  "rayon",
+ "smallvec",
  "yavs-logic",
 ]
 

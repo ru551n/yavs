@@ -20,8 +20,11 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   driver values, transaction values, force and port layers) is a `Buf` of the signal's kind.
   Element-addressed operations (copy a range, masked select, diff, resolve) work on chunks of 64
   elements with shifts and masks, so a sub-range at any offset is never transposed element by
-  element. Per-element metadata (`event_cycle`, `active_cycle`, `last_event`, `last_active`)
-  are flat arrays over the whole signal (rule 2).
+  element. Per-element metadata (event cycle, active cycle, last event time, last active time)
+  are flat arrays over the whole signal (rule 2), the four in one buffer. Small collections
+  (a `Buf` of up to 16 bytes or one logic block, one waiter, one segment, one pending
+  transaction, a signal's scratch range lists) are stored inline (`SmallVec`): a scalar signal
+  and its driver cost no allocation of their own (#421).
 - **Sources**: a signal's source list holds process drivers (creation order) and then out-ports
   (`DriverSlot { range, value, off }`). A driver's current value lives in the signal, its
   projected output waveform in the owning process (`ProcState::waveforms`), so a running process
@@ -63,7 +66,7 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 - **Waiters**: per signal, `(proc, range, generation)`. A process's generation increases on every
   resumption, invalidating its other waiters and its timeout in O(1). Each signal buckets its
   waiters by chunk of 64 elements (a waiter over at most 4 chunks sits in each of them, a wider
-  or null one in a wide list), so an event looks only at the waiters of the chunks it touches
+  or null one in a wide list; a signal of one chunk has the one list), so an event looks only at the waiters of the chunks it touches
   and the wide list: one process per element of a wide vector costs O(1) per event, not
   O(processes). Waiters carry their registration number and wake in that order, each once.
   Lists are compacted when they reach twice their live size.

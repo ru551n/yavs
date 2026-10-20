@@ -515,10 +515,12 @@ impl Builder {
         }
         for s in &mut self.signals {
             s.build_segments();
+            s.drivers.shrink_to_fit();
         }
         self.check_groups(&infos).map_err(usage)?;
-        let mut slots = Vec::new();
-        let mut procs = Vec::new();
+        let mut slots = Vec::with_capacity(self.procs.len());
+        let mut procs = Vec::with_capacity(self.procs.len());
+        let mut names = Vec::with_capacity(self.procs.len());
         for p in self.procs {
             let st = ProcState {
                 waveforms: p.drivers.iter().map(|_| Waveform::default()).collect(),
@@ -529,8 +531,8 @@ impl Builder {
                 st,
                 result: Ok(()),
             }));
+            names.push(p.name);
             procs.push(ProcMeta {
-                name: p.name,
                 flags: p.flags,
                 generation: 0,
                 ready: false,
@@ -547,6 +549,7 @@ impl Builder {
             self.groups,
             slots,
             procs,
+            names,
         )
     }
 }

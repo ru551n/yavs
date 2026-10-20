@@ -2491,3 +2491,12 @@ user's performance priority:
 - **Why:** these values are equal exactly when their stored bytes are; the key comparison of the
   data-types dictionary tests spent its time in that loop.
 
+
+
+
+## Floor of a run: freeing the analysis (#426, yavs decision under the user's single-thread performance priority)
+
+- **`Db::release_analysis` frees the arenas on a thread of its own.** Dropping every node of the analysed
+  design one by one took a fifth of a short run (#409 freed them for the peak, the drop sat in the run). The
+  arenas are moved to a detached thread; a failed spawn drops them in place. Peak memory is unchanged.
+

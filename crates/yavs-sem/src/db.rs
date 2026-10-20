@@ -262,10 +262,12 @@ impl Db {
     /// Free the analysis results (units, declarations, expressions, statements, types, scopes
     /// and the analysis caches), keeping only the source map, for a run that needs nothing
     /// else of the design once it is elaborated and lowered (#409). Nothing may use the
-    /// design below the source map afterwards: ids into the arenas dangle.
+    /// design below the source map afterwards: ids into the arenas dangle. The memory is freed
+    /// on a thread of its own: dropping every node one by one took a fifth of a short run.
     pub fn release_analysis(&mut self) {
+        let mut junk: Vec<Box<dyn std::any::Any + Send>> = Vec::new();
         macro_rules! free {
-            ($($f:ident),*) => {$(drop(std::mem::take(&mut self.$f));)*};
+            ($($f:ident),*) => {$(junk.push(Box::new(std::mem::take(&mut self.$f)));)*};
         }
         free!(
             libs,
@@ -301,6 +303,8 @@ impl Db {
             lib_by_key,
             generic
         );
+        // A failed spawn drops the closure, and with it the memory, here.
+        let _ = std::thread::Builder::new().spawn(move || drop(junk));
     }
 
     /// The recorded uses of a TIME unit smaller than `limit_fs` femtoseconds, in source order

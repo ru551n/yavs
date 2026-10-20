@@ -727,6 +727,7 @@ impl Elaborated {
                     Ok(())
                 }))
             };
+        let mut proc_index: HashMap<_, HashMap<_, usize>> = HashMap::new();
         let mut s = self.build_res(
             cfg,
             |p, ds| {
@@ -747,10 +748,19 @@ impl Elaborated {
                     let proc = self.actual_process(&rt, u, a, p, ds, inst)?;
                     return Ok(Box::new(attach(proc, p)));
                 }
-                let pir = u
-                    .processes
-                    .iter()
-                    .find(|x| x.stmt == p.stmt && x.actual.is_none())
+                // Processes by statement, indexed once per architecture (#435).
+                let by_stmt = proc_index.entry(arch).or_insert_with(|| {
+                    let mut m = HashMap::new();
+                    for (i, x) in u.processes.iter().enumerate() {
+                        if x.actual.is_none() {
+                            m.entry(x.stmt).or_insert(i);
+                        }
+                    }
+                    m
+                });
+                let pir = by_stmt
+                    .get(&p.stmt)
+                    .map(|&i| &u.processes[i])
                     .ok_or_else(|| {
                         sim_err(format!(
                             "{}: processes inside generates and blocks are not lowered yet",

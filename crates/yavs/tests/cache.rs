@@ -397,3 +397,55 @@ fn parallel_cold_runs_agree_on_lowering() {
         .count();
     assert_eq!(leftovers, 0);
 }
+
+/// A package with a warning of its own (a static index outside the bounds, in dead code) after a
+/// line with a non-ASCII character, so that the snippet and column come from the source text.
+const NOISY: &str = "-- caf\u{e9} \u{e9}\u{e9}\npackage n is\n  function g (x : integer) return integer;\nend;\n\
+package body n is\n  function g (x : integer) return integer is\n    variable v : bit_vector(0 to 3);\n  begin\n\
+    if false then v(5) := '1'; end if;\n    return x;\n  end;\nend;\n";
+
+/// A diagnostic in a dependency (not the top-level file) is rendered from source text that a hit
+/// reads again on demand, identically to a cold run.
+#[test]
+fn warm_diagnostics_in_dependencies_render_identically() {
+    let e = Env::new("deps");
+    std::fs::write(e.tmp.join("noisy.vhd"), NOISY).expect("write");
+    let tb = TB.replace("use work.p.all;", "use work.p.all; use work.n.all;");
+    std::fs::write(e.tmp.join("tb.vhd"), tb).expect("write");
+    for f in ["noisy.vhd", "tb.vhd"] {
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let plain = e.run(&["--no-cache"]);
+    assert_eq!(plain.code, 0, "{plain:?}");
+    assert!(plain.stderr.matches("W1404").count() >= 2, "{plain:?}");
+    assert!(plain.stderr.contains("noisy.vhd"), "{plain:?}");
+    let cold = e.run(&[]);
+    assert!(note(&cold, "store"), "{cold:?}");
+    let warm = e.run(&[]);
+    assert!(note(&warm, "hit"), "{warm:?}");
+    assert_eq!(visible(&plain), visible(&warm));
+}
+
+/// A hit does not read the text of the sources (they are verified by size and modification time
+/// and decoded lazily): a run that has nothing to show works with a source nobody can read now.
+#[cfg(unix)]
+#[test]
+fn a_hit_without_diagnostics_does_not_read_the_sources() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new("unread");
+    // The testbench warns; drop its warning so no snippet is needed, and age every source.
+    std::fs::write(e.tmp.join("tb.vhd"), TB.replace("v(5)", "v(1)")).expect("write");
+    for f in ["pkg.vhd", "other.vhd", "tb.vhd"] {
+        age(&e.tmp.join(f));
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let cold = e.run(&[]);
+    assert!(note(&cold, "store"), "{cold:?}");
+    assert!(cold.stdout.contains("K=7 f=21"), "{cold:?}");
+    let pkg = e.tmp.join("pkg.vhd");
+    std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let warm = e.run(&[]);
+    std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    assert!(note(&warm, "hit"), "{warm:?}");
+    assert_eq!(visible(&cold), visible(&warm));
+}

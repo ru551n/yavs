@@ -1,0 +1,1 @@
+A run now restores only the parts of its cached analysis that it uses: source text, symbol names and design entries are decoded when first needed, and the elaborator finds a process of an instance by an index instead of a scan, which shortens every `yavs run` that hits the cache.

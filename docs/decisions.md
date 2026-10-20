@@ -1955,10 +1955,10 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - **Key and validation.** Key = sha256 over the cache format, the yavs build id (version, size and
   modification time of the executable), `--std`/`--relaxed`/`--psl`/`--encoding`/defines, the std/ieee
   tree, and the closure's files (library, path, recorded content hash, standard; the working directory
-  for a relative path). The image also holds the bytes of every source file read (std/ieee included);
-  the files of the closure were verified by the closure itself (content hash, or size and modification
-  time, see "Per-run overhead" below) and the key holds their hashes, so on restore only the built-in
-  files are compared again, and a file the manifests do not list cannot make an entry stale. Library
+  for a relative path). The image also holds a digest of every source file read (std/ieee included; the text
+  itself is not stored, see "Lazy image decode" below); the files of the closure were verified by the
+  closure itself (content hash, or size and modification time, see "Per-run overhead" below) and the key
+  holds their hashes, so on restore only the built-in files are compared again (by digest), and a file the manifests do not list cannot make an entry stale. Library
   manifests are never stored: they are read again on restore.
   Anything that does not match, or does not decode, is a miss and analysis runs from source; the cache
   can only make a run faster.
@@ -1967,7 +1967,7 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   identically); never an analysis with errors; never one with pending work. Transient analysis state
   (memo tables, the parsed-file cache) is cleared by `Db::settle` after the closure on both paths, so a
   restored `Db` and a cold one continue from the same state. Symbols are written as indices into a
-  per-image text table and interned again on load (`yavs_syntax::encode_table`/`decode_table`).
+  per-image text table and interned when first read (`yavs_syntax::encode_table`/`DecodeTable`).
 - **Format.** `serde` with `postcard` (a maintained, specified, compact serde format), wrapped by
   `yavs-cache` in a header with magic, format version, key, length and an xxh3 checksum of the payload. Stored in
   `<work library dir>/yavs-cache/sem-<key>.img`; a write is a temporary file plus an atomic rename (no
@@ -2004,6 +2004,35 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     changed for precise roots (#422) and the package data refers into the heap: serialising both
     waits for that work (comment on #407).
 
+
+## Lazy image decode (#426, yavs decisions under the user's single-thread performance priority)
+
+Decoding the whole analysis image (serde and postcard: about 5 MB of arenas, 3 MB of source text, 13 000
+symbol texts) was the largest fixed cost of a run, and a run reads only part of the design. So the restore
+decodes on demand:
+
+- **Arenas decode 64 entries at a time on first read** (`yavs-sem` `ids.rs`). The image form of an arena is
+  its entries in chunks, one postcard sequence per chunk, plus the chunk start offsets; a restored arena
+  keeps the bytes (a range of the buffer the entry was read into, not a copy) and a `OnceLock` per chunk.
+  `Index` decodes the chunk, `IndexMut` decodes it and hands out the entry, `push` appends after the lazy
+  entries, `iter` reads every entry. Ids are unchanged, so a warm run is still the same value, id for id.
+  Ceiling: an entry read decodes its 63 neighbours; a decode error cannot be returned from `Index`, so it
+  is an internal-error panic (the entry was checksummed, a chunk that does not decode is a bug).
+- **Whole-design scans must not run on the run path**, because they decode everything. The three that did
+  (`'active`/`'last_active` reads, force and release statements, package-path external names) are answered
+  from `Db::facts()`, found by `Db::settle` and stored in the image; `facts()` recomputes when the
+  expression or statement arena grew since.
+- **The source map stores no text**: per file the path, the line starts and an xxh3 digest. `SourceFile::text()`
+  and `bytes()` read the file again on first use (built-in files from the binary) and check the digest; a
+  file that changed since is an internal-error panic, never a rendering of the wrong text. Ceiling: a file
+  whose size and modification time are unchanged (trusted by the closure, "Per-run overhead") but whose
+  content differs is now caught when a diagnostic needs it, where it was silently shown from the image before.
+  The line starts stay, so source locations of run-time messages never read a file.
+- **Symbols are interned on first read** (`DecodeTable`): the table is one string plus end offsets and an
+  `OnceLock<Symbol>` per entry. Symbol numbers now depend on the order of first use (they are never
+  compared across runs; elaboration is single-threaded).
+- **Versioning.** The cache key holds the yavs build id (size and modification time of the executable), so an
+  entry written by a build with another image layout is a miss, as before; nothing else reads old images.
 
 ## Per-run overhead (#426)
 

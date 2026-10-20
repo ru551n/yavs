@@ -75,6 +75,22 @@ pub(crate) struct UnitCx {
     pub file_rev: LangRev,
 }
 
+/// What the elaborator wants to know about every analyzed expression and statement, found once
+/// when the analysis is settled so that a `Db` restored from an image need not decode all of
+/// them to answer ([`Db::facts`]).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Facts {
+    /// Sizes of the arenas the facts were found in; a `Db` that grew since recomputes them.
+    exprs: usize,
+    stmts: usize,
+    /// Some expression reads `'active` or `'last_active` (used or not).
+    pub reads_activity: bool,
+    /// The force and release statements, in order.
+    pub forces: Vec<StmtId>,
+    /// The expressions that were package-path external names (`@lib.pkg.obj`) with their names.
+    pub(crate) package_paths: Vec<(ExprId, ExternalId)>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Db {
     /// The design revision `D`: std and ieee are loaded for it.
@@ -214,6 +230,8 @@ pub struct Db {
     pub(crate) range_records: HashMap<TypeId, SubtypeId>,
     /// Generic defaults, generic lists and instance remappings (generic.rs).
     pub(crate) generic: crate::generic::GenericState,
+    /// Whole-design facts found by [`Db::settle`] (see [`Facts`]).
+    pub(crate) facts: Option<Facts>,
     diags: Vec<Diagnostic>,
     errors: usize,
 }
@@ -303,6 +321,54 @@ impl Db {
         });
         if !zero && !builtin && fs < 1_000_000_000_000_000 && self.well_known.time == Some(ty) {
             self.time_units.push(TimeUnitUse { span, unit, fs });
+        }
+    }
+
+    /// The [`Facts`] of the design as it is now: the stored ones when nothing was added since,
+    /// else found now.
+    pub fn facts(&self) -> std::borrow::Cow<'_, Facts> {
+        match &self.facts {
+            Some(f) if f.exprs == self.exprs.len() && f.stmts == self.stmts.len() => {
+                std::borrow::Cow::Borrowed(f)
+            }
+            _ => std::borrow::Cow::Owned(self.scan_facts()),
+        }
+    }
+
+    pub(crate) fn scan_facts(&self) -> Facts {
+        use crate::hir::{ExprKind, PredefAttr, StmtKind};
+        Facts {
+            exprs: self.exprs.len(),
+            stmts: self.stmts.len(),
+            reads_activity: self.exprs.iter().any(|(_, e)| {
+                matches!(
+                    e.kind,
+                    ExprKind::Attr {
+                        attr: PredefAttr::Active | PredefAttr::LastActive,
+                        ..
+                    }
+                )
+            }),
+            forces: self
+                .stmts
+                .iter()
+                .filter(|(_, s)| {
+                    matches!(s.kind, StmtKind::Force { .. } | StmtKind::Release { .. })
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            package_paths: self
+                .exprs
+                .iter()
+                .filter_map(|(e, x)| match x.kind {
+                    ExprKind::External(x)
+                        if self.externals[x].path_kind == yavs_syntax::ast::PathKind::Package =>
+                    {
+                        Some((e, x))
+                    }
+                    _ => None,
+                })
+                .collect(),
         }
     }
 
@@ -415,6 +481,7 @@ impl Db {
             range_records: HashMap::default(),
             pending_specs: Vec::new(),
             generic: Default::default(),
+            facts: None,
             diags: Vec::new(),
             errors: 0,
         }
@@ -465,7 +532,7 @@ impl Db {
     /// The source text of `span`, as written, for messages.
     pub(crate) fn source_text(&self, span: Span) -> String {
         let f = self.sources.get(span.file);
-        f.text[f.text_offset(span.start)..f.text_offset(span.end)].to_string()
+        f.text()[f.text_offset(span.start)..f.text_offset(span.end)].to_string()
     }
 
     pub fn diagnostics(&self) -> &[Diagnostic] {

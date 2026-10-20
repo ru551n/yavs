@@ -132,7 +132,12 @@ pub fn analyze_closure(
         // holds those hashes: only the files outside it (`std`, `ieee`) are compared again.
         let verified: std::collections::HashSet<String> =
             files.iter().map(|f| f.path.display().to_string()).collect();
-        match Db::from_image(opts.clone(), &bytes, &|p| verified.contains(p)) {
+        let (buf, start) = bytes.into_parts();
+        match Db::from_image(
+            opts.clone(),
+            yavs_sem::image::Image::new(buf, start),
+            &|p| verified.contains(p),
+        ) {
             Ok(db) => {
                 debug(format!("hit {}", k.hex()));
                 return (with_stages(db, store, &k), Ok(()));

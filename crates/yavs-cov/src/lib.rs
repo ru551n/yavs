@@ -236,13 +236,13 @@ pub fn collect(
             .unwrap_or((span.file, 0));
         let f = db.sources.get(span.file);
         let text = f
-            .text
+            .text()
             .get(f.text_offset(span.start)..f.text_offset(span.end))
             .unwrap_or("");
         let line = f.line_col(span.start).0 as u32;
         let rg = regs
             .entry(span.file)
-            .or_insert_with(|| regions(&f.path, &f.text, translate_off, &mut warns));
+            .or_insert_with(|| regions(&f.path, f.text(), translate_off, &mut warns));
         items.push(Item {
             text: display(text),
             skip: rg.iter().any(|&(a, b)| a <= line && line <= b),

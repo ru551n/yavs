@@ -82,22 +82,100 @@ impl std::fmt::Debug for Span {
 /// Spans are byte offsets into the file as it is on disk. For a UTF-8 file
 /// that is the same as an offset into `text`; for a file read as ISO-8859-1
 /// the original bytes are kept and offsets are mapped when rendering.
-#[derive(serde::Serialize, serde::Deserialize)]
+///
+/// A file restored from an analysis image keeps no text: only the path, the line starts and a
+/// digest of the bytes. The text is read again the first time something needs it (a rendered
+/// snippet, a re-scan of a construct), so a run without such a need never decodes or reads it.
 pub struct SourceFile {
     pub path: String,
-    /// The decoded text, for display.
-    pub text: String,
     line_starts: Vec<u32>,
+    full: std::sync::OnceLock<Full>,
+    /// Set for a file restored from an image: how to read it again.
+    lazy: Option<Lazy>,
+}
+
+struct Full {
+    /// The decoded text, for display.
+    text: String,
     /// The bytes on disk, kept only for a Latin-1 file.
     raw: Option<Vec<u8>>,
     /// File offsets of the bytes of a Latin-1 file that are two bytes in `text`.
     high: Vec<u32>,
 }
 
+struct Lazy {
+    latin1: bool,
+    digest: u64,
+    read: SourceReader,
+}
+
+/// Reads the bytes of a file by the path recorded in the map.
+pub type SourceReader = fn(&str) -> std::io::Result<Vec<u8>>;
+
+/// The digest of a file's bytes recorded in an image.
+pub fn digest(bytes: &[u8]) -> u64 {
+    twox_hash::XxHash3_64::oneshot(bytes)
+}
+
+impl Full {
+    fn new(text: String, raw: Option<Vec<u8>>) -> Full {
+        let high = raw
+            .iter()
+            .flatten()
+            .enumerate()
+            .filter(|&(_, &b)| b >= 0x80)
+            .map(|(i, _)| i as u32)
+            .collect();
+        Full { text, raw, high }
+    }
+}
+
+fn latin1_text(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
+}
+
 impl SourceFile {
+    fn full(&self) -> &Full {
+        self.full.get_or_init(|| {
+            let l = self.lazy.as_ref().expect("an eager file is always loaded");
+            let bytes = match (l.read)(&self.path) {
+                Ok(b) if digest(&b) == l.digest => b,
+                // A file changed after the run verified it: nothing sensible can be shown.
+                Ok(_) => panic!(
+                    "internal error: source file `{}` changed during the run",
+                    self.path
+                ),
+                Err(e) => panic!(
+                    "internal error: source file `{}` cannot be read again: {e}",
+                    self.path
+                ),
+            };
+            if l.latin1 {
+                Full::new(latin1_text(&bytes), Some(bytes))
+            } else {
+                Full::new(
+                    String::from_utf8(bytes).expect("a UTF-8 file stays UTF-8 (digest checked)"),
+                    None,
+                )
+            }
+        })
+    }
+
+    fn digest(&self) -> u64 {
+        self.lazy
+            .as_ref()
+            .map_or_else(|| digest(self.bytes()), |l| l.digest)
+    }
+
+    /// The decoded text, for display.
+    pub fn text(&self) -> &str {
+        &self.full().text
+    }
+
     /// The file as it is on disk.
     pub fn bytes(&self) -> &[u8] {
-        self.raw.as_deref().unwrap_or(self.text.as_bytes())
+        let f = self.full();
+        f.raw.as_deref().unwrap_or(f.text.as_bytes())
     }
 
     /// Offsets of the first byte of each line, in `text`: those of the file on disk unless
@@ -108,14 +186,16 @@ impl SourceFile {
 
     /// The file was read as ISO-8859-1 bytes rather than UTF-8.
     pub fn is_latin1(&self) -> bool {
-        self.raw.is_some()
+        self.lazy
+            .as_ref()
+            .map_or_else(|| self.full().raw.is_some(), |l| l.latin1)
     }
 
     /// The offset in `text` of a file byte offset, on a character boundary.
     pub fn text_offset(&self, offset: u32) -> usize {
-        let mut t =
-            (offset as usize + self.high.partition_point(|&h| h < offset)).min(self.text.len());
-        while !self.text.is_char_boundary(t) {
+        let f = self.full();
+        let mut t = (offset as usize + f.high.partition_point(|&h| h < offset)).min(f.text.len());
+        while !f.text.is_char_boundary(t) {
             t -= 1;
         }
         t
@@ -126,19 +206,61 @@ impl SourceFile {
         let offset = self.text_offset(offset) as u32;
         let line = self.line_starts.partition_point(|&s| s <= offset) - 1;
         let start = self.line_starts[line] as usize;
-        let end = (offset as usize).min(self.text.len());
-        let col = self
-            .text
+        let text = self.text();
+        let end = (offset as usize).min(text.len());
+        let col = text
             .get(start..end)
             .map_or(end - start, |s| s.chars().count());
         (line + 1, col + 1)
     }
 }
 
+/// What an image holds of a file: no text (see [`SourceFile`]).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FileStub {
+    path: String,
+    line_starts: Vec<u32>,
+    latin1: bool,
+    digest: u64,
+}
+
 /// All files a session has loaded, addressed by [`FileId`].
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
+}
+
+impl serde::Serialize for SourceMap {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.files.iter().map(|f| FileStub {
+            path: f.path.clone(),
+            line_starts: f.line_starts.clone(),
+            latin1: f.is_latin1(),
+            digest: f.digest(),
+        }))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SourceMap {
+    /// The files come back unloaded, to be read with `std::fs::read` unless
+    /// [`SourceMap::set_reader`] says otherwise.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let stubs = Vec::<FileStub>::deserialize(d)?;
+        let files = stubs
+            .into_iter()
+            .map(|f| SourceFile {
+                path: f.path,
+                line_starts: f.line_starts,
+                full: std::sync::OnceLock::new(),
+                lazy: Some(Lazy {
+                    latin1: f.latin1,
+                    digest: f.digest,
+                    read: |p| std::fs::read(p),
+                }),
+            })
+            .collect();
+        Ok(SourceMap { files })
+    }
 }
 
 impl SourceMap {
@@ -149,7 +271,7 @@ impl SourceMap {
 
     /// Add a file whose bytes are ISO-8859-1 characters.
     pub fn add_latin1(&mut self, path: impl Into<String>, bytes: Vec<u8>) -> FileId {
-        let text = bytes.iter().map(|&b| b as char).collect();
+        let text = latin1_text(&bytes);
         self.push(path.into(), text, Some(bytes))
     }
 
@@ -157,30 +279,29 @@ impl SourceMap {
         let line_starts = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(i, _)| i as u32 + 1))
             .collect();
-        let high = raw
-            .iter()
-            .flatten()
-            .enumerate()
-            .filter(|&(_, &b)| b >= 0x80)
-            .map(|(i, _)| i as u32)
-            .collect();
         self.files.push(SourceFile {
             path,
-            text,
             line_starts,
-            raw,
-            high,
+            full: std::sync::OnceLock::from(Full::new(text, raw)),
+            lazy: None,
         });
         FileId(self.files.len() as u32 - 1)
+    }
+
+    /// How files restored from an image are read again (embedded library files, say).
+    pub fn set_reader(&mut self, read: SourceReader) {
+        for l in self.files.iter_mut().filter_map(|f| f.lazy.as_mut()) {
+            l.read = read;
+        }
     }
 
     pub fn get(&self, id: FileId) -> &SourceFile {
         &self.files[id.0 as usize]
     }
 
-    /// Every file as (path, bytes on disk), in `FileId` order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
-        self.files.iter().map(|f| (f.path.as_str(), f.bytes()))
+    /// Every file as (path, digest of its bytes on disk), in `FileId` order; loads nothing.
+    pub fn digests(&self) -> impl Iterator<Item = (&str, u64)> {
+        self.files.iter().map(|f| (f.path.as_str(), f.digest()))
     }
 }
 
@@ -387,7 +508,7 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
                 .chain(&diag.secondary)
                 .filter(move |l| l.span.file == file)
         };
-        let len = src.text.len();
+        let len = src.text().len();
         let lo = labels()
             .map(|l| src.text_offset(l.span.start))
             .min()
@@ -397,10 +518,10 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
             .max()
             .unwrap_or(0)
             .max(lo);
-        let lo = src.text[..lo].rfind('\n').map_or(0, |i| i + 1);
-        let hi = src.text[hi..].find('\n').map_or(len, |i| hi + i);
+        let lo = src.text()[..lo].rfind('\n').map_or(0, |i| i + 1);
+        let hi = src.text()[hi..].find('\n').map_or(len, |i| hi + i);
         let first_line = src.line_starts.partition_point(|&s| s as usize <= lo);
-        let mut snippet = Snippet::source(&src.text[lo..hi])
+        let mut snippet = Snippet::source(&src.text()[lo..hi])
             .line_start(first_line)
             .path(src.path.as_str());
         let clamp = |s: Span| {
@@ -554,11 +675,56 @@ mod tests {
         assert_eq!(f.line_col(23), (2, 12));
     }
 
+    /// A map written to an image keeps no text; the files are read again when first needed and
+    /// render exactly as before.
+    #[test]
+    fn restored_files_load_on_demand() {
+        let dir = std::env::temp_dir().join(format!("yavs-diag-lazy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let utf8 = dir.join("u.vhd");
+        let latin1 = dir.join("l.vhd");
+        std::fs::write(&utf8, "a\u{e9}b\nentity e is\n").expect("write");
+        std::fs::write(&latin1, b"a\xe9b\nx\xe9 y\n").expect("write");
+        let mut sm = SourceMap::default();
+        let u = sm.add(utf8.display().to_string(), "a\u{e9}b\nentity e is\n");
+        let l = sm.add_latin1(latin1.display().to_string(), b"a\xe9b\nx\xe9 y\n".to_vec());
+        let bytes = postcard::to_stdvec(&sm).expect("serialize");
+        assert!(
+            bytes.len() < 120,
+            "no text in the image: {} bytes",
+            bytes.len()
+        );
+        let back: SourceMap = postcard::from_bytes(&bytes).expect("deserialize");
+        assert!(back.get(u).full.get().is_none() && back.get(l).full.get().is_none());
+        assert_eq!(back.get(l).line_starts(), sm.get(l).line_starts());
+        assert!(back.get(l).is_latin1() && !back.get(u).is_latin1());
+        assert_eq!(
+            back.digests().collect::<Vec<_>>(),
+            sm.digests().collect::<Vec<_>>()
+        );
+        for (id, off) in [(u, 7), (l, 7)] {
+            let d =
+                Diagnostic::error("E0001", "m").with_primary(Span::new(id, off, off + 1), "here");
+            assert_eq!(
+                render(&back, &d, MessageFormat::Human, false),
+                render(&sm, &d, MessageFormat::Human, false)
+            );
+        }
+        assert!(back.get(u).full.get().is_some());
+        // A file that changed since the image was made is never shown as the old one.
+        std::fs::write(&utf8, "changed\n").expect("write");
+        let back: SourceMap = postcard::from_bytes(&bytes).expect("deserialize");
+        let changed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| back.get(u).text().len()));
+        assert!(changed.is_err());
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
     #[test]
     fn latin1_offsets_are_file_bytes() {
         let mut sm = SourceMap::default();
         let f = sm.add_latin1("l.vhd", b"a\xe9b\nx\xe9 y\n".to_vec());
-        assert_eq!(sm.get(f).text, "a\u{e9}b\nx\u{e9} y\n");
+        assert_eq!(sm.get(f).text(), "a\u{e9}b\nx\u{e9} y\n");
         assert_eq!(sm.get(f).bytes()[7], b'y');
         assert_eq!(sm.get(f).line_col(7), (2, 4));
         let d = Diagnostic::error("E0001", "m").with_primary(Span::new(f, 7, 8), "here");

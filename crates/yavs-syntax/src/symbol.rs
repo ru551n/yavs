@@ -109,6 +109,23 @@ impl std::fmt::Display for Symbol {
 mod tests {
     use super::Symbol;
 
+    /// A table written by `encode_table` decodes in any order and interns only what is read.
+    #[test]
+    fn image_table_is_read_lazily() {
+        use super::{DecodeTable, encode_table};
+        let syms = [
+            Symbol::intern("alpha_t"),
+            Symbol::intern("beta_t"),
+            Symbol::intern(""),
+        ];
+        let (bytes, table) = encode_table(|| postcard::to_stdvec(&syms).expect("serialize"));
+        let table = DecodeTable::new(table);
+        assert!(DecodeTable::current().is_none());
+        let back: [Symbol; 3] = table.run(|| postcard::from_bytes(&bytes).expect("deserialize"));
+        assert_eq!(back, syms);
+        assert_eq!(back[1].as_str(), "beta_t");
+    }
+
     #[test]
     fn roundtrip() {
         let a = Symbol::intern("Foo");
@@ -127,25 +144,70 @@ type EncTable = (Vec<u32>, Vec<Symbol>);
 
 thread_local! {
     static ENC: std::cell::RefCell<Option<EncTable>> = const { std::cell::RefCell::new(None) };
-    static DEC: std::cell::RefCell<Option<Vec<Symbol>>> = const { std::cell::RefCell::new(None) };
+    static DEC: std::cell::RefCell<Option<DecodeTable>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The texts of the symbols an image holds, as one string and the end offset of each.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SymbolTable {
+    text: String,
+    ends: Vec<u32>,
 }
 
 /// Run `f` (which serializes values holding symbols) and return its result with the table of
 /// the symbol texts it used; the written indices refer to that table.
-pub fn encode_table<R>(f: impl FnOnce() -> R) -> (R, Vec<&'static str>) {
+pub fn encode_table<R>(f: impl FnOnce() -> R) -> (R, SymbolTable) {
     ENC.with(|e| *e.borrow_mut() = Some(Default::default()));
     let r = f();
     let (_, list) = ENC.with(|e| e.borrow_mut().take()).unwrap_or_default();
-    (r, list.into_iter().map(Symbol::as_str).collect())
+    let mut t = SymbolTable {
+        text: String::new(),
+        ends: Vec::with_capacity(list.len()),
+    };
+    for s in list {
+        t.text.push_str(s.as_str());
+        t.ends.push(t.text.len() as u32);
+    }
+    (r, t)
 }
 
-/// Run `f` (which deserializes values holding symbols) against the table `encode_table` made.
-pub fn decode_table<R, S: AsRef<str>>(table: &[S], f: impl FnOnce() -> R) -> R {
-    let syms = table.iter().map(|t| Symbol::intern(t.as_ref())).collect();
-    DEC.with(|d| *d.borrow_mut() = Some(syms));
-    let r = f();
-    DEC.with(|d| *d.borrow_mut() = None);
-    r
+/// The symbols of a table `encode_table` made, for deserializing values that hold them, now or
+/// later (a lazily decoded arena keeps one). A symbol is interned when first read, so the
+/// texts nothing reads cost nothing.
+#[derive(Clone)]
+pub struct DecodeTable(std::sync::Arc<Decoded>);
+
+struct Decoded {
+    table: SymbolTable,
+    syms: Vec<std::sync::OnceLock<Symbol>>,
+}
+
+impl DecodeTable {
+    pub fn new(table: SymbolTable) -> Self {
+        let syms = (0..table.ends.len()).map(|_| Default::default()).collect();
+        DecodeTable(std::sync::Arc::new(Decoded { table, syms }))
+    }
+
+    fn get(&self, i: usize) -> Option<Symbol> {
+        let t = &self.0.table;
+        let end = *t.ends.get(i)? as usize;
+        let start = if i == 0 { 0 } else { t.ends[i - 1] as usize };
+        let text = t.text.get(start..end)?;
+        Some(*self.0.syms[i].get_or_init(|| Symbol::intern(text)))
+    }
+
+    /// The table of the enclosing [`DecodeTable::run`], if any.
+    pub fn current() -> Option<Self> {
+        DEC.with(|d| d.borrow().clone())
+    }
+
+    /// Run `f` (which deserializes values holding symbols) against this table.
+    pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let before = DEC.with(|d| d.borrow_mut().replace(self.clone()));
+        let r = f();
+        DEC.with(|d| *d.borrow_mut() = before);
+        r
+    }
 }
 
 impl serde::Serialize for Symbol {
@@ -175,7 +237,7 @@ impl serde::Serialize for Symbol {
 impl<'de> serde::Deserialize<'de> for Symbol {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let i = <u32 as serde::Deserialize>::deserialize(d)?;
-        DEC.with(|t| t.borrow().as_ref().and_then(|t| t.get(i as usize).copied()))
+        DEC.with(|t| t.borrow().as_ref().and_then(|t| t.get(i as usize)))
             .ok_or_else(|| serde::de::Error::custom("symbol outside decode_table or out of range"))
     }
 }

@@ -445,17 +445,12 @@ impl Db {
     /// bound per region. Names that do not resolve are left to elab, which reports them where
     /// they are bound. Idempotent (#255).
     pub fn bind_package_paths(&mut self) {
-        let uses: Vec<(ExprId, ExternalId)> = self
-            .exprs
-            .iter()
-            .filter_map(|(e, x)| match x.kind {
-                ExprKind::External(x) if self.externals[x].path_kind == PathKind::Package => {
-                    Some((e, x))
-                }
-                _ => None,
-            })
-            .collect();
+        // The list comes from the settled analysis, not from a walk over every expression.
+        let uses = self.facts().package_paths.clone();
         for (e, x) in uses {
+            if !matches!(self.exprs[e].kind, ExprKind::External(_)) {
+                continue;
+            }
             if let Ok(d) = self.package_path_target(x) {
                 self.pkg_targets.insert(x, d);
                 self.exprs[e].kind = ExprKind::Obj(d);

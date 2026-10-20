@@ -715,7 +715,7 @@ pub fn run(
         // A process left suspended by its edge trigger would be visible to statement coverage,
         // a debugger stepping through it, and foreign callbacks.
         edge_triggers: observed_free,
-        skip_unchanged: observed_free && !yavs_elab::reads_activity(&db),
+        skip_unchanged: observed_free && !db.facts().reads_activity,
         ..Default::default()
     };
     let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do

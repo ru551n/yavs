@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the read payload, no copy), tests |
+| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the read payload, no copy; `into_parts` hands the buffer to a reader that decodes from it later), tests |
 
 ## 3. Design decisions that bind this module
 

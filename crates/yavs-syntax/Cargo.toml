@@ -11,5 +11,8 @@ serde.workspace = true
 rustc-hash.workspace = true
 yavs-diag.workspace = true
 
+[dev-dependencies]
+postcard.workspace = true
+
 [lints]
 workspace = true

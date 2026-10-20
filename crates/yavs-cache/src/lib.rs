@@ -57,6 +57,14 @@ pub struct Entry {
     bytes: Vec<u8>,
 }
 
+impl Entry {
+    /// The buffer the entry was read into and where the payload starts in it, for a reader that
+    /// keeps the payload and decodes from it later without a copy.
+    pub fn into_parts(self) -> (Vec<u8>, usize) {
+        (self.bytes, HEADER)
+    }
+}
+
 impl std::ops::Deref for Entry {
     type Target = [u8];
 

@@ -179,7 +179,7 @@ impl Db {
 
     pub(crate) fn span_text(&self, s: Span) -> String {
         let f = self.sources.get(s.file);
-        f.text[f.text_offset(s.start)..f.text_offset(s.end)].to_string()
+        f.text()[f.text_offset(s.start)..f.text_offset(s.end)].to_string()
     }
 }
 
@@ -187,7 +187,7 @@ impl Db {
 /// subprograms, the type marks of the profile (lower case, without blanks).
 fn sigs(decls: &[ast::Decl], src: &yavs_diag::SourceFile) -> Vec<(String, Span)> {
     let text = |s: Span| -> String {
-        src.text[src.text_offset(s.start)..src.text_offset(s.end)]
+        src.text()[src.text_offset(s.start)..src.text_offset(s.end)]
             .chars()
             .filter(|c| !c.is_whitespace())
             .flat_map(char::to_lowercase)

@@ -203,8 +203,8 @@ fn forced(
 ) -> Option<HashSet<ObjId>> {
     let mut decls = HashSet::new();
     let mut exts = HashSet::new();
-    for (_, st) in db.stmts.iter() {
-        let t = match &st.kind {
+    for &id in &db.facts().forces {
+        let t = match &db.stmts[id].kind {
             StmtKind::Force { target, .. } | StmtKind::Release { target, .. } => target,
             _ => continue,
         };

@@ -13,6 +13,22 @@ use crate::ids::{Id, LibId};
 use crate::loader::LibSource;
 use crate::{LangRev, Options};
 
+/// The bytes of an image as read from the store: the buffer, and where the image starts in it.
+/// The restored `Db` keeps the buffer and decodes from it on demand.
+pub struct Image {
+    buf: std::sync::Arc<Vec<u8>>,
+    start: usize,
+}
+
+impl Image {
+    pub fn new(buf: Vec<u8>, start: usize) -> Image {
+        Image {
+            buf: std::sync::Arc::new(buf),
+            start,
+        }
+    }
+}
+
 /// Why an image could not be turned back into a `Db`; the caller analyzes from source instead.
 #[derive(Debug)]
 pub enum ImageError {
@@ -42,6 +58,7 @@ impl Db {
         self.context_subtype = None;
         self.top_context = None;
         self.files.clear();
+        self.facts = Some(self.scan_facts());
     }
 
     /// The store for stage results (`Options::stages`).
@@ -109,20 +126,22 @@ impl Db {
     /// was made from.
     pub fn from_image(
         opts: Options,
-        bytes: &[u8],
+        image: Image,
         verified: &dyn Fn(&str) -> bool,
     ) -> Result<Db, ImageError> {
         let corrupt = |s: &str| ImageError::Corrupt(s.into());
+        let bytes = &image.buf[image.start..];
         let n = bytes
             .get(..8)
             .and_then(|b| <[u8; 8]>::try_from(b).ok())
             .map(u64::from_le_bytes)
             .ok_or_else(|| corrupt("short"))? as usize;
         let table_bytes = bytes.get(8..8 + n).ok_or_else(|| corrupt("short table"))?;
-        let table: Vec<String> =
+        let table: yavs_syntax::SymbolTable =
             postcard::from_bytes(table_bytes).map_err(|e| ImageError::Corrupt(e.to_string()))?;
         let payload = &bytes[8 + n..];
-        let mut db: Db = yavs_syntax::decode_table(&table, || postcard::from_bytes(payload))
+        let mut db: Db = yavs_syntax::DecodeTable::new(table)
+            .run(|| crate::ids::sharing(&image.buf, || postcard::from_bytes(payload)))
             .map_err(|e| ImageError::Corrupt(e.to_string()))?;
         if db.rev != opts.rev {
             return Err(ImageError::Stale("design revision".into()));
@@ -147,15 +166,17 @@ impl Db {
             };
             db.libs[id].source = source;
         }
+        db.sources
+            .set_reader(|p| crate::stdlib::read(std::path::Path::new(p)));
         db.check_sources(verified)?;
         Ok(db)
     }
 
     /// Every file the analysis read, except the `verified` ones, must still hold the bytes it read.
     fn check_sources(&self, verified: &dyn Fn(&str) -> bool) -> Result<(), ImageError> {
-        for (path, bytes) in self.sources.iter().filter(|(p, _)| !verified(p)) {
+        for (path, digest) in self.sources.digests().filter(|(p, _)| !verified(p)) {
             match crate::stdlib::read(std::path::Path::new(path)) {
-                Ok(now) if now == bytes => {}
+                Ok(now) if yavs_diag::digest(&now) == digest => {}
                 _ => return Err(ImageError::Stale(path.to_string())),
             }
         }

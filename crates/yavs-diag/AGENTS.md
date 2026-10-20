@@ -21,7 +21,7 @@ Everything is in `src/lib.rs` (about 530 lines).
 | Item | Role |
 |---|---|
 | `FileId`, `Span` (`file`, `start`, `end`: byte offsets into the file on disk), `Span::to` | Source positions |
-| `SourceFile`, `SourceMap::add` / `add_latin1` / `get` | Loaded files; Latin-1 files keep their raw bytes and map offsets to the decoded text (`text_offset`, `line_col`) |
+| `SourceFile`, `SourceMap::add` / `add_latin1` / `get` | Loaded files; Latin-1 files keep their raw bytes and map offsets to the decoded text (`text_offset`, `line_col`). Serialized, a file is its path, line starts and an xxh3 digest of its bytes; `SourceFile::text()`/`bytes()` read it again on first use (`SourceMap::set_reader`), and panic if the bytes no longer match the digest (#426) |
 | `Severity` (`Error`, `Warning`, `Note`) | Level |
 | `Diagnostic::error/warning/new`, `with_primary`, `with_secondary`, `with_note`, `with_help` | Builder |
 | `MessageFormat` (`Human`, `Short`, `Json`), `ColorChoice::use_color` (TTY and `NO_COLOR`) | Output options |

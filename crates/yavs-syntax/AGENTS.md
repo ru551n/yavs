@@ -19,7 +19,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | `Std`, `Options` (`std`, `defines`), `Encoding`, `load_source`, `parse_file`, `parse_str`, `Parsed` (`design` only when no error), `codes` |
-| `src/symbol.rs` | `Symbol`: global interner behind a lock plus a per-thread copy (hits and `as_str` take no lock), leaked strings, `as_str() -> &'static str` |
+| `src/symbol.rs` | `Symbol`: global interner behind a lock plus a per-thread copy (hits and `as_str` take no lock), leaked strings, `as_str() -> &'static str`; `encode_table`/`DecodeTable`: the symbol text table of a cache image, each symbol interned on first read |
 | `src/source.rs` | `Src` (bytes plus Latin-1 flag) |
 | `src/token.rs` | `Tok`, `Kw` (keywords per standard), `Token` |
 | `src/lexer.rs` | `lex`: bytes to tokens, `-- psl` pragmas, `E0001`, `E0009`, `W0003` |

@@ -336,20 +336,3 @@ pub fn elaborate(
 ) -> Result<Elaborated, Vec<Diagnostic>> {
     walk::elaborate(db, top, overrides, cfg)
 }
-
-/// Whether any analysed expression reads `'active` or `'last_active`. When none does, a
-/// zero-delay assignment that changes nothing is unobservable and the kernel may skip it
-/// (`yavs_kernel::Config::skip_unchanged`). Conservative: expressions of every loaded unit
-/// count, used or not.
-pub fn reads_activity(db: &Db) -> bool {
-    use yavs_sem::hir::{ExprKind, PredefAttr};
-    db.exprs.iter().any(|(_, e)| {
-        matches!(
-            e.kind,
-            ExprKind::Attr {
-                attr: PredefAttr::Active | PredefAttr::LastActive,
-                ..
-            }
-        )
-    })
-}

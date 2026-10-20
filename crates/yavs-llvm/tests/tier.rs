@@ -161,8 +161,10 @@ fn loop_runs_compiled() {
     let (a, b, n) = p.both(f, &[100_000]);
     assert_eq!(a, Ok(5_000_050_000));
     assert_eq!(a, b);
-    // One entry: the whole loop runs in compiled code, the interpreter only executes `Ret`.
-    assert_eq!(n, 1);
+    // The whole loop runs in compiled code and the interpreter only executes `Ret`: one entry
+    // from the function's start, or two when its first instruction is a definition the frame
+    // starts with (skipped, so the interpreter runs the preamble and enters at the loop).
+    assert!((1..=2).contains(&n), "{n} entries");
 }
 
 /// A threshold the loops of these tests pass early: seen in one sample of the interpreter.

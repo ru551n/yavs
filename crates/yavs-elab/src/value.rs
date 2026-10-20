@@ -34,6 +34,26 @@ pub(crate) fn elems(a: &ArrayConst) -> Vec<Val> {
     }
 }
 
+/// LRM 9.2.3: values of an array type are equal when their lengths and elements are, whatever
+/// their bounds and directions; other values by structure.
+pub(crate) fn same(a: &Val, b: &Val) -> bool {
+    match (a, b) {
+        (Val::Array(x), Val::Array(y)) => {
+            let (bx, by) = (bounds_of(x), bounds_of(y));
+            bx.len() == by.len()
+                && bx.iter().zip(&by).all(|(p, q)| p.len() == q.len())
+                && {
+                    let (ex, ey) = (elems(x), elems(y));
+                    ex.len() == ey.len() && ex.iter().zip(&ey).all(|(p, q)| same(p, q))
+                }
+        }
+        (Val::Record(x), Val::Record(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| same(p, q))
+        }
+        _ => a == b,
+    }
+}
+
 /// Element `k` (row major) of `a`, without expanding runs.
 pub(crate) fn elem_at(a: &ArrayConst, mut k: u64) -> Option<Val> {
     match &a.elems {

@@ -1,0 +1,3 @@
+exit	0
+diag	note	0	0	:case_generate_array:g1:_p0	g1 two
+diag	note	0	0	:case_generate_array:g2:_p0	g2 one

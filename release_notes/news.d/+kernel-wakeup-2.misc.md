@@ -1,0 +1,1 @@
+Simulation of clocked designs is faster again: processes that wait for the same signals every cycle are not registered again each time, scalar signal assignments take a shorter path, and delta cycles do less bookkeeping.

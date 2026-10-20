@@ -2595,3 +2595,21 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
   suite) no longer pays the serialisation (a fifth of its run); a design run twice or more has its image from
   the third run on. Prefix images are made at once: they are shared. Supersedes "The first `elab` or `run`
   of a design stores the image".
+
+## Kernel round 5: the cost of a wake-up, second pass (yavs-kernel, yavs-interp, #440, 2026-10-20)
+
+- **A zero-delay assignment of one `std_ulogic` element to a driver with nothing pending or skipped
+  is appended to the driver's waveform directly** (`Ctx::assign_code`): nothing to preempt, no
+  waveform list, no value buffer. Anything else, and every error, takes the general path.
+- **A process that waits for the same signals twice in a row without a timeout has resident waiters**
+  (`ProcMeta::perm`): the wake scan keeps them and the commit registers nothing. Ceiling: a wait on
+  different signals, or with a timeout, ends the epoch and the stale waiters go at the next scan of
+  their lists. Processes of one signal now wake in the order of their first wait. The batch order is
+  sorted by process, so output is the same; only the permutation of resumed processes under `--shuffle`
+  differs from earlier builds.
+- **`Observer::phase_after_serial(phase)`**: the kernel calls such an observer's `phase` only in a cycle
+  after which a serial process ran, and keeps a phase mask per observer. The shared-heap collector uses it
+  for `NextCycle`: only serial processes allocate in the shared heap, so a design without any pays no
+  mutex and no hook per delta cycle.
+- **The wake scan asks interned trigger ids stored in the waiters**, not the process table, and a signal
+  whose waiters all share one edge trigger that holds skips the per-waiter question.

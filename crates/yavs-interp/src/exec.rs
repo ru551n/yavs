@@ -1899,6 +1899,33 @@ impl Machine {
         Ok(())
     }
 
+    /// `Inst::LFill`: set the `n` elements from `i` of the logic vector at `base` to `code`, a
+    /// plane word at a time.
+    fn lfill(&mut self, base: u64, mut i: u64, mut n: u64, code: u64) -> R<()> {
+        if code > 8 {
+            return Err(ice(format!("std_ulogic code {code}")));
+        }
+        while n > 0 {
+            let s = i % 64;
+            let take = (64 - s).min(n);
+            let mask = if take == 64 {
+                !0
+            } else {
+                ((1u64 << take) - 1) << s
+            };
+            let a = add_addr(base, i / 64 * 32)?;
+            let b = self.wr(a, 32)?;
+            for p in 0..4 {
+                let set = if code >> p & 1 == 1 { mask } else { 0 };
+                let w = plane_word(b, p) & !mask | set;
+                b[p * 8..p * 8 + 8].copy_from_slice(&w.to_le_bytes());
+            }
+            i += take;
+            n -= take;
+        }
+        Ok(())
+    }
+
     /// `Inst::Copy`: `n` bytes from `s` to `d`.
     #[inline(always)]
     fn copy_mem(&mut self, d: u64, s: u64, n: u64) -> R<()> {
@@ -4260,6 +4287,9 @@ impl Machine {
                 self.set(dst, code);
             }
             Inst::LSet { base, idx, v } => self.lset(self.r(base), self.r(idx), self.r(v))?,
+            Inst::LFill { base, idx, n, v } => {
+                self.lfill(self.r(base), self.r(idx), self.r(n), self.r(v))?;
+            }
             Inst::LCopy {
                 dst,
                 dst_off,

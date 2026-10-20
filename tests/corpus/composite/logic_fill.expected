@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:logic_fill:_p0	ones 0 0
+diag	note	0	0	:logic_fill:_p0	ones 1 1
+diag	note	0	0	:logic_fill:_p0	ones 63 63
+diag	note	0	0	:logic_fill:_p0	ones 64 64
+diag	note	0	0	:logic_fill:_p0	ones 65 65
+diag	note	0	0	:logic_fill:_p0	ones 127 127
+diag	note	0	0	:logic_fill:_p0	ones 128 128
+diag	note	0	0	:logic_fill:_p0	ones 129 129
+diag	note	0	0	:logic_fill:_p0	zero ones uninit special special other other
+diag	note	0	0	:logic_fill:_p0	five empty twentyone ? ?
+diag	note	0	0	:logic_fill:_p0	done

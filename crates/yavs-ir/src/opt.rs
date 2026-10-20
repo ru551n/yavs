@@ -2460,6 +2460,7 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::Bool { .. }
             | Inst::LGet { .. }
             | Inst::LSet { .. }
+            | Inst::LFill { .. }
             | Inst::LCopy { .. }
             | Inst::LEq { .. }
             | Inst::Check { .. }

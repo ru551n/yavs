@@ -356,10 +356,15 @@ impl<'a> Fx<'a, '_> {
                     .collect(),
             ),
         };
+        // Read in place, like the string constants above: the runtime expands a compact
+        // constant once; no consumer writes into the value of a literal.
         let c = self.fb.program().konst(data);
-        let size = self.size_of(tid, dope);
-        let dst = self.alloc(size);
-        self.emit(Inst::CopyConst { dst, c });
+        let dst = self.reg(RegTy::Ptr);
+        self.emit(Inst::AddrOf {
+            dst,
+            space: yavs_ir::AddrSpace::Const(c),
+            off: 0,
+        });
         Ok(V::A(dst, dope))
     }
 
@@ -1910,10 +1915,14 @@ impl<'a> Fx<'a, '_> {
         {
             let v = elem_value(self, a.value)?;
             if logic {
-                self.for_n(count, |fx, i| {
-                    set(fx, i, v);
-                    Ok(())
-                })?;
+                let code = self.enc(v, bias);
+                let zero = self.int(0);
+                self.emit(Inst::LFill {
+                    base: data,
+                    idx: zero,
+                    n: count,
+                    v: code,
+                });
             } else {
                 let zero = self.int(0);
                 self.fill_scalars(data, zero, count, v, w);
@@ -3169,6 +3178,25 @@ impl<'a> Fx<'a, '_> {
         let la = self.dope_len(ap);
         let lb = self.dope_len(bp);
         let r = self.reg(RegTy::I64);
+        if op == CmpOp::Eq && logic {
+            // Equal when the lengths are and the planes are, word by word.
+            let same = self.cmp(CmpOp::Eq, la, lb);
+            let (go, no, j) = (self.block(), self.block(), self.block());
+            self.branch(same, go, no);
+            self.at(go);
+            self.emit(Inst::LEq {
+                dst: r,
+                a: ad,
+                b: bd,
+                n: la,
+            });
+            self.jump(j);
+            self.at(no);
+            self.emit(Inst::Const { dst: r, v: 0 });
+            self.jump(j);
+            self.at(j);
+            return Ok(r);
+        }
         let i = self.reg(RegTy::I64);
         self.emit(Inst::Const { dst: i, v: 0 });
         let lt = self.cmp(CmpOp::Lt, la, lb);

@@ -153,7 +153,7 @@ signals (the kernel stores logic leaves as yavs-logic planes, K7) and temporarie
 | Nesting | an array of logic arrays (memories, `array (0 to 1023) of std_logic_vector(7 downto 0)`, 2-D logic arrays) is **one** plane vector over all elements, rows contiguous; a row is an element range, not a padded block |
 | In records | a logic-array field is its own plane vector at its field offset, padded to whole 32-byte blocks |
 | Size | `ceil(n / 64) * 32` bytes (`LayoutOf` computes it; `u64`) |
-| Element access | `LGet{dst, base, idx}` / `LSet{base, idx, v}`: block `idx / 64`, bit `idx % 64` in each plane; `Index` on a logic array lowers to these |
+| Element access | `LGet{dst, base, idx}` / `LSet{base, idx, v}`: block `idx / 64`, bit `idx % 64` in each plane; `Index` on a logic array lowers to these; `LFill{base, idx, n, v}` is `LSet` of one code at the `n` plane elements from `idx` (a default, an `others` choice: one instruction, whole plane words at a time, instead of a loop) |
 | Slices, concatenation, aggregates | `LCopy{dst, dst_off, src, src_off, n}`: word-wise copy with funnel shifts (64 elements per step, any alignment); `Copy` when both ends are block aligned |
 | Operators | `LogicOp`/`LNum` call yavs-logic bit-parallel ops (`and`..`xnor`, `not`, `to_x01`, `resolve`, `match_eq`, shifts, `add_num`, `cmp_num`); 0/1-only values take the `BitVec` word path |
 | Parameters | in-mode: by reference when block aligned, else `LCopy` into a temp; out/inout of an unaligned slice: copy-in/copy-out (LRM 6.5.6.2 allows either) |

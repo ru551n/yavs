@@ -412,6 +412,13 @@ pub enum Inst {
         idx: Reg,
         v: Reg,
     },
+    /// `LSet` of `v` at plane elements `idx .. idx + n`.
+    LFill {
+        base: Reg,
+        idx: Reg,
+        n: Reg,
+        v: Reg,
+    },
     LCopy {
         dst: Reg,
         dst_off: Reg,
@@ -889,6 +896,12 @@ impl Inst {
             Inst::LSet { base, idx, v } => {
                 f(base, Use, p);
                 f(idx, Use, i);
+                f(v, Use, i);
+            }
+            Inst::LFill { base, idx, n, v } => {
+                f(base, Use, p);
+                f(idx, Use, i);
+                f(n, Use, i);
                 f(v, Use, i);
             }
             Inst::LCopy {

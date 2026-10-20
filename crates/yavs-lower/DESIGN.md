@@ -162,7 +162,7 @@ a call into your module in a small commit.
 | `Attr` `range reverse_range` | only inside `RangeC::Attr`: the dope of the prefix, direction flipped |
 | `Attr` on a signal `event active last_event last_active last_value` | `SigAttr` |
 | `Attr` `simple_name path_name instance_name` | instance-data string (elab computes the path) |
-| `Aggregate` | static: one pool constant; dynamic: dope from `AggBounds`, then per association `Store`/`LSet`/`Fill`/`LCopy` |
+| `Aggregate` | static: one pool constant; dynamic: dope from `AggBounds`, then per association `Store`/`LSet`/`LFill`/`Fill`/`LCopy` |
 | `Qualified` | operand, then `SubtypeCheck`/`Check{Range}` against `to` |
 | `Conv` int/real/enum | `IToF` / `FToI` (checked round) / position move, then `Check{Range}` |
 | `Conv` array (closely related) | element conversion only when the element types differ, new dope from `to` or the operand |

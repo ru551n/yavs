@@ -1104,14 +1104,13 @@ impl Fx<'_, '_> {
                     let v = self.scalar_left(s, span)?;
                     let bias = if leaf == LogicKind::StdULogic { 0 } else { 2 };
                     let code = self.enc(v, bias);
-                    self.for_n(count, |fx, i| {
-                        fx.emit(Inst::LSet {
-                            base: addr,
-                            idx: i,
-                            v: code,
-                        });
-                        Ok(())
-                    })?;
+                    let zero = self.int(0);
+                    self.emit(Inst::LFill {
+                        base: addr,
+                        idx: zero,
+                        n: count,
+                        v: code,
+                    });
                     return Ok(());
                 }
                 let count = self.layout_count(tid, desc);

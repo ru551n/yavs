@@ -2357,5 +2357,13 @@ user's performance priority:
   slots whose address is passed, indexed or copied, slots covered by a composite root map or
   written while a root map covers them. A slot a root map covers that the function never writes
   (a parameter) is read from a register and keeps its value in memory for the collector.
+- **Logic arrays, lowering side (#444):** a default value or an `others` choice for a logic
+  array is one `LFill` (the instruction sets whole plane words), not a loop of `LSet`; the
+  equality that `case` choices and `array_cmp` ask for on logic arrays compares the planes
+  with `LEq` after the lengths; the value of an array literal or aggregate constant is read in
+  place from the constant pool (as string literals always were: the runtime expands a compact
+  constant once) instead of being copied into a temporary first. The verification libraries'
+  command records and `case` statements over `std_ulogic_vector` ran thousands of
+  instructions per default value and per choice.
 - **For a future cache of optimised code:** the key must include whether `keep_variables` was
   called; today only unoptimised IR is cached.

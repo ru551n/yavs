@@ -829,14 +829,13 @@ impl<'a, 'b> Fx<'a, 'b> {
         if logic {
             let v = self.scalar_left(elem, span)?;
             let code = self.enc(v, bias);
-            self.for_n(count, |fx, i| {
-                fx.emit(Inst::LSet {
-                    base: data,
-                    idx: i,
-                    v: code,
-                });
-                Ok(())
-            })?;
+            let zero = self.int(0);
+            self.emit(Inst::LFill {
+                base: data,
+                idx: zero,
+                n: count,
+                v: code,
+            });
             return Ok(data);
         }
         let (_, _, w) = self.elem_scalar(elem, span)?;

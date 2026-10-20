@@ -108,6 +108,10 @@ impl Heap {
         }
     }
 
+    pub fn tag(&self) -> u8 {
+        self.tag
+    }
+
     /// Slots in use, deallocated or not (for tests and statistics).
     pub fn slots(&self) -> usize {
         self.slots.len()
@@ -149,6 +153,30 @@ impl Heap {
         s.start = start;
         s.writes = 0;
         Ok(pack(self.tag, index, s.generation))
+    }
+
+    /// The bytes of live object `h` for an edit in place, as `(slot, data, start)`: the object
+    /// is `data[start..]`. Finish with [`Heap::reissue`], which makes `h` stale and returns the
+    /// handle of the edited object (textio READ and WRITE, #428).
+    pub fn edit(&mut self, h: u64) -> Result<(u32, &mut Vec<u8>, &mut usize), HeapError> {
+        let i = self.resolve(h)?;
+        let s = &mut self.slots[i as usize];
+        s.writes = s.writes.wrapping_add(1);
+        match s.data.as_mut() {
+            Some(d) => Ok((i, d, &mut s.start)),
+            None => Err(HeapError::Stale),
+        }
+    }
+
+    /// The handle of the object edited by [`Heap::edit`] (`grown` bytes added): a new
+    /// generation of the same slot, so every older handle is stale as after a deallocation.
+    /// Addresses into the object (not handles) see the edited bytes; the object kept its slot.
+    pub fn reissue(&mut self, i: u32, grown: usize) -> u64 {
+        self.since_gc = self.since_gc.saturating_add(grown as u64);
+        let s = &mut self.slots[i as usize];
+        s.generation = s.generation.wrapping_add(1).max(1);
+        s.writes = 0;
+        pack(self.tag, i, s.generation)
     }
 
     /// The slot index of a live handle.

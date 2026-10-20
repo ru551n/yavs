@@ -1806,6 +1806,15 @@ impl Machine {
     /// The heap a new object goes into: the shared one for `shared` or in a frame marked
     /// `shared_alloc`, else the private one. Every allocation of an access value's object
     /// goes through here.
+    /// The tag of the heap [`Machine::alloc_heap`] would use.
+    pub(crate) fn alloc_tag(&self, shared: bool) -> u8 {
+        if shared || self.frames.last().is_some_and(|f| f.shared_alloc) {
+            heap::SHARED
+        } else {
+            heap::PRIVATE
+        }
+    }
+
     pub(crate) fn alloc_heap(&mut self, shared: bool) -> R<&mut Heap> {
         if shared || self.frames.last().is_some_and(|f| f.shared_alloc) {
             let sh = self.shared_mut()?;
@@ -2244,14 +2253,14 @@ impl Machine {
     }
 
     /// The empty staging buffer of `Copy` and `Fill`; hand it back with `give_bytes`.
-    fn take_bytes(&mut self) -> Vec<u8> {
+    pub(crate) fn take_bytes(&mut self) -> Vec<u8> {
         let mut b = std::mem::take(&mut self.bytes);
         b.clear();
         b
     }
 
     /// Keep a staging buffer for the next `Copy` or `Fill`, unless it grew large.
-    fn give_bytes(&mut self, b: Vec<u8>) {
+    pub(crate) fn give_bytes(&mut self, b: Vec<u8>) {
         if b.capacity() <= 1 << 16 {
             self.bytes = b;
         }
@@ -5371,13 +5380,11 @@ pub(crate) fn cell(b: &[u8]) -> u64 {
 /// [`cell`] of `w.bytes()` bytes, `w` known: `B4` sign-extends.
 #[inline(always)]
 fn cell_w(b: &[u8], w: Width) -> u64 {
-    let mut x = [0u8; 8];
-    x[..b.len()].copy_from_slice(b);
-    let v = u64::from_le_bytes(x);
-    if w == Width::B4 {
-        v as u32 as i32 as i64 as u64
-    } else {
-        v
+    // `b` is exactly `min(w.bytes(), 8)` long: fixed sizes compile to plain loads.
+    match w {
+        Width::B1 => b.first().map_or(0, |&x| u64::from(x)),
+        Width::B4 => <[u8; 4]>::try_from(b).map_or(0, |x| i64::from(i32::from_le_bytes(x)) as u64),
+        _ => <[u8; 8]>::try_from(b).map_or(0, u64::from_le_bytes),
     }
 }
 

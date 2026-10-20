@@ -178,6 +178,11 @@ impl Machine {
         self.alloc_heap(matches!(split(cell).0, SHARED | SHARED_HEAP))
     }
 
+    /// The tag of the heap whose objects `cell` designates by default.
+    fn line_tag(&self, cell: u64) -> u8 {
+        self.alloc_tag(matches!(split(cell).0, SHARED | SHARED_HEAP))
+    }
+
     fn alloc_in(&mut self, cell: u64, kind: Obj, data: Vec<u8>) -> R<u64> {
         self.heap_for(cell)?
             .alloc(kind, data)
@@ -230,6 +235,18 @@ impl Machine {
         Ok(self.line_ref(cell)?.map(<[u8]>::to_vec))
     }
 
+    /// The line variable at `cell` is null or designates a live object.
+    fn line_live(&mut self, cell: u64) -> R<()> {
+        let h = self.load(cell, Width::B8)?;
+        if h != 0 {
+            self.heap_of(h)?
+                .0
+                .resolve(h)
+                .map_err(|_| deallocated_line())?;
+        }
+        Ok(())
+    }
+
     /// [`Machine::line_get`] without the copy.
     fn line_ref(&mut self, cell: u64) -> R<Option<&[u8]>> {
         let h = self.load(cell, Width::B8)?;
@@ -243,15 +260,83 @@ impl Machine {
         d.get(24..24 + n).map(Some).ok_or_else(line_short)
     }
 
+    /// Parse from the front of the line at `cell` (null is empty); when the parse succeeds the
+    /// bytes it consumed leave the line, in place when the object can stay where it is.
+    fn line_parse<T, E>(
+        &mut self,
+        cell: u64,
+        parse: impl FnOnce(&mut &[u8]) -> Result<T, E>,
+    ) -> R<Result<T, E>> {
+        let h = self.load(cell, Width::B8)?;
+        if h == 0 || crate::heap::tag_of(h) != self.line_tag(cell) {
+            let (r, k) = parse_line(self, cell, parse)?;
+            if r.is_ok() {
+                self.line_edit(cell, k, b"")?;
+            }
+            return Ok(r);
+        }
+        let hp = self.heap_of(h)?.0;
+        let (i, v, start) = hp.edit(h).map_err(|e| match e {
+            HeapError::Stale => deallocated_line(),
+            e => ice(format!("line: {e:?}")),
+        })?;
+        let n = line_len(v.get(*start..).unwrap_or_default())?;
+        if v.len() < *start + 24 + n {
+            return Err(line_short());
+        }
+        v.truncate(*start + 24 + n);
+        let mut rest = &v[*start + 24..];
+        let r = parse(&mut rest);
+        if r.is_err() {
+            return Ok(r);
+        }
+        *start += n - rest.len();
+        if *start > v.len() - *start {
+            v.drain(..*start);
+            *start = 0;
+        }
+        let n = v.len() - *start - 24;
+        v[*start..*start + 24].copy_from_slice(&line_desc(n));
+        let nh = hp.reissue(i, 0);
+        self.store(cell, Width::B8, nh)?;
+        Ok(r)
+    }
+
     /// Replace the line at `cell` (null is empty) by a new object `1 to len` holding its
     /// bytes without the first `drop` and with `tail` appended, deallocating the old one: as
     /// [`Machine::line_get`] then [`Machine::line_set`], but the bytes move to the new object
     /// instead of being copied, so N READs or WRITEs on one line are O(N) (#196).
     fn line_edit(&mut self, cell: u64, drop: usize, tail: &[u8]) -> R<()> {
-        self.line_edit_with(cell, drop, |_, v| {
-            v.extend_from_slice(tail);
-            Ok(())
-        })
+        let h = self.load(cell, Width::B8)?;
+        // The object stays in its slot (no quarantine, no new slot) when `cell` allocates from
+        // the same heap; its handle is reissued, so an older copy of the line is stale (#428).
+        if h == 0 || crate::heap::tag_of(h) != self.line_tag(cell) {
+            return self.line_edit_with(cell, drop, |_, v| {
+                v.extend_from_slice(tail);
+                Ok(())
+            });
+        }
+        let hp = self.heap_of(h)?.0;
+        let (i, v, start) = hp.edit(h).map_err(|e| match e {
+            HeapError::Stale => deallocated_line(),
+            e => ice(format!("line: {e:?}")),
+        })?;
+        let n = line_len(v.get(*start..).unwrap_or_default())?;
+        if drop > n || v.len() < *start + 24 + n {
+            return Err(line_short());
+        }
+        v.truncate(*start + 24 + n);
+        *start += drop;
+        v.extend_from_slice(tail);
+        // Compact once the dropped prefix is the larger half: amortized O(1) per byte.
+        if *start > v.len() - *start {
+            v.drain(..*start);
+            *start = 0;
+        }
+        let n = v.len() - *start - 24;
+        v[*start..*start + 24].copy_from_slice(&line_desc(n));
+        let nh = hp.reissue(i, tail.len());
+        self.store(cell, Width::B8, nh)
     }
 
     /// [`Machine::line_edit`] with the appended bytes produced by `tail` from the machine's
@@ -753,22 +838,17 @@ fn read_with<T>(
     ctx: &mut Option<&mut Ctx<'_>>,
     what: &str,
     a: Args<'_>,
-    parse: impl FnOnce(&mut &[u8]) -> Result<T, yavs_std::error::ConvError>,
+    parse: impl FnOnce(&mut &[u8]) -> Result<T, ()>,
     store: impl FnOnce(&mut Machine, T) -> R<()>,
 ) -> R<Option<u64>> {
     let cell = arg(a, 0)?;
     let good = a.get(2).copied();
-    let (v, k) = parse_line(m, cell, parse)?;
-    let ok = match v {
+    let ok = match m.line_parse(cell, parse)? {
         Ok(v) => {
             store(m, v)?;
-            m.line_edit(cell, k, b"")?;
             true
         }
-        Err(e) if good.is_some() => {
-            let _ = e;
-            false
-        }
+        Err(_) if good.is_some() => false,
         Err(_) => {
             crate::ieee::report(m, ctx, Severity::Error, what)?;
             return Ok(None);
@@ -789,7 +869,14 @@ fn read_scalar(
     f: impl FnOnce(&mut &[u8], yavs_std::types::Revision) -> Result<u64, yavs_std::error::ConvError>,
 ) -> R<Option<u64>> {
     let (rev, dst) = (m.rt.revision, arg(a, 1)?);
-    read_with(m, ctx, what, a, |l| f(l, rev), |m, v| m.store(dst, w, v))
+    read_with(
+        m,
+        ctx,
+        what,
+        a,
+        |l| f(l, rev).map_err(drop),
+        |m, v| m.store(dst, w, v),
+    )
 }
 
 fn read_bits(
@@ -805,7 +892,7 @@ fn read_bits(
         ctx,
         what,
         a,
-        |l| f(l, n as usize),
+        |l| f(l, n as usize).map_err(drop),
         |m, b| m.put_bits(data, &b),
     )
 }
@@ -827,10 +914,11 @@ fn write_with(
 ) -> R<Option<u64>> {
     let cell = arg(a, 0)?;
     // A deallocated line is an error before anything is formatted.
-    m.line_ref(cell)?;
-    let mut tail = Vec::new();
+    m.line_live(cell)?;
+    let mut tail = m.take_bytes();
     f(m, &mut tail)?;
     m.line_edit(cell, 0, &tail)?;
+    m.give_bytes(tail);
     Ok(None)
 }
 
@@ -851,7 +939,7 @@ natives! {
     }
     read_string(m, ctx, a) {
         let (data, n) = m.fat1(arg(a, 1)?)?;
-        read_with(m, ctx, "string read failed", a, |l| tio::read_string(l, n as usize), |m, b| m.put(data, &b))
+        read_with(m, ctx, "string read failed", a, |l| tio::read_string(l, n as usize).map_err(drop), |m, b| m.put(data, &b))
     }
     read_bit_vector(m, ctx, a) { read_bits(m, ctx, "bit_vector read failed", a, tio::read_bit_vector) }
     hread(m, ctx, a) { read_bits(m, ctx, "hread failed", a, tio::hread) }
@@ -890,11 +978,11 @@ natives! {
         if w as u64 <= n && !in_heap {
             // No padding: the string goes from its memory into the line.
             let cell = arg(a, 0)?;
-            m.line_ref(cell)?;
-            m.line_edit_with(cell, 0, |m, l| {
-                l.extend_from_slice(m.rd(data, n)?);
-                Ok(())
-            })?;
+            m.line_live(cell)?;
+            let mut s = m.take_bytes();
+            s.extend_from_slice(m.rd(data, n)?);
+            m.line_edit(cell, 0, &s)?;
+            m.give_bytes(s);
             Ok(None)
         } else {
             let v = m.rd(data, n)?.to_vec();
@@ -961,6 +1049,10 @@ fn line_len(d: &[u8]) -> R<usize> {
         return Err(ice("line object without descriptor"));
     };
     let w = |k: usize| i64::from_le_bytes(w[k]);
+    // Lines made here are `1 to n`.
+    if w(0) == 1 && w(2) == 0 && w(1) >= 0 {
+        return Ok(w(1) as usize);
+    }
     yavs_ir::dim_len(w(0), w(1), w(2) == 1)
         .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| ice("line length"))
